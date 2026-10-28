@@ -25,7 +25,7 @@ vi.mock('../web/agent-config.js', async (orig) => {
   return { ...actual, agentDir: (name: string) => join(SANDBOX, 'agents', name) }
 })
 
-const { parseExtraChannels, buildExtraChannelLaunch, enableExtraPlugins } = await import('../web/agent-extra-channels.js')
+const { parseExtraChannels, buildExtraChannelLaunch, enableExtraPlugins, wantsGromzo, mxdAgentSockUsable, GROMZO_PLUGIN_ID } = await import('../web/agent-extra-channels.js')
 const { ensureIsolatedChannelConfigDir, scopeChannelPlugins, CHANNEL_PLUGIN_IDS } = await import('../web/agent-process.js')
 const { decideContinueFlag } = await import('../web/channel-continue-policy.js')
 const { pluginInTree, combineLiveness } = await import('../web/extra-channel-liveness.js')
@@ -75,12 +75,61 @@ describe('buildExtraChannelLaunch', () => {
 
   it('an extra equal to the primary is ignored', () => {
     const l = buildExtraChannelLaunch(['telegram'], 'telegram', AGENT, () => true)
-    expect(l).toEqual({ providers: [], skipped: [], pluginIds: [], channelArgs: '', envExports: '' })
+    expect(l).toEqual({ gromzo: 'off', providers: [], skipped: [], pluginIds: [], channelArgs: '', envExports: '' })
   })
 
   it('no extras -> every launch piece is empty (the launch is byte-identical to before)', () => {
     expect(buildExtraChannelLaunch([], 'telegram', AGENT, () => true))
-      .toEqual({ providers: [], skipped: [], pluginIds: [], channelArgs: '', envExports: '' })
+      .toEqual({ gromzo: 'off', providers: [], skipped: [], pluginIds: [], channelArgs: '', envExports: '' })
+  })
+})
+
+describe('GROMZOAGENTS1028: the Gromzo channel rides the extra-channel launch', () => {
+  const none = () => false
+  it('on: the plugin id, its --channels arg, and MXD_AGENT/MXD_SCOPE, never a provider', () => {
+    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true })
+    expect(l.gromzo).toBe('on')
+    expect(l.providers).toEqual([])
+    expect(l.pluginIds).toEqual([GROMZO_PLUGIN_ID])
+    expect(l.channelArgs).toBe(` plugin:${GROMZO_PLUGIN_ID}`)
+    expect(l.envExports).toBe('export MXD_AGENT="samu" && export MXD_SCOPE="owner" && ')
+    expect(GROMZO_PLUGIN_ID).toBe('gromzo-channel@gromzo-local')
+  })
+  it('next to a tokened slack extra: both, slack first', () => {
+    const l = buildExtraChannelLaunch(['slack'], 'telegram', AGENT, () => true, { slug: 'zara', sockUsable: true })
+    expect(l.providers).toEqual(['slack'])
+    expect(l.pluginIds).toEqual([SL, GROMZO_PLUGIN_ID])
+    expect(l.envExports).toContain('export SLACK_STATE_DIR=')
+    expect(l.envExports.endsWith('export MXD_AGENT="zara" && export MXD_SCOPE="owner" && ')).toBe(true)
+  })
+  it('no usable agent.sock: skipped, contributing nothing (fail-safe, like a tokenless extra)', () => {
+    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: false })
+    expect(l).toMatchObject({ gromzo: 'skipped-no-socket', pluginIds: [], channelArgs: '', envExports: '' })
+  })
+  it('a name mxd would refuse never reaches the shell export', () => {
+    for (const slug of ['Samu', 'sa mu', 'x"; rm -rf ~; "', '', 'a'.repeat(33), 'samu$(id)']) {
+      const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug, sockUsable: true })
+      expect(l).toMatchObject({ gromzo: 'skipped-bad-name', pluginIds: [], envExports: '' })
+    }
+  })
+  it('not asked for: off, and the launch is byte-identical to before', () => {
+    const l = buildExtraChannelLaunch([], 'slack', AGENT, none)
+    expect(l).toEqual({ gromzo: 'off', providers: [], skipped: [], pluginIds: [], channelArgs: '', envExports: '' })
+  })
+  it('only a real true opts in', () => {
+    expect(wantsGromzo(true)).toBe(true)
+    for (const v of ['true', 1, 'yes', {}, null, undefined, false]) expect(wantsGromzo(v)).toBe(false)
+  })
+  it('the socket check: a path this user can read and write passes, a missing one does not', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mxdsock-'))
+    try {
+      const f = join(dir, 'agent.sock')
+      writeFileSync(f, '')
+      expect(mxdAgentSockUsable(f)).toBe(true)
+      expect(mxdAgentSockUsable(join(dir, 'nope.sock'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -167,6 +216,13 @@ describe('isolated config dir keeps the extra plugin enabled (executed)', () => 
     expect(s.enabledPlugins[DI]).toBe(false)
   })
 
+  it('GROMZOAGENTS1028: slack primary + gromzo: the gromzo plugin stays enabled next to slack', () => {
+    const cfg = ensureIsolatedChannelConfigDir('demo', 'slack', [GROMZO_PLUGIN_ID])!
+    const s = JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8'))
+    expect(s.enabledPlugins[SL]).toBe(true)
+    expect(s.enabledPlugins[GROMZO_PLUGIN_ID]).toBe(true)
+  })
+
   it('without extras the slack plugin stays OFF (negative control: the scope step still works)', () => {
     const cfg = ensureIsolatedChannelConfigDir('demo', 'telegram')!
     const s = JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8'))
@@ -179,7 +235,11 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
 
   it('reads the extras once, from agent-config, against the resolved primary', () => {
-    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir)')
+    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name) ? { slug: name, sockUsable: mxdAgentSockUsable() } : undefined)')
+  })
+  it('GROMZOAGENTS1028: a gromzo-only launch still counts as having a channel, and a skipped one is logged', () => {
+    expect(FN).toContain("const hasExtraChannels = extraLaunch.providers.length > 0 || extraLaunch.gromzo === 'on'")
+    expect(FN).toContain("if (extraLaunch.gromzo === 'skipped-no-socket' || extraLaunch.gromzo === 'skipped-bad-name') {")
   })
   it('the --channels list carries the primary AND the extras', () => {
     expect(FN).toContain('const channelList = (primaryChannel + extraLaunch.channelArgs).trim()')

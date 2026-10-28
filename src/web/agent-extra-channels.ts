@@ -25,6 +25,7 @@
  * state dir contributes nothing, so a half-configured field cannot start a
  * plugin that would fall back to some other bot's token.
  */
+import { accessSync, constants } from 'node:fs'
 import { join } from 'node:path'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
@@ -49,7 +50,41 @@ export function parseExtraChannels(raw: unknown, primary: string | null): Channe
   return out
 }
 
+// GROMZOAGENTS1028: the Gromzo channel next to the primary one. It is NOT a
+// ChannelProviderType: it has no bot token and no state dir. The plugin talks to
+// the local marveen-mxd over agent.sock, and mxd holds every Matrix key; the
+// agent only names itself (MXD_AGENT, the mxd [[agents]] slug = the fleet name).
+// Opted in per agent with `gromzo: true` in agent-config.json (not inside
+// extraChannels, which the channel-setup route rewrites through the provider
+// list). Fail-safe like a tokenless extra: no usable agent.sock, or a name mxd
+// would refuse, and the plugin is not loaded.
+export const GROMZO_PLUGIN_ID = 'gromzo-channel@gromzo-local'
+/** The plugin's own default (plugin/gromzo-channel, MXD_AGENT_SOCK unset). */
+export const MXD_AGENT_SOCK_DEFAULT = process.platform === 'darwin'
+  ? '/Library/Application Support/Marveen/mxd-run/agent.sock'
+  : '/run/marveen-mxd/agent.sock'
+/** mxd's slug rule (config.rs): lower-case letters, digits and '-', at most 32. */
+const MXD_SLUG_RE = /^[a-z0-9-]{1,32}$/
+
+export function wantsGromzo(raw: unknown): boolean {
+  return raw === true
+}
+
+/** Whether this user can talk to mxd's agent.sock (read and write). */
+export function mxdAgentSockUsable(path: string = MXD_AGENT_SOCK_DEFAULT): boolean {
+  try {
+    accessSync(path, constants.R_OK | constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export type GromzoLaunchState = 'off' | 'on' | 'skipped-no-socket' | 'skipped-bad-name'
+
 export interface ExtraChannelLaunch {
+  /** The Gromzo channel's part in this launch (GROMZOAGENTS1028). */
+  gromzo: GromzoLaunchState
   /** Providers that actually take part in this launch (configured AND tokened). */
   providers: ChannelProviderType[]
   /** Providers configured but skipped because their state dir holds no token. */
@@ -72,6 +107,7 @@ export function buildExtraChannelLaunch(
   primary: ChannelProviderType,
   agentDirPath: string,
   hasToken: (provider: ChannelProviderType, envPath: string) => boolean = (p, envPath) => !!readChannelToken(p, envPath),
+  gromzoFor?: { slug: string; sockUsable: boolean },
 ): ExtraChannelLaunch {
   const providers: ChannelProviderType[] = []
   const skipped: ChannelProviderType[] = []
@@ -81,14 +117,25 @@ export function buildExtraChannelLaunch(
     if (hasToken(p, join(dir, '.env'))) providers.push(p)
     else skipped.push(p)
   }
-  const pluginIds = providers.map(p => CHANNEL_PLUGIN_IDS[p])
-  const channelArgs = pluginIds.map(id => ` plugin:${id}`).join('')
-  const envExports = providers.map(p => {
+  const pluginIds: string[] = providers.map(p => CHANNEL_PLUGIN_IDS[p])
+  let envExports = providers.map(p => {
     const dir = channelStateDir(p, agentDirPath)
     const audit = p === 'slack' ? ` && export SLACK_AUDIT_LOG="${dir}/audit.jsonl"` : ''
     return `export ${channelStateDirEnvVar(p)}="${dir}"${audit} && `
   }).join('')
-  return { providers, skipped, pluginIds, channelArgs, envExports }
+  // The slug goes into a shell export, so only mxd's own character set passes.
+  let gromzo: GromzoLaunchState = 'off'
+  if (gromzoFor) {
+    if (!MXD_SLUG_RE.test(gromzoFor.slug)) gromzo = 'skipped-bad-name'
+    else if (!gromzoFor.sockUsable) gromzo = 'skipped-no-socket'
+    else {
+      gromzo = 'on'
+      pluginIds.push(GROMZO_PLUGIN_ID)
+      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="owner" && `
+    }
+  }
+  const channelArgs = pluginIds.map(id => ` plugin:${id}`).join('')
+  return { gromzo, providers, skipped, pluginIds, channelArgs, envExports }
 }
 
 /** Force the extra plugins on, after the primary-only scope step turned them off. */

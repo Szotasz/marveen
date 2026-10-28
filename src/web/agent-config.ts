@@ -3,7 +3,7 @@ import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { parseExtraChannels } from './agent-extra-channels.js'
+import { parseExtraChannels, wantsGromzo } from './agent-extra-channels.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { safeJoin } from './sanitize.js'
@@ -419,6 +419,16 @@ export function readAgentExtraChannels(name: string): ChannelProviderType[] {
     return parseExtraChannels(config.extraChannels, primary)
   } catch {
     return []
+  }
+}
+
+// GROMZOAGENTS1028: whether the agent also listens on Gromzo (agent-config `gromzo: true`).
+export function readAgentGromzo(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    return wantsGromzo((JSON.parse(readFileOr(configPath, '{}')) as Record<string, unknown>).gromzo)
+  } catch {
+    return false
   }
 }
 
