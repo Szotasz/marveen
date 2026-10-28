@@ -101,6 +101,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
+  const claimUrl = `${base}/api/kanban/${id}/claim`
   // Escalation target when blocked: sub-agents hand back to the main agent
   // (their delegator), who triages and only escalates to the operator when
   // the block genuinely needs a human decision. Only the main agent itself
@@ -151,6 +152,21 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     'Ha a "status:" sor már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
     'A "description:" sort is OLVASD EL, ne csak a státuszt: ha benne kártya-specifikus kikötés áll (pl. más záró-státusz, "nincs éles restart"), az felülírja ennek a sablonnak az alapértelmezését, lásd a 2) lépésnél.',
     '',
+    // The status probe above answers "is the work already done?", not "is
+    // someone else doing it right now?": two agents can both read in_progress
+    // and both start. The claim is the atomic lock that settles it, so where the
+    // lock is on the dispatch hands it over as a runnable step. With the lock
+    // off /claim answers 404 claim_lock_disabled, so the step is left out and
+    // the text never tells an agent to call a route that cannot work.
+    ...(isKanbanClaimLockEnabled() ? [
+      'FOGLALD LE a kártyát, MIELŐTT dolgozni kezdesz (két ügynök ne dolgozzon ugyanazon):',
+      `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${claimUrl} \\`,
+      `    ${auth} \\`,
+      `    -H 'Content-Type: application/json' \\`,
+      `    -d '{"agent":"${target}"}'`,
+      'Csak HTTP 200 után kezdj bele. Ha a válasz 409 (más foglalja, a válasz megmondja, ki és meddig), NE dolgozz rajta párhuzamosan, jelezd a delegálódnak. A foglalás alapból 2 óráig él; hosszabb munkánál ugyanezzel a hívással újítsd meg. Automatikusan elengedi a done, a waiting vagy a testing státusz, az archiválás, és az is, ha a kártyát másra osztod át (lent, elakadásnál): így az átvevő le tudja foglalni.',
+      '',
+    ] : []),
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
     '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',

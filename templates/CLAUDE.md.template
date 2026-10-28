@@ -175,6 +175,29 @@ hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd ú
 Kész-re (done) zárásnál add meg, mit ellenőriztél: `-d '{"status":"done","evidence":"MIT MÉRTÉL, MI LETT AZ EREDMÉNY"}'`.
 Ügynökként bizonyíték nélkül a kártya `testing`-be kerül, nem `done`-ba.
 
+Kártya foglalása MIELŐTT dolgozni kezdesz rajta (két ágens ne vegye fel ugyanazt). Ez csak ott
+működik, ahol a kártya-foglalás be van kapcsolva (`KANBAN_CLAIM_LOCK=1`); kikapcsolva a `/claim`
+és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), ilyenkor foglalás nélkül dolgozz.
+Bekapcsolva csak akkor kezdj bele, ha a válasz HTTP 200; 409 esetén más foglalja (a válasz
+megmondja, ki és meddig), ilyenkor NE dolgozz rajta párhuzamosan. A foglalás alapból 2 óráig él
+(`ttl_seconds`, 60 és 86400 között); hosszabb munkánál ugyanezzel a hívással megújítod.
+Automatikusan elengedi a `done`, `waiting` vagy `testing` státusz, az archiválás, és ha a kártyát
+másra osztod át (így az átvevő le tudja foglalni):
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/claim \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d '{"agent":"{{MAIN_AGENT_ID}}"}'
+```
+
+Foglalás elengedése, ha félbehagyod (nem `done`):
+```bash
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/release \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d '{"agent":"{{MAIN_AGENT_ID}}"}'
+```
+
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \

@@ -48,7 +48,7 @@ Moving a card to `in_progress` wakes its assignee by default. If an agent should
 
 ### Claim lock, unblock, done evidence
 
-Moving a card to `in_progress` does not stop two agents from picking up the same card (both can see it free). For installs that want that guarantee there is an atomic claim. It is opt-in and off by default: enable it with `KANBAN_CLAIM_LOCK=1` (`.env` or the Settings page, no restart needed). While it is off, `/claim` and `/release` answer 404 with `reason: "claim_lock_disabled"`, no `claim_warning` is added, and nothing requires an agent to claim before it works.
+Moving a card to `in_progress` does not stop two agents from picking up the same card (both can see it free). For installs that want that guarantee there is an atomic claim. It is opt-in and off by default: enable it with `KANBAN_CLAIM_LOCK=1` (`.env` or the Settings page, no restart needed). While it is off, `/claim` and `/release` answer 404 with `reason: "claim_lock_disabled"`, no `claim_warning` is added, and nothing requires an agent to claim before it works. While it is on, the dispatch an assignee gets when its card moves to `in_progress` includes the claim call as the step before the work starts.
 
 ```
 POST /api/kanban/:id/claim    {"agent":"NAME","ttl_seconds":7200}  -- 200 claimed/renewed, 409 held by another (the body names holder and expiry)

@@ -27,7 +27,7 @@ import {
   claimKanbanCard, releaseKanbanCardClaim, isKanbanClaimActive, unblockDependentsOf, getDoneEvidence,
   KANBAN_CLAIM_SQL, KANBAN_CLAIM_DEFAULT_TTL_SEC,
 } from '../db.js'
-import { tryHandleKanban, parseClaimTtl, isKanbanClaimLockEnabled } from '../web/routes/kanban.js'
+import { tryHandleKanban, parseClaimTtl, isKanbanClaimLockEnabled, kanbanMoveInstructions } from '../web/routes/kanban.js'
 import { getSettingDefinition } from '../config-registry.js'
 
 // KANBAN_CLAIM_LOCK as the settings layer would resolve it; every other key
@@ -721,5 +721,42 @@ describe('the claim lock is opt-in (KANBAN_CLAIM_LOCK, off by default)', () => {
     expect(done.body.evidence_warning).toContain('/api/kanban/b/comments')
     expect(done.body.unblocked.map((u: { id: string }) => u.id)).toEqual(['a'])
     expect(getKanbanCard('a')!.status).toBe('planned')
+  })
+})
+
+// The in_progress dispatch is where an agent learns how to work a card. With the
+// lock on it must hand over the claim as a runnable step (the status probe only
+// answers "is it already done?", not "is someone else on it?"); with the lock
+// off it must not mention /claim at all, because that route answers 404 there.
+describe('the dispatch text carries the claim step only where the lock is on', () => {
+  beforeEach(() => { initDatabase(':memory:') })
+  afterEach(() => { claimLock.value = '1' })
+
+  it('on: the claim call comes before the work steps and names the assignee', () => {
+    claimLock.value = '1'
+    const out = kanbanMoveInstructions('c1', 'cody')
+    expect(out).toContain('/api/kanban/c1/claim')
+    expect(out.indexOf('/api/kanban/c1/claim')).toBeLessThan(out.indexOf('/api/kanban/c1/comments'))
+    const claimLine = out.split('\n').findIndex((l) => l.includes('/api/kanban/c1/claim'))
+    expect(out.split('\n').slice(claimLine, claimLine + 5).join('\n')).toContain(`-d '{"agent":"cody"}'`)
+    expect(out).toContain('409')
+  })
+
+  it('on: the body the text hands over is accepted by the claim route', async () => {
+    claimLock.value = '1'
+    createKanbanCard({ id: 'c1', title: 'One' })
+    const out = kanbanMoveInstructions('c1', 'cody')
+    const claimLine = out.split('\n').findIndex((l) => l.includes('/api/kanban/c1/claim'))
+    const payload = out.split('\n').slice(claimLine).find((l) => l.includes("-d '"))!.match(/-d '(.*)'/)![1]
+    const r = await route('POST', '/api/kanban/c1/claim', JSON.parse(payload))
+    expect(r.status).toBe(200)
+    expect(getKanbanCard('c1')!.claimed_by).toBe('cody')
+  })
+
+  it('off (the registry default): no claim step in the text', () => {
+    claimLock.value = getSettingDefinition('KANBAN_CLAIM_LOCK')!.default
+    const out = kanbanMoveInstructions('c1', 'cody')
+    expect(out).not.toContain('/claim')
+    expect(out).not.toContain('FOGLALD LE')
   })
 })

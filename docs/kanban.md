@@ -48,7 +48,7 @@ Az `in_progress`-re húzás alapból felébreszti a kártya felelősét. Ha ezt 
 
 ### Foglalás (claim), feloldás, lezárási bizonyíték
 
-Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik.
+Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik. Bekapcsolva az `in_progress`-re húzott kártya kiosztó üzenete a munka előtti lépésként tartalmazza a foglaló hívást.
 
 ```
 POST /api/kanban/:id/claim    {"agent":"NEV","ttl_seconds":7200}  -- 200 foglalva/megújítva, 409 más foglalja (a válasz megnevezi, ki és meddig)
