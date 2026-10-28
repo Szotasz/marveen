@@ -908,6 +908,12 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
     if (!denyList.includes(rule)) denyList.push(rule)
   }
+  // SECRETREADGATE1028: the secret-file rules ride with the floor, sub-agents only (see SECRET_READ_DENY).
+  if (agentGetsSecretReadGate(name)) {
+    for (const rule of SECRET_READ_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+      if (!denyList.includes(rule)) denyList.push(rule)
+    }
+  }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -970,6 +976,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   else removeSecondReviewerGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
+  if (agentGetsSecretReadGate(name)) injectSecretReadGate(existing)
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -1335,6 +1342,36 @@ export const FLEET_BASELINE_DENY = [
   'mcp__playwright__browser_run_code_unsafe',
 ]
 
+// SECRETREADGATE1028 (kanban 3ddab86a): the second layer under the secret-read-gate hook, on SUB-AGENTS
+// only. FLEET_BASELINE_DENY carries the credential directories in Read() form, so the shell was open;
+// the hook closes the shell side, and these rules add the store's own token files and ~/.claude.json to
+// the Read tool, plus the two `cat` shapes a deny rule can name exactly.
+//
+// WHY NOT IN FLEET_BASELINE_DENY: that list is the main agent's floor too, pinned to the tracked
+// .claude/settings.json by a parity test, and that file also binds the owner's own sessions in this
+// repo. The main agent reads the HarderPM key from ~/.claude.json (pm.py), so a Read(~/.claude.json) there
+// would break the PM work. Extending these rules to the main agent is a separate owner decision; folding
+// this list into FLEET_BASELINE_DENY (and the tracked file) is the one-line change that makes it.
+//
+// What a deny rule here does NOT do: the Bash rules are anchored full-match text rules (see RULE
+// SEMANTICS above), so `cat ~/.ssh/id_rsa` and its resolved-home twin are denied and `head ~/.ssh/x`,
+// `cat -v ~/.ssh/x` or `python3 -c ...` are not: those are the hook's job. Both the typed `~` form and the
+// resolved home form are listed, because a Bash rule matches the text as typed. store/.dashboard-token
+// is deliberately absent: every agent reads it in each dashboard call.
+export const SECRET_READ_DENY = [
+  'Bash(cat ~/.ssh/*)',
+  'Bash(cat ${HOME}/.ssh/*)',
+  'Bash(cat ~/.aws/*)',
+  'Bash(cat ${HOME}/.aws/*)',
+  'Read(${HOME}/.claude.json)',
+  'Read(${PROJECT_ROOT}/store/vault*)',
+  'Read(${PROJECT_ROOT}/store/.claude-oauth-token)',
+  'Read(${PROJECT_ROOT}/store/.fal-key*)',
+  'Read(${PROJECT_ROOT}/store/.fb-page-token)',
+  'Read(${PROJECT_ROOT}/store/.launch-secrets)',
+  'Read(${PROJECT_ROOT}/store/*-mcp-key*.txt)',
+]
+
 // Idempotently merge the egress deny rules into a settings object's
 // permissions.deny. Pure (no I/O) so both the rule set and the merge behaviour
 // are unit-testable; ensureBashEgressDeny() below is the filesystem wrapper.
@@ -1653,6 +1690,44 @@ export function injectBashEgressParser(existing: Record<string, unknown>): void 
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs')),
+    entry,
+  ]
+}
+
+// SECRETREADGATE1028: which agents get the secret-read gate: every sub-agent, NOT the main agent (its
+// widening is a separate owner decision, see SECRET_READ_DENY). Same population as the Bash egress parser.
+export function agentGetsSecretReadGate(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// The gate's mode rides on its hook command (`--block`), from the SECRET_READ_GATE_BLOCK dashboard
+// setting (default off = warn, the rollout review). Not a file in store/: a sub-agent could rewrite one
+// to switch itself back to warn, while config-overrides.json is already a protected store file and an
+// agent's own settings.json is rewritten by this scaffold. An unreadable setting reads as warn.
+export function secretReadGateBlock(read: (key: string) => string | number = getEffectiveSettingValue): boolean {
+  try { return String(read('SECRET_READ_GATE_BLOCK')) === '1' } catch { return false }
+}
+export function secretReadGateCommand(block = secretReadGateBlock()): string {
+  return hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'secret-read-gate.mjs'), block ? ['--block'] : [])
+}
+
+// Idempotently wire the secret-read-gate PreToolUse hook on the Bash matcher. The dedupe key is the
+// script basename, which contains none of the other injectors' filter strings (egress-gate.mjs,
+// bash-egress-parser.mjs, destructive-gate.py ...), so no other injector drops it and it drops no other.
+export function injectSecretReadGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = secretReadGateCommand()
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('secret-read-gate.mjs')),
     entry,
   ]
 }
@@ -2177,6 +2252,30 @@ export function ensureBashEgressParser(name: string): boolean {
   if (wired) return false
   if (isUnsafeHookCommand(command)) return false
   injectBashEgressParser(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotent migration for the EXISTING fleet, the twin of ensureBashEgressParser: without it the gate
+// would reach a running agent no sooner than its next respawn. A settings file that is not there is not
+// created. Returns true if written.
+export function ensureSecretReadGate(name: string): boolean {
+  if (!agentGetsSecretReadGate(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  // The CURRENT command, mode included: a switched SECRET_READ_GATE_BLOCK rewrites the entry in place.
+  const command = secretReadGateCommand()
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash'
+    && hookCommandWired(JSON.stringify(e), command))
+  if (wired) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectSecretReadGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }

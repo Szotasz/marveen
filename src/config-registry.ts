@@ -747,6 +747,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'SECRET_READ_GATE_BLOCK',
+    type: 'boolean',
+    default: '0',
+    description: 'Széf-kapu (secret-read-gate) a sub-ügynökök Bash-hívásain. Kikapcsolva (alapértelmezés, a bevezető átnézés ideje) a kapu csak naplóz (store/secret-read-gate.log): ha egy parancs titkos útvonalra hivatkozik (~/.ssh, ~/.aws, ~/.gnupg, ~/Library/Keychains, ~/.claude.json, store/vault*, store/.claude-oauth-token, store/.fal-key*, store/.fb-page-token, store/.launch-secrets, store/*-mcp-key*.txt, valamint .env, *.pem, *.key, service-account*.json), a hívás átmegy, és a napló rögzíti az ügynököt, a szabályt és az útvonalat (a parancs szövegét nem, csak a hash-ét). Bekapcsolva ugyanez a hívás tiltva, az indoklás megnevezi a szabályt és az útvonalat. A store/.dashboard-token mindkét állásban szabad. A fő ügynökre egyik állásban sem vonatkozik. MARADÉK RÉS: egy fájlba írt, majd lefuttatott szkript olvasását a kapu nem látja. A váltás a dashboard újraindításakor íródik be az ügynökök settings.json-jába.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'BASH_SANDBOX_AGENTS',
     type: 'string',
     default: '',
