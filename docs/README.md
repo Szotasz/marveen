@@ -21,6 +21,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Printing-press CLI-k](printing-press-cli.md) | API nélküli oldalakhoz is agent-natív CLI generálás |
 | [Skool CLI](skool-cli.md) | Közösségi platform kezelése parancssorból (API nélkül) |
 | [connectors.hu](connectors-hu.md) | Üzleti API-átjáró (NAV, Billingo, Wise, fal.ai) MCP-n |
+| [Egy Google-jóváhagyás minden fogyasztónak](google-consent.md) | Egy telefonos jóváhagyás, egy refresh token a Gmail/Calendar/Drive MCP-knek és az API-szkripteknek, mindegyik a saját fájlformátumában; scope-hiány és 7 napos "Testing" token hangos jelzése ([EN](en/google-consent.md)) |
 | [Vault & titkosítás](vault.md) | Titkosított titok-tár (AES-256-GCM) OS-kulcstárral |
 | [Belépés-visszaút & vészreset](dashboard-auth-recovery.md) | Elfelejtett jelszó, kizárás, `security:reset` pánikgomb -- HTTP-független break-glass CLI |
 | [Dream-engine](dream-engine.md) | Éjszakai tudás-konszolidáció + reggeli prioritás-javaslatok |
