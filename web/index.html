@@ -956,6 +956,27 @@
           </div>
         </div>
 
+        <!-- Adopted open-source inventory: code the scan finds in the agents' own
+             folders. The GitHub repos count above counts dashboard-installed
+             repos, so on its own it can read 0 while the agents use more. -->
+        <div class="connector-external-paths" id="ossInventorySection">
+          <div class="connector-external-header" id="ossInventoryToggle">
+            <span class="connector-scope-toggle">▶</span>
+            <span data-i18n="oss.title">Átvett nyílt forrású projektek</span> <span class="connector-scope-count" id="ossInventoryCount">…</span>
+          </div>
+          <div class="connector-external-body" id="ossInventoryBody" hidden>
+            <div class="oss-inv-note" data-i18n="oss.note">A bejárás által az ágensek saját mappáiban talált kód: skill-forrás, git-klón, MCP, npm, pip. A fenti „GitHub repok” szám a dashboardon át telepített repókat számolja, ezeket nem.</div>
+            <div class="oss-inv-toolbar">
+              <span class="oss-inv-meta" id="ossInventoryMeta"></span>
+              <label class="oss-inv-check"><input type="checkbox" id="ossInventoryTransitive"> <span data-i18n="oss.show_transitive">Közvetett függőségek is (pip és npm)</span></label>
+              <button class="btn-secondary btn-compact" id="ossInventoryRefresh" data-i18n="common.refresh">Frissítés</button>
+            </div>
+            <div class="github-repo-status error" id="ossInventoryError" hidden></div>
+            <div class="oss-inv-sub" id="ossInventoryOwnClones" hidden></div>
+            <div id="ossInventoryList"></div>
+          </div>
+        </div>
+
         <div class="connector-external-paths">
           <div class="connector-external-header" id="vaultToggle">
             <span class="connector-scope-toggle">▶</span>

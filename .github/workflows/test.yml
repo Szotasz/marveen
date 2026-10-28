@@ -78,6 +78,10 @@ jobs:
       # warning, 2 = nothing measured): a crash or a bad threshold that exits 1
       # would page someone for nothing. Hermetic: fake /proc files and disk.
       - run: python3 scripts/__tests__/host-resource-heartbeat.test.py
+      # The open-source inventory generator: what it lists, counts or withholds
+      # (credentials in remotes, absolute paths, own clones) is only asserted
+      # here. Hermetic: throwaway fixture trees, no network.
+      - run: python3 scripts/__tests__/opensource-inventory.test.py
       # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
       # so "CI green" said nothing about them -- the exact rot the comment
       # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,

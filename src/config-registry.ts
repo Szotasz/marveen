@@ -119,6 +119,46 @@ function validKeepAlive(v: string): string | null {
   return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
 }
 
+// OSS_INVENTORY_NOTES_DIRS: comma-separated folder names under each agent
+// folder that hold research notes. Each name is one plain directory (no path
+// separator, not '.' or '..'); '' means the default. Returns the list, or null
+// when any name is invalid. Shared by the validator and the inventory route.
+export const OSS_INVENTORY_DEFAULT_NOTES_DIRS = 'research'
+export function parseOssNotesDirs(raw: string): string[] | null {
+  const names = raw.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  if (names.length === 0) return OSS_INVENTORY_DEFAULT_NOTES_DIRS.split(',')
+  for (const n of names) {
+    if (n === '.' || n === '..' || n.includes('/') || n.includes('\\') || n.length > 64 || n.startsWith('-')) return null
+  }
+  return [...new Set(names)]
+}
+
+function validOssNotesDirs(v: string): string | null {
+  return parseOssNotesDirs(v) ? null : 'Vesszővel elválasztott mappanevek kellenek (pl. research,kutatas), útvonal-elválasztó és .. nélkül.'
+}
+
+// OSS_INVENTORY_OWN_OWNERS: comma-separated repository owner names for the
+// open-source inventory. Clones the scan reaches that have a readable http(s)
+// or ssh origin are listed unless their origin owner name is in
+// OSS_INVENTORY_OWN_OWNERS; what the scan does not look inside is listed in
+// scripts/opensource-inventory.py ("Git clones"). The owner name is the first
+// path segment of the clone's own origin URL, matched on any host (the host is
+// not compared); a fork of third-party code kept under such an owner is
+// matched too. Ownership is not inferred from the installation's remotes.
+// Returns the list (lower case, deduplicated), or null when a name is invalid.
+const OSS_OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/
+export function parseOssOwnOwners(raw: string): string[] | null {
+  const names = raw.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  for (const n of names) {
+    if (!OSS_OWNER_RE.test(n)) return null
+  }
+  return [...new Set(names.map((n) => n.toLowerCase()))]
+}
+
+function validOssOwnOwners(v: string): string | null {
+  return parseOssOwnOwners(v) ? null : 'Vesszővel elválasztott fióknevek kellenek (pl. sajat-nev,sajat-ceg), útvonal és szóköz nélkül.'
+}
+
 function validFusionWeight(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -390,6 +430,26 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'OSS_INVENTORY_NOTES_DIRS',
+    type: 'string',
+    default: OSS_INVENTORY_DEFAULT_NOTES_DIRS,
+    description: 'Az átvett nyílt forrású projektek leltára (Kapcsolatok oldal) ezekből a mappákból olvassa az ügynökök kutatási jegyzeteit (csillagszám, mért előtte/utána hatás): vesszővel elválasztott mappanevek az ügynök mappáján belül, pl. research,kutatas. Üres = research. A következő leltár-frissítéskor érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validOssNotesDirs,
+  },
+  {
+    key: 'OSS_INVENTORY_OWN_OWNERS',
+    type: 'string',
+    default: '',
+    description: 'Repó-tulajdonosnevek az átvett nyílt forrású projektek leltárához (Kapcsolatok oldal), vesszővel elválasztva, pl. a saját fiók(ok). A bejárás által elért, olvasható http(s)- vagy ssh-originű klónok a listán vannak, hacsak az origin-tulajdonosnevük nem szerepel az OSS_INVENTORY_OWN_OWNERS beállításban. A bejárás nem néz bele másik klónba, node_modules-ba, gyorsítótárakba, virtuális környezetekbe, kicsomagolt vendor-csomagokba és szimbolikus linkkel bekötött mappákba. A név a klón saját origin-címének első útvonal-tagja, bármelyik hoszton (a hosztot nem nézi); az egyező klónt megszámolja, nem listázza, egy ilyen tulajdonosnál tartott, harmadik féltől származó forkot is. A tulajdonjogot nem a telepítés remote-jaiból következteti ki. Az olvasható http(s)- vagy ssh-origin nélküli klónt megszámolja, nem listázza. A következő leltár-frissítéskor érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validOssOwnOwners,
   },
   {
     key: 'OLLAMA_URL',

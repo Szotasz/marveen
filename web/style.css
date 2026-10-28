@@ -4557,6 +4557,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted);
   font-family: inherit;
 }
+
+/* Adopted open-source inventory (connectors page) */
+.oss-inv-note { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; line-height: 1.45; }
+.oss-inv-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; font-size: 12px; }
+.oss-inv-meta { color: var(--text-muted); flex: 1 1 220px; min-width: 0; }
+.oss-inv-check { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; }
+.oss-inv-agent { margin-bottom: 12px; }
+.oss-inv-agent-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.oss-inv-agent-counts { font-weight: 400; font-size: 11px; color: var(--text-muted); }
+.oss-inv-item { flex-direction: column; align-items: stretch; gap: 2px; font-family: inherit; }
+.oss-inv-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.oss-inv-name { font-family: monospace; font-weight: 500; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
+a.oss-inv-name:hover { text-decoration: underline; }
+.oss-inv-type { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-muted); }
+.oss-inv-version { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+.oss-inv-sub { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.oss-inv-effect { font-size: 12px; overflow-wrap: anywhere; }
 .github-repo-actions {
   display: flex;
   gap: 4px;
