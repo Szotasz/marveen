@@ -4,7 +4,8 @@
 // The suite mutates the file system a lot, and a cleanup path built from an empty
 // or unset value (join(x, '..') with x === '') collapses to the cwd's parent and
 // wipes it (2026-10-24 incident). safeRmTmp covers the callers that opted in; this
-// guard covers every other caller, by replacing the delete functions on the CJS
+// guard covers every other in-process fs.rm*/rmdir* caller (child processes such as
+// `rm -rf` and unlink loops are not covered), by replacing the delete functions on the CJS
 // `node:fs` object and syncing the builtin ESM exports, so named, default and
 // namespace imports all reach the checking wrappers.
 //
@@ -23,6 +24,13 @@ const MARKER = Symbol.for('test-suite.rm-guard.installed')
 const cjsRequire = createRequire(import.meta.url)
 const nodeFs = cjsRequire('node:fs') as typeof import('node:fs')
 const nodeFsPromises = cjsRequire('node:fs/promises') as typeof import('node:fs/promises')
+// Pinned at load: a test that later spies on fs.lstatSync / fs.realpathSync must not blind the guard.
+// realpathSync.native is realpath(3): '..' after a symlink follows the link, as the kernel's rm does.
+// The JS realpathSync resolves '..' lexically first, so 'link/../x' would be judged as a sibling of
+// the link while rm deletes next to the link's target.
+const lstat = nodeFs.lstatSync
+const realpathNative = nodeFs.realpathSync.native
+const isBuffer = Buffer.isBuffer
 
 // Same derivation as global-live-install-gate.ts: from this file's location, never from the environment.
 const checkoutRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -35,7 +43,7 @@ function refuse(shown: unknown, why: string): Error {
 }
 
 function realOrNull(p: string): string | null {
-  try { return nodeFs.realpathSync(p) } catch { return null }
+  try { return realpathNative(p) } catch { return null }
 }
 
 // A root that fails assertSafeTmpRoot (poisoned TMPDIR such as '/' or $HOME) is left
@@ -64,7 +72,7 @@ function resolveTarget(raw: string): string {
   for (;;) {
     let st: import('node:fs').Stats
     try {
-      st = nodeFs.lstatSync(cur)
+      st = lstat(cur)
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw refuse(raw, `cannot inspect the path (${code ?? 'unknown error'})`)
@@ -83,8 +91,8 @@ function resolveTarget(raw: string): string {
     try {
       resolved =
         isFsRoot || base === '.' || base === '..' || !st.isSymbolicLink() || followed
-          ? nodeFs.realpathSync(cur)
-          : join(nodeFs.realpathSync(dirname(cur)), base)
+          ? realpathNative(cur)
+          : join(realpathNative(dirname(cur)), base)
     } catch (e) {
       throw refuse(raw, `cannot resolve the path (${(e as NodeJS.ErrnoException).code ?? 'unknown error'})`)
     }
@@ -94,7 +102,7 @@ function resolveTarget(raw: string): string {
 
 function pathToString(p: unknown): string {
   if (typeof p === 'string') return p
-  if (Buffer.isBuffer(p)) return p.toString()
+  if (isBuffer(p)) return p.toString()
   if (p instanceof URL) return fileURLToPath(p)
   throw refuse(p, 'not a string, Buffer or URL path')
 }

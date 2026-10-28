@@ -116,6 +116,24 @@ describe('rm-guard (global setup file)', () => {
     expect(() => rmSync(p, { recursive: true, force: true })).not.toThrow()
   })
 
+  it("judges '..' after a symlink the way the kernel does, not lexically", () => {
+    // link -> a directory OUTSIDE the allowed roots (the checkout's parent, only read). The
+    // kernel resolves '<link>/../<x>' next to that directory; a lexical '..' would wrongly see
+    // '<holder>/<x>', so a decoy with that name exists in the temp dir. The outside '<x>' is a
+    // random name that does not exist, so nothing real is at stake even if the guard failed.
+    const holder = mkdtempSync(join(tmpdir(), 'rm-guard-'))
+    try {
+      const x = `rm-guard-decoy-${randomBytes(6).toString('hex')}`
+      mkdirSync(join(holder, x))
+      const link = join(holder, 'link')
+      symlinkSync(resolve(checkout, '..'), link)
+      expect(() => rmSync(`${link}/../${x}`, { recursive: true, force: true })).toThrow(REFUSED)
+      expect(existsSync(join(holder, x))).toBe(true)
+    } finally {
+      rmSync(holder, { recursive: true, force: true })
+    }
+  })
+
   it('removes a symlink to another temp dir, not its target', () => {
     const holder = mkdtempSync(join(tmpdir(), 'rm-guard-'))
     const target = mkdtempSync(join(tmpdir(), 'rm-guard-'))

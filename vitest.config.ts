@@ -47,8 +47,9 @@ export default defineConfig({
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
     //  - rm-guard: refuse recursive or forced deletes outside the temp dir, /tmp and
-    //    this checkout (and inside the checkout's .git), for every caller, however
-    //    it imports fs. Must stay AFTER assert-not-live-install.
+    //    this checkout (and inside the checkout's .git), for every in-process
+    //    fs.rm*/rmdir* caller however it imports fs (child processes are not
+    //    covered). Must stay AFTER assert-not-live-install.
     //  - assert-supported-node: refuse to run on a Node whose ABI the installed
     //    native modules were not built for, which otherwise reds out 40 files
     //    with errors that look like bugs in those files (2026-08-17).
