@@ -3,6 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, backfillNeedsWarning,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, escapeLike,
+  retractMemory, saveAgentMemorySuperseding,
   type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
@@ -19,6 +20,23 @@ import type { RouteContext } from './types.js'
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
 // src/db.ts so the API rejects bad values before they even reach SQLite.
 const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
+// One replacing save names a handful of older memories, not a sweep.
+const MAX_SUPERSEDES = 50
+
+// The author of a retraction (or of a save that retracts): the body's agent_id,
+// else the X-Agent-Id the request carries, else the main agent. Self-asserted
+// (the fleet shares one token): it stops an agent withdrawing the wrong row,
+// not an impostor.
+function resolveAuthor(bodyAgent: unknown, ctx: RouteContext): { author: string } | { error: string } {
+  if (bodyAgent !== undefined && (typeof bodyAgent !== 'string' || !bodyAgent)) {
+    return { error: '"agent_id" must be a non-empty string' }
+  }
+  const headerAgent = ctx.auth?.kind === 'token' ? ctx.auth.agent : undefined
+  if (bodyAgent && headerAgent && bodyAgent !== headerAgent) {
+    return { error: '"agent_id" and X-Agent-Id disagree -- send one' }
+  }
+  return { author: (bodyAgent as string | undefined) ?? headerAgent ?? MAIN_AGENT_ID }
+}
 
 // --- Memory content filter (card b1ea54ce) ---------------------------------
 //
@@ -277,8 +295,20 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
+    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string; supersedes?: unknown }
     if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
+    // `supersedes`: ids of the author's own older memories this one replaces. A
+    // malformed list is refused before anything is saved -- a caller that meant
+    // to replace something must not get a plain save it then reads as a replace.
+    // null is "not sent", as it was before this field existed: clients that
+    // serialise unset fields as null keep getting a plain save.
+    if (data.supersedes === null) delete data.supersedes
+    if (data.supersedes !== undefined && !(Array.isArray(data.supersedes)
+      && data.supersedes.length <= MAX_SUPERSEDES
+      && data.supersedes.every((x) => Number.isSafeInteger(x) && (x as number) > 0))) {
+      json(res, { error: `"supersedes" must be an array of at most ${MAX_SUPERSEDES} memory ids (positive integers)` }, 400)
+      return true
+    }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
       json(res, { error: 'Content rejected by security filter' }, 400)
@@ -292,13 +322,32 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
       return true
     }
-    const result = saveAgentMemory(
+    const supersedes = data.supersedes as number[] | undefined
+    // A replacing save retracts rows, so it resolves its author the way the
+    // retract route does (body, else X-Agent-Id, else the main agent; the two
+    // disagreeing is a 400). A plain save keeps its old rule, unchanged.
+    let replacingAuthor: string | undefined
+    if (supersedes !== undefined) {
+      const who = resolveAuthor(data.agent_id, ctx)
+      if ('error' in who) { json(res, { error: who.error }, 400); return true }
+      replacingAuthor = who.author
+    }
+    const replacing = supersedes !== undefined
+      ? saveAgentMemorySuperseding(replacingAuthor!, data.content.trim(), category, data.keywords || undefined, supersedes)
+      : null
+    const result = replacing ?? saveAgentMemory(
       data.agent_id || MAIN_AGENT_ID,
       data.content.trim(),
       category,
       data.keywords || undefined,
       true
     )
+    // What the replacement did, per id: a skipped id (not the author's, not
+    // there, already withdrawn) stays exactly as it was.
+    const replaced = replacing ? { superseded: replacing.superseded, skipped: replacing.skipped } : {}
+    if (replacing && replacing.superseded.length > 0) {
+      logger.info({ id: replacing.id, agent: replacingAuthor, superseded: replacing.superseded }, 'memory saved, superseding (retracted) older ones')
+    }
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
     // must never be lost, so the finding rides the response instead of a 4xx.
@@ -306,10 +355,47 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ agent: data.agent_id, memoryId: result.id }, `memory saved with ${warning}`)
-      json(res, { ok: true, id: result.id, homoglyph_warning: warning })
+      json(res, { ok: true, id: result.id, ...replaced, homoglyph_warning: warning })
       return true
     }
-    json(res, { ok: true, id: result.id })
+    json(res, { ok: true, id: result.id, ...replaced })
+    return true
+  }
+
+  // POST /api/memories/:id/retract {agent_id?} -- take back one's own memory
+  // without deleting it (retractMemory). The author is the body's agent_id, else
+  // the X-Agent-Id the request carries, else the main agent. That is a
+  // SELF-ASSERTED identity (the fleet shares one token): the author check stops
+  // an agent withdrawing the wrong row, it does not stop an impostor.
+  const retractMatch = path.match(/^\/api\/memories\/(\d+)\/retract$/)
+  if (retractMatch && method === 'POST') {
+    const id = Number(retractMatch[1])
+    if (!Number.isSafeInteger(id) || id < 1) { json(res, { error: 'Invalid memory id' }, 400); return true }
+    let bodyAgent: unknown
+    try {
+      const raw = (await readBody(req)).toString().trim()
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw)
+        // An object or nothing: a body that is valid JSON but not an object would
+        // otherwise read as "no agent_id" and fall back to another author.
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          json(res, { error: 'The body must be a JSON object' }, 400)
+          return true
+        }
+        bodyAgent = (parsed as { agent_id?: unknown }).agent_id
+      }
+    } catch {
+      json(res, { error: 'Invalid JSON body' }, 400)
+      return true
+    }
+    const who = resolveAuthor(bodyAgent, ctx)
+    if ('error' in who) { json(res, { error: who.error }, 400); return true }
+    const author = who.author
+    const outcome = retractMemory(id, author)
+    if (outcome === 'not_found') { json(res, { error: 'Memory not found' }, 404); return true }
+    if (outcome === 'not_owner') { json(res, { error: 'Only the author can retract a memory' }, 403); return true }
+    logger.info({ id, agent: author, outcome }, 'memory retraction')
+    json(res, { ok: true, id, outcome })
     return true
   }
 
@@ -389,7 +475,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         const db2 = getDb()
         const pattern = `%${escapeLike(q)}%`
         const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
-        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${searchCategory ? ' AND category = ?' : ''}${dt} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`)
+        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${searchCategory ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`)
           .all(agentId, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), pattern, pattern, limit) as Memory[]
       }
     } else if (q) {
@@ -408,7 +494,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         // relaxed=false. A zero that looks like a real answer is the whole
         // cost of this bug, which is why the fix is the parity, not a new mode.
         const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
-        results = db2.prepare(`SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${searchCategory ? ' AND category = ?' : ''}${dt} ORDER BY accessed_at DESC LIMIT ?`)
+        results = db2.prepare(`SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${searchCategory ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt} ORDER BY accessed_at DESC LIMIT ?`)
           .all(pattern, pattern, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
@@ -661,7 +747,7 @@ Respond ONLY with JSON, nothing else:
   if (memUpdateMatch && method === 'GET') {
     const id = parseInt(memUpdateMatch[1], 10)
     const row = getDb()
-      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at, updated_at, updated_by FROM memories WHERE id = ?')
+      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at, updated_at, updated_by, retracted_at, supersedes FROM memories WHERE id = ?')
       .get(id) as Record<string, unknown> | undefined
     if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
     // PR #1357: `length` lets a caller see the size before a guarded write.
