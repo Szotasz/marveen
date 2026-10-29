@@ -234,6 +234,10 @@ _AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SCOPE_PREFIX = "heavy-job-"
 PROBE_CAP_MB = 64            # the cap the scope probe sets and must read back
 PROBE_FLAG = "--probe-memory-max"   # internal: the probe child's mode
+# systemd-run --description: without one, systemd uses the full command line
+# (a token can be passed in argv) as the scope description, also in the journal
+PROBE_DESCRIPTION = "heavy-job-gate memory-cap probe"
+JOB_DESCRIPTION_PREFIX = "heavy-job-gate: "
 PROBE_REPORT = "heavy-job-probe memory.max="
 SCOPE_STOP_TIMEOUT = "5s"    # TimeoutStopSec of the scope: SIGTERM, then SIGKILL after this
 SYSTEMCTL_TIMEOUT = 30       # hard bound on one systemctl call (stop waits for the kill)
@@ -932,7 +936,8 @@ def scope_probe():
         return False, "no_systemd_run", None
     unit = "%sprobe-%d-%d" % (SCOPE_PREFIX, os.getpid(), time.time_ns())
     argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect"] + no_expand_flag() + [
-            "--unit=" + unit, "-p", "MemoryMax=%dM" % PROBE_CAP_MB, "--",
+            "--unit=" + unit, "--description=" + PROBE_DESCRIPTION,
+            "-p", "MemoryMax=%dM" % PROBE_CAP_MB, "--",
             sys.executable or "python3", os.path.abspath(__file__), PROBE_FLAG]
     try:
         p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -1286,6 +1291,8 @@ def main(argv=None):
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
             os.close(fd)
             raise OSError("not a regular file owned by uid %d" % os.geteuid())
+        if st.st_mode & 0o077:
+            os.fchmod(fd, 0o600)   # an older, wider lock is narrowed (as _open_log does)
     except OSError as e:
         say("REFUSED: cannot open the lock file %s: %s. Not started." % (lp, e))
         log({"event": "refuse", "reason": "lock_io_error", "label": label, "cmd": cmd_text,
@@ -1469,6 +1476,9 @@ def main(argv=None):
     if scoped:
         argv_run = ["systemd-run", "--user", "--scope", "--collect", "--quiet"] + no_expand_flag() + [
                     "--unit=" + unit,
+                    # without it systemd puts the full argv (a token can be passed
+                    # in argv) into the scope's description and the user journal
+                    "--description=" + JOB_DESCRIPTION_PREFIX + sanitize_label(label),
                     "-p", "TimeoutStopSec=" + SCOPE_STOP_TIMEOUT,
                     # normalized to MB: systemd reads a bare number as BYTES and
                     # may reject a lowercase suffix, while this gate documents

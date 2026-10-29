@@ -1306,7 +1306,7 @@ def cap_verification():
         check("argv: a systemd-run without --expand-environment gets no such flag (probe and job)",
               "--expand-environment=no" not in probe, probe)
         os.remove(argfile)
-        p = E.run(["--", "sh", "-c", "exit 0", "$$", "$HOME"], FAKE_SR_ARGS=argfile,
+        p = E.run(["--label", "DESC", "--", "sh", "-c", "exit 0", "$$", "$HOME"], FAKE_SR_ARGS=argfile,
                   FAKE_SR_HELP="     --expand-environment=BOOL    Control expansion of environment variables")
         with open(argfile) as f:
             calls = [c.splitlines() for c in f.read().split("----\n") if c.strip()]
@@ -1316,6 +1316,13 @@ def cap_verification():
               and all("--expand-environment=no" in c[:c.index("--")] for c in calls)
               and calls[1][calls[1].index("--") + 1:] == ["sh", "-c", "exit 0", "$$", "$HOME"],
               (p.returncode, calls))
+        check("argv: probe and job scopes carry a fixed --description (the label, not the argv) "
+              "before '--', so systemd does not put the full command line in the journal",
+              len(calls) == 2
+              and "--description=heavy-job-gate memory-cap probe" in calls[0][:calls[0].index("--")]
+              and "--description=heavy-job-gate: DESC" in calls[1][:calls[1].index("--")]
+              and not any(a.startswith("--description") and "$HOME" in a for c in calls for a in c),
+              calls)
         for memmax, detail in (("max", "none:max"), ("missing", "none:missing"),
                                ("1048576", "1048576"), ("garbage x", "none:garbage_x")):
             if os.path.exists(marker):
@@ -2062,6 +2069,24 @@ def file_modes_and_cmd_cut():
             body = f.read()
         check("symlinked lock -> refused 74, the target neither written nor re-moded; log not followed",
               p.returncode == 74 and body == "keep" and mode(target) == 0o644, (p.returncode, body, p.stderr))
+
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        # an older, wider lock is narrowed to 0600
+        with open(E.lock, "w"):
+            pass
+        os.chmod(E.lock, 0o644)
+        p = run022(E, ["--", "true"])
+        check("modes: an existing 0644 lock is narrowed to 0600", p.returncode == 0 and mode(E.lock) == 0o600,
+              (p.returncode, oct(mode(E.lock)), p.stderr))
+        # a FIFO at the lock path is not a regular file: refused 74, nothing run
+        fifo = os.path.join(td, "fifo.lock")
+        os.mkfifo(fifo, 0o600)
+        marker = os.path.join(td, "ran")
+        p = run022(E, ["--", "touch", marker], HEAVY_JOB_LOCK=fifo)
+        check("FIFO at the lock path -> refused 74 (not a regular file), job not run",
+              p.returncode == 74 and not os.path.exists(marker) and "regular file" in p.stderr,
+              (p.returncode, p.stderr))
 
 
 if __name__ == "__main__":
