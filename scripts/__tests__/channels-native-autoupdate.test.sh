@@ -92,6 +92,10 @@ case "\$1" in
                  ln -sfn "\$D/2.1.312" "\$L" ;;
       npmcopy) newbuild 2.1.312; ln -sfn "\$D/2.1.312" "\$L"
                mkdir -p "\$R/npmroot/@anthropic-ai/claude-code" ;;
+      prunebroken) printf '#!/bin/sh\nexit 3\n' > "\$D/2.1.312"; chmod +x "\$D/2.1.312"
+                   ln -sfn "\$D/2.1.312" "\$L"; rm -f "\$D/2.1.169" ;;
+      prunenpm) newbuild 2.1.312; ln -sfn "\$D/2.1.312" "\$L"; rm -f "\$D/2.1.169"
+                mkdir -p "\$R/npmroot/@anthropic-ai/claude-code" ;;
       pathwin) newbuild 2.1.312; ln -sfn "\$D/2.1.312" "\$L"
                printf '#!/bin/sh\necho 9.9.9\n' > "\$R/stub/claude"; chmod +x "\$R/stub/claude" ;;
     esac
@@ -217,6 +221,38 @@ check_rollback escape "launcher moved out of the versions dir" "no longer points
 check_rollback brokennew "new build fails --version" "does not run --version"
 check_rollback npmcopy "an npm-global claude appeared" "an npm-global claude appeared (npm copy: absent -> present)"
 check_rollback pathwin "another claude wins on the PATH" "claude on the PATH is no longer"
+
+# review #2339: the update installs a broken build AND prunes the previous one.
+run_case prunebroken 1
+case "$LINK" in
+  "$OLD") fail "=1, broken build + previous pruned: no dangling launcher" "not $OLD (it is gone)" "$LINK" ;;
+  *) pass "=1, broken build + previous pruned: no dangling launcher back to the pruned build" ;;
+esac
+case "$FAILLOG" in
+  *"launcher restored"*) fail "=1, broken build + previous pruned: the log does not claim a restore" "no 'launcher restored'" "$FAILLOG" ;;
+  *"the previous build 2.1.169 is gone or does not run, and NO native build runs"*)
+    pass "=1, broken build + previous pruned: the log says no native build runs" ;;
+  *) fail "=1, broken build + previous pruned: the log says no native build runs" "NO native build runs" "${FAILLOG:-<empty>}" ;;
+esac
+# Three older builds that all run: the NEWEST must win (2.1.9 / 2.1.30 / 2.1.100 also trip a
+# lexical sort or an ascending scan).
+older_build() { make_version "$1" 2.1.9; make_version "$1" 2.1.30; make_version "$1" 2.1.100; }
+run_case prunebroken 1 0 older_build
+if [ "$LINK" = ".local/share/claude/versions/2.1.100" ]; then
+  pass "=1, broken build + previous pruned, an older build runs: launcher set to it"
+else fail "=1, broken build + previous pruned, an older build runs: launcher set to it" \
+  ".local/share/claude/versions/2.1.100" "${LINK:-<no link>}"; fi
+case "$FAILLOG" in *"launcher set to the newest build that runs, 2.1.100"*)
+  pass "=1, broken build + previous pruned, an older build runs: the log names it" ;;
+  *) fail "=1, broken build + previous pruned, an older build runs: the log names it" "newest build that runs, 2.1.100" "${FAILLOG:-<empty>}" ;; esac
+# A working new build, the previous pruned, but an npm copy appeared: stay on the new
+# build (it runs), and name where the npm copy is.
+run_case prunenpm 1
+if [ "$LINK" = "$NEW" ]; then pass "=1, npm copy appeared + previous pruned: launcher stays on the new build that runs"
+else fail "=1, npm copy appeared + previous pruned: launcher stays on the new build that runs" "$NEW" "${LINK:-<no link>}"; fi
+case "$FAILLOG" in *"the npm copy is still installed at "*"/npmroot/@anthropic-ai/claude-code"*)
+  pass "=1, npm copy appeared: the log names where the npm copy is" ;;
+  *) fail "=1, npm copy appeared: the log names where the npm copy is" "the npm copy is still installed at .../npmroot/..." "${FAILLOG:-<empty>}" ;; esac
 
 N_DEFAULT="$(grep -c '^CLAUDE_NATIVE_AUTOUPDATE_DEFAULT=' "$SRC")"
 N_LITERAL="$(grep -n 'CLAUDE_NATIVE_AUTOUPDATE_DEFAULT' "$SRC" | grep -vc 'CLAUDE_NATIVE_AUTOUPDATE_DEFAULT=\|"\$CLAUDE_NATIVE_AUTOUPDATE_DEFAULT"')"

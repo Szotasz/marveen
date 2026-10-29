@@ -1057,9 +1057,16 @@ claude_npm_copy_state() {
   npm_root="$(npm root -g 2>/dev/null)"
   if [ -n "$npm_root" ] && [ -d "$npm_root/@anthropic-ai/claude-code" ]; then echo "present"; else echo "absent"; fi
 }
+# claude_native_runs <path>: the build is there and answers --version, in the
+# same plugin-free environment as the update.
+claude_native_runs() {
+  local iso="$INSTALL_DIR/store/.claude-native-update-env"
+  [ -n "$1" ] && [ -x "$1" ] || return 1
+  CLAUDE_CONFIG_DIR="$iso/config" TELEGRAM_STATE_DIR="$iso/telegram" "$1" --version </dev/null >/dev/null 2>&1
+}
 claude_native_update() {
   local why="$1" launcher="$HOME/.local/bin/claude" iso="$INSTALL_DIR/store/.claude-native-update-env"
-  local l0 l1 t1 n0 n1 out rc reason="" tmo=""
+  local l0 l1 t1 n0 n1 out rc reason="" tmo="" target how v
   l0="$(readlink "$launcher" 2>/dev/null)"
   n0="$(claude_npm_copy_state)"
   mkdir -p "$iso/config" "$iso/telegram" 2>/dev/null
@@ -1077,7 +1084,7 @@ claude_native_update() {
     reason="claude update exited $rc: $(printf '%s' "$out" | tail -1)"
   elif ! claude_under_native_root "$t1"; then
     reason="the launcher no longer points into $CLAUDE_NATIVE_ROOT (${t1:-<nothing>})"
-  elif ! CLAUDE_CONFIG_DIR="$iso/config" TELEGRAM_STATE_DIR="$iso/telegram" "$t1" --version </dev/null >/dev/null 2>&1; then
+  elif ! claude_native_runs "$t1"; then
     reason="the new build does not run --version ($t1)"
   elif [ "$n1" != "$n0" ]; then
     reason="an npm-global claude appeared (npm copy: $n0 -> $n1)"
@@ -1089,12 +1096,32 @@ claude_native_update() {
     return 0
   fi
   if [ -n "$l0" ] && [ "$l1" != "$l0" ]; then
-    command -v chflags >/dev/null 2>&1 && chflags -h nouchg "$launcher" 2>/dev/null
-    if ln -sfn "$l0" "$launcher" 2>/dev/null; then
-      reason="$reason; launcher restored to ${l0##*/}"
+    # Back to the previous build only if it is still there and runs: an update
+    # that pruned it would otherwise leave a dangling launcher, and the next
+    # start's relink would pick the newest dir -- the broken one (review #2339).
+    # Failing that, the newest build that runs; failing that, say so and leave
+    # the launcher alone rather than claim a restore.
+    target=""
+    if claude_native_runs "$l0"; then
+      target="$l0"; how="launcher restored to ${l0##*/}"
     else
-      reason="$reason; restoring the launcher to $l0 FAILED"
+      for v in $(ls -1 "$CLAUDE_NATIVE_ROOT" 2>/dev/null | sort -V -r); do
+        if claude_native_runs "$CLAUDE_NATIVE_ROOT/$v"; then target="$CLAUDE_NATIVE_ROOT/$v"; break; fi
+      done
+      if [ -n "$target" ]; then
+        how="the previous build ${l0##*/} is gone or does not run; launcher set to the newest build that runs, ${target##*/}"
+      else
+        how="the previous build ${l0##*/} is gone or does not run, and NO native build runs; launcher left on ${l1##*/}, claude will not start until a working build is installed (claude install stable)"
+      fi
     fi
+    if [ -n "$target" ] && [ "$target" != "$l1" ]; then
+      command -v chflags >/dev/null 2>&1 && chflags -h nouchg "$launcher" 2>/dev/null
+      ln -sfn "$target" "$launcher" 2>/dev/null || how="moving the launcher to $target FAILED"
+    fi
+    reason="$reason; $how"
+  fi
+  if [ "$n1" = "present" ] && [ "$n0" != "present" ]; then
+    reason="$reason; the npm copy is still installed at $(npm root -g 2>/dev/null)/@anthropic-ai/claude-code (npm uninstall -g @anthropic-ai/claude-code removes it)"
   fi
   echo "$(date '+%F %T') claude update FAILED (native, $why): $reason" >&2
   { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: claude update FAILED (native, $why): $reason" >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null
