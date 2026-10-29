@@ -178,4 +178,21 @@ describe('skill section migration', () => {
     expect(f).toBeGreaterThan(-1)
     expect(body(f)).toContain(HEADING)
   })
+  it('the oldest section as sub-agents carry it, without the "Progressive disclosure" block, migrates', () => {
+    // #2200 review: that block was in the main agent's template only. Sub-agents carry the
+    // oldest section without it, matched no entry, and kept mkdir -p ~/.claude/skills/.
+    const l = retired[2].split('\n')
+    const i = l.indexOf('### Progressive disclosure (token-hatékony betöltés)')
+    const j = l.findIndex((s) => s.startsWith('Tartsd a SKILL.md-t 500 sor alatt.'))
+    expect(i).toBeGreaterThan(0)
+    expect(j - i).toBe(6)
+    const withoutBlock = [...l.slice(0, i - 1), ...l.slice(j + 1)].join('\n')
+    expect(withoutBlock).toContain('mkdir -p ~/.claude/skills/')
+    expect(retired).toContain(withoutBlock)
+    const after = '## Időkezelés\n\n  Mindig Europe/Budapest.  \n\n\n- első\n'
+    const doc = `# A\n\nintro\n\n${withoutBlock}\n\n${after}`
+    expect(upgradeRetiredSkillSection(doc, retired, current)).toBe(`# A\n\nintro\n\n${current}\n\n${after}`)
+    // the new entry is what migrates it
+    expect(upgradeRetiredSkillSection(doc, retired.filter((r) => r !== withoutBlock), current)).toBeNull()
+  })
 })

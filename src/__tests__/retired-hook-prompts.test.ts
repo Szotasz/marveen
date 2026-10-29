@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureAgentHooks, upgradeRetiredHookPrompts, readRetiredHookPrompts, resolveTemplatePlaceholders, upgradeTaskStateHeaderInHookPrompts } from '../web/agent-scaffold.js'
+import { ensureAgentHooks, upgradeRetiredHookPrompts, upgradePreCompactRecipesToHelper, readRetiredHookPrompts, resolveTemplatePlaceholders, upgradeTaskStateHeaderInHookPrompts } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 
 type Hooks = Record<string, Array<{ hooks?: Array<Record<string, unknown>> }>>
@@ -17,6 +17,13 @@ const agentPrompt = (hooks: Hooks | undefined, event: string): unknown =>
 const TPL = load('settings.json.template') as { hooks: Hooks }
 const RETIRED = load('retired-hook-prompts.json') as { PreCompact: string[] }
 const CURRENT = agentPrompt(TPL.hooks, 'PreCompact') as string
+const fixture = (f: string) => readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', f), 'utf-8')
+// What upgradePreCompactRecipesToHelper alone makes of a prompt.
+const afterHelperPass = (prompt: string): string => {
+  const hooks = { PreCompact: [{ hooks: [{ type: 'agent', prompt }] }] }
+  upgradePreCompactRecipesToHelper(hooks)
+  return hooks.PreCompact[0].hooks[0].prompt
+}
 
 describe('upgradeRetiredHookPrompts', () => {
   const tplHooks = { PreCompact: [{ hooks: [{ type: 'agent', prompt: 'NEW', timeout: 180 }] }] }
@@ -52,6 +59,25 @@ describe('upgradeRetiredHookPrompts', () => {
     expect(upgradeRetiredHookPrompts(existing, tplHooks, { PreCompact: ['OLD-1'] })).toBe(true)
     expect(upgradeRetiredHookPrompts(existing, tplHooks, { PreCompact: ['OLD-1'] })).toBe(false)
   })
+
+  it('a retired entry the #2338 pass already rewrote still migrates', () => {
+    // The ~/ClaudeClaw-era prompt (b8e4ff8e6) as #2338's pass leaves it: its curl lines are
+    // helper lines, the rest is the old prompt, so it equals no entry as shipped.
+    const b8 = fixture('precompact-prompt-b8e4ff8e6.txt')
+    const rewritten = afterHelperPass(b8)
+    expect(rewritten).not.toBe(b8)
+    expect(RETIRED.PreCompact).not.toContain(rewritten)
+    const existing: Hooks = { PreCompact: [{ hooks: [{ type: 'agent', prompt: rewritten, timeout: 180 }] }] }
+    expect(upgradeRetiredHookPrompts(existing, TPL.hooks, RETIRED)).toBe(true)
+    expect(existing.PreCompact[0].hooks![0].prompt).toBe(CURRENT)
+  })
+
+  it('an edited prompt stays edited after the #2338 pass rewrote it', () => {
+    const edited = `${afterHelperPass(fixture('precompact-prompt-b8e4ff8e6.txt'))}\nmy own line`
+    const existing: Hooks = { PreCompact: [{ hooks: [{ type: 'agent', prompt: edited }] }] }
+    expect(upgradeRetiredHookPrompts(existing, TPL.hooks, RETIRED)).toBe(false)
+    expect(existing.PreCompact[0].hooks![0].prompt).toBe(edited)
+  })
 })
 
 describe('the shipped retired list', () => {
@@ -78,6 +104,11 @@ describe('the shipped retired list', () => {
       upgradeTaskStateHeaderInHookPrompts(hooks)
       expect(raw.PreCompact).toContain(hooks.PreCompact[0].hooks[0].prompt)
     }
+  })
+
+  it('holds the prompt #2340 shipped, so an agent #2340 rewrote still migrates', () => {
+    const raw = JSON.parse(readFileSync(join(PROJECT_ROOT, 'templates', 'retired-hook-prompts.json'), 'utf-8')) as { PreCompact: string[] }
+    expect(raw.PreCompact).toContain(fixture('precompact-prompt-2340.txt'))
   })
 })
 
@@ -148,5 +179,32 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
     write(edited)
     ensureAgentHooks(PROBE, scopes())
     expect(read()).toBe(edited)
+  })
+
+  it('the last shipped curl prompt reaches the template prompt in one start', () => {
+    write(resolveTemplatePlaceholders(fixture('precompact-prompt-pre2338.txt')))
+    ensureAgentHooks(PROBE, scopes())
+    expect(read()).toBe(CURRENT)
+  })
+
+  it('the b8e4ff8e6 prompt, already rewritten by the #2338 pass, reaches the template prompt', () => {
+    write(afterHelperPass(fixture('precompact-prompt-b8e4ff8e6.txt')))
+    ensureAgentHooks(PROBE, scopes())
+    expect(read()).toBe(CURRENT)
+  })
+
+  it('a prompt the helper pass turns into a retired one converges in the same start', () => {
+    // The last curl prompt with the ~/ClaudeClaw token path: no retired entry as it is, but
+    // the helper pass makes it the prompt #2340 shipped. Without the second retired-list pass
+    // after the helper pass it would stop there until the next start.
+    const pre = fixture('precompact-prompt-pre2338.txt')
+    expect(pre).toContain('{{PROJECT_ROOT}}/store/.dashboard-token')
+    const old = resolveTemplatePlaceholders(pre.split('{{PROJECT_ROOT}}/store/.dashboard-token').join('~/ClaudeClaw/store/.dashboard-token'))
+    expect(RETIRED.PreCompact).not.toContain(old)
+    expect(RETIRED.PreCompact.map(afterHelperPass)).not.toContain(old)
+    expect(afterHelperPass(old)).toBe(resolveTemplatePlaceholders(fixture('precompact-prompt-2340.txt')))
+    write(old)
+    ensureAgentHooks(PROBE, scopes())
+    expect(read()).toBe(CURRENT)
   })
 })

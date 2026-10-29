@@ -666,6 +666,9 @@ export function upgradePreCompactRecipesToHelper(
   // Test seam only: renders the placeholders as another install would (a WEB_PORT
   // other than 3420). Production callers pass nothing.
   render: (s: string) => string = resolveTemplatePlaceholders,
+  // false when upgradeRetiredHookPrompts runs this pass over the retired list itself:
+  // that runs on every start, and an old entry it cannot rewrite is not news.
+  warn: boolean = true,
 ): boolean {
   const pairs = PRECOMPACT_HELPER_UPGRADES.map(([olds, next]) => ({
     olds: [...new Set(olds.map((o) => render(o)))],
@@ -688,8 +691,10 @@ export function upgradePreCompactRecipesToHelper(
         if (!touched) continue
         const leftover = out.find((line) => PRECOMPACT_CURL_RECIPE_RE.test(line))
         if (leftover !== undefined) {
-          logger.warn({ line: leftover.trim().slice(0, 200) },
-            'upgradePreCompactRecipesToHelper: a PreCompact save recipe is not a shipped spelling; prompt left unchanged (#2338)')
+          if (warn) {
+            logger.warn({ line: leftover.trim().slice(0, 200) },
+              'upgradePreCompactRecipesToHelper: a PreCompact save recipe is not a shipped spelling; prompt left unchanged (#2338)')
+          }
           continue
         }
         hook.prompt = out.join('\n')
@@ -704,7 +709,8 @@ export function upgradePreCompactRecipesToHelper(
  * A stock agent-hook prompt an earlier template shipped (templates/retired-hook-prompts.json,
  * resolved like the template) that an agent still carries word for word was never edited:
  * it becomes the current template prompt of the same event. Any other prompt was edited by
- * someone and stays. Exported for unit tests.
+ * someone and stays. A prompt also counts as stock when it equals a retired entry after
+ * upgradePreCompactRecipesToHelper rewrote that entry. Exported for unit tests.
  */
 export function upgradeRetiredHookPrompts(
   existingHooks: Record<string, unknown>,
@@ -721,10 +727,19 @@ export function upgradeRetiredHookPrompts(
     if (current === undefined) continue
     const entries = existingHooks[event]
     if (!Array.isArray(entries)) continue
+    // #2200 review: an agent the #2338 pass (upgradePreCompactRecipesToHelper) already
+    // rewrote never edited its prompt either, so a retired entry counts in both forms:
+    // as shipped, and as that pass makes it.
+    const accepted = new Set(oldPrompts)
+    for (const old of oldPrompts) {
+      const probe: Record<string, unknown> = { [event]: [{ hooks: [{ type: 'agent', prompt: old }] }] }
+      upgradePreCompactRecipesToHelper(probe, resolveTemplatePlaceholders, false)
+      accepted.add((probe[event] as HookEntry[])[0].hooks![0].prompt as string)
+    }
     for (const entry of entries as HookEntry[]) {
       for (const hook of entry.hooks ?? []) {
         if (hook.type !== 'agent' || typeof hook.prompt !== 'string') continue
-        if (hook.prompt !== current && oldPrompts.includes(hook.prompt)) {
+        if (hook.prompt !== current && accepted.has(hook.prompt)) {
           hook.prompt = current
           changed = true
         }
@@ -818,11 +833,15 @@ export function ensureAgentHooks(
     // #2200: an agent still on a stock prompt from an earlier template gets the
     // current one; an edited prompt stays. Before the header pass, so a stock
     // prompt is compared as it shipped.
-    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, readRetiredHookPrompts())) changed = true
+    const retiredPrompts = readRetiredHookPrompts()
+    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, retiredPrompts)) changed = true
     // The add pass's blind spot also hides the task-state curl's X-Agent-Id header.
     if (upgradeTaskStateHeaderInHookPrompts(existingHooks)) changed = true
     // #2338: and for the save recipes, which now go through marveen-api.sh.
     if (upgradePreCompactRecipesToHelper(existingHooks)) changed = true
+    // #2200 review: once more after the helper pass, so a prompt that pass just turned
+    // into a retired stock prompt reaches the template prompt in this start, not the next.
+    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, retiredPrompts)) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true

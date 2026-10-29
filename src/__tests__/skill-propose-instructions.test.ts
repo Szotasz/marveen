@@ -12,7 +12,9 @@ describe('skill propose instructions', () => {
     const hook = j.hooks.PreCompact.flatMap((h: any) => h.hooks ?? [h]).find((h: any) => h.type === 'agent')
     expect(hook).toBeTruthy()
     const prompt: string = hook.prompt
-    expect(prompt).toContain('/api/skills/propose')
+    expect(prompt).toContain('bash {{PROJECT_ROOT}}/scripts/marveen-api.sh skill-propose SKILL-NEV skill-javaslat.md --reason-file skill-javaslat-indok.txt')
+    expect(prompt).not.toContain('/api/skills/propose')
+    expect(prompt).not.toContain('$(cat')
     expect(prompt).toContain('mkdir -p .claude/skills/SKILL-NEV')
     for (const bad of NO_DIRECT) expect(prompt).not.toContain(bad)
   })
@@ -33,14 +35,14 @@ describe('skill propose instructions', () => {
 
   it('T4: sub-agent CLAUDE.md section in agent-scaffold', () => {
     const src = read('src/web/agent-scaffold.ts')
-    const a = src.indexOf('## Öntanulás és Skill rendszer')
+    const a = src.indexOf('`## Öntanulás és Skill rendszer')
     const b = src.indexOf('### Mikor generálj skill-t?', a)
     expect(a).toBeGreaterThan(-1)
     expect(b).toBeGreaterThan(a)
     const sec = src.slice(a, b)
     expect(sec).toContain('/api/skills/propose')
     expect(sec).toContain('mkdir -p .claude/skills/SKILL-NEV')
-    expect(sec).toContain('$(cat ${tokenPath})')
+    expect(sec).toContain('$(cat ${tokenFile})')
     expect(sec).not.toContain('mkdir -p ~/.claude/skills/')
   })
 
