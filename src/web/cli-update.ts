@@ -19,16 +19,18 @@
 //   4. Running sessions keep the OLD binary until their next start; the result
 //      carries that note so the UI says it.
 //   5. Before an npm install the global npm dirs are measured (`npm prefix -g`,
-//      then W_OK on <prefix>/lib/node_modules and <prefix>/bin). If either one
-//      exists and is not writable, the install would fail with EACCES (measured
-//      with npm 12.2.0: an update also renames the old bin link aside, even with
-//      --no-bin-links), so the manual sudo command is the result at once and
-//      nothing is spawned. A dir that does not exist yet, a prefix that cannot
-//      be measured, or a measurement that throws: the install runs as before.
+//      then W_OK on the package's scope dir <prefix>/lib/node_modules/@anthropic-ai
+//      and on <prefix>/bin). If either one exists and is not writable, the
+//      install would fail with EACCES (measured with npm 12.2.0: an update renames
+//      the old package dir and the old bin link aside, even with --no-bin-links;
+//      a read-only lib/node_modules alone does not stop it), so the manual sudo
+//      command is the result at once and nothing is spawned. A dir that does not
+//      exist yet, a prefix that cannot be measured, or a measurement that throws:
+//      the install runs as before.
 import { execFile, spawn } from 'node:child_process'
 import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { tryResolveFromPath } from '../platform.js'
@@ -202,7 +204,7 @@ export function accessState(path: string): DirAccess {
 /** `npm prefix -g`, or null when it fails or does not print an absolute path. */
 function readNpmGlobalPrefix(): Promise<string | null> {
   return new Promise((done) => {
-    execFile('npm', ['prefix', '-g'], { timeout: REGISTRY_TIMEOUT_MS }, (err, stdout) => {
+    execFile('npm', ['prefix', '-g'], { timeout: REGISTRY_TIMEOUT_MS, killSignal: 'SIGKILL' }, (err, stdout) => {
       const p = err ? '' : String(stdout).trim()
       done(p && isAbsolute(p) ? p : null)
     })
@@ -210,7 +212,7 @@ function readNpmGlobalPrefix(): Promise<string | null> {
 }
 
 /**
- * Rule 5: true when <prefix>/lib/node_modules or <prefix>/bin exists and is not writable, false when both are
+ * Rule 5: true when the package's scope dir or <prefix>/bin exists and is not writable, false when both are
  * writable, null when the prefix cannot be measured or a dir is missing and none is not-writable (npm creates it).
  */
 export async function npmGlobalDirsNotWritable(deps: {
@@ -220,10 +222,10 @@ export async function npmGlobalDirsNotWritable(deps: {
   const prefix = await (deps.npmPrefix ?? readNpmGlobalPrefix)()
   if (!prefix) return null
   const access = deps.access ?? accessState
-  const lib = access(join(prefix, 'lib', 'node_modules'))
+  const scope = access(dirname(join(prefix, 'lib', 'node_modules', CLAUDE_CODE_PACKAGE)))
   const bin = access(join(prefix, 'bin'))
-  if (lib === 'not-writable' || bin === 'not-writable') return true
-  if (lib === 'missing' || bin === 'missing') return null
+  if (scope === 'not-writable' || bin === 'not-writable') return true
+  if (scope === 'missing' || bin === 'missing') return null
   return false
 }
 

@@ -232,11 +232,12 @@ describe('rule 5: the global npm dirs are measured before an npm install', () =>
     expect(cliUpdateRunning()).toBe(false)
   })
   it('npmGlobalDirsNotWritable: which dirs it asks and what it answers', async () => {
-    const run = async (lib: 'writable' | 'not-writable' | 'missing', bin: 'writable' | 'not-writable' | 'missing') => {
+    const run = async (scope: 'writable' | 'not-writable' | 'missing', bin: 'writable' | 'not-writable' | 'missing') => {
       const asked: string[] = []
-      const map: Record<string, typeof lib> = { [join('/p', 'lib', 'node_modules')]: lib, [join('/p', 'bin')]: bin }
+      const scopeDir = join('/p', 'lib', 'node_modules', '@anthropic-ai')
+      const map: Record<string, typeof scope> = { [scopeDir]: scope, [join('/p', 'bin')]: bin }
       const result = await npmGlobalDirsNotWritable({ npmPrefix: async () => '/p', access: (p) => { asked.push(p); return map[p] } })
-      expect(asked).toEqual([join('/p', 'lib', 'node_modules'), join('/p', 'bin')])
+      expect(asked).toEqual([scopeDir, join('/p', 'bin')])
       return result
     }
     expect(await run('writable', 'writable')).toBe(false)
