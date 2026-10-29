@@ -4028,7 +4028,12 @@ export function ensureSkillSectionCurrent(name: string, retiredPath?: string): b
   } catch {
     return false
   }
-  const updated = upgradeRetiredSkillSection(existing, readRetiredSkillSections(retiredPath), buildSkillSection(dashboardTokenPathFor(name)))
+  // The other profile's current section counts as retired too, so an unedited section follows a
+  // profile switch, as the strict-api block does.
+  const strict = agentRunsStrict(name)
+  const tokenFile = dashboardTokenPathFor(name)
+  const retired = [...readRetiredSkillSections(retiredPath), strict ? buildSkillSection(undefined, tokenFile) : buildSkillSection(name)]
+  const updated = upgradeRetiredSkillSection(existing, retired, buildSkillSection(strict ? name : undefined, tokenFile))
   if (updated === null || updated === existing) return false
   atomicWriteFileSync(claudeMdPath, updated)
   return true
@@ -4771,11 +4776,26 @@ function strictPromptRecipes(name: string) {
   }
 }
 
+// #2232 for the proposal recipe: a strict-profile agent's dontAsk mode denies the mkdir, heredoc
+// and curl block of the section, so it writes both files with its file tool and the helper sends
+// them. The files sit in its own directory, the only place its profile lets it write.
+function strictSkillProposeRecipe(name: string): string {
+  const draft = join(agentDir(name), 'skill-javaslat.md')
+  return [
+    `A teljes SKILL.md-t (ugyanazzal a szerkezettel, mint egy saját skillé) a Write eszközzel írd ide: ${draft}`,
+    `Az indoklást (miért kell, mit javít) a Write eszközzel írd ide: ${strictPayloadPath(name)}`,
+    'Utána küldd el:',
+    `${apiHelper} skill-propose SKILL-NEV ${draft} --reason-file ${strictPayloadPath(name)}`,
+  ].join('\n')
+}
+
 // The current "## Öntanulás és Skill rendszer" section of a sub-agent CLAUDE.md,
 // as generateClaudeMd asks the model to copy it. One source for the prompt and
-// for ensureSkillSectionCurrent's migration of an unedited old copy. The token file is the
-// agent's own (dashboardTokenPathFor, #2325), as in every other recipe of the CLAUDE.md.
-export function buildSkillSection(tokenFile: string = mainTokenPath()): string {
+// for ensureSkillSectionCurrent's migration of an unedited old copy. With a strict
+// agent's name the proposal goes through the helper; without one the text is unchanged.
+// The token file is the agent's own (dashboardTokenPathFor, #2325), as in every other
+// recipe of the CLAUDE.md.
+export function buildSkillSection(strictAgent?: string, tokenFile: string = mainTokenPath()): string {
   return `## Öntanulás és Skill rendszer
 
 Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
@@ -4794,11 +4814,11 @@ A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat
 ### Globális skill: csak javaslatként
 Ha a skill minden ágensnek hasznos, vagy egy meglévő globális skillt javítanál, írd meg a teljes SKILL.md-t piszkozatba, és küldd el. Ha a név már él, a javaslat csere: jóváhagyáskor a régi változat mentésre kerül. Meglévő globális skill javításánál a mostani szövegből indulj (cat ~/.claude/skills/NEV/SKILL.md), és a TELJES javított szöveget küldd.
 
-mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
+${strictAgent ? strictSkillProposeRecipe(strictAgent) : `mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
 (a teljes SKILL.md, ugyanazzal a szerkezettel, mint egy saját skillé)
 SKILLEOF
 python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' SKILL-NEV .claude/skill-javaslat/SKILL.md "miért kell, mit javít" > .claude/skill-javaslat/body.json
-curl -s -X POST ${dashboardOrigin}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat ${tokenFile})" --data-binary @.claude/skill-javaslat/body.json
+curl -s -X POST ${dashboardOrigin}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat ${tokenFile})" --data-binary @.claude/skill-javaslat/body.json`}
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:
@@ -4932,7 +4952,7 @@ Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00)
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le.
 
-${buildSkillSection(tokenPath)}
+${buildSkillSection(strict ? name : undefined, tokenPath)}
 
 ## Időkezelés
 

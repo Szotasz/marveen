@@ -165,10 +165,10 @@ describe('skill section migration', () => {
       const m = src.slice(from + 1).search(/\n(function |export )/)
       return src.slice(from, m < 0 ? undefined : from + 1 + m)
     }
-    expect(src).toContain('${buildSkillSection(tokenPath)}')
+    expect(src).toContain('${buildSkillSection(strict ? name : undefined, tokenPath)}')
     const g = src.indexOf('function generateClaudeMd')
     expect(g).toBeGreaterThan(-1)
-    expect(body(g)).toContain('${buildSkillSection(tokenPath)}')
+    expect(body(g)).toContain('${buildSkillSection(strict ? name : undefined, tokenPath)}')
     // the section text lives once, in buildSkillSection's template literal (it opens
     // with the heading); no line of the file is the bare heading, so no second copy of
     // the section sits in the prompt -- that would be the drift
