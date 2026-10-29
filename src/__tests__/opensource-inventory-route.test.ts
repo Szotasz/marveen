@@ -76,11 +76,14 @@ describe('auth: the route is bearer-gated (401 without a token)', () => {
   })
 
   it('web.ts dispatches the handler only after the 401 gate', () => {
+    // The 401 answer lives in gateRequest (auth-gate.ts) since per-agent tokens; web.ts calls it first.
     const src = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
-    const gate = src.indexOf("res.end(JSON.stringify({ error: 'Unauthorized' }))")
+    const gate = src.indexOf('await gateRequest(req, res, url, path, method')
     const call = src.indexOf('await tryHandleOpensourceInventory(routeCtx)')
     expect(gate).toBeGreaterThan(0)
     expect(call).toBeGreaterThan(gate)
+    const gateSrc = readFileSync(join(ROOT, 'src', 'web', 'auth-gate.ts'), 'utf-8')
+    expect(gateSrc).toContain("res.end(JSON.stringify({ error: 'Unauthorized' }))")
   })
 })
 

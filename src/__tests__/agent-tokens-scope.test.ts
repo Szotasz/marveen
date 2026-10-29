@@ -1049,6 +1049,99 @@ describe('allowlist coverage and the measured replay', () => {
   })
 })
 
+// ---- Review of #2325 ----------------------------------------------------------
+
+// Drive gateRequest with full control over the URL (query string), headers and
+// identity lookups.
+async function gateRaw(method: string, pathAndQuery: string, headers: Record<string, string>, resolver: (t: string) => string | null, opts: { body?: unknown; identityLookups?: Parameters<typeof gateRequest>[5]['identityLookups'] } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const out: { status: number; body: Record<string, unknown> } = { status: 0, body: {} }
+  const res = {
+    writeHead(code: number) { out.status = code; return res },
+    end(data?: unknown) { try { out.body = JSON.parse(String(data ?? '{}')) } catch { /* non-JSON */ } },
+    setHeader() { return res },
+  } as unknown as http.ServerResponse
+  const url = new URL(`http://127.0.0.1${pathAndQuery}`)
+  const auth = await gateRequest(mkReq(headers, opts.body), res, url, url.pathname, method, {
+    dashboardToken: MAIN_TOKEN, resolveAgentToken: resolver, mainAgentId: MAIN_AGENT_ID,
+    ...(opts.identityLookups ? { identityLookups: opts.identityLookups } : {}),
+  })
+  if (auth !== null) out.status = 200 // passed the gate; the route decides from here
+  return out
+}
+
+describe('a token value that two agents hold (a directory copied with cp -r)', () => {
+  const base = join(scratch.root, 'twins', 'agents')
+  const SHARED = 'a1'.repeat(32)
+
+  it('authenticates NEITHER agent; the next ensure of the copy rotates it, and then both differ and each is itself', () => {
+    for (const n of ['eredeti', 'eredeti-masolat']) {
+      mkdirSync(join(base, n), { recursive: true })
+      writeFileSync(agentTokenPath(n, base), SHARED, { mode: 0o600 })
+    }
+    const loaded = loadAgentTokens(base, MAIN_TOKEN)
+    expect(loaded.has('eredeti')).toBe(false)
+    expect(loaded.has('eredeti-masolat')).toBe(false)
+    const resolver = createAgentTokenResolver({ baseDir: base, mainToken: MAIN_TOKEN })
+    expect(resolver(SHARED)).toBeNull()
+    const url = new URL('http://127.0.0.1/api/memories')
+    expect(resolveAuth(mkReq({ authorization: `Bearer ${SHARED}` }), url, url.pathname, 'GET', MAIN_TOKEN, resolver))
+      .toStrictEqual({ kind: 'none' })
+
+    // The copy's next start: its duplicated value is not kept.
+    expect(ensureAgentToken('eredeti-masolat', base, MAIN_TOKEN)?.created).toBe(true)
+    const orig = readFileSync(agentTokenPath('eredeti', base), 'utf-8')
+    const copy = readFileSync(agentTokenPath('eredeti-masolat', base), 'utf-8')
+    expect(orig).toBe(SHARED)
+    expect(copy).not.toBe(orig)
+    expect(copy).toMatch(/^[0-9a-f]{64}$/)
+    expect(resolver(orig)).toBe('eredeti')
+    expect(resolver(copy)).toBe('eredeti-masolat')
+    // ...and the original's own next start keeps its now-unique token.
+    expect(ensureAgentToken('eredeti', base, MAIN_TOKEN)?.created).toBe(false)
+    expect(readFileSync(agentTokenPath('eredeti', base), 'utf-8')).toBe(SHARED)
+  })
+})
+
+describe('gate invariants: identity lookup failure and the SSE pane stream', () => {
+  const base = join(scratch.root, 'invariants', 'agents')
+  let agentTok = ''
+  let resolver: (t: string) => string | null = () => null
+  beforeAll(() => {
+    mkdirSync(join(base, AGENT), { recursive: true })
+    ensureAgentToken(AGENT, base, MAIN_TOKEN)
+    agentTok = readFileSync(agentTokenPath(AGENT, base), 'utf-8')
+    resolver = createAgentTokenResolver({ baseDir: base, mainToken: MAIN_TOKEN })
+  })
+
+  it('an identity lookup that throws fails CLOSED: 403 agent-identity-binding, the route never runs', async () => {
+    const boom = () => { throw new Error('database is locked') }
+    const lookups = { messageRecipient: boom, memoryOwner: boom, approvalOwner: boom }
+    const cases: Array<[string, string, unknown]> = [
+      ['PUT', '/api/messages/7', { status: 'done' }],
+      ['PUT', '/api/memories/7', { content: 'x' }],
+      ['POST', '/api/approvals/abc/consume', { consumer: AGENT }],
+    ]
+    for (const [m, p, body] of cases) {
+      const r = await gateRaw(m, p, { authorization: `Bearer ${agentTok}` }, resolver, { body, identityLookups: lookups })
+      expect(r.status, `${m} ${p}`).toBe(403)
+      expect(r.body.rule).toBe('agent-identity-binding')
+      expect(String(r.body.error)).toContain('the identity could not be verified')
+    }
+  })
+
+  it('the SSE pane stream: an agent token is not accepted as ?token= (401), and is out of scope in the header (403)', async () => {
+    const pane = `/api/agents/${MAIN_AGENT_ID}/pane/stream`
+    const q = await gateRaw('GET', `${pane}?token=${agentTok}`, {}, resolver)
+    expect(q.status).toBe(401)
+    const h = await gateRaw('GET', pane, { authorization: `Bearer ${agentTok}` }, resolver)
+    expect(h.status).toBe(403)
+    expect(h.body.rule).toBe('agent-token-scope')
+    // The main token still opens it both ways (unchanged).
+    expect((await gateRaw('GET', `${pane}?token=${MAIN_TOKEN}`, {}, resolver)).status).toBe(200)
+    expect((await gateRaw('GET', pane, { authorization: `Bearer ${MAIN_TOKEN}` }, resolver)).status).toBe(200)
+  })
+})
+
 // ---- Backward compatibility: an install that only has the shared token --------
 
 describe('shared-token-only install (AGENT_TOKENS off, no agent token on disk) is unchanged', () => {

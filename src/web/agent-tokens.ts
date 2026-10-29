@@ -124,15 +124,30 @@ function readRegularTokenFile(path: string, mainToken: string | null = readMainT
   return inspectTokenFile(path, mainToken).token
 }
 
+// Does any OTHER plausible agent dir under baseDir hold this same token value?
+// A directory copied with `cp -r` carries its twin's token, and a token held
+// by two agents cannot say which one is calling.
+function tokenHeldByAnotherAgent(name: string, value: string, baseDir: string, mainToken: string | null): boolean {
+  let entries: string[]
+  try { entries = readdirSync(baseDir) } catch { return false }
+  for (const other of entries) {
+    if (other === name || !isPlausibleAgentName(other)) continue
+    if (inspectTokenFile(agentTokenPath(other, baseDir), mainToken).token === value) return true
+  }
+  return false
+}
+
 /**
  * Idempotently provision the sub-agent's own token file.
  *
  * - Main agent, implausible name, or missing agent dir -> null (nothing written).
  * - A valid regular token file already exists -> kept as-is; its mode is
  *   tightened to 0600 if it drifted. Returns { created: false }.
- * - Absent, empty, malformed, not a regular file (e.g. a symlink), or a copy of
- *   the MAIN token -> replaced by a fresh 32-byte hex token written atomically
- *   at 0600. { created: true }.
+ * - Absent, empty, malformed, not a regular file (e.g. a symlink), a copy of
+ *   the MAIN token, or a value another agent's file also holds (a directory
+ *   copied with cp -r) -> replaced by a fresh 32-byte hex token written
+ *   atomically at 0600. { created: true }. Whichever of two twins starts first
+ *   is rotated; after that both values are unique again.
  *
  * Never logs or returns the token itself.
  */
@@ -150,7 +165,13 @@ export function ensureAgentToken(
     // Rotate, never keep: this file would hand the agent the admin credential.
     logger.warn({ name, path }, 'agent token: file held a copy of the MAIN token; rotating it to a fresh per-agent token')
   }
-  if (state.token !== null) {
+  // Rotate, never keep, a value another agent's file holds too: the loader
+  // authenticates neither while they are equal (loadAgentTokens).
+  const duplicated = state.token !== null && tokenHeldByAnotherAgent(name, state.token, baseDir, mainToken)
+  if (duplicated) {
+    logger.warn({ name, path }, 'agent token: another agent holds the same token (a copied directory?); rotating it to a fresh per-agent token')
+  }
+  if (state.token !== null && !duplicated) {
     try {
       if ((lstatSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600)
     } catch (err) {
@@ -196,11 +217,17 @@ let lastReaddirWarnAt = 0
 // Same for the per-agent "copy of the MAIN token" warning: once a minute
 // per agent, not on every cache reload.
 const lastCopyWarnAt = new Map<string, number>()
+// And for a token value that several agents hold (a copied directory).
+const lastDuplicateWarnAt = new Map<string, number>()
 
 /** Scan <baseDir>/<agent>/.dashboard-token for every plausible sub-agent dir.
- *  Files that are copies of the main token are skipped (and warned about). */
+ *  Files that are copies of the main token are skipped (and warned about).
+ *  A value that more than one agent's file holds authenticates NONE of them
+ *  (a directory copied with cp -r would otherwise authenticate as its twin);
+ *  the next start of either agent rotates its copy (ensureAgentToken). */
 export function loadAgentTokens(baseDir: string = agentsBaseDir(), mainToken: string | null = readMainTokenValue()): Map<string, string> {
   const out = new Map<string, string>()
+  const byValue = new Map<string, string[]>()
   let entries: string[]
   try {
     entries = readdirSync(baseDir)
@@ -215,13 +242,26 @@ export function loadAgentTokens(baseDir: string = agentsBaseDir(), mainToken: st
   for (const name of entries) {
     if (!isPlausibleAgentName(name)) continue
     const state = inspectTokenFile(agentTokenPath(name, baseDir), mainToken)
-    if (state.token !== null) out.set(name, state.token)
-    else if (state.reason === 'equals-main') {
+    if (state.token !== null) {
+      const holders = byValue.get(state.token)
+      if (holders) holders.push(name)
+      else byValue.set(state.token, [name])
+    } else if (state.reason === 'equals-main') {
       const now = Date.now()
       if (now - (lastCopyWarnAt.get(name) ?? 0) >= 60_000) {
         lastCopyWarnAt.set(name, now)
         logger.warn({ name }, 'agent tokens: agents/<name>/.dashboard-token is a copy of the MAIN token; ignored (restart the agent to rotate it)')
       }
+    }
+  }
+  for (const [value, holders] of byValue) {
+    if (holders.length === 1) { out.set(holders[0]!, value); continue }
+    // Names only, never the value. Once a minute per set of holders.
+    const key = holders.slice().sort().join('\0')
+    const now = Date.now()
+    if (now - (lastDuplicateWarnAt.get(key) ?? 0) >= 60_000) {
+      lastDuplicateWarnAt.set(key, now)
+      logger.warn({ agents: holders }, 'agent tokens: several agents hold the same token (a copied directory?); it authenticates none of them until the next start rotates it')
     }
   }
   return out

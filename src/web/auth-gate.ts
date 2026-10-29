@@ -177,11 +177,13 @@ export function resolveAuth(
   // 3. SSE pane stream ?token= (EventSource cannot set an Authorization header):
   //    dashboard token first, then device key -- a device must be able to open
   //    the pane stream too, or the dashboard would look half-broken on it.
+  //    A sub-agent token is NOT accepted here: the pane stream shows another
+  //    agent's terminal, and a query-string credential is the one a browser
+  //    page holds, never an agent. (In the Bearer header it is outside the
+  //    sub-agent scope: 403 agent-token-scope.)
   if (isSsePaneStream(path, method)) {
     const qtoken = url.searchParams.get('token') ?? ''
     if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
-    const agent = resolveAgentToken && qtoken ? resolveAgentToken(qtoken) : null
-    if (agent) return { kind: 'token', agent, tokenAgent: agent }
     const dk = resolveDeviceKey(qtoken)
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id, scope: dk.scope }
   }
