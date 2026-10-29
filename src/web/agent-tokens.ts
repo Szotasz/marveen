@@ -328,6 +328,21 @@ const PATH_CONT = '(?![A-Za-z0-9._~/-])'
 // something else and never crosses whitespace, quotes, backticks or brackets.
 const ABS_PREFIX = '(?<![\\w~}.\\-/])/[^\\s"\'`()<>\\[\\]]*?'
 function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+// One agent-name path segment (isPlausibleAgentName's shape).
+const AGENT_SEG = '[A-Za-z0-9][A-Za-z0-9._-]*'
+
+// Every absolute reference to ANY agent's token file: under the current agents
+// dir literally (a root with a space in it is not an ABS_PREFIX match), then
+// <any root>/agents/<any agent>/.dashboard-token. An agent's CLAUDE.md has no
+// reason to read another agent's token, and after `cp -r anna zara` the copy's
+// CLAUDE.md still names anna's file, which resolves to anna.
+function anyAgentTokenRefRes(baseDir: string): RegExp[] {
+  const file = `/${AGENT_SEG}/${escapeRe(AGENT_TOKEN_FILENAME)}${PATH_CONT}`
+  return [
+    new RegExp(`${escapeRe(baseDir)}${file}`, 'g'),
+    new RegExp(`${ABS_PREFIX}/agents${file}`, 'g'),
+  ]
+}
 
 // Rewrite a REGULAR CLAUDE.md through `edit`; a symlinked CLAUDE.md is left
 // alone rather than replaced by a copy, and the file mode is carried over.
@@ -358,10 +373,12 @@ function rewriteAgentClaudeMd(name: string, baseDir: string, edit: (text: string
  * `<PROJECT_ROOT>/store/.dashboard-token` string is touched, and only where it
  * is NOT followed by another path character (the relative form never worked
  * from agents/<name>/ anyway), and only after the per-agent file exists, so a
- * failed provisioning never leaves the agent pointing at a missing file. A
- * per-agent path under ANOTHER root (the install was moved to a new home or
- * directory) is re-anchored onto the current one, which the generic host-move
- * suffix list cannot do for a per-agent path. The generated blocks are
+ * failed provisioning never leaves the agent pointing at a missing file. An
+ * absolute reference to ANY agent's token file, under this or another root
+ * (a directory copied with cp -r names its twin's file; a moved install names
+ * the old root), becomes this agent's own path: an agent's CLAUDE.md has no
+ * reason to read another agent's token, and the generic host-move suffix list
+ * cannot re-anchor a per-agent path. The generated blocks are
  * re-rendered right after this with dashboardTokenPathFor(), so they converge
  * to the same path.
  */
@@ -374,14 +391,15 @@ export function migrateAgentClaudeMdTokenRefs(
   const perAgent = agentTokenPath(name, baseDir)
   if (readRegularTokenFile(perAgent) === null) return false
   const mainRe = new RegExp(`${escapeRe(mainTokenPathArg)}${PATH_CONT}`, 'g')
-  const anyRootRe = new RegExp(`${ABS_PREFIX}/agents/${escapeRe(name)}/${escapeRe(AGENT_TOKEN_FILENAME)}${PATH_CONT}`, 'g')
-  return rewriteAgentClaudeMd(name, baseDir, (text) => text.replace(mainRe, () => perAgent).replace(anyRootRe, () => perAgent))
+  return rewriteAgentClaudeMd(name, baseDir, (text) =>
+    anyAgentTokenRefRes(baseDir).reduce((t, re) => t.replace(re, () => perAgent), text.replace(mainRe, () => perAgent)))
 }
 
 /**
- * The way back (AGENT_TOKENS off): every absolute reference to this agent's
- * own token file, under any root, becomes the shared token path again, so the
- * agent keeps working after its token file is deleted. Idempotent.
+ * The way back (AGENT_TOKENS off): every absolute reference to an agent token
+ * file (its own or a twin's, under any root) becomes the shared token path
+ * again, so the agent keeps working after its token file is deleted, and a
+ * copy made while the switch was on does not keep its twin's path. Idempotent.
  */
 export function revertAgentClaudeMdTokenRefs(
   name: string,
@@ -389,11 +407,8 @@ export function revertAgentClaudeMdTokenRefs(
   mainTokenPathArg: string = mainTokenPath(),
 ): boolean {
   if (!isPlausibleAgentName(name)) return false
-  // The current path literally first (a root with a space in it is not an
-  // ABS_PREFIX match), then the same file under any other root.
-  const ownRe = new RegExp(`${escapeRe(agentTokenPath(name, baseDir))}${PATH_CONT}`, 'g')
-  const anyRootRe = new RegExp(`${ABS_PREFIX}/agents/${escapeRe(name)}/${escapeRe(AGENT_TOKEN_FILENAME)}${PATH_CONT}`, 'g')
-  return rewriteAgentClaudeMd(name, baseDir, (text) => text.replace(ownRe, () => mainTokenPathArg).replace(anyRootRe, () => mainTokenPathArg))
+  return rewriteAgentClaudeMd(name, baseDir, (text) =>
+    anyAgentTokenRefRes(baseDir).reduce((t, re) => t.replace(re, () => mainTokenPathArg), text))
 }
 
 /**

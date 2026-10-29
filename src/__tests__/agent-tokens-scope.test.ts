@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
@@ -246,8 +246,9 @@ describe('token provisioning (ensureAgentToken)', () => {
     const after = readFileSync(md, 'utf-8')
     expect(after).toContain(`$(cat ${agentTokenPath(AGENT, base)})`)
     expect(after).not.toContain(`/old/home/inst/agents/${AGENT}/`)
-    // only THIS agent's file is its business
-    expect(after).toContain('/old/home/inst/agents/beta/.dashboard-token')
+    // another agent's token file is no business of this CLAUDE.md: it names its own
+    expect(after).toContain(`other agent: ${agentTokenPath(AGENT, base)}\n`)
+    expect(after).not.toContain('/agents/beta/')
     expect(migrateAgentClaudeMdTokenRefs(AGENT, base, main)).toBe(false)
   })
 
@@ -259,6 +260,30 @@ describe('token provisioning (ensureAgentToken)', () => {
     expect(revertAgentClaudeMdTokenRefs(AGENT, base, main)).toBe(true)
     expect(readFileSync(md, 'utf-8')).toBe(`$(cat ${main})\n$(cat ${main})\nkeep ${own}.bak\n`)
     expect(revertAgentClaudeMdTokenRefs(AGENT, base, main)).toBe(false)
+  })
+
+  it('a dir copied with cp -r after migration: the copy\'s CLAUDE.md names its OWN token file, and that token resolves to the copy', () => {
+    const main = '/opt/cp/store/.dashboard-token'
+    const own = (n: string) => agentTokenPath(n, base)
+    const named = (n: string) => {
+      const m = /\$\(cat ([^)]+)\)/.exec(readFileSync(join(base, n, 'CLAUDE.md'), 'utf-8'))
+      return m ? m[1] : null
+    }
+    mkdirSync(join(base, 'anna'), { recursive: true })
+    writeFileSync(join(base, 'anna', 'CLAUDE.md'), `curl -H "Authorization: Bearer $(cat ${main})" u\n`)
+    expect(syncAgentTokenOnStart('anna', { enabled: true, baseDir: base, mainTokenPath: main }).rewritten).toBe(true)
+    expect(named('anna')).toBe(own('anna'))
+    cpSync(join(base, 'anna'), join(base, 'zara'), { recursive: true })
+    expect(named('zara')).toBe(own('anna')) // the copy still points at the twin
+    expect(syncAgentTokenOnStart('zara', { enabled: true, baseDir: base, mainTokenPath: main })).toEqual({ provisioned: true, rewritten: true })
+    expect(named('zara')).toBe(own('zara'))
+    const resolver = createAgentTokenResolver({ baseDir: base, mainToken: MAIN_TOKEN })
+    expect(resolver(readFileSync(named('zara')!, 'utf-8'))).toBe('zara')
+    expect(resolver(readFileSync(named('anna')!, 'utf-8'))).toBe('anna')
+    // A copy made while the switch was on, then the switch off: no twin path survives.
+    cpSync(join(base, 'anna'), join(base, 'mira'), { recursive: true })
+    expect(syncAgentTokenOnStart('mira', { enabled: false, baseDir: base, mainTokenPath: main }).rewritten).toBe(true)
+    expect(named('mira')).toBe(main)
   })
 
   it('syncAgentTokenOnStart: on = provision + migrate, off = revert and provision nothing; main and heartbeat untouched', () => {
