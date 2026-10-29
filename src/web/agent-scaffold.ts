@@ -612,24 +612,34 @@ export function upgradeTaskStateHeaderInHookPrompts(existingHooks: Record<string
  * prompt along, because the add pass never rewrites a `type: "agent"` prompt.
  *
  * Line by line and only the exact shipped spelling (rendered with this
- * install's placeholders), like the X-Agent-Id pass above: an operator-edited
- * line stays as it is. It runs after the HOSTMOVE root re-anchoring and the
- * X-Agent-Id pass, so a prompt from another host or from before the header
- * matches too. Idempotent: no new line contains an old one. Exported for tests.
+ * install's placeholders), like the X-Agent-Id pass above. It runs after the
+ * HOSTMOVE root re-anchoring and the X-Agent-Id pass, so a prompt from another
+ * host or from before the header matches too.
+ *
+ * All or nothing per prompt (review #2340): if a save recipe would be left as
+ * curl -- an operator-edited line, or a spelling not in the table -- the prompt
+ * is left exactly as it is and the line is logged. Rewriting the intro to "use
+ * the helper" above curl lines that stay would hand the agent two
+ * contradicting instructions, and on a strict profile keep the very silent
+ * failure this fixes. Idempotent: no new line contains an old one. Exported
+ * for tests.
  */
 const API_HELPER_TPL = 'bash {{PROJECT_ROOT}}/scripts/marveen-api.sh'
-const PRECOMPACT_TOKEN_TPL = `$(cat {{PROJECT_ROOT}}/store/.dashboard-token)`
 const PRECOMPACT_TASKSTATE_BODY = '{"summary":"egy mondat mit csinálsz","doneSteps":["már kész lépés"],"alreadyDelegated":["mit kinek adtál már át"],"nextAction":"a következő konkrét lépés","pendingDecision":"nyitott döntés vagy blokkoló ha van"}'
-const precompactCurl = (port: string, path: string, extraHeaders: string, body: string) =>
-  `curl -s -X POST http://localhost:${port}/api/${path} -H 'Content-Type: application/json'${extraHeaders} -H "Authorization: Bearer ${PRECOMPACT_TOKEN_TPL}" -d '${body}'`
-// [old shipped spellings, the line that replaces them]. The literal-3420 forms
-// predate the WEB_PORT placeholder (#616); "A Marveen" predates BOT_NAME (#510).
+// The shipped spellings vary on three axes: the port (literal 3420 before the
+// WEB_PORT placeholder, #616), the token path (~/ClaudeClaw before the
+// PROJECT_ROOT placeholder, still on live agents measured 2026-10-29) and the
+// bot name in the intro ("Marveen" before BOT_NAME, #510).
+const PRECOMPACT_PORTS = ['{{WEB_PORT}}', '3420']
+const PRECOMPACT_TOKENS = ['{{PROJECT_ROOT}}/store/.dashboard-token', '~/ClaudeClaw/store/.dashboard-token']
+const precompactCurls = (indent: string, path: string, extraHeaders: string, body: string) =>
+  PRECOMPACT_PORTS.flatMap((port) => PRECOMPACT_TOKENS.map((token) =>
+    `${indent}curl -s -X POST http://localhost:${port}/api/${path} -H 'Content-Type: application/json'${extraHeaders} -H "Authorization: Bearer $(cat ${token})" -d '${body}'`))
+// [old shipped spellings, the line that replaces them]
 const PRECOMPACT_HELPER_UPGRADES: ReadonlyArray<readonly [readonly string[], string]> = [
   [
-    [
-      'A {{BOT_NAME}} /api/* Bearer tokenes. A token a projekt gyökerében: cat {{PROJECT_ROOT}}/store/.dashboard-token',
-      'A Marveen /api/* Bearer tokenes. A token a projekt gyökerében: cat {{PROJECT_ROOT}}/store/.dashboard-token',
-    ],
+    ['{{BOT_NAME}}', 'Marveen'].flatMap((bot) => PRECOMPACT_TOKENS.map((token) =>
+      `A ${bot} /api/* Bearer tokenes. A token a projekt gyökerében: cat ${token}`)),
     `A {{BOT_NAME}} /api/* hívásai EGY segéden mennek: ${API_HELPER_TPL} <ige> (az igék: ${API_HELPER_TPL} --help). A tokent a segéd maga olvassa, ezért nem kell sem nyers curl, sem parancs-behelyettesítés: szigorú profilon ezeket a Claude Code kérdés nélkül megtagadja. A szöveget a segéd CSAK fájlból veszi: előbb a Write eszközzel írd a munkamappádba, és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
   ],
   [
@@ -637,21 +647,20 @@ const PRECOMPACT_HELPER_UPGRADES: ReadonlyArray<readonly [readonly string[], str
     'Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):',
   ],
   [
-    ['{{WEB_PORT}}', '3420'].map((port) =>
-      '  ' + precompactCurl(port, 'memories', '', '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}')),
+    precompactCurls('  ', 'memories', '', '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'),
     `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`,
   ],
   [
-    ['{{WEB_PORT}}', '3420'].map((port) =>
-      '  ' + precompactCurl(port, 'daily-log', '', '{"agent_id":"SAJAT_NEVED","content":"..."}')),
+    precompactCurls('  ', 'daily-log', '', '{"agent_id":"SAJAT_NEVED","content":"..."}'),
     `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-payload.txt`,
   ],
   [
-    ['{{WEB_PORT}}', '3420'].map((port) =>
-      precompactCurl(port, 'agent-taskstate/SAJAT_NEVED', " -H 'X-Agent-Id: SAJAT_NEVED'", PRECOMPACT_TASKSTATE_BODY)),
+    precompactCurls('', 'agent-taskstate/SAJAT_NEVED', " -H 'X-Agent-Id: SAJAT_NEVED'", PRECOMPACT_TASKSTATE_BODY),
     `Írd a rekordot JSON-ként az api-payload.json fájlba a munkamappádban:\n${PRECOMPACT_TASKSTATE_BODY}\nmajd:\n${API_HELPER_TPL} taskstate-save SAJAT_NEVED api-payload.json`,
   ],
 ]
+// A save recipe still written as curl: what the all-or-nothing guard looks for.
+const PRECOMPACT_CURL_RECIPE_RE = /\bcurl\b.*\/api\/(?:memories|daily-log|agent-taskstate)\b/
 export function upgradePreCompactRecipesToHelper(
   existingHooks: Record<string, unknown>,
   // Test seam only: renders the placeholders as another install would (a WEB_PORT
@@ -676,10 +685,15 @@ export function upgradePreCompactRecipesToHelper(
           touched = true
           return hit.next
         })
-        if (touched) {
-          hook.prompt = out.join('\n')
-          changed = true
+        if (!touched) continue
+        const leftover = out.find((line) => PRECOMPACT_CURL_RECIPE_RE.test(line))
+        if (leftover !== undefined) {
+          logger.warn({ line: leftover.trim().slice(0, 200) },
+            'upgradePreCompactRecipesToHelper: a PreCompact save recipe is not a shipped spelling; prompt left unchanged (#2338)')
+          continue
         }
+        hook.prompt = out.join('\n')
+        changed = true
       }
     }
   }

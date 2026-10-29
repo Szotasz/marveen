@@ -102,16 +102,39 @@ describe('upgradePreCompactRecipesToHelper', () => {
     expect(JSON.stringify(hooks)).toBe(after)
   })
 
-  it('an operator-edited line stays as it is, the shipped lines around it are still upgraded', () => {
+  it('all or nothing: an operator-edited curl line leaves the WHOLE prompt as it is', () => {
+    // Rewriting the intro and the other lines while one curl recipe stays would hand
+    // the agent two contradicting instructions (review #2340).
     const rendered = resolveTemplatePlaceholders(pre2338Prompt())
     const edited = rendered.replace('"category":"warm","keywords":"..."', '"category":"hot","keywords":"sajat"')
     expect(edited).not.toBe(rendered)
     const hooks = hooksWith(edited)
+    expect(upgradePreCompactRecipesToHelper(hooks)).toBe(false)
+    expect(promptOf(hooks)).toBe(edited)
+  })
+
+  it('all or nothing: an unknown curl save recipe next to shipped lines leaves the prompt untouched', () => {
+    const rendered = resolveTemplatePlaceholders(pre2338Prompt())
+    const withUnknown = rendered.replace('Használd a curl parancsokat:',
+      "Használd a curl parancsokat:\n  curl -X POST http://127.0.0.1:9999/api/daily-log -d @napi.json")
+    const hooks = hooksWith(withUnknown)
+    expect(upgradePreCompactRecipesToHelper(hooks)).toBe(false)
+    expect(promptOf(hooks)).toBe(withUnknown)
+  })
+
+  it('the ~/ClaudeClaw-era prompt (b8e4ff8e6, still on live agents): every recipe line is upgraded, none left as curl', () => {
+    // Frozen from the template's history; byte-equal to a live agent's prompt measured on 2026-10-29.
+    const old = readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-b8e4ff8e6.txt'), 'utf-8')
+    expect(old).toContain('cat ~/ClaudeClaw/store/.dashboard-token')
+    const hooks = hooksWith(old)
     expect(upgradePreCompactRecipesToHelper(hooks)).toBe(true)
     const p = promptOf(hooks)
-    expect(p).toContain('"category":"hot","keywords":"sajat"')
+    expect(p).not.toMatch(/curl\b.*\/api\//)
+    expect(p).not.toContain('.dashboard-token')
+    expect(p).not.toContain('Használd a curl parancsokat:')
+    expect(p).toContain('/scripts/marveen-api.sh memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt')
     expect(p).toContain('/scripts/marveen-api.sh daily-log SAJAT_NEVED api-payload.txt')
-    expect(p).toContain('/scripts/marveen-api.sh taskstate-save SAJAT_NEVED api-payload.json')
+    expect(p).toContain('Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):')
   })
 
   it('a curl line inside a longer line (not the exact shipped line) is not touched', () => {
