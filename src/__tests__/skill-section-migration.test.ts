@@ -68,6 +68,13 @@ describe('skill section migration', () => {
     expect(upgradeRetiredSkillSection(around(retired[1]), retired, current)).toBe(MIGRATED)
   })
 
+  it('M2b: the oldest retired section is replaced whole, the "## " lines of its fenced SKILL.md sample included', () => {
+    const oldest = retired[retired.length - 1]
+    expect(oldest).toMatch(/\n```[^\n]*\n[\s\S]*\n## [\s\S]*\n```/)
+    // the section after it stays byte for byte (MIGRATED ends with it)
+    expect(upgradeRetiredSkillSection(around(oldest), retired, current)).toBe(MIGRATED)
+  })
+
   it('the live case: one blank line inserted between two text lines (an LLM copy) is still unedited', () => {
     // Measured on a live sub-agent: the copy had a blank line right after the
     // `mkdir -p ~/.claude/skills/SKILL-NEV` line, where the shipped text has none.

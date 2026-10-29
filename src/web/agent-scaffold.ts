@@ -3970,14 +3970,17 @@ export function normalizeSectionWhitespace(s: string): string {
     .filter((l) => l !== '').join('\n')
 }
 
-/** The section of a CLAUDE.md that starts at a line equal to `heading` (trailing spaces, tabs and CR ignored) and ends before the next line starting with "## " (or at the end). */
+/** The section of a CLAUDE.md that starts at a line equal to `heading` (trailing spaces, tabs and CR ignored) and ends before the next line starting with "## " (or at the end). Lines inside ``` fences are text, not headings: the oldest shipped section carries a fenced SKILL.md sample with its own "## " lines. */
 export function findSection(text: string, heading: string): { start: number; end: number } | null {
   const lines = text.split('\n')
   let offset = 0
   let start = -1
+  let inFence = false
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/[ \t\r]+$/, '')
-    if (start < 0 && line === heading) start = offset
+    if (line.trimStart().startsWith('```')) inFence = !inFence
+    else if (inFence) { /* a line of a code block */ }
+    else if (start < 0 && line === heading) start = offset
     else if (start >= 0 && line.startsWith('## ')) return { start, end: offset }
     offset += lines[i].length + 1
   }
