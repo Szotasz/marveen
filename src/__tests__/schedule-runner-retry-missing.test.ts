@@ -240,4 +240,21 @@ describe('schedule runner: pending retry survives a missing target session', () 
     expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
     expect(mockSendTeams).not.toHaveBeenCalled()
   })
+
+  // An all-agents task is retried once per (task, agent) row. The tick must
+  // hand the stuck ROW's agent to the notice: task.agent is 'all', which names
+  // no agent, no channel state directory and nobody the team could ask about.
+  it("names the stuck row's agent, not task.agent, for an all-agents task", async () => {
+    const all = task({ name: 'retry-missing-e2e-all', schedule: '0 8 * * *', agent: 'all', channelProvider: 'teams', telegramChatId: 'a:teams-conv-2' })
+    mockListScheduledTasks.mockReturnValue([all])
+    mockListPendingRetries.mockReturnValue([retryRow({ task_name: all.name, first_attempt: Date.now() - 61 * 60000 })])
+    mockMarkAlert.mockReturnValueOnce(true)
+    await runOneTick()
+
+    expect(mockSendTeams).toHaveBeenCalledTimes(1)
+    const [, stateDir, conversationId, text] = mockSendTeams.mock.calls[0]
+    expect(conversationId).toBe('a:teams-conv-2')
+    expect(String(text)).toContain(`"${all.name}" ütemezett feladat (retryagent)`)
+    expect(String(stateDir)).toContain('retryagent')
+  })
 })
