@@ -260,7 +260,7 @@ describe('the skill section follows the profile', () => {
     const strict = readFileSync(strictPath, 'utf-8')
     expect(strict).toBe(doc(S.buildSkillSection('strict-a')))
     expect(helperLines(strict)).toEqual([
-      `${HELPER_CMD} skill-propose SKILL-NEV ${join(tmpRoot, 'agents', 'strict-a', 'skill-javaslat.md')} --reason-file ${join(tmpRoot, 'agents', 'strict-a', 'api-payload.txt')}`,
+      `${HELPER_CMD} skill-propose SKILL-NEV ${join(tmpRoot, 'agents', 'strict-a', 'skill-javaslat.md')} --reason-file ${join(tmpRoot, 'agents', 'strict-a', 'skill-javaslat-indok.txt')}`,
     ])
     expect(strict).not.toContain('$(')
     expect(strict).not.toContain('/api/skills/propose')

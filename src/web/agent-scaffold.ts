@@ -4778,14 +4778,16 @@ function strictPromptRecipes(name: string) {
 
 // #2232 for the proposal recipe: a strict-profile agent's dontAsk mode denies the mkdir, heredoc
 // and curl block of the section, so it writes both files with its file tool and the helper sends
-// them. The files sit in its own directory, the only place its profile lets it write.
+// them. The files sit in its own directory, the only place its profile lets it write. The reason
+// gets its own file: the shared payload file is overwritten by every other recipe in between.
 function strictSkillProposeRecipe(name: string): string {
   const draft = join(agentDir(name), 'skill-javaslat.md')
+  const reason = join(agentDir(name), 'skill-javaslat-indok.txt')
   return [
     `A teljes SKILL.md-t (ugyanazzal a szerkezettel, mint egy saját skillé) a Write eszközzel írd ide: ${draft}`,
-    `Az indoklást (miért kell, mit javít) a Write eszközzel írd ide: ${strictPayloadPath(name)}`,
+    `Az indoklást (miért kell, mit javít) a Write eszközzel írd ide: ${reason}`,
     'Utána küldd el:',
-    `${apiHelper} skill-propose SKILL-NEV ${draft} --reason-file ${strictPayloadPath(name)}`,
+    `${apiHelper} skill-propose SKILL-NEV ${draft} --reason-file ${reason}`,
   ].join('\n')
 }
 

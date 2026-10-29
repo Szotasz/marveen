@@ -209,6 +209,8 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     expect((await run(['message', 'dani', 'samu'])).code).toBe(2)
     expect((await run(['skill-propose', 'my-skill', file('e.md', '  \n')])).code).toBe(2)
     expect((await run(['skill-propose', '../x', file('s.md', 'x')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', file('s.md', 'x'), '--force'])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill'])).code).toBe(2)
     expect(seen).toHaveLength(0)
   })
 
