@@ -91,6 +91,10 @@ token is a 7-day "Testing" token.
   being followed or replaced; every missing directory level is created
   0700. Every existing file is first copied byte for byte to
   `<file>.bak-<timestamp>` (0600, never overwritten).
+- **Leftovers hold live tokens and are never pruned.** The parked response
+  (`<state_dir>/.google-consent[-NAME]-pending.json`) stays until a complete write clears it, and
+  the `.bak-<timestamp>` copies stay forever: delete the parked file if you abandon a run,
+  and the backups once the new token works.
 - **A code is redeemed only when it is bound to a link this helper issued.** The
   pasted URL's `state` must match a stored PKCE entry (S256), and the exchange
   always sends that entry's `code_verifier`. A bare code, a URL with the `state`

@@ -92,6 +92,10 @@ ellenőrizve, de a token 7 napos "Testing" token.
   írás), nem követi és nem cseréli le; a hiányzó mappák
   minden szintje 0700-zal jön létre. Minden meglévő fájlról előbb bájtra pontos másolat készül:
   `<fájl>.bak-<időbélyeg>` (0600, sosem íródik felül).
+- **A maradék fájlokban élő token van, és semmi nem takarítja őket.** A parkolt válasz
+  (`<state_dir>/.google-consent[-NÉV]-pending.json`) egy teljes, sikeres írásig megmarad, a
+  `.bak-<időbélyeg>` másolatok pedig örökre: a parkolt fájlt töröld, ha félbehagyod a
+  futást, a mentéseket pedig, ha az új token már működik.
 - **Kódot csak akkor vált be, ha egy általa kiadott linkhez kötődik.** A
   visszamásolt URL `state` értékének egy tárolt PKCE-bejegyzéshez (S256) kell
   tartoznia, és a beváltás mindig annak a bejegyzésnek a `code_verifier`-ét küldi.
