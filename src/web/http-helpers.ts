@@ -67,6 +67,28 @@ export function readBody(
   })
 }
 
+// For routes whose body is OPTIONAL (a missing or unparsable body means
+// "use the defaults"): such a route must still not run with defaults when the
+// body was cut off. readBody() rejects in that case (client disconnect, early
+// close, over the limit); this answers the request (413 over the limit, 400
+// otherwise) and returns null, so the caller stops instead of falling back.
+export async function readBodyOrRefuse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: { maxBytes?: number } = {},
+): Promise<Buffer | null> {
+  try {
+    return await readBody(req, opts)
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) {
+      json(res, { error: `Request body too large (max ${err.limit} bytes)`, code: 'body-too-large' }, 413)
+    } else {
+      json(res, { error: 'The request body did not arrive in full; nothing was done', code: 'incomplete-body' }, 400)
+    }
+    return null
+  }
+}
+
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
   // Cache-Control: private, no-store prevents CDN / proxy caching of API
   // responses that may contain user-specific data or session state. Without

@@ -17,7 +17,7 @@ import {
   createMainChannelsSession,
 } from '../channel-monitor.js'
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
-import { json, readBody } from '../http-helpers.js'
+import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
@@ -318,7 +318,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // restartNeeded instead.
   if (path === '/api/onboarding/identity' && method === 'POST') {
     let body: { agentName?: string; ownerName?: string } = {}
-    try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
+    const raw = await readBodyOrRefuse(req, res)
+    if (!raw) return true
+    try { body = JSON.parse(raw.toString()) as typeof body } catch { /* empty */ }
     const agentName = (body.agentName ?? '').trim()
     const ownerName = (body.ownerName ?? '').trim()
     if (!agentName || !ownerName) { json(res, { error: 'agentName es ownerName szukseges.', reason: 'missing' }, 400); return true }
@@ -396,7 +398,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       return true
     }
     let body: { token?: string; apiKey?: string } = {}
-    try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
+    const raw = await readBodyOrRefuse(req, res)
+    if (!raw) return true
+    try { body = JSON.parse(raw.toString()) as typeof body } catch { /* empty */ }
     const token = (body.token ?? '').trim()
     const apiKey = (body.apiKey ?? '').trim()
     if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }

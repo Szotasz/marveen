@@ -157,7 +157,7 @@ import {
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+import { readBody, readBodyOrRefuse, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import {
   exportAgentBundle,
@@ -2338,7 +2338,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
-    try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
+    // A body that did not arrive in full is refused, not read as "no options".
+    const startBody = await readBodyOrRefuse(req, res)
+    if (!startBody) return true
+    try { startFresh = JSON.parse(startBody.toString() || '{}').fresh === true } catch {}
     const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
@@ -2464,8 +2467,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
     // caller that wakes the agent itself can send { "wake": false } (no caller
     // in this repository does today). See restart-wake.ts.
-    let restartBody = ''
-    try { restartBody = (await readBody(req)).toString() } catch {}
+    // A body that did not arrive in full is refused, not read as "no options".
+    const restartRaw = await readBodyOrRefuse(req, res)
+    if (!restartRaw) return true
+    const restartBody = restartRaw.toString()
     const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)

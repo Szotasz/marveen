@@ -136,3 +136,36 @@ describe('every onboarding .env write goes through the single-line check (ENVINJ
     expect(() => assertEnvEntry('OWNER_NAME', 'Kiss Anna')).not.toThrow()
   })
 })
+
+// Both routes read an optional-looking body ("{}" on a parse failure). A body
+// cut off mid-way is refused as such (400 incomplete-body), before the live
+// probe and before any write, instead of being read as an empty request.
+describe('onboarding routes refuse a body that did not arrive in full', () => {
+  async function postCutOff(path: string, partial: string) {
+    let status = 0
+    let out = ''
+    const req = Object.assign(new Readable({ read() {} }), { headers: {} })
+    req.push(Buffer.from(partial))
+    setImmediate(() => req.destroy())
+    const res = { setHeader() {}, writeHead(s: number) { status = s }, end(b?: string) { out = b ?? '' } }
+    const url = new URL(`http://localhost${path}`)
+    await tryHandleOnboarding({ req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'token' } } as any)
+    return { status, json: out ? JSON.parse(out) : null }
+  }
+
+  it('identity: 400 incomplete-body, .env untouched, no session started', async () => {
+    const r = await postCutOff('/api/onboarding/identity', '{"agentName":"Ada","ownerName":"Kis')
+    expect(r.status).toBe(400)
+    expect(r.json.code).toBe('incomplete-body')
+    expect(readFileSync(envFile, 'utf-8')).toBe('MAIN_AGENT_ID=marveen\n')
+    expect(L.create).not.toHaveBeenCalled()
+  })
+
+  it('claude-auth: 400 incomplete-body, nothing probed or written', async () => {
+    const r = await postCutOff('/api/onboarding/claude-auth', '{"token":"sk-ant-oat01-ab')
+    expect(r.status).toBe(400)
+    expect(r.json.code).toBe('incomplete-body')
+    expect(readFileSync(envFile, 'utf-8')).toBe('MAIN_AGENT_ID=marveen\n')
+    expect(existsSync(probeLog)).toBe(false)
+  })
+})

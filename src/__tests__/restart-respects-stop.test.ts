@@ -13,6 +13,7 @@
 //   remote, unreachable   -> 503 host-unreachable, nothing attempted
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
@@ -52,7 +53,8 @@ function fakeCtx(path: string, method: string): {
   }
   const url = new URL(`http://localhost:3420${path}`)
   return {
-    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url } as RouteContext,
+    // A complete, empty body: the route reads it (a cut-off body is refused with 400).
+    ctx: { req: Readable.from([]) as unknown as RouteContext['req'], res, path: url.pathname, method, url } as RouteContext,
     out,
   }
 }

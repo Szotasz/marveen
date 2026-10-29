@@ -1,4 +1,4 @@
-import { readBody, json } from '../http-helpers.js'
+import { readBody, readBodyOrRefuse, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
 import { clearOverride, getEffectiveSettingSource, getEffectiveSettingValue, getSettingFallback, setOverride } from '../../settings-store.js'
@@ -133,12 +133,15 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
 
       let actor = 'dashboard'
+      // A body cut off mid-way is refused (nothing reset), not read as "no body".
+      const raw = await readBodyOrRefuse(req, res)
+      if (!raw) return true
       try {
-        const body = (await readBody(req)).toString()
+        const body = raw.toString()
         const parsed = body ? JSON.parse(body) : null
         if (parsed && typeof parsed.actor === 'string' && parsed.actor) actor = parsed.actor
       } catch {
-        // A DELETE usually has no body; an unreadable one just keeps the default actor.
+        // A DELETE usually has no body; an unparsable one just keeps the default actor.
       }
 
       if (def.loosens?.(String(getEffectiveSettingValue(key)), String(getSettingFallback(key).value)) && !ownerCredential(ctx)) {
