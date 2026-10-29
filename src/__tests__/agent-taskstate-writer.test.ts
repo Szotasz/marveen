@@ -336,12 +336,16 @@ describe('buildTaskStateInjection: a foreign value cannot add or imitate a line 
 })
 
 describe('the PreCompact hook names its writer', () => {
-  it('the task-state curl in the settings template sends X-Agent-Id', () => {
-    const tpl = readFileSync(join(PROJECT_ROOT, 'templates', 'settings.json.template'), 'utf-8')
-    const prompt = tpl.split('\n').find((l) => l.includes('/api/agent-taskstate/SAJAT_NEVED'))
-    expect(prompt).toBeDefined()
-    const curl = prompt!.slice(prompt!.indexOf('/api/agent-taskstate/SAJAT_NEVED'))
-    const end = curl.indexOf("}'")
-    expect(curl.slice(0, end)).toContain('X-Agent-Id: SAJAT_NEVED')
+  // #2338: the save goes through scripts/marveen-api.sh taskstate-save, which sends
+  // X-Agent-Id = the agent it is given (pinned on the wire in marveen-api-helper.test.ts).
+  it('the task-state save in the settings template names the agent to the helper', () => {
+    const tpl = JSON.parse(readFileSync(join(PROJECT_ROOT, 'templates', 'settings.json.template'), 'utf-8')) as
+      { hooks: { PreCompact: Array<{ hooks: Array<{ prompt?: string }> }> } }
+    const prompt = tpl.hooks.PreCompact.flatMap((e) => e.hooks).find((h) => typeof h.prompt === 'string')?.prompt ?? ''
+    expect(prompt).toContain('/scripts/marveen-api.sh taskstate-save SAJAT_NEVED ')
+    expect(prompt).not.toContain('/api/agent-taskstate/')
+    const helper = readFileSync(join(PROJECT_ROOT, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
+    const verb = helper.slice(helper.indexOf("if verb == 'taskstate-save':"))
+    expect(verb.slice(0, verb.indexOf('return '))).toContain("headers['X-Agent-Id'] = agent")
   })
 })

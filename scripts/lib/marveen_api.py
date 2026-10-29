@@ -44,6 +44,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
+  taskstate-save <agent> <json-file>
   approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
@@ -259,6 +260,20 @@ def build_request(verb, args):
         if not content.strip():
             fail_usage('daily-log: the content is empty')
         return 'POST', '/api/daily-log', {'agent_id': agent, 'content': content}, headers, {}
+    if verb == 'taskstate-save':
+        # #2338: the PreCompact hook's task-state save, the last raw-curl recipe. The record is a
+        # JSON object (summary, doneSteps, alreadyDelegated, nextAction, pendingDecision); it is
+        # parsed here so a broken file fails loudly before anything is sent.
+        agent, json_file = positional(args, 2, verb)
+        check(agent, NAME_RE, 'agent name')
+        try:
+            record = json.loads(read_text(json_file))
+        except ValueError as e:
+            fail_usage(f'taskstate-save: {json_file} is not valid JSON ({e})')
+        if not isinstance(record, dict) or not record:
+            fail_usage('taskstate-save: the file must hold a non-empty JSON object')
+        headers['X-Agent-Id'] = agent
+        return 'POST', f'/api/agent-taskstate/{agent}', record, headers, {}
     if verb == 'approval-request':
         content_hash = take_opt(args, '--content-hash')
         agent, category, timeout, description_file = positional(args, 4, verb)

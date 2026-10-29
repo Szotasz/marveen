@@ -601,6 +601,91 @@ export function upgradeTaskStateHeaderInHookPrompts(existingHooks: Record<string
   return changed
 }
 
+/**
+ * #2338: the PreCompact prompt's save recipes go through scripts/marveen-api.sh.
+ * The shipped prompt told every agent to save memory, the daily log and the
+ * task state with `curl -X POST ... -H "Authorization: Bearer $(cat <token>)"`.
+ * A strict profile runs under `dontAsk`, where a command substitution never
+ * matches the allow-list, and the researcher profile denies `curl -X POST`
+ * outright: for those agents the pre-compaction save was refused, silently.
+ * The template now names the helper; this pass brings an EXISTING agent's
+ * prompt along, because the add pass never rewrites a `type: "agent"` prompt.
+ *
+ * Line by line and only the exact shipped spelling (rendered with this
+ * install's placeholders), like the X-Agent-Id pass above: an operator-edited
+ * line stays as it is. It runs after the HOSTMOVE root re-anchoring and the
+ * X-Agent-Id pass, so a prompt from another host or from before the header
+ * matches too. Idempotent: no new line contains an old one. Exported for tests.
+ */
+const API_HELPER_TPL = 'bash {{PROJECT_ROOT}}/scripts/marveen-api.sh'
+const PRECOMPACT_TOKEN_TPL = `$(cat {{PROJECT_ROOT}}/store/.dashboard-token)`
+const PRECOMPACT_TASKSTATE_BODY = '{"summary":"egy mondat mit csinálsz","doneSteps":["már kész lépés"],"alreadyDelegated":["mit kinek adtál már át"],"nextAction":"a következő konkrét lépés","pendingDecision":"nyitott döntés vagy blokkoló ha van"}'
+const precompactCurl = (port: string, path: string, extraHeaders: string, body: string) =>
+  `curl -s -X POST http://localhost:${port}/api/${path} -H 'Content-Type: application/json'${extraHeaders} -H "Authorization: Bearer ${PRECOMPACT_TOKEN_TPL}" -d '${body}'`
+// [old shipped spellings, the line that replaces them]. The literal-3420 forms
+// predate the WEB_PORT placeholder (#616); "A Marveen" predates BOT_NAME (#510).
+const PRECOMPACT_HELPER_UPGRADES: ReadonlyArray<readonly [readonly string[], string]> = [
+  [
+    [
+      'A {{BOT_NAME}} /api/* Bearer tokenes. A token a projekt gyökerében: cat {{PROJECT_ROOT}}/store/.dashboard-token',
+      'A Marveen /api/* Bearer tokenes. A token a projekt gyökerében: cat {{PROJECT_ROOT}}/store/.dashboard-token',
+    ],
+    `A {{BOT_NAME}} /api/* hívásai EGY segéden mennek: ${API_HELPER_TPL} <ige> (az igék: ${API_HELPER_TPL} --help). A tokent a segéd maga olvassa, ezért nem kell sem nyers curl, sem parancs-behelyettesítés: szigorú profilon ezeket a Claude Code kérdés nélkül megtagadja. A szöveget a segéd CSAK fájlból veszi: előbb a Write eszközzel írd a munkamappádba, és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
+  ],
+  [
+    ['Használd a curl parancsokat:'],
+    'Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):',
+  ],
+  [
+    ['{{WEB_PORT}}', '3420'].map((port) =>
+      '  ' + precompactCurl(port, 'memories', '', '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}')),
+    `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`,
+  ],
+  [
+    ['{{WEB_PORT}}', '3420'].map((port) =>
+      '  ' + precompactCurl(port, 'daily-log', '', '{"agent_id":"SAJAT_NEVED","content":"..."}')),
+    `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-payload.txt`,
+  ],
+  [
+    ['{{WEB_PORT}}', '3420'].map((port) =>
+      precompactCurl(port, 'agent-taskstate/SAJAT_NEVED', " -H 'X-Agent-Id: SAJAT_NEVED'", PRECOMPACT_TASKSTATE_BODY)),
+    `Írd a rekordot JSON-ként az api-payload.json fájlba a munkamappádban:\n${PRECOMPACT_TASKSTATE_BODY}\nmajd:\n${API_HELPER_TPL} taskstate-save SAJAT_NEVED api-payload.json`,
+  ],
+]
+export function upgradePreCompactRecipesToHelper(
+  existingHooks: Record<string, unknown>,
+  // Test seam only: renders the placeholders as another install would (a WEB_PORT
+  // other than 3420). Production callers pass nothing.
+  render: (s: string) => string = resolveTemplatePlaceholders,
+): boolean {
+  const pairs = PRECOMPACT_HELPER_UPGRADES.map(([olds, next]) => ({
+    olds: [...new Set(olds.map((o) => render(o)))],
+    next: render(next),
+  }))
+  let changed = false
+  for (const entries of Object.values(existingHooks)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (typeof hook.prompt !== 'string') continue
+        const lines = hook.prompt.split('\n')
+        let touched = false
+        const out = lines.map((line) => {
+          const hit = pairs.find((p) => p.olds.includes(line))
+          if (!hit) return line
+          touched = true
+          return hit.next
+        })
+        if (touched) {
+          hook.prompt = out.join('\n')
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -664,6 +749,8 @@ export function ensureAgentHooks(
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
     // The same blind spot for the task-state curl's X-Agent-Id header.
     if (upgradeTaskStateHeaderInHookPrompts(existingHooks)) changed = true
+    // #2338: and for the save recipes, which now go through marveen-api.sh.
+    if (upgradePreCompactRecipesToHelper(existingHooks)) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true

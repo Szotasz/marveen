@@ -1,0 +1,57 @@
+A kontextus hamarosan tömörítődik. Három dolgot csinálj:
+
+A {{BOT_NAME}} /api/* Bearer tokenes. A token a projekt gyökerében: cat {{PROJECT_ROOT}}/store/.dashboard-token
+
+## 1. Memória mentés
+Nézd át az eddigi beszélgetést és mentsd el a fontos dolgokat.
+
+FONTOS: Az agent_id-t a CLAUDE.md-ből derítsd ki (a fájl elején szerepel a neved). Ha nem találod, nézd meg a munkamappa nevét (agents/NEVET).
+
+Használd a curl parancsokat:
+- Fontos döntések, preferenciák, tanulságok (category=warm):
+  curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)" -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
+- Aktív feladatok, pending -> category=hot
+- Hosszútávú tanulság -> category=cold
+- Más agent-nek is -> category=shared
+- Napi napló bejegyzés:
+  curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)" -d '{"agent_id":"SAJAT_NEVED","content":"..."}'
+
+CSAK a tényleg fontos, nem nyilvánvaló dolgokat mentsd. Ne mentsd ami a kódból kiderül.
+
+## 2. Skill reflexió (auto-skill generálás)
+Nézd át az eddigi munkamenetet és keresd az újrafelhasználható mintákat:
+- Volt 5+ tool hívást igénylő komplex feladat?
+- Volt hiba utáni sikeres recovery?
+- Volt user korrekció amiből tanultál?
+- Volt nem triviális, többlépéses workflow?
+
+Ha BÁRMELYIK igaz, generálj SKILL.md fájlt ~/.claude/skills/ mappába:
+
+mkdir -p ~/.claude/skills/SKILL-NEV && cat > ~/.claude/skills/SKILL-NEV/SKILL.md << 'SKILLEOF'
+---
+name: skill-nev
+description: Mikor használd, mit csinál (legyél konkrét és "pushy" a triggerelésben)
+---
+# Skill neve
+## Mikor használd
+[Konkrét triggerek]
+## Eljárás
+[Számozott lépések]
+## Buktatók
+[Ismert problémák és megoldásaik]
+## Ellenőrzés
+[Hogyan validáld az eredményt]
+SKILLEOF
+
+Ha volt korábban hasonló skill, PATCH-eld (csak a megváltozott részt cseréld sed-del vagy a SKILL.md átírásával), ne írd újra az egészet.
+
+Ha generáltál vagy patch-eltél skill-t, futtasd az index frissítőt: bash {{PROJECT_ROOT}}/scripts/skill-index.sh
+
+Ha nem volt skill-méltó munka, ne csinálj semmit -- ez a rész opcionális.
+
+## 3. Aktív task-state mentés (compact-folytonosság)
+Ha ÉPP egy feladaton dolgozol (nem fejezted be), mentsd el strukturáltan, hogy compact után onnan folytasd és NE indítsd újra / NE delegáld újra ami már megvan:
+
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json' -H 'X-Agent-Id: SAJAT_NEVED' -H "Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)" -d '{"summary":"egy mondat mit csinálsz","doneSteps":["már kész lépés"],"alreadyDelegated":["mit kinek adtál már át"],"nextAction":"a következő konkrét lépés","pendingDecision":"nyitott döntés vagy blokkoló ha van"}'
+
+FONTOS: doneSteps = amit MÁR megcsináltál (NE ismételd), alreadyDelegated = amit MÁR átadtál másik agentnek (NE küldd újra), nextAction = a következő konkrét lépés. Ha NINCS aktív feladat (csak beszélgetés/idle), hagyd ki ezt a lépést teljesen -- ilyenkor nem kell rekord.

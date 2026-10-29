@@ -148,6 +148,27 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(JSON.parse(seen[4].body)).toEqual({ category: 'memory_maintenance', consumer: 'dani' })
   })
 
+  it('taskstate-save: POST to the agent\'s own record with X-Agent-Id, the JSON object from the file (#2338)', async () => {
+    const rec = { summary: 'mit csinálok `x` $(nem fut)', doneSteps: ['kész'], alreadyDelegated: [], nextAction: 'következő', pendingDecision: '' }
+    const r = await run(['taskstate-save', 'dani', file('t.json', JSON.stringify(rec))])
+    expect(r.code).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].method).toBe('POST')
+    expect(seen[0].url).toBe('/api/agent-taskstate/dani')
+    expect(seen[0].headers['x-agent-id']).toBe('dani')
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
+    expect(JSON.parse(seen[0].body)).toEqual(rec)
+  })
+
+  it('taskstate-save: a broken, empty or non-object JSON file exits 2 and sends nothing', async () => {
+    for (const bad of ['{"summary": ', '{}', '[1,2]', '"szöveg"']) {
+      const r = await run(['taskstate-save', 'dani', file('bad.json', bad)])
+      expect(r.code).toBe(2)
+    }
+    expect((await run(['taskstate-save', '../x', file('ok.json', '{"summary":"a"}')])).code).toBe(2)
+    expect(seen).toHaveLength(0)
+  })
+
   it('message: goes through agent-msg.sh with the text from the file', async () => {
     reply = { status: 200, body: '{"id":99}' }
     const r = await run(['message', 'dani', 'samu', file('msg.txt', 'Szia, "idézet" és `kód`')])
