@@ -1310,7 +1310,7 @@ window._i18n.hu = {
   'settings.col.value':          'Érték',
   'settings.col.description':    'Leírás',
   'settings.col.restart':        'Újraindítás',
-  'settings.desc.MAIN_AGENT_ISOLATED_CONFIG':  'CSAK macOS: a fő channels-agent saját, izolált CLAUDE_CONFIG_DIR-t kap (mint a sub-agentek), így a stabil fleet setup-tokenből hitelesít, nem a rotálódó macOS Keychainből (ami periodikusan lejár és 401-et ad → "Please run /login"). Token nélkül vagy nem-macOS gépen nincs hatása; a channels session újraindításakor lép életbe.',
+  'settings.desc.MAIN_AGENT_ISOLATED_CONFIG':  'Bármely platformon (macOS és Linux): a fő channels-agent saját, izolált CLAUDE_CONFIG_DIR-t kap (mint a sub-agentek), így a stabil fleet setup-tokenből hitelesít, nem a megosztott, önmagát frissítő bejelentkezésből (macOS-en a Keychain, Linuxon a ~/.claude/.credentials.json), ami periodikusan lejár és 401-et ad ("Please run /login"). Az automata kulcs-rotáció előfeltétele. Fleet token nélkül nincs hatása; a channels session újraindításakor lép életbe.',
   'settings.desc.KANBAN_WIP_PLANNED':          'A "planned" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',
   'settings.desc.KANBAN_WIP_IN_PROGRESS':      'Az "in_progress" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',
   'settings.desc.KANBAN_WIP_WAITING':          'A "waiting" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',
