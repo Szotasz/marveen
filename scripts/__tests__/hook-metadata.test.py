@@ -893,6 +893,59 @@ class Switches(unittest.TestCase):
         env = {"MARVEEN_DISABLED_HOOKS": "egress-gate"}
         self.assertFalse(hook_switches.is_disabled("egress-gate", env, path))
 
+    def test_a_sidecar_with_local_names_still_keeps_the_whole_floor(self):
+        # The sidecar can only ADD: listing one local name must not replace
+        # the built-in floor (a "return extra if extra else floor" bug would
+        # unlock every shipped gate as soon as an install adds its first name).
+        path = sidecar(self.tmp.name, {"version": 1, "hooks": {}, "non_disableable": ["local-ledger"]})
+        locked = hook_switches.locked_names(path)
+        self.assertEqual(locked, hook_switches.DEFAULT_NON_DISABLEABLE | {"local-ledger"})
+        env = {"MARVEEN_DISABLED_HOOKS": "egress-gate,email-send-gate,local-ledger,log-a"}
+        for name in ("egress-gate", "email-send-gate", "fleet-freeze-gate", "local-ledger"):
+            self.assertTrue(hook_switches.is_locked(name, path), name)
+            self.assertFalse(hook_switches.is_disabled(name, env, path), name)
+        self.assertTrue(hook_switches.is_disabled("log-a", env, path))
+
+    def test_sidecar_path_never_comes_from_the_environment(self):
+        # An env var that redirected the lookup to an empty (or otherwise
+        # different) sidecar would be an env switch for the install's own
+        # locks. Point every plausible variable at such files and check that
+        # the default lookup still reads the repo's sidecar.
+        names = ("MARVEEN_HOOKS_METADATA", "MARVEEN_HOOKS_METADATA_PATH", "MARVEEN_HOOK_METADATA",
+                 "MARVEEN_HOOK_METADATA_PATH", "MARVEEN_METADATA_PATH", "HOOKS_METADATA_PATH",
+                 "HOOK_METADATA_PATH", "HOOK_SWITCHES_METADATA")
+        repo = hook_switches.DEFAULT_METADATA_PATH
+        hook_switches._CACHE.clear()
+        expected = (hook_switches.locked_names(), hook_switches.is_locked("log-a"))
+        self.assertEqual(expected[0], hook_switches.locked_names(repo))
+        bodies = ({"version": 1, "hooks": {}},                                   # empty: no additions
+                  {"version": 1, "hooks": {}, "non_disableable": ["env-marker"]},  # different list
+                  "{not json")                                                     # broken: all locked
+        saved = {k: os.environ.get(k) for k in names}
+        try:
+            for body in bodies:
+                path = sidecar(tempfile.mkdtemp(dir=self.tmp.name), body)
+                for k in names:
+                    os.environ[k] = path
+                hook_switches._CACHE.clear()
+                self.assertEqual(hook_switches.locked_names(), expected[0], body)
+                self.assertEqual(hook_switches.is_locked("log-a"), expected[1], body)
+                self.assertEqual(hook_switches.is_disabled("log-a", {"MARVEEN_DISABLED_HOOKS": "log-a"}),
+                                 not expected[1], body)
+                # Also at import time: a fresh process with the variables set.
+                probe = ("import json, sys; sys.path.insert(0, %r); import hook_switches as h; "
+                         "print(json.dumps([sorted(h.locked_names()), h.is_locked('log-a'), h.DEFAULT_METADATA_PATH]))"
+                         % HOOKS_DIR)
+                out = subprocess.run([sys.executable, "-I", "-c", probe], env=dict(os.environ),
+                                     capture_output=True, text=True, check=True).stdout
+                self.assertEqual(json.loads(out), [sorted(expected[0]), expected[1], repo], body)
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+            hook_switches._CACHE.clear()
+
     def test_missing_sidecar_means_default_floor_only(self):
         path = os.path.join(self.tmp.name, "absent.json")
         self.assertEqual(hook_switches.locked_names(path), hook_switches.DEFAULT_NON_DISABLEABLE)

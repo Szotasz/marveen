@@ -75,6 +75,13 @@ DEFAULT_NON_DISABLEABLE = frozenset({
     "child-claude-channel-guard",
     # fleet control (KILLSWITCH1022): the red button must not be env-disabled
     "fleet-freeze-gate",
+    # conversation audit ledger: a disabled ledger hook loses channel
+    # messages silently, so an env var may not switch it off either
+    "ledger-capture",
+    "ledger-outbound",
+    "ledger-turn-failure",
+    "ledger-live-drain",
+    "ledger-live-drain-precheck",
 })
 # Backwards-compatible name for the built-in floor.
 NON_DISABLEABLE = DEFAULT_NON_DISABLEABLE

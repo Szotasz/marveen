@@ -57,7 +57,7 @@ CI (`.github/workflows/test.yml`) runs the validator's tests and the validator i
 
 The lock list has two parts:
 
-1. **Built-in floor:** `hook_switches.DEFAULT_NON_DISABLEABLE`, every gate and guard shipped with the repo (`outgoing-copy-gate`, `email-approval-gate`, `email-send-gate`, `egress-gate`, `credential-gate`, `destructive-gate`, `fleet-freeze-gate`, `telegram-reply-guard` and the rest). A test fails when a shipped `-gate` / `-guard` hook is missing from it.
+1. **Built-in floor:** `hook_switches.DEFAULT_NON_DISABLEABLE`, every gate and guard shipped with the repo (`outgoing-copy-gate`, `email-approval-gate`, `email-send-gate`, `egress-gate`, `credential-gate`, `destructive-gate`, `fleet-freeze-gate`, `telegram-reply-guard` and the rest), plus the conversation audit-ledger hooks (`ledger-capture`, `ledger-outbound`, `ledger-turn-failure`, `ledger-live-drain`, `ledger-live-drain-precheck`). A test fails when a shipped `-gate` / `-guard` hook is missing from it.
 2. **The install's own additions:** the sidecar's top-level `non_disableable` list. An installation puts its own gates and audit ledgers here, without editing `hook_switches.py`:
 
 ```json

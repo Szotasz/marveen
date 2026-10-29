@@ -57,7 +57,7 @@ A **zárolt** hookok NEM kapcsolhatók ki env-ből: a nevük figyelmen kívül m
 
 A zárolási lista két részből áll:
 
-1. **Beépített alap:** `hook_switches.DEFAULT_NON_DISABLEABLE`, a repóval szállított összes kapu és őr (`outgoing-copy-gate`, `email-approval-gate`, `email-send-gate`, `egress-gate`, `credential-gate`, `destructive-gate`, `fleet-freeze-gate`, `telegram-reply-guard` és a többi). Egy teszt bukik, ha egy szállított `-gate` / `-guard` hook kimarad belőle.
+1. **Beépített alap:** `hook_switches.DEFAULT_NON_DISABLEABLE`, a repóval szállított összes kapu és őr (`outgoing-copy-gate`, `email-approval-gate`, `email-send-gate`, `egress-gate`, `credential-gate`, `destructive-gate`, `fleet-freeze-gate`, `telegram-reply-guard` és a többi), továbbá a beszélgetés-napló (audit ledger) hookjai (`ledger-capture`, `ledger-outbound`, `ledger-turn-failure`, `ledger-live-drain`, `ledger-live-drain-precheck`). Egy teszt bukik, ha egy szállított `-gate` / `-guard` hook kimarad belőle.
 2. **A telepítés saját kiegészítése:** az oldalfájl felső szintű `non_disableable` listája. Ide kerülnek a telepítés saját kapui és audit-naplói, a `hook_switches.py` szerkesztése nélkül:
 
 ```json

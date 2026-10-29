@@ -7,7 +7,7 @@
         "index": 0,
         "id": "user-prompt-submit/ledger-capture",
         "hook": "ledger-capture",
-        "gate": false,
+        "gate": true,
         "purpose": "Records every inbound channel message into the conversation ledger before the agent processes it.",
         "fingerprint": "246ab056550e32276ba44c3ec455d1efc74db0ad59fde32ffe7dcca458adbaac"
       },
@@ -105,7 +105,7 @@
         "index": 0,
         "id": "post-tool-use/ledger-outbound",
         "hook": "ledger-outbound",
-        "gate": false,
+        "gate": true,
         "purpose": "Records the text of every outbound channel reply into the conversation ledger.",
         "fingerprint": "35ed1f14c7f8e11ada825babf309cb725af86771f3fa7efce9378862a7696b2c"
       },
@@ -377,7 +377,7 @@
         "index": 0,
         "id": "stop-failure/ledger-turn-failure",
         "hook": "ledger-turn-failure",
-        "gate": false,
+        "gate": true,
         "purpose": "StopFailure hook: leave a trace when a turn that owed a channel reply died on an API error.",
         "fingerprint": "2e634c28735c33523857e5d9ac9a6bc1917154a779853a4dd4b597c8222d240e"
       }
