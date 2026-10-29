@@ -98,6 +98,12 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # NATIVEAUTOUPD1642 (#1642): the channels.sh install/update block on native
+      # hosts -- never npm, and the guarded daily `claude update` with rollback.
+      # The older native-guard suite had no CI wiring either. Both hermetic: the
+      # block runs against a throwaway HOME with npm and claude stubbed on PATH.
+      - run: bash scripts/__tests__/channels-native-install-no-npm.test.sh
+      - run: bash scripts/__tests__/channels-native-autoupdate.test.sh
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
