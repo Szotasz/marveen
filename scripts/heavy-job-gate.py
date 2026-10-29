@@ -931,8 +931,8 @@ def scope_probe():
     if not shutil.which("systemd-run"):
         return False, "no_systemd_run", None
     unit = "%sprobe-%d-%d" % (SCOPE_PREFIX, os.getpid(), time.time_ns())
-    argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + unit,
-            "-p", "MemoryMax=%dM" % PROBE_CAP_MB, "--",
+    argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect"] + no_expand_flag() + [
+            "--unit=" + unit, "-p", "MemoryMax=%dM" % PROBE_CAP_MB, "--",
             sys.executable or "python3", os.path.abspath(__file__), PROBE_FLAG]
     try:
         p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -948,6 +948,29 @@ def scope_probe():
                 return True, None, None
             return False, "cap_not_in_effect", sanitize_label(val[:40])
     return False, "cap_not_in_effect", "no_report"
+
+
+_EXPAND_FLAG = []
+
+
+def no_expand_flag():
+    """["--expand-environment=no"] where this systemd-run knows the option, else [].
+    With that option on, systemd-run expands $VAR / ${VAR} in the command's argv
+    and turns "$$" into "$" (ExecStart= rules), so `sh -c 'kill -9 $$'` reaches the
+    shell as `kill -9 $`. It is off by default for --scope on the systemd versions
+    measured here, but systemd documents that this default will change, and a CI
+    runner showed the expansion. The gate runs the command verbatim, so it turns
+    the expansion off explicitly. Asked once per process (systemd-run --help)."""
+    if not _EXPAND_FLAG:
+        try:
+            p = subprocess.run(["systemd-run", "--help"], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, text=True, timeout=10,
+                               env=dict(os.environ, SYSTEMD_PAGER="cat"))
+            known = "--expand-environment" in (p.stdout or "")
+        except (OSError, subprocess.TimeoutExpired):
+            known = False
+        _EXPAND_FLAG.append(["--expand-environment=no"] if known else [])
+    return list(_EXPAND_FLAG[0])
 
 
 def scope_available():
@@ -1444,7 +1467,7 @@ def main(argv=None):
         write_record(lane_tail)  # admitted: now this job counts in the short lane
     env = dict(os.environ, HEAVY_JOB_ACTIVE="1", HEAVY_JOB_TOKEN=token)
     if scoped:
-        argv_run = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+        argv_run = ["systemd-run", "--user", "--scope", "--collect", "--quiet"] + no_expand_flag() + [
                     "--unit=" + unit,
                     "-p", "TimeoutStopSec=" + SCOPE_STOP_TIMEOUT,
                     # normalized to MB: systemd reads a bare number as BYTES and

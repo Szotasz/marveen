@@ -104,6 +104,9 @@ are system errors: report them to the main agent.
    manager and then does not enforce it; there `memory.max` reads `max` or does not
    exist, and the gate refuses (77) rather than run the job uncapped while logging
    it as capped. The start line's `capped: true` means this check passed.
+   The command's argv reaches the job verbatim: where `systemd-run` knows
+   `--expand-environment`, the gate passes `=no`, so `$VAR` and `$$` are not
+   expanded by systemd-run (with expansion on, `sh -c 'kill -9 $$'` became `kill -9 $`).
 4. **Teardown.** When the main process ends: `systemctl --user stop <unit>.scope`,
    then a bounded check that the cgroup is empty, `cgroup.kill` as the last resort.
 5. **Log.** One JSON line per event in `store/heavy-job-log.jsonl`: `wait`, `start`,

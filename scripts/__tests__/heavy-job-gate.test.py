@@ -66,6 +66,8 @@ FAKE_SYSTEMD_RUN = r"""#!/bin/sh
 # other value is written as is, e.g. "max"), point the probe child at it
 # through the HEAVY_JOB_PROBE_* hooks, and exec the REAL probe child.
 # Job call: exec the command after "--" (optionally in a fake scope cgroup).
+# --help prints $FAKE_SR_HELP (the gate asks it whether --expand-environment exists).
+if [ "$1" = "--help" ]; then [ -n "$FAKE_SR_HELP" ] && printf "%s\n" "$FAKE_SR_HELP"; exit 0; fi
 if [ -n "$FAKE_SR_ARGS" ]; then printf "%s
 " "$@" >> "$FAKE_SR_ARGS"; echo ---- >> "$FAKE_SR_ARGS"; fi
 unit=
@@ -218,7 +220,8 @@ def main():
     # The gate and these tests read /proc/<pid>/stat (ticket owners, start times);
     # without it the suite cannot measure anything: skip, do not crash.
     if not sys.platform.startswith("linux") or gate.proc_stat(os.getpid()) is None:
-        print("SKIP: heavy-job-gate tests need Linux /proc/<pid>/stat (platform %s)" % sys.platform)
+        print("SKIP (control unmet): heavy-job-gate tests need Linux /proc/<pid>/stat (platform %s)"
+              % sys.platform)
         return 77
     # --- pure helpers
     check("parse_size_mb 2G = 2048", gate.parse_size_mb("2G") == 2048)
@@ -1300,6 +1303,19 @@ def cap_verification():
               "MemoryMax=64M" in probe and any(a.startswith("--unit=heavy-job-probe-") for a in probe), probe)
         check("cap: probe reads its MemoryMax back -> job runs, start line capped=true",
               p.returncode == 0 and st and st[-1].get("capped") is True, (p.returncode, st[-1:], p.stderr))
+        check("argv: a systemd-run without --expand-environment gets no such flag (probe and job)",
+              "--expand-environment=no" not in probe, probe)
+        os.remove(argfile)
+        p = E.run(["--", "sh", "-c", "exit 0", "$$", "$HOME"], FAKE_SR_ARGS=argfile,
+                  FAKE_SR_HELP="     --expand-environment=BOOL    Control expansion of environment variables")
+        with open(argfile) as f:
+            calls = [c.splitlines() for c in f.read().split("----\n") if c.strip()]
+        check("argv: where systemd-run knows --expand-environment, probe and job pass =no before '--', "
+              "and the job's own argv ($$, $HOME) is passed verbatim",
+              p.returncode == 0 and len(calls) == 2
+              and all("--expand-environment=no" in c[:c.index("--")] for c in calls)
+              and calls[1][calls[1].index("--") + 1:] == ["sh", "-c", "exit 0", "$$", "$HOME"],
+              (p.returncode, calls))
         for memmax, detail in (("max", "none:max"), ("missing", "none:missing"),
                                ("1048576", "1048576"), ("garbage x", "none:garbage_x")):
             if os.path.exists(marker):

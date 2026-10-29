@@ -102,6 +102,9 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   `nested_unverified`). A `cmd` mező csak a program neve és az argumentumok első
   32 karaktere, a teljes argv soha (argv-ben token is lehet). 5 MiB-nál a napló
   egyszer `heavy-job-log.jsonl.1`-re fordul.
+- **Szó szerinti parancs:** ahol a `systemd-run` ismeri az `--expand-environment`
+  kapcsolót, a kapu `=no`-val adja át, így a `$VAR` és a `$$` nem bomlik ki a
+  systemd-run-ban (bekapcsolva a `sh -c 'kill -9 $$'` `kill -9 $`-ra változott).
 - **Fájljogok:** a zár, a jegyek és a napló `0600`-as, a sor könyvtára `0700`-as,
   az umasktól függetlenül. A zárat és a naplót a kapu szimbolikus linken át soha nem
   nyitja meg, és csak a hívó saját, közönséges fájlját fogadja el (különben a zár 74,
