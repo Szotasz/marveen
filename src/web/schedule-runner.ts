@@ -85,7 +85,8 @@ import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-mo
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneOneLine } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
-import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { channelStateDir, getProvider, readChannelToken, readTeamsCreds, type ChannelProviderType } from '../channel-provider.js'
+import { sendTeamsMessage } from '../teams-send.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -2847,12 +2848,66 @@ function pendingRetryAlertText(view: PendingRetryView, prefix: string, ageMinute
       ]).join('\n')
 }
 
+// Where a stuck scheduled task's OWN channel target learns about the stall.
+// The main-agent notice below reaches the main agent's session, but the team
+// that asked for the result (a Teams channel bound to the stuck agent) waits
+// in silence: its agent is the one that could not start, so nobody in that
+// conversation knows the result is late. This is a team-facing one-liner --
+// no operator detail (tmux, MCP, dashboard page, login steps) -- because the
+// recipients are the humans waiting for the output, not the person who has to
+// fix the session. Best effort and never a throw: the stall is already being
+// escalated through the stage-1/stage-2 paths below, so a failed Teams send
+// must not take the tick down with it.
+export type StallNoticeOutcome = 'sent' | 'not-teams' | 'no-target' | 'failed'
+
+export async function notifyTaskTargetOfStall(
+  task: Pick<ScheduledTask, 'name' | 'agent' | 'telegramChatId' | 'channelProvider'>,
+  agentName: string,
+  ageMinutes: number,
+  deps: {
+    resolveTarget?: typeof resolveTaskChannelTarget
+    send?: typeof sendTeamsMessage
+    readCreds?: typeof readTeamsCreds
+  } = {},
+): Promise<StallNoticeOutcome> {
+  try {
+    // The stuck ROW's agent, not task.agent: a multi-agent task is retried
+    // once per (task, agent) row, and the channel to tell is the one bound to
+    // the agent that could not start.
+    const target = (deps.resolveTarget ?? resolveTaskChannelTarget)({ ...task, agent: agentName })
+    if (target.provider !== 'teams') return 'not-teams'
+    if (!target.chatId) {
+      const reason = task.telegramChatId === 'none' ? 'opted-out' : target.ambiguousCandidates ? 'ambiguous' : 'unbound'
+      logger.info({ task: task.name, agent: agentName, reason, ambiguousCandidates: target.ambiguousCandidates }, 'Teams stall notice skipped: no target conversation for the task')
+      return 'no-target'
+    }
+    // The Teams bot credentials live in the state dir of the agent that owns
+    // the channel: install-scoped for the main agent, agent-scoped otherwise.
+    const isMain = agentName === MAIN_AGENT_ID
+    const dir = isMain ? channelStateDir('teams') : channelStateDir('teams', agentDir(agentName))
+    const creds = (deps.readCreds ?? readTeamsCreds)('', isMain ? undefined : [join(dir, '.env')])
+    const text = `[ütemező] A(z) "${task.name}" ütemezett feladat (${agentName}) ${ageMinutes} perce nem tudott elindulni, ezért az eredménye késik. A rendszer tovább próbálkozik.`
+    await (deps.send ?? sendTeamsMessage)(creds, dir, target.chatId, text)
+    logger.info({ task: task.name, agent: agentName, ageMinutes }, 'Teams stall notice sent')
+    return 'sent'
+  } catch (err) {
+    // Never rethrow, and never log `creds` (it holds the bot secret) or the
+    // error object itself -- only its message string.
+    logger.warn({ task: task.name, agent: agentName, error: err instanceof Error ? err.message : String(err) }, 'Teams stall notice failed')
+    return 'failed'
+  }
+}
+
 // Stage 1: inter-agent notice to the main agent once a pending retry crosses
 // ALERT_THRESHOLD_MS. This used to go straight to the operator's channel
 // (see sendPendingRetryAlert below, now the stage-2 escalation) -- too
 // eager: a handful of tasks that all resolved themselves within the hour
 // each fired a direct alert for nothing.
-function sendPendingRetryMainAgentNotice(view: PendingRetryView, nowMs: number): void {
+export function sendPendingRetryMainAgentNotice(
+  view: PendingRetryView,
+  nowMs: number,
+  task?: Pick<ScheduledTask, 'name' | 'agent' | 'telegramChatId' | 'channelProvider'>,
+): void {
   // Stamp first, same claim-before-send guard as the channel path: if
   // another tick raced us, markPendingTaskRetryAlert returns false (the
   // WHERE alert_sent_at IS NULL guards it) and we skip the send entirely.
@@ -2866,6 +2921,10 @@ function sendPendingRetryMainAgentNotice(view: PendingRetryView, nowMs: number):
   try {
     createAgentMessage('system', MAIN_AGENT_ID, text)
     logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry main-agent notice sent')
+    // Only once the notice is safely in the DB: the task's own channel target
+    // has to be told too (see notifyTaskTargetOfStall). Fire-and-forget -- it
+    // never rejects and must never roll back the claim above.
+    if (task) void notifyTaskTargetOfStall(task, view.agentName, ageMinutes)
   } catch (err) {
     // A failed DB insert here does not block stage-2 escalation -- see
     // sendTaskInflightMainAgentNotice for the same rationale on the other path.
@@ -3570,7 +3629,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // do not alert.
       const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
       const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
-      if (stillPresent && view.alertDue) sendPendingRetryMainAgentNotice(view, now)
+      if (stillPresent && view.alertDue) sendPendingRetryMainAgentNotice(view, now, current)
       if (stillPresent && view.ownerAlertDue) sendPendingRetryAlert(view, now)
 
       // SCHEDPARK814 stale-parked-input janitor. A 'busy' verdict that keeps
