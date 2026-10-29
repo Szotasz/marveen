@@ -1140,7 +1140,7 @@ describe('gate invariants: identity lookup failure and the SSE pane stream', () 
 
   it('an identity lookup that throws fails CLOSED: 403 agent-identity-binding, the route never runs', async () => {
     const boom = () => { throw new Error('database is locked') }
-    const lookups = { messageRecipient: boom, memoryOwner: boom, approvalOwner: boom }
+    const lookups = { messageRecipient: boom, memoryOwner: boom, approvalOwner: boom, approvalGrantee: boom }
     const cases: Array<[string, string, unknown]> = [
       ['PUT', '/api/messages/7', { status: 'done' }],
       ['PUT', '/api/memories/7', { content: 'x' }],

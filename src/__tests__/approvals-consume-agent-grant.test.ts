@@ -17,6 +17,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 vi.mock('../config.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../config.js')>()
@@ -29,6 +32,7 @@ vi.mock('../web/telegram.js', async (importOriginal) => {
 
 import { initDatabase, getApproval, listApprovals } from '../db.js'
 import { gateRequest } from '../web/auth-gate.js'
+import { agentTokenPath, createAgentTokenResolver, ensureAgentToken } from '../web/agent-tokens.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -59,13 +63,13 @@ function mkRes(out: Out): http.ServerResponse {
 }
 
 /** gate -> route, as web.ts runs them. */
-async function call(method: string, path: string, token: string, body?: unknown): Promise<Out> {
+async function call(method: string, path: string, token: string, body?: unknown, resolveAgentToken: (t: string) => string | null = resolver): Promise<Out> {
   const out: Out = { status: 0, body: null }
   const req = mkReq(token, body)
   const res = mkRes(out)
   const url = new URL(`http://127.0.0.1${path}`)
   const auth = await gateRequest(req, res, url, url.pathname, method, {
-    dashboardToken: MAIN_TOKEN, resolveAgentToken: resolver, mainAgentId: MAIN,
+    dashboardToken: MAIN_TOKEN, resolveAgentToken, mainAgentId: MAIN,
   })
   if (auth === null) return out
   const ctxAuth = auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent, ...(auth.tokenAgent ? { tokenAgent: auth.tokenAgent } : {}) } : undefined
@@ -194,6 +198,45 @@ describe('POST /api/approvals/:id/consume with a sub-agent token', () => {
     const id = await mainGrant(X)
     expectNotGranted(await routeOnly('POST', `/api/approvals/${id}/consume`, Y, consumeBody()), Y)
     expect(getApproval(id)!.consumed_at).toBeNull()
+  })
+})
+
+// A directory copied with cp -r carries the original's token. A value two
+// agents hold authenticates neither (loadAgentTokens), so the copy cannot spend
+// a grant made to the original; once its next start rotates the copy, it is
+// itself, still not the grantee.
+describe('a copied agent dir (duplicate token) cannot consume a grant made for_agent to the original', () => {
+  it('the shared token is 401; after the copy is rotated it is 403 not granted; the original consumes once', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'grant-twin-'))
+    try {
+      const base = join(root, 'agents')
+      mkdirSync(join(base, X), { recursive: true })
+      ensureAgentToken(X, base, MAIN_TOKEN)
+      const COPY = `${X}-masolat`
+      cpSync(join(base, X), join(base, COPY), { recursive: true })
+      const shared = readFileSync(agentTokenPath(X, base), 'utf-8')
+      expect(readFileSync(agentTokenPath(COPY, base), 'utf-8')).toBe(shared)
+      const real = createAgentTokenResolver({ baseDir: base, mainToken: MAIN_TOKEN })
+
+      const id = await mainGrant(X)
+      // While the two files hold the same value, it authenticates nobody.
+      const twin = await call('POST', `/api/approvals/${id}/consume`, shared, consumeBody(), real)
+      expect(twin.status, JSON.stringify(twin.body)).toBe(401)
+      expect(getApproval(id)!.consumed_at).toBeNull()
+
+      // The copy's next start rotates it: it is now itself, and not the grantee.
+      expect(ensureAgentToken(COPY, base, MAIN_TOKEN)?.created).toBe(true)
+      const copyTok = readFileSync(agentTokenPath(COPY, base), 'utf-8')
+      expect(copyTok).not.toBe(shared)
+      expectNotGranted(await call('POST', `/api/approvals/${id}/consume`, copyTok, consumeBody(), real), COPY)
+      expect(getApproval(id)!.consumed_at).toBeNull()
+
+      // The original's token is unique again and consumes its grant once.
+      expect((await call('POST', `/api/approvals/${id}/consume`, shared, consumeBody(), real)).status).toBe(200)
+      expect((await call('POST', `/api/approvals/${id}/consume`, shared, consumeBody(), real)).status).toBe(409)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
