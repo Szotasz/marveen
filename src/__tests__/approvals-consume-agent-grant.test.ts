@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,7 +32,7 @@ vi.mock('../web/telegram.js', async (importOriginal) => {
 
 import { initDatabase, getApproval, listApprovals } from '../db.js'
 import { gateRequest } from '../web/auth-gate.js'
-import { agentTokenPath, createAgentTokenResolver, ensureAgentToken } from '../web/agent-tokens.js'
+import { agentTokenPath, createAgentTokenResolver, ensureAgentToken, syncAgentTokenOnStart } from '../web/agent-tokens.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -234,6 +234,31 @@ describe('a copied agent dir (duplicate token) cannot consume a grant made for_a
       // The original's token is unique again and consumes its grant once.
       expect((await call('POST', `/api/approvals/${id}/consume`, shared, consumeBody(), real)).status).toBe(200)
       expect((await call('POST', `/api/approvals/${id}/consume`, shared, consumeBody(), real)).status).toBe(409)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('a migrated dir copied with cp -r: after its start the copy uses the token file its CLAUDE.md names, and is 403 not granted', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'grant-twin-md-'))
+    try {
+      const base = join(root, 'agents')
+      const mainPath = join(root, 'store', '.dashboard-token')
+      mkdirSync(join(base, X), { recursive: true })
+      writeFileSync(join(base, X, 'CLAUDE.md'), `curl -H "Authorization: Bearer $(cat ${mainPath})" u\n`)
+      syncAgentTokenOnStart(X, { enabled: true, baseDir: base, mainTokenPath: mainPath })
+      const COPY = `${X}-masolat`
+      cpSync(join(base, X), join(base, COPY), { recursive: true })
+      syncAgentTokenOnStart(COPY, { enabled: true, baseDir: base, mainTokenPath: mainPath })
+      const named = /\$\(cat ([^)]+)\)/.exec(readFileSync(join(base, COPY, 'CLAUDE.md'), 'utf-8'))?.[1]
+      expect(named).toBe(agentTokenPath(COPY, base))
+      const real = createAgentTokenResolver({ baseDir: base, mainToken: MAIN_TOKEN })
+      const copyTok = readFileSync(named!, 'utf-8')
+      expect(real(copyTok)).toBe(COPY)
+
+      const id = await mainGrant(X)
+      expectNotGranted(await call('POST', `/api/approvals/${id}/consume`, copyTok, consumeBody(), real), COPY)
+      expect(getApproval(id)!.consumed_at).toBeNull()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
