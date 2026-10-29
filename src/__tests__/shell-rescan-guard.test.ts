@@ -6,7 +6,7 @@
 // log and state redirected into a temp directory.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
@@ -42,6 +42,15 @@ describe('the five refused shapes, each with the safe form next to it', () => {
   it('A: $( ) inside an inline interpreter payload is refused; on its own it is an everyday idiom', () => {
     expect(denied(bash('python3 -c "print(\'$(id)\')"'))).toBe(true)
     expect(allowed(bash('curl -H "X: $(cat token-file)" http://localhost/x'))).toBe(true)
+  })
+
+  it('A: an UNQUOTED $( ) as the payload word is refused too, glued or not', () => {
+    expect(denied(bash('python3 -c $(cat script.py)'))).toBe(true)
+    expect(denied(bash('node -e $(cat x.js)'))).toBe(true)
+    expect(denied(bash('bash -c $(cat cmd.sh)'))).toBe(true)
+    expect(denied(bash('python3 -c$(cat script.py)'))).toBe(true)
+    // control: an unquoted $( ) that is an ordinary argument, not the payload
+    expect(allowed(bash('python3 script.py $(cat args)'))).toBe(true)
   })
 
   it('B: an unquoted heredoc whose body has a backtick or $( ) is refused; a quoted heredoc is inert', () => {
@@ -315,6 +324,24 @@ describe('fail-open on anything it does not understand (exit 0, never a tracebac
 
   it('a numeric session id is still enforced (hashed, not dropped)', () => {
     expect(denied(run({ tool_name: 'Bash', tool_input: { command: `echo "${BT}id${BT}"` }, session_id: 42 }))).toBe(true)
+  })
+
+  it('a detector that fails to load lets the command through (exit 0) and logs the error', () => {
+    // A copy of the hook next to a broken library: the hook imports the library
+    // from its own directory, so this exercises the real fail-open branch.
+    const hooks = join(dir, 'hooks')
+    mkdirSync(hooks)
+    copyFileSync(GUARD, join(hooks, 'shell-rescan-guard.py'))
+    writeFileSync(join(hooks, 'shell_rescan_lib.py'), 'def findings(:\n')
+    const command = `echo "${BT}id${BT}"` // refused by the working detector
+    expect(denied(bash(command))).toBe(true)
+    const r = spawnSync('python3', [join(hooks, 'shell-rescan-guard.py')], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, session_id: 's2' }), env, encoding: 'utf-8', timeout: 20_000,
+    })
+    expect(allowed({ code: r.status, out: r.stdout })).toBe(true)
+    const errors = logLines().filter((l) => l.decision === 'error')
+    expect(errors.length).toBe(1)
+    expect(String(errors[0].err)).toContain('SyntaxError')
   })
 })
 
