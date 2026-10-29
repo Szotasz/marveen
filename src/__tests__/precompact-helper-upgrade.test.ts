@@ -113,6 +113,16 @@ describe('upgradePreCompactRecipesToHelper', () => {
     expect(promptOf(hooks)).toBe(edited)
   })
 
+  it('all or nothing: an operator-edited task-state curl line leaves the WHOLE prompt as it is', () => {
+    // Review #2340: the guard must see the task-state recipe too, not only memory and daily log.
+    const rendered = resolveTemplatePlaceholders(pre2338Prompt())
+    const edited = rendered.replace('"nextAction":"a következő konkrét lépés"', '"nextAction":"sajat mezo"')
+    expect(edited).not.toBe(rendered)
+    const hooks = hooksWith(edited)
+    expect(upgradePreCompactRecipesToHelper(hooks)).toBe(false)
+    expect(promptOf(hooks)).toBe(edited)
+  })
+
   it('all or nothing: an unknown curl save recipe next to shipped lines leaves the prompt untouched', () => {
     const rendered = resolveTemplatePlaceholders(pre2338Prompt())
     const withUnknown = rendered.replace('Használd a curl parancsokat:',
