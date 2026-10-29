@@ -99,7 +99,13 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   várakozó nem akasztja meg a sort.
 - **Napló:** `store/heavy-job-log.jsonl`, eseményenként egy JSON-sor (`wait`, `start`,
   `finish`, `refuse` egy `reason` mezővel, `uncapped`, `ollama_unload`, `nested`,
-  `nested_unverified`).
+  `nested_unverified`). A `cmd` mező csak a program neve és az argumentumok első
+  32 karaktere, a teljes argv soha (argv-ben token is lehet). 5 MiB-nál a napló
+  egyszer `heavy-job-log.jsonl.1`-re fordul.
+- **Fájljogok:** a zár, a jegyek és a napló `0600`-as, a sor könyvtára `0700`-as,
+  az umasktól függetlenül. A zárat és a naplót a kapu szimbolikus linken át soha nem
+  nyitja meg, és csak a hívó saját, közönséges fájlját fogadja el (különben a zár 74,
+  a naplósor elmarad).
 - **Ellenőrzött keret:** minden hívás előtt egy próba-scope `MemoryMax=64M`-et kap, és
   a benne futó gyerekfolyamatnak a saját cgroupja `memory.max` értékét pontosan
   64 MiB-nak kell visszaolvasnia. Ha ott `max` áll, vagy nincs is ilyen fájl, a keret

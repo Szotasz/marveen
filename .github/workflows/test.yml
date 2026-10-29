@@ -140,5 +140,5 @@ jobs:
       # The heavy-job gate decides whether a heavy job may start, so its fail-closed exit
       # codes (73/74/75/77) are gate instruments. Hermetic: fake /proc/meminfo, temp lock,
       # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
-      # SKIP where the runner has no systemd user manager.
+      # SKIP where the runner has no systemd user manager or its MemoryMax is not in effect.
       - run: python3 scripts/__tests__/heavy-job-gate.test.py

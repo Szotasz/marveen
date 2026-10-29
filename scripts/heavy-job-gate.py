@@ -207,6 +207,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -246,6 +247,12 @@ SHORT_MAX_SEC = 300               # --max-sec <= this is a short job
 SHORT_OVERTAKE_MAX = 3            # at most this many short jobs in a row pass a waiting long one
 _POS_RE = re.compile(r"^\d{20}-\d{10}$")
 
+# Lock, tickets and log are the invoking user's own: created 0600 (queue dir
+# 0700), the lock and the log opened without following a symlink.
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+CMD_LOG_PREFIX = 32           # the log keeps the program name + this many characters of its arguments
+LOG_MAX_BYTES = 5 * 1024 * 1024  # past this the log is rotated once to <log>.1
+
 
 def env_path(name, default):
     return os.environ.get(name) or default
@@ -280,13 +287,58 @@ def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def log(rec):
-    rec = dict({"ts": now_iso(), "pid": os.getpid()}, **rec)
+def cmd_summary(cmd):
+    """What the log keeps of the command: the program name and a short prefix of
+    its arguments, never the full argv (a token can be passed in argv)."""
+    prog = os.path.basename(cmd[0])[:64]
+    rest = " ".join(cmd[1:])
+    if not rest:
+        return prog
+    return prog + " " + rest[:CMD_LOG_PREFIX] + ("..." if len(rest) > CMD_LOG_PREFIX else "")
+
+
+def _open_log(path):
+    """The log as an append fd, or None: created 0600, never through a symlink,
+    only a regular file of this user; an older, wider one is narrowed to 0600."""
     try:
-        with open(log_path(), "a") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK | O_NOFOLLOW, 0o600)
+    except OSError:
+        return None, None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            os.close(fd)
+            return None, None
+        if st.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+        return fd, st
+    except OSError:
+        os.close(fd)
+        return None, None
+
+
+def log(rec):
+    """Append one JSONL line (see _open_log); at LOG_MAX_BYTES the log is first
+    rotated once to <log>.1. A write error is ignored."""
+    rec = dict({"ts": now_iso(), "pid": os.getpid()}, **rec)
+    line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
+    path = log_path()
+    fd, st = _open_log(path)
+    if fd is not None and st.st_size >= LOG_MAX_BYTES:
+        os.close(fd)
+        try:
+            os.replace(path, path + ".1")
+        except OSError:
+            pass
+        fd, st = _open_log(path)
+    if fd is None:
+        return
+    try:
+        os.write(fd, line)
     except OSError:
         pass
+    finally:
+        os.close(fd)
 
 
 def say(msg):
@@ -499,7 +551,7 @@ def queue_enter(label, agent=None, max_sec=None):
     "fair": 1 says this gate knows the deferral and the short-lane rules;
     "agent" and "max_sec" are written only when given."""
     d = queue_dir()
-    os.makedirs(d, exist_ok=True)
+    os.makedirs(d, mode=0o700, exist_ok=True)
     pid = os.getpid()
     try:
         start = proc_stat(pid)[1]
@@ -521,7 +573,7 @@ def write_ticket(path, body):
     d = os.path.dirname(path)
     tmp = os.path.join(d, "%s%d-%s" % (TICKET_TMP_PREFIX, os.getpid(), secrets.token_hex(4)))
     try:
-        wfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        wfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(wfd, body.encode("utf-8"))
         finally:
@@ -1149,7 +1201,7 @@ def main(argv=None):
         return usage(str(e))
 
     label = opts["label"] or os.path.basename(cmd[0])
-    cmd_text = " ".join(cmd)[:400]
+    cmd_text = cmd_summary(cmd)
     agent = opts["agent"]
     if agent is None and os.environ.get("HEAVY_JOB_AGENT"):
         agent = os.environ["HEAVY_JOB_AGENT"]
@@ -1206,7 +1258,11 @@ def main(argv=None):
     lp = lock_path()
     try:
         os.makedirs(os.path.dirname(lp), exist_ok=True)
-        fd = os.open(lp, os.O_RDWR | os.O_CREAT, 0o644)
+        fd = os.open(lp, os.O_RDWR | os.O_CREAT | O_NOFOLLOW, 0o600)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            os.close(fd)
+            raise OSError("not a regular file owned by uid %d" % os.geteuid())
     except OSError as e:
         say("REFUSED: cannot open the lock file %s: %s. Not started." % (lp, e))
         log({"event": "refuse", "reason": "lock_io_error", "label": label, "cmd": cmd_text,

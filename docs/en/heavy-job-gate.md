@@ -109,7 +109,14 @@ are system errors: report them to the main agent.
 5. **Log.** One JSON line per event in `store/heavy-job-log.jsonl`: `wait`, `start`,
    `finish` (exit code, duration, peak memory, OOM kills, scope stop result),
    `refuse` (with a `reason`), `uncapped`, `ollama_unload`, `nested`,
-   `nested_unverified`.
+   `nested_unverified`. The `cmd` field is the program name plus the first 32
+   characters of its arguments, never the full argv (a token can be passed in argv).
+   At 5 MiB the log is rotated once to `heavy-job-log.jsonl.1`.
+6. **File modes.** The lock, the tickets and the log are created `0600` and the
+   queue directory `0700`, whatever the umask (the lock record carries the
+   nested-call token). The lock and the log are never opened through a symlink,
+   and must be regular files owned by the caller: otherwise the lock is refused
+   (74) and the log line is dropped. An older, wider log is narrowed to `0600`.
 
 ### Options and configuration
 

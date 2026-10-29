@@ -12,13 +12,17 @@ The LIVE section at the end uses the real systemd-run/systemctl: it creates a
 few small transient heavy-job-*.scope units (sleep/sh/true, 200M cap) to
 check the scope teardown and the cgroup-based nested check. It is skipped, with
 a SKIP line, when no user scope can be created (no systemd-run, no user
-manager, e.g. a CI container), or with HEAVY_JOB_TEST_NO_LIVE=1.
+manager, e.g. a CI container), where a scope can be created but its MemoryMax
+is not in effect (memory controller not delegated), or with
+HEAVY_JOB_TEST_NO_LIVE=1. Off Linux (no /proc/<pid>/stat) the whole suite prints
+SKIP and exits 77; under uid 0 the mode-0 permission cases print SKIP.
 """
 import fcntl
 import importlib.util
 import json
 import os
 import shutil
+import stat
 import signal
 import subprocess
 import sys
@@ -36,6 +40,9 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 fails = []
+# mode-0 files and directories do not stop root: those cases are skipped under uid 0
+AS_ROOT = os.geteuid() == 0
+ROOT_SKIP = "running as uid 0, where mode 0 denies nothing"
 
 
 def check(name, cond, extra=""):
@@ -208,6 +215,11 @@ class Env:
 
 
 def main():
+    # The gate and these tests read /proc/<pid>/stat (ticket owners, start times);
+    # without it the suite cannot measure anything: skip, do not crash.
+    if not sys.platform.startswith("linux") or gate.proc_stat(os.getpid()) is None:
+        print("SKIP: heavy-job-gate tests need Linux /proc/<pid>/stat (platform %s)" % sys.platform)
+        return 77
     # --- pure helpers
     check("parse_size_mb 2G = 2048", gate.parse_size_mb("2G") == 2048)
     check("parse_size_mb 300M = 300", gate.parse_size_mb("300M") == 300)
@@ -752,21 +764,24 @@ def main():
         # deleted: judged by the pid in its name, it stays ahead while that pid lives
         if os.path.exists(marker):
             os.remove(marker)  # left by the zombie/reused-pid run above
-        blocker = subprocess.Popen(["sleep", "30"])
-        locked = put_ticket(5, blocker.pid, "locked")
-        os.chmod(locked, 0)
-        p = E.run(["--wait-sec", "1", "--label", "BEHIND", "--", "touch", marker])
-        rf = last_line("BEHIND")
-        check("unreadable ticket of a live pid: kept, counted ahead, 73, not run",
-              p.returncode == 73 and os.path.exists(locked) and not os.path.exists(marker)
-              and rf.get("ahead") == ["?unreadable"], (p.returncode, tickets(), rf))
-        blocker.kill()
-        blocker.wait()
-        p = E.run(["--wait-sec", "5", "--", "touch", marker])
-        check("unreadable ticket of a dead pid: removed, next job admitted",
-              p.returncode == 0 and os.path.exists(marker) and tickets() == [],
-              (p.returncode, tickets()))
-        os.remove(marker)
+        if AS_ROOT:
+            print("  SKIP unreadable-ticket cases (%s)" % ROOT_SKIP)
+        else:
+            blocker = subprocess.Popen(["sleep", "30"])
+            locked = put_ticket(5, blocker.pid, "locked")
+            os.chmod(locked, 0)
+            p = E.run(["--wait-sec", "1", "--label", "BEHIND", "--", "touch", marker])
+            rf = last_line("BEHIND")
+            check("unreadable ticket of a live pid: kept, counted ahead, 73, not run",
+                  p.returncode == 73 and os.path.exists(locked) and not os.path.exists(marker)
+                  and rf.get("ahead") == ["?unreadable"], (p.returncode, tickets(), rf))
+            blocker.kill()
+            blocker.wait()
+            p = E.run(["--wait-sec", "5", "--", "touch", marker])
+            check("unreadable ticket of a dead pid: removed, next job admitted",
+                  p.returncode == 0 and os.path.exists(marker) and tickets() == [],
+                  (p.returncode, tickets()))
+            os.remove(marker)
 
         # labels read back from other tickets are sanitized before stderr/log
         blocker = subprocess.Popen(["sleep", "30"])
@@ -800,17 +815,20 @@ def main():
         check("queue dir deleted during the wait -> 74 queue_io_error, not 73, not run",
               w.returncode == 74 and rf.get("reason") == "queue_io_error" and not os.path.exists(marker),
               (w.returncode, rf))
-        w = waiter("CHMOD", 0.1, job="touch %s" % marker)
-        wait_line("CHMOD")
-        os.chmod(qdir, 0)
-        try:
-            w.communicate(timeout=10)
-        finally:
-            os.chmod(qdir, 0o755)
-        rf = last_line("CHMOD")
-        check("queue dir made inaccessible during the wait -> 74 queue_io_error, not run",
-              w.returncode == 74 and rf.get("reason") == "queue_io_error" and not os.path.exists(marker),
-              (w.returncode, rf))
+        if AS_ROOT:
+            print("  SKIP inaccessible-queue-dir case (%s)" % ROOT_SKIP)
+        else:
+            w = waiter("CHMOD", 0.1, job="touch %s" % marker)
+            wait_line("CHMOD")
+            os.chmod(qdir, 0)
+            try:
+                w.communicate(timeout=10)
+            finally:
+                os.chmod(qdir, 0o700)
+            rf = last_line("CHMOD")
+            check("queue dir made inaccessible during the wait -> 74 queue_io_error, not run",
+                  w.returncode == 74 and rf.get("reason") == "queue_io_error" and not os.path.exists(marker),
+                  (w.returncode, rf))
         os.close(fd)
 
         # the queue directory is overridable (HEAVY_JOB_QUEUE_DIR)
@@ -988,16 +1006,9 @@ def main():
               and "could not be verified empty" in p.stderr, (fin, p.stderr))
 
     # --- LIVE: real transient scopes (skipped if the user manager cannot make one)
-    try:
-        live = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=20).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        live = False
-    if os.environ.get("HEAVY_JOB_TEST_NO_LIVE") == "1":
-        live = False
+    live, why = live_scope_possible()
     if not live:
-        print("  SKIP live scope tests (no systemd --user scope here)")
+        print("  SKIP live scope tests (%s)" % why)
     else:
         with tempfile.TemporaryDirectory() as td:
             E = Env(td, live=True)
@@ -1136,6 +1147,7 @@ def main():
     cap_verification()
     max_sec_and_fairness()
     short_lane()
+    file_modes_and_cmd_cut()
 
     print()
     if fails:
@@ -1362,22 +1374,40 @@ def cap_verification():
               and "Traceback" not in err, (g.returncode, rf, err[-300:]))
 
     # --- LIVE: on this host the real probe must see its cap (skipped without a user manager)
-    if live_scope_possible():
+    live, why = live_scope_possible()
+    if live:
         check("LIVE: scope_probe() verifies a real MemoryMax here", gate.scope_probe() == (True, None, None),
               gate.scope_probe())
     else:
-        print("  SKIP live cap probe (no systemd --user scope here)")
+        print("  SKIP live cap probe (%s)" % why)
+
+
+_LIVE = []
 
 
 def live_scope_possible():
+    """(True, None) when the LIVE sections can run: a real user scope can be
+    created AND the cap set on it is in effect (the gate's own probe). A host
+    where the memory controller is not delegated to the user manager (some CI
+    runners) can create a scope, but every gated run there is refused 77, so
+    the LIVE checks are skipped with that reason instead of failing."""
     if os.environ.get("HEAVY_JOB_TEST_NO_LIVE") == "1":
-        return False
-    try:
-        return subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=20).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+        return False, "HEAVY_JOB_TEST_NO_LIVE=1"
+    if not _LIVE:
+        try:
+            ok = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=20).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        if not ok:
+            _LIVE.append((False, "no systemd --user scope here"))
+        else:
+            probed, pwhy, detail = gate.scope_probe()
+            _LIVE.append((True, None) if probed else
+                         (False, "a user scope works but its MemoryMax is not in effect: %s %s"
+                          % (pwhy, detail or "")))
+    return _LIVE[0]
 
 
 def max_sec_and_fairness():
@@ -1656,16 +1686,9 @@ def max_sec_and_fairness():
         blocker.wait()
 
     # --- LIVE: a real transient scope is stopped by --max-sec
-    try:
-        live = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=20).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        live = False
-    if os.environ.get("HEAVY_JOB_TEST_NO_LIVE") == "1":
-        live = False
+    live, why = live_scope_possible()
     if not live:
-        print("  SKIP live --max-sec test (no systemd --user scope here)")
+        print("  SKIP live --max-sec test (%s)" % why)
         return
     with tempfile.TemporaryDirectory() as td:
         E = Env(td, live=True)
@@ -1843,7 +1866,7 @@ def fc_unreadable_record(td, W):
     q.wait_line("W")
     os.chmod(q.E.lock, 0)
     finish([w])
-    os.chmod(q.E.lock, 0o644)
+    os.chmod(q.E.lock, 0o600)
     q.release()
     rf = q.line("W", "refuse")
     return (w.returncode == 74 and rf.get("reason") == "queue_io_error" and "lock record" in rf.get("error", "")
@@ -1902,9 +1925,12 @@ def short_lane():
               [p.returncode for p in procs] == [0] * 6 and len(r) == 6 and q.serial(), r)
 
     # --- the new failure path fails closed
-    ok, info = scenario(fc_unreadable_record, WRAPPER)
-    check("fail closed: an unreadable lock record (the short-lane counter) -> 74, not 73, not run",
-          ok, info)
+    if AS_ROOT:
+        print("  SKIP unreadable-lock-record case and its mutant (%s)" % ROOT_SKIP)
+    else:
+        ok, info = scenario(fc_unreadable_record, WRAPPER)
+        check("fail closed: an unreadable lock record (the short-lane counter) -> 74, not 73, not run",
+              ok, info)
     # --- mutants: each rule broken on its own must be caught by its test
     mutants = (
         ("lane-off", "    return isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= SHORT_MAX_SEC\n",
@@ -1921,6 +1947,8 @@ def short_lane():
     )
     with tempfile.TemporaryDirectory() as mtd:
         for name, old, new, count, fn, args in mutants:
+            if AS_ROOT and fn is fc_unreadable_record:
+                continue
             W = mutant_wrapper(mtd, name, old, new, count)
             if W is None:
                 check("mutant %s: applies to the gate source" % name, False, "pattern not found")
@@ -1931,6 +1959,93 @@ def short_lane():
             else:
                 caught = not res[0]
             check("mutant %s: caught by %s" % (name, fn.__name__), caught, res)
+
+
+def file_modes_and_cmd_cut():
+    """The lock, the tickets and the log are the user's own (0600, queue dir
+    0700) whatever the umask; the log keeps only the program name and a short
+    prefix of the arguments (a token can be passed in argv)."""
+    def mode(path):
+        return stat.S_IMODE(os.lstat(path).st_mode)
+
+    def run022(E, args, **extra):
+        return subprocess.run([WRAPPER] + args, env=E.env(**extra), capture_output=True, text=True,
+                              timeout=30, preexec_fn=lambda: os.umask(0o022))
+
+    secret = "SECRET-TOKEN-0123456789abcdef"
+    prefix = 32                      # gate.CMD_LOG_PREFIX
+    log_cap = 5 * 1024 * 1024        # gate.LOG_MAX_BYTES
+    check("the gate's cut and log cap are the ones measured here",
+          getattr(gate, "CMD_LOG_PREFIX", None) == prefix and getattr(gate, "LOG_MAX_BYTES", None) == log_cap)
+    prog = shutil.which("true") or "/bin/true"
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        qdir = os.path.join(td, ".heavy-job-queue")
+        p = run022(E, ["--label", "MODES", "--", prog, "--opt", "x" * 40, secret])
+        check("modes: plain run exit 0", p.returncode == 0, p.stderr)
+        check("modes: the lock is created 0600 under umask 022", mode(E.lock) == 0o600, oct(mode(E.lock)))
+        check("modes: the log is created 0600 under umask 022", mode(E.log) == 0o600, oct(mode(E.log)))
+        check("modes: the queue dir is created 0700 under umask 022",
+              os.path.isdir(qdir) and mode(qdir) == 0o700, oct(mode(qdir)) if os.path.isdir(qdir) else "missing")
+        with open(E.log) as f:
+            raw = f.read()
+        cmds = [e.get("cmd") for e in E.events() if "cmd" in e]
+        want = "true " + ("--opt " + "x" * 40)[:prefix] + "..."
+        check("cmd cut: every logged cmd is the program name + a %d-char prefix of the arguments"
+              % prefix, cmds and all(c == want for c in cmds), (cmds, want))
+        check("cmd cut: the argument past the prefix (a token) is nowhere in the log", secret not in raw)
+        summary = getattr(gate, "cmd_summary", lambda c: None)
+        check("cmd cut: a command without arguments is logged as its program name",
+              summary([prog]) == "true" and summary(["a/b", "c"]) == "b c")
+
+        # a ticket written while waiting behind a held lock is 0600
+        fd = os.open(E.lock, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        w = subprocess.Popen([WRAPPER, "--wait-sec", "5", "--label", "TICKET", "--", "true"],
+                             env=E.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             preexec_fn=lambda: os.umask(0o022))
+        seen = None
+        end = time.monotonic() + 10
+        while time.monotonic() < end and seen is None:
+            for n in os.listdir(qdir):
+                if n.endswith(".ticket"):
+                    try:
+                        seen = mode(os.path.join(qdir, n))
+                    except OSError:
+                        pass
+            time.sleep(0.02)
+        os.close(fd)
+        w.wait(timeout=30)
+        check("modes: a queue ticket is 0600 under umask 022", seen == 0o600 and w.returncode == 0,
+              (oct(seen) if seen is not None else None, w.returncode))
+
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        # an older, wider log is narrowed; a full one is rotated once to <log>.1
+        with open(E.log, "w") as f:
+            f.write("x" * log_cap)
+        os.chmod(E.log, 0o644)
+        p = run022(E, ["--", "true"])
+        check("log: an existing 0644 log over the size cap is rotated to .1 (0600) and a new 0600 log started",
+              p.returncode == 0 and os.path.exists(E.log + ".1") and os.path.getsize(E.log + ".1") == log_cap
+              and mode(E.log + ".1") == 0o600 and mode(E.log) == 0o600
+              and 0 < os.path.getsize(E.log) < 10000,
+              (p.returncode, os.path.getsize(E.log), oct(mode(E.log))))
+
+        # the lock and the log are never opened through a symlink
+        target = os.path.join(td, "elsewhere")
+        with open(target, "w") as f:
+            f.write("keep")
+        os.chmod(target, 0o644)
+        lk = os.path.join(td, "sym.lock")
+        os.symlink(target, lk)
+        lg = os.path.join(td, "sym.log")
+        os.symlink(target, lg)
+        p = run022(E, ["--", "true"], HEAVY_JOB_LOCK=lk, HEAVY_JOB_LOG=lg)
+        with open(target) as f:
+            body = f.read()
+        check("symlinked lock -> refused 74, the target neither written nor re-moded; log not followed",
+              p.returncode == 74 and body == "keep" and mode(target) == 0o644, (p.returncode, body, p.stderr))
 
 
 if __name__ == "__main__":
