@@ -414,8 +414,9 @@ function cdIntoHooks(seg, ctx, cwds) {
   const cmd = (words[i] ?? '').replace(/^\(+/, '').replace(/^.*\//, '')
   if (cmd !== 'cd' && cmd !== 'pushd') return false
   const arg = words.slice(i + 1).find((w) => !/^-[LPe@]+$/.test(w))?.replace(/^['"]|['"]$/g, '').replace(/\)+$/, '')
-  if (!arg || /[$`*?[{]/.test(arg)) return false
+  if (!arg) return false
   if (mentionsProtectedName(` ${arg}`)) return true
+  if (/[$`*?[{]/.test(arg)) return false
   const target = expandHome(arg)
   return cwds.some((cwd) => {
     const abs = target.startsWith('/') ? target : cwd ? join(cwd, target) : null
@@ -423,8 +424,10 @@ function cdIntoHooks(seg, ctx, cwds) {
   })
 }
 const SEGMENT_CONTROL_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', ''])
-// Words that write nothing on their own: a cd (where it leads, the cwds follow) and the shell's own loop and case words.
-const CWD_CHANGERS = new Set(['cd', 'pushd', 'popd', 'for', 'done', 'fi', 'esac', 'case', 'true', 'false', ':'])
+// A cd writes nothing on its own (where it leads, the cwds follow). The shell's closing words write nothing only bare
+// (Dani 57649: `case x in x) cp ...`, `: $(cp ...)` and `true $(cp ...)` ran their writer as the argument).
+const CWD_CHANGERS = new Set(['cd', 'pushd', 'popd'])
+const BARE_CLOSERS = new Set(['done', 'fi', 'esac'])
 // Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
@@ -484,7 +487,19 @@ function readOnlyMentionAllowed(seg, mentions) {
   while (i < words.length && SEGMENT_CONTROL_WORDS.has(words[i].replace(/^\(+/, ''))) i++
   const cmd = (words[i] ?? '').replace(/^\(+/, '').replace(/[)"'`]+$/, '').replace(/^.*\//, '')
   // a cd writes nothing; where it leads, the cwds the mention is measured from follow (allowlistBashSegmentAllowed)
-  if (!ALLOWLIST_READERS.has(cmd) && !CWD_CHANGERS.has(cmd)) return false
+  const rest = words.slice(i + 1).filter(Boolean)
+  const bareCloser = BARE_CLOSERS.has(cmd) && rest.length === 0
+  const plainFor = cmd === 'for' && rest[1] === 'in' && !/\$\(|`/.test(s)
+  if (!ALLOWLIST_READERS.has(cmd) && !CWD_CHANGERS.has(cmd) && !bareCloser && !plainFor) return false
+  // (2) a command substitution inside the allowed segment runs a command of its own: each piece after a `$(` or a
+  // backtick (to its `)` or backtick, the naive segments may have cut it) is measured with this same rule
+  // (Dani 57649: `echo $(cp /tmp/a <allowlist>)` passed as a read).
+  if (/\$\(|`/.test(s)) {
+    for (const piece of s.split(/\$\(|`/).slice(1)) {
+      const inner = piece.split(')')[0].replace(/^["'\s]+|["'\s]+$/g, '')
+      if (inner && !readOnlyMentionAllowed(inner, mentions)) return false
+    }
+  }
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
     const target = m[1]
     if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null

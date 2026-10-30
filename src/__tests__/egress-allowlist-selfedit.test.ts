@@ -230,6 +230,26 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
     expect(from('cat gate.py', join(root, H))).toEqual({ deny: false })
     expect(from(`cd ${root}; for d in a; do echo "$(cd $d; pwd)"; done`, join(root, H))).toEqual({ deny: false })
   })
+  // Dani 57649: a "non-writing" first word must not carry a writer in its arguments; a substitution runs a command
+  const A = 'store/egress-' + 'allowlist.json'
+  const X = 'store/extra-' + 'hooks.json'
+  it.each([
+    ['a case branch that copies onto the allowlist', `case x in x) cp /tmp/a ${A};; esac`],
+    ['a case branch that copies onto an unresolved target', 'case $x in a) cp /tmp/a $f;; esac'],
+    ['a case branch that edits the extra hooks', `case x in x) sed -i s/a/b/ ${X};; esac`],
+    ['a loop over a substitution that copies', `for x in $(cp /tmp/a ${A}); do :; done`],
+    ['a colon with a substitution that copies', `: $(cp /tmp/a ${A})`],
+    ['a true with a substitution that copies', `true $(cp /tmp/a ${A})`],
+    ['an echo of a substitution that copies', `echo $(cp /tmp/a ${A})`],
+    ['the same quoted', `echo "$(cp /tmp/a ${A})"`],
+  ])('%s is denied from the root', (_, cmd) => {
+    expect(from(cmd, root).deny).toBe(true)
+  })
+  it('a cd into the hooks dir through a variable stays denied from elsewhere', () => {
+    mkdirSync(join(root, H), { recursive: true })
+    expect(from(`R=${root}; cd $R/${H} && touch x.py`, tmpdir()).deny).toBe(true)
+    expect(from(`cd $R/${H} && touch x.py`, tmpdir()).deny).toBe(true)
+  })
   it('the same writes after a cd to the root stay denied from elsewhere', () => {
     expect(from(`cd ${root}; false && cd /tmp; cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
     expect(from(`cd ${root}; (cd /tmp); cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
