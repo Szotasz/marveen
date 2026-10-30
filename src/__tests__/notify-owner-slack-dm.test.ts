@@ -22,9 +22,10 @@ describe('sendOwnerSlackDm', () => {
     const send = vi.fn(async () => ({ ok: true }))
     expect(await sendOwnerSlackDm('kérés', send as never)).toEqual({ attempted: true, sent: true })
     expect(send).toHaveBeenCalledTimes(1)
-    const [target, , opts] = send.mock.calls[0] as unknown as [string, string, { ownerUserId: string }]
+    const [target, , opts] = send.mock.calls[0] as unknown as [string, string, { ownerUserId: string; raw: boolean }]
     expect(target).toBe('dm')
     expect(opts.ownerUserId).toBe('U0OWNER1')
+    expect(opts.raw).toBe(true)
   })
 
   it('a failed send is reported with its error', async () => {

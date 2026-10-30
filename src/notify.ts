@@ -96,7 +96,8 @@ export async function sendOwnerSlackDm(
   } catch {
     return { attempted: true, sent: false, error: 'slack_module_unavailable' }
   }
-  const r = await sendFn('dm', markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
+  // raw: the request's text is the requesting agent's, shown as written (Dani 55614 F1).
+  const r = await sendFn('dm', markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID'), raw: true })
   return r.ok ? { attempted: true, sent: true } : { attempted: true, sent: false, error: r.error }
 }
 
