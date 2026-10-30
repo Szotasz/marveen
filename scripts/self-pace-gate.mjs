@@ -2476,6 +2476,526 @@ function commandWordIndex(args) {
 }
 const EVAL_QUOTING_COMMANDS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'cat', 'jq', 'test', '[', 'man', 'which', 'type'])
 
+// A command NAME that comes out of a substitution is invisible to this gate. The shell runs
+// the OUTPUT of `$(echo crontab -r)` as the command, while the text only shows `echo`; a flat $(...)
+// is even turned into an opaque marker before the segments are parsed, and the marker in command
+// position denied nothing. Fail-closed: a word in COMMAND POSITION (the command itself, or what a
+// wrapper such as env, exec, timeout, nice or xargs runs) that contains a substitution -- $(...),
+// backticks or <(...), bare or inside "..." -- denies. So does a <(...) that `source`, `.` or a
+// shell reads as code, without modelling the shell's own option grammar. An assignment (also an
+// array literal), an argument, a quoted argument, data and a plain $VAR command word stay allowed
+// ($VAR as a command name is common in real commands and was never resolved here).
+// The scan is its own on purpose: shellSegments also cuts inside "...$(a | b)...", so its pieces
+// look like commands (measured on real commands: 108 of 123 false denials).
+// A heredoc body is data unless its TAG is unquoted: then it expands like "...", and the
+// substitutions in it are scanned as such. eval, `sh -c` and a heredoc a shell reads are decided
+// again by decide() as code of their own (scanShellCode); a resolved substitution reaches that
+// recursion as a NUL marker, which counts as a substitution here.
+const DYN_WRAPPERS = new Set([...CMD_WRAPPERS, 'timeout', 'gtimeout'])
+const DYN_RESERVED = new Set([...RESERVED_LEAD, 'coproc'])
+const DYN_CODE_READERS = new Set(['source', '.', ...SHELL_NAMES])
+// shells whose option grammar the scanner models (the bash one); any other shell has options of its own, with values
+const DYN_MODELLED_SHELLS = new Set(['bash', 'rbash', 'sh', 'dash'])
+const DYN_ASSIGNMENT_RX = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
+const DYN_ARRAY_OPEN_RX = /^[A-Za-z_][A-Za-z0-9_]*\+?=$/
+const ANSI_C_ESCAPES = { a: '\x07', b: '\b', e: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
+// wrapper options whose NEXT word is their value (an attached value, -uroot or --user=root, takes none)
+const DYN_WRAPPER_VALUE_OPTS = {
+  sudo: ['-u', '-g', '-h', '-p', '-C', '-D', '-r', '-t', '-T', '-U', '--user', '--group', '--host', '--prompt', '--close-from', '--chdir', '--role', '--type', '--command-timeout', '--other-user'],
+  env: ['-u', '-C', '-S', '--unset', '--chdir', '--split-string'],
+  nice: ['-n', '--adjustment'],
+  timeout: ['-s', '-k', '--signal', '--kill-after'],
+  gtimeout: ['-s', '-k', '--signal', '--kill-after'],
+  stdbuf: ['-i', '-o', '-e', '--input', '--output', '--error'],
+  xargs: ['-I', '-n', '-P', '-L', '-s', '-d', '-E', '-a', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--eof', '--arg-file', '--replace'],
+  time: ['-f', '-o', '--format', '--output'],
+}
+// env's short options in one word (-iS, -vu, -C/tmp): split = the bundle holds an S, whose rest of the word (or, when it ends the
+// bundle, the next word) env runs as a command line; attached = a value follows the letter inside the word. null: no S / u / C.
+function envBundle(plain) {
+  if (!/^-[^-]/.test(plain)) return null
+  for (let k = 1; k < plain.length; k++) {
+    const ch = plain[k]
+    if (ch === 'S' || ch === 'u' || ch === 'C') return { split: ch === 'S', attached: k < plain.length - 1 }
+  }
+  return null
+}
+// opts.heredoc: the text is an UNQUOTED heredoc body: it expands like "...", except that a " is an ordinary
+// character there and a backslash escapes only $ ` \ and a newline. opts.any: (heredoc only) the body is the
+// script of a shell, so ANY substitution in it denies. opts.bodies: the CALLER's list; the code of each
+// outermost $(...), `...`, <(...) and >(...) is pushed to it, for decide() to decide again as a command of its own.
+export function substitutionInCommandPosition(command, { heredoc: asHeredocBody = false, any = false, bodies = null } = {}) {
+  const s = String(command ?? '')
+  let found = false
+  let nest = 0 // code frames of a substitution we are inside of
+  let closed = false // set by scanCode: did the frame end on its closer
+  const newWord = () => ({ raw: '', plain: '', subst: false, bare: false, proc: false })
+
+  // $((, $(, ${ or a backtick at i: scan the whole construct, return the index after it (-1: none).
+  // keepRaw: the opener is also recorded in the raw spelling of the word (code context only).
+  function expansionAt(i, w, keepRaw, bare = keepRaw) {
+    const c = s[i]
+    const n = s[i + 1]
+    if (c === '$' && n === '(' && s[i + 2] === '(') {
+      if (keepRaw) w.raw += '$(('
+      return scanBalanced(i + 3, w, 'arith')
+    }
+    if (c === '$' && n === '(') {
+      if (keepRaw) w.raw += '$('
+      w.subst = true
+      if (bare) w.bare = true // unquoted: the output is split into words
+      return enterCode(i + 2, ')')
+    }
+    if (c === '$' && n === '{') {
+      if (keepRaw) w.raw += '${'
+      return scanBalanced(i + 2, w, 'param', bare)
+    }
+    if (c === '$' && n === '[') {
+      if (keepRaw) w.raw += '$['
+      return scanBalanced(i + 2, w, 'bracket')
+    }
+    if (c === '`') {
+      if (keepRaw) w.raw += c
+      w.subst = true
+      if (bare) w.bare = true
+      return scanBacktick(i + 1)
+    }
+    return -1
+  }
+
+  // the code frame of a substitution ($(...), <(...), >(...)); the outermost ones hand their text to the caller
+  function enterCode(from, close) {
+    const outermost = nest === 0
+    nest++
+    const end = scanCode(from, close)
+    nest--
+    if (outermost && bodies) bodies.push(s.slice(from, closed ? end - 1 : end))
+    return end
+  }
+
+  // `...`: the shell finds the closing backtick first (a comment ends there, too), then undoes \$ \` \\ in the
+  // text and runs THAT as code; so the inside is cut out, unescaped and scanned as a command line of its own
+  function scanBacktick(i) {
+    let e = i
+    while (e < s.length && s[e] !== '`') e += s[e] === '\\' ? 2 : 1
+    e = Math.min(e, s.length)
+    const text = s.slice(i, e).replace(/\\([$`\\])/g, '$1')
+    if (nest === 0 && bodies) bodies.push(text)
+    if (substitutionInCommandPosition(text)) found = true
+    return Math.min(e + 1, s.length)
+  }
+
+  // $'...': ANSI-C quoting, a \' inside does not end it
+  function ansiCEnd(i) {
+    while (i < s.length && s[i] !== "'") i += s[i] === '\\' ? 2 : 1
+    return Math.min(i + 1, s.length)
+  }
+
+  // the inside of "...", from after the opening quote; returns the index after the closing one
+  function scanDq(i, w, heredoc = false, anySubst = false) {
+    while (i < s.length && !found) {
+      const c = s[i]
+      if (c === '\0') { w.subst = true; i++; continue }
+      if (c === '"' && !heredoc) return i + 1
+      if (c === '\\' && heredoc) {
+        const n = s[i + 1]
+        // the heredoc unescapes \$ and \` : a shell that reads the body as its script then gets a live $( or `
+        if (anySubst && (n === '`' || (n === '$' && s[i + 2] === '('))) { found = true; return i }
+        if (n === '\n') i += 2
+        else if (n !== undefined && '$`\\'.includes(n)) { w.plain += n; i += 2 }
+        else { w.plain += c; i++ }
+        continue
+      }
+      if (c === '\\') { if (s[i + 1] !== '\n') w.plain += s[i + 1] ?? ''; i += 2; continue }
+      const j = expansionAt(i, w, false)
+      if (j >= 0) { i = j; continue }
+      w.plain += c
+      i++
+    }
+    return i
+  }
+
+  // ${...}, $((...)) and an array literal x=(...): no command position of their own, but a
+  // substitution inside opens one. Returns the index after the closer.
+  function scanBalanced(i, w, kind, bare = false) {
+    const square = kind === 'bracket' || kind === 'subscript'
+    const open = kind === 'param' ? '{' : square ? '[' : '('
+    const close = kind === 'param' ? '}' : square ? ']' : ')'
+    const quotes = kind !== 'arith' && kind !== 'bracket'
+    let depth = 0
+    while (i < s.length && !found) {
+      const c = s[i]
+      if (c === '\0') { w.subst = true; if (bare) w.bare = true; i++; continue } // a resolved $(...): unquoted, it splits
+      if (quotes && c === '$' && s[i + 1] === "'") { i = ansiCEnd(i + 2); continue }
+      if (quotes && c === "'") {
+        const e = s.indexOf("'", i + 1)
+        if (e < 0) return s.length
+        i = e + 1
+        continue
+      }
+      if (quotes && c === '"') { i = scanDq(i + 1, w); continue }
+      if (c === '\\') { i += 2; continue }
+      const j = expansionAt(i, w, false, bare)
+      if (j >= 0) { i = j; continue }
+      if (kind === 'array' && (c === '<' || c === '>') && s[i + 1] === '(') {
+        w.subst = true
+        i = enterCode(i + 2, ')')
+        continue
+      }
+      if (c === open) { depth++; i++; continue }
+      if (c !== close) { i++; continue }
+      if (depth > 0) { depth--; i++; continue }
+      return i + (kind === 'arith' && s[i + 1] === ')' ? 2 : 1)
+    }
+    return i
+  }
+
+  // The delimiter word of a heredoc, from after the `<<`: the whole shell word with its quoting removed;
+  // any quoting (a part of it is enough: <<E"O"F, <<\\EOF) makes the body data. null: no word follows.
+  function heredocTag(i) {
+    const dash = s[i] === '-'
+    if (dash) i++
+    while (s[i] === ' ' || s[i] === '\t') i++
+    let tag = ''
+    let quoted = false
+    let any = false
+    while (i < s.length && !/[\s;&|()<>]/.test(s[i])) {
+      any = true
+      const c = s[i]
+      if (c === '$' && s[i + 1] === "'") {
+        // $'...' ANSI-C quoting: the escapes are decoded (a \' does not end it)
+        let j = i + 2
+        while (j < s.length && s[j] !== "'") {
+          const m = s[j] === '\\' ? /^\\(?:([abefnrtv\\'"?])|x([0-9A-Fa-f]{1,2})|([0-7]{1,3}))/.exec(s.slice(j, j + 5)) : null
+          if (m) {
+            tag += m[1] ? (ANSI_C_ESCAPES[m[1]] ?? m[1]) : String.fromCharCode(parseInt(m[2] ?? m[3], m[2] ? 16 : 8))
+            j += m[0].length
+          } else {
+            tag += s[j++]
+          }
+        }
+        i = Math.min(j + 1, s.length)
+        quoted = true
+      } else if (c === '$' && s[i + 1] === '"') {
+        // $"..." locale quoting: the $ is dropped with the quotes
+        quoted = true
+        i++
+      } else if (c === "'") {
+        const e = s.indexOf("'", i + 1)
+        tag += s.slice(i + 1, e < 0 ? s.length : e)
+        i = e < 0 ? s.length : e + 1
+        quoted = true
+      } else if (c === '"') {
+        // inside "...": a backslash before $ ` " \ or a newline is removed (a newline with it), any other stays
+        let e = i + 1
+        while (e < s.length && s[e] !== '"') {
+          if (s[e] === '\\' && s[e + 1] !== undefined && '$`"\\\n'.includes(s[e + 1])) {
+            if (s[e + 1] !== '\n') tag += s[e + 1]
+            e += 2
+          } else {
+            tag += s[e++]
+          }
+        }
+        i = Math.min(e + 1, s.length)
+        quoted = true
+      } else if (c === '\\') {
+        tag += s[i + 1] ?? ''
+        i += 2
+        quoted = true
+      } else {
+        tag += c
+        i++
+      }
+    }
+    return any ? { dash, tag, quoted, end: i } : null
+  }
+
+  // Shell code: the top level, $(...), `...` and <(...). From i, until its closer (or the end).
+  function scanCode(i, close) {
+    const f = { atCmd: true, wrapped: null, wraps: 0, assigned: false, redirected: false, timeKw: false, valueNext: false, operandNext: false, afterFunction: false, dbl: false, afterFor: false, eval: false, shell: null, hereString: false, hereSubst: false, cmdHeredocs: [], target: false, paren: 0, word: null, reader: false, heredocs: [] }
+    let ended = false
+    const word = () => (f.word ??= newWord())
+
+    // a word is complete: decide what it was
+    const finish = () => {
+      const w = f.word
+      f.word = null
+      if (!w) return
+      if (f.dbl && w.plain === ']]') f.dbl = false
+      // source / . / a shell may read ANY <(...) of its command as code (operand, stdin, an option value
+      // the shell's own option grammar decides): fail-closed, without modelling that grammar
+      if (f.reader && w.proc) { found = true; return }
+      if (f.target) {
+        f.target = false
+        // the target of a here-string: if the command turns out to be a shell without -c, it is the script
+        if (f.hereString && w.subst) f.hereSubst = true
+        f.hereString = false
+        return
+      }
+      if (!f.atCmd) { argumentWord(w); return }
+      if (f.timeKw && w.raw !== '[[') f.timeKw = w.raw === '-p' && f.timeKw === true ? 'p' : false // the keyword time takes ONE -p; any other word, a second -p too, makes it a command
+      if (f.valueNext) {
+        // the value of a wrapper option (also one spelled NAME=value: exec -a A=B, xargs -I A=B): unquoted, it is split
+        // into words; env -S / --split-string runs it as a command line
+        f.valueNext = false
+        if (w.bare || (w.subst && f.wrapped === 'env')) found = true
+        return
+      }
+      if (DYN_ASSIGNMENT_RX.test(w.raw)) {
+        // env / sudo take NAME=value for the child's environment: an unquoted substitution there is split into words
+        if (f.wrapped && w.bare) found = true
+        if (!f.wrapped) f.assigned = true // a NAME=value before it: a following [[ is no keyword any more
+        return
+      }
+      // the duration of timeout / gtimeout is an operand, whatever it is spelled as; unquoted, it is split into words
+      if (f.operandNext && !w.plain.startsWith('-')) { f.operandNext = false; if (w.bare) found = true; return }
+      if (w.subst) {
+        // an option of a wrapper with the value glued on (xargs -P$(nproc), env -C"$(pwd)"): quoted, it runs nothing;
+        // unquoted, it is split into words; env -S / --split-string runs its value as a command line
+        if (f.wrapped && w.plain.startsWith('-') && !(f.wrapped === 'env' && (/^--split-string/.test(w.plain) || envBundle(w.plain)?.split))) {
+          if (w.bare) found = true
+          return
+        }
+        found = true
+        return
+      }
+      if (f.afterFunction) { f.afterFunction = false; return } // the NAME of function NAME { ...; }
+      if (w.plain === 'function') { f.afterFunction = true; return }
+      if (DYN_RESERVED.has(w.plain)) return
+      const base = baseName(w.plain)
+      if (DYN_WRAPPERS.has(base)) { f.wrapped = base; f.wraps++; f.timeKw = f.wraps === 1 && w.raw === 'time'; f.operandNext = base === 'timeout' || base === 'gtimeout'; return }
+      // `command -v` / `-V` only looks the name up, nothing runs
+      if (f.wrapped === 'command' && /^-[a-zA-Z]*[vV]/.test(w.plain)) { f.atCmd = false; f.wrapped = null; return }
+      if (f.wrapped && (DYN_WRAPPER_VALUE_OPTS[f.wrapped] ?? []).includes(w.plain)) { f.valueNext = true; return }
+      if (f.wrapped === 'env' && envBundle(w.plain)?.attached === false) { f.valueNext = true; return } // env -iS CMDLINE, -vu NAME
+      if (f.wrapped === 'exec' && /^-[cl]*a$/.test(w.plain)) { f.valueNext = true; return } // exec -la NAME
+      if (f.wrapped && (w.plain.startsWith('-') || /^\d+(?:\.\d+)?[smhd]?$/.test(w.plain))) return
+      const wraps = f.wraps
+      f.atCmd = false
+      f.wrapped = null
+      f.reader = DYN_CODE_READERS.has(base)
+      // inside [[ ... ]] the && || ( ) join operands, they start no command. [[ is a keyword only as the bare first word
+      // of a command: quoted ("[[", \[[), behind a NAME=value, a redirection or a wrapper (env, command, timeout ...;
+      // only the bare keyword time, with -p at most, keeps it a keyword) it is an ordinary command name, and a following
+      // || or && ends it
+      f.dbl = base === '[[' && w.raw === '[[' && !f.assigned && !f.redirected && (wraps === 0 || (wraps === 1 && f.timeKw))
+      f.afterFor = base === 'for' // `for ((` opens an arithmetic loop head
+      f.eval = base === 'eval' || base === 'trap' // eval parses ALL its words again; so does the action word of trap, when the signal fires
+      f.shell = SHELL_NAMES.has(base) ? { c: false, opts: true, optValue: 0, code: false, skip: 0, modelled: DYN_MODELLED_SHELLS.has(base) } : null
+    }
+    // a word after the command word. eval parses its words again after the outer shell expanded them, so a
+    // substitution anywhere in them is code. A shell's -c code string is parsed again, too: a substitution in the
+    // words from the -c bundle up to and including the code word (the first one that is no option) denies; the
+    // positional arguments after it are not parsed again.
+    const argumentWord = (w) => {
+      if (f.eval && w.subst) found = true
+      const sh = f.shell
+      if (!sh) return
+      const t = w.plain
+      // the option range of a shell (its options, their values, the -c bundle word, the first operand) holds a word that
+      // can bring the -c and the code itself (`bash "$(cat f)" 'x'` with f = -c), quoted or not; a shell whose options
+      // the scanner does not model has no range end: any of its words denies
+      if (w.subst && (!sh.modelled || sh.opts)) found = true
+      if (sh.optValue > 0) { sh.optValue--; return }
+      if (sh.opts) {
+        if (!/^[-+]/.test(t) || t === '--') { sh.opts = false; return } // the script operand, or the end of the options
+        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(t)) { sh.c = true; sh.opts = false; sh.code = true; sh.skip = (t.match(/[oO]/g) ?? []).length; return } // each o / O in the bundle takes the next word
+        // each o / O of an option bundle (-xo pipefail, -oo a b) takes the next word as its value, and so does --rcfile / --init-file
+        sh.optValue = /^[-+][A-Za-z]+$/.test(t) ? (t.match(/[oO]/g) ?? []).length : /^--(?:rcfile|init-file)$/.test(t) ? 1 : 0
+        return
+      }
+      if (sh.code) {
+        if (sh.skip > 0) { sh.skip--; if (w.subst) found = true; return } // the value of an o / O of the -c bundle, not the code word: unquoted, its output can shift the code word
+        if (w.subst) found = true
+        if (!/^[-+]/.test(t)) sh.code = false
+      }
+    }
+    // the end of a simple command: a shell without -c reads its stdin as the script, so a substitution in a
+    // here-string or in an unquoted heredoc handed to it is code (the redirection may come before the command word)
+    const settle = () => {
+      if (!f.shell || f.shell.c) return
+      if (f.hereSubst) found = true
+      for (const h of f.cmdHeredocs) h.shellScript = true
+    }
+    // a separator starts a new simple command
+    const separate = () => {
+      finish()
+      settle()
+      f.atCmd = true
+      f.wrapped = null
+      f.wraps = 0
+      f.assigned = false
+      f.redirected = false
+      f.timeKw = false
+      f.valueNext = false
+      f.operandNext = false
+      f.afterFunction = false
+      f.dbl = false
+      f.afterFor = false
+      f.eval = false
+      f.shell = null
+      f.hereString = false
+      f.hereSubst = false
+      f.cmdHeredocs = []
+      f.target = false
+      f.reader = false
+    }
+    const bodyRunsSubst = (body, h) => substitutionInCommandPosition(body, { heredoc: true, any: h.shellScript, bodies })
+    // the heredoc bodies announced on the line that just ended: skip each, from `at` to its TAG line
+    // (or to the end when there is none); an unquoted one is scanned as "..." (it expands)
+    const skipBodies = (at) => {
+      let p = at
+      for (const h of f.heredocs) {
+        let body = ''
+        for (;;) {
+          if (p >= s.length) {
+            if (!h.quoted && bodyRunsSubst(body, h)) found = true
+            return s.length
+          }
+          // an unquoted body joins a \ + newline BEFORE the TAG line is matched (bash reads it so)
+          let line = ''
+          for (;;) {
+            const e = s.indexOf('\n', p)
+            const part = s.slice(p, e < 0 ? s.length : e)
+            p = e < 0 ? s.length : e + 1
+            const joins = !h.quoted && e >= 0 && /(?:^|[^\\])(?:\\\\)*\\$/.test(part)
+            line += joins ? part.slice(0, -1) : part
+            if (!joins) break
+          }
+          if ((h.dash ? line.replace(/^\t+/, '') : line) === h.tag) break
+          body += line + '\n'
+        }
+        if (!h.quoted && bodyRunsSubst(body, h)) { found = true; return s.length }
+      }
+      f.heredocs = []
+      return p
+    }
+
+    while (i < s.length && !found) {
+      const c = s[i]
+      const n = s[i + 1]
+      if (c === '\0') { const w = word(); w.subst = true; w.bare = true; i++; continue } // a resolved $(...) outside quotes: it splits
+      if (close === ')' && c === ')' && f.paren === 0) { i++; ended = true; break }
+      if (c === '\\' && n === '\n') { i += 2; continue } // a line continuation joins, it is no character
+      if (c === ' ' || c === '\t') { finish(); i++; continue }
+      if (c === '\n') { separate(); i = f.heredocs.length ? skipBodies(i + 1) : i + 1; continue }
+      if (c === '#' && !f.word) { const e = s.indexOf('\n', i); i = e < 0 ? s.length : e; continue }
+      if (c === "'") {
+        const e = s.indexOf("'", i + 1)
+        if (e < 0) { i = s.length; continue }
+        const w = word()
+        w.raw += s.slice(i, e + 1)
+        w.plain += s.slice(i + 1, e)
+        i = e + 1
+        continue
+      }
+      if (c === '"') { const w = word(); w.raw += c; i = scanDq(i + 1, w); continue }
+      if (c === '\\') { const w = word(); w.raw += c + (n ?? ''); w.plain += n ?? ''; i += 2; continue }
+      if (c === '$' && n === "'") {
+        const e = ansiCEnd(i + 2)
+        const w = word()
+        w.raw += s.slice(i, e)
+        w.plain += s.slice(i, e)
+        i = e
+        continue
+      }
+      if (c === '$' || c === '`') {
+        const j = expansionAt(i, word(), true)
+        if (j >= 0) { i = j; continue }
+      }
+      if ((c === '<' || c === '>') && n === '(') {
+        // a process substitution; one that opens a word is what source / . / a shell would read
+        const w = word()
+        if (!w.raw) w.proc = true
+        w.raw += c + '('
+        w.subst = true
+        w.bare = true
+        i = enterCode(i + 2, ')')
+        continue
+      }
+      if (c === '(' && f.word && DYN_ARRAY_OPEN_RX.test(f.word.raw)) {
+        f.word.raw += c
+        i = scanBalanced(i + 1, f.word, 'array')
+        continue
+      }
+      if (c === '<' && n === '<' && s[i + 2] !== '<') {
+        // a heredoc: remember its TAG, its body starts on the next line
+        const h = heredocTag(i + 2)
+        if (h) {
+          if (f.atCmd) f.redirected = true
+          if (f.word && /^\d+$/.test(f.word.raw)) f.word = null
+          else finish()
+          f.heredocs.push(h)
+          f.cmdHeredocs.push(h)
+          i = h.end
+          continue
+        }
+      }
+      if (c === '<' || c === '>' || (c === '&' && n === '>')) {
+        // a redirection: an fd number before it is part of the operator, the next word is its target
+        if (f.atCmd) f.redirected = true
+        if (f.word && /^\d+$/.test(f.word.raw)) f.word = null
+        else finish()
+        const opStart = i
+        while (i < s.length && '<>&|'.includes(s[i])) i++
+        f.hereString = s.slice(opStart, i) === '<<<'
+        // 2>&1, <&0, >&-: an fd dup or close names no file, so the next word is not a target
+        const dup = s[i - 1] === '&' && /[\d-]/.test(s[i] ?? '')
+        while (dup && i < s.length && /[\d-]/.test(s[i])) i++
+        f.target = !dup
+        continue
+      }
+      if (f.dbl && (c === '&' || c === '|')) {
+        finish() // a glued `]]&&` ends the conditional here: then it is a separator, handled below
+        if (f.dbl) {
+          while (i < s.length && '&|'.includes(s[i])) i++
+          continue
+        }
+      }
+      if (c === ';' || c === '&' || c === '|') {
+        separate()
+        while (i < s.length && ';&|'.includes(s[i])) i++
+        continue
+      }
+      if (f.dbl && c === '(') { finish(); f.paren++; i++; continue }
+      if (f.dbl && c === ')' && f.paren > 0) { finish(); f.paren--; i++; continue }
+      if (c === '(' && n === '(' && f.atCmd && f.word && /^(?:for|while|until|if|elif)$/.test(f.word.plain)) finish()
+      if (c === '(' && n === '(' && (f.atCmd || f.afterFor) && !f.word) {
+        // (( ... )) is an arithmetic command (also the head of `for ((`), not two subshells: no command
+        // position of its own, and a << inside is a shift, no heredoc
+        const loopHead = f.afterFor
+        separate()
+        i = scanBalanced(i + 2, newWord(), 'arith')
+        f.atCmd = loopHead
+        continue
+      }
+      if (c === '[' && f.atCmd && !f.wrapped && !f.target && f.word && /^[A-Za-z_][A-Za-z0-9_]*$/.test(f.word.raw)) {
+        // name[index]=value at the start of a command: the index is arithmetic, a << in it is a shift
+        f.word.raw += '[]'
+        i = scanBalanced(i + 1, f.word, 'subscript')
+        continue
+      }
+      if (c === '(') { separate(); f.paren++; i++; continue }
+      if (c === ')') { separate(); if (f.paren > 0) f.paren--; i++; continue }
+      const w = word()
+      w.raw += c
+      w.plain += c
+      i++
+    }
+    finish()
+    settle()
+    closed = ended
+    return i
+  }
+
+  if (asHeredocBody) {
+    const w = newWord()
+    scanDq(0, w, true, any)
+    if (any && w.subst) found = true
+  } else scanCode(0, null)
+  return found
+}
+
 function scanShellCode(command) {
   const segs = codeSegments(command)
   const codes = []
@@ -2514,6 +3034,7 @@ function scanShellCode(command) {
       const v = args[i].value
       if (v === 'eval' && !(cmdWord && EVAL_QUOTING_COMMANDS.has(cmdWord.value))) {
         const rest = args.slice(i + 1)
+        if (rest[0]?.value === '--') rest.shift() // eval skips one leading `--`, the code starts after it
         if (rest.length) push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
       }
       if (v === 'trap') {
@@ -2694,6 +3215,14 @@ function decide(toolName, toolInput, opts = {}) {
     // command is used: safeCommand blanks heredoc bodies and data payloads.
     const rawCommand = String(toolInput?.command ?? '')
     const depth = opts.depth ?? 0
+    const bodies = []
+    if (substitutionInCommandPosition(rawCommand, { bodies })) return { deny: true, reason: 'dynamic-command' }
+    // the code of each outermost substitution is a command of its own (scanShellCode does not look inside one)
+    for (const body of bodies) {
+      if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
+      const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1 })
+      if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
+    }
     const scan = scanShellCode(rawCommand)
     for (const code of scan.codes) {
       if (code.ansi) return { deny: true, reason: 'shell-code' }
@@ -2730,6 +3259,11 @@ const GATE_MSG =
   'vagy: csak az operator (channel) vagy egy peer (inter-agent) uzenete inditson. Ha varakozol, ' +
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
+
+const DYNAMIC_COMMAND_GATE_MSG =
+  'Self-pace kapu: a parancs NEVE helyettesitesbol jon ($(...), backtick vagy <(...)), igy a kapu nem latja, ' +
+  'mi fut: a $(echo X) az X-et futtatja. Fail-closed: TILTVA. Ird ki a parancsot szo szerint; a ' +
+  'helyettesites argumentumkent vagy idezve tovabbra is szabad.'
 
 const ALLOWLIST_GATE_MSG =
   'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
@@ -2832,6 +3366,7 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
+        : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
         : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG : GATE_MSG)
     }
     allow()
