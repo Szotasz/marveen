@@ -420,6 +420,11 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a checkout after the cd', `cd @ROOT@; git checkout develop; ${U}`],
     ['a hard reset in the substitution', 'cd @ROOT@; echo "$(git reset --hard $y)"'],
     ['an archive in the substitution', 'cd @ROOT@; echo "$(tar -xf /tmp/x.tar $y)"'],
+    // Dani 57400: a cd the rough reading follows may not run (a subshell's, one after || or &&)
+    ['an archive after a subshell cd', `cd @ROOT@; (cd /tmp); tar -xf /tmp/x.tar; ${U}`],
+    ['an archive after a cd that does not run', `cd @ROOT@; true || cd /tmp; tar -xf /tmp/x.tar; ${U}`],
+    ['a hard reset after a cd that does not run', `cd @ROOT@; false && cd /tmp; git reset --hard; ${U}`],
+    ['a protected path after a subshell cd', 'cd @ROOT@; (cd /tmp); echo "$(echo $x)" > .claude/settings.json'],
   ])('%s stays denied from elsewhere', (_, cmd) => {
     gitScaffold() // the install is a main checkout, for the git rule
     expect(bash(cmd, base).deny).toBe(true)

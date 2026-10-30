@@ -532,14 +532,20 @@ export function installFileDeny(command, opts = {}) {
     for (const s of subs) outer = outer.split('$(' + s + ')').join(' ').split('`' + s + '`').join(' ')
     const c = { ...ctx }
     const cwds = [c.cwd]
+    // Every command is measured from EVERY cwd the reading has passed, the caller's included: the rough reading follows
+    // each cd unconditionally (one in a subshell, or after || / &&, may not run, Dani 57400), so a cd followed wrongly
+    // can only make it stricter.
     for (const words of roughCommands(outer)) {
       c.cwdInsideDir = insideDir(c.cwd)
-      if (hitsIn(words.map((w) => w.value).join(' '), c).some((h) => h.kind !== 'ancestor')) return false
-      if (writes(words, c)) return false
+      const line = words.map((w) => w.value).join(' ')
+      for (const cwd of cwds) {
+        const at = { ...ctx, cwd, cwdInsideDir: insideDir(cwd) }
+        if (hitsIn(line, at).some((h) => h.kind !== 'ancestor') || writes(words, at)) return false
+      }
       if (!['cd', 'pushd', 'popd'].includes(words[0].value)) continue
-      cwdAfterSegment(words.map((w) => w.value).join(' '), c)
+      cwdAfterSegment(line, c)
       if (!c.cwd) return false
-      cwds.push(c.cwd)
+      if (!cwds.includes(c.cwd)) cwds.push(c.cwd)
     }
     return !subs.some((s) => cwds.some((cwd) => {
       const at = { ...ctx, cwd, cwdInsideDir: insideDir(cwd) }
