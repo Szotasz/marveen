@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
@@ -13,7 +13,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
-import { sendOwnerMessage } from '../../notify.js'
+import { sendOwnerMessage, sendOwnerSlackDm } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
@@ -139,8 +139,15 @@ export function categoryWindowSeconds(v: unknown): number | null {
   return v
 }
 
-// Owner-facing Telegram text. Pure + exported for tests. Plain text (no
-// markdown escaping concerns), proper accents: this is outgoing copy.
+// The dashboard's Approvals page as the BROWSER reaches it (DASHBOARD_PUBLIC_URL, else this host's port), for the
+// owner's message (APPROVALSLACK1030: the decision is one tap away). Exported for tests.
+export function approvalsPageUrl(publicUrl: string = DASHBOARD_PUBLIC_URL, port: number = WEB_PORT): string {
+  return `${publicUrl.trim().replace(/\/+$/, '') || `http://localhost:${port}`}/#approvals`
+}
+
+// Owner-facing text (Slack DM or the channel provider). Pure + exported for
+// tests. Plain text (no markdown escaping concerns), proper accents: this is
+// outgoing copy.
 export function buildOwnerApprovalText(approval: Approval): string {
   const expires = approval.timeout_at
     ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
@@ -150,6 +157,7 @@ export function buildOwnerApprovalText(approval: Approval): string {
     approval.action_description,
     `Lejárat: ${expires}`,
     `Döntés: Dashboard -> Jóváhagyások (id: ${approval.id})`,
+    approvalsPageUrl(),
   ].join('\n')
 }
 
@@ -212,6 +220,32 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId)
     : buildOwnerApprovalText(approval)
   void (async () => {
+    // APPROVALSLACK1030: an owner who moved to Slack (NOTIFY_SLACK_TARGET set) while the channel provider stays
+    // Telegram got the request on Telegram (measured 2026-10-30: both of the day's requests logged this function's
+    // Telegram branch, its messageId and no provider). The owner asked for Slack only: the request goes to the owner's
+    // Slack DM, and a miss falls back in-band, never to Telegram.
+    const slack = await sendOwnerSlackDm(text)
+    if (slack.attempted) {
+      if (slack.sent) {
+        logger.info({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification sent')
+        return
+      }
+      if (slack.error === 'no_slack_token') {
+        logger.warn({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification suppressed: no channel token')
+        if (!informative) fallbackInBand(approval, 'no-token')
+        return
+      }
+      if (slack.error?.startsWith('unresolved_target')) {
+        logger.warn({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification suppressed: no owner chat')
+        if (!informative) fallbackInBand(approval, 'no-owner-chat')
+        return
+      }
+      logger.warn({ approvalId: approval.id, provider: 'slack', error: slack.error, informative },
+        'approval owner notification FAILED -- the request is only visible on the dashboard')
+      if (!informative) fallbackInBand(approval, 'send-failed')
+      return
+    }
+
     // APPROVALVAK821 fixed this path so the request reaches the OWNER and not
     // only the main agent's queue -- but the fix went out Telegram-only, so on
     // any install that speaks another provider the old silence came straight

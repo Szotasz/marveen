@@ -19,6 +19,8 @@ import type { RouteContext } from '../web/routes/types.js'
 let sendResult: { sent: boolean; reason?: string } = { sent: true }
 const sent: string[] = []
 vi.mock('../notify.js', () => ({
+  // APPROVALSLACK1030: no Slack target on this install, the provider path is what these tests pin.
+  sendOwnerSlackDm: async () => ({ attempted: false, sent: false }),
   sendOwnerMessage: async (text: string) => { sent.push(text); return sendResult },
   notifyChannel: async (text: string) => { sent.push(text) },
   notifyTelegram: async () => {},

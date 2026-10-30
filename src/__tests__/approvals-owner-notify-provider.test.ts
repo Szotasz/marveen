@@ -13,6 +13,8 @@ const sent: string[] = []
 // result instead of assuming success, so the mock returns one.
 let ownerSendResult: { sent: boolean; reason?: string } = { sent: true }
 vi.mock('../notify.js', () => ({
+  // APPROVALSLACK1030: no Slack target on this install, the provider path is what these tests pin.
+  sendOwnerSlackDm: async () => ({ attempted: false, sent: false }),
   sendOwnerMessage: async (text: string) => { sent.push(text); return ownerSendResult },
   notifyChannel: async (text: string) => { sent.push(text) },
   notifyTelegram: async () => {},
