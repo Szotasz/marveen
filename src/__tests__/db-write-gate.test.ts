@@ -45,6 +45,7 @@ function gitScaffold(): void {
   mkdirSync(join(root, '.git', 'hooks'), { recursive: true })
   writeFileSync(join(root, '.git', 'config'), '')
   writeFileSync(join(root, '.git', 'packed-refs'), '')
+  writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/develop\n')
   writeFileSync(join(root, '.git', 'refs', 'remotes', 'origin', 'develop'), '')
   writeFileSync(join(wt, '.git'), `gitdir: ${root}/.git/worktrees/wt\n`)
 }
@@ -451,6 +452,62 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash('git --git-dir=@ROOT@/.git --work-tree=@ROOT@ checkout develop', wt)).toEqual(DENY_GIT)
     expect(bash('git -C "$INSTALL" reset --hard', wt)).toEqual(DENY_GIT)
   })
+  // Dani 56794: a quoted command substitution with quotes or an expansion inside does not resolve into segments; a
+  // plain reader like this was denied whenever "git" was in it. Now only a protected path or a git/implicit write in it
+  // denies (a rough reading of every command in it).
+  it.each([
+    ['a loop with a reading substitution', `for c in a b; do echo "$(git log -1 --format='%ad' $c)"; done`],
+    ['the same with no format', 'for c in a b; do echo "$(git log -1 $c)"; done'],
+    ['no loop', `echo "$(git log -1 --format='%ad' HEAD)"`],
+    ['a quoted subcommand', `echo "$(git 'log' -1 --format='%ad')"`],
+  ])('%s passes, in the install and in another repo', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+    expect(bash(cmd, base)).toEqual(ALLOW)
+  })
+  // Samu 56807: the fleet adds worktrees from the install and must be able to clean them up
+  it.each([
+    ['a worktree removed outside the install', 'git worktree remove /tmp/wt-x'],
+    ['forced', 'git worktree remove --force /tmp/wt-x'],
+    ['its branch deleted with it', 'git worktree remove /tmp/wt-x && git branch -D samu/x'],
+    ['a merged branch deleted', 'git branch -d bence/x'],
+    ['a worktree prune', 'git worktree prune'],
+    ['a worktree added with a new branch', 'git worktree add -b bence/y /tmp/wt-y origin/develop'],
+    ['a worktree moved outside', 'git worktree move /tmp/wt-x /tmp/wt-z'],
+  ])('%s passes in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+  it.each([
+    ['the branch the install runs', 'git branch -D develop'],
+    ['an origin name', 'git branch -D origin/develop'],
+    ['a remote-tracking ref', 'git branch -dr origin/x'],
+    ['a remote-tracking ref of another remote', 'git branch -dr upstream/x'],
+    ['the --remotes form', 'git branch --delete --remotes upstream/x'],
+    ['no name', 'git branch -D'],
+    ['a name in a variable', 'git branch -D $B'],
+    ['a worktree added inside the install', 'git worktree add @ROOT@/agents/wt-x -b x'],
+    ['a worktree added inside, relative', 'git worktree add wt-in -b x'],
+    ['a worktree removed inside the install', 'git worktree remove @ROOT@/agents/old'],
+    ['a worktree moved into the install', 'git worktree move /tmp/wt-x @ROOT@/wt'],
+    ['a worktree path in a variable', 'git worktree remove $WT'],
+    ['another worktree subcommand', 'git worktree lock /tmp/wt-x'],
+  ])('%s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_GIT)
+  })
+
+  it('a git write hidden in an unresolved substitution is still denied in the install', () => {
+    expect(bash(`echo "$(git reset --hard 'origin/main')"`)).toEqual(DENY_GIT)
+    expect(bash(`x="$(git checkout 'develop')"`)).toEqual(DENY_GIT)
+  })
+  it('an unresolved command that names a protected path, or extracts into the install, is denied', () => {
+    expect(bash(`cp /tmp/x "$(printf '%s' @ROOT@)/.claude/settings.json"`)).toEqual(DENY_FILE)
+    expect(bash(`echo "$(date '+%F')"; tar -xf /tmp/x.tar`)).toEqual(DENY_FILE)
+  })
+  it('the install-file text says a hook script may be run directly, not that a protected path may be any argument', () => {
+    expect(INSTALL_FILE_GATE_MSG).toContain('KOZVETLENUL futtatni')
+    expect(INSTALL_FILE_GATE_MSG).toContain('ARGUMENTUMKENT adott vedett ut viszont tilt')
+    expect(INSTALL_FILE_GATE_MSG).not.toContain('hook-szkriptet futtatni is.')
+  })
+
   it('with no known cwd git counts as the main checkout, unless an absolute -C names another repo', () => {
     const noCwd = (command: string) => gateDecision('Bash', { command: command.replaceAll('@WT@', wt).replaceAll('@ROOT@', root) }, { root })
     expect(noCwd('git commit -m x')).toEqual(DENY_GIT)

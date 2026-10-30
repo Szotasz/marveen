@@ -66,6 +66,7 @@ import {
   scheduleSurfaceVariants,
   shellSegments,
   shellWords,
+  splitSegments,
   underKey,
 } from '../self-pace-gate.mjs'
 
@@ -342,12 +343,34 @@ export function gitDecision(words, ctx) {
     return args.filter((a) => a.startsWith('-')).every((a) => flags.test(a)) && (!names.length || args.some((a) => listFlags.test(a)))
   }
   const LIST_ARG = /^(?:-l|--list|--contains|--no-contains|--merged|--no-merged|--points-at)$/
+  // A local branch deleted after its worktree is gone (Samu 56807: the fleet could add worktrees but not clean up):
+  // allowed, but never a remote-tracking ref (-r, an origin/ or refs/ name) and never the branch the install runs.
+  if (sub === 'branch' && args.some((a) => /^-[A-Za-z]*[dD]$|^--delete$/.test(a))) {
+    const names = args.filter((a) => !a.startsWith('-'))
+    const head = (() => { try { return readFileSync(join(ctx.root, '.git', 'HEAD'), 'utf-8').trim().replace(/^ref: refs\/heads\//, '') } catch { return null } })()
+    const bad = !names.length || args.some((a) => /^-[A-Za-z]*r$|^--remotes$/.test(a))
+      || names.some((n) => /^(?:origin\/|remotes\/|refs\/)/.test(n) || n === head || /[$`\u0000]/.test(n))
+    return bad ? 'deny' : null
+  }
   if (sub === 'branch') return listing(/^(?:-a|-r|-v|-vv|-l|--list|--all|--remotes|--show-current|--verbose|--no-color|--color|--contains|--no-contains|--merged|--no-merged|--format=.*|--sort=.*)$/, LIST_ARG) ? null : 'deny'
   if (sub === 'tag') return listing(/^(?:-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|--sort=.*|--format=.*)$/, LIST_ARG) ? null : 'deny'
   if (sub === 'remote') return args.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(args[0]) ? null : 'deny'
   if (sub === 'config') return args.some((a) => /^--(?:get|get-all|get-regexp|get-urlmatch|list)$|^-l$/.test(a)) || ['get', 'list'].includes(args[0]) ? null : 'deny'
   if (sub === 'stash') return ['list', 'show'].includes(args[0]) ? null : 'deny'
-  if (sub === 'worktree') return ['list', 'add', 'prune', 'remove'].includes(args[0]) ? null : 'deny'
+  // A worktree is added, moved or removed only OUTSIDE the install (Samu 56807): one inside it would be a second
+  // checkout of the tree the install runs.
+  if (sub === 'worktree') {
+    if (args[0] === 'list' || args[0] === 'prune') return null
+    if (!['add', 'remove', 'move'].includes(args[0])) return 'deny'
+    const paths = []
+    for (let j = 1; j < args.length; j++) {
+      if (['-b', '-B', '--reason'].includes(args[j])) { j++; continue }
+      if (!args[j].startsWith('-')) paths.push(args[j])
+    }
+    const where = args[0] === 'add' ? paths.slice(0, 1) : paths
+    if (!where.length || where.some((p) => /[$`\u0000]/.test(p))) return 'deny'
+    return where.some((p) => underKey(pathKey(resolve(dir ?? ctx.cwd ?? '/', expandHome(p))), rootKey)) ? 'deny' : null
+  }
   return 'deny'
 }
 
@@ -369,6 +392,22 @@ function isExecOf(words, name, hitWords) {
   const script = words.findIndex((w, i) => i > 0 && !w.value.startsWith('-'))
   if (script < 0 || words.slice(1, script).some((w) => /^-[A-Za-z]*[ceE]$/.test(w.value))) return false
   return hitWords.has(words[script].value) && !words.slice(script + 1).some((w) => hitWords.has(w.value))
+}
+
+// Every command of a command line whose quoting does not resolve, read roughly: split at the separators and at every
+// command substitution's start and end, the quotes taken off each word. Only for the rules that must not be lost there.
+const ROUGH_CONTROL = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time'])
+function roughCommands(cmd) {
+  const out = []
+  for (const seg of splitSegments(cmd)) {
+    for (const piece of seg.split(/\$\(|`|\)/)) {
+      let words = piece.trim().split(/\s+/).filter(Boolean)
+        .map((v) => ({ value: v.replace(/^['"]+|['"]+$/g, ''), dollar: v.includes('$') }))
+      while (words.length && ROUGH_CONTROL.has(words[0].value)) words = words.slice(1)
+      if (words.length) out.push(words)
+    }
+  }
+  return out
 }
 
 const CONTROL_PREFIX_RX = /^(?:(?:do|then|else|elif|if|while|until|!|\{)\s+)+/
@@ -396,7 +435,19 @@ export function installFileDeny(command, opts = {}) {
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
   const segs = shellSegments(cmd, { surface: 'security', projectRoot: ctx.root, keepSubst: (inner) => hitsIn(inner, ctx).length > 0 })
-  if (!segs) return true // unresolvable quoting around a protected path: fail closed
+  if (!segs) {
+    // The quoting does not resolve: a command substitution with quotes or an expansion inside, most often a plain reader
+    // (`echo "$(git log -1 --format='%ad' $c)"`, Dani 56794). A protected path anywhere in it: fail closed. Otherwise
+    // the git and the implicit-writer rules still run on a rough reading of every command in it, so a write hidden in
+    // a substitution is not lost.
+    if (hitsIn(cmd, ctx).length) return true
+    for (const words of roughCommands(cmd)) {
+      const git = gitWords(words)
+      if (git && gitDecision(git, ctx) === 'deny') return 'git'
+      if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
+    }
+    return false
+  }
   const tainted = new Set()
   for (const seg of segs) {
     const own = seg.own.slice((CONTROL_PREFIX_RX.exec(seg.own)?.[0] ?? '').length).trimStart()
@@ -514,10 +565,13 @@ export const INSTALL_FILE_GATE_MSG =
   'store/extra-hooks.json es store/autonomy-config.json fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
-  'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), hook-szkriptet futtatni is. Valtoztatas a gazda ' +
-  'jovahagyasaval a fo ugynokon at. Ha egy feloldatlan valtozo utan vedett ut-veg all ($X/.claude/settings.json), ' +
-  'azt nem tudom ellenorizni, ezert tiltom: kifejezett ut kell. Egy fajlba irt szoveg, ami csak EMLITI a vedett utat ' +
-  '(uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
+  'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet KOZVETLENUL futtatni is ' +
+  '(python3 scripts/hooks/x.py); egy masik szkriptnek vagy ertelmezonek ARGUMENTUMKENT adott vedett ut viszont tilt, ' +
+  'mert az irhat bele. Valtoztatas a gazda jovahagyasaval a fo ugynokon at. Ha egy feloldatlan valtozo utan vedett ' +
+  'ut-veg all ($X/.claude/settings.json), azt nem tudom ellenorizni, ezert tiltom: kifejezett ut kell. Ha a parancs ' +
+  'idezese nem bonthato fel (idezojeles parancs-behelyettesites) ES vedett utat emlit, tiltom. Egy fajlba irt szoveg, ' +
+  'ami csak EMLITI a vedett utat (uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). ' +
+  'Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
 
 // The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
 export const RESCUE_DOC = 'docs/db-write-gate.md'
