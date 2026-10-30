@@ -13362,7 +13362,7 @@ function buildBubbleHtml(m) {
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
   const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
   const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
-  return `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}">
+  const requestBubble = `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}">
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
     <div class="chat-bubble ${isOutgoing ? 'bubble-out' : 'bubble-in'}">
       <div class="bubble-meta">
@@ -13376,6 +13376,38 @@ function buildBubbleHtml(m) {
       <div class="bubble-time">${when}</div>
     </div>
     ${isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(mainAgentId(), 28)}</div>` : ''}
+  </div>`
+  // The ANSWER to a closed message lives in its `result` column, not in a row
+  // of its own, so this view used to end at the request: the badge turned
+  // "done" and the reply was nowhere on screen (measured twice on 2026-10-30,
+  // both times read as "the agent never answered" -- it had, in 24 s).
+  //
+  // Drawn ONLY for the owner's own messages, on purpose. Agent -> agent, the
+  // close also creates a reverse `[Eredmeny]` message (shouldNotifyDelegator in
+  // routes/messages.ts), which already renders as its own bubble further down
+  // the thread -- rendering `result` there too would show the same answer
+  // twice. That notification is skipped when the sender is not a registered
+  // agent, which is exactly the owner's case (they send under OWNER_NAME), so
+  // this is the one path where the answer has no row to appear in.
+  const closed = m.status === 'done' || m.status === 'failed'
+  const replyText = closed && m.from_agent === chatOwnerName() ? String(m.result || '').trim() : ''
+  if (!replyText) return requestBubble
+  // The result is produced by the RECIPIENT, so the reply bubble is sent by
+  // m.to_agent -- the same side test the request bubble makes for m.from_agent.
+  const replyOutgoing = m.to_agent === mainAgentId()
+  const replyWhen = m.completed_at ? new Date(m.completed_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
+  return requestBubble + `<div class="chat-bubble-row ${replyOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}-result">
+    ${!replyOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(m.to_agent, 28)}</div>` : ''}
+    <div class="chat-bubble ${replyOutgoing ? 'bubble-out' : 'bubble-in'}">
+      <div class="bubble-meta">
+        ${!replyOutgoing ? `<span class="bubble-sender">${escapeHtml(chatDisplayName(m.to_agent))}</span>` : ''}
+        <span class="bubble-id-chip">#${m.id}</span>
+        <span class="badge ${m.status === 'failed' ? 'badge-paused' : 'badge-active'}" style="font-size:10px">${escapeHtml(t('messages.conv.reply_label'))}</span>
+      </div>
+      <div class="bubble-text">${escapeHtml(replyText)}</div>
+      <div class="bubble-time">${replyWhen}</div>
+    </div>
+    ${replyOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(mainAgentId(), 28)}</div>` : ''}
   </div>`
 }
 
