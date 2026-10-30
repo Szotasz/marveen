@@ -360,6 +360,21 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   ])('a text file that only mentions a protected path (%s) passes', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
   })
+  // Samu 56684 (a)-(d), word for word
+  const NOTE = `cat > $S/m.txt <<'EOF'\nsee .claude/settings.json\nEOF\n`
+  it('(a) the note fed to curl as data passes', () => {
+    expect(bash(`${NOTE}curl -s -X POST http://localhost:3420/api/messages --data-binary @$S/m.txt`)).toEqual(ALLOW)
+  })
+  it('(b) the note run by python3 is denied', () => {
+    expect(bash(`${NOTE}python3 $S/m.txt`)).toEqual(DENY_FILE)
+  })
+  it('(c) the note fed to sqlite3 on the database is denied', () => {
+    expect(bash(`cat > $S/m.sql <<'EOF'\nsee .claude/settings.json\nEOF\nsqlite3 store/claude${'claw.db'} < $S/m.sql`)).toEqual(DENY_FILE)
+  })
+  it('(d) the note handed to the kanban tool as --comment-file or --msg-file passes', () => {
+    expect(bash(`${NOTE}python3 @ROOT@/scripts/kartya-es-ertesites.py --id X --comment-file $S/m.txt --author Marveen`)).toEqual(ALLOW)
+    expect(bash(`${NOTE}python3 @ROOT@/scripts/kartya-es-ertesites.py --id X --assignee samu --title T --desc-file $S/m.txt --msg-file $S/m.txt --author Marveen --from marveen`)).toEqual(ALLOW)
+  })
 
   it('a running hook script with the protected path as its OUTPUT is denied', () => {
     expect(bash(`python3 scripts/hooks/gate.py --out .claude/settings.json`)).toEqual(DENY_FILE)
