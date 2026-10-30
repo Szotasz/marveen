@@ -1029,9 +1029,9 @@ claude_daily_check_start() {
 # bot poller from the running session (docs/mcp-list-channel-plugin.md). The
 # update itself works from $HOME, not the config dir (measured above).
 #
-# On by default or opt-in is the owner's decision (#1642); it is made HERE and
+# On by default: the owner's decision (#1642, 2026-10-30, option A); it is made HERE and
 # nowhere else. CLAUDE_NATIVE_AUTOUPDATE=1 / =0 in .env overrides it per host.
-CLAUDE_NATIVE_AUTOUPDATE_DEFAULT=0
+CLAUDE_NATIVE_AUTOUPDATE_DEFAULT=1
 CLAUDE_NATIVE_UPDATE_STAMP="$INSTALL_DIR/store/.claude-native-update-stamp"
 claude_native_autoupdate_on() {
   local v=""
