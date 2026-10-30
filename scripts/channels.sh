@@ -852,11 +852,8 @@ claude_install() {
 # one machine, the same second-install vector that broke the install four
 # times in one day in July.
 #
-# Auto-updating the native install from here is ALSO off, on purpose:
-# `claude update` on a native install can misdetect itself as npm-global and
-# reinstall the npm package, re-creating the very second install this block
-# prevents. Upgrading a native build is a deliberate step (`claude install
-# stable`), not a side effect of a boot.
+# The native install is updated by `claude update`, never by npm, and only
+# behind the guard in claude_native_update below (NATIVEAUTOUPD1642).
 CLAUDE_NATIVE_ROOT="$HOME/.local/share/claude/versions"
 claude_realpath() {
   python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null \
@@ -995,9 +992,140 @@ claude_native_behind_npm_note() {
 # takes effect on the next restart, as before.
 DAILY_CLAUDE_CHECK=0
 claude_daily_check_start() {
-  [ "$DAILY_CLAUDE_CHECK" = "1" ] || return 0
-  DAILY_CLAUDE_CHECK=0
-  claude_install "daily check" &
+  case "$DAILY_CLAUDE_CHECK" in
+    1) DAILY_CLAUDE_CHECK=0; claude_install "daily check" & ;;
+    native) DAILY_CLAUDE_CHECK=0; claude_native_update "daily check" & ;;
+  esac
+}
+
+# NATIVEAUTOUPD1642 (#1642): a native host is updated once a day with
+# `claude update`, behind a guard. Until this, a native host never updated at
+# all (the reporter's sat on 2.1.284 from late September).
+#
+# The earlier worry was that `claude update` on a native install misdetects
+# itself as npm-global and installs a second, npm copy. Measured 2026-10-29 on
+# an isolated native 2.1.169 (macOS arm64, npm on the PATH, with and without
+# DISABLE_AUTOUPDATER=1): it moved ~/.local/bin/claude to versions/2.1.312,
+# kept the old version dir, created no npm copy, and its only npm call was a
+# read-only `npm --global config get prefix`; a second run said "up to date",
+# rc 0. The reporter measured the same on Ubuntu (2.1.284 -> 2.1.296). The
+# guard keeps that a checked fact on every run rather than an assumption:
+#   - the launcher still points into the versions dir and its build runs
+#     `--version`;
+#   - no npm-global claude appeared that was not there before;
+#   - `claude` on the PATH is still the launcher.
+# Any miss puts the launcher back on the build it pointed at before and is
+# logged as FAILED in channels-failures.log. The swap is a symlink re-point,
+# not a file replaced in place, and it runs after the launch like the npm path
+# (DAILYRACE1024), so the new build takes effect on the next restart.
+#
+# It has its own stamp on purpose: $CLAUDE_UPDATE_STAMP means "npm installed
+# after this build" to claude_host_is_native_now and
+# claude_native_behind_npm_note, and a native update writing it would read as
+# a host that went back to npm.
+#
+# `claude update` and `--version` run with an empty CLAUDE_CONFIG_DIR and
+# TELEGRAM_STATE_DIR: a child claude that loads the channel plugin takes the
+# bot poller from the running session (docs/mcp-list-channel-plugin.md). The
+# update itself works from $HOME, not the config dir (measured above).
+#
+# On by default: the owner's decision (#1642, 2026-10-30, option A); it is made HERE and
+# nowhere else. CLAUDE_NATIVE_AUTOUPDATE=1 / =0 in .env overrides it per host.
+CLAUDE_NATIVE_AUTOUPDATE_DEFAULT=1
+CLAUDE_NATIVE_UPDATE_STAMP="$INSTALL_DIR/store/.claude-native-update-stamp"
+claude_native_autoupdate_on() {
+  local v=""
+  [ -f "$INSTALL_DIR/.env" ] && v="$(grep -E '^CLAUDE_NATIVE_AUTOUPDATE=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  case "$v" in
+    1|0) ;;
+    *) v="$CLAUDE_NATIVE_AUTOUPDATE_DEFAULT" ;;
+  esac
+  [ "$v" = "1" ]
+}
+claude_under_native_root() {  # claude_under_native_root <resolved path>
+  local root
+  root="$(claude_realpath "$CLAUDE_NATIVE_ROOT")"
+  [ -n "$1" ] && [ -n "$root" ] || return 1
+  case "$1" in
+    "$root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+claude_npm_copy_state() {
+  local npm_root
+  command -v npm >/dev/null 2>&1 || { echo "no-npm"; return 0; }
+  npm_root="$(npm root -g 2>/dev/null)"
+  if [ -n "$npm_root" ] && [ -d "$npm_root/@anthropic-ai/claude-code" ]; then echo "present"; else echo "absent"; fi
+}
+# claude_native_runs <path>: the build is there and answers --version, in the
+# same plugin-free environment as the update.
+claude_native_runs() {
+  local iso="$INSTALL_DIR/store/.claude-native-update-env"
+  [ -n "$1" ] && [ -x "$1" ] || return 1
+  CLAUDE_CONFIG_DIR="$iso/config" TELEGRAM_STATE_DIR="$iso/telegram" "$1" --version </dev/null >/dev/null 2>&1
+}
+claude_native_update() {
+  local why="$1" launcher="$HOME/.local/bin/claude" iso="$INSTALL_DIR/store/.claude-native-update-env"
+  local l0 l1 t1 n0 n1 out rc reason="" tmo="" target how v
+  l0="$(readlink "$launcher" 2>/dev/null)"
+  n0="$(claude_npm_copy_state)"
+  mkdir -p "$iso/config" "$iso/telegram" 2>/dev/null
+  # One attempt a day, success or not: a failing update is retried tomorrow,
+  # not on every restart.
+  : > "$CLAUDE_NATIVE_UPDATE_STAMP" 2>/dev/null
+  command -v timeout >/dev/null 2>&1 && tmo="timeout 900"
+  echo "$(date '+%F %T') claude update START (native, $why): ${l0##*/}" >&2
+  out="$(CLAUDE_CONFIG_DIR="$iso/config" TELEGRAM_STATE_DIR="$iso/telegram" $tmo "$launcher" update </dev/null 2>&1)"
+  rc=$?
+  l1="$(readlink "$launcher" 2>/dev/null)"
+  t1="$(claude_realpath "$launcher")"
+  n1="$(claude_npm_copy_state)"
+  if [ "$rc" != "0" ]; then
+    reason="claude update exited $rc: $(printf '%s' "$out" | tail -1)"
+  elif ! claude_under_native_root "$t1"; then
+    reason="the launcher no longer points into $CLAUDE_NATIVE_ROOT (${t1:-<nothing>})"
+  elif ! claude_native_runs "$t1"; then
+    reason="the new build does not run --version ($t1)"
+  elif [ "$n1" != "$n0" ]; then
+    reason="an npm-global claude appeared (npm copy: $n0 -> $n1)"
+  elif [ "$(command -v claude 2>/dev/null)" != "$launcher" ]; then
+    reason="claude on the PATH is no longer $launcher ($(command -v claude 2>/dev/null))"
+  fi
+  if [ -z "$reason" ]; then
+    echo "$(date '+%F %T') claude update OK (native, $why): ${l0##*/} -> ${l1##*/}" >&2
+    return 0
+  fi
+  if [ -n "$l0" ] && [ "$l1" != "$l0" ]; then
+    # Back to the previous build only if it is still there and runs: an update
+    # that pruned it would otherwise leave a dangling launcher, and the next
+    # start's relink would pick the newest dir -- the broken one (review #2339).
+    # Failing that, the newest build that runs; failing that, say so and leave
+    # the launcher alone rather than claim a restore.
+    target=""
+    if claude_native_runs "$l0"; then
+      target="$l0"; how="launcher restored to ${l0##*/}"
+    else
+      for v in $(ls -1 "$CLAUDE_NATIVE_ROOT" 2>/dev/null | sort -V -r); do
+        if claude_native_runs "$CLAUDE_NATIVE_ROOT/$v"; then target="$CLAUDE_NATIVE_ROOT/$v"; break; fi
+      done
+      if [ -n "$target" ]; then
+        how="the previous build ${l0##*/} is gone or does not run; launcher set to the newest build that runs, ${target##*/}"
+      else
+        how="the previous build ${l0##*/} is gone or does not run, and NO native build runs; launcher left on ${l1##*/}, claude will not start until a working build is installed (claude install stable)"
+      fi
+    fi
+    if [ -n "$target" ] && [ "$target" != "$l1" ]; then
+      command -v chflags >/dev/null 2>&1 && chflags -h nouchg "$launcher" 2>/dev/null
+      ln -sfn "$target" "$launcher" 2>/dev/null || how="moving the launcher to $target FAILED"
+    fi
+    reason="$reason; $how"
+  fi
+  if [ "$n1" = "present" ] && [ "$n0" != "present" ]; then
+    reason="$reason; the npm copy is still installed at $(npm root -g 2>/dev/null)/@anthropic-ai/claude-code (npm uninstall -g @anthropic-ai/claude-code removes it)"
+  fi
+  echo "$(date '+%F %T') claude update FAILED (native, $why): $reason" >&2
+  { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: claude update FAILED (native, $why): $reason" >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null
+  return 1
 }
 
 if ! command -v claude >/dev/null 2>&1; then
@@ -1005,8 +1133,14 @@ if ! command -v claude >/dev/null 2>&1; then
     claude_install "binary missing -- self-heal"
   fi
 elif claude_is_native; then
-  echo "$(date '+%F %T') claude update SKIPPED: native install, npm path disabled" >&2
   claude_native_behind_npm_note
+  if [ "$AVX_LESS" = "0" ] && claude_native_autoupdate_on \
+     && [ -z "$(find "$CLAUDE_NATIVE_UPDATE_STAMP" -mtime -1 2>/dev/null)" ]; then
+    # Due, not started: see DAILYRACE1024 above.
+    DAILY_CLAUDE_CHECK=native
+  elif ! claude_native_autoupdate_on; then
+    echo "$(date '+%F %T') claude update SKIPPED: native install, auto-update off (CLAUDE_NATIVE_AUTOUPDATE)" >&2
+  fi
 elif [ "$AVX_LESS" = "0" ] && [ -z "$(find "$CLAUDE_UPDATE_STAMP" -mtime -1 2>/dev/null)" ]; then
   # AVX-less hosts are excluded on purpose: their claude is pinned, and
   # "keep it current" is exactly what breaks them.
