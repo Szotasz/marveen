@@ -178,6 +178,69 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
   })
 })
 
+// Samu 57515/57529/57656 (this PR only tightens): the segments follow each cd unconditionally, also one that may not
+// run, so the mention is measured from every cwd passed (the caller's included); and a substitution inside a read
+// runs a command of its own (Dani 57649).
+describe('gate: a cd that may not run, and a command inside a substitution', () => {
+  const from = (command: string, cwd: string) => gateDecision('Bash', { command }, { allowlistPath: allowlist, cwd })
+  it('a plain read with a substitution still passes in the root', () => {
+    expect(from('echo "$(date)"', root)).toEqual({ deny: false })
+    expect(from('cat a; ls', root)).toEqual({ deny: false })
+  })
+  it.each([
+    ['a copy onto an unresolved target', 'cp a $f'],
+    ['the same after a cd that does not run (&&)', 'false && cd /tmp; cp a $f'],
+    ['the same after a cd that does not run (||)', 'true || cd /tmp; cp a $f'],
+    ['the same after a subshell cd', '(cd /tmp); cp a $f'],
+    ['a write with a control word before it', 'if true; then cp a $f; fi'],
+    ['a write after a cd into the store', 'cd store; cp a $f'],
+    // measured from the caller's cwd too, from the first segment on: the price of "only stricter"
+    ['a write after a cd out of the root', 'cd /tmp; cp a $f'],
+    // a cd from the install to a place the check cannot know (it may be the hooks dir)
+    ['a write after an unknown cd from the install', 'cd $d && touch x.py'],
+  ])('%s stays denied from the root', (_, cmd) => {
+    expect(from(cmd, root)).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+  // Dani 57550, Samu 57556: a cd into the hooks dir stays denied, from the root and from elsewhere
+  const H = 'local-' + 'hooks'
+  it.each([
+    ['a touch after a cd into the hooks dir', `cd ${H} && touch x.py`],
+    ['a copy after a cd into it', `cd ${H}; cp /x/evil.py gate.py`],
+    ['an archive after a pushd into it', `pushd ${H}; tar -xf /tmp/x.tar`],
+    ['a redirect after a cd into it', `cd ${H} && echo x > g.py`],
+    ['the cd alone', `cd ${H}`],
+  ])('%s is denied, from the root and from elsewhere', (_, cmd) => {
+    mkdirSync(join(root, H), { recursive: true })
+    expect(from(cmd, root).deny).toBe(true)
+    expect(from(cmd.replace(H, join(root, H)), tmpdir()).deny).toBe(true)
+  })
+  // Dani 57649: no first word carries a writer in its arguments; a substitution runs a command of its own
+  const A = 'store/egress-' + 'allowlist.json'
+  const X = 'store/extra-' + 'hooks.json'
+  it.each([
+    ['a case branch that copies onto the allowlist', `case x in x) cp /tmp/a ${A};; esac`],
+    ['a case branch that copies onto an unresolved target', 'case $x in a) cp /tmp/a $f;; esac'],
+    ['a case branch that edits the extra hooks', `case x in x) sed -i s/a/b/ ${X};; esac`],
+    ['a loop over a substitution that copies', `for x in $(cp /tmp/a ${A}); do :; done`],
+    ['a colon with a substitution that copies', `: $(cp /tmp/a ${A})`],
+    ['a true with a substitution that copies', `true $(cp /tmp/a ${A})`],
+    ['an echo of a substitution that copies', `echo $(cp /tmp/a ${A})`],
+    ['the same quoted', `echo "$(cp /tmp/a ${A})"`],
+  ])('%s is denied, from the root and after a cd to it from elsewhere', (_, cmd) => {
+    expect(from(cmd, root).deny).toBe(true)
+    expect(from(`cd ${root}; ${cmd}`, tmpdir()).deny).toBe(true)
+  })
+  it('a cd into the hooks dir through a variable stays denied from elsewhere', () => {
+    mkdirSync(join(root, H), { recursive: true })
+    expect(from(`R=${root}; cd $R/${H} && touch x.py`, tmpdir()).deny).toBe(true)
+    expect(from(`cd $R/${H} && touch x.py`, tmpdir()).deny).toBe(true)
+  })
+  it('the same writes after a cd to the root stay denied from elsewhere', () => {
+    expect(from(`cd ${root}; false && cd /tmp; cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(from(`cd ${root}; (cd /tmp); cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+})
+
 describe('gate: the hook end to end, and who it applies to', () => {
   const hook = join(__dirname, '..', '..', 'scripts', 'self-pace-gate.mjs')
   const run = (payload: unknown) =>

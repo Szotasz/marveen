@@ -409,8 +409,12 @@ const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
 // `ctx` (optional): what protectedMention needs beyond the segment's own text, see
 // protectedContext. Without it only the spelling variants are read.
+// The mention is measured from EVERY cwd the command has passed, the caller's included (ctx.cwds, Samu 57529/57656):
+// the segments follow each cd unconditionally, also one after || or && that may not run (`false && cd /tmp; cp a $f`
+// passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
-  return readOnlyMentionAllowed(seg, (text) => protectedMention(text, ctx))
+  const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -452,6 +456,15 @@ function readOnlyMentionAllowed(seg, mentions) {
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
   const cmd = (words[i] ?? '').replace(/^.*\//, '')
   if (!ALLOWLIST_READERS.has(cmd)) return false
+  // A command substitution inside the read runs a command of its own: each piece after a `$(` or a backtick (to its
+  // `)`, the naive segments may have cut it) is measured with this same rule (Dani 57649: `echo $(cp /tmp/a
+  // <allowlist>)` passed as a read).
+  if (/\$\(|`/.test(s)) {
+    for (const piece of s.split(/\$\(|`/).slice(1)) {
+      const inner = piece.split(')')[0].replace(/^["'\s]+|["'\s]+$/g, '')
+      if (inner && !readOnlyMentionAllowed(inner, mentions)) return false
+    }
+  }
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
     const target = m[1]
     if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
@@ -506,7 +519,8 @@ export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, c
   const store = dirname(allowlistPath)
   // root/store are compared as pathKey()s (real, on-disk case, every nameForms() form):
   // see realDeep and sameKey.
-  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: cwd ? resolve(String(cwd)) : null }
+  const start = cwd ? resolve(String(cwd)) : null
+  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: start, cwds: [start] }
 }
 
 // The working directory after one segment: a literal `cd DIR` / `pushd DIR` moves it,
@@ -2676,6 +2690,7 @@ function decide(toolName, toolInput, opts = {}) {
       // the egress allowlist and the extra hooks: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
       cwdAfterSegment(seg, protectedCtx)
+      if (!protectedCtx.cwds.includes(protectedCtx.cwd)) protectedCtx.cwds.push(protectedCtx.cwd)
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
