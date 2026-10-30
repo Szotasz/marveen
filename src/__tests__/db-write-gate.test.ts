@@ -285,6 +285,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a heredoc body that names it, written to a script file the command runs', `cat > /tmp/s.sh <<'EOF'\ncp /tmp/x @ROOT@/.claude/settings.json\nEOF\nbash /tmp/s.sh`],
     ['the same, run as the command word', `cat > /tmp/s.sh <<'EOF'\ncp /tmp/x @ROOT@/.claude/settings.json\nEOF\nchmod +x /tmp/s.sh && /tmp/s.sh`],
     ['the same, sourced', `cat > $S/s.sh <<'EOF'\nrm -rf @ROOT@/scripts/hooks\nEOF\nsource $S/s.sh`],
+    ['the same, run only as the command word', `cat > $S/s.sh <<'EOF'\nrm -rf @ROOT@/scripts/hooks\nEOF\n$S/s.sh`],
   ])('%s is denied in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(DENY_FILE)
   })
