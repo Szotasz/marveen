@@ -30,8 +30,13 @@
 // The load-bearing control is that nothing goes live without that approval.
 //
 // Not covered here (stated, not hidden):
-//   - an agent writing a skill directory directly with its file tools (the
-//     same OS user; the fleet's self-learning instructions do exactly that);
+//   - an agent writing a skill directory directly with its file tools. For its
+//     OWN root (<its working dir>/.claude/skills, loaded by that agent only)
+//     this is by design: it is the agent's notebook. For the global root the
+//     shipped instructions route every new or improved skill through
+//     POST /api/skills/propose (queueProposedSkill below), but the same OS user
+//     can still write ~/.claude/skills, so that is an instruction, not a
+//     boundary;
 //   - the fleet import, the agent-bundle import and the `skill` CLI, which
 //     have their own paths;
 //   - editing a LIVE skill's SKILL.md through PUT /api/skills/:name;
@@ -54,7 +59,7 @@ import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 export type SkillTarget = { scope: 'global' } | { scope: 'agent'; agent: string }
-export type PendingSource = 'generate' | 'import'
+export type PendingSource = 'generate' | 'import' | 'propose'
 
 export interface PendingMeta {
   id: string
@@ -62,6 +67,11 @@ export interface PendingMeta {
   target: SkillTarget
   source: PendingSource
   createdAt: string
+  // 'propose' only: the live skill this proposal replaces, by the hash of its directory when proposed.
+  replaces?: { hash: string }
+  // 'propose' only: who sent it (the authenticated agent, when the request carried one) and why.
+  proposedBy?: string
+  reason?: string
 }
 
 export interface ScanFile {
@@ -109,6 +119,7 @@ export interface PendingSkill extends PendingMeta {
   // false when the scan bounds stopped it: such a skill cannot be shown in
   // full, so it cannot be approved here.
   approvable: boolean
+  liveSkillMd?: string
 }
 
 export const SKILL_PENDING_DIRNAME = 'skills-pending'
@@ -207,6 +218,50 @@ export function queueImportedSkillDir(targetIn: SkillTarget, name: string, srcDi
   return meta
 }
 
+export const SKILL_REPLACED_DIRNAME = 'skills-replaced'
+export function replacedRoot(): string { return join(STORE_DIR, SKILL_REPLACED_DIRNAME) }
+export const MAX_PROPOSED_SKILL_BYTES = 256 * 1024
+
+export type ProposeResult =
+  | { ok: true; meta: PendingMeta }
+  | { ok: false; status: number; error: string }
+
+// A complete SKILL.md proposed by an agent for the GLOBAL root. Never written into a skill root here.
+export function queueProposedSkill(name: string, skillMd: string, opts: { proposedBy?: string; reason?: string } = {}): ProposeResult {
+  const target: SkillTarget = { scope: 'global' }
+  for (const pid of listIds()) {
+    const m = readMeta(pid)
+    if (m && m.name === name && sameTarget(m.target, target)) {
+      return { ok: false, status: 409, error: 'A skill with this name is already waiting for approval' }
+    }
+  }
+  const live = join(targetRoot(target), name)
+  let replaces: { hash: string } | undefined
+  let st: ReturnType<typeof lstatSync> | null
+  try { st = lstatSync(live) } catch { st = null }
+  if (st) {
+    if (st.isSymbolicLink() || !st.isDirectory() || hasSymlink(live)) {
+      return { ok: false, status: 400, error: 'The live skill is a symlink or contains one; it cannot be replaced through a proposal' }
+    }
+    replaces = { hash: skillDirHash(live) }
+  }
+  const id = newId(name)
+  const dir = entryDir(id)
+  mkdirSync(join(dir, 'skill'), { recursive: true })
+  // A replacement keeps the live skill's other files (scripts/, references/, ...): they are copied
+  // in, so the approver sees, and the hash binds, exactly the directory that goes live.
+  if (replaces) cpSync(live, join(dir, 'skill'), { recursive: true, verbatimSymlinks: true })
+  atomicWriteFileSync(join(dir, 'skill', 'SKILL.md'), skillMd)
+  const meta: PendingMeta = {
+    id, name, target, source: 'propose', createdAt: new Date().toISOString(),
+    ...(replaces ? { replaces } : {}),
+    ...(opts.proposedBy ? { proposedBy: opts.proposedBy } : {}),
+    ...(opts.reason ? { reason: opts.reason } : {}),
+  }
+  writeMeta(dir, meta)
+  return { ok: true, meta }
+}
+
 // A scratch directory for extracting an upload, inside the pending area (same
 // filesystem, so the queue step is a rename) and never inside a skill root.
 export function newExtractDir(): string {
@@ -254,10 +309,10 @@ function hasSymlink(root: string): boolean {
 // bytes, length-framed, in sorted order. A file added, removed or changed, or
 // the target or name edited after the approver looked, changes it, and the
 // approval no longer applies.
-export function skillDirHash(root: string, meta?: Pick<PendingMeta, 'name' | 'target' | 'source'>): string {
+export function skillDirHash(root: string, meta?: Pick<PendingMeta, 'name' | 'target' | 'source' | 'replaces'>): string {
   const h = createHash('sha256')
   h.update('marveen-pending-skill-v2\n')
-  const metaJson = JSON.stringify(meta ? { name: meta.name, target: meta.target, source: meta.source } : null)
+  const metaJson = JSON.stringify(meta ? { name: meta.name, target: meta.target, source: meta.source, ...(meta.replaces ? { replaces: meta.replaces } : {}) } : null)
   h.update(`meta\0${Buffer.byteLength(metaJson)}\0${metaJson}`)
   for (const rel of filesUnder(root)) {
     let buf: Buffer
@@ -498,7 +553,18 @@ export function getPending(id: string): PendingSkill | null {
   if (!meta) return null
   const skillRoot = join(entryDir(id), 'skill')
   const report = scanSkillDir(skillRoot)
-  return { ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated && report.unreviewable.length === 0 }
+  let liveSkillMd: string | undefined
+  if (meta.replaces) {
+    const livePath = join(targetRoot(meta.target), meta.name, 'SKILL.md')
+    try {
+      const st = lstatSync(livePath)
+      if (st.isFile() && st.size <= MAX_PROPOSED_SKILL_BYTES) {
+        const text = readFileSync(livePath, 'utf-8')
+        if (Buffer.byteLength(text) <= MAX_PROPOSED_SKILL_BYTES) liveSkillMd = text
+      }
+    } catch { /* no readable live SKILL.md: leave it out */ }
+  }
+  return { ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated && report.unreviewable.length === 0, ...(liveSkillMd !== undefined ? { liveSkillMd } : {}) }
 }
 
 // The queue, without file texts (GET /api/skills/pending).
@@ -506,13 +572,32 @@ export function listPending(): PendingSkill[] {
   return listIds()
     .map((id) => getPending(id))
     .filter((p): p is PendingSkill => p !== null)
-    .map((p) => ({ ...p, report: { ...p.report, files: p.report.files.map(({ text: _t, ...f }) => f) } }))
+    .map(({ liveSkillMd: _l, ...p }) => ({ ...p, report: { ...p.report, files: p.report.files.map(({ text: _t, ...f }) => f) } }))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 export type ApproveResult =
-  | { ok: true; name: string; path: string }
+  | { ok: true; name: string; path: string; backup?: string }
   | { ok: false; status: number; error: string }
+
+// Move a directory. Across filesystems (EXDEV) copy it, then remove the source; any other
+// rename error is thrown before anything is touched.
+function moveDir(src: string, dst: string): void {
+  try {
+    renameSync(src, dst)
+    return
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'EXDEV') throw err
+  }
+  cpSync(src, dst, { recursive: true, verbatimSymlinks: true })
+  // Not atomic across filesystems: re-hash, and remove the source only if it did not change during
+  // the copy. The window between this check and the remove is a documented limit.
+  if (skillDirHash(src) !== skillDirHash(dst)) {
+    rmSync(dst, { recursive: true, force: true })
+    throw Object.assign(new Error('the directory changed while it was copied'), { code: 'ECHANGED' })
+  }
+  rmSync(src, { recursive: true, force: true })
+}
 
 // Make a pending skill live. `hash` must be the hash the approver was shown:
 // content changed since then is not approved by that click.
@@ -538,20 +623,63 @@ export function approvePending(id: string, hash: unknown): ApproveResult {
   const root = targetRoot(meta.target)
   const dest = join(root, meta.name)
   if (!dest.startsWith(root + sep)) return { ok: false, status: 400, error: 'Invalid skill name' }
-  if (existsSync(dest)) return { ok: false, status: 409, error: `Skill already exists: ${meta.name}` }
+  let backup: string | undefined
+  if (meta.replaces) {
+    let st
+    try { st = lstatSync(dest) } catch { st = null }
+    if (!st) return { ok: false, status: 409, error: `The skill this proposal replaces no longer exists: ${meta.name}; reject it and propose it again` }
+  } else if (existsSync(dest)) {
+    return { ok: false, status: 409, error: `Skill already exists: ${meta.name}` }
+  }
   if (meta.target.scope === 'agent' && meta.target.agent !== MAIN_AGENT_ID && !existsSync(agentDir(meta.target.agent))) {
     return { ok: false, status: 404, error: 'Agent not found' }
   }
   mkdirSync(root, { recursive: true })
+  if (meta.replaces) {
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
+    backup = join(replacedRoot(), `${meta.name}--${stamp}--${randomBytes(3).toString('hex')}`)
+    mkdirSync(replacedRoot(), { recursive: true })
+    try {
+      moveDir(dest, backup)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ECHANGED') return { ok: false, status: 409, error: `The live skill ${meta.name} changed while it was being backed up; nothing was changed` }
+      if (existsSync(dest) && skillDirHash(dest) === meta.replaces.hash) {
+        try { rmSync(backup, { recursive: true, force: true }) } catch { /* a partial copy stays in the backup area */ }
+        return { ok: false, status: 500, error: 'Backing up the live skill failed; nothing was changed' }
+      }
+      return { ok: false, status: 500, error: `Backing up the live skill failed part-way; the live skill may be incomplete, and the copy made so far is kept at ${backup}` }
+    }
+    // Checked on the moved copy, not before the move: what is checked is exactly what was backed
+    // up, so a change made to the live skill after the proposal cannot slip in between.
+    let bst
+    try { bst = lstatSync(backup) } catch { bst = null }
+    const why = !bst || bst.isSymbolicLink() || !bst.isDirectory() || hasSymlink(backup) ? 'The live skill is a symlink or contains one; it cannot be replaced here'
+      : skillDirHash(backup) !== meta.replaces.hash ? `The live skill ${meta.name} changed since this replacement was proposed; reject it and propose again`
+      : null
+    if (why) {
+      try { moveDir(backup, dest) } catch { return { ok: false, status: 500, error: `${why}; moving it back failed, it is kept at ${backup}` } }
+      return { ok: false, status: 409, error: why }
+    }
+  }
   try {
-    renameSync(skillRoot, dest)
-  } catch {
-    // Another filesystem (store/ and ~/.claude on different volumes): copy, then drop the source.
-    cpSync(skillRoot, dest, { recursive: true, verbatimSymlinks: true })
-    rmSync(skillRoot, { recursive: true, force: true })
+    try {
+      renameSync(skillRoot, dest)
+    } catch {
+      // Another filesystem (store/ and ~/.claude on different volumes): copy, then drop the source.
+      cpSync(skillRoot, dest, { recursive: true, verbatimSymlinks: true })
+      rmSync(skillRoot, { recursive: true, force: true })
+    }
+  } catch (err) {
+    if (!backup) throw err
+    try { rmSync(dest, { recursive: true, force: true }) } catch { /* the rename below reports it */ }
+    let restored = false
+    try { moveDir(backup, dest); restored = true } catch { /* reported below */ }
+    return restored
+      ? { ok: false, status: 500, error: 'Installing the replacement failed; the previous version was restored' }
+      : { ok: false, status: 500, error: `Installing the replacement failed and the previous version could not be put back; it is kept at ${backup}` }
   }
   rmSync(entryDir(id), { recursive: true, force: true })
-  return { ok: true, name: meta.name, path: dest }
+  return { ok: true, name: meta.name, path: dest, ...(backup ? { backup } : {}) }
 }
 
 export function rejectPending(id: string): boolean {

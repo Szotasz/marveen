@@ -30,6 +30,13 @@ function pre2338Prompt(): string {
   return readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-pre2338.txt'), 'utf-8')
 }
 
+// The prompt #2340 shipped (develop ed5cca8f0): its helper sections 1 and 3 with the old
+// skill section 2, frozen. upgradePreCompactRecipesToHelper on its own turns a curl prompt
+// into this one; ensureAgentHooks' retired-list pass then takes it to the template prompt.
+function post2340Prompt(): string {
+  return readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-2340.txt'), 'utf-8')
+}
+
 function hooksWith(prompt: string): Record<string, unknown> {
   return { PreCompact: [{ hooks: [{ type: 'agent', prompt, timeout: 180 }] }] }
 }
@@ -55,19 +62,19 @@ describe('templates/settings.json.template PreCompact prompt (#2338)', () => {
 })
 
 describe('upgradePreCompactRecipesToHelper', () => {
-  it('turns the last shipped curl prompt into the current template prompt, byte for byte', () => {
+  it('turns the last shipped curl prompt into the prompt #2340 shipped, byte for byte', () => {
     const hooks = hooksWith(resolveTemplatePlaceholders(pre2338Prompt()))
     expect(upgradePreCompactRecipesToHelper(hooks)).toBe(true)
-    expect(promptOf(hooks)).toBe(resolveTemplatePlaceholders(templatePrompt()))
+    expect(promptOf(hooks)).toBe(resolveTemplatePlaceholders(post2340Prompt()))
     expect((hooks as Hooks).PreCompact[0].hooks[0].timeout).toBe(180)
   })
 
-  it('a prompt from before the X-Agent-Id header: header pass, then this one, ends on the template', () => {
+  it('a prompt from before the X-Agent-Id header: header pass, then this one, ends on the prompt #2340 shipped', () => {
     const noHeader = pre2338Prompt().replace(" -H 'X-Agent-Id: SAJAT_NEVED'", '')
     const hooks = hooksWith(resolveTemplatePlaceholders(noHeader))
     upgradeTaskStateHeaderInHookPrompts(hooks)
     expect(upgradePreCompactRecipesToHelper(hooks)).toBe(true)
-    expect(promptOf(hooks)).toBe(resolveTemplatePlaceholders(templatePrompt()))
+    expect(promptOf(hooks)).toBe(resolveTemplatePlaceholders(post2340Prompt()))
   })
 
   it('the literal-3420 spelling (before the WEB_PORT placeholder) is upgraded on an install on another port', () => {
@@ -80,7 +87,7 @@ describe('upgradePreCompactRecipesToHelper', () => {
     expect(old).not.toContain('localhost:3421')
     const hooks = hooksWith(old)
     expect(upgradePreCompactRecipesToHelper(hooks, render)).toBe(true)
-    expect(promptOf(hooks)).toBe(render(templatePrompt()))
+    expect(promptOf(hooks)).toBe(render(post2340Prompt()))
   })
 
   it('the "A Marveen" intro line (before BOT_NAME) is upgraded on an install with another bot name', () => {
@@ -91,7 +98,7 @@ describe('upgradePreCompactRecipesToHelper', () => {
     expect(old).toContain('A Marveen /api/* Bearer tokenes.')
     const hooks = hooksWith(old)
     expect(upgradePreCompactRecipesToHelper(hooks, render)).toBe(true)
-    expect(promptOf(hooks)).toBe(render(templatePrompt()))
+    expect(promptOf(hooks)).toBe(render(post2340Prompt()))
   })
 
   it('is idempotent', () => {

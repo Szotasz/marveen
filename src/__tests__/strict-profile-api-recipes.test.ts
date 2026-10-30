@@ -11,7 +11,8 @@
 //      helper knows;
 //   3. a non-strict agent still gets the curl recipes, and the strict-api block never touches it;
 //   4. the strict-api block goes away when the profile stops being strict;
-//   5. the allow-list entry and the start-path wiring exist.
+//   5. the allow-list entry and the start-path wiring exist;
+//   6. the skill section's proposal recipe follows the profile too (ensureSkillSectionCurrent).
 // That the non-strict output is byte-identical to develop was measured once for the PR
 // (a render of all six surfaces before and after the change, cmp IDENTICAL); a golden copy
 // here would break on every unrelated copy edit.
@@ -165,9 +166,9 @@ describe('a strict agent gets no recipe its dontAsk mode denies', () => {
       expect(text).not.toContain('Authorization: Bearer')
       expect(text.split('\n').filter((l) => l.trimStart().startsWith('curl '))).toEqual([])
     }
-    // memory save, daily log, search, hot list, move, stranger ping
+    // memory save, daily log, search, hot list, move, skill proposal, stranger ping
     expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
-      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'message'],
+      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'skill-propose', 'message'],
     )
     expect(prompt).toContain('Listázni sem tudsz')
   })
@@ -208,8 +209,8 @@ describe('a non-strict agent keeps the curl recipes', () => {
     stageAgent('plain-b', null)
     const { prompt } = await creation('plain-b')
     expect(prompt).not.toContain('marveen-api.sh')
-    // memory save, daily log, search, hot list, move, schedule listing, stranger ping
-    expect(prompt.split('$(cat ').length - 1).toBe(7)
+    // memory save, daily log, search, hot list, move, schedule listing, skill proposal, stranger ping
+    expect(prompt.split('$(cat ').length - 1).toBe(8)
   })
 
   it('ensureStrictApiSection does not touch a non-strict file at all', () => {
@@ -242,6 +243,41 @@ describe('the strict-api block follows the profile', () => {
     writeFileSync(join(tmpRoot, 'agents', 'strict-f', 'agent-config.json'), JSON.stringify({}))
     S.ensureStrictApiSection('strict-f')
     expect(readFileSync(path, 'utf-8')).toBe('# strict-f\n\n## Utána\n\nszöveg\n')
+  })
+})
+
+describe('the skill section follows the profile', () => {
+  const retiredPath = join(REPO, 'templates', 'retired-claude-md-sections.json')
+  const [retired] = S.readRetiredSkillSections(retiredPath)
+  const doc = (section: string) => `# Ágens\n\n${section}\n\n## Időkezelés\n\nx\n`
+
+  it('an unedited old section: a strict agent gets the helper recipe, a non-strict one the curl', () => {
+    expect(retired).toContain('## Öntanulás és Skill rendszer')
+    const strictPath = stageAgent('strict-a', 'developer-junior', doc(retired))
+    const plainPath = stageAgent('plain-b', null, doc(retired))
+    expect(S.ensureSkillSectionCurrent('strict-a', retiredPath)).toBe(true)
+    expect(S.ensureSkillSectionCurrent('plain-b', retiredPath)).toBe(true)
+    const strict = readFileSync(strictPath, 'utf-8')
+    expect(strict).toBe(doc(S.buildSkillSection('strict-a')))
+    expect(helperLines(strict)).toEqual([
+      `${HELPER_CMD} skill-propose SKILL-NEV ${join(tmpRoot, 'agents', 'strict-a', 'skill-javaslat.md')} --reason-file ${join(tmpRoot, 'agents', 'strict-a', 'skill-javaslat-indok.txt')}`,
+    ])
+    expect(strict).not.toContain('$(')
+    expect(strict).not.toContain('/api/skills/propose')
+    const plain = readFileSync(plainPath, 'utf-8')
+    expect(plain).toBe(doc(S.buildSkillSection()))
+    expect(plain).toContain('/api/skills/propose')
+    expect(plain).not.toContain('marveen-api.sh')
+  })
+
+  it('an unedited current section follows a profile switch, both ways, and a second start writes nothing', () => {
+    const path = stageAgent('strict-g', 'developer-junior', doc(S.buildSkillSection()))
+    expect(S.ensureSkillSectionCurrent('strict-g', retiredPath)).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe(doc(S.buildSkillSection('strict-g')))
+    expect(S.ensureSkillSectionCurrent('strict-g', retiredPath)).toBe(false)
+    writeFileSync(join(tmpRoot, 'agents', 'strict-g', 'agent-config.json'), JSON.stringify({}))
+    expect(S.ensureSkillSectionCurrent('strict-g', retiredPath)).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe(doc(S.buildSkillSection()))
   })
 })
 

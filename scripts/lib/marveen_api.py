@@ -48,6 +48,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
+  skill-propose <skill-name> <skill-md-file> [--reason-file <file>]
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -298,6 +299,16 @@ def build_request(verb, args):
         if content_hash is not None:
             body['content_hash'] = check(content_hash, HASH_RE, 'content hash')
         return 'POST', f'/api/approvals/{approval_id}/consume', body, headers, {}
+    if verb == 'skill-propose':
+        reason_file = take_opt(args, '--reason-file')
+        name, skill_md_file = positional(args, 2, verb)
+        check(name, NAME_RE, 'skill name')
+        body = {'name': name, 'skill_md': read_text(skill_md_file)}
+        if not body['skill_md'].strip():
+            fail_usage('skill-propose: the SKILL.md is empty')
+        if reason_file is not None:
+            body['reason'] = read_text(reason_file)
+        return 'POST', '/api/skills/propose', body, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 

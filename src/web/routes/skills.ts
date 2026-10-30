@@ -10,7 +10,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import {
-  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, rejectPending, targetRoot,
+  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, queueProposedSkill, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
   type SkillTarget,
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
@@ -416,6 +416,30 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       files,
       source: 'user',
     })
+    return true
+  }
+
+  // D4: an agent proposes a complete SKILL.md for the GLOBAL root. It is queued like a generated
+  // skill and waits for the owner's approval; an already-live name is a replacement, whose
+  // approval backs the old version up (skill-quarantine.ts). Proposing needs only the dashboard
+  // token every agent holds; approving stays owner-only (see the pending routes above).
+  if (path === '/api/skills/propose' && method === 'POST') {
+    let body: { name?: unknown; skill_md?: unknown; reason?: unknown }
+    try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    const rawName = typeof body?.name === 'string' ? body.name : ''
+    const name = sanitizeSkillName(rawName)
+    if (!name || name !== rawName) { json(res, { error: 'Invalid skill name (use lowercase letters, digits and hyphens)' }, 400); return true }
+    const root = targetRoot({ scope: 'global' })
+    if (!join(root, name).startsWith(root + sep)) { json(res, { error: 'Invalid skill name' }, 400); return true }
+    const skillMd = body?.skill_md
+    if (typeof skillMd !== 'string' || !skillMd.trim()) { json(res, { error: 'skill_md (the full SKILL.md text) is required' }, 400); return true }
+    if (Buffer.byteLength(skillMd) > MAX_PROPOSED_SKILL_BYTES) { json(res, { error: `skill_md is over ${MAX_PROPOSED_SKILL_BYTES} bytes` }, 400); return true }
+    const reason = typeof body?.reason === 'string' ? body.reason.slice(0, 2000) : undefined
+    const proposedBy = typeof ctx.auth?.agent === 'string' && ctx.auth.agent ? ctx.auth.agent : undefined
+    const r = queueProposedSkill(name, skillMd, { proposedBy, reason })
+    if (!r.ok) { json(res, { error: r.error }, r.status); return true }
+    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, proposedBy }, 'Global skill proposed and queued for approval')
+    json(res, { ok: true, name, pending: true, id: r.meta.id, replaces: !!r.meta.replaces })
     return true
   }
 

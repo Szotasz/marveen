@@ -84,6 +84,21 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(JSON.parse(s.body)).toEqual({ agent_id: 'dani', content: 'tartalom `backtick` és $(nem fut)\n', category: 'warm', keywords: 'k1, k2' })
   })
 
+  it('skill-propose: POST with the SKILL.md and the reason from files, the reason optional', async () => {
+    const md = '---\nname: my-skill\n---\ntartalom `backtick` és $(nem fut)\n'
+    const mdFile = file('s.md', md)
+    const r = await run(['skill-propose', 'my-skill', mdFile, '--reason-file', file('why.txt', 'miért kell\n')])
+    expect(r.code).toBe(0)
+    expect(seen).toHaveLength(1)
+    const [s] = seen
+    expect(s.method).toBe('POST')
+    expect(s.url).toBe('/api/skills/propose')
+    expect(s.headers.authorization).toBe(`Bearer ${TOKEN}`)
+    expect(JSON.parse(s.body)).toEqual({ name: 'my-skill', skill_md: md, reason: 'miért kell\n' })
+    expect((await run(['skill-propose', 'my-skill', mdFile])).code).toBe(0)
+    expect(JSON.parse(seen[1].body)).toEqual({ name: 'my-skill', skill_md: md })
+  })
+
   it('memory-search: the accented query is encoded, and the label header is printed first', async () => {
     reply = { status: 200, body: '[]', headers: { 'X-Memory-Search': 'strict=true; relaxed=false; hits=0' } }
     const r = await run(['memory-search', 'dani', 'funkcionális', '--category', 'warm', '--strict', '--since', '2026-10-01'])
@@ -192,6 +207,10 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     expect((await run(['memory-save', 'dani', 'lukewarm', 'k', file('x.txt', 'x')])).code).toBe(2)
     expect((await run(['memory-save', 'dani', 'warm', 'k', file('e.txt', '  \n')])).code).toBe(2)
     expect((await run(['message', 'dani', 'samu'])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', file('e.md', '  \n')])).code).toBe(2)
+    expect((await run(['skill-propose', '../x', file('s.md', 'x')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', file('s.md', 'x'), '--force'])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill'])).code).toBe(2)
     expect(seen).toHaveLength(0)
   })
 
