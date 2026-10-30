@@ -113,6 +113,13 @@ if [[ -d store ]]; then
     _name="$(basename "${_entry}")"
     case "${STORE_SKIP}" in *" ${_name} "*) continue ;; esac
     case "${_name}" in *.log|*.out|*.pid) continue ;; esac
+    # The temp file of an atomic write (<state>.tmp, <state>.tmp.<pid>,
+    # <state>.tmp-<pid>-<ts>): its writer renames it over the real file a few
+    # milliseconds after creating it, so it can be listed here and gone by the
+    # time stage_group copies it. cp then fails and the manifest names a path
+    # the archive cannot hold: a healthy backup exits 6 and raises the alert.
+    # A half-written temp file is worthless in a restore anyway.
+    case "${_name}" in *.tmp|*.tmp.*|*.tmp-*) continue ;; esac
     echo "store/${_name}" >> "${REPOLIST}"
   done < <(find store -mindepth 1 -maxdepth 1)
 fi
