@@ -208,6 +208,26 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
   ])('%s stays denied from the root', (_, cmd) => {
     expect(from(cmd, root)).toEqual({ deny: true, reason: 'egress-allowlist' })
   })
+  // Dani 57550, Samu 57556: a cd into the hooks dir stays denied (1), and from a cwd inside it, the caller's or one a cd
+  // led to, a segment may only read (2)
+  const H = 'local-' + 'hooks'
+  it.each([
+    ['a touch after a cd into the hooks dir', `cd ${H} && touch x.py`],
+    ['a copy after a cd into it', `cd ${H}; cp /x/evil.py gate.py`],
+    ['an archive after a pushd into it', `pushd ${H}; tar -xf /tmp/x.tar`],
+    ['a redirect after a cd into it', `cd ${H} && echo x > g.py`],
+    ['the cd alone', `cd ${H}`],
+  ])('%s is denied, from the root and from elsewhere', (_, cmd) => {
+    mkdirSync(join(root, H), { recursive: true })
+    expect(from(cmd, root).deny).toBe(true)
+    expect(from(cmd.replace(H, join(root, H)), tmpdir()).deny).toBe(true)
+  })
+  it('from a cwd inside the hooks dir only a read passes', () => {
+    mkdirSync(join(root, H), { recursive: true })
+    expect(from('touch x.py', join(root, H)).deny).toBe(true)
+    expect(from('cat gate.py', join(root, H))).toEqual({ deny: false })
+    expect(from(`cd ${root}; for d in a; do echo "$(cd $d; pwd)"; done`, join(root, H))).toEqual({ deny: false })
+  })
   it('the same writes after a cd to the root stay denied from elsewhere', () => {
     expect(from(`cd ${root}; false && cd /tmp; cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
     expect(from(`cd ${root}; (cd /tmp); cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
