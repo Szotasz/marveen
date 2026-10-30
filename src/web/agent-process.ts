@@ -39,7 +39,7 @@ import {
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
@@ -2163,7 +2163,12 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   // id, --channels arg, env exports), never `providers`: it has no token or
   // state dir for the reaper, the state fence or the token probes to act on.
   const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,
-    readAgentGromzo(name) ? { slug: name, sockUsable: mxdAgentSockUsable() } : undefined)
+    readAgentGromzo(name)
+      ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGatePolicy(name) != null }
+      : undefined)
+  if (extraLaunch.gromzo === 'on' && extraLaunch.gromzoScope === 'owner') {
+    logger.warn({ name }, 'gromzo: owner DM only -- the team (colleague DMs, channels) needs a senderRoleGate in agent-config.json')
+  }
   if (extraLaunch.skipped.length > 0) {
     logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')
   }
