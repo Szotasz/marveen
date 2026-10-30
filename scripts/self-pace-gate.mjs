@@ -404,13 +404,19 @@ const ALLOWLIST_READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
 ])
+const SEGMENT_CONTROL_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', ''])
+const CWD_CHANGERS = new Set(['cd', 'pushd', 'popd'])
 // Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
 // `ctx` (optional): what protectedMention needs beyond the segment's own text, see
 // protectedContext. Without it only the spelling variants are read.
+// The mention is measured from EVERY cwd the command has passed, the caller's included (ctx.cwds, Samu 57529): the
+// segments follow each cd unconditionally, also one after || or && that may not run (`false && cd /tmp; cp a $f`
+// passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
-  return readOnlyMentionAllowed(seg, (text) => protectedMention(text, ctx))
+  const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -450,8 +456,12 @@ function readOnlyMentionAllowed(seg, mentions) {
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
-  const cmd = (words[i] ?? '').replace(/^.*\//, '')
-  if (!ALLOWLIST_READERS.has(cmd)) return false
+  // The command word, only for this test: a control word or an opening parenthesis before it is not the command
+  // (the segments are cut naively: `do echo "$(pwd)"`, `(cd $d`); the whole segment is still what was measured.
+  while (i < words.length && SEGMENT_CONTROL_WORDS.has(words[i].replace(/^\(+/, ''))) i++
+  const cmd = (words[i] ?? '').replace(/^\(+/, '').replace(/^.*\//, '')
+  // a cd writes nothing; where it leads, the cwds the mention is measured from follow (allowlistBashSegmentAllowed)
+  if (!ALLOWLIST_READERS.has(cmd) && !CWD_CHANGERS.has(cmd)) return false
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
     const target = m[1]
     if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
@@ -506,7 +516,8 @@ export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, c
   const store = dirname(allowlistPath)
   // root/store are compared as pathKey()s (real, on-disk case, every nameForms() form):
   // see realDeep and sameKey.
-  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: cwd ? resolve(String(cwd)) : null }
+  const start = cwd ? resolve(String(cwd)) : null
+  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: start, cwds: [start] }
 }
 
 // The working directory after one segment: a literal `cd DIR` / `pushd DIR` moves it,
@@ -2676,6 +2687,7 @@ function decide(toolName, toolInput, opts = {}) {
       // the egress allowlist and the extra hooks: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
       cwdAfterSegment(seg, protectedCtx)
+      if (!protectedCtx.cwds.includes(protectedCtx.cwd)) protectedCtx.cwds.push(protectedCtx.cwd)
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and

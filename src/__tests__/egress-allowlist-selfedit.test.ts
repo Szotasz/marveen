@@ -178,6 +178,40 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
   })
 })
 
+// Samu 57515/57529: in the root an unresolved word may be the allowlist, so a segment holding one may only be a read;
+// the command word was the segment's first word, and the naive segments start with `do`, `(` or `cd`. And the
+// segments follow each cd unconditionally, also one that may not run: measured from every cwd passed, it only gets
+// stricter.
+describe('gate: a reading loop in the root, and a cd that may not run', () => {
+  const from = (command: string, cwd: string) => gateDecision('Bash', { command }, { allowlistPath: allowlist, cwd })
+  const R = '@R@'
+  const at = (c: string) => c.replaceAll(R, root)
+  it.each([
+    ['a loop that reads after a cd to the root', `cd ${R}; for d in agents/abel/; do echo "$(cd $d; pwd)"; done`],
+    ['a loop with a plain substitution', `cd ${R}; for d in a; do echo "$(pwd)"; done`],
+    ['a cd to an unresolved directory, then a read', `cd ${R}; cd $d; pwd`],
+    ['the same in a subshell', `cd ${R}; (cd $d; pwd)`],
+    ['a loop of cds', `cd ${R}; for d in a; do cd $d; done`],
+  ])('%s passes, from the root and from elsewhere', (_, cmd) => {
+    expect(from(at(cmd), root)).toEqual({ deny: false })
+    expect(from(at(cmd), tmpdir())).toEqual({ deny: false })
+  })
+  it.each([
+    ['a copy onto an unresolved target', 'cp a $f'],
+    ['the same after a cd that does not run (&&)', 'false && cd /tmp; cp a $f'],
+    ['the same after a cd that does not run (||)', 'true || cd /tmp; cp a $f'],
+    ['the same after a subshell cd', '(cd /tmp); cp a $f'],
+    ['a write with a control word before it', 'if true; then cp a $f; fi'],
+    ['a write after a cd into the store', 'cd store; cp a $f'],
+  ])('%s stays denied from the root', (_, cmd) => {
+    expect(from(cmd, root)).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+  it('the same writes after a cd to the root stay denied from elsewhere', () => {
+    expect(from(`cd ${root}; false && cd /tmp; cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(from(`cd ${root}; (cd /tmp); cp a $f`, tmpdir())).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+})
+
 describe('gate: the hook end to end, and who it applies to', () => {
   const hook = join(__dirname, '..', '..', 'scripts', 'self-pace-gate.mjs')
   const run = (payload: unknown) =>
