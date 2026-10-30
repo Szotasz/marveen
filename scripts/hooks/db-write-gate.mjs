@@ -394,7 +394,7 @@ function isExecOf(words, name, hitWords) {
   return hitWords.has(words[script].value) && !words.slice(script + 1).some((w) => hitWords.has(w.value))
 }
 
-// The live command substitutions of a command line, as their inner text (nested ones too): backticks and $(...)
+// The live command substitutions of a command line, as their inner text: backticks and $(...)
 // outside single quotes, $'...' and the body of a heredoc with a quoted tag (those are literal text). The segment
 // parser replaces a substitution by an opaque marker, so a git write inside one never reached the git rule (Dani 56844:
 // `git update-ref refs/remotes/...` in backticks passed; measured: a flat $(...) too).
@@ -423,7 +423,7 @@ export function liveSubstitutions(cmd) {
       let j = i + 1
       while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1
       const inner = s.slice(i + 1, j)
-      out.push(inner, ...liveSubstitutions(inner))
+      out.push(inner)
       i = j + 1
       continue
     }
@@ -438,7 +438,7 @@ export function liveSubstitutions(cmd) {
         j++
       }
       const inner = s.slice(i + 2, j - 1)
-      out.push(inner, ...liveSubstitutions(inner))
+      out.push(inner)
       i = j
       continue
     }
