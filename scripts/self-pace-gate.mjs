@@ -128,6 +128,169 @@ const SCHEDULER_RX = new RegExp(
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
 const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
+// Transient user unit exemption. A sub-agent's long test run started with setsid
+// stays in the tmux-spawn scope cgroup, so a session restart kills it; a transient
+// user unit (systemd-run --user --collect ...) runs outside that cgroup and
+// survives. What the gate guards against is a SELF-TIMED FUTURE TURN, and an
+// immediate unit with no timer option schedules nothing. So exactly ONE such
+// invocation is allowed. The option check is an ALLOWLIST, not a denylist (same
+// reasoning as the LAUNCHCTL_SUBCOMMAND comment: miss one dangerous option in a
+// denylist and it is a hole). maskInertLiterals blanks quoted text, so the payload
+// of `sh -c '...'` is invisible in the masked segments; the payload check therefore
+// reads the RAW command text, never the masked text.
+// Known limit: a deliberately hidden payload (a name assembled from variables, an
+// encoded command, a script file) is not seen; the same is true of the existing
+// setsid/nohup branch. The gate's threat model (see KNOWN LIMITATIONS near
+// splitSegments) is a sub-agent that must not casually self-pace.
+// StandardOutput/StandardError are left out on purpose: `file:PATH` makes systemd write
+// PATH, and the store-write checks above only recognise a shell redirect as a write.
+// A log goes through the payload instead: sh -c 'npm test > /tmp/x.log 2>&1'.
+// RuntimeMaxSec is mandatory and bounded (whole seconds, 1 to TRANSIENT_UNIT_RUNTIME_MAX_SEC):
+// without it, or with `infinity` or an empty value (which resets it to infinity),
+// the unit is a process with no end the gate can see.
+// TimeoutStopSec is left out for the same reason: when RuntimeMaxSec expires systemd sends
+// SIGTERM and waits TimeoutStopSec before SIGKILL, so `infinity` lets a payload that
+// ignores SIGTERM run on. Without it the user manager's default stop timeout applies.
+// Environment, --setenv and -E are left out on purpose: they pass any variable name,
+// and names such as BASH_ENV, ENV, NODE_OPTIONS, LD_PRELOAD, DYLD_*, PYTHONSTARTUP,
+// PYTHONPATH or PATH make the payload's interpreter load code the payload check never reads.
+// This puts the option channel in line with the existing known limit: a payload
+// that runs a script file is not read either.
+const TRANSIENT_UNIT_PROPERTIES = new Set([
+  'WorkingDirectory', 'Nice', 'IOSchedulingClass', 'IOSchedulingPriority', 'CPUWeight', 'IOWeight',
+  'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec',
+])
+const TRANSIENT_UNIT_RUNTIME_MAX_SEC = 7200
+// A word ends at any character that cannot be part of a command name, so `${X}claude`
+// is caught here as it is by the setsid/nohup branch's \bclaude\b.
+const TRANSIENT_PAYLOAD_DENY_WORD_RX =
+  /(?:^|[^A-Za-z0-9_-])(?:claude(?:-code)?|crontab|launchctl|systemd-run|at|batch|tmux|nohup|setsid|disown|sleep|watch|eval)(?=$|[^A-Za-z0-9_-])/i
+
+// Split a string into shell words: [{ value (quotes removed), start (index of the
+// word's first character, including an opening quote), expands (the word bash runs
+// is not this text: `$` or a backtick outside single quotes, or a brace, glob or
+// redirection character outside any quotes) }]; null if unterminated.
+function transientShellWords(command) {
+  const words = []
+  const n = command.length
+  let i = 0
+  while (i < n) {
+    if (command[i] === ' ' || command[i] === '\t') { i++; continue }
+    const start = i
+    let value = ''
+    let expands = false
+    while (i < n && command[i] !== ' ' && command[i] !== '\t') {
+      const c = command[i]
+      if (c === "'") {
+        const end = command.indexOf("'", i + 1)
+        if (end < 0) return null
+        value += command.slice(i + 1, end)
+        i = end + 1
+      } else if (c === '"') {
+        i++
+        let closed = false
+        while (i < n) {
+          const d = command[i]
+          if (d === '"') { closed = true; i++; break }
+          if (d === '\\' && i + 1 < n && '"\\$`'.includes(command[i + 1])) {
+            value += command[i + 1]
+            i += 2
+          } else {
+            if (d === '$' || d === '`') expands = true
+            value += d
+            i++
+          }
+        }
+        if (!closed) return null
+      } else if (c === '\\') {
+        if (i + 1 >= n) return null
+        value += command[i + 1]
+        i += 2
+      } else {
+        if ('$`{}*?[<>'.includes(c)) expands = true
+        value += c
+        i++
+      }
+    }
+    words.push({ value, start, expands })
+  }
+  return words
+}
+
+export function transientUserUnitAllowed(command) {
+  if (typeof command !== 'string' || /[\r\n]/.test(command)) return false
+  // $'...' (ANSI-C) and $"..." quoting are not modelled by the word splitter below:
+  // bash turns $'cl\x61ude' into `claude`, so a payload in that quoting gets no exemption.
+  if (/\$['"]/.test(command)) return false
+  const masked = maskInertLiterals(command)
+  if (masked == null) return false
+  if (/[;&|`<]|\$\(|>\(/.test(masked.replace(/\d*>&\d+/g, ' '))) return false
+  const words = transientShellWords(command)
+  if (words == null || words.length === 0) return false
+  if (words[0].value !== 'systemd-run' || command.slice(words[0].start, words[0].start + 11) !== 'systemd-run') return false
+  const FLAGS = new Set(['--user', '--collect', '-G', '--quiet', '-q', '--same-dir', '-d', '--wait', '--pipe', '-P'])
+  const LONG_VALUE = new Set(['--unit', '--description', '--working-directory', '--nice', '--property'])
+  const SHORT_VALUE = { '-u': '--unit', '-p': '--property' }
+  let user = false
+  let runtimeMax = false
+  let collect = false
+  let i = 1
+  while (i < words.length && words[i].value.startsWith('-')) {
+    const w = words[i].value
+    i++
+    if (w === '--') break
+    if (FLAGS.has(w)) {
+      if (w === '--user') user = true
+      if (w === '--collect' || w === '-G') collect = true
+      continue
+    }
+    let opt
+    let val
+    if (SHORT_VALUE[w] !== undefined) {
+      opt = SHORT_VALUE[w]
+    } else if (w.startsWith('--')) {
+      const eq = w.indexOf('=')
+      opt = eq < 0 ? w : w.slice(0, eq)
+      if (!LONG_VALUE.has(opt)) return false
+      if (eq >= 0) val = w.slice(eq + 1)
+    } else {
+      return false
+    }
+    if (val === undefined) {
+      if (i >= words.length) return false
+      val = words[i].value
+      i++
+    }
+    if (opt === '--unit') {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_@:-]*(?:\.service)?$/.test(val)) return false
+    } else if (opt === '--description' || opt === '--working-directory') {
+      if (val === '') return false
+    } else if (opt === '--nice') {
+      if (!/^-?\d{1,2}$/.test(val)) return false
+    } else {
+      const m = /^([A-Za-z]+)=[\s\S]*$/.exec(val)
+      if (!m || !TRANSIENT_UNIT_PROPERTIES.has(m[1])) return false
+      if (m[1] === 'RuntimeMaxSec') {
+        const text = val.slice(val.indexOf('=') + 1)
+        if (!/^[1-9][0-9]{0,3}$/.test(text) || Number(text) > TRANSIENT_UNIT_RUNTIME_MAX_SEC) return false
+        runtimeMax = true
+      }
+    }
+  }
+  if (!user || !collect || !runtimeMax || i >= words.length) return false
+  // systemd-run reads options up to its first non-option argument ("+" getopt), so a
+  // word bash still splits or expands there can turn into an option this loop never
+  // saw: --description=x${IFS}--on-active=5m, {--on-active=5m,true}, an empty $X, or a
+  // redirection that bash drops from argv (>/tmp/l --on-active=5m).
+  if (words.slice(0, i + 1).some((w) => w.expands)) return false
+  const rawPayload = command.slice(words[i].start)
+  const joined = words.slice(i).map((w) => w.value).join(' ')
+  for (const s of [rawPayload, joined]) {
+    if (TRANSIENT_PAYLOAD_DENY_WORD_RX.test(s) || /\/api\//i.test(s) || /\$\(|`|</.test(s)) return false
+  }
+  return true
+}
+
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
 const SCHEDULE_STORE_RX = /scheduled_tasks\.json/i
@@ -2405,9 +2568,12 @@ function decide(toolName, toolInput, opts = {}) {
     // the only one that gets quote-aware segments. Null (unresolvable quoting)
     // falls back to the naive split, i.e. to scanning strictly more.
     const masked = maskInertLiterals(safeCommand)
+    // The transient-unit exemption lifts ONLY the scheduler-binary deny, and only for a
+    // command that is one single transient-unit invocation; every check above still ran.
+    const transientUnitOk = transientUserUnitAllowed(String(toolInput?.command ?? ''))
     for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
-      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg) && !transientUnitOk) return { deny: true }
     }
     // Shell code handed to another shell (sh -c, eval, here-strings, heredocs,
     // tmux -c) is decided recursively; quoted, it was blanked above. The RAW
@@ -2441,7 +2607,9 @@ const GATE_MSG =
   '$HOME nem), se ~/.claude/scheduled-tasks/ iras (olvasni ls/cat/grep/sed -n lehet, ' +
   'de NE cd-vel a store-ba -- abszolut uttal hivatkozz ra), se schedule-registry-cli register/unregister ' +
   '(csak status es verify), se utemezes-tabla SQL-iras vagy a claudeclaw.db fajl felulirasa, ' +
-  'se /loop self-pace. Ha csak egy dokumentumot irsz, ami az utemezo API-t vagy a store-t emliti ' +
+  'se /loop self-pace. ' +
+  'Kivetel: hosszu tesztfutashoz EGYETLEN azonnali, idozito nelkuli `systemd-run --user --collect -p RuntimeMaxSec=<1..7200> [--unit=NEV] <parancs>` megengedett, onallo parancskent (--on-*/--timer-property, -E/--setenv/Environment=, claude, utemezo, tmux, sleep es /api/ nelkul). ' +
+  'Ha csak egy dokumentumot irsz, ami az utemezo API-t vagy a store-t emliti ' +
   '(jegyzet, review-tervezet): a nativ Write tool-lal ird, a store-on kivuli utra -- az atmegy; ' +
   'egy fajlba iranyitott heredoc (cat <<EOF > fajl) nem. Utemezest a fo agenstol kerj inter-agent uzenetben. ' +
   'Input-vezerelt ' +
