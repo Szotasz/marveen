@@ -203,6 +203,8 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
     ['the same after a subshell cd', '(cd /tmp); cp a $f'],
     ['a write with a control word before it', 'if true; then cp a $f; fi'],
     ['a write after a cd into the store', 'cd store; cp a $f'],
+    // measured from the caller's cwd too, from the first segment on: the price of "only stricter"
+    ['a write after a cd out of the root', 'cd /tmp; cp a $f'],
   ])('%s stays denied from the root', (_, cmd) => {
     expect(from(cmd, root)).toEqual({ deny: true, reason: 'egress-allowlist' })
   })
