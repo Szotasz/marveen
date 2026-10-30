@@ -5,11 +5,13 @@
 //                                 code, or, once the owner is registered, the login
 //                                 code for a new phone (see mxd-dash.ts requestOwnerQr)
 //
-// Who may ask for the QR: the owner QR is a credential for the owner's chat account,
-// so it takes the same principal as issuing a device key (routes/auth.ts
-// mayIssueCredentials, DEVKEYMINT1022): the owner's dashboard session, or the shared
-// token only before the first dashboard login exists. The shared bearer is held by
-// every fleet agent; it must not be able to sign an app in as the owner.
+// Who may ask for the QR: ONLY the owner's dashboard session. This is stricter than
+// issuing a device key (routes/auth.ts mayIssueCredentials, DEVKEYMINT1022), which
+// lets the shared token in before the first dashboard login exists. Here that
+// first-run branch is closed on purpose (Dani's review of #2365): the shared bearer
+// is held by every fleet agent, and the first owner_invite claims the owner's chat
+// seat on the controller once. On a fresh install the owner first sets up the
+// dashboard login, then asks for the QR.
 //
 // The global Origin gate (csrf-origin) refuses a foreign-origin POST before this
 // runs; the POST here also refuses a non-JSON body (415), as video-review does.
@@ -20,9 +22,22 @@
 import type http from 'node:http'
 import { logger } from '../../logger.js'
 import { json, methodNotAllowed, readBody } from '../http-helpers.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { OWNER_SESSION_REQUIRED } from './auth.js'
+import { parseCookies, SESSION_COOKIE_NAME } from '../auth-gate.js'
+import { resolveSession } from '../auth-sessions.js'
 import { mxdDashCall, MxdDashError, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import type { RouteContext } from './types.js'
+
+/** The owner's dashboard session, and nothing else: a session principal, or the
+ *  shared token sent alongside a valid session cookie (a logged-in owner whose
+ *  browser also keeps the access token). Never the bare token, not even before the
+ *  first login exists; never a sub-agent token, a device key or a federation peer. */
+export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMessage): boolean {
+  if (auth?.kind === 'session') return true
+  if (auth?.kind !== 'token' || auth.tokenAgent) return false
+  const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
+  return !!cookie && resolveSession(cookie) !== null
+}
 
 const STATUS_PATH = '/api/gromzo/status'
 const OWNER_QR_PATH = '/api/gromzo/owner-qr'
@@ -103,7 +118,7 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
   if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }
   // Drain the (empty) body; nothing in it is used.
   try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
-  if (!mayIssueCredentials(auth, req)) {
+  if (!isOwnerSession(auth, req)) {
     logger.warn({ kind: auth?.kind }, 'gromzo: owner QR refused (needs the owner session)')
     json(res, OWNER_SESSION_REQUIRED, 403)
     return true

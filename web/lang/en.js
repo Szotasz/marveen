@@ -2272,7 +2272,7 @@ window._i18n.en = {
   'gromzo.err.invite_outstanding': 'The previous registration code is still valid (for up to 10 minutes). Use it, or wait until it expires and request a new one.',
   'gromzo.err.not_running': 'The chat service (mxd) is not running on this machine.',
   'gromzo.err.timeout': 'The chat service did not answer in time. Try again in a minute.',
-  'gromzo.err.owner_session_required': 'This needs the dashboard sign-in with your password (the owner login).',
+  'gromzo.err.owner_session_required': 'This needs the dashboard sign-in with your password (the owner login). If you have no dashboard login yet, set one up first, then ask for the code.',
   'gromzo.err.identity_reset_in_progress': 'A security reset of your account is in progress. You can request the code after it finishes.',
   'gromzo.err.team_lapsed': 'Your subscription has lapsed, so no code can be issued right now.',
   'gromzo.err.generic': 'Could not request a code ({code}). Try again later.',

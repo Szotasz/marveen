@@ -31,7 +31,8 @@ vi.mock('../env.js', async (importOriginal) => ({
 
 const { initDatabase, getDb, createDashboardUser } = await import('../db.js')
 const { tryHandleGromzo } = await import('../web/routes/gromzo.js')
-const { requiresAuth } = await import('../web/auth-gate.js')
+const { requiresAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
+const { createSession } = await import('../web/auth-sessions.js')
 const { isBlockedCrossOriginWrite } = await import('../web/csrf-origin.js')
 
 let fake: FakeMxdDash
@@ -61,7 +62,7 @@ beforeAll(async () => {
 afterAll(async () => { server.close(); await fake.close() })
 beforeEach(() => {
   getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
-  principal = { kind: 'token' }
+  principal = { kind: 'session', user: 'owner' }
   fake.script.clear()
   fake.seen.length = 0
   logged.length = 0
@@ -113,6 +114,7 @@ describe('auth and same-origin', () => {
   it('once a dashboard login exists, the shared token cannot mint the owner QR', async () => {
     createDashboardUser('owner', 'x')
     fake.script.set('owner_invite', INVITE_OK)
+    principal = { kind: 'token' }
     const r = await postQr()
     expect(r.status).toBe(403)
     expect((await r.json()).code).toBe('owner_session_required')
@@ -130,9 +132,22 @@ describe('auth and same-origin', () => {
     }
   })
 
-  it('before the first login exists, the shared token is the owner (first-run setup)', async () => {
+  it('before the first login exists, the shared token is still refused: every fleet agent holds it (Dani, #2365 review)', async () => {
     fake.script.set('owner_invite', INVITE_OK)
-    expect((await postQr()).status).toBe(200)
+    principal = { kind: 'token' }
+    const r = await postQr()
+    expect(r.status).toBe(403)
+    expect((await r.json()).code).toBe('owner_session_required')
+    expect(fake.seen).toEqual([])
+  })
+
+  it('once a login exists, the bare shared token is refused, the token with a live session cookie is the owner', async () => {
+    const u = createDashboardUser('owner', 'x')
+    fake.script.set('owner_invite', INVITE_OK)
+    principal = { kind: 'token' }
+    expect((await postQr()).status).toBe(403)
+    const sid = createSession({ userId: u.id, username: u.username })
+    expect((await postQr({ 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
   })
 })
 
@@ -213,6 +228,20 @@ describe('POST /api/gromzo/owner-qr', () => {
     const r = await postQr()
     expect(r.status).toBe(502)
     expect(await r.text()).not.toContain('SNEAKY')
+  })
+})
+
+describe('the page that draws the secret', () => {
+  // The QR library runs in the same page as the owner secret: a swapped CDN reply
+  // could read the URI. Pinned by Subresource Integrity (Dani, #2365 review); the
+  // hash is of the npm tarball's dist/qrcode.js, which jsDelivr serves unchanged.
+  it('loads qrcode-generator only at the exact version, with integrity and crossorigin', () => {
+    const html = readFileSync(join(__dirname, '..', '..', 'web', 'index.html'), 'utf-8')
+    const tags = html.match(/<script[^>]*qrcode-generator[^>]*>/g) ?? []
+    expect(tags).toHaveLength(1)
+    expect(tags[0]).toContain('qrcode-generator@2.0.4/')
+    expect(tags[0]).toMatch(/\sintegrity="sha384-e9EFD6BGC90bkW9aDV5xbbBfzwN7G8YImHao2lfLVKV\/hPB0E0go\+H3I64h7oHtA"/)
+    expect(tags[0]).toMatch(/\scrossorigin="anonymous"/)
   })
 })
 
