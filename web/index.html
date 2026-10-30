@@ -1340,6 +1340,27 @@
         </div>
       </div>
 
+      <!-- GROMZOOWNERQR1030: the Gromzo app's owner QR code. The first time it is the
+           registration code, afterwards the login code for a new phone. The code is
+           drawn client-side into #gromzoQr only, shown for at most 2 minutes, then
+           wiped. Rendered by setupGromzoCard() in app.js. -->
+      <div class="card gromzo-card" id="gromzoCard" style="margin-bottom:16px">
+        <h3 data-i18n="gromzo.card.title">Gromzo (mobilapp)</h3>
+        <p class="modal-desc" data-i18n="gromzo.card.desc">Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.</p>
+        <p class="gromzo-status" id="gromzoStatus"></p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary btn-compact" id="gromzoAddPhoneBtn" data-i18n="gromzo.btn.add_phone">Telefon hozzáadása</button>
+        </div>
+        <p class="mobile-login-warn" id="gromzoError" hidden></p>
+        <div class="gromzo-qr-area" id="gromzoQrArea" hidden>
+          <div id="gromzoQr" class="mobile-login-qr"></div>
+          <p class="modal-desc" id="gromzoQrHint"></p>
+          <p class="gromzo-countdown" id="gromzoCountdown"></p>
+          <p class="mobile-login-warn" data-i18n="gromzo.qr.warn">A kód belépést ad a fiókodba. Csak a saját telefonoddal olvasd be, ne fotózd le és ne oszd meg.</p>
+          <button class="btn-secondary btn-compact" id="gromzoQrClose" data-i18n="gromzo.btn.hide">Kód elrejtése</button>
+        </div>
+      </div>
+
       <!-- Dashboard browser login (optional). Rendered by renderAuthCard():
            create the first login when none exists, else change password + list
            active sessions and log out. Starts hidden; loadSettings() moves it

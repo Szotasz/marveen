@@ -365,6 +365,8 @@ function switchPage(pageId) {
   if (pageId !== 'agents') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
+  // GROMZOOWNERQR1030: the owner QR never outlives the Settings page.
+  if (pageId !== 'settings' && typeof window.clearGromzoQr === 'function') window.clearGromzoQr()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
@@ -16249,6 +16251,7 @@ async function loadSettings() {
   updateSettingsSaveBar()
 
   renderAuthCard()
+  if (typeof window.loadGromzoCard === 'function') window.loadGromzoCard()
 
   try {
     const res = await fetch('/api/settings')
@@ -20489,6 +20492,133 @@ async function openResearchDoc(agent, name) {
   btn.addEventListener('click', () => { render(); openModal(overlay) })
   if (closeBtn) closeBtn.addEventListener('click', () => closeModal(overlay))
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+})()
+
+// === Gromzo card: the owner's QR code (GROMZOOWNERQR1030, MOBILRELOGINDASH1025) ===
+// POST /api/gromzo/owner-qr answers with the app's URI: the registration code while
+// the owner seat is free, afterwards a new phone's login code. The URI carries a live
+// secret, so: it is drawn client-side into #gromzoQr (an SVG of modules, no text,
+// no attribute holding it), shown for at most 2 minutes (or less if the code expires
+// sooner), then wiped; closing the panel and leaving the page wipe it too. Nothing
+// is stored, nothing is copyable, the request is no-store.
+;(function setupGromzoCard() {
+  const card = document.getElementById('gromzoCard')
+  if (!card) return
+  const statusEl = document.getElementById('gromzoStatus')
+  const btn = document.getElementById('gromzoAddPhoneBtn')
+  const errEl = document.getElementById('gromzoError')
+  const area = document.getElementById('gromzoQrArea')
+  const qrBox = document.getElementById('gromzoQr')
+  const hintEl = document.getElementById('gromzoQrHint')
+  const cdEl = document.getElementById('gromzoCountdown')
+  const closeBtn = document.getElementById('gromzoQrClose')
+  const SHOW_MAX_S = 120
+  let timer = null
+
+  function clearQr(expiredNote) {
+    if (timer) { clearInterval(timer); timer = null }
+    qrBox.replaceChildren()
+    hintEl.textContent = ''
+    cdEl.textContent = ''
+    area.hidden = true
+    btn.disabled = false
+    if (expiredNote) showError(t('gromzo.qr.expired'))
+  }
+
+  function showError(msg) {
+    errEl.textContent = msg
+    errEl.hidden = !msg
+  }
+
+  function errorText(code) {
+    const key = 'gromzo.err.' + code
+    const s = t(key)
+    return s === key ? t('gromzo.err.generic', { code }) : s
+  }
+
+  async function loadStatus() {
+    statusEl.textContent = t('gromzo.status.loading')
+    try {
+      const r = await fetch('/api/gromzo/status', { cache: 'no-store' })
+      const s = r.ok ? await r.json() : { available: false, code: 'http_' + r.status }
+      if (s.available) {
+        statusEl.textContent = t(s.linked ? 'gromzo.status.linked' : 'gromzo.status.not_linked')
+      } else if (s.code === 'not_running' || s.code === 'no_access') {
+        statusEl.textContent = t('gromzo.status.not_running')
+      } else {
+        statusEl.textContent = t('gromzo.status.unknown', { code: String(s.code || '?') })
+      }
+    } catch (e) {
+      statusEl.textContent = t('gromzo.status.unknown', { code: 'network' })
+    }
+  }
+  window.loadGromzoCard = loadStatus
+
+  async function requestQr() {
+    clearQr(false)
+    showError('')
+    if (typeof qrcode !== 'function') { showError(t('gromzo.qr.lib_error')); return }
+    btn.disabled = true
+    statusEl.textContent = t('gromzo.qr.generating')
+    let data = null
+    try {
+      const r = await fetch('/api/gromzo/owner-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        cache: 'no-store',
+      })
+      if (!r.ok) {
+        let code = 'http_' + r.status
+        try {
+          const b = await r.json()
+          code = String(b.code || b.error || code)
+        } catch { /* keep the HTTP code */ }
+        showError(errorText(code))
+        btn.disabled = false
+        loadStatus()
+        return
+      }
+      data = await r.json()
+    } catch (e) {
+      showError(t('gromzo.err.generic', { code: 'network' }))
+      btn.disabled = false
+      loadStatus()
+      return
+    }
+    loadStatus()
+    const ttl = Math.max(1, Math.min(SHOW_MAX_S, Number(data && data.expires_in) || SHOW_MAX_S))
+    const hint = t(data && data.kind === 'login' ? 'gromzo.qr.login_hint' : 'gromzo.qr.join_hint')
+    try {
+      const qr = qrcode(0, 'M')
+      qr.addData(String(data && data.uri || ''))
+      qr.make()
+      qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })
+    } catch (e) {
+      data = null
+      showError(t('gromzo.err.generic', { code: 'qr' }))
+      btn.disabled = false
+      return
+    }
+    data = null // the URI is in no variable past this point, only in the drawing
+    hintEl.textContent = hint
+    area.hidden = false
+    const until = Date.now() + ttl * 1000
+    const tick = () => {
+      const left = Math.ceil((until - Date.now()) / 1000)
+      if (left <= 0) { clearQr(true); return }
+      cdEl.textContent = t('gromzo.qr.countdown', { sec: left })
+    }
+    tick()
+    timer = setInterval(tick, 1000)
+  }
+
+  btn.addEventListener('click', requestQr)
+  closeBtn.addEventListener('click', () => clearQr(false))
+  window.addEventListener('pagehide', () => clearQr(false))
+  // A hidden tab wipes it too; leaving the Settings page does (switchPage).
+  document.addEventListener('visibilitychange', () => { if (document.hidden) clearQr(false) })
+  window.clearGromzoQr = () => clearQr(false)
 })()
 
 // === Archivalt kartyak ===
