@@ -74,6 +74,20 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # ENDASHGATE1030 follow-up: the outgoing copy gate (em dash, spaced en dash,
+      # double hyphen, accents, homoglyphs, names) decides what may go out to a
+      # customer, yet none of its tests ran here, so a green CI said nothing about
+      # it. Every outgoing-copy-gate*.test.py runs, a new one included without
+      # touching this file; the first failure stops the step, and an empty glob
+      # fails too (the literal pattern is not a file). Hermetic: each test drives
+      # the hook as a subprocess with its own rules file or temp dir.
+      - name: Outgoing copy gate tests
+        run: |
+          set -e
+          for t in scripts/__tests__/outgoing-copy-gate*.test.py; do
+            echo "== $t"
+            python3 "$t"
+          done
       # HOOKDRIFT926: the hook sidecar validator (drift / reorder / missing
       # script / forbidden key) and the gate lock list of hook_switches.py,
       # then the validator itself on the repo's own settings.
