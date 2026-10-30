@@ -1796,16 +1796,20 @@ EM_DASH = "—"
 # Group 1 is the character before the white space, for the range exception below.
 SPACED_EN_DASH = re.compile(r"(\S)[^\S\r\n]+\u2013(?:[^\S\r\n]+(?=\S)|[^\S\r\n]*(?=\r?\n|$))")
 # A time span or a date range is a range, not a dash ("10:00 – 12:00", "október 30. – november 2.", "2026 – 2027"):
-# a digit, a period or a colon before the white space, and a digit or a month name (lower case) after the dash.
+# a digit, or a period right after a digit ("30."), before the white space, and a digit or a month name (lower case,
+# inflected too: "novemberig") after the dash. Any other period or colon before it is prose ("kész. – 3 dolog").
+_DIGITS = "0123456789"
 _RANGE_AFTER = re.compile(r"\d|(?:január|február|március|április|május|június|július|augusztus|szeptember|október"
-                          r"|november|december)\b")
+                          r"|november|december)")
 
 
 def spaced_en_dashes(prose: str) -> int:
     """How many spaced en dashes in `prose` are dashes (ENDASHGATE1030); a time span or date range is not one."""
     n = 0
     for m in SPACED_EN_DASH.finditer(prose):
-        if m.group(1) in "0123456789.:" and _RANGE_AFTER.match(prose, m.end()):
+        before = m.group(1)
+        number_before = before in _DIGITS or (before == "." and m.start() > 0 and prose[m.start() - 1] in _DIGITS)
+        if number_before and _RANGE_AFTER.match(prose, m.end()):
             continue
         n += 1
     return n

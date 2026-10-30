@@ -11,6 +11,7 @@ passed: 'ez megy – nem baj' went out.
   B6  double space and a tab around the dash                : BLOCKED, '2 helyen'
   B7  a dash at the end of a line ('ez megy –' + newline)   : BLOCKED
   B8  a word before the dash and a number after ('kell – 3 nap'): BLOCKED (both sides decide a range)
+  B9  a period or colon not after a number ('kb. – 3 nap', 'kész. – 3 dolog', 'Megjegyzés: – 3 pont'): BLOCKED, 3 places
   N1  an unspaced range ('10–12 óra között')                : passes
   N2  a list marker at the start of a line ('– első')       : passes
   N3  inside a code span ('`a – b`') and in a URL           : passes (technical regions)
@@ -18,7 +19,8 @@ passed: 'ez megy – nem baj' went out.
   N5  an indented list marker ('  – első')                  : passes
   S1  spaced_en_dashes(): a period before and each of the 12 month names after the dash is a range (0)
   N6  a time span or date range is a range, not a dash: '10 – 12 óra', '10:00 – 12:00', 'október 30. – november 2.',
-      '2026 – 2027' pass (a digit, period or colon before, a digit or a month name after)
+      '2026 – 2027', 'október 30. – novemberig' pass (a digit or a period after a digit before, a digit or a month
+      name, inflected too, after)
 KONTROLL: B1 and B4 against a copy without the new check: each must PASS there (else the test is blind).
 Run: python3 scripts/__tests__/outgoing-copy-gate-endash1030.test.py   (exit 0 = the listed checks passed, 1 = a failure)
 """
@@ -68,6 +70,7 @@ BLOKK = (
     ("B5 a number before a word, and two names", ELEJE + "megvan a 10 – nem baj, a Budapest – Bécs járat is" + VEGE, 2),
     ("B6 double space and a tab", ELEJE + "ez megy  –  nem baj, és az is\t–\tholnap" + VEGE, 2),
     ("B8 a word before the dash, a number after it", ELEJE + "ez kell – 3 nap múlva jó" + VEGE, 1),
+    ("B9 a period or colon not after a number", ELEJE + "kb. – 3 nap kell, kész. – 3 dolog maradt, Megjegyzés: – 3 pont" + VEGE, 3),
     ("B7 a dash at the end of a line", "Szia! Holnap reggel átnézem, ez megy –\nnem baj, és küldöm a választ. Köszönöm szépen.", 1),
 )
 ATMEGY = (
@@ -79,6 +82,7 @@ ATMEGY = (
     ("N6b a time span", ELEJE + "a hívás 10:00 – 12:00 között jó" + VEGE),
     ("N6c a date range with month names", ELEJE + "a szabadság október 30. – november 2. között lesz" + VEGE),
     ("N6d a range of years", ELEJE + "a 2026 – 2027 tanév rendben" + VEGE),
+    ("N6e an inflected month name", ELEJE + "a szünet október 30. – novemberig tart" + VEGE),
     ("N5 an indented list marker", "Szia! A teendők holnapra:\n  – első lépés\n  – második lépés\nKöszönöm szépen, és küldöm a választ."),
 )
 
