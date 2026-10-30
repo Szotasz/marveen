@@ -516,12 +516,33 @@ export function installFileDeny(command, opts = {}) {
       if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
     }
   }
+  // An unresolved quoting whose only mention is a directory on the way to a protected path, the install root itself
+  // most often (`cd <root>; ... "$(cd $d; git remote get-url origin)"`, Marveen 57083). Holds when the rest, read
+  // roughly with its cd followed, names no protected path from the cwd each command runs in, and no substitution's own
+  // text names one (ancestor too) from any of those cwds. A cd that cannot be followed outside a substitution: no.
+  const ancestorOnlyHolds = (text) => {
+    const subs = liveSubstitutions(text)
+    let outer = text
+    for (const s of subs) outer = outer.split('$(' + s + ')').join(' ').split('`' + s + '`').join(' ')
+    const c = { ...ctx }
+    const cwds = [c.cwd]
+    for (const words of roughCommands(outer)) {
+      c.cwdInsideDir = insideDir(c.cwd)
+      if (hitsIn(words.map((w) => w.value).join(' '), c).some((h) => h.kind !== 'ancestor')) return false
+      if (!['cd', 'pushd', 'popd'].includes(words[0].value)) continue
+      cwdAfterSegment(words.map((w) => w.value).join(' '), c)
+      if (!c.cwd) return false
+      cwds.push(c.cwd)
+    }
+    return !subs.some((s) => cwds.some((cwd) => hitsIn(s, { ...ctx, cwd, cwdInsideDir: insideDir(cwd) }).length))
+  }
   if (!segs) {
     // The quoting does not resolve: a command substitution with quotes or an expansion inside, most often a plain reader
     // (`echo "$(git log -1 --format='%ad' $c)"`, Dani 56794). A protected path anywhere in it: fail closed. Otherwise
     // the git and the implicit-writer rules still run on a rough reading of every command in it, so a write hidden in
     // a substitution is not lost.
-    if (hitsIn(cmd, ctx).length) return true
+    const hits = hitsIn(cmd, ctx)
+    if (hits.some((h) => h.kind !== 'ancestor') || (hits.length && !ancestorOnlyHolds(cmd))) return true
     for (const words of roughCommands(cmd)) {
       const git = gitWords(words)
       if (git && gitDecision(git, ctx) === 'deny') return 'git'

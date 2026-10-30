@@ -380,6 +380,31 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('a running hook script with the protected path as its OUTPUT is denied', () => {
     expect(bash(`python3 scripts/hooks/gate.py --out .claude/settings.json`)).toEqual(DENY_FILE)
   })
+
+  // Marveen 57083, Samu 57104: an unresolved quoting failed closed on ANY mention, the install root's own path too (a
+  // directory on the way to a protected path), so a reading loop that started with a cd to the root was denied.
+  it.each([
+    ['Marveen\'s loop', 'cd @ROOT@; for d in agents/*/*/; do [ -e "$d/.git" ] && echo "$(cd $d; git remote get-url origin 2>/dev/null) $d"; done 2>/dev/null | sort -u -k1,1 | head -30'],
+    ['the minimal shape', 'cd @ROOT@; echo "$(echo $x)"'],
+    ['the root as an argument', 'echo @ROOT@ "$(cd $d; pwd)"'],
+    ['git -C in the substitution', 'cd @ROOT@; for d in agents/*/*/; do echo "$(git -C $d remote get-url origin) $d"; done'],
+  ])('%s passes, from the install and from elsewhere', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+    expect(bash(cmd, base)).toEqual(ALLOW)
+  })
+  it.each([
+    ['a protected path relative to the cd', 'cd @ROOT@; echo "$(cat $f)" > .claude/settings.json'],
+    ['a protected directory relative to the cd', 'cd @ROOT@; echo "$(cat $f)" > scripts/hooks/x.mjs'],
+    ['two cds', 'cd @ROOT@ && cd scripts; echo "$(cat $f)" > hooks/x.mjs'],
+    ['a cd that cannot be followed', 'cd @ROOT@; cd $Y; echo "$(echo $y)" > settings.json'],
+    ['an absolute protected path in the substitution', 'echo @ROOT@ "$(cat $f > @ROOT@/.claude/settings.json)"'],
+    ['a cd under a protected directory in the substitution', 'cd @ROOT@; echo "$(cd @ROOT@/scripts/hooks; cp $x a.mjs)"'],
+    ['a relative protected directory in the substitution', 'cd @ROOT@; echo "$(cd .claude; cp $x settings.json)"'],
+    ['the root itself in the substitution', 'cd @ROOT@; echo "$(cd @ROOT@; cp $x b)"'],
+  ])('%s stays denied, from the install and from elsewhere', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+    expect(bash(cmd, base)).toEqual(DENY_FILE)
+  })
 })
 
 // Samu 56294/56299/56310, Dani 56284/56308; the base claim measured on a throwaway clone first
