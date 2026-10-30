@@ -717,7 +717,7 @@ function getAgentDetail(name: string): AgentDetail {
 }
 
 export function listAgentSummaries(): AgentSummary[] {
-  return listAgentNames().map(getAgentSummary)
+  return withTmuxBatch(() => listAgentNames().map(getAgentSummary))
 }
 
 // Max inter-agent messages a single main-agent inbox drain returns. The rest
