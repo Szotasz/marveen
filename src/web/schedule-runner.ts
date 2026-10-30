@@ -54,7 +54,9 @@ import { toPendingRetryView, classifySendError, OWNER_ESCALATION_EXTRA_MS, type 
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
-  wrapScheduledTaskByReference,
+  scheduledTaskReferencePrompt,
+  scheduledTaskFilePreamble,
+  scheduledTaskBlockFrame,
 } from '../prompt-safety.js'
 import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
 import { cronMinGapMs, cronPrevOccurrence, effectiveCronTz } from './cron.js'
@@ -63,7 +65,6 @@ import {
   readScheduledTask,
   parseChannelProvider,
   SCHEDULED_TASKS_DIR,
-  SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
   isOnceRunSuccess,
@@ -762,15 +763,6 @@ export function sizeGuardLevel(
   return 'none'
 }
 
-// Whether the task body is large enough that tmux delivery must go through
-// the fire-time snapshot + reference path instead of inline (spec 3.3).
-export function shouldSnapshotTaskBody(
-  bodyChars: number,
-  inlineMaxChars: number = SCHEDULED_TASK_INLINE_MAX_CHARS,
-): boolean {
-  return bodyChars > inlineMaxChars
-}
-
 export interface ScheduledTaskBlockDeps {
   writeSnapshot: typeof writeScheduledRunSnapshot
   isValidReference: (filePath: string) => boolean
@@ -781,32 +773,49 @@ const DEFAULT_TASK_BLOCK_DEPS: ScheduledTaskBlockDeps = {
   isValidReference: (filePath) => isScheduledRunReference(filePath),
 }
 
-// Build the <scheduled-task> block for one fire: inline, or a reference to a
-// fire-time snapshot (spec 3.3). The reference path is taken only when all
-// three hold, otherwise the body goes inline and the task is never dropped:
-//   - the body crosses SCHEDULED_TASK_INLINE_MAX_CHARS;
-//   - the target session is LOCAL (host === null). The snapshot lives on the
-//     dashboard host, so a remote agent could not Read it and the task would
-//     be silently undelivered;
-//   - the snapshot was written (write failure = spec test 11) and its path
-//     passes isScheduledRunReference (a rejected path is logged there).
-export function buildScheduledTaskBlock(
+// The line the resubmit loop and isScheduledPromptStuck look for in the pane.
+export function scheduledTaskMarker(task: Pick<ScheduledTask, 'name' | 'type'>): string {
+  return task.type === 'heartbeat' ? `[Heartbeat: ${task.name}]` : `[Utemezett feladat: ${task.name}]`
+}
+
+// Build the prompt typed into the pane for one fire (spec 3.3, NUDGESHORT1031).
+// A LOCAL agent gets a short pointer (scheduledTaskReferencePrompt) to a
+// fire-time snapshot that holds the whole prompt: full notice, the prefix with
+// its result routing, and the task block. The pointer stays under
+// NUDGE_MAX_CHARS whatever the task's size, because a typed prompt over ~800
+// chars is what the TUI's paste detector cuts up (see prompt-safety.ts).
+// Inline -- the full notice, the prefix and the block typed as before -- only
+// when the pointer cannot be used, so the task is never dropped:
+//   - the target session is REMOTE (host !== null): the snapshot lives on the
+//     dashboard host, a remote agent could not Read it;
+//   - the snapshot write failed (spec test 11), or its path fails
+//     isScheduledRunReference (a rejected path is logged there).
+export function buildScheduledTaskPrompt(
   taskName: string,
+  marker: string,
+  prefix: string,
   taskBody: string,
   host: string | null,
   nowMs: number,
   deps: ScheduledTaskBlockDeps = DEFAULT_TASK_BLOCK_DEPS,
-): { block: string; delivery: 'inline' | 'reference' } {
+): { prompt: string; delivery: 'inline' | 'reference' } {
   const source = `scheduled-task:${taskName}`
-  const inline = { block: wrapScheduledTask(source, taskBody), delivery: 'inline' as const }
-  if (!shouldSnapshotTaskBody(taskBody.length)) return inline
+  const inline = {
+    prompt: SCHEDULED_TASK_PREAMBLE + '\n' + prefix.trimEnd() + '\n\n' + wrapScheduledTask(source, taskBody),
+    delivery: 'inline' as const,
+  }
   if (host !== null) return inline
   const skillPath = join(SCHEDULED_TASKS_DIR, taskName, 'SKILL.md')
-  const snapshot = deps.writeSnapshot(taskName, taskBody, { firedAt: new Date(nowMs), skillPath })
+  const { open, close } = scheduledTaskBlockFrame(source)
+  const frame = (filePath: string) => ({
+    before: scheduledTaskFilePreamble(filePath) + '\n' + prefix.trimEnd() + '\n\n' + open,
+    after: close,
+  })
+  const snapshot = deps.writeSnapshot(taskName, taskBody, { firedAt: new Date(nowMs), skillPath, frame })
   if (!snapshot) return inline
   if (!deps.isValidReference(snapshot.filePath)) return inline
   return {
-    block: wrapScheduledTaskByReference(source, snapshot.filePath, snapshot.sha256, snapshot.chars),
+    prompt: scheduledTaskReferencePrompt(marker, snapshot.filePath, snapshot.sha256, snapshot.chars),
     delivery: 'reference',
   }
 }
@@ -2218,11 +2227,8 @@ async function attemptFireTask(
     // their length, so folding them in would make the guard fire on
     // something the operator cannot fix from the SKILL.md.
     maybeSendSizeGuardNotice(task.name, task.prompt.length, now)
-    const { block: scheduledTaskBlock } = buildScheduledTaskBlock(task.name, taskBody, host, now)
-    const fullPrompt =
-      SCHEDULED_TASK_PREAMBLE + '\n' +
-      prefix.trimEnd() + '\n\n' +
-      scheduledTaskBlock
+    const marker = scheduledTaskMarker(task)
+    const { prompt: fullPrompt } = buildScheduledTaskPrompt(task.name, marker, prefix, taskBody, host, now)
     // A worksource agent takes the prompt through its queue, not the keyboard (see queueScheduledToWorksource).
     // `await`, so a throwing enqueue still lands in the catch below and books an 'error' run.
     if (shouldQueueScheduledToWorksource(agentName, host)) {
@@ -2379,9 +2385,6 @@ async function attemptFireTask(
     // line. We want the prompt to run, not disappear -- so if the pane
     // still shows our marker below ❯ after a short wait, re-send Enter so
     // the submit sticks. We retry a couple of times before giving up.
-    const marker = task.type === 'heartbeat'
-      ? `[Heartbeat: ${task.name}]`
-      : `[Utemezett feladat: ${task.name}]`
     const resubmit = async (attempt: number, laneBusySkips = 0): Promise<void> => {
       try {
         // TASKTAIL805: the whole probe+act step is one recover-mode critical
