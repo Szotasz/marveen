@@ -1,7 +1,8 @@
 import { isSingleLineEnvValue } from '../../env.js'
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
+import type { ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
@@ -433,6 +434,28 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
     ? channelStateDir(provider)
     : channelStateDir(provider, agentDir(name))
   return join(dir, 'access.json')
+}
+
+// ACCESSREADFAIL1030: the read half of every dashboard write to a channel
+// access.json (pairing approve, allowlist remove, Slack channel-request
+// approve). A MISSING file is a fresh start ({}), as before. A file that
+// EXISTS but cannot be read (EACCES/EPERM/...) or is not a JSON object is
+// refused: the route answers 500, writes nothing and renames nothing.
+// readFileOr's '{}' fallback used to turn an unreadable file into an empty
+// allowlist that the route then wrote back, wiping allowFrom, policy and
+// groups. readJsonObjectForWrite logs the path and the error, never the
+// file's contents. Returns null once the error response has been sent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function readChannelAccessForWrite(res: ServerResponse, accessPath: string): Record<string, any> | null {
+  try {
+    return readJsonObjectForWrite(accessPath)
+  } catch (err) {
+    json(res, {
+      error: 'access.json exists but cannot be read or is not valid JSON; nothing was changed',
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500)
+    return null
+  }
 }
 
 function extractBotId(token: string): string | null {
@@ -2039,10 +2062,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       ? channelStateDir(provider)
       : channelStateDir(provider, agentDir(name))
     const accessPath = join(chDir, 'access.json')
-    const accessContent = readFileOr(accessPath, '{}')
+    const access = readChannelAccessForWrite(res, accessPath)
+    if (!access) return true
 
     try {
-      const access = JSON.parse(accessContent)
       const pending = access.pending || {}
       const entry = pending[code.trim()]
 
@@ -2125,7 +2148,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, result)
     } catch (err) {
       logger.error({ err }, 'Failed to create invite')
-      json(res, { error: 'Failed to create invite' }, 500)
+      // The detail names a refused unreadable/invalid access.json or
+      // invites.json (ACCESSREADFAIL1030) -- path only, never contents.
+      json(res, { error: 'Failed to create invite', detail: err instanceof Error ? err.message : String(err) }, 500)
     }
     return true
   }
@@ -2194,8 +2219,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       ? channelStateDir(provider)
       : channelStateDir(provider, agentDir(name))
     const accessPath = join(chDir, 'access.json')
+    const access = readChannelAccessForWrite(res, accessPath)
+    if (!access) return true
     try {
-      const access = JSON.parse(readFileOr(accessPath, '{}'))
       if (kind === 'user') {
         access.allowFrom = (access.allowFrom || []).filter((s: string) => s !== id)
         // safeJoin blocks a traversal id (e.g. "..%2F..%2Ftmp%2Fvictim") from
@@ -2245,18 +2271,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (provider !== 'slack') { json(res, { error: 'Only Slack agents support channel requests' }, 400); return true }
 
     const accessPath = resolveAccessPath(name, provider)
+    // A missing file starts from the default policy, as before. An existing
+    // file that cannot be read or parsed is refused (ACCESSREADFAIL1030): it
+    // used to be renamed to .corrupt-* and replaced by a fresh one, which
+    // dropped the live allowFrom/groups -- for a read error too, not only for
+    // a corrupt file.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let access: any = { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
+    if (existsSync(accessPath)) {
+      access = readChannelAccessForWrite(res, accessPath)
+      if (!access) return true
+    }
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let access: any = { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
-      if (existsSync(accessPath)) {
-        try {
-          access = JSON.parse(readFileSync(accessPath, 'utf-8'))
-        } catch (parseErr) {
-          const backupPath = `${accessPath}.corrupt-${Math.floor(Date.now() / 1000)}`
-          try { renameSync(accessPath, backupPath) } catch { /* best effort */ }
-          logger.warn({ parseErr, accessPath, backupPath }, 'Corrupt access.json backed up, starting fresh')
-        }
-      }
       if (!access.channels) access.channels = {}
 
       const channelConfig: Record<string, unknown> = { requireMention: opts.requireMention !== false }
