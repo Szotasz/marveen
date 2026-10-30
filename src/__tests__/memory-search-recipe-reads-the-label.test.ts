@@ -25,26 +25,33 @@ import { dirname, join } from 'node:path'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..', '..')
 
-const SURFACES: Array<{ label: string; path: string }> = [
-  { label: 'agent-scaffold (generated per-agent CLAUDE.md)', path: join(ROOT, 'src', 'web', 'agent-scaffold.ts') },
-  { label: 'templates/CLAUDE.md.template (new install)', path: join(ROOT, 'templates', 'CLAUDE.md.template') },
+// `curl`: the surface hands out the raw search URL and dumps the headers itself. `helper`: the surface
+// calls scripts/marveen-api.sh, whose memory-search verb prints the X-Memory-Search line first (and
+// takes --strict); the main agent's template moved there so no token sits on a curl argv.
+const SURFACES: Array<{ label: string; path: string; recipe: 'curl' | 'helper' }> = [
+  { label: 'agent-scaffold (generated per-agent CLAUDE.md)', path: join(ROOT, 'src', 'web', 'agent-scaffold.ts'), recipe: 'curl' },
+  { label: 'templates/CLAUDE.md.template (new install)', path: join(ROOT, 'templates', 'CLAUDE.md.template'), recipe: 'helper' },
 ]
 
-describe.each(SURFACES)('memory-search recipe in $label', ({ path }) => {
+describe.each(SURFACES)('memory-search recipe in $label', ({ path, recipe }) => {
   const src = readFileSync(path, 'utf-8')
 
   // Guard the guard: if the recipe ever moves out of this file, the assertions
   // below would pass vacuously on a file that no longer documents anything.
   it('still documents a memory search', () => {
-    expect(src).toMatch(/\/api\/memories\?[^"'\n]*q=/)
+    expect(src).toMatch(recipe === 'curl' ? /\/api\/memories\?[^"'\n]*q=/ : /marveen-api\.sh memory-search \S/)
   })
 
   // The bound is what makes this an assertion about the RECIPE rather than
   // about the file: a `-D` anywhere else in a 2000-line source would otherwise
   // satisfy it. The window is wide enough for a shell line continuation, which
   // is how the template writes the same command.
-  it('dumps the response headers, so the label is visible at all', () => {
-    expect(src).toMatch(/curl[\s\S]{0,200}?-D [\s\S]{0,200}?\/api\/memories\?[^"'\n]*q=/)
+  it('shows the label at all (curl: dumps the response headers; helper: its first output line)', () => {
+    expect(src).toMatch(
+      recipe === 'curl'
+        ? /curl[\s\S]{0,200}?-D [\s\S]{0,200}?\/api\/memories\?[^"'\n]*q=/
+        : /marveen-api\.sh memory-search [^\n]*\n[\s\S]{0,400}?X-Memory-Search/,
+    )
   })
 
   it('tells the reader to look at X-Memory-Search', () => {
@@ -71,7 +78,7 @@ describe.each(SURFACES)('memory-search recipe in $label', ({ path }) => {
   // would show up. A deleted assertion with no trace is how the reason gets
   // lost, so this comment stays.
 
-  it('points at strict=1 for an absence claim', () => {
-    expect(src).toContain('strict=1')
+  it('points at the strict form for an absence claim', () => {
+    expect(src).toContain(recipe === 'curl' ? 'strict=1' : '--strict')
   })
 })

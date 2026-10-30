@@ -97,33 +97,35 @@ A memória 3 rétegből áll (hot/warm/cold) + napi napló.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-A dashboard `/api/*` végpontjai Bearer tokennel védettek. A token a
-`store/.dashboard-token` fájlban van, minden példában behúzva.
+A dashboard `/api/*` végpontjai Bearer tokennel védettek. A hívásokat a `scripts/marveen-api.sh`
+segéd végzi: a tokent maga olvassa a `store/.dashboard-token` fájlból, így az nem kerül a
+parancssorba (a `ps` minden helyi felhasználónak megmutatja az argv-t). Kivétel a `message` ige:
+az `agent-msg.sh`-t futtatja, és az a tokent ÉS az üzenet szövegét is ma még a curl argv-jébe teszi
+(`-d "$BODY"`), így a szöveg a `ps`-ben is látszik. A szöveget (memória,
+napló, komment, üzenet) előbb írd fájlba a Write eszközzel, és a fájl útját add át: szöveget soha
+ne tegyél a parancssorba. A kilépési kód: 0 = 2xx, a válasz a stdout-on; 1 = HTTP-hiba, a törzs a
+stderr-en; 2 = hibás hívás, semmi nem ment el; 3 = a dashboard nem elérhető vagy nem válaszolt 30
+másodpercen belül. Időtúllépés után (3) a kérés már elmehetett: írásnál ismétlés előtt olvass
+vissza (pl. `kanban-list`), különben dupla kártya vagy komment lesz. A `message` igénél az
+`OK id=<n>` / `FAIL` kimenet a mérvadó (azt az `agent-msg.sh` adja, a saját kilépési kódjaival).
+Az igék listája: `bash scripts/marveen-api.sh --help`.
 
-Memória mentés:
+Memória mentés (a `mem.txt` a MIT, a CATEGORY hot, warm, cold vagy shared):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
+bash scripts/marveen-api.sh memory-save {{MAIN_AGENT_ID}} CATEGORY "kulcsszó1, kulcsszó2" mem.txt
 ```
 
-Napi napló (append-only):
+Napi napló (append-only; a `naplo.txt` első sora `## HH:MM -- Téma`, alatta mi történt, mi lett az eredmény):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
+bash scripts/marveen-api.sh daily-log {{MAIN_AGENT_ID}} naplo.txt
 ```
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
-curl -s -D /tmp/mem-fejlec.txt -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:{{WEB_PORT}}/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
-grep -i '^x-memory-search' /tmp/mem-fejlec.txt   # EZT IS OLVASD EL, nem opcionális
+bash scripts/marveen-api.sh memory-search {{MAIN_AGENT_ID}} KULCSSZÓ --category warm   # az első kimeneti sor az X-Memory-Search címke: EZT IS OLVASD EL, nem opcionális
 ```
 
-A `-D` NEM dísz. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja
+Az `X-Memory-Search` sor NEM dísz (ha `MISSING`, a keresés nem úgy futott, ahogy kérted). A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja
 őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz
 ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik.
 
@@ -133,7 +135,7 @@ ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search`
   és azt sem, hogy van találat: `relaxed=false; hits=0` létező válasz.
 
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
-`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik. Az engedékeny
+`--strict` kapcsolót: ott az üres válasz pontosan azt jelenti, aminek látszik. Az engedékeny
 alapértelmezés SZÁNDÉKOS -- a természetesen megfogalmazott kérdés attól találja meg a meglévő
 emléket. Amivel a végpont tartozik, az a CÍMKE, nem a szigor.
 
@@ -143,67 +145,52 @@ A kanban adatai a `store/claudeclaw.db` SQLite fájlban vannak, de **NE a `sqlit
 parancssori eszközzel nyúlj hozzá, és `jq`-t se feltételezz**: egyik sincs telepítve egy
 átlagos Linux gépen (a telepítő függőségei: ffmpeg, git, tmux, lsof, curl, python3, pipx,
 unzip), és ott a hívás `exit 127`-tel elhal. A tábla útja a dashboard API -- ugyanaz a
-Bearer token, mint a memóriánál. Szűréshez/számoláshoz `python3` van mindig kéznél.
+segéd, mint a memóriánál. Szűréshez/számoláshoz `python3` van mindig kéznél.
 
 Kártyák listázása (JSON tömb: id, title, status, assignee, priority, updated_at, archived_at):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:{{WEB_PORT}}/api/kanban
+bash scripts/marveen-api.sh kanban-list
 ```
 
-Új kártya:
+Új kártya (a `cim.txt` a CÍM; a kártya `planned` státuszba kerül, a prioritás low, normal, high vagy urgent):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"title":"CÍM","status":"planned","assignee":"{{MAIN_AGENT_ID}}","priority":"normal"}'
+bash scripts/marveen-api.sh kanban-create {{MAIN_AGENT_ID}} normal cim.txt
 ```
 
 Kártya mozgatása:
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"status":"in_progress"}'
+bash scripts/marveen-api.sh kanban-move KARTYA_ID in_progress
 ```
 
 Ha tudod, honnan mozgatod (egy kiosztott, `in_progress` kártya lezárása `done`/`waiting`/`testing`
-státuszra), küldd mellé az `"expected_status":"in_progress"` mezőt is: a mozgatás csak akkor lép,
-ha a kártya MÉG abban a státuszban van. HTTP 409 (`status_conflict`, a `current_status` mutatja,
-hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd újra feltétel nélkül,
+státuszra), add meg az `--expected-status in_progress` kapcsolót is: a mozgatás csak akkor lép,
+ha a kártya MÉG abban a státuszban van. HTTP 409 (a kilépési kód 1, a stderr `status_conflict`-et
+és a `current_status`-t mutatja, hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd újra feltétel nélkül,
 és NE dolgozz rajta tovább.
-Kész-re (done) zárásnál add meg, mit ellenőriztél: `-d '{"status":"done","evidence":"MIT MÉRTÉL, MI LETT AZ EREDMÉNY"}'`.
+Kész-re (done) zárásnál add meg, mit ellenőriztél (a `bizonyitek.txt` a MIT MÉRTÉL, MI LETT AZ EREDMÉNY):
+`bash scripts/marveen-api.sh kanban-move KARTYA_ID done --expected-status in_progress --evidence-file bizonyitek.txt`.
 Ügynökként bizonyíték nélkül a kártya `testing`-be kerül, nem `done`-ba.
 
 Kártya foglalása MIELŐTT dolgozni kezdesz rajta (két ágens ne vegye fel ugyanazt). Ez csak ott
 működik, ahol a kártya-foglalás be van kapcsolva (`KANBAN_CLAIM_LOCK=1`); kikapcsolva a `/claim`
-és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), ilyenkor foglalás nélkül dolgozz.
-Bekapcsolva csak akkor kezdj bele, ha a válasz HTTP 200; 409 esetén más foglalja (a válasz
-megmondja, ki és meddig), ilyenkor NE dolgozz rajta párhuzamosan. A foglalás alapból 2 óráig él
-(`ttl_seconds`, 60 és 86400 között); hosszabb munkánál ugyanezzel a hívással megújítod.
+és a `/release` 404-et ad (kilépési kód 1, a stderr `claim_lock_disabled`), ilyenkor foglalás nélkül dolgozz.
+Bekapcsolva csak akkor kezdj bele, ha a kilépési kód 0 (HTTP 200); 409 esetén (kilépési kód 1)
+más foglalja (a stderr megmondja, ki és meddig), ilyenkor NE dolgozz rajta párhuzamosan. A foglalás alapból 2 óráig él
+(`--ttl <másodperc>`, 60 és 86400 között); hosszabb munkánál ugyanezzel a hívással megújítod.
 Automatikusan elengedi a `done`, `waiting` vagy `testing` státusz, az archiválás, és ha a kártyát
 másra osztod át (így az átvevő le tudja foglalni):
 ```bash
-curl -s -w '\nHTTP %{http_code}\n' -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/claim \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent":"{{MAIN_AGENT_ID}}"}'
+bash scripts/marveen-api.sh kanban-claim KARTYA_ID {{MAIN_AGENT_ID}}
 ```
 
 Foglalás elengedése, ha félbehagyod (nem `done`):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/release \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent":"{{MAIN_AGENT_ID}}"}'
+bash scripts/marveen-api.sh kanban-release KARTYA_ID {{MAIN_AGENT_ID}}
 ```
 
-Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
+Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik; a `komment.txt` az EREDMÉNY RÖVIDEN):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"author":"{{MAIN_AGENT_ID}}","content":"AZ EREDMÉNY RÖVIDEN"}'
+bash scripts/marveen-api.sh kanban-comment KARTYA_ID {{MAIN_AGENT_ID}} komment.txt
 ```
 
 Archiválás: `POST /api/kanban/KARTYA_ID/archive`, üres törzzsel.
@@ -217,6 +204,10 @@ Ha {{OWNER_NAME}} ad feladatot Telegramon, vedd fel a kanban táblára is.
 Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
 ### Feladat létrehozása API-n keresztül
+
+A segédnek szándékosan nincs ütemezés-igéje, ezért az ütemezés létrehozása (és a lent említett
+`PUT /api/schedules/<név>` módosítás) curl-lal megy, a token a parancssorban van. Az archiválásnak
+sincs segéd-igéje.
 
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
@@ -250,17 +241,13 @@ Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetso
 Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
+bash scripts/marveen-api.sh message {{MAIN_AGENT_ID}} TARGET_AGENT uzenet.txt
 ```
 
-**MEGBÍZHATÓ KÜLDÉS (verify + retry) — KÖTELEZŐ:** a gyakori `curl -s ... >/dev/null && echo sent` minta VESZÉLYES: a curl `0`-val tér vissza akkor is, ha a szerver ELUTASÍTOTTA a kérést (401/400/5xx), így NÉMA küldés-hiba keletkezik — a címzett sosem kapja meg az üzenetet, és két ágens végtelenül várhat egymásra. Egy üzenet CSAK akkor számít elküldöttnek, ha a válaszban visszajött egy `id` (`{"id":<n>,"status":"pending",...}` HTTP 200-zal). Vagy használd a `scripts/agent-msg.sh` helpert (HTTP-státusz + `id` ellenőrzés + 3x újraküldés + hiba-napló), vagy nyers curl-nél KÖTELEZŐ ellenőrizni a HTTP-kódot ÉS az `id`-t, és újraküldeni ha nincs:
+**MEGBÍZHATÓ KÜLDÉS (verify + retry) — KÖTELEZŐ:** a gyakori `curl -s ... >/dev/null && echo sent` minta VESZÉLYES: a curl `0`-val tér vissza akkor is, ha a szerver ELUTASÍTOTTA a kérést (401/400/5xx), így NÉMA küldés-hiba keletkezik — a címzett sosem kapja meg az üzenetet, és két ágens végtelenül várhat egymásra. Egy üzenet CSAK akkor számít elküldöttnek, ha a válaszban visszajött egy `id` (`{"id":<n>,"status":"pending",...}` HTTP 200-zal). A `message` ige ezt maga ellenőrzi (a `scripts/agent-msg.sh` helpert futtatja: HTTP-státusz + `id` ellenőrzés + 3x újraküldés + hiba-napló), a kimenete `OK id=<n>` vagy `FAIL`. Az `uzenet.txt` helyett `-` a stdin-t jelenti:
 
 ```bash
-bash scripts/agent-msg.sh {{MAIN_AGENT_ID}} TARGET_AGENT "Feladat leírása."   # -> OK id=<n>  vagy  FAIL
-# nagy/soktoros üzenethez a content jöhet STDIN-en:  echo "..." | bash scripts/agent-msg.sh {{MAIN_AGENT_ID}} TARGET_AGENT -
+bash scripts/marveen-api.sh message {{MAIN_AGENT_ID}} TARGET_AGENT uzenet.txt   # -> OK id=<n>  vagy  FAIL
 ```
 
 A rendszer automatikusan:
@@ -270,7 +257,7 @@ A rendszer automatikusan:
 
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
-- Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/agents`
+- Az elérhető ágensek listája: `bash scripts/marveen-api.sh agents-list`
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 
@@ -304,6 +291,8 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) írj SKILL.md-t. A fő ágensnek nincs csak-saját skill-mappája, ezért minden új vagy javított skill javaslatként megy: a gazda jóváhagyásáig karanténban vár, és ha a név már él, jóváhagyáskor a régi változat mentésre kerül.
 
+Az indokot (miért kell, mit javít) előbb írd az `.claude/skill-javaslat/indok.txt` fájlba a Write eszközzel, utána futtasd az alábbi blokkot.
+
 ```bash
 mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
 ---
@@ -326,9 +315,10 @@ description: Mikor használd, mit csinál. Legyél konkrét a triggerelésben.
 ## Ellenőrzés
 - [Hogyan validáld az eredményt]
 SKILLEOF
-python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' SKILL-NEV .claude/skill-javaslat/SKILL.md "miért kell, mit javít" > .claude/skill-javaslat/body.json
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat store/.dashboard-token)" --data-binary @.claude/skill-javaslat/body.json
+bash scripts/marveen-api.sh skill-propose SKILL-NEV .claude/skill-javaslat/SKILL.md --reason-file .claude/skill-javaslat/indok.txt
 ```
+
+A javaslat a karanténba megy (`POST /api/skills/propose`), a segéd `skill-propose` igéje küldi.
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:

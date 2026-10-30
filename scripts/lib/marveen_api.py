@@ -33,6 +33,11 @@ ID_RE = re.compile(r'^[0-9]{1,18}$')
 APPROVAL_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 CATEGORY_KEY_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 HASH_RE = re.compile(r'^[A-Za-z0-9:_-]{8,128}$')
+# a card id is one path segment: no '/', '.', '?' or '#', so it cannot leave /api/kanban/<id>/
+CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+# the status set belongs to the server; this only keeps the value one plain token
+STATUS_RE = re.compile(r'^[a-z][a-z_]{1,31}$')
+PRIORITIES = ('low', 'normal', 'high', 'urgent')
 
 USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   message <from> <to> <content-file> [--priority high|normal]
@@ -49,6 +54,13 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>]
+  kanban-list
+  kanban-create <assignee> <low|normal|high|urgent> <title-file>
+  kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
+  kanban-claim <card-id> <agent> [--ttl <seconds>]
+  kanban-release <card-id> <agent>
+  kanban-comment <card-id> <author> <content-file>
+  agents-list
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -161,7 +173,7 @@ def take_opt(args, opt):
 
 
 def check(value, rx, what):
-    if not rx.match(value or ''):
+    if not rx.fullmatch(value or ''):
         fail_usage(f'invalid {what}: {value!r}')
     return value
 
@@ -309,6 +321,55 @@ def build_request(verb, args):
         if reason_file is not None:
             body['reason'] = read_text(reason_file)
         return 'POST', '/api/skills/propose', body, headers, {}
+    if verb == 'kanban-list':
+        positional(args, 0, verb)
+        return 'GET', '/api/kanban', None, headers, {}
+    if verb == 'agents-list':
+        positional(args, 0, verb)
+        return 'GET', '/api/agents', None, headers, {}
+    if verb == 'kanban-create':
+        assignee, priority, title_file = positional(args, 3, verb)
+        check(assignee, NAME_RE, 'agent name')
+        if priority not in PRIORITIES:
+            fail_usage(f'invalid priority: {priority!r} (one of {", ".join(PRIORITIES)})')
+        title = read_text(title_file).strip()
+        if not title:
+            fail_usage('kanban-create: the title is empty')
+        if len(title) > 300:
+            fail_usage('kanban-create: the title is longer than 300 characters (the board would cut it)')
+        return 'POST', '/api/kanban', {'title': title, 'status': 'planned', 'assignee': assignee, 'priority': priority}, headers, {}
+    if verb == 'kanban-move':
+        expected = take_opt(args, '--expected-status')
+        evidence_file = take_opt(args, '--evidence-file')
+        actor = take_opt(args, '--actor')
+        card, status = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        body = {'status': check(status, STATUS_RE, 'status')}
+        if expected is not None:
+            body['expected_status'] = check(expected, STATUS_RE, 'status')
+        if evidence_file is not None:
+            body['evidence'] = read_text(evidence_file)
+            if not body['evidence'].strip():
+                fail_usage('kanban-move: the evidence is empty')
+        if actor is not None:
+            body['actor'] = check(actor, NAME_RE, 'agent name')
+        return 'POST', f'/api/kanban/{card}/move', body, headers, {}
+    if verb in ('kanban-claim', 'kanban-release'):
+        ttl = take_opt(args, '--ttl') if verb == 'kanban-claim' else None
+        card, agent = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        body = {'agent': check(agent, NAME_RE, 'agent name')}
+        if ttl is not None:
+            body['ttl_seconds'] = int(check(ttl, ID_RE, 'ttl'))
+        return 'POST', f'/api/kanban/{card}/{verb.split("-")[1]}', body, headers, {}
+    if verb == 'kanban-comment':
+        card, author, content_file = positional(args, 3, verb)
+        check(card, CARD_ID_RE, 'card id')
+        check(author, NAME_RE, 'agent name')
+        content = read_text(content_file)
+        if not content.strip():
+            fail_usage('kanban-comment: the content is empty')
+        return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 
