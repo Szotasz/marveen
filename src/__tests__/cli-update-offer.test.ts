@@ -8,6 +8,7 @@ import {
   resetLatestVersionCache, buildCliUpdateStatus, startCliUpdate, setCliUpdateDepsForTests,
   RUNNING_SESSIONS_NOTE, REGISTRY_LATEST_URL, readCliUpdateResult,
   notWritableMessage, accessState, npmGlobalDirsNotWritable, cliUpdateRunning,
+  readNpmGlobalPrefix,
 } from '../web/cli-update.js'
 import { tryHandleUpdates } from '../web/routes/updates.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -271,6 +272,39 @@ describe('rule 5: the global npm dirs are measured before an npm install', () =>
         rmSync(ro, { recursive: true, force: true })
       }
     }
+  })
+  const withStubNpm = async (script: string, fn: () => Promise<void>): Promise<void> => {
+    const dir = mkdtempSync(join(tmpdir(), 'stub-npm-'))
+    writeFileSync(join(dir, 'npm'), script)
+    chmodSync(join(dir, 'npm'), 0o755)
+    const savedPath = process.env.PATH
+    process.env.PATH = dir + ':' + savedPath
+    try {
+      await fn()
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH
+      else process.env.PATH = savedPath
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  it('npm prefix -g that ignores SIGTERM is SIGKILLed at the timeout and reads as unmeasured', async () => {
+    await withStubNpm('#!/bin/sh\ntrap \'\' TERM\nexec sleep 10\n', async () => {
+      const t0 = Date.now()
+      const p = await readNpmGlobalPrefix(300)
+      const elapsed = Date.now() - t0
+      expect(p).toBeNull()
+      expect(elapsed).toBeGreaterThanOrEqual(250)
+      expect(elapsed).toBeLessThan(3000)
+    })
+  }, 15_000)
+  it('a prefix that is not an absolute path reads as unmeasured: null, so the install runs the old way', async () => {
+    await withStubNpm('#!/bin/sh\necho /stub/abs/prefix\n', async () => {
+      expect(await readNpmGlobalPrefix(5000)).toBe('/stub/abs/prefix')
+    })
+    await withStubNpm('#!/bin/sh\necho relative/prefix\n', async () => {
+      expect(await readNpmGlobalPrefix(5000)).toBeNull()
+      expect(await npmGlobalDirsNotWritable({ npmPrefix: () => readNpmGlobalPrefix(5000), access: () => 'not-writable' })).toBeNull()
+    })
   })
 })
 

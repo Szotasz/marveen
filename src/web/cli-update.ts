@@ -201,10 +201,10 @@ export function accessState(path: string): DirAccess {
   }
 }
 
-/** `npm prefix -g`, or null when it fails or does not print an absolute path. */
-function readNpmGlobalPrefix(): Promise<string | null> {
+/** `npm prefix -g`, or null when it fails or does not print an absolute path. The timeout is a parameter so a test can use a short one. */
+export function readNpmGlobalPrefix(timeoutMs: number = REGISTRY_TIMEOUT_MS): Promise<string | null> {
   return new Promise((done) => {
-    execFile('npm', ['prefix', '-g'], { timeout: REGISTRY_TIMEOUT_MS, killSignal: 'SIGKILL' }, (err, stdout) => {
+    execFile('npm', ['prefix', '-g'], { timeout: timeoutMs, killSignal: 'SIGKILL' }, (err, stdout) => {
       const p = err ? '' : String(stdout).trim()
       done(p && isAbsolute(p) ? p : null)
     })
