@@ -8,6 +8,8 @@ passed: 'ez megy – nem baj' went out.
   B3  NBSP on both sides ('ez megy\\u00a0–\\u00a0nem baj')    : BLOCKED
   B4  the HTML entity ('ez megy &ndash; nem baj')           : BLOCKED (html.unescape)
   B5  a spaced range of numbers ('10 – 12 óra')             : BLOCKED (spaced, it reads as a dash; unspaced is the range)
+  B6  double space and a tab around the dash                : BLOCKED, '2 helyen'
+  B7  a dash at the end of a line ('ez megy –' + newline)   : BLOCKED
   N1  an unspaced range ('10–12 óra között')                : passes
   N2  a list marker at the start of a line ('– első')       : passes
   N3  inside a code span ('`a – b`') and in a URL           : passes (technical regions)
@@ -59,6 +61,8 @@ BLOKK = (
     ("B3 NBSP on both sides", ELEJE + "ez megy – nem baj" + VEGE, 1),
     ("B4 the &ndash; entity", ELEJE + "ez megy &ndash; nem baj" + VEGE, 1),
     ("B5 a spaced range of numbers", ELEJE + "a hívás 10 – 12 óra között jó" + VEGE, 1),
+    ("B6 double space and a tab", ELEJE + "ez megy  –  nem baj, és az is\t–\tholnap" + VEGE, 2),
+    ("B7 a dash at the end of a line", "Szia! Holnap reggel átnézem, ez megy –\nnem baj, és küldöm a választ. Köszönöm szépen.", 1),
 )
 ATMEGY = (
     ("N1 an unspaced range", ELEJE + "a hívás 10–12 óra között jó" + VEGE),

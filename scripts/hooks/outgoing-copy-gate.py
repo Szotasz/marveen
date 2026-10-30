@@ -1790,9 +1790,10 @@ _char_script = char_script   # the name this file used before the extraction
 
 
 EM_DASH = "—"
-# ENDASHGATE1030: an en dash between two words with horizontal white space on both sides (NBSP included, line breaks
-# not), i.e. a dash in prose; an unspaced range ("10–12") and a list marker at the start of a line do not match.
-SPACED_EN_DASH = re.compile(r"(?<=\S)[^\S\r\n]+\u2013[^\S\r\n]+(?=\S)")
+# ENDASHGATE1030: an en dash after a word with horizontal white space before it (NBSP and tabs included, line breaks
+# not) and either horizontal white space and a word after it, or the end of the line (a dash where the line was
+# broken), i.e. a dash in prose; an unspaced range ("10–12") and a list marker at the start of a line do not match.
+SPACED_EN_DASH = re.compile(r"(?<=\S)[^\S\r\n]+\u2013(?:[^\S\r\n]+(?=\S)|[^\S\r\n]*(?=\r?\n|$))")
 
 # GATEPERSIST816: owner-specific NAME rules load from an UNTRACKED local file,
 # not from this (public-repo) script. The generic checks (accents, em dash,
