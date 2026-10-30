@@ -531,6 +531,7 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     ['a subshell after a cd inside it, in the install', '(cd agents; git reset --hard HEAD~1)'],
     ['nested subshells', '((git reset --hard HEAD~1))'],
     ['the cd of a subshell ends with it', '(cd @WT@); git reset --hard HEAD~1'],
+    ['the cd of a subshell ends with its last command', '(cd @WT@; git status); git reset --hard HEAD~1'],
     ['a case pattern', 'case $x in a) git reset --hard HEAD~1;; esac'],
     ['a subshell next to an unresolved quoting', 'echo "$(echo $x)"; (git reset --hard HEAD~1)'],
   ])('%s is denied in the install', (_, cmd) => {
@@ -539,6 +540,7 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
   it.each([
     ['a git log in a subshell', '(git log -1 --format=%ad)'],
     ['a write in a subshell that went into a worktree', '(cd @WT@ && git reset --hard HEAD~1)'],
+    ['the same in a loop', 'for d in a; do (cd @WT@ && git reset --hard HEAD~1); done'],
     ['a parenthesis in quotes', 'echo "(git reset --hard)"'],
   ])('%s passes in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
