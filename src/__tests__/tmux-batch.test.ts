@@ -1,6 +1,6 @@
 // withTmuxBatch: per-call memo for read-only tmux queries. execFileSync is faked,
 // so no tmux server is touched.
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const calls: string[][] = []
 let table: Record<string, string | { status: number }> = {}
@@ -40,11 +40,21 @@ const LS = (c: string[]) => c.includes('list-sessions')
 const ALL_ARGS = ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_current_command}']
 const states = () => ['alpha', 'beta', 'gamma'].map(n => agentRunState(n))
 
+// The run-as map behind resolveTarget is cached for 5 s, and RUN_AS changes between tests. Each
+// test gets a clock 10 s past the previous one, so the map is always rebuilt from this test's
+// RUN_AS -- whatever the wall clock does on a slow run.
+let clock = Date.UTC(2026, 0, 1)
+
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  clock += 10_000
+  vi.setSystemTime(clock)
   calls.length = 0
   table = {}
   for (const k of Object.keys(RUN_AS)) delete RUN_AS[k]
 })
+
+afterEach(() => { vi.useRealTimers() })
 
 describe('withTmuxBatch', () => {
   it('T1 outside a batch every agentRunState runs list-sessions', () => {
@@ -97,6 +107,14 @@ describe('withTmuxBatch', () => {
     expect(calls[0].slice(-ALL_ARGS.length)).toEqual(ALL_ARGS)
   })
 
+  it('T12 a target that names a window keeps the unbatched query', () => {
+    table['list-panes-t'] = 'node\n'
+    table['list-panes-a'] = 'agent-alpha\t1\tclaude\n'
+    expect(withTmuxBatch(() => paneCurrentCommand('agent-alpha:1'))).toBe('node')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].slice(-5)).toEqual(['list-panes', '-t', '=agent-alpha:1', '-F', '#{pane_current_command}'])
+  })
+
   it('T7 a failing list-panes -a gives null for all, one call', () => {
     table['list-panes-a'] = { status: 1 }
     const r = withTmuxBatch(() => [paneCurrentCommand('agent-alpha'), paneCurrentCommand('agent-beta')])
@@ -129,6 +147,22 @@ describe('withTmuxBatch', () => {
   it('T10 an async fn is rejected and leaves no memo behind', () => {
     table['list-sessions'] = 'agent-alpha\n'
     expect(() => withTmuxBatch(() => Promise.resolve(1))).toThrow(TypeError)
+    agentRunState('alpha')
+    agentRunState('alpha')
+    expect(calls.filter(LS)).toHaveLength(2)
+  })
+
+  it('T10b a rejecting async fn is refused without leaving an unhandled rejection', async () => {
+    expect(() => withTmuxBatch(() => Promise.reject(new Error('late')))).toThrow(TypeError)
+    await new Promise(r => setTimeout(r, 0))
+  })
+
+  it('T11 a nested async fn is rejected too, and the outer batch still clears', () => {
+    table['list-sessions'] = 'agent-alpha\n'
+    expect(() => withTmuxBatch(() => {
+      void withTmuxBatch(async () => 1)
+      return 'ok'
+    })).toThrow(TypeError)
     agentRunState('alpha')
     agentRunState('alpha')
     expect(calls.filter(LS)).toHaveLength(2)

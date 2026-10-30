@@ -97,9 +97,9 @@ describe('tmux spawns of the agents read paths', () => {
     expect(calls.find(c => c.includes('list-panes'))).toContain('-a')
   })
 
-  it('S3 listAgentSummaries lists at most once', () => {
+  it('S3 listAgentSummaries lists exactly once', () => {
     const rows = listAgentSummaries()
-    expect(count('list-sessions')).toBeLessThanOrEqual(1)
+    expect(count('list-sessions')).toBe(1)
     expect(rows.map(r => r.name)).toEqual(expect.arrayContaining(['alpha', 'beta', 'gamma']))
   })
 

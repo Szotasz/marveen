@@ -10,6 +10,7 @@ const IDLE = ['', SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on · ↓ to ma
 
 const paneCalls = new Map<string, number>()
 let paneText = IDLE
+let captureCostMs = 0
 
 vi.mock('../web/agent-process.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/agent-process.js')>()
@@ -20,6 +21,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => {
     isAgentRunning: () => true,
     capturePane: (session: string) => {
       paneCalls.set(session, (paneCalls.get(session) ?? 0) + 1)
+      if (captureCostMs > 0) vi.setSystemTime(Date.now() + captureCostMs)
       return paneText
     },
     paneCurrentCommand: () => 'claude',
@@ -59,6 +61,7 @@ beforeEach(() => {
   vi.setSystemTime(T0)
   paneCalls.clear()
   paneText = IDLE
+  captureCostMs = 0
   resetAgentsActivityCacheForTests()
 })
 
@@ -106,5 +109,15 @@ describe('GET /api/agents/activity cache', () => {
     const second = await getActivity()
     expect(second).not.toEqual(first)
     expect(second.find(e => e.name === 'alpha')?.tail).toContain('working on the thing')
+  })
+
+  it('C6 the TTL counts from the end of a slow compute', async () => {
+    captureCostMs = 1000
+    await getActivity()
+    expect(Date.now()).toBe(T0 + 3000)
+    vi.setSystemTime(T0 + 3000 + 1999)
+    captureCostMs = 0
+    await getActivity()
+    expect(total()).toBe(3)
   })
 })

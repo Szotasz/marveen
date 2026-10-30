@@ -965,7 +965,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
     })
 
-    activityCache = { at: now, entries }
+    // Stamped after the compute: under load one compute can take most of the TTL itself.
+    activityCache = { at: Date.now(), entries }
     jsonMaybeGzip(req, res, entries)
     return true
   }

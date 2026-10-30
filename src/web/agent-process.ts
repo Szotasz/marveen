@@ -1890,17 +1890,22 @@ let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
  * single `list-panes -a`. `fn` must be synchronous. Nested calls reuse the outer batch.
  */
 export function withTmuxBatch<T>(fn: () => T): T {
-  if (tmuxBatch !== null) return fn()
+  if (tmuxBatch !== null) return assertSync(fn())
   tmuxBatch = new Map()
   try {
-    const r = fn()
-    if (r !== null && (typeof r === 'object' || typeof r === 'function') && typeof (r as any).then === 'function') {
-      throw new TypeError('withTmuxBatch: fn must be synchronous')
-    }
-    return r
+    return assertSync(fn())
   } finally {
     tmuxBatch = null
   }
+}
+
+function assertSync<T>(r: T): T {
+  if (r !== null && (typeof r === 'object' || typeof r === 'function') && typeof (r as any).then === 'function') {
+    // The refused promise is dropped here; a later rejection must not become an unhandled one.
+    ;(r as any).then(undefined, () => {})
+    throw new TypeError('withTmuxBatch: fn must be synchronous')
+  }
+  return r
 }
 
 function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
@@ -4462,7 +4467,10 @@ export function readRemoteTranscriptMtime(
  * never to a false death sentence.
  */
 export function paneCurrentCommand(session: string, host: string | null = null): string | null {
-  if (host === null && tmuxBatch !== null) {
+  // Only a bare session name (or its exact form) is batched: a target that names a window or pane
+  // asks about that window, which the session-wide list cannot answer the same way.
+  const bare = session.replace(/^=/, '').replace(/:$/, '')
+  if (host === null && tmuxBatch !== null && !bare.includes(':')) {
     const probeArgs = ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}']
     const { runAsUser } = resolveTarget(null, probeArgs)
     const target: TmuxTarget = { host: null, runAsUser: runAsUser ?? null }
@@ -4479,11 +4487,10 @@ export function paneCurrentCommand(session: string, host: string | null = null):
       tmuxBatch.set(key, entry)
     }
     if ('err' in entry) return null
-    const wanted = session.startsWith('=') || session.includes(':') ? sessionOfTmuxTarget(session) : session
     for (const line of (entry.out ?? '').split('\n')) {
       const [name, active, ...rest] = line.split('\t')
       const command = rest.join('\t').trim()
-      if (name === wanted && active === '1' && command.length > 0) return command
+      if (name === bare && active === '1' && command.length > 0) return command
     }
     return null
   }
