@@ -288,7 +288,7 @@ export function gitDecision(words, ctx) {
     if (v === '-C') {
       const d = val()
       if (/[$`\u0000]/.test(d) || words[i]?.dollar) dirUnknown = true
-      else if (d.startsWith('/') || d === '~' || d.startsWith('~/')) dir = resolve(expandHome(d === '~' ? '~/' : d))
+      else if (d.startsWith('/') || d === '~' || d.startsWith('~/')) { dir = resolve(expandHome(d === '~' ? '~/' : d)); dirUnknown = false }
       else if (dir) dir = resolve(dir, d)
       else dirUnknown = true
     } else if (v === '-c' || v.startsWith('--config-env')) {

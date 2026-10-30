@@ -405,6 +405,12 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash('git --git-dir=@ROOT@/.git --work-tree=@ROOT@ checkout develop', wt)).toEqual(DENY_GIT)
     expect(bash('git -C "$INSTALL" reset --hard', wt)).toEqual(DENY_GIT)
   })
+  it('with no known cwd git counts as the main checkout, unless an absolute -C names another repo', () => {
+    const noCwd = (command: string) => gateDecision('Bash', { command: command.replaceAll('@WT@', wt).replaceAll('@ROOT@', root) }, { root })
+    expect(noCwd('git commit -m x')).toEqual(DENY_GIT)
+    expect(noCwd('git -C @WT@ commit -m x')).toEqual(ALLOW)
+    expect(noCwd('git -C @WT@ -C @ROOT@ commit -m x')).toEqual(DENY_GIT)
+  })
   it.each([
     ['a commit', 'git commit -m "x"'],
     ['a reset', 'git reset --hard HEAD~1'],
