@@ -79,3 +79,40 @@ export function sendRoutineAlert(
 export function resetRoutineAlerts(): void {
   states.clear()
 }
+
+// Separate state: a key here and a key in `states` above never interact, so a
+// routine recovery and an owner-action case can reuse the same string without
+// one's cooldown bleeding into the other.
+const ownerActionStates = new Map<string, RoutineAlertState>()
+
+// For the cases sendRoutineAlert must NOT cover: nothing healed itself, and
+// only the owner can act (a decision only a person can make, or a manual
+// check after an automatic fix did not take). NOTIFY_ROUTINE_ALERTS gates the
+// fleet's self-healing noise -- it must never reach this path, so unlike
+// sendRoutineAlert there is no gate check here at all. The cooldown/repeat-
+// count bookkeeping is otherwise identical and for the same reason: a prompt
+// that is STILL unanswered after the window is a worse fact than the first
+// sighting, and repeating it on every poll tick would bury that fact in noise.
+export function sendOwnerActionAlert(
+  key: string,
+  text: string,
+  opts: { cooldownMs?: number, now?: number } = {},
+): boolean {
+  const cooldownMs = opts.cooldownMs ?? ROUTINE_ALERT_COOLDOWN_MS
+  const now = opts.now ?? Date.now()
+  const prev = ownerActionStates.get(key)
+  const decision = decideRoutineAlert(prev, now, cooldownMs)
+  if (!decision.send) {
+    const state = prev as RoutineAlertState
+    state.suppressed += 1
+    logger.info({ key, suppressed: state.suppressed }, 'Owner-action alert suppressed (inside cooldown) -- logged only, still due')
+    return false
+  }
+  ownerActionStates.set(key, { lastSentAt: now, suppressed: 0 })
+  notifyChannel(text + routineAlertSuffix(decision.repeats, cooldownMs), { kind: key }).catch(() => {})
+  return true
+}
+
+export function resetOwnerActionAlerts(): void {
+  ownerActionStates.clear()
+}

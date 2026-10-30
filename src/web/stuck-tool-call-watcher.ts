@@ -77,7 +77,7 @@ import { STATE_OBSERVER_STATE_DIR } from './state-observer.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { MAIN_CHANNELS_SESSION, withoutMainAgent } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
-import { sendRoutineAlert } from './routine-alert.js'
+import { sendRoutineAlert, sendOwnerActionAlert } from './routine-alert.js'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
@@ -1005,7 +1005,10 @@ const LIVE_SUB_AGENT_DEPS: SubAgentSweepDeps = {
   capture: (agent, session) => capturePane(session, readAgentRemoteHost(agent)),
   now: () => Date.now(),
   alertWait: (agent, session, kind, waitingMs, ask) => {
-    sendRoutineAlert(`agent-wait:${agent}`, formatAgentWaitAlert(agent, session, kind, waitingMs, ask))
+    // Owner-action, not self-heal: a permission prompt or held peer message
+    // waits on a person by design (no keystrokes sent), so NOTIFY_ROUTINE_ALERTS
+    // must not silence it.
+    sendOwnerActionAlert(`agent-wait:${agent}`, formatAgentWaitAlert(agent, session, kind, waitingMs, ask))
   },
   readState: readLocalAgentState,
 }
@@ -1052,7 +1055,8 @@ const LIVE_MAIN_HELD_PEER_DEPS: MainHeldPeerDeps = {
   capture: () => capturePane(MAIN_CHANNELS_SESSION),
   now: () => Date.now(),
   alertWait: (waitingMs) => {
-    sendRoutineAlert(`agent-wait:${MAIN_AGENT_ID}`, formatAgentWaitAlert(BOT_NAME, MAIN_CHANNELS_SESSION, 'peer-message', waitingMs, null))
+    // Same owner-action case as the sub-agent sweep above, for the main session.
+    sendOwnerActionAlert(`agent-wait:${MAIN_AGENT_ID}`, formatAgentWaitAlert(BOT_NAME, MAIN_CHANNELS_SESSION, 'peer-message', waitingMs, null))
   },
 }
 
