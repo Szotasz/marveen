@@ -19,6 +19,7 @@ Run: python3 <thisfile>   Exit 0 = all pass.
 """
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -37,6 +38,19 @@ VAL = "Xk29proba"
 VAL2 = "Kiskert2099z"
 SHARED = "KozosPr0ba"
 ALL_VALUES = (VAL, VAL2, SHARED, "TitkosProba7", "4821", "Kert!proba", "probaUrlJelszo9")
+
+# "4821" is all digits: inside a random hex key, an HMAC digest or a timestamp it can occur
+# by chance. It counts as written only when no ASCII letter or digit touches it on either side.
+BOUNDED_VALUES = {"4821"}
+
+
+def value_in(value, text):
+    """Whether `value` occurs in `text`; a value in BOUNDED_VALUES only as a whole token."""
+    if value in BOUNDED_VALUES:
+        return re.search(r"(?<![0-9A-Za-z])" + re.escape(value) + r"(?![0-9A-Za-z])", text) is not None
+    return value in text
+
+
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 failed = []
@@ -514,6 +528,12 @@ def test_multi_recipient():
 
 def test_no_value_anywhere():
     print("(5) the value is never written")
+    check("the leak matcher finds a whole-token PIN",
+          value_in("4821", "PIN: 4821\n") and value_in("4821", '"4821"') and value_in("4821", "4821"))
+    check("the leak matcher ignores the PIN digits inside hex or a longer number",
+          not value_in("4821", "9c0e4821ab") and not value_in("4821", "1793394821")
+          and not value_in("4821", "4821ab") and not value_in("4821", "ab4821"))
+    check("the leak matcher still finds the other values inside a longer word", value_in(VAL, "xx" + VAL + "yy"))
     leaks = []
     for out in outputs:
         leaks += [v for v in ALL_VALUES if v in out and v != "4821"]
@@ -529,7 +549,7 @@ def test_no_value_anywhere():
         if name.startswith("credential-gate") and not name.endswith(".lock"):
             with open(os.path.join(store, name), encoding="utf-8") as fh:
                 files[name] = fh.read()
-    found = sorted({(n, v) for n, t in files.items() for v in ALL_VALUES if v in t})
+    found = sorted({(n, v) for n, t in files.items() for v in ALL_VALUES if value_in(v, t)})
     check("no value in the log, the state or any other gate file", not found, repr(found))
     check("the log shows length and an 8-hex fingerprint prefix",
           all(set(h) == {"keyword", "line", "length", "fp8"} and len(h["fp8"]) == 8
