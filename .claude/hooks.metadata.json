@@ -336,6 +336,14 @@
         "gate": true,
         "purpose": "Memory frontmatter check for memory files written from Bash (before the write).",
         "fingerprint": "c43f4eb6a848f6abe80c053115250eb63529c59d8119f69463af15c904b6e55b"
+      },
+      {
+        "index": 19,
+        "id": "pre-tool-use/db-write-gate",
+        "hook": "db-write-gate",
+        "gate": true,
+        "purpose": "PreToolUse gate: agent writes to the dashboard's SECURITY surface (APPROVALDBGATE1030), for EVERY agent, the main agent included.",
+        "fingerprint": "ccb220ffc34e4c03f9b8267c0aee515a0a618a9ebd8e4650feb9e8c5c31be04e"
       }
     ],
     "Stop": [

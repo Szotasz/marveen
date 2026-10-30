@@ -67,6 +67,7 @@ DEFAULT_NON_DISABLEABLE = frozenset({
     "kanban-write-gate",
     "fleet-memory-gate",
     "self-pace-gate",
+    "db-write-gate",                 # security tables, DB file, gate wiring (APPROVALDBGATE1030)
     "staleness-guard",
     # reply enforcement and channel ownership
     "telegram-reply-guard",
