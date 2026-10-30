@@ -2028,6 +2028,36 @@ export function parkedPasteSignature(pane: string): string | null {
   return sig.length > 0 ? sig : null
 }
 
+// SCHEDPASTE1030: a DAMAGED scheduled-task tick parked in the live input box --
+// typed text and `[Pasted text #N]` stubs mixed, the head still the scheduler's
+// wrapper. Measured on the main pane 2026-10-29 18:20 -> 2026-10-30 10:53:
+//
+//   ❯ SCHEDULED TASK NOTICE -- the next <scheduled-task source="..."> ...
+//     </scheduled-[Pasted text #48][Pasted text #49]ulj el reszleges szovegbol:
+//     jelezd a hibat a kor eredmenyekent. </scheduled-task>
+//
+// Nothing recovered it. The stub makes detectPaneState read 'busy', so every
+// 'typing'-gated path (parkedScheduledTaskInput -> clear-scheduled included)
+// returns null, and the scheduler deferred 19 tasks for 16 hours behind it.
+// Unlike parkedPasteSignature (a WHOLE prompt collapsed into one stub, which a
+// bare Enter submits intact) this box must never be Enter-submitted: the tick is
+// already broken, so the only safe move is clear-only, like clear-scheduled --
+// the scheduler re-delivers the task whole.
+//
+// The whitespace-collapsed box text, or null. Only a stub confirmed between the
+// two box separators counts ('box', never the 'tail' fallback), and the box must
+// START with the scheduler's wrapper, so a human draft or a <channel> block that
+// merely contains a stub is never matched. Busy-agnostic on purpose: a parked
+// tick does not submit itself when a turn ends; the caller's time gates decide.
+export function parkedScheduledPasteSignature(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const region = pastePlaceholderRegion(pane)
+  if (region.where !== 'box' || !PENDING_PASTE_RX.test(region.text)) return null
+  const flat = region.text.replace(/\s+/g, ' ').trim().replace(/^❯\s*/, '').trim()
+  if (!/^SCHEDULED TASK NOTICE/.test(flat) && !/^<scheduled-task[\s>]/.test(flat)) return null
+  return flat
+}
+
 export interface ParkedChannelInput {
   /** True only when the parked block is captured intact -- opening
    * <channel source="plugin:..."> tag WITH a chat_id AND a closing
