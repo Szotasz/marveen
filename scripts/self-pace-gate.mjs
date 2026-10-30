@@ -1869,6 +1869,46 @@ function isPipeSink(words, name) {
   return !!script && AGENT_MSG_RX.test(script.value) && words.every((w) => !w.dollar)
 }
 
+// Does a later segment of the same command run or feed a file segment [k] wrote? Then the file is a script, whatever
+// wrote it: an interpreter, sqlite3 or a shell given it (as an argument or on stdin), `source` / `.`, chmod, the file as
+// the command word, or a reader of it piped into one of them. A file only sent on (curl -d @file, the kanban tool's
+// --comment-file) is not run. [targets]: the written words as the command spells them. A run in a LATER Bash call is the
+// stated limit, as for a file written with the Write tool.
+// An interpreter runs the file when it is its script (the first word that is not an option), its stdin, or named in
+// its -c/-e code; a script that only takes the file as data (the kanban tool's --comment-file) does not.
+const FILE_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'node', 'nodejs', 'deno', 'bun', 'ruby',
+  'perl', 'php', 'osascript', 'tsx'])
+// The rest run or hand on whatever file they name.
+const FILE_RUNNERS = new Set(['sqlite3', 'sqlite', 'source', '.', 'chmod', 'env', 'xargs', 'exec', 'eval', 'npx'])
+const isInterpreter = (name) => FILE_INTERPRETERS.has(name) || /^python[0-9.]*$/.test(name)
+const isFileRunner = (name) => FILE_RUNNERS.has(name) || isInterpreter(name)
+const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export function laterRuns(segs, k, targets) {
+  if (!targets.length) return false
+  for (let j = k + 1; j < segs.length; j++) {
+    const s = segs[j]
+    if (!targets.some((t) => [s.own, ...s.bodies].join('\n').includes(t))) continue
+    const words = shellWords(s.own)
+    if (!words || !words.length) return true
+    const first = words[0].value
+    if (targets.includes(first)) return true
+    const name = commandName(words) || first.slice(first.lastIndexOf('/') + 1)
+    if (isInterpreter(name)) {
+      const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own))
+      const code = words.some((w, i) => /^-[A-Za-z]*[ceE]$/.test(w.value) && targets.some((t) => (words[i + 1]?.value ?? '').includes(t)))
+      const script = words.slice(1).find((w) => !w.value.startsWith('-'))
+      if (stdin || code || (script && targets.includes(script.value))) return true
+      continue
+    }
+    if (FILE_RUNNERS.has(name)) return true
+    if ((s.sep === '|' || s.sep === '|&') && segs[j + 1]) {
+      const nw = shellWords(segs[j + 1].own)
+      if (!nw || isFileRunner(commandName(nw))) return true
+    }
+  }
+  return false
+}
+
 function pipesOnlyIntoSinks(segs, k, redirectsOk) {
   for (let j = k; j < segs.length - 1 && (segs[j].sep === '|' || segs[j].sep === '|&'); j++) {
     const next = segs[j + 1]
@@ -2145,12 +2185,16 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
     // to a file: `cat <<'X' > /tmp/s.sh ... X; bash /tmp/s.sh`. The file is a
     // script the next segment can run, so no redirect but /dev/null is
     // accepted there -- whatever the consumer (message carriers included).
-    if (seg.bodies.length && refsIn(seg.bodies.join('\n')) && words.redirects.some((t) => t.value !== '/dev/null')) return true
+    // The security surface (db-write-gate) asks the narrower question, for the main agent writes its message and
+    // comment files this way: the file is a script only when the same command then runs or feeds it (laterRuns).
+    const fileTargets = words.redirects.map((t) => t.value).filter((v) => v !== '/dev/null')
+    const scriptFile = opts.surface !== 'security' || laterRuns(segs, k, fileTargets)
+    if (seg.bodies.length && refsIn(seg.bodies.join('\n')) && fileTargets.length && scriptFile) return true
     const residue = dataResidue(view, words, name, opts)
     // The security surface reads the same of any output: SQL text written to a
     // file (`printf 'UPDATE approvals ..' > s.sql; sqlite3 db < s.sql`) is a
     // statement file the next segment runs, whichever command wrote it.
-    if (opts.surface === 'security' && words.redirects.some((t) => t.value !== '/dev/null') && refsIn(residue)) return true
+    if (opts.surface === 'security' && fileTargets.length && scriptFile && refsIn(residue)) return true
     if (!refsIn(residue)) continue // (c) only message data mentions it
     if (name === 'curl' && isPlainCurlGet(words)) continue // (a)
     if (isReadOnlyFsCommand(words, name) && pipesOnlyIntoSinks(segs, k, redirectsOk)) continue // (b)
