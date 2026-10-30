@@ -8391,3 +8391,5 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.gromzo-card > summary.gromzo-summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text-muted); user-select: none; }
+.gromzo-card[open] > summary.gromzo-summary { margin-bottom: 8px; color: var(--text); }

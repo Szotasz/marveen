@@ -36,6 +36,10 @@ async function open(page: Page, lang: 'hu' | 'en', qr: { status: number, body: R
     w.switchPage('settings')
     await w.loadSettings()
   })
+  // The card is collapsed at the bottom of Settings (owner, 2026-10-30): the
+  // button is reachable only after unfolding it, as a user would.
+  await expect(page.locator('#gromzoAddPhoneBtn')).toBeHidden()
+  await page.locator('#gromzoCard > summary').click()
   return { errors, qrCalls }
 }
 
@@ -91,6 +95,23 @@ test.describe('GROMZOOWNERQR1030 -- Gromzo card on Settings', () => {
     await expect(page.locator('#gromzoQrArea')).toBeHidden()
     expect(await page.locator('#gromzoQr').innerHTML()).toBe('')
     expect(errors, `page errors: ${errors.join(' | ')}`).toEqual([])
+  })
+
+  test('collapsed by default after the Settings tabs; folding the card away wipes the code', async ({ page }) => {
+    await open(page, 'en', { status: 200, body: { kind: 'join', uri: JOIN_URI, expires_in: 600 } })
+    const order = await page.evaluate(() => {
+      const card = document.getElementById('gromzoCard')!
+      const tabs = document.getElementById('settingsTabPanels')!
+      return { isDetails: card.tagName, afterTabs: !!(tabs.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING) }
+    })
+    expect(order).toEqual({ isDetails: 'DETAILS', afterTabs: true })
+    await page.locator('#gromzoAddPhoneBtn').click()
+    await expect(page.locator('#gromzoQr svg')).toBeVisible()
+    await page.locator('#gromzoCard > summary').click()
+    await expect(page.locator('#gromzoAddPhoneBtn')).toBeHidden()
+    // 'toggle' is dispatched as a task after the click, so poll for the wipe.
+    await expect.poll(() => page.locator('#gromzoQr').innerHTML()).toBe('')
+    expect(await domHolds(page, SECRET)).toBe(false)
   })
 
   test('leaving the Settings page wipes the code', async ({ page }) => {

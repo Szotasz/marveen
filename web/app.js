@@ -20615,6 +20615,8 @@ async function openResearchDoc(agent, name) {
 
   btn.addEventListener('click', requestQr)
   closeBtn.addEventListener('click', () => clearQr(false))
+  // The card is a collapsed <details>: folding it away wipes the code as well.
+  card.addEventListener('toggle', () => { if (!card.open) clearQr(false) })
   window.addEventListener('pagehide', () => clearQr(false))
   // A hidden tab wipes it too; leaving the Settings page does (switchPage).
   document.addEventListener('visibilitychange', () => { if (document.hidden) clearQr(false) })
