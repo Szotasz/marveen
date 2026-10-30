@@ -178,9 +178,12 @@ describe('the two call sites in channel-monitor.ts', () => {
     }
     const stuck = block("if (wait.verdict === 'stuck') {")
     expect(stuck[0]).toMatch(/^logger\.error\(/)
-    expect(stuck[1]).toMatch(/^sendRoutineAlert\('main-session-supervisor-stuck', /)
+    // Owner-action alert (Szotasz/marveen#2353 review): this branch starts
+    // nothing, so it must stay off the NOTIFY_ROUTINE_ALERTS-gated path.
+    expect(stuck.some((l) => /^sendOwnerActionAlert\('main-session-supervisor-stuck', /.test(l))).toBe(true)
+    expect(stuck.some((l) => /^sendRoutineAlert\(/.test(l))).toBe(false)
     expect(stuck[stuck.length - 1]).toBe("return 'grace'")
-    expect(stuck).toHaveLength(3)
+    expect(stuck).toHaveLength(6)
     const waitLines = block("if (wait.verdict === 'wait') {")
     expect(waitLines[waitLines.length - 1]).toBe("return 'grace'")
     expect(waitLines).toHaveLength(2)
