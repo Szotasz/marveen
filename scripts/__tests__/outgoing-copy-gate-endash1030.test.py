@@ -7,17 +7,22 @@ passed: 'ez megy – nem baj' went out.
   B2  two spaced en dashes                                  : BLOCKED, '2 helyen'
   B3  NBSP on both sides ('ez megy\\u00a0–\\u00a0nem baj')    : BLOCKED
   B4  the HTML entity ('ez megy &ndash; nem baj')           : BLOCKED (html.unescape)
-  B5  a spaced range of numbers ('10 – 12 óra')             : BLOCKED (spaced, it reads as a dash; unspaced is the range)
+  B5  a spaced dash between a number and a word ('10 – nem baj'), and between two names ('Budapest – Bécs'): BLOCKED
   B6  double space and a tab around the dash                : BLOCKED, '2 helyen'
   B7  a dash at the end of a line ('ez megy –' + newline)   : BLOCKED
+  B8  a word before the dash and a number after ('kell – 3 nap'): BLOCKED (both sides decide a range)
   N1  an unspaced range ('10–12 óra között')                : passes
   N2  a list marker at the start of a line ('– első')       : passes
   N3  inside a code span ('`a – b`') and in a URL           : passes (technical regions)
   N4  a word joined with an unspaced en dash ('Budapest–Bécs'): passes
   N5  an indented list marker ('  – első')                  : passes
+  S1  spaced_en_dashes(): a period before and each of the 12 month names after the dash is a range (0)
+  N6  a time span or date range is a range, not a dash: '10 – 12 óra', '10:00 – 12:00', 'október 30. – november 2.',
+      '2026 – 2027' pass (a digit, period or colon before, a digit or a month name after)
 KONTROLL: B1 and B4 against a copy without the new check: each must PASS there (else the test is blind).
 Run: python3 scripts/__tests__/outgoing-copy-gate-endash1030.test.py   (exit 0 = the listed checks passed, 1 = a failure)
 """
+import importlib.util
 import json
 import os
 import shutil
@@ -27,7 +32,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
-CHECK = "    ed = len(SPACED_EN_DASH.findall(prose))\n"
+CHECK = "    ed = spaced_en_dashes(prose)\n"
 
 ELEJE = "Szia! Holnap reggel átnézem, "
 VEGE = ", és küldöm a választ. Köszönöm szépen."
@@ -60,8 +65,9 @@ BLOKK = (
     ("B2 two spaced en dashes", ELEJE + "ez megy – nem baj, és az is – holnap" + VEGE, 2),
     ("B3 NBSP on both sides", ELEJE + "ez megy – nem baj" + VEGE, 1),
     ("B4 the &ndash; entity", ELEJE + "ez megy &ndash; nem baj" + VEGE, 1),
-    ("B5 a spaced range of numbers", ELEJE + "a hívás 10 – 12 óra között jó" + VEGE, 1),
+    ("B5 a number before a word, and two names", ELEJE + "megvan a 10 – nem baj, a Budapest – Bécs járat is" + VEGE, 2),
     ("B6 double space and a tab", ELEJE + "ez megy  –  nem baj, és az is\t–\tholnap" + VEGE, 2),
+    ("B8 a word before the dash, a number after it", ELEJE + "ez kell – 3 nap múlva jó" + VEGE, 1),
     ("B7 a dash at the end of a line", "Szia! Holnap reggel átnézem, ez megy –\nnem baj, és küldöm a választ. Köszönöm szépen.", 1),
 )
 ATMEGY = (
@@ -69,13 +75,32 @@ ATMEGY = (
     ("N2 a list marker at the start of a line", "Szia! A teendők holnapra:\n– első lépés\n– második lépés\nKöszönöm szépen, és küldöm a választ."),
     ("N3 code span and URL", ELEJE + "a parancs `a – b` és a https://example.com/a–b cím" + VEGE),
     ("N4 an unspaced en dash between words", ELEJE + "a Budapest–Bécs járat" + VEGE),
+    ("N6a a spaced number range", ELEJE + "a hívás 10 – 12 óra között jó" + VEGE),
+    ("N6b a time span", ELEJE + "a hívás 10:00 – 12:00 között jó" + VEGE),
+    ("N6c a date range with month names", ELEJE + "a szabadság október 30. – november 2. között lesz" + VEGE),
+    ("N6d a range of years", ELEJE + "a 2026 – 2027 tanév rendben" + VEGE),
     ("N5 an indented list marker", "Szia! A teendők holnapra:\n  – első lépés\n  – második lépés\nKöszönöm szépen, és küldöm a választ."),
 )
+
+
+HONAPOK = ("január", "február", "március", "április", "május", "június", "július", "augusztus", "szeptember",
+           "október", "november", "december")
+
+
+def modul():
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("endash1030_gate", HOOK)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
 
 
 def main():
     src = open(HOOK, encoding="utf-8").read()
     check("S0 the check occurs exactly once", src.count(CHECK) == 1)
+    g = modul()
+    rossz = [h for h in HONAPOK if g.spaced_en_dashes("a szünet 30. – %s 2. között" % h) != 0]
+    check("S1 every month name after the dash makes a date range", not rossz, repr(rossz))
 
     for nev, szoveg, db in BLOKK:
         kod, ki = run(HOOK, szoveg)
