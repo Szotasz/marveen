@@ -155,7 +155,8 @@ describe('scheduledTaskReferencePrompt', () => {
     const lines = pointer('kanban-audit').split('\n')
     expect(lines.at(-1)).toBe('</scheduled-task>')
     expect(lines.at(-2)).toBe(`body-file="${ROOT}/20261031-003011-kanban-audit-3aae.md" body-sha256="${'deadbeef'.repeat(8)}" body-chars="48745"`)
-    expect(lines).toContain('[Utemezett feladat: kanban-audit]')
+    // The marker sits on its own line before the block, where the resubmit loop finds it.
+    expect(lines.slice(1, 3)).toEqual(['[Utemezett feladat: kanban-audit]', '<scheduled-task>'])
   })
 
   it('stays under NUDGE_MAX_CHARS for the longest task name and a 6-digit body, below the 801-char smallest measured paste', () => {
