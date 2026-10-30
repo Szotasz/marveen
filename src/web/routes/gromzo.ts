@@ -22,9 +22,16 @@
 import type http from 'node:http'
 import { logger } from '../../logger.js'
 import { json, methodNotAllowed, readBody } from '../http-helpers.js'
-import { OWNER_SESSION_REQUIRED } from './auth.js'
 import { parseCookies, SESSION_COOKIE_NAME } from '../auth-gate.js'
 import { resolveSession } from '../auth-sessions.js'
+
+/** The 403 body. Same code as auth.ts OWNER_SESSION_REQUIRED (the panel keys its
+ *  sentence on it), but its own text: that one says the token works before the
+ *  first login, which is not true here. */
+export const OWNER_QR_SESSION_REQUIRED = {
+  error: "The owner QR needs the owner's dashboard login. The access token never gets it, not even before the first login exists: set up the dashboard login first.",
+  code: 'owner_session_required',
+}
 import { mxdDashCall, MxdDashError, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import type { RouteContext } from './types.js'
 
@@ -120,7 +127,7 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
   try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
   if (!isOwnerSession(auth, req)) {
     logger.warn({ kind: auth?.kind }, 'gromzo: owner QR refused (needs the owner session)')
-    json(res, OWNER_SESSION_REQUIRED, 403)
+    json(res, OWNER_QR_SESSION_REQUIRED, 403)
     return true
   }
   let result

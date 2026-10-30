@@ -137,7 +137,10 @@ describe('auth and same-origin', () => {
     principal = { kind: 'token' }
     const r = await postQr()
     expect(r.status).toBe(403)
-    expect((await r.json()).code).toBe('owner_session_required')
+    const body = await r.json()
+    expect(body.code).toBe('owner_session_required')
+    // its own text: auth.ts's says the token works before the first login (Dani, #2365)
+    expect(body.error).not.toMatch(/only before the first login/)
     expect(fake.seen).toEqual([])
   })
 
