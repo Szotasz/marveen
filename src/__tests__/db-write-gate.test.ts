@@ -494,6 +494,32 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash(cmd)).toEqual(DENY_GIT)
   })
 
+  // Dani 56844, Samu 56847: a git write in a command substitution reached the git rule only when the quoting did not
+  // resolve; in backticks (and, measured, in a flat $(...)) the segment parser hid it behind a marker.
+  it.each([
+    ['update-ref onto refs/remotes in backticks', 'echo `git update-ref refs/remotes/origin/develop HEAD`'],
+    ['the same in double quotes', 'echo "`git update-ref refs/remotes/origin/develop HEAD`"'],
+    ['a reset in backticks with a quoted ref', `echo "\`git reset --hard 'HEAD~1'\`"`],
+    ['a reset in a flat $(...)', 'echo $(git reset --hard HEAD~1)'],
+    ['update-ref in a flat $(...)', 'echo $(git update-ref refs/remotes/origin/develop HEAD)'],
+    ['a checkout assigned from backticks', 'x=`git checkout develop`'],
+    ['nested', 'echo "$(echo `git reset --hard HEAD~1`)"'],
+    ['in an unquoted heredoc body (it runs)', 'cat <<EOF\n`git reset --hard HEAD~1`\nEOF'],
+  ])('%s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_GIT)
+  })
+  it('update-ref onto refs/remotes in backticks is denied from a worktree too', () => {
+    expect(bash('echo `git update-ref refs/remotes/origin/develop HEAD`', wt)).toEqual(DENY_GIT)
+  })
+  it.each([
+    ['a git log in backticks', 'echo `git log -1 --format=%ad`'],
+    ['backticks in single quotes (literal text)', "echo 'use `git reset --hard` with care'"],
+    ['backticks in a quoted heredoc (literal text)', "cat <<'EOF'\n`git reset --hard HEAD~1`\nEOF"],
+    ['a date in backticks', 'printf \'%s\' "`date`"'],
+  ])('%s passes in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+
   it('a git write hidden in an unresolved substitution is still denied in the install', () => {
     expect(bash(`echo "$(git reset --hard 'origin/main')"`)).toEqual(DENY_GIT)
     expect(bash(`x="$(git checkout 'develop')"`)).toEqual(DENY_GIT)
