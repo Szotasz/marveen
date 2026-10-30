@@ -66,6 +66,7 @@ import {
   scheduleSurfaceVariants,
   shellSegments,
   shellWords,
+  splitSegments,
   underKey,
 } from '../self-pace-gate.mjs'
 
@@ -371,6 +372,22 @@ function isExecOf(words, name, hitWords) {
   return hitWords.has(words[script].value) && !words.slice(script + 1).some((w) => hitWords.has(w.value))
 }
 
+// Every command of a command line whose quoting does not resolve, read roughly: split at the separators and at every
+// command substitution's start and end, the quotes taken off each word. Only for the rules that must not be lost there.
+const ROUGH_CONTROL = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time'])
+function roughCommands(cmd) {
+  const out = []
+  for (const seg of splitSegments(cmd)) {
+    for (const piece of seg.split(/\$\(|`|\)/)) {
+      let words = piece.trim().split(/\s+/).filter(Boolean)
+        .map((v) => ({ value: v.replace(/^['"]+|['"]+$/g, ''), dollar: v.includes('$') }))
+      while (words.length && ROUGH_CONTROL.has(words[0].value)) words = words.slice(1)
+      if (words.length) out.push(words)
+    }
+  }
+  return out
+}
+
 const CONTROL_PREFIX_RX = /^(?:(?:do|then|else|elif|if|while|until|!|\{)\s+)+/
 const ASSIGN_RX = /^([A-Za-z_]\w*)=/
 
@@ -396,7 +413,19 @@ export function installFileDeny(command, opts = {}) {
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
   const segs = shellSegments(cmd, { surface: 'security', projectRoot: ctx.root, keepSubst: (inner) => hitsIn(inner, ctx).length > 0 })
-  if (!segs) return true // unresolvable quoting around a protected path: fail closed
+  if (!segs) {
+    // The quoting does not resolve: a command substitution with quotes or an expansion inside, most often a plain reader
+    // (`echo "$(git log -1 --format='%ad' $c)"`, Dani 56794). A protected path anywhere in it: fail closed. Otherwise
+    // the git and the implicit-writer rules still run on a rough reading of every command in it, so a write hidden in
+    // a substitution is not lost.
+    if (hitsIn(cmd, ctx).length) return true
+    for (const words of roughCommands(cmd)) {
+      const git = gitWords(words)
+      if (git && gitDecision(git, ctx) === 'deny') return 'git'
+      if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
+    }
+    return false
+  }
   const tainted = new Set()
   for (const seg of segs) {
     const own = seg.own.slice((CONTROL_PREFIX_RX.exec(seg.own)?.[0] ?? '').length).trimStart()
@@ -514,10 +543,13 @@ export const INSTALL_FILE_GATE_MSG =
   'store/extra-hooks.json es store/autonomy-config.json fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
-  'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), hook-szkriptet futtatni is. Valtoztatas a gazda ' +
-  'jovahagyasaval a fo ugynokon at. Ha egy feloldatlan valtozo utan vedett ut-veg all ($X/.claude/settings.json), ' +
-  'azt nem tudom ellenorizni, ezert tiltom: kifejezett ut kell. Egy fajlba irt szoveg, ami csak EMLITI a vedett utat ' +
-  '(uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
+  'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet KOZVETLENUL futtatni is ' +
+  '(python3 scripts/hooks/x.py); egy masik szkriptnek vagy ertelmezonek ARGUMENTUMKENT adott vedett ut viszont tilt, ' +
+  'mert az irhat bele. Valtoztatas a gazda jovahagyasaval a fo ugynokon at. Ha egy feloldatlan valtozo utan vedett ' +
+  'ut-veg all ($X/.claude/settings.json), azt nem tudom ellenorizni, ezert tiltom: kifejezett ut kell. Ha a parancs ' +
+  'idezese nem bonthato fel (idezojeles parancs-behelyettesites) ES vedett utat emlit, tiltom. Egy fajlba irt szoveg, ' +
+  'ami csak EMLITI a vedett utat (uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). ' +
+  'Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
 
 // The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
 export const RESCUE_DOC = 'docs/db-write-gate.md'

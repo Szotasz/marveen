@@ -451,6 +451,31 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash('git --git-dir=@ROOT@/.git --work-tree=@ROOT@ checkout develop', wt)).toEqual(DENY_GIT)
     expect(bash('git -C "$INSTALL" reset --hard', wt)).toEqual(DENY_GIT)
   })
+  // Dani 56794: a quoted command substitution with quotes or an expansion inside does not resolve into segments; a
+  // plain reader like this was denied whenever "git" was in it. Now only a protected path or a git/implicit write in it
+  // denies (a rough reading of every command in it).
+  it.each([
+    ['a loop with a reading substitution', `for c in a b; do echo "$(git log -1 --format='%ad' $c)"; done`],
+    ['the same with no format', 'for c in a b; do echo "$(git log -1 $c)"; done'],
+    ['no loop', `echo "$(git log -1 --format='%ad' HEAD)"`],
+  ])('%s passes, in the install and in another repo', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+    expect(bash(cmd, base)).toEqual(ALLOW)
+  })
+  it('a git write hidden in an unresolved substitution is still denied in the install', () => {
+    expect(bash(`echo "$(git reset --hard 'origin/main')"`)).toEqual(DENY_GIT)
+    expect(bash(`x="$(git checkout 'develop')"`)).toEqual(DENY_GIT)
+  })
+  it('an unresolved command that names a protected path, or extracts into the install, is denied', () => {
+    expect(bash(`cp /tmp/x "$(printf '%s' @ROOT@)/.claude/settings.json"`)).toEqual(DENY_FILE)
+    expect(bash(`echo "$(date '+%F')"; tar -xf /tmp/x.tar`)).toEqual(DENY_FILE)
+  })
+  it('the install-file text says a hook script may be run directly, not that a protected path may be any argument', () => {
+    expect(INSTALL_FILE_GATE_MSG).toContain('KOZVETLENUL futtatni')
+    expect(INSTALL_FILE_GATE_MSG).toContain('ARGUMENTUMKENT adott vedett ut viszont tilt')
+    expect(INSTALL_FILE_GATE_MSG).not.toContain('hook-szkriptet futtatni is.')
+  })
+
   it('with no known cwd git counts as the main checkout, unless an absolute -C names another repo', () => {
     const noCwd = (command: string) => gateDecision('Bash', { command: command.replaceAll('@WT@', wt).replaceAll('@ROOT@', root) }, { root })
     expect(noCwd('git commit -m x')).toEqual(DENY_GIT)
