@@ -1790,6 +1790,9 @@ _char_script = char_script   # the name this file used before the extraction
 
 
 EM_DASH = "—"
+# ENDASHGATE1030: an en dash between two words with horizontal white space on both sides (NBSP included, line breaks
+# not), i.e. a dash in prose; an unspaced range ("10–12") and a list marker at the start of a line do not match.
+SPACED_EN_DASH = re.compile(r"(?<=\S)[^\S\r\n]+\u2013[^\S\r\n]+(?=\S)")
 
 # GATEPERSIST816: owner-specific NAME rules load from an UNTRACKED local file,
 # not from this (public-repo) script. The generic checks (accents, em dash,
@@ -2470,6 +2473,19 @@ def audit(text: str):
         problems.append(
             f"DUPLA KOTOJEL gondolatjel-potlokent {dh} helyen (' -- ') -- Szabi jelzese: "
             "ugyanugy zavaro, mint az em dash. Ird at kotojel nelkul: kettospont, zarojel, vagy uj mondat."
+        )
+    # ENDASHGATE1030 (2026-10-30): a szokozzel korulvett EN DASH (" – ", U+2013) a
+    # magyar gondolatjel tipikus alakja, es eddig atment (a kapu csak az em dash-t
+    # es a " -- "-t nezte). A PROZAN merjuk, mint a dupla kotojelet. Csak a SORON
+    # BELULI alak szamit (szo, vizszintes szokoz, en dash, vizszintes szokoz, szo;
+    # az NBSP is szokoz): a szokoz nelkuli szamtartomany ("10–12") es a sor eleji
+    # felsorolasjel ("– elem") nem gondolatjel. Az &ndash; entitas a fenti
+    # html.unescape miatt ugyanide jut.
+    ed = len(SPACED_EN_DASH.findall(prose))
+    if ed:
+        problems.append(
+            f"GONDOLATJEL (en dash szokozokkel, ' – ', U+2013) {ed} helyen -- a gondolatjel tilos. "
+            "Ird at: kettospont, zarojel, vagy uj mondat. A szokoz nelkuli szamtartomany (10–12) maradhat."
         )
     # 4. ellenorzes (GATEHOMOGLIF816): vegyes irasrendszeru szo. SZANDEKOSAN
     # NEM magyar-kapuzott (elteres Marveen specjetol, ervvel): az FP-vedelem
