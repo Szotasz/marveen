@@ -242,6 +242,9 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
     ['a true with a substitution that copies', `true $(cp /tmp/a ${A})`],
     ['an echo of a substitution that copies', `echo $(cp /tmp/a ${A})`],
     ['the same quoted', `echo "$(cp /tmp/a ${A})"`],
+    // only a BARE closer and a for without a substitution are not commands (denied on the base too)
+    ['a closer with arguments', 'done cp /tmp/a $f'],
+    ['a loop over any substitution', 'for x in $(echo a); do :; done'],
   ])('%s is denied from the root', (_, cmd) => {
     expect(from(cmd, root).deny).toBe(true)
   })
