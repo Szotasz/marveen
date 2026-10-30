@@ -57,6 +57,7 @@ import {
   expandHome,
   globMatchesName,
   isReadOnlyFsCommand,
+  laterRuns,
   nameForms,
   normalizePathSegments,
   pathKey,
@@ -423,9 +424,10 @@ export function installFileDeny(command, opts = {}) {
       if (['exact', 'under', 'unresolved'].includes(classifyWord(r.value, ctx))) return true
       if (usesTainted && /\$/.test(r.value)) return true
     }
-    // a heredoc body that names a protected path, written to a file: a script
-    // the next segment can run
-    if (seg.bodies.length && seg.bodies.some((b) => hitsIn(b, ctx).length) && words.redirects.some((t) => t.value !== '/dev/null')) return true
+    // a heredoc body that names a protected path, written to a file that the same command then runs or feeds (a
+    // script); a message or comment file that only mentions the path passes (Marveen 56653)
+    const fileTargets = words.redirects.map((t) => t.value).filter((v) => v !== '/dev/null')
+    if (seg.bodies.length && seg.bodies.some((b) => hitsIn(b, ctx).length) && laterRuns(segs, segs.indexOf(seg), fileTargets)) return true
     // an assignment carries the path to a later word (`F=<path>; cp x $F`): the
     // name is tainted, and a later segment that uses it is judged as naming it
     if (words.every((w) => ASSIGN_RX.test(w.value)) || /^(?:export|local|declare|readonly|typeset)$/.test(words[0].value)) {
@@ -503,7 +505,8 @@ export const DB_GATE_MSG =
   'Jovahagyast a dashboard API-n kerj es hasznalj fel (/api/approvals). Olvasni szabad (SELECT, sqlite3 -readonly), ' +
   'mas tablat irni is (agent_messages, daily_logs). Masolat a DB-rol: sqlite3 -readonly <db> "VACUUM INTO \'/tmp/x.db\'". ' +
   'Ha egy uzenet vagy kanban-szoveg idez ilyen parancsot: curl -d / git commit -m / a kanban-eszkoz --title atmegy; ' +
-  'egy fajlba iranyitott heredoc nem, azt a nativ Write tool-lal ird.' + LIMIT_MSG
+  'egy fajlba irt szoveg is atmegy, KIVEVE ha ugyanaz a parancs utana futtatja vagy a sqlite3-ba tolja ' +
+  '(az egy SQL-szkript).' + LIMIT_MSG
 
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
@@ -512,8 +515,9 @@ export const INSTALL_FILE_GATE_MSG =
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
   'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), hook-szkriptet futtatni is. Valtoztatas a gazda ' +
-  'jovahagyasaval a fo ugynokon at. Kifejezett ut kell: valtozoba ($X/...) rakott celutat nem tudok ellenorizni, ' +
-  'ezert tiltom. Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
+  'jovahagyasaval a fo ugynokon at. Ha egy feloldatlan valtozo utan vedett ut-veg all ($X/.claude/settings.json), ' +
+  'azt nem tudom ellenorizni, ezert tiltom: kifejezett ut kell. Egy fajlba irt szoveg, ami csak EMLITI a vedett utat ' +
+  '(uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
 
 // The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
 export const RESCUE_DOC = 'docs/db-write-gate.md'

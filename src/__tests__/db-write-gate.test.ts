@@ -116,7 +116,7 @@ describe('1. SQL writes on the security tables', () => {
     ['a quoted heredoc on python stdin', `python3 - <<'PY'\nimport sqlite3\nsqlite3.connect('${DB}').execute("UPDATE approvals SET status=1")\nPY`],
     ['echo into sqlite3', `echo "UPDATE approvals SET status=1" | sqlite3 ${DB}`],
     ['a statement file written in the same command', `printf 'UPDATE approvals SET status=1' > /tmp/s.sql; sqlite3 ${DB} < /tmp/s.sql`],
-    ['a statement file written by grep', `grep -h "UPDATE approvals" notes.txt > /tmp/s.sql`],
+    ['a statement file written by grep, then fed to sqlite3', `grep -h "UPDATE approvals" notes.txt > /tmp/s.sql; sqlite3 ${DB} < /tmp/s.sql`],
     ['bash -c', `bash -c "sqlite3 ${DB} 'UPDATE approvals SET status=1'"`],
     ['python -c whose code also has a "content" key (Dani 56100 #2)',
       `python3 -c "import sqlite3; d={'content':'x'}; sqlite3.connect('${DB}').execute('UPDATE approvals SET status=1')"`],
@@ -168,8 +168,27 @@ describe('1. SQL writes on the security tables', () => {
     expect(bash(`python3 -c "x" @ROOT@/scripts/kartya-es-ertesites.py --title "UPDATE approvals SET y=1"`)).toEqual(DENY_DB)
     expect(bash(`python3 @ROOT@/scripts/kartya-es-ertesites.py --title "x" --id "UPDATE approvals SET y=1"`)).toEqual(DENY_DB)
   })
-  it('a quoted message written to a FILE by a heredoc is not data (a script the next step can run)', () => {
-    expect(bash(`cat > /tmp/m.txt <<'EOF'\nUPDATE approvals SET status=1\nEOF`)).toEqual(DENY_DB)
+  // Marveen 56653: a message or comment file written by a heredoc is text; it is a script only when the same command
+  // then runs or feeds it (laterRuns).
+  it.each([
+    ['sqlite3 on its stdin', `cat > /tmp/m.sql <<'EOF'\nUPDATE approvals SET status=1\nEOF\nsqlite3 ${DB} < /tmp/m.sql`],
+    ['sqlite3 .read', `cat > /tmp/m.sql <<'EOF'\nUPDATE approvals SET status=1\nEOF\nsqlite3 ${DB} ".read /tmp/m.sql"`],
+    ['python on it', `cat > /tmp/m.py <<'EOF'\nimport sqlite3; sqlite3.connect('${DB}').execute('UPDATE approvals SET x=1')\nEOF\npython3 /tmp/m.py`],
+    ['a shell on it', `cat > $S/m.sh <<'EOF'\nsqlite3 ${DB} 'UPDATE approvals SET x=1'\nEOF\nbash $S/m.sh`],
+    ['a reader of it piped into sqlite3', `cat > /tmp/m.sql <<'EOF'\nDELETE FROM auth_sessions\nEOF\ncat /tmp/m.sql | sqlite3 ${DB}`],
+    ['python on its stdin', `cat > /tmp/m.py <<'EOF'\nimport sqlite3; sqlite3.connect('${DB}').execute('UPDATE approvals SET x=1')\nEOF\npython3 - < /tmp/m.py`],
+    ['python -c that opens it', `cat > /tmp/m.py <<'EOF'\nimport sqlite3; sqlite3.connect('${DB}').execute('UPDATE approvals SET x=1')\nEOF\npython3 -c "exec(open('/tmp/m.py').read())"`],
+  ])('SQL text written to a file by a heredoc and then run (%s) is denied', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_DB)
+  })
+  it.each([
+    ['a comment file in a variable directory', `cat > $S/kc.txt <<'EOF'\nthe gate denies UPDATE approvals SET status=1\nEOF`],
+    ['then the kanban tool reads it', `cat > $S/kc.txt <<'EOF'\nUPDATE approvals is gated\nEOF\npython3 @ROOT@/scripts/kartya-es-ertesites.py --id X --comment-file $S/kc.txt --author Marveen`],
+    ['then curl sends it', `cat > /tmp/m.json <<'EOF'\n{"content":"DELETE FROM auth_sessions is denied"}\nEOF\ncurl -s -X POST http://localhost:3420/api/messages --data-binary @/tmp/m.json`],
+    ['printf to a file', `printf 'UPDATE approvals is gated' > /tmp/note.txt`],
+    ['grep to a file', `grep -h "UPDATE approvals" notes.txt > /tmp/hits.txt`],
+  ])('SQL text only written to a file (%s) passes', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
   })
 })
 
@@ -263,7 +282,10 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a file list piped into xargs', `echo store/autonomy-config.json | xargs rm`],
     ['an unresolved prefix with the protected tail', `cp /tmp/x "$SOMEWHERE/.claude/settings.json"`],
     ['the home-relative absolute path', `cp /tmp/x @ROOT@/store/autonomy-config.json`],
-    ['a heredoc body that names it, written to a script file', `cat > /tmp/s.sh <<'EOF'\ncp /tmp/x @ROOT@/.claude/settings.json\nEOF`],
+    ['a heredoc body that names it, written to a script file the command runs', `cat > /tmp/s.sh <<'EOF'\ncp /tmp/x @ROOT@/.claude/settings.json\nEOF\nbash /tmp/s.sh`],
+    ['the same, run as the command word', `cat > /tmp/s.sh <<'EOF'\ncp /tmp/x @ROOT@/.claude/settings.json\nEOF\nchmod +x /tmp/s.sh && /tmp/s.sh`],
+    ['the same, sourced', `cat > $S/s.sh <<'EOF'\nrm -rf @ROOT@/scripts/hooks\nEOF\nsource $S/s.sh`],
+    ['the same, run only as the command word', `cat > $S/s.sh <<'EOF'\nrm -rf @ROOT@/scripts/hooks\nEOF\n$S/s.sh`],
   ])('%s is denied in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(DENY_FILE)
   })
@@ -328,6 +350,30 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('an extraction in an unrelated directory of the install passes (no protected path below it)', () => {
     mkdirSync(join(root, 'workspace'))
     expect(bash(`tar -xf /tmp/x.tar`, join(root, 'workspace'))).toEqual(ALLOW)
+  })
+
+  // Marveen 56653: the main agent's message and comment files mention these paths all the time
+  it.each([
+    ['a comment file in a variable directory', `cat > $S/x.txt <<'EOF'\nthe gate reads .claude/settings.json and scripts/hooks/\nEOF`],
+    ['with the directory assigned first', `S=/private/tmp/claude-501/x/scratchpad; cat > $S/x.txt <<'EOF'\nsee @ROOT@/store/autonomy-config.json\nEOF`],
+    ['then sent with curl', `cat > /tmp/m.json <<'EOF'\n{"content":"edit .claude/settings.json"}\nEOF\ncurl -s --data-binary @/tmp/m.json http://localhost:3420/api/messages`],
+  ])('a text file that only mentions a protected path (%s) passes', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+  // Samu 56684 (a)-(d), word for word
+  const NOTE = `cat > $S/m.txt <<'EOF'\nsee .claude/settings.json\nEOF\n`
+  it('(a) the note fed to curl as data passes', () => {
+    expect(bash(`${NOTE}curl -s -X POST http://localhost:3420/api/messages --data-binary @$S/m.txt`)).toEqual(ALLOW)
+  })
+  it('(b) the note run by python3 is denied', () => {
+    expect(bash(`${NOTE}python3 $S/m.txt`)).toEqual(DENY_FILE)
+  })
+  it('(c) the note fed to sqlite3 on the database is denied', () => {
+    expect(bash(`cat > $S/m.sql <<'EOF'\nsee .claude/settings.json\nEOF\nsqlite3 store/claude${'claw.db'} < $S/m.sql`)).toEqual(DENY_FILE)
+  })
+  it('(d) the note handed to the kanban tool as --comment-file or --msg-file passes', () => {
+    expect(bash(`${NOTE}python3 @ROOT@/scripts/kartya-es-ertesites.py --id X --comment-file $S/m.txt --author Marveen`)).toEqual(ALLOW)
+    expect(bash(`${NOTE}python3 @ROOT@/scripts/kartya-es-ertesites.py --id X --assignee samu --title T --desc-file $S/m.txt --msg-file $S/m.txt --author Marveen --from marveen`)).toEqual(ALLOW)
   })
 
   it('a running hook script with the protected path as its OUTPUT is denied', () => {
