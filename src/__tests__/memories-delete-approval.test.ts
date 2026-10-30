@@ -19,6 +19,8 @@ vi.mock('../config.js', async () => {
 })
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } }))
 vi.mock('../notify.js', () => ({
+  // APPROVALSLACK1030: no Slack target on this install, the provider path is what these tests pin.
+  sendOwnerSlackDm: async () => ({ attempted: false, sent: false }),
   sendOwnerMessage: vi.fn(async (text: string) => { ownerTexts.push(text); return { sent: true } }),
 }))
 vi.mock('../web/autonomy-level.js', async (orig) => {

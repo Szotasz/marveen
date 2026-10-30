@@ -78,6 +78,29 @@ export async function deliverWithSlack(
   return true
 }
 
+/**
+ * APPROVALSLACK1030: an approval request on an install whose owner moved to Slack (a NOTIFY_SLACK_TARGET is set,
+ * SLACKATALLAS1006) goes straight to the owner's Slack DM, and the result is REPORTED, never a Telegram fallback: the
+ * owner asked for Slack only, and a miss is the caller's in-band fallback. attempted=false: Slack is not the owner's
+ * channel on this install, the caller keeps its provider path. Exported for tests.
+ */
+export async function sendOwnerSlackDm(
+  text: string,
+  send?: typeof SendSlack,
+): Promise<{ attempted: boolean; sent: boolean; error?: string }> {
+  const setting = await loadSetting()
+  if (!(await slackTargetFor('owner', setting))) return { attempted: false, sent: false }
+  let sendFn: typeof SendSlack
+  try {
+    sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
+  } catch {
+    return { attempted: true, sent: false, error: 'slack_module_unavailable' }
+  }
+  // raw: the request's text is the requesting agent's, shown as written (Dani 55614 F1).
+  const r = await sendFn('dm', markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID'), raw: true })
+  return r.ok ? { attempted: true, sent: true } : { attempted: true, sent: false, error: r.error }
+}
+
 /** What a channel send did, for callers that must react to a miss. */
 export interface ChannelSendResult {
   sent: boolean
