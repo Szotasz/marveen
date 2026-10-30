@@ -44,9 +44,9 @@
 // Engine: scheduleSurfaceDeny in scripts/self-pace-gate.mjs (segments, quoting,
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import {
@@ -79,6 +79,15 @@ export const PROTECTED_INSTALL_PATHS = [
   { rel: 'scripts/self-pace-gate.mjs' },
   { rel: 'store/extra-hooks.json' },
   { rel: 'store/autonomy-config.json' },
+  // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
+  // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
+  { rel: '.git/config' },
+  { rel: '.git/packed-refs' },
+  { rel: '.git/refs/remotes', dir: true },
+  { rel: '.git/hooks', dir: true },
+  // The user's git config, read by every git on the machine (Samu 56310 2): an url.*.insteadOf there redirects origin.
+  { home: '.gitconfig' },
+  { home: 'git/config', xdg: true },
 ]
 // The database file, by NAME anywhere (as the Bash rule reads it).
 const DB_FILE_NAME_RX = /(?:^|\/)claudeclaw\.db(?:-wal|-shm|-journal)?$/i
@@ -90,7 +99,8 @@ export function installTargets(root = INSTALL_ROOT) {
     targetCache.set(k, {
       rootKey: pathKey(k),
       list: PROTECTED_INSTALL_PATHS.map((t) => {
-        const abs = resolve(k, t.rel)
+        const abs = t.home == null ? resolve(k, t.rel)
+          : t.xdg ? resolve(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), t.home) : resolve(homedir(), t.home)
         const key = pathKey(abs)
         // the lexical and the real spelling, segment by segment, for glob words
         const segs = [normalizePathSegments(abs), normalizePathSegments(key[0])]
@@ -146,7 +156,7 @@ export function classifyWord(word, ctx) {
     const tail = ('/' + w.split(UNRESOLVED_RX).pop()).replace(/\/+/g, '/').replace(/\/$/, '')
     for (const f of nameForms(tail)) {
       for (const t of list) {
-        const rel = '/' + t.rel.toLowerCase()
+        const rel = '/' + (t.rel ?? t.home).toLowerCase()
         if (f.endsWith(rel) || (t.dir && f.includes(rel + '/'))) return 'unresolved'
       }
     }
@@ -226,6 +236,120 @@ function writesIntoCwd(words, name) {
   return false
 }
 
+// GIT (Samu 56294/56299/56310, Dani 56284/56308; measured on a throwaway clone, probes/gitprobe-2b-1030.txt): a
+// worktree shares the main checkout's refs and .git/config, so `merge --ff-only origin/<branch>` in the install can take
+// a commit any worktree put under refs/remotes/origin; `pull --ff-only origin <branch>` fetches the ref itself and does
+// not, unless the remote's address is redirected (url.*.insteadOf from -c, from the GIT_CONFIG_* environment or from the
+// user's config). So:
+//   - everywhere: no write of refs/remotes/* (update-ref, a refspec onto it, branch -f/-m/-c on an origin name), no
+//     write of the remote/hook config keys (any scope), no -c or --config-env with such a key, no GIT_CONFIG_* / GIT_DIR /
+//     GIT_WORK_TREE in the command;
+//   - in the install's main checkout (the cwd or a -C/--git-dir/--work-tree inside it, an unresolved one counted as
+//     inside): only reads, `fetch [origin]` and exactly `pull --ff-only origin <branch>`, plus `checkout -- <paths>` and
+//     `restore <paths>` with no ref (they put back the reviewed tree: the host update skill's clean-up step); every
+//     other writing subcommand is denied, and so is any -c there.
+const GIT_WORD_RX = /(?:^|[\s;&|(/])git(?=\s|$)/
+const GIT_ENV_RX = /(?:^|[\s;&|(])(?:export\s+|env\s+)?GIT_(?:CONFIG\w*|DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|SSH_COMMAND|SSH|EXEC_PATH|TEMPLATE_DIR|ALTERNATE_OBJECT_DIRECTORIES)=/
+const GIT_PROTECTED_KEY_RX = /^(?:remote\..+\.(?:url|pushurl|fetch|pushurl)|core\.hookspath|include\.path|includeif\..+|url\..+\.(?:insteadof|pushinsteadof))$/i
+const GIT_ROOT_READS = new Set([...['diff', 'log', 'show', 'status', 'blame', 'ls-files', 'grep', 'rev-parse', 'ls-tree', 'cat-file'],
+  'rev-list', 'merge-base', 'describe', 'shortlog', 'for-each-ref', 'show-ref', 'name-rev', 'check-ignore', 'count-objects',
+  'ls-remote', 'cherry', 'whatchanged', 'version', 'help'])
+const GIT_FETCH_FLAGS = new Set(['-q', '--quiet', '--prune', '-p'])
+
+// The git words of a segment: the words after any leading assignments and `env`, or null when it is not git.
+function gitWords(words) {
+  let i = 0
+  while (i < words.length && ASSIGN_RX.test(words[i].value)) i++
+  if (words[i]?.value === 'env') { i++; while (i < words.length && (ASSIGN_RX.test(words[i].value) || words[i].value.startsWith('-'))) i++ }
+  const rest = words.slice(i)
+  return commandName(rest) === 'git' ? rest : null
+}
+
+// The main checkout this repo dir belongs to: the nearest directory up from it that has a .git entry.
+function repoTop(dir) {
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    if (existsSync(join(d, '.git'))) return d
+    if (dirname(d) === d) return null
+  }
+}
+
+// 'deny', 'allow' (an allowed write in the main checkout: decided, no path rule after it), or null (judge as any other).
+export function gitDecision(words, ctx) {
+  const { rootKey } = installTargets(ctx.root)
+  const inRootDir = (dir) => { const top = dir && repoTop(dir); return !!top && sameKey(pathKey(top), rootKey) }
+  let dir = ctx.cwd
+  let dirUnknown = !ctx.cwd
+  let pointsIn = false
+  const configs = []
+  let i = 1
+  for (; i < words.length && words[i].value.startsWith('-'); i++) {
+    const v = words[i].value
+    const val = () => (v.includes('=') ? v.slice(v.indexOf('=') + 1) : words[++i]?.value ?? '')
+    if (v === '-C') {
+      const d = val()
+      if (/[$`\u0000]/.test(d) || words[i]?.dollar) dirUnknown = true
+      else if (d.startsWith('/') || d === '~' || d.startsWith('~/')) dir = resolve(expandHome(d === '~' ? '~/' : d))
+      else if (dir) dir = resolve(dir, d)
+      else dirUnknown = true
+    } else if (v === '-c' || v.startsWith('--config-env')) {
+      configs.push(val().split('=')[0])
+    } else if (/^--(?:git-dir|work-tree)(?:=|$)/.test(v)) {
+      const d = val()
+      if (/[$`\u0000]/.test(d) || !(d.startsWith('/') || ctx.cwd)) pointsIn = true
+      else if (inRootDir(resolve(ctx.cwd ?? '/', expandHome(d)))) pointsIn = true
+    }
+  }
+  const sub = words[i]?.value ?? ''
+  const args = words.slice(i + 1).map((w) => w.value)
+  // everywhere
+  if (configs.some((k) => GIT_PROTECTED_KEY_RX.test(k))) return 'deny'
+  if (args.some((a) => /(?:^|:)\+?refs\/remotes\//.test(a) && (a.includes(':') || sub === 'update-ref' || sub === 'symbolic-ref'))) return 'deny'
+  if (sub === 'update-ref' && args.includes('--stdin')) return 'deny'
+  if (sub === 'fetch' && args.some((a) => a.startsWith('--refmap'))) return 'deny'
+  if (sub === 'branch' && args.some((a) => /^-[A-Za-z]*[fmMcC]|^--(?:force|move|copy)$/.test(a))
+    && args.some((a) => /^(?:origin\/|remotes\/|refs\/remotes\/)/.test(a))) return 'deny'
+  if (sub === 'config') {
+    const plain = args.filter((a) => !a.startsWith('-'))
+    const verb = ['set', 'unset', 'get', 'list', 'edit', 'rename-section', 'remove-section'].includes(plain[0]) ? plain.shift() : null
+    const reading = verb === 'get' || verb === 'list' || args.some((a) => /^--(?:get|get-all|get-regexp|get-urlmatch|list)$|^-l$/.test(a))
+      || (!verb && plain.length === 1 && !args.some((a) => /^--(?:unset|unset-all|add|replace-all|rename-section|remove-section|edit)$|^-e$/.test(a)))
+    if (!reading && (verb === 'edit' || args.some((a) => a === '--edit' || a === '-e') || GIT_PROTECTED_KEY_RX.test(plain[0] ?? '')
+      || ['rename-section', 'remove-section'].includes(verb ?? '') || args.some((a) => /^--(?:rename|remove)-section$/.test(a)))) return 'deny'
+  }
+  if (sub === 'remote' && ['set-url', 'rename', 'remove', 'rm', 'set-branches', 'set-head'].includes(args[0] ?? '')) return 'deny'
+  if (sub === 'remote' && args[0] === 'add' && args.includes('origin')) return 'deny'
+  // the main checkout
+  const inRoot = pointsIn || dirUnknown || inRootDir(dir)
+  if (!inRoot) return null
+  if (configs.length) return 'deny'
+  if (GIT_ROOT_READS.has(sub)) return null
+  if (sub === 'fetch') return args.every((a) => GIT_FETCH_FLAGS.has(a)) || (args.filter((a) => !GIT_FETCH_FLAGS.has(a)).join(' ') === 'origin') ? 'allow' : 'deny'
+  if (sub === 'pull') {
+    const rest = args.filter((a) => a !== '-q' && a !== '--quiet')
+    return rest.length === 3 && rest[0] === '--ff-only' && rest[1] === 'origin' && /^[A-Za-z0-9._\/-]+$/.test(rest[2]) && !rest[2].startsWith('-') ? 'allow' : 'deny'
+  }
+  if (sub === 'checkout') {
+    const dash = args.indexOf('--')
+    return dash >= 0 && dash < args.length - 1 && args.slice(0, dash).every((a) => a === '-q' || a === '--quiet') ? 'allow' : 'deny'
+  }
+  if (sub === 'restore') {
+    return args.some((a) => /^(?:-s|--source)(?:=|$)|^-s./.test(a)) || !args.some((a) => !a.startsWith('-')) ? 'deny' : 'allow'
+  }
+  // branch / tag: a listing only. A name without a listing option creates one.
+  const listing = (flags, listFlags) => {
+    const names = args.filter((a) => !a.startsWith('-'))
+    return args.filter((a) => a.startsWith('-')).every((a) => flags.test(a)) && (!names.length || args.some((a) => listFlags.test(a)))
+  }
+  const LIST_ARG = /^(?:-l|--list|--contains|--no-contains|--merged|--no-merged|--points-at)$/
+  if (sub === 'branch') return listing(/^(?:-a|-r|-v|-vv|-l|--list|--all|--remotes|--show-current|--verbose|--no-color|--color|--contains|--no-contains|--merged|--no-merged|--format=.*|--sort=.*)$/, LIST_ARG) ? null : 'deny'
+  if (sub === 'tag') return listing(/^(?:-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|--sort=.*|--format=.*)$/, LIST_ARG) ? null : 'deny'
+  if (sub === 'remote') return args.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(args[0]) ? null : 'deny'
+  if (sub === 'config') return args.some((a) => /^--(?:get|get-all|get-regexp|get-urlmatch|list)$|^-l$/.test(a)) || ['get', 'list'].includes(args[0]) ? null : 'deny'
+  if (sub === 'stash') return ['list', 'show'].includes(args[0]) ? null : 'deny'
+  if (sub === 'worktree') return ['list', 'add', 'prune', 'remove'].includes(args[0]) ? null : 'deny'
+  return 'deny'
+}
+
 function gitIsRead(words) {
   let i = 1
   while (i < words.length && words[i].value.startsWith('-')) {
@@ -257,7 +381,9 @@ export function installFileDeny(command, opts = {}) {
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
   // and no program in it writes into the cwd on its own
-  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd)) return false
+  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd)) return false
+  // the git environment that redirects a remote or points git at another repo or work tree, anywhere in a git command
+  if (GIT_WORD_RX.test(cmd) && GIT_ENV_RX.test(cmd)) return 'git'
   // the cwd is the install root, a directory on the way to a protected path, or
   // inside a protected directory: an implicit writer there reaches it
   const { list, rootKey } = installTargets(ctx.root)
@@ -279,6 +405,12 @@ export function installFileDeny(command, opts = {}) {
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
     const name = words ? commandName(words) : ''
+    const git = words && gitWords(words)
+    if (git) {
+      const g = gitDecision(git, ctx)
+      if (g === 'deny') return 'git'
+      if (g === 'allow') continue
+    }
     if (!rawHits.length && !usesTainted) {
       if (words && words.length && writesIntoCwd(words, name) && cwdReaches(ctx.cwd)) return true
       cwdAfterSegment(own, ctx)
@@ -343,7 +475,8 @@ function decide(toolName, toolInput, opts = {}) {
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
-    if (installFileDeny(command, opts)) return { deny: true, reason: 'install-file' }
+    const file = installFileDeny(command, opts)
+    if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
   }
   return { deny: false }
 }
@@ -380,7 +513,20 @@ export const INSTALL_FILE_GATE_MSG =
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
   'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), hook-szkriptet futtatni is. Valtoztatas a gazda ' +
   'jovahagyasaval a fo ugynokon at. Kifejezett ut kell: valtozoba ($X/...) rakott celutat nem tudok ellenorizni, ' +
-  'ezert tiltom.' + LIMIT_MSG
+  'ezert tiltom. Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
+
+// The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
+export const RESCUE_DOC = 'docs/db-write-gate.md'
+export const GIT_GATE_MSG =
+  'Git-iras a telepitesben TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). A futo telepites fo ' +
+  'checkoutjaban (cwd vagy -C) csak olvaso git mehet, plusz pontosan "git fetch [origin]", "git pull --ff-only origin <ag>", ' +
+  'es a "git checkout -- <utak>" / "git restore <utak>" ref nelkul. Tiltott ott: merge (--ff-only origin/<ag> is: egy ' +
+  'worktree-bol atirt refbol huzna), reset (origin/-lal is), checkout <ag>, switch, rebase, cherry-pick, apply, am, stash, ' +
+  'clean, restore --source, pull nem-origin forrasbol, es barmilyen -c. Mindenhol tiltott: a refs/remotes/* irasa ' +
+  '(update-ref, refspec, branch -f origin-nevvel), a remote.*.url/pushurl/fetch, core.hooksPath, include.path, includeIf.*, ' +
+  'url.*.insteadOf config-irasa (--global/--system is), es a GIT_CONFIG_*/GIT_DIR/GIT_WORK_TREE kornyezeti valtozo. ' +
+  'Fejleszteni worktree-ben kell. Elrontott prod fa helyreallitasa: ' + RESCUE_DOC + ', "Vesz-helyreallitas" szakasz ' +
+  '(a gazda sajat terminaljaban, vagy jovahagyas-keressel a pontos paranccsal).' + LIMIT_MSG
 
 function allow() { process.exit(0) }
 
@@ -453,7 +599,7 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
   try {
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
-    if (verdict.deny) deny(verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG : DB_GATE_MSG)
+    if (verdict.deny) deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG : DB_GATE_MSG)
     allow()
   } catch (err) {
     deny(FAIL_CLOSED_MSG(err?.message ?? err))

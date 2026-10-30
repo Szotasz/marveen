@@ -9,7 +9,7 @@
 // (Dani 56100). The gate is a text-based brake, not an OS boundary (stated in both messages).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, DB_GATE_MSG, INSTALL_FILE_GATE_MSG, PROTECTED_INSTALL_PATHS } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, DB_GATE_MSG, GIT_GATE_MSG, INSTALL_FILE_GATE_MSG, PROTECTED_INSTALL_PATHS } from '../../scripts/hooks/db-write-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { SECURITY_TABLES, gateDecision as selfPaceDecision } from '../../scripts/self-pace-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync, realpathSync } from 'node:fs'
@@ -38,6 +38,15 @@ function scaffold(dir: string): void {
   writeFileSync(join(dir, 'scripts', 'self-pace-gate.mjs'), '')
   writeFileSync(join(dir, 'store', 'extra-hooks.json'), '{}')
   writeFileSync(join(dir, 'store', 'autonomy-config.json'), '{}')
+}
+// The install is a main checkout (a .git directory), the worktree has a .git file, as git makes them.
+function gitScaffold(): void {
+  mkdirSync(join(root, '.git', 'refs', 'remotes', 'origin'), { recursive: true })
+  mkdirSync(join(root, '.git', 'hooks'), { recursive: true })
+  writeFileSync(join(root, '.git', 'config'), '')
+  writeFileSync(join(root, '.git', 'packed-refs'), '')
+  writeFileSync(join(root, '.git', 'refs', 'remotes', 'origin', 'develop'), '')
+  writeFileSync(join(wt, '.git'), `gitdir: ${root}/.git/worktrees/wt\n`)
 }
 beforeEach(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), 'db-write-gate-')))
@@ -186,8 +195,9 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   const REL = ['.claude/settings.json', '.claude/settings.local.json', 'scripts/hooks/gate.py', 'scripts/hooks/new.py',
     'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json']
   it('the protected list is the decided one', () => {
-    expect(PROTECTED_INSTALL_PATHS.map((t: { rel: string }) => t.rel)).toEqual(['.claude/settings.json',
-      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json'])
+    expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
+      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+      '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config'])
   })
   for (const rel of REL) {
     it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])(`%s on the install's ${rel} is denied`, (tool) => {
@@ -322,6 +332,134 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
 
   it('a running hook script with the protected path as its OUTPUT is denied', () => {
     expect(bash(`python3 scripts/hooks/gate.py --out .claude/settings.json`)).toEqual(DENY_FILE)
+  })
+})
+
+// Samu 56294/56299/56310, Dani 56284/56308; the base claim measured on a throwaway clone first
+// (probes/gitprobe-2b-1030.txt: a ref rewritten from a worktree is taken by `merge --ff-only origin/develop`, not by
+// `pull --ff-only origin develop`; the pull is redirected by url.*.insteadOf from -c, the environment or the user config).
+describe('4. git: the main checkout and the remote it pulls from', () => {
+  const DENY_GIT = { deny: true, reason: 'git' }
+  beforeEach(() => gitScaffold())
+  it.each([
+    ['the update path', 'git pull --ff-only origin develop'],
+    ['the update path, quiet', 'git pull -q --ff-only origin main'],
+    ['the update path through -C', 'git -C @ROOT@ pull --ff-only origin develop'],
+    ['a fetch', 'git fetch'],
+    ['a fetch from origin', 'git fetch origin --prune'],
+    ['the host update skill\'s clean-up step', 'git checkout -- package.json package-lock.json'],
+    ['a restore with no ref', 'git restore package.json'],
+    ['a protected file put back to the reviewed tree', 'git checkout -- .claude/settings.json'],
+    ['status', 'git status --porcelain'],
+    ['a log', 'git log --oneline -3 -- scripts/hooks/'],
+    ['a diff against origin', 'git diff --name-only HEAD origin/develop'],
+    ['the remotes', 'git remote -v'],
+    ['a config read', 'git config --get remote.origin.url'],
+    ['a branch listing', 'git branch -a --contains HEAD'],
+    ['a stash listing', 'git stash list'],
+    ['a worktree for development', 'git worktree add /tmp/wt-x -b bence/x origin/develop'],
+  ])('%s passes in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+  it.each([
+    ['merge --ff-only origin/<branch> (a worktree can rewrite that ref)', 'git merge --ff-only origin/develop'],
+    ['a merge', 'git merge feature'],
+    ['reset --hard origin/<branch>', 'git reset --hard origin/main'],
+    ['a reset', 'git reset HEAD~1'],
+    ['a checkout of a branch', 'git checkout develop'],
+    ['a checkout of a ref\'s file', 'git checkout origin/develop -- scripts/x.py'],
+    ['a switch', 'git switch develop'],
+    ['a rebase', 'git rebase origin/develop'],
+    ['a cherry-pick', 'git cherry-pick abc123'],
+    ['an apply', 'git apply /tmp/x.patch'],
+    ['an am', 'git am /tmp/x.mbox'],
+    ['a stash', 'git stash'],
+    ['a stash pop', 'git stash pop'],
+    ['a clean', 'git clean -fdx'],
+    ['a restore from a ref', 'git restore --source=origin/develop scripts/x.py'],
+    ['a restore from a ref, short', 'git restore -s HEAD~3 scripts/x.py'],
+    ['a pull from another repo', 'git pull --ff-only /tmp/evil develop'],
+    ['a pull with a rebase', 'git pull --rebase origin develop'],
+    ['a plain pull', 'git pull'],
+    ['a pull with an extra refspec', 'git pull --ff-only origin develop main'],
+    ['a pull into another ref', 'git pull --ff-only origin develop:x'],
+    ['a pull with --upload-pack', 'git pull --ff-only --upload-pack=/tmp/x origin develop'],
+    ['a fetch with a refspec', 'git fetch origin develop'],
+    ['a fetch of every remote', 'git fetch --all'],
+    ['any -c in the install', 'git -c core.pager=cat pull --ff-only origin develop'],
+    ['-c url.*.insteadOf (measured: it redirects the pull)', 'git -c url./tmp/evil.insteadOf=https://github.com/ pull --ff-only origin develop'],
+    ['-c remote.origin.url', 'git -c remote.origin.url=/tmp/evil pull --ff-only origin develop'],
+    ['--config-env', 'git --config-env=url.x.insteadOf=EVIL pull --ff-only origin develop'],
+    ['the GIT_CONFIG_* environment (measured: it redirects the pull)', 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.x.insteadOf GIT_CONFIG_VALUE_0=y git pull --ff-only origin develop'],
+    ['an exported GIT_CONFIG_PARAMETERS', "export GIT_CONFIG_PARAMETERS=\"'url.x.insteadof'='y'\"; git pull --ff-only origin develop"],
+    ['GIT_DIR pointing at another repo', 'GIT_DIR=/tmp/evil/.git git status'],
+    ['a commit', 'git commit -m x'],
+    ['a branch made', 'git branch evil'],
+    ['an unknown subcommand (an alias can run anything)', 'git up'],
+  ])('%s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_GIT)
+  })
+  it('the main checkout reached from elsewhere: -C, a subdirectory, --git-dir, an unresolved -C', () => {
+    expect(bash('git -C @ROOT@ reset --hard origin/main', wt)).toEqual(DENY_GIT)
+    expect(bash('git reset --hard origin/main', join(root, 'scripts'))).toEqual(DENY_GIT)
+    expect(bash('git --git-dir=@ROOT@/.git --work-tree=@ROOT@ checkout develop', wt)).toEqual(DENY_GIT)
+    expect(bash('git -C "$INSTALL" reset --hard', wt)).toEqual(DENY_GIT)
+  })
+  it.each([
+    ['a commit', 'git commit -m "x"'],
+    ['a reset', 'git reset --hard HEAD~1'],
+    ['a rebase', 'git rebase origin/develop'],
+    ['a checkout of a branch', 'git checkout -b bence/y'],
+    ['a merge of origin', 'git merge --ff-only origin/develop'],
+    ['a config of its own', 'git config user.name Bence'],
+    ['a push of its branch', 'git push -u origin bence/x'],
+  ])('%s passes in a worktree', (_, cmd) => {
+    expect(bash(cmd, wt)).toEqual(ALLOW)
+  })
+  it.each([
+    ['update-ref onto refs/remotes', 'git update-ref refs/remotes/origin/develop HEAD'],
+    ['update-ref --stdin', 'git update-ref --stdin < /tmp/refs'],
+    ['a fetch with a refspec onto refs/remotes', 'git fetch /tmp/evil +x:refs/remotes/origin/develop'],
+    ['a push into its own refs/remotes', 'git push . HEAD:refs/remotes/origin/develop'],
+    ['a branch forced onto an origin name', 'git branch -f origin/develop HEAD'],
+    ['a branch moved onto an origin name', 'git branch -M x refs/remotes/origin/develop'],
+    ['symbolic-ref onto refs/remotes', 'git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/evil'],
+    ['remote.origin.url', 'git config remote.origin.url /tmp/evil'],
+    ['remote.origin.fetch', 'git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/*'],
+    ['core.hooksPath', 'git config core.hooksPath /tmp/hooks'],
+    ['include.path', 'git config include.path /tmp/evil.cfg'],
+    ['includeIf', 'git config includeIf.gitdir:/Users/.path /tmp/evil.cfg'],
+    ['a global insteadOf (measured: it redirects the pull)', 'git config --global url./tmp/evil.insteadOf https://github.com/'],
+    ['a system insteadOf', 'git config --system url./tmp/evil.insteadOf https://github.com/'],
+    ['the new config syntax', 'git config set --global url./tmp/evil.insteadOf https://github.com/'],
+    ['a config edit', 'git config --global --edit'],
+    ['remote set-url', 'git remote set-url origin /tmp/evil'],
+    ['remote rename', 'git remote rename origin old'],
+    ['remote add origin', 'git remote add origin /tmp/evil'],
+    ['-c with a remote key', 'git -c remote.origin.url=/tmp/evil fetch origin'],
+  ])('%s is denied in a worktree too', (_, cmd) => {
+    expect(bash(cmd, wt)).toEqual(DENY_GIT)
+  })
+  it.each([
+    ['the main checkout\'s .git/config', 'echo x >> @ROOT@/.git/config'],
+    ['its packed-refs', 'cp /tmp/p @ROOT@/.git/packed-refs'],
+    ['a remote-tracking ref file', 'echo abc > @ROOT@/.git/refs/remotes/origin/develop'],
+    ['a hook of the main checkout', 'cp /tmp/h @ROOT@/.git/hooks/pre-commit'],
+    ['the user\'s git config', 'echo x >> ~/.gitconfig'],
+    ['the user\'s XDG git config', 'echo x >> ~/.config/git/config'],
+  ])('a write of %s is denied', (_, cmd) => {
+    expect(bash(cmd, wt)).toEqual(DENY_FILE)
+  })
+  it('the file tools on the git wiring are denied, and a read passes', () => {
+    expect(file('Edit', join(root, '.git', 'config'), wt)).toEqual(DENY_FILE)
+    expect(file('Write', join(root, '.git', 'hooks', 'post-merge'), wt)).toEqual(DENY_FILE)
+    expect(bash('cat @ROOT@/.git/config', wt)).toEqual(ALLOW)
+  })
+  it('the deny text names the rescue section by its file', () => {
+    expect(GIT_GATE_MSG).toContain('docs/db-write-gate.md')
+    expect(GIT_GATE_MSG).toContain('Vesz-helyreallitas')
+    expect(INSTALL_FILE_GATE_MSG).toContain('docs/db-write-gate.md')
+    expect(readFileSync(join(REPO, 'docs', 'db-write-gate.md'), 'utf-8')).toMatch(/^## Vész-helyreállítás$/m)
   })
 })
 
