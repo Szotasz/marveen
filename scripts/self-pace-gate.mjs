@@ -616,7 +616,7 @@ function protectedPatternWord(text, ctx) {
   return false
 }
 
-function expandHome(p) {
+export function expandHome(p) {
   return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
 // The plain JS real path, or the path itself when it does not resolve. Kept for
@@ -657,13 +657,13 @@ function realDeep(p) {
 // The key every protected-path comparison uses, in the file-tool AND the Bash branch:
 // the nameForms() of the real path. Two keys are the same path if any form matches its
 // counterpart (sameKey); a path is under a directory the same way (underKey).
-function pathKey(p) {
+export function pathKey(p) {
   return nameForms(realDeep(p))
 }
-function sameKey(a, b) {
+export function sameKey(a, b) {
   return a.some((f, i) => f === b[i])
 }
-function underKey(a, dir) {
+export function underKey(a, dir) {
   return a.some((f, i) => f === dir[i] || f.startsWith(dir[i] + '/'))
 }
 
@@ -1154,6 +1154,42 @@ const SCHEDULE_CLI_NAMES = ['schedule-registry-cli.js', 'schedule-registry-cli.t
 // An SQL write on a schedule table (scheduled_tasks, scheduled_task_registry,
 // ...), whatever program runs it: the sqlite3 CLI, python, node, a heredoc.
 const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into|delete\s+from|update(?:\s+or\s+\w+)?|drop\s+(?:table|trigger|view)(?:\s+if\s+exists)?|alter\s+table|create\s+(?:temp\w*\s+)?(?:table|view)(?:\s+if\s+not\s+exists)?)\s+(?:\w+\.)?scheduled_task|\bcreate\s+(?:temp\w*\s+)?trigger\b[\s\S]{0,300}?\bon\s+(?:\w+\.)?scheduled_task/i
+// The dashboard's SECURITY tables (APPROVALDBGATE1030): approvals and their
+// audit trail, the login sessions and users, the device keys, the SSH vault.
+// Used by scripts/hooks/db-write-gate.mjs through scheduleSurfaceDeny's
+// `surface: 'security'` mode, for every agent including the main one.
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']
+// An SQL write on one of them. The table name is read wherever the statement
+// names its target: after a schema prefix (`main.approvals`, an ATTACHed
+// `x.approvals`), in [brackets], with SQL comments or line breaks between the
+// words (`UPDATE/**/approvals`), inside a CTE (`WITH .. UPDATE approvals`), as
+// the target of an UPSERT, and in a trigger's body or ON clause (a trigger on
+// another table that writes this one, or a trigger on this one). Quoted names
+// ("approvals", `approvals`) are matched on the unquoted variant.
+const SQL_GAP = String.raw`(?:\s|/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*\n)`
+// A schema-table name (sqlite_master and its aliases), also the target of a
+// write: with PRAGMA writable_schema a statement can rename a security table
+// in the schema, write it under the new name and rename it back, never spelling
+// it (Dani 56276, measured on a throwaway database). So writable_schema in any
+// form and any write on a schema table are denied as well.
+export const SCHEMA_TABLES = ['sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'sqlite_temp_schema']
+const sqlIdent = (names) => String.raw`(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?(?:${names.join('|')})\]?(?![\w$])`
+const SQL_IDENT = sqlIdent([...SECURITY_TABLES, ...SCHEMA_TABLES])
+const SQL_WRITE_HEADS = [
+  String.raw`insert(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+into`,
+  String.raw`replace${SQL_GAP}+into`,
+  String.raw`delete${SQL_GAP}+from`,
+  String.raw`update(?:${SQL_GAP}+or${SQL_GAP}+\w+)?`,
+  String.raw`drop${SQL_GAP}+(?:table|trigger|view|index)(?:${SQL_GAP}+if${SQL_GAP}+exists)?`,
+  String.raw`alter${SQL_GAP}+table`,
+  String.raw`create${SQL_GAP}+(?:temp\w*${SQL_GAP}+)?(?:table|view)(?:${SQL_GAP}+if${SQL_GAP}+not${SQL_GAP}+exists)?`,
+]
+export const SECURITY_SQL_WRITE_RX = new RegExp(
+  String.raw`\b(?:${SQL_WRITE_HEADS.join('|')})${SQL_GAP}+${SQL_IDENT}` +
+  String.raw`|\bcreate${SQL_GAP}+(?:(?:temp\w*|unique)${SQL_GAP}+)?(?:trigger|index)\b[\s\S]{0,300}?\bon${SQL_GAP}+${SQL_IDENT}` +
+  String.raw`|\bpragma${SQL_GAP}+(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?writable_schema\b`,
+  'i',
+)
 // The dashboard database file (and its WAL/SHM/journal). Reads by any program
 // stay allowed (a worker reads the board with sqlite3 SELECT); a FILE-level
 // write -- a redirect onto it, cp/mv/tee/dd/rm/ln/... naming it, or a sqlite3
@@ -1199,7 +1235,7 @@ export function scheduleSurfaceVariants(text) {
   return [joined, unquoted, glued, joinedLiterals]
 }
 
-function globMatchesName(glob, name) {
+export function globMatchesName(glob, name) {
   let rx = ''
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i]
@@ -1244,7 +1280,7 @@ function findBraceGroup(w) {
   }
   return null
 }
-function expandBraces(word, cap) {
+export function expandBraces(word, cap) {
   const out = []
   const todo = [word]
   while (todo.length) {
@@ -1387,7 +1423,7 @@ function globRefs(text, opts) {
 // them, so `~/.claude//sc*` and `~/.claude/./sc*` still show `.claude` as the
 // parent of `sc*`. (A `..` after a symlink can differ from the lexical result;
 // that is inside the stated symlink limit.)
-function normalizePathSegments(word) {
+export function normalizePathSegments(word) {
   const out = []
   for (const seg of String(word).split('/')) {
     if (seg === '.' || (seg === '' && out.length)) continue
@@ -1403,6 +1439,18 @@ function normalizePathSegments(word) {
 // (`s*`) may be resolved relative to it.
 export function scheduleSurfaceRefs(text, opts) {
   const vs = scheduleSurfaceVariants(text)
+  // The security surface (db-write-gate): an SQL write on a security table is
+  // the strong reference, the database file keeps its own narrower rule; the
+  // schedule route, store and registry tool are not this mode's business.
+  if (opts?.surface === 'security') {
+    return {
+      api: false,
+      dir: false,
+      cli: false,
+      sql: vs.some((v) => SECURITY_SQL_WRITE_RX.test(v)),
+      db: vs.some((v) => DASHBOARD_DB_REF_RX.test(v)) || globRefs(text, opts).db,
+    }
+  }
   const r = {
     api: vs.some((v) => SCHEDULE_API_REF_RX.test(v)),
     dir: vs.some((v) => SCHEDULE_DIR_REF_RX.test(v)),
@@ -1499,7 +1547,7 @@ export function selfAgentFromProjectDir(dir, root = PROJECT_ROOT) {
 }
 function resolveCatSubst(cmd, opts) {
   return cmd.replace(CAT_SUBST_RX, (full, path) => {
-    if (strongRef(scheduleSurfaceRefs(path, opts))) return full
+    if (strongRef(scheduleSurfaceRefs(path, opts)) || opts?.keepSubst?.(path)) return full
     return acceptedTokenFile(path, opts) ? TOKEN_NONCE : NONCONTENT_MARKER
   })
 }
@@ -1518,7 +1566,9 @@ function resolveCatSubst(cmd, opts) {
 const FLAT_SUBST_RX = /\$\(([^()'"`$\\]*)\)/g
 function resolveFlatSubst(cmd, opts) {
   return cmd.replace(FLAT_SUBST_RX, (full, inner) => {
-    return strongRef(scheduleSurfaceRefs(inner, opts)) ? full : NONCONTENT_MARKER
+    // opts.keepSubst: a caller's own reference (db-write-gate: a protected install
+    // path) keeps the substitution as written, so the word stays unparsable there
+    return strongRef(scheduleSurfaceRefs(inner, opts)) || opts?.keepSubst?.(inner) ? full : NONCONTENT_MARKER
   })
 }
 
@@ -1614,7 +1664,7 @@ function readWord(s, i) {
   return { word: { value, dollar, star, ansi }, i }
 }
 
-function shellWords(text) {
+export function shellWords(text) {
   const s = String(text).replace(HEREDOC_OP_RX, ' ')
   const words = []
   words.redirects = []
@@ -1646,7 +1696,7 @@ function shellWords(text) {
 // of these (`/usr/bin/curl`). `./curl`, `/tmp/cat`, `$X/curl`, a relative path:
 // not trusted -> commandName returns '' -> neither form matches -> deny.
 const SYSTEM_BIN_DIRS = ['/usr/bin/', '/bin/', '/usr/local/bin/', '/usr/sbin/', '/sbin/', '/opt/homebrew/bin/']
-function commandName(words) {
+export function commandName(words) {
   const w = words[0]
   if (!w || w.dollar || w.value.includes('$')) return ''
   const v = w.value
@@ -1799,7 +1849,7 @@ function sortIsReadOnly(words) {
   return words.slice(1).every((w) => !w.value.startsWith('-') || /^-[bdfghinMRrsuVz]+$/.test(w.value) || /^-[kt]/.test(w.value))
 }
 
-function isReadOnlyFsCommand(words, name) {
+export function isReadOnlyFsCommand(words, name) {
   if (!READ_ONLY_FS.has(name)) return false
   // uniq's SECOND operand is an output file
   if (name === 'uniq') return words.slice(1).filter((w) => !w.value.startsWith('-')).length <= 1
@@ -1811,6 +1861,7 @@ function isReadOnlyFsCommand(words, name) {
 }
 
 const AGENT_MSG_RX = /(?:^|\/)scripts\/agent-msg\.sh$/
+const KANBAN_TOOL_RX = /(?:^|\/)scripts\/kartya-es-ertesites\.py$/
 function isPipeSink(words, name) {
   if (TEXT_FILTERS.has(name)) return isReadOnlyFsCommand(words, name)
   // the inter-agent helper: its stdin becomes message content, nothing else
@@ -1835,8 +1886,22 @@ const GH_PROSE_FILE_FLAGS = new Set(['--body-file', '--notes-file', '-F'])
 // Form (c): the segment's text with its LITERAL message data removed. The data
 // words are found by the carrier's own grammar; anything not recognised keeps
 // the full text, so the reference stays and the segment is denied.
-function dataResidue(seg, words, name) {
+export function dataResidue(seg, words, name, opts) {
   const keep = (drop) => words.filter((_, i) => !drop.has(i)).map((w) => w.value).join(' ')
+  // The kanban write tool (security surface only): its --title is card text, and
+  // the tool writes kanban_cards / kanban_comments, never a security table. Run
+  // as `python3 <path>/scripts/kartya-es-ertesites.py ...`, no interpreter option
+  // before the script, no expansion in any word.
+  if (opts?.surface === 'security' && /^python[0-9.]*$/.test(name) && KANBAN_TOOL_RX.test(words[1]?.value ?? '')
+    && !words.some((w) => w.dollar)) {
+    const drop = new Set()
+    for (let j = 2; j < words.length; j++) {
+      const v = words[j].value
+      if (v === '--title') { drop.add(j + 1); j++; continue }
+      if (v.startsWith('--title=')) drop.add(j)
+    }
+    return [keep(drop), ...seg.bodies].join('\n')
+  }
   if (name === 'curl') {
     const p = parseCurl(words)
     if (!p || p.kinds.has('config')) return seg.text
@@ -2013,7 +2078,7 @@ function wholeCommandExports(command) {
 // cat >> $F`): a value carrying a reference taints its name, and a later use of
 // it counts as a reference. That only ADDS denials.
 export function scheduleSurfaceDeny(command, gateOpts = {}) {
-  const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent }
+  const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent, surface: gateOpts.surface }
   const whole = scheduleSurfaceRefs(command, opts)
   const wholeStrong = strongRef(whole)
   if (!wholeStrong && !whole.db) return false
@@ -2081,7 +2146,12 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
     // script the next segment can run, so no redirect but /dev/null is
     // accepted there -- whatever the consumer (message carriers included).
     if (seg.bodies.length && refsIn(seg.bodies.join('\n')) && words.redirects.some((t) => t.value !== '/dev/null')) return true
-    if (!refsIn(dataResidue(view, words, name))) continue // (c) only message data mentions it
+    const residue = dataResidue(view, words, name, opts)
+    // The security surface reads the same of any output: SQL text written to a
+    // file (`printf 'UPDATE approvals ..' > s.sql; sqlite3 db < s.sql`) is a
+    // statement file the next segment runs, whichever command wrote it.
+    if (opts.surface === 'security' && words.redirects.some((t) => t.value !== '/dev/null') && refsIn(residue)) return true
+    if (!refsIn(residue)) continue // (c) only message data mentions it
     if (name === 'curl' && isPlainCurlGet(words)) continue // (a)
     if (isReadOnlyFsCommand(words, name) && pipesOnlyIntoSinks(segs, k, redirectsOk)) continue // (b)
     // the registry tool's read-only subcommands, and git on its source

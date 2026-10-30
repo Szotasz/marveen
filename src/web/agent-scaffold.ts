@@ -1144,6 +1144,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
   }
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
+  // (e) the dashboard DB's security surface and this install's gate wiring
+  // (APPROVALDBGATE1030): every sub-agent; the main agent's entry is
+  // repo-shipped in the tracked .claude/settings.json.
+  if (agentGetsGovernanceGates(name)) injectDbWriteGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
@@ -1813,6 +1817,26 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotently wire the db-write-gate PreToolUse hook (APPROVALDBGATE1030): no
+// SQL write on the dashboard's security tables, no file-level write of the
+// database, no write of this install's gate wiring or autonomy levels. Write,
+// Edit, MultiEdit and NotebookEdit are in the matcher: the install-file part is
+// reachable through the native file tools as well as Bash.
+export const DB_WRITE_GATE_MATCHER = 'Bash|Write|Edit|MultiEdit|NotebookEdit'
+export function injectDbWriteGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = { matcher: DB_WRITE_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('db-write-gate.mjs')),
     entry,
   ]
 }
@@ -2802,6 +2826,10 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  const dbGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
+  const dbGateStale = ptu.some((e) => JSON.stringify(e).includes('db-write-gate.mjs')
+    && (e as { matcher?: unknown })?.matcher !== DB_WRITE_GATE_MATCHER)
+  const needDbGate = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, dbGateCmd) || dbGateStale)
   // The destructive gate has the same two failure modes, plus a third that is
   // specific to it: it was hand-wired on 2026-09-08, so an install can carry a
   // correct-looking entry this code never wrote. Treat a stale matcher as
@@ -2825,11 +2853,12 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
   // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
   const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
-  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
+  if (!needEmail && !needPace && !needDbGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
+  if (needDbGate) injectDbWriteGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
   if (needReviewer) injectSecondReviewerGate(settings)
