@@ -147,6 +147,7 @@ describe('1. SQL writes on the security tables', () => {
   it('the kanban tool carries only its title: a write elsewhere in the command is still denied', () => {
     expect(bash(`python3 @ROOT@/scripts/kartya-es-ertesites.py --id X --title "x" ; ${WRITE}`)).toEqual(DENY_DB)
     expect(bash(`python3 -c "x" @ROOT@/scripts/kartya-es-ertesites.py --title "UPDATE approvals SET y=1"`)).toEqual(DENY_DB)
+    expect(bash(`python3 @ROOT@/scripts/kartya-es-ertesites.py --title "x" --id "UPDATE approvals SET y=1"`)).toEqual(DENY_DB)
   })
   it('a quoted message written to a FILE by a heredoc is not data (a script the next step can run)', () => {
     expect(bash(`cat > /tmp/m.txt <<'EOF'\nUPDATE approvals SET status=1\nEOF`)).toEqual(DENY_DB)
@@ -235,6 +236,10 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a cd into the hooks first', `cd scripts/hooks && echo x > new.py`],
     ['a path built from a literal variable', `F=.claude/settings.json; cp /tmp/x $F`],
     ['a path from a command substitution', `F=$(echo .claude/settings.json); cp /tmp/x "$F"`],
+    ['a path from a command substitution, next to a read of it', `cat .claude/settings.json; F=$(echo .claude/settings.json); cp /tmp/x "$F"`],
+    ['a path from a variable with an expansion in it', `F=$PWD/.claude/settings.json; cat .claude/settings.json; cp /tmp/x $F`],
+    ['a git checkout of it', `git checkout HEAD -- .claude/settings.json`],
+    ['a hook script run with the target as its output', `scripts/hooks/gate.py --out .claude/settings.json`],
     ['a file list piped into xargs', `echo store/autonomy-config.json | xargs rm`],
     ['an unresolved prefix with the protected tail', `cp /tmp/x "$SOMEWHERE/.claude/settings.json"`],
     ['the home-relative absolute path', `cp /tmp/x @ROOT@/store/autonomy-config.json`],
@@ -263,6 +268,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a build in the install', `cd @ROOT@ && npm run build`],
     ['a message that names it', `curl -s -X POST http://localhost:3420/api/messages -d '{"content":"I edited @ROOT@/.claude/settings.json"}'`],
     ['a read of it as a message file', `cat @ROOT@/store/autonomy-config.json | jq .levels`],
+    ['a write after a cd out of the install', `cd /tmp && echo '{}' > .claude/settings.json`],
   ])('%s passes in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
   })

@@ -55,7 +55,6 @@ import {
   nameForms,
   normalizePathSegments,
   pathKey,
-  protectedContext,
   sameKey,
   scheduleSurfaceDeny,
   scheduleSurfaceVariants,
@@ -192,22 +191,6 @@ function hitsIn(text, ctx) {
   return hits
 }
 
-// Literal assignments in the command, substituted into a later word (`F=<path>;
-// cp x $F`). Every value a name gets is tried.
-function substituteAssigns(text, assigns) {
-  const used = [...(assigns?.keys() ?? [])].filter((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(text))
-  if (!used.length) return [text]
-  const out = [text]
-  const most = Math.min(8, Math.max(...used.map((n) => assigns.get(n).length)))
-  for (let k = 0; k < most; k++) {
-    out.push(text.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (m, a, b) => {
-      const l = assigns.get(a ?? b)
-      return l ? l[Math.min(k, l.length - 1)] : m
-    }))
-  }
-  return out
-}
-
 // Commands that only read a file they name (the output redirect is checked apart).
 const READERS = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls',
   'stat', 'file', 'shasum', 'sha1sum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf', 'test', '[',
@@ -255,37 +238,33 @@ export function installFileDeny(command, opts = {}) {
   // opaque marker), so its segment fails to parse below and is denied.
   const segs = shellSegments(cmd, { surface: 'security', projectRoot: ctx.root, keepSubst: (inner) => hitsIn(inner, ctx).length > 0 })
   if (!segs) return true // unresolvable quoting around a protected path: fail closed
-  const assigns = protectedContext(segs.map((s) => s.own)).assigns
   const tainted = new Set()
-  let carried = false
   for (const seg of segs) {
     const own = seg.own.slice((CONTROL_PREFIX_RX.exec(seg.own)?.[0] ?? '').length).trimStart()
     const view = { ...seg, own, text: [own, ...seg.bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
-    const texts = substituteAssigns(view.text, assigns)
-    const rawHits = texts.flatMap((t) => hitsIn(t, ctx))
+    const rawHits = hitsIn(view.text, ctx)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
     const name = words ? commandName(words) : ''
     if (!rawHits.length && !usesTainted) { cwdAfterSegment(own, ctx); continue }
-    carried = true
     if (!words || !words.length) return true
     // an output redirect onto a protected path (or onto a word built at run time)
     for (const r of words.redirects) {
       if (r.value === '/dev/null') continue
-      if (substituteAssigns(r.value, assigns).some((v) => ['exact', 'under', 'unresolved'].includes(classifyWord(v, ctx)))) return true
+      if (['exact', 'under', 'unresolved'].includes(classifyWord(r.value, ctx))) return true
       if (usesTainted && /\$/.test(r.value)) return true
     }
     // a heredoc body that names a protected path, written to a file: a script
     // the next segment can run
     if (seg.bodies.length && seg.bodies.some((b) => hitsIn(b, ctx).length) && words.redirects.some((t) => t.value !== '/dev/null')) return true
-    // an assignment carries the path to a later word
+    // an assignment carries the path to a later word (`F=<path>; cp x $F`): the
+    // name is tainted, and a later segment that uses it is judged as naming it
     if (words.every((w) => ASSIGN_RX.test(w.value)) || /^(?:export|local|declare|readonly|typeset)$/.test(words[0].value)) {
       for (const w of words) { const m = ASSIGN_RX.exec(w.value); if (m) tainted.add(m[1]) }
       continue
     }
-    const residue = substituteAssigns(dataResidue(view, words, name, { surface: 'security' }), assigns)
-    const hits = residue.flatMap((t) => hitsIn(t, ctx))
+    const hits = hitsIn(dataResidue(view, words, name, { surface: 'security' }), ctx)
     if (!hits.length && !usesTainted) { cwdAfterSegment(own, ctx); continue } // only message data names it
     if (READERS.has(name) || isReadOnlyFsCommand(words, name)) {
       // ...but not as the file list of a pipe into a program that acts on it (xargs rm)
@@ -304,9 +283,9 @@ export function installFileDeny(command, opts = {}) {
     if (!usesTainted && hits.every((h) => h.kind === 'ancestor') && !DIR_CHANGERS.has(name)) continue
     return true
   }
-  // the whole command reaches a target but no segment does: the path sits in a
-  // place this parser replaced (a command substitution). Fail closed.
-  return !carried
+  // (A path inside a $(...) is not lost to the parser: keepSubst above keeps
+  // that substitution as written, and its segment then fails to parse.)
+  return false
 }
 
 // Native file tools: the target, resolved against the payload cwd.

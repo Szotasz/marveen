@@ -2084,9 +2084,7 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
   // accepted `$(cat <token file>)` (already replaced by the nonce) is one too:
   // `echo ... > <root>/store/.dashboard-token; curl -q ... $(cat <it>)` would
   // otherwise rewrite the file between the gate's content check and curl.
-  // (Schedule surface only: the security surface's strong reference is SQL text,
-  // which a token in the same command cannot turn into a schedule write.)
-  const tokenMention = (text) => wholeStrong && opts.surface !== 'security' && scheduleSurfaceVariants(text).some((v) => /dashboard[-_.]?token/i.test(v))
+  const tokenMention = (text) => wholeStrong && scheduleSurfaceVariants(text).some((v) => /dashboard[-_.]?token/i.test(v))
   const refsIn = (text) => strongRef(scheduleSurfaceRefs(text, opts)) || usesVar(tainted, text) || tokenMention(text)
   const dbRefsIn = (text) => scheduleSurfaceRefs(text, opts).db || usesVar(dbTainted, text)
   // A redirect target may not reference the store or the database (a tainted
