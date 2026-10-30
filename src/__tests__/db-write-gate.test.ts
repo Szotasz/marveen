@@ -520,6 +520,30 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash(cmd)).toEqual(ALLOW)
   })
 
+  // Bence 57071, Samu 57104: the word reader cannot split a parenthesis, and a segment it could not split passed
+  // unjudged, so a git write in a subshell went through.
+  it.each([
+    ['a reset in a subshell', '(git reset --hard HEAD~1)'],
+    ['the same with spaces', '( git reset --hard HEAD~1 )'],
+    ['a checkout in a subshell after &&', 'true && (git checkout develop)'],
+    ['update-ref onto refs/remotes in a subshell', '(git update-ref refs/remotes/origin/main HEAD)'],
+    ['a subshell in a loop', 'for d in a b; do (git reset --hard HEAD~1); done'],
+    ['a subshell after a cd inside it, in the install', '(cd agents; git reset --hard HEAD~1)'],
+    ['nested subshells', '((git reset --hard HEAD~1))'],
+    ['the cd of a subshell ends with it', '(cd @WT@); git reset --hard HEAD~1'],
+    ['a case pattern', 'case $x in a) git reset --hard HEAD~1;; esac'],
+    ['a subshell next to an unresolved quoting', 'echo "$(echo $x)"; (git reset --hard HEAD~1)'],
+  ])('%s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_GIT)
+  })
+  it.each([
+    ['a git log in a subshell', '(git log -1 --format=%ad)'],
+    ['a write in a subshell that went into a worktree', '(cd @WT@ && git reset --hard HEAD~1)'],
+    ['a parenthesis in quotes', 'echo "(git reset --hard)"'],
+  ])('%s passes in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+
   it('a git write hidden in an unresolved substitution is still denied in the install', () => {
     expect(bash(`echo "$(git reset --hard 'origin/main')"`)).toEqual(DENY_GIT)
     expect(bash(`x="$(git checkout 'develop')"`)).toEqual(DENY_GIT)

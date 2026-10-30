@@ -447,13 +447,14 @@ export function liveSubstitutions(cmd) {
   return out
 }
 
-// Every command of a command line whose quoting does not resolve, read roughly: split at the separators and at every
-// command substitution's start and end, the quotes taken off each word. Only for the rules that must not be lost there.
+// Every command of a command line whose quoting does not resolve, read roughly: split at the separators, at every
+// command substitution's start and end and at every parenthesis (a subshell, a case pattern), the quotes taken off each
+// word. Only for the rules that must not be lost there.
 const ROUGH_CONTROL = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time'])
 function roughCommands(cmd) {
   const out = []
   for (const seg of splitSegments(cmd)) {
-    for (const piece of seg.split(/\$\(|`|\)/)) {
+    for (const piece of seg.split(/\$\(|`|\(|\)/)) {
       let words = piece.trim().split(/\s+/).filter(Boolean)
         .map((v) => ({ value: v.replace(/^['"]+|['"]+$/g, ''), dollar: v.includes('$') }))
       while (words.length && ROUGH_CONTROL.has(words[0].value)) words = words.slice(1)
@@ -463,8 +464,26 @@ function roughCommands(cmd) {
   return out
 }
 
-const CONTROL_PREFIX_RX = /^(?:(?:do|then|else|elif|if|while|until|!|\{)\s+)+/
 const ASSIGN_RX = /^([A-Za-z_]\w*)=/
+
+// A segment's subshell parentheses: the "(" that open one before its command (after a control word too) and the ")"
+// that close one after it, counted, and the command between. The word reader cannot split a parenthesis, and a
+// segment it could not split passed unjudged: `(git reset --hard)` went through (Bence 57071). A ")" that is not a
+// subshell's (a case pattern's) only ends the cwd of an enclosing subshell early: the stricter reading.
+export function subshellParts(own) {
+  let body = own
+  let opens = 0
+  for (let m; (m = /^(?:(?:do|then|else|elif|if|while|until|!|\{)\s+|\(\s*)/.exec(body));) {
+    if (m[0].startsWith('(')) opens++
+    body = body.slice(m[0].length)
+  }
+  let closes = 0
+  for (let m; (m = /(?<!\\)\s*\)$/.exec(body));) {
+    closes++
+    body = body.slice(0, m.index)
+  }
+  return { opens, body: body.trim(), closes }
+}
 
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
@@ -511,13 +530,28 @@ export function installFileDeny(command, opts = {}) {
     return false
   }
   const tainted = new Set()
+  // A subshell's cd ends with it: the cwd before its "(" comes back after its ")".
+  const cwdStack = []
+  let closing = 0
   for (const seg of segs) {
-    const own = seg.own.slice((CONTROL_PREFIX_RX.exec(seg.own)?.[0] ?? '').length).trimStart()
+    for (; closing > 0; closing--) if (cwdStack.length) ctx.cwd = cwdStack.pop()
+    const sub = subshellParts(seg.own)
+    for (let k = 0; k < sub.opens; k++) cwdStack.push(ctx.cwd)
+    closing = sub.closes
+    const own = sub.body
     const view = { ...seg, own, text: [own, ...seg.bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
     const rawHits = hitsIn(view.text, ctx)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
+    // A segment the word reader still cannot split (a case pattern, an arithmetic group): its git commands are read
+    // roughly, so they reach the git rule.
+    if (!words) {
+      for (const rough of roughCommands(own)) {
+        const g = gitWords(rough)
+        if (g && gitDecision(g, ctx) === 'deny') return 'git'
+      }
+    }
     const name = words ? commandName(words) : ''
     const git = words && gitWords(words)
     if (git) {
