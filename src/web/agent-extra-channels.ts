@@ -131,7 +131,11 @@ export function buildExtraChannelLaunch(
     else {
       gromzo = 'on'
       pluginIds.push(GROMZO_PLUGIN_ID)
-      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="owner" && `
+      // both: the owner DM AND the team (colleague DMs, team channels), as the main session
+      // (main-extra-plugins-settings.ts). With "owner" a sub-agent the owner added to a team
+      // channel never heard a mention there (owner, 2026-10-30). Colleague text still arrives
+      // as <untrusted> with its sender_role; the plugin's own rules keep owner data out of it.
+      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="both" && `
     }
   }
   const channelArgs = pluginIds.map(id => ` plugin:${id}`).join('')

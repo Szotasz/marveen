@@ -92,7 +92,7 @@ describe('GROMZOAGENTS1028: the Gromzo channel rides the extra-channel launch', 
     expect(l.providers).toEqual([])
     expect(l.pluginIds).toEqual([GROMZO_PLUGIN_ID])
     expect(l.channelArgs).toBe(` plugin:${GROMZO_PLUGIN_ID}`)
-    expect(l.envExports).toBe('export MXD_AGENT="samu" && export MXD_SCOPE="owner" && ')
+    expect(l.envExports).toBe('export MXD_AGENT="samu" && export MXD_SCOPE="both" && ')
     expect(GROMZO_PLUGIN_ID).toBe('gromzo-channel@gromzo-local')
   })
   it('next to a tokened slack extra: both, slack first', () => {
@@ -100,7 +100,7 @@ describe('GROMZOAGENTS1028: the Gromzo channel rides the extra-channel launch', 
     expect(l.providers).toEqual(['slack'])
     expect(l.pluginIds).toEqual([SL, GROMZO_PLUGIN_ID])
     expect(l.envExports).toContain('export SLACK_STATE_DIR=')
-    expect(l.envExports.endsWith('export MXD_AGENT="zara" && export MXD_SCOPE="owner" && ')).toBe(true)
+    expect(l.envExports.endsWith('export MXD_AGENT="zara" && export MXD_SCOPE="both" && ')).toBe(true)
   })
   it('no usable agent.sock: skipped, contributing nothing (fail-safe, like a tokenless extra)', () => {
     const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: false })
