@@ -222,7 +222,7 @@ const DIR_CHANGERS = new Set(['rm', 'rmdir', 'mv', 'cp', 'rsync', 'ln', 'install
 // Programs that write into the CWD when no target directory is named: an
 // archive extracted, a patch applied (Dani 56276 2a). The names they create
 // come from the archive or the patch, not from the command.
-const IMPLICIT_WRITER_RX = /(?:^|[\s;&|(/])(?:tar|bsdtar|gtar|unzip|patch|cpio|7z|7za)(?=\s|$)/
+const IMPLICIT_WRITER_RX = /(?:^|[\s;&|(/`"'])(?:tar|bsdtar|gtar|unzip|patch|cpio|7z|7za)(?=\s|$)/
 function writesIntoCwd(words, name) {
   const vals = words.map((w) => w.value)
   const named = (...flags) => vals.some((v, i) => flags.some((f) =>
@@ -250,7 +250,7 @@ function writesIntoCwd(words, name) {
 //     inside): only reads, `fetch [origin]` and exactly `pull --ff-only origin <branch>`, plus `checkout -- <paths>` and
 //     `restore <paths>` with no ref (they put back the reviewed tree: the host update skill's clean-up step); every
 //     other writing subcommand is denied, and so is any -c there.
-const GIT_WORD_RX = /(?:^|[\s;&|(/])git(?=\s|$)/
+const GIT_WORD_RX = /(?:^|[\s;&|(/`"'])git(?=\s|$)/
 const GIT_ENV_RX = /(?:^|[\s;&|(])(?:export\s+|env\s+)?GIT_(?:CONFIG\w*|DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|SSH_COMMAND|SSH|EXEC_PATH|TEMPLATE_DIR|ALTERNATE_OBJECT_DIRECTORIES)=/
 const GIT_PROTECTED_KEY_RX = /^(?:remote\..+\.(?:url|pushurl|fetch|pushurl)|core\.hookspath|include\.path|includeif\..+|url\..+\.(?:insteadof|pushinsteadof))$/i
 const GIT_ROOT_READS = new Set([...['diff', 'log', 'show', 'status', 'blame', 'ls-files', 'grep', 'rev-parse', 'ls-tree', 'cat-file'],
@@ -394,6 +394,59 @@ function isExecOf(words, name, hitWords) {
   return hitWords.has(words[script].value) && !words.slice(script + 1).some((w) => hitWords.has(w.value))
 }
 
+// The live command substitutions of a command line, as their inner text: backticks and $(...)
+// outside single quotes, $'...' and the body of a heredoc with a quoted tag (those are literal text). The segment
+// parser replaces a substitution by an opaque marker, so a git write inside one never reached the git rule (Dani 56844:
+// `git update-ref refs/remotes/...` in backticks passed; measured: a flat $(...) too).
+export function liveSubstitutions(cmd) {
+  const out = []
+  const s = String(cmd ?? '')
+  let i = 0
+  while (i < s.length) {
+    const c = s[i]
+    if (c === '\\') { i += 2; continue }
+    if (c === "'") { const e = s.indexOf("'", i + 1); i = e < 0 ? s.length : e + 1; continue }
+    if (c === '$' && s[i + 1] === "'") {
+      let j = i + 2
+      while (j < s.length && s[j] !== "'") j += s[j] === '\\' ? 2 : 1
+      i = j + 1
+      continue
+    }
+    const here = /^<<-?\s*(['"])([A-Za-z_]\w*)\1/.exec(s.slice(i))
+    if (here) {
+      const nl = s.indexOf('\n', i)
+      const end = nl < 0 ? -1 : s.slice(nl + 1).search(new RegExp(`^[ \\t]*${here[2]}[ \\t]*$`, 'm'))
+      i = nl < 0 || end < 0 ? s.length : nl + 1 + end + here[2].length
+      continue
+    }
+    if (c === '`') {
+      let j = i + 1
+      while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1
+      const inner = s.slice(i + 1, j)
+      out.push(inner)
+      i = j + 1
+      continue
+    }
+    if (c === '$' && s[i + 1] === '(' && s[i + 2] !== '(') {
+      let j = i + 2
+      let depth = 1
+      while (j < s.length && depth > 0) {
+        if (s[j] === '\\') { j += 2; continue }
+        if (s[j] === "'") { const e = s.indexOf("'", j + 1); j = e < 0 ? s.length : e + 1; continue }
+        if (s[j] === '(') depth++
+        else if (s[j] === ')') depth--
+        j++
+      }
+      const inner = s.slice(i + 2, j - 1)
+      out.push(inner)
+      i = j
+      continue
+    }
+    i++
+  }
+  return out
+}
+
 // Every command of a command line whose quoting does not resolve, read roughly: split at the separators and at every
 // command substitution's start and end, the quotes taken off each word. Only for the rules that must not be lost there.
 const ROUGH_CONTROL = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time'])
@@ -435,6 +488,15 @@ export function installFileDeny(command, opts = {}) {
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
   const segs = shellSegments(cmd, { surface: 'security', projectRoot: ctx.root, keepSubst: (inner) => hitsIn(inner, ctx).length > 0 })
+  // A git write or an implicit cwd writer inside a live command substitution: the segments below see only a marker
+  // in its place.
+  for (const inner of liveSubstitutions(cmd)) {
+    for (const words of roughCommands(inner)) {
+      const git = gitWords(words)
+      if (git && gitDecision(git, ctx) === 'deny') return 'git'
+      if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
+    }
+  }
   if (!segs) {
     // The quoting does not resolve: a command substitution with quotes or an expansion inside, most often a plain reader
     // (`echo "$(git log -1 --format='%ad' $c)"`, Dani 56794). A protected path anywhere in it: fail closed. Otherwise
