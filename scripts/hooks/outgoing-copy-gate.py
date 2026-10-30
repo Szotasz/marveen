@@ -1790,6 +1790,29 @@ _char_script = char_script   # the name this file used before the extraction
 
 
 EM_DASH = "—"
+# ENDASHGATE1030: an en dash after a word with horizontal white space before it (NBSP and tabs included, line breaks
+# not) and either horizontal white space and a word after it, or the end of the line (a dash where the line was
+# broken), i.e. a dash in prose; an unspaced range ("10–12") and a list marker at the start of a line do not match.
+# Group 1 is the character before the white space, for the range exception below.
+SPACED_EN_DASH = re.compile(r"(\S)[^\S\r\n]+\u2013(?:[^\S\r\n]+(?=\S)|[^\S\r\n]*(?=\r?\n|$))")
+# A time span or a date range is a range, not a dash ("10:00 – 12:00", "október 30. – november 2.", "2026 – 2027"):
+# a digit, or a period right after a digit ("30."), before the white space, and a digit or a month name (lower case,
+# inflected too: "novemberig") after the dash. Any other period or colon before it is prose ("kész. – 3 dolog").
+_DIGITS = "0123456789"
+_RANGE_AFTER = re.compile(r"\d|(?:január|február|március|április|május|június|július|augusztus|szeptember|október"
+                          r"|november|december)")
+
+
+def spaced_en_dashes(prose: str) -> int:
+    """How many spaced en dashes in `prose` are dashes (ENDASHGATE1030); a time span or date range is not one."""
+    n = 0
+    for m in SPACED_EN_DASH.finditer(prose):
+        before = m.group(1)
+        number_before = before in _DIGITS or (before == "." and m.start() > 0 and prose[m.start() - 1] in _DIGITS)
+        if number_before and _RANGE_AFTER.match(prose, m.end()):
+            continue
+        n += 1
+    return n
 
 # GATEPERSIST816: owner-specific NAME rules load from an UNTRACKED local file,
 # not from this (public-repo) script. The generic checks (accents, em dash,
@@ -2475,6 +2498,21 @@ def audit(text: str):
         problems.append(
             f"DUPLA KOTOJEL gondolatjel-potlokent {dh} helyen (' -- ') -- Szabi jelzese: "
             "ugyanugy zavaro, mint az em dash. Ird at kotojel nelkul: kettospont, zarojel, vagy uj mondat."
+        )
+    # ENDASHGATE1030 (2026-10-30): a szokozzel korulvett EN DASH (" – ", U+2013) a
+    # magyar gondolatjel tipikus alakja, es eddig atment (a kapu csak az em dash-t
+    # es a " -- "-t nezte). A PROZAN merjuk, mint a dupla kotojelet. A szo utani,
+    # vizszintes szokozzel (NBSP, tab is) kezdodo en dash szamit, ha utana szokoz es
+    # szo, vagy a sor vege jon. Nem gondolatjel: a szokoz nelkuli tartomany ("10–12"),
+    # a sor eleji felsorolasjel ("– elem"), es az idosav/datumtartomany ("10:00 –
+    # 12:00", "oktober 30. – november 2."): tartomany, nem gondolatjel (Samu
+    # 55873/55879; spaced_en_dashes). Az &ndash; entitas a fenti html.unescape
+    # miatt ugyanide jut.
+    ed = spaced_en_dashes(prose)
+    if ed:
+        problems.append(
+            f"GONDOLATJEL (en dash szokozokkel, ' – ', U+2013) {ed} helyen -- a gondolatjel tilos. "
+            "Ird at: kettospont, zarojel, vagy uj mondat. Idosav es datumtartomany (10:00 – 12:00, 10–12) tartomany, nem gondolatjel: az maradhat."
         )
     # 4. ellenorzes (GATEHOMOGLIF816): vegyes irasrendszeru szo. SZANDEKOSAN
     # NEM magyar-kapuzott (elteres Marveen specjetol, ervvel): az FP-vedelem
