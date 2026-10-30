@@ -396,6 +396,10 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a protected path relative to the cd', 'cd @ROOT@; echo "$(cat $f)" > .claude/settings.json'],
     ['a protected directory relative to the cd', 'cd @ROOT@; echo "$(cat $f)" > scripts/hooks/x.mjs'],
     ['two cds', 'cd @ROOT@ && cd scripts; echo "$(cat $f)" > hooks/x.mjs'],
+    // the same in the unparsed form ("$(cat $f)" alone is resolved, so these reach the relaxed reading)
+    ['unparsed: a protected path relative to the cd', 'cd @ROOT@; echo "$(echo $x)" > .claude/settings.json'],
+    ['unparsed: a copy onto it after the cd', 'cd @ROOT@; x="$(echo $y)"; cp a .claude/settings.json'],
+    ['unparsed: two cds', 'cd @ROOT@ && cd scripts; echo "$(echo $x)" > hooks/x.mjs'],
     ['a cd that cannot be followed', 'cd @ROOT@; cd $Y; echo "$(echo $y)" > settings.json'],
     ['an absolute protected path in the substitution', 'echo @ROOT@ "$(cat $f > @ROOT@/.claude/settings.json)"'],
     ['a cd under a protected directory in the substitution', 'cd @ROOT@; echo "$(cd @ROOT@/scripts/hooks; cp $x a.mjs)"'],
