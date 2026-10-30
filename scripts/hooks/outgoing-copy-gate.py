@@ -2057,8 +2057,13 @@ _TECH_SUFFIXED = r"""
         \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
-      | \b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek)
+      | (?:(?<![\w-])--)?\b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek), --flag alakban is
 """
+# FLAGDASH1030 (2026-10-30): the hyphenated-identifier branch above used to eat only the word part of a
+# '--select-release-current' flag, so strip_technical() left the leading '--' between two spaces, and the double-hyphen
+# rule counted it as a dash in prose: 'plesk installer --select-release-current --upgrade-installed-components' was
+# BLOCKED twice. The optional '--' prefix takes the flag whole. A real ' -- ' in prose is still counted: the prefix
+# needs a letter right after the two hyphens, and a prose dash has a space there.
 TECHNICAL = re.compile(_TECH_COMMON + "|" + _TECH_SUFFIXED, re.X)
 NAME_MASK = re.compile(_TECH_COMMON, re.X)
 
