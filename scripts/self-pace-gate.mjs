@@ -1167,7 +1167,14 @@ export const SECURITY_TABLES = ['approvals', 'approval_events', 'auth_sessions',
 // another table that writes this one, or a trigger on this one). Quoted names
 // ("approvals", `approvals`) are matched on the unquoted variant.
 const SQL_GAP = String.raw`(?:\s|/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*\n)`
-const SQL_IDENT = String.raw`(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?(?:${SECURITY_TABLES.join('|')})\]?(?![\w$])`
+// A schema-table name (sqlite_master and its aliases), also the target of a
+// write: with PRAGMA writable_schema a statement can rename a security table
+// in the schema, write it under the new name and rename it back, never spelling
+// it (Dani 56276, measured on a throwaway database). So writable_schema in any
+// form and any write on a schema table are denied as well.
+export const SCHEMA_TABLES = ['sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'sqlite_temp_schema']
+const sqlIdent = (names) => String.raw`(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?(?:${names.join('|')})\]?(?![\w$])`
+const SQL_IDENT = sqlIdent([...SECURITY_TABLES, ...SCHEMA_TABLES])
 const SQL_WRITE_HEADS = [
   String.raw`insert(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+into`,
   String.raw`replace${SQL_GAP}+into`,
@@ -1179,7 +1186,8 @@ const SQL_WRITE_HEADS = [
 ]
 export const SECURITY_SQL_WRITE_RX = new RegExp(
   String.raw`\b(?:${SQL_WRITE_HEADS.join('|')})${SQL_GAP}+${SQL_IDENT}` +
-  String.raw`|\bcreate${SQL_GAP}+(?:(?:temp\w*|unique)${SQL_GAP}+)?(?:trigger|index)\b[\s\S]{0,300}?\bon${SQL_GAP}+${SQL_IDENT}`,
+  String.raw`|\bcreate${SQL_GAP}+(?:(?:temp\w*|unique)${SQL_GAP}+)?(?:trigger|index)\b[\s\S]{0,300}?\bon${SQL_GAP}+${SQL_IDENT}` +
+  String.raw`|\bpragma${SQL_GAP}+(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?writable_schema\b`,
   'i',
 )
 // The dashboard database file (and its WAL/SHM/journal). Reads by any program

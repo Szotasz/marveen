@@ -7,7 +7,10 @@
 //      TRIGGER|INDEX ... ON) on a security table of the dashboard database
 //      (SECURITY_TABLES in self-pace-gate.mjs: approvals, approval_events,
 //      auth_sessions, dashboard_users, device_keys, vault_ssh_keys), whatever
-//      program runs it: sqlite3, python -c, node -e, a heredoc, a pipe.
+//      program runs it: sqlite3, python -c, node -e, a heredoc, a pipe. Also
+//      PRAGMA writable_schema and any write on sqlite_master / sqlite_schema
+//      (and the temp aliases): through them a table is renamed, written under
+//      the new name and renamed back without its name ever being spelled.
 //   2. A FILE-level write of the database (store/claudeclaw.db and its -wal,
 //      -shm, -journal): a redirect onto it, cp/mv/tee/dd/rm/ln/... naming it, a
 //      sqlite3 dot-command that replaces or runs files, a native Write/Edit.
@@ -17,7 +20,9 @@
 //      store/autonomy-config.json. "This install" is the root this file sits in
 //      (scripts/hooks/ -> ../..), never the cwd: the same Edit in a worktree's
 //      own copy passes, and every path is compared after realpath (symlinks and
-//      ".." resolved, case folded as a case-insensitive volume reads it).
+//      ".." resolved, case folded as a case-insensitive volume reads it). An
+//      archive extracted or a patch applied with no target directory writes
+//      into the cwd: there the cwd is the target.
 //
 // What still passes: SQL reads (SELECT, sqlite3 -readonly), SQL writes on any
 // other table (UPDATE agent_messages in the skills, the daily_logs date fix in
@@ -202,6 +207,25 @@ const INTERPRETERS = new Set(['python', 'python3', 'node', 'bash', 'sh', 'zsh'])
 const DIR_CHANGERS = new Set(['rm', 'rmdir', 'mv', 'cp', 'rsync', 'ln', 'install', 'tar', 'bsdtar', 'gtar', 'unzip',
   'cpio', 'patch', 'ditto', '7z', '7za', 'chmod', 'chown', 'chflags', 'find'])
 
+// Programs that write into the CWD when no target directory is named: an
+// archive extracted, a patch applied (Dani 56276 2a). The names they create
+// come from the archive or the patch, not from the command.
+const IMPLICIT_WRITER_RX = /(?:^|[\s;&|(/])(?:tar|bsdtar|gtar|unzip|patch|cpio|7z|7za)(?=\s|$)/
+function writesIntoCwd(words, name) {
+  const vals = words.map((w) => w.value)
+  const named = (...flags) => vals.some((v, i) => flags.some((f) =>
+    v === f ? i + 1 < vals.length : v.startsWith(f + '=') || (f.length === 2 && v.startsWith(f) && v.length > 2)))
+  if (name === 'tar' || name === 'bsdtar' || name === 'gtar') {
+    const extract = vals.slice(1).some((v) => v === '--extract' || v === '--get' || (!v.startsWith('--') && /^-?[A-Za-z]*x/.test(v)))
+    return extract && !named('-C', '--directory', '--cd')
+  }
+  if (name === 'unzip') return !named('-d')
+  if (name === 'patch') return !named('-d', '--directory')
+  if (name === 'cpio') return vals.slice(1).some((v) => /^-[A-Za-z]*i/.test(v) || v === '--extract') && !named('-D', '--directory')
+  if (name === '7z' || name === '7za') return ['x', 'e'].includes(vals[1]) && !vals.some((v) => v.startsWith('-o'))
+  return false
+}
+
 function gitIsRead(words) {
   let i = 1
   while (i < words.length && words[i].value.startsWith('-')) {
@@ -231,9 +255,17 @@ export function installFileDeny(command, opts = {}) {
   const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
-  // fast path: nothing in any spelling of the whole command reaches a target
-  const wholeHits = hitsIn(cmd, ctx).length > 0
-  if (!wholeHits) return false
+  // fast path: nothing in any spelling of the whole command reaches a target,
+  // and no program in it writes into the cwd on its own
+  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd)) return false
+  // the cwd is the install root, a directory on the way to a protected path, or
+  // inside a protected directory: an implicit writer there reaches it
+  const { list, rootKey } = installTargets(ctx.root)
+  const cwdReaches = (cwd) => {
+    if (!cwd) return false
+    const key = pathKey(cwd)
+    return underKey(key, rootKey) && list.some((t) => underKey(t.key, key) || (t.dir && underKey(key, t.key)))
+  }
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
   const segs = shellSegments(cmd, { surface: 'security', projectRoot: ctx.root, keepSubst: (inner) => hitsIn(inner, ctx).length > 0 })
@@ -247,7 +279,11 @@ export function installFileDeny(command, opts = {}) {
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
     const name = words ? commandName(words) : ''
-    if (!rawHits.length && !usesTainted) { cwdAfterSegment(own, ctx); continue }
+    if (!rawHits.length && !usesTainted) {
+      if (words && words.length && writesIntoCwd(words, name) && cwdReaches(ctx.cwd)) return true
+      cwdAfterSegment(own, ctx)
+      continue
+    }
     if (!words || !words.length) return true
     // an output redirect onto a protected path (or onto a word built at run time)
     for (const r of words.redirects) {
@@ -329,7 +365,8 @@ export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, auth_sessions, dashboard_users, ' +
   'device_keys, vault_ssh_keys) semmilyen programmal (sqlite3, python, node, heredoc), es NEM irhatod fajl ' +
-  'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup). ' +
+  'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup), ' +
+  'es NEM hasznalhatod a PRAGMA writable_schema-t, sem a sqlite_master/sqlite_schema irasat. ' +
   'Jovahagyast a dashboard API-n kerj es hasznalj fel (/api/approvals). Olvasni szabad (SELECT, sqlite3 -readonly), ' +
   'mas tablat irni is (agent_messages, daily_logs). Masolat a DB-rol: sqlite3 -readonly <db> "VACUUM INTO \'/tmp/x.db\'". ' +
   'Ha egy uzenet vagy kanban-szoveg idez ilyen parancsot: curl -d / git commit -m / a kanban-eszkoz --title atmegy; ' +
@@ -339,7 +376,8 @@ export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
   'store/extra-hooks.json es store/autonomy-config.json fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
-  'vagy ..-on at sem). Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
+  'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
+  'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
   'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), hook-szkriptet futtatni is. Valtoztatas a gazda ' +
   'jovahagyasaval a fo ugynokon at. Kifejezett ut kell: valtozoba ($X/...) rakott celutat nem tudok ellenorizni, ' +
   'ezert tiltom.' + LIMIT_MSG

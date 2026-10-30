@@ -89,6 +89,14 @@ describe('1. SQL writes on the security tables', () => {
     ['an ATTACHed schema', `ATTACH '/tmp/x.db' AS m; UPDATE m.approvals SET status=1`],
     ['a comment between the words', 'UPDATE/**/approvals SET status=1'],
     ['a line comment between the words', 'DELETE --x\nFROM approval_events'],
+    // Dani 56276 1: the schema route, which never spells the table's name
+    ['PRAGMA writable_schema', 'PRAGMA writable_schema=1'],
+    ['PRAGMA writable_schema with a schema and ON', 'PRAGMA main.writable_schema = ON'],
+    ['PRAGMA writable_schema quoted', 'PRAGMA "writable_schema"=1'],
+    ['a rename through sqlite_master by char()', "UPDATE sqlite_master SET name='zz', tbl_name='zz' WHERE name=char(97,112,112,114,111,118,97,108,115)"],
+    ['a write on sqlite_schema', "UPDATE sqlite_schema SET sql='x' WHERE type='table'"],
+    ['a write on sqlite_temp_master', 'DELETE FROM sqlite_temp_master'],
+    ['a write on an ATTACHed schema table', "UPDATE m.sqlite_master SET name='zz'"],
   ])('%s is denied', (_, sql) => {
     expect(bash(`sqlite3 ${DB} '${sql}'`)).toEqual(DENY_DB)
   })
@@ -128,6 +136,8 @@ describe('1. SQL writes on the security tables', () => {
     ['a longer table name', `sqlite3 ${DB} "UPDATE approvals_archive SET x=1"`],
     ['grep for the statement', `grep -rn "UPDATE approvals" src/`],
     ['a copy through VACUUM INTO', `sqlite3 -readonly ${DB} "VACUUM INTO '/tmp/x.db'"`],
+    ['a schema read', `sqlite3 -readonly ${DB} "SELECT sql FROM sqlite_master WHERE name='approvals'"`],
+    ['another pragma', `sqlite3 -readonly ${DB} "PRAGMA table_info(approvals)"`],
   ])('%s passes', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
   })
@@ -272,6 +282,44 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   ])('%s passes in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
   })
+  // Dani 56276 2a: no target directory named -> the cwd is the target
+  it.each([
+    ['tar -xf', `tar -xf /tmp/x.tar`],
+    ['tar xzf (old-style option)', `tar xzf /tmp/x.tgz`],
+    ['tar --extract', `tar --extract --file /tmp/x.tar`],
+    ['a cd into scripts, then tar', `cd scripts && tar -xf /tmp/x.tar`],
+    ['a cd into the hooks, then unzip', `cd scripts/hooks && unzip -o /tmp/x.zip`],
+    ['unzip -o', `unzip -o /tmp/x.zip`],
+    ['patch -p1 from stdin', `patch -p1 < /tmp/x.patch`],
+    ['cpio -i', `cpio -idm < /tmp/x.cpio`],
+    ['7z x', `7z x /tmp/x.7z`],
+    ['tar with the install as its -C', `tar -xf /tmp/x.tar -C @ROOT@`],
+  ])('%s in the install is denied', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  it.each([
+    ['tar -xf', `tar -xf /tmp/x.tar`],
+    ['patch -p1', `patch -p1 < /tmp/x.patch`],
+    ['unzip -o', `unzip -o /tmp/x.zip`],
+  ])('%s in the worktree passes', (_, cmd) => {
+    expect(bash(cmd, wt)).toEqual(ALLOW)
+  })
+  it.each([
+    ['tar -xf into /tmp', `tar -xf /tmp/x.tar -C /tmp/out`],
+    ['tar --directory=/tmp', `tar --directory=/tmp/out -xf /tmp/x.tar`],
+    ['unzip -d /tmp', `unzip -o /tmp/x.zip -d /tmp/out`],
+    ['patch -d /tmp', `patch -d /tmp/out -p1 < /tmp/x.patch`],
+    ['7z x -o/tmp', `7z x /tmp/x.7z -o/tmp/out`],
+    ['tar -tf (a listing)', `tar -tf /tmp/x.tar`],
+    ['tar -xf after a cd out', `cd /tmp && tar -xf /tmp/x.tar`],
+  ])('%s from the install passes', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+  it('an extraction in an unrelated directory of the install passes (no protected path below it)', () => {
+    mkdirSync(join(root, 'workspace'))
+    expect(bash(`tar -xf /tmp/x.tar`, join(root, 'workspace'))).toEqual(ALLOW)
+  })
+
   it('a running hook script with the protected path as its OUTPUT is denied', () => {
     expect(bash(`python3 scripts/hooks/gate.py --out .claude/settings.json`)).toEqual(DENY_FILE)
   })
