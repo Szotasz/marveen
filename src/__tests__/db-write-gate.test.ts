@@ -458,6 +458,7 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     ['a loop with a reading substitution', `for c in a b; do echo "$(git log -1 --format='%ad' $c)"; done`],
     ['the same with no format', 'for c in a b; do echo "$(git log -1 $c)"; done'],
     ['no loop', `echo "$(git log -1 --format='%ad' HEAD)"`],
+    ['a quoted subcommand', `echo "$(git 'log' -1 --format='%ad')"`],
   ])('%s passes, in the install and in another repo', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
     expect(bash(cmd, base)).toEqual(ALLOW)
