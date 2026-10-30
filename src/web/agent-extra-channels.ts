@@ -85,6 +85,8 @@ export type GromzoLaunchState = 'off' | 'on' | 'skipped-no-socket' | 'skipped-ba
 export interface ExtraChannelLaunch {
   /** The Gromzo channel's part in this launch (GROMZOAGENTS1028). */
   gromzo: GromzoLaunchState
+  /** The MXD_SCOPE the Gromzo plugin got, when `gromzo` is 'on'. */
+  gromzoScope?: 'owner' | 'both'
   /** Providers that actually take part in this launch (configured AND tokened). */
   providers: ChannelProviderType[]
   /** Providers configured but skipped because their state dir holds no token. */
@@ -107,7 +109,7 @@ export function buildExtraChannelLaunch(
   primary: ChannelProviderType,
   agentDirPath: string,
   hasToken: (provider: ChannelProviderType, envPath: string) => boolean = (p, envPath) => !!readChannelToken(p, envPath),
-  gromzoFor?: { slug: string; sockUsable: boolean },
+  gromzoFor?: { slug: string; sockUsable: boolean; senderRoleGate: boolean },
 ): ExtraChannelLaunch {
   const providers: ChannelProviderType[] = []
   const skipped: ChannelProviderType[] = []
@@ -125,21 +127,23 @@ export function buildExtraChannelLaunch(
   }).join('')
   // The slug goes into a shell export, so only mxd's own character set passes.
   let gromzo: GromzoLaunchState = 'off'
+  let gromzoScope: 'owner' | 'both' | undefined
   if (gromzoFor) {
     if (!MXD_SLUG_RE.test(gromzoFor.slug)) gromzo = 'skipped-bad-name'
     else if (!gromzoFor.sockUsable) gromzo = 'skipped-no-socket'
     else {
       gromzo = 'on'
       pluginIds.push(GROMZO_PLUGIN_ID)
-      // both: the owner DM AND the team (colleague DMs, team channels), as the main session
-      // (main-extra-plugins-settings.ts). With "owner" a sub-agent the owner added to a team
-      // channel never heard a mention there (owner, 2026-10-30). Colleague text still arrives
-      // as <untrusted> with its sender_role; the plugin's own rules keep owner data out of it.
-      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="both" && `
+      // both = the owner DM AND the team (colleague DMs, team channels). The plugin's both mode
+      // leans on the sender-role gate to keep risky tools off a turn a colleague speaks in
+      // (gromzo-channel server.js), so a sub-agent gets both ONLY with a senderRoleGate in its
+      // agent-config.json; without one it stays owner-only, fail-closed (Dani, #2375 review).
+      gromzoScope = gromzoFor.senderRoleGate ? 'both' : 'owner'
+      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="${gromzoScope}" && `
     }
   }
   const channelArgs = pluginIds.map(id => ` plugin:${id}`).join('')
-  return { gromzo, providers, skipped, pluginIds, channelArgs, envExports }
+  return { gromzo, gromzoScope, providers, skipped, pluginIds, channelArgs, envExports }
 }
 
 /** Force the extra plugins on, after the primary-only scope step turned them off. */
