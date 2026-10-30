@@ -34,6 +34,12 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   }
 })
 
+// A remote call creates the ssh ControlMaster dir first; the test must not touch the disk.
+vi.mock('../web/ssh-tmux.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/ssh-tmux.js')>()
+  return { ...actual, ensureControlDir: () => {} }
+})
+
 const { agentRunState, paneCurrentCommand, withTmuxBatch } = await import('../web/agent-process.js')
 
 const LS = (c: string[]) => c.includes('list-sessions')
@@ -113,6 +119,28 @@ describe('withTmuxBatch', () => {
     expect(withTmuxBatch(() => paneCurrentCommand('agent-alpha:1'))).toBe('node')
     expect(calls).toHaveLength(1)
     expect(calls[0].slice(-5)).toEqual(['list-panes', '-t', '=agent-alpha:1', '-F', '#{pane_current_command}'])
+  })
+
+  it('T13 inside a batch only list-sessions is memoized, other reads run every time', () => {
+    table['list-panes-t'] = 'node\n'
+    expect(withTmuxBatch(() => [paneCurrentCommand('agent-alpha:1'), paneCurrentCommand('agent-alpha:1')])).toEqual(['node', 'node'])
+    expect(calls).toHaveLength(2)
+  })
+
+  it('T14 an exact target without the colon is a window target and keeps the unbatched query', () => {
+    table['list-panes-t'] = 'node\n'
+    table['list-panes-a'] = 'agent-alpha\t1\tclaude\n'
+    expect(withTmuxBatch(() => paneCurrentCommand('=agent-alpha'))).toBe('node')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].slice(-5)).toEqual(['list-panes', '-t', '=agent-alpha', '-F', '#{pane_current_command}'])
+  })
+
+  it('T15 a remote pane query is never batched', () => {
+    table['list-panes-a'] = 'agent-alpha\t1\tclaude\n'
+    withTmuxBatch(() => paneCurrentCommand('agent-alpha', 'remote-box'))
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('ssh')
+    expect(calls[0].at(-1)).toBe("tmux 'list-panes' '-t' '=agent-alpha:' '-F' '#{pane_current_command}'")
   })
 
   it('T7 a failing list-panes -a gives null for all, one call', () => {

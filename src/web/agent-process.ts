@@ -4467,10 +4467,12 @@ export function readRemoteTranscriptMtime(
  * never to a false death sentence.
  */
 export function paneCurrentCommand(session: string, host: string | null = null): string | null {
-  // Only a bare session name (or its exact form) is batched: a target that names a window or pane
-  // asks about that window, which the session-wide list cannot answer the same way.
+  // Only a target that exactTmuxTarget turns into `=<session>:` is batched (a bare session name, or
+  // that exact form): a target that names a window or pane asks about that window, which the
+  // session-wide list cannot answer the same way. `=<session>` without the colon is a window target
+  // too -- tmux resolves it to a window of that name in the current session if one exists.
   const bare = session.replace(/^=/, '').replace(/:$/, '')
-  if (host === null && tmuxBatch !== null && !bare.includes(':')) {
+  if (host === null && tmuxBatch !== null && !bare.includes(':') && exactTmuxTarget(session) === `=${bare}:`) {
     const probeArgs = ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}']
     const { runAsUser } = resolveTarget(null, probeArgs)
     const target: TmuxTarget = { host: null, runAsUser: runAsUser ?? null }
