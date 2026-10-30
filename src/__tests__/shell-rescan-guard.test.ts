@@ -241,6 +241,15 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(allowed(bash('echo "${PROMPT}"'))).toBe(true)
   })
 
+  it('D: ${v@P} is refused unquoted and in an unquoted heredoc body; a quoted heredoc is inert', () => {
+    expect(denied(bash('echo ${PROMPT@P}'))).toBe(true)
+    expect(logLines().at(-1)).toMatchObject({ decision: 'deny', rules: ['D_PROMPT_EXPAND'] })
+    expect(allowed(bash('echo ${PROMPT}'))).toBe(true)
+    expect(denied(bash('cat <<EOF\n${PROMPT@P}\nEOF'))).toBe(true)
+    expect(logLines().at(-1)).toMatchObject({ decision: 'deny', rules: ['D_PROMPT_EXPAND'] })
+    expect(allowed(bash("cat <<'EOF'\n${PROMPT@P}\nEOF"))).toBe(true)
+  })
+
   it('a backtick inside $(( )) in double quotes still runs and is refused; an escaped backtick is literal text', () => {
     expect(denied(bash(`echo "$(( ${BT}id -u${BT} + 1 ))"`))).toBe(true)
     expect(allowed(bash(`echo "literal \\${BT}id\\${BT} text"`))).toBe(true)
