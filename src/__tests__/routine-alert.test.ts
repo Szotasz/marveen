@@ -160,9 +160,9 @@ describe('sendOwnerActionAlert (Szotasz/marveen#2353 review): never gated by NOT
   it('gate on: sends the first alert to the channel', async () => {
     const { sendOwnerActionAlert } = await loadRoutineAlert()
 
-    expect(sendOwnerActionAlert('agent-wait:talosz', 'varakozik', { now: 1_000 })).toBe(true)
+    expect(sendOwnerActionAlert('agent-wait:agent-a', 'varakozik', { now: 1_000 })).toBe(true)
     expect(h.notify).toHaveLength(1)
-    expect(h.notify[0].kind).toBe('agent-wait:talosz')
+    expect(h.notify[0].kind).toBe('agent-wait:agent-a')
     expect(h.notify[0].text).toContain('varakozik')
   })
 
@@ -172,7 +172,7 @@ describe('sendOwnerActionAlert (Szotasz/marveen#2353 review): never gated by NOT
     h.routineAlerts = false
     const { sendOwnerActionAlert } = await loadRoutineAlert()
 
-    expect(sendOwnerActionAlert('agent-wait:talosz', 'varakozik', { now: 1_000 })).toBe(true)
+    expect(sendOwnerActionAlert('agent-wait:agent-a', 'varakozik', { now: 1_000 })).toBe(true)
     expect(h.notify).toHaveLength(1)
     expect(h.notify[0].text).toContain('varakozik')
     expect(h.logLines.some((line) => line.msg.includes('NOTIFY_ROUTINE_ALERTS'))).toBe(false)
