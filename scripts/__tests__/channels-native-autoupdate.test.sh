@@ -148,6 +148,8 @@ echo "channels.sh guarded native auto-update"
 # stays a one-line change there.
 DEF="$(grep -E '^CLAUDE_NATIVE_AUTOUPDATE_DEFAULT=' "$SRC" | head -1 | cut -d= -f2)"
 case "$DEF" in 0|1) ;; *) fail "channels.sh sets CLAUDE_NATIVE_AUTOUPDATE_DEFAULT to 0 or 1" "0|1" "${DEF:-<missing>}"; DEF=0 ;; esac
+# The owner chose on-by-default on 2026-10-30 (#1642, option A): a silent revert must fail.
+if [ "$DEF" = "1" ]; then pass "the default is 1 (owner decision #1642)"; else fail "the default is 1 (owner decision #1642)" "1" "$DEF"; fi
 
 run_case ok -
 if [ "$DEF" = "0" ]; then
