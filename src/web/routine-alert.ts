@@ -1,5 +1,6 @@
 import { logger } from '../logger.js'
 import { notifyChannel } from '../notify.js'
+import { NOTIFY_ROUTINE_ALERTS } from '../config.js'
 
 // Self-healing recoveries are the fleet's normal operating noise: a session
 // died, the supervisor rebuilt it, nothing was lost. The owner still wants to
@@ -60,6 +61,15 @@ export function sendRoutineAlert(
     return false
   }
   states.set(key, { lastSentAt: now, suppressed: 0 })
+  // Owner-switchable noise gate (NOTIFY_ROUTINE_ALERTS, DEFAULT ON). The state
+  // above is written either way: with the gate off the cooldown bookkeeping must
+  // keep working, so turning the switch back on does not replay a backlog. The
+  // real failure alerts travel sendAlert(), not this function, and are never
+  // gated here.
+  if (!NOTIFY_ROUTINE_ALERTS) {
+    logger.info({ key }, 'Routine recovery alert kept log-only (NOTIFY_ROUTINE_ALERTS=off)')
+    return false
+  }
   // The key names the recovery (and the agent, per call site): it is the case
   // on the delivery log line (card 68cb6715).
   notifyChannel(text + routineAlertSuffix(decision.repeats, cooldownMs), { kind: key }).catch(() => {})

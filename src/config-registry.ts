@@ -867,6 +867,20 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Boot-time const in src/config.ts, like the opt-in switches further down this
+  // module -- so a saved value takes effect only after the dashboard restarts.
+  // It sits HERE, next to the notify switches, because its default is ON: the
+  // comment above that lower block says its entries default to '0', which would
+  // not be true of this one.
+  {
+    key: 'NOTIFY_ROUTINE_ALERTS',
+    type: 'boolean',
+    default: '1',
+    description: 'Menjenek-e ki a csatornára a routine (önjavító recovery) értesítések: a flotta saját újraindításai és beragadásai, például "a fő session beragadt, automatikusan újraindítottam", "a session eltűnt, újraindítom". Alapértelmezés: BE, a viselkedés változatlan. Kikapcsolva (off/0) a sendRoutineAlert csak naplót ír (dashboard.log), a csatornára nem küld semmit; a VALÓDI hiba-értesítések (sendAlert, például "az automatikus újraindítás NEM sikerült") másik függvényen mennek ki, és ettől függetlenül mindig kimennek. A módosítás a dashboard újraindításakor lép életbe (boot-time const, nem a settings-store live-olvasásos útja).',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
   {
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
