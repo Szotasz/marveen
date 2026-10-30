@@ -3,6 +3,8 @@
 // rate-limited owner secret on the controller.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
 import http from 'node:http'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { startFakeMxdDash, INVITE_OK, LOGIN_OK, type FakeMxdDash } from './helpers/fake-mxd-dash.js'
 
 vi.mock('../notify.js', () => ({
@@ -72,6 +74,15 @@ describe('auth and same-origin', () => {
   it('both paths sit behind the dashboard auth gate', () => {
     expect(requiresAuth('/api/gromzo/status', 'GET')).toBe(true)
     expect(requiresAuth('/api/gromzo/owner-qr', 'POST')).toBe(true)
+  })
+
+  it('web.ts runs the Origin gate (403) before it dispatches to the Gromzo routes', () => {
+    // The test server above re-runs the gate itself; this pins the real wiring.
+    const src = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8').replace(/^\s*\/\/.*$/gm, '')
+    const gate = src.search(/if \(isBlockedCrossOriginWrite\([^)]*\)\) \{\s*logger\.warn\([^\n]*\n\s*res\.writeHead\(403/)
+    const route = src.indexOf('await tryHandleGromzo(routeCtx)')
+    expect(gate).toBeGreaterThan(-1)
+    expect(route).toBeGreaterThan(gate)
   })
 
   it('a foreign Origin is refused before mxd is asked', async () => {
