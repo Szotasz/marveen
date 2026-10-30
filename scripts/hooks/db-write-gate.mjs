@@ -520,6 +520,12 @@ export function installFileDeny(command, opts = {}) {
   // most often (`cd <root>; ... "$(cd $d; git remote get-url origin)"`, Marveen 57083). Holds when the rest, read
   // roughly with its cd followed, names no protected path from the cwd each command runs in, and no substitution's own
   // text names one (ancestor too) from any of those cwds. A cd that cannot be followed outside a substitution: no.
+  // The git rule and the implicit writer rule run from the followed cwd too, every command of a substitution from each
+  // of those cwds (Dani 57368: measured from the caller's cwd, `cd <root>; tar -xf ...; echo "$(date $y)"` passed).
+  const writes = (words, cw) => {
+    const git = gitWords(words)
+    return (git && gitDecision(git, cw) === 'deny') || (writesIntoCwd(words, commandName(words)) && cwdReaches(cw.cwd))
+  }
   const ancestorOnlyHolds = (text) => {
     const subs = liveSubstitutions(text)
     let outer = text
@@ -529,12 +535,16 @@ export function installFileDeny(command, opts = {}) {
     for (const words of roughCommands(outer)) {
       c.cwdInsideDir = insideDir(c.cwd)
       if (hitsIn(words.map((w) => w.value).join(' '), c).some((h) => h.kind !== 'ancestor')) return false
+      if (writes(words, c)) return false
       if (!['cd', 'pushd', 'popd'].includes(words[0].value)) continue
       cwdAfterSegment(words.map((w) => w.value).join(' '), c)
       if (!c.cwd) return false
       cwds.push(c.cwd)
     }
-    return !subs.some((s) => cwds.some((cwd) => hitsIn(s, { ...ctx, cwd, cwdInsideDir: insideDir(cwd) }).length))
+    return !subs.some((s) => cwds.some((cwd) => {
+      const at = { ...ctx, cwd, cwdInsideDir: insideDir(cwd) }
+      return hitsIn(s, at).length || roughCommands(s).some((words) => writes(words, at))
+    }))
   }
   if (!segs) {
     // The quoting does not resolve: a command substitution with quotes or an expansion inside, most often a plain reader

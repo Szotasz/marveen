@@ -409,6 +409,26 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     expect(bash(cmd)).toEqual(DENY_FILE)
     expect(bash(cmd, base)).toEqual(DENY_FILE)
   })
+  // Dani 57368: the git rule and the implicit writer rule run from the followed cwd as well, not from the caller's
+  const U = 'echo "$(date +%s $y)"'
+  it.each([
+    ['an archive extracted after the cd', `cd @ROOT@; tar -xf /tmp/x.tar; ${U}`],
+    ['an unzip after the cd', `cd @ROOT@; unzip -o /tmp/x.zip; ${U}`],
+    ['a patch after the cd', `cd @ROOT@; patch -p1 < /tmp/x.diff; ${U}`],
+    ['an archive in scripts', `cd @ROOT@/scripts; tar -xf /tmp/x.tar; ${U}`],
+    ['a hard reset after the cd', `cd @ROOT@; git reset --hard; ${U}`],
+    ['a checkout after the cd', `cd @ROOT@; git checkout develop; ${U}`],
+    ['a hard reset in the substitution', 'cd @ROOT@; echo "$(git reset --hard $y)"'],
+    ['an archive in the substitution', 'cd @ROOT@; echo "$(tar -xf /tmp/x.tar $y)"'],
+  ])('%s stays denied from elsewhere', (_, cmd) => {
+    gitScaffold() // the install is a main checkout, for the git rule
+    expect(bash(cmd, base).deny).toBe(true)
+    expect(bash(cmd).deny).toBe(true)
+  })
+  it('an archive extracted after a cd to the root, from an agent\'s folder, stays denied', () => {
+    mkdirSync(join(root, 'agents', 'x'), { recursive: true })
+    expect(bash(`cd @ROOT@; tar -xf /tmp/x.tar; ${U}`, join(root, 'agents', 'x')).deny).toBe(true)
+  })
 })
 
 // Samu 56294/56299/56310, Dani 56284/56308; the base claim measured on a throwaway clone first
