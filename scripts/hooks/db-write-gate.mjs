@@ -343,12 +343,34 @@ export function gitDecision(words, ctx) {
     return args.filter((a) => a.startsWith('-')).every((a) => flags.test(a)) && (!names.length || args.some((a) => listFlags.test(a)))
   }
   const LIST_ARG = /^(?:-l|--list|--contains|--no-contains|--merged|--no-merged|--points-at)$/
+  // A local branch deleted after its worktree is gone (Samu 56807: the fleet could add worktrees but not clean up):
+  // allowed, but never a remote-tracking ref (-r, an origin/ or refs/ name) and never the branch the install runs.
+  if (sub === 'branch' && args.some((a) => /^-[A-Za-z]*[dD]$|^--delete$/.test(a))) {
+    const names = args.filter((a) => !a.startsWith('-'))
+    const head = (() => { try { return readFileSync(join(ctx.root, '.git', 'HEAD'), 'utf-8').trim().replace(/^ref: refs\/heads\//, '') } catch { return null } })()
+    const bad = !names.length || args.some((a) => /^-[A-Za-z]*r$|^--remotes$/.test(a))
+      || names.some((n) => /^(?:origin\/|remotes\/|refs\/)/.test(n) || n === head || /[$`\u0000]/.test(n))
+    return bad ? 'deny' : null
+  }
   if (sub === 'branch') return listing(/^(?:-a|-r|-v|-vv|-l|--list|--all|--remotes|--show-current|--verbose|--no-color|--color|--contains|--no-contains|--merged|--no-merged|--format=.*|--sort=.*)$/, LIST_ARG) ? null : 'deny'
   if (sub === 'tag') return listing(/^(?:-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|--sort=.*|--format=.*)$/, LIST_ARG) ? null : 'deny'
   if (sub === 'remote') return args.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(args[0]) ? null : 'deny'
   if (sub === 'config') return args.some((a) => /^--(?:get|get-all|get-regexp|get-urlmatch|list)$|^-l$/.test(a)) || ['get', 'list'].includes(args[0]) ? null : 'deny'
   if (sub === 'stash') return ['list', 'show'].includes(args[0]) ? null : 'deny'
-  if (sub === 'worktree') return ['list', 'add', 'prune', 'remove'].includes(args[0]) ? null : 'deny'
+  // A worktree is added, moved or removed only OUTSIDE the install (Samu 56807): one inside it would be a second
+  // checkout of the tree the install runs.
+  if (sub === 'worktree') {
+    if (args[0] === 'list' || args[0] === 'prune') return null
+    if (!['add', 'remove', 'move'].includes(args[0])) return 'deny'
+    const paths = []
+    for (let j = 1; j < args.length; j++) {
+      if (['-b', '-B', '--reason'].includes(args[j])) { j++; continue }
+      if (!args[j].startsWith('-')) paths.push(args[j])
+    }
+    const where = args[0] === 'add' ? paths.slice(0, 1) : paths
+    if (!where.length || where.some((p) => /[$`\u0000]/.test(p))) return 'deny'
+    return where.some((p) => underKey(pathKey(resolve(dir ?? ctx.cwd ?? '/', expandHome(p))), rootKey)) ? 'deny' : null
+  }
   return 'deny'
 }
 
