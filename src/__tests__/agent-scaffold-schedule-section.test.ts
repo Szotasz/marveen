@@ -20,6 +20,11 @@ const prompt = src.slice(start, end)
 const secStart = prompt.indexOf('## Ütemezett feladatok')
 const secEnd = prompt.indexOf('\n## ', secStart + 5)
 const section = prompt.slice(secStart, secEnd)
+// The doctrine paragraph of that section lives in scheduleDoctrineText() (conditional on the schedule-writer
+// grant); the default agent's text is its second branch, taught exactly as before.
+const doctrineStart = src.indexOf('export function scheduleDoctrineText')
+const defaultDoctrine = src.slice(doctrineStart, start).split('\n').filter((l) => l.includes('Ütemezést NEM hozhatsz létre')).join('\n')
+const taught = section + '\n' + defaultDoctrine
 
 const ROOT = mkdtempSync(join(tmpdir(), 'sched-section-root-'))
 mkdirSync(join(ROOT, 'store'), { recursive: true })
@@ -42,10 +47,13 @@ describe('generateClaudeMd: the schedule section matches the self-pace gate', ()
   })
 
   it('teaches no schedule write, and routes create/change through the main agent', () => {
-    expect(section).not.toMatch(/-X\s*(POST|PUT|PATCH|DELETE)/)
-    expect(section).not.toMatch(/\s-d\s|--data/)
-    expect(section).toContain('${MAIN_AGENT_ID}')
-    expect(section).toMatch(/NEM hozhatsz létre/)
+    expect(doctrineStart).toBeGreaterThan(0)
+    expect(doctrineStart).toBeLessThan(start)
+    expect(defaultDoctrine).not.toBe('')
+    expect(taught).not.toMatch(/-X\s*(POST|PUT|PATCH|DELETE)/)
+    expect(taught).not.toMatch(/\s-d\s|--data/)
+    expect(taught).toContain('${MAIN_AGENT_ID}')
+    expect(taught).toMatch(/NEM hozhatsz létre/)
   })
 
   it('every taught curl is the accepted GET form, and the gate allows it for a sub-agent', () => {
