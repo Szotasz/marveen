@@ -402,47 +402,19 @@ function mentionsProtectedName(text) {
 }
 const ALLOWLIST_READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
-  'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf', 'pwd',
+  'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
 ])
-const HOOKS_DIR_NAME = 'local-' + 'hooks'
-// Is the segment a cd/pushd whose literal target, from any of [cwds], is the hooks dir or under it? An unresolved target
-// is left to unknownCwd (what follows it may only read).
-function cdIntoHooks(seg, ctx, cwds) {
-  const words = String(seg ?? '').trim().split(/\s+/)
-  let i = 0
-  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || SEGMENT_CONTROL_WORDS.has(words[i].replace(/^\(+/, '')))) i++
-  const cmd = (words[i] ?? '').replace(/^\(+/, '').replace(/^.*\//, '')
-  if (cmd !== 'cd' && cmd !== 'pushd') return false
-  const arg = words.slice(i + 1).find((w) => !/^-[LPe@]+$/.test(w))?.replace(/^['"]|['"]$/g, '').replace(/\)+$/, '')
-  if (!arg) return false
-  if (mentionsProtectedName(` ${arg}`)) return true
-  if (/[$`*?[{]/.test(arg)) return false
-  const target = expandHome(arg)
-  return cwds.some((cwd) => {
-    const abs = target.startsWith('/') ? target : cwd ? join(cwd, target) : null
-    return !!abs && underKey(pathKey(resolve(abs)), ctx.hooks)
-  })
-}
-const SEGMENT_CONTROL_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', ''])
-// A cd writes nothing on its own (where it leads, the cwds follow). The shell's closing words write nothing only bare
-// (Dani 57649: `case x in x) cp ...`, `: $(cp ...)` and `true $(cp ...)` ran their writer as the argument).
-const CWD_CHANGERS = new Set(['cd', 'pushd', 'popd'])
-const BARE_CLOSERS = new Set(['done', 'fi', 'esac'])
 // Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
 // `ctx` (optional): what protectedMention needs beyond the segment's own text, see
 // protectedContext. Without it only the spelling variants are read.
-// The mention is measured from EVERY cwd the command has passed, the caller's included (ctx.cwds, Samu 57529): the
-// segments follow each cd unconditionally, also one after || or && that may not run (`false && cd /tmp; cp a $f`
+// The mention is measured from EVERY cwd the command has passed, the caller's included (ctx.cwds, Samu 57529/57656):
+// the segments follow each cd unconditionally, also one after || or && that may not run (`false && cd /tmp; cp a $f`
 // passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
   const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
-  // A cd or pushd INTO the hooks dir (or under it) stays denied (Samu 57556 (1)); one to the root or elsewhere passes.
-  if (ctx && cdIntoHooks(seg, ctx, cwds)) return false
-  // Once a cd led into the hooks dir, or from the install to a place this check cannot know (cd $d), every name a
-  // later segment writes may be a hook script (Dani 57550, Samu 57556 (2)): it may only read (or cd).
-  return readOnlyMentionAllowed(seg, (text) => !!ctx?.unknownCwd || cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -482,18 +454,11 @@ function readOnlyMentionAllowed(seg, mentions) {
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
-  // The command word, only for this test: a control word or an opening parenthesis before it is not the command
-  // (the segments are cut naively: `do echo "$(pwd)"`, `(cd $d`, `pwd)"`); the whole segment is still what was measured.
-  while (i < words.length && SEGMENT_CONTROL_WORDS.has(words[i].replace(/^\(+/, ''))) i++
-  const cmd = (words[i] ?? '').replace(/^\(+/, '').replace(/[)"'`]+$/, '').replace(/^.*\//, '')
-  // a cd writes nothing; where it leads, the cwds the mention is measured from follow (allowlistBashSegmentAllowed)
-  const rest = words.slice(i + 1).filter(Boolean)
-  const bareCloser = BARE_CLOSERS.has(cmd) && rest.length === 0
-  const plainFor = cmd === 'for' && rest[1] === 'in' && !/\$\(|`/.test(s)
-  if (!ALLOWLIST_READERS.has(cmd) && !CWD_CHANGERS.has(cmd) && !bareCloser && !plainFor) return false
-  // (2) a command substitution inside the allowed segment runs a command of its own: each piece after a `$(` or a
-  // backtick (to its `)` or backtick, the naive segments may have cut it) is measured with this same rule
-  // (Dani 57649: `echo $(cp /tmp/a <allowlist>)` passed as a read).
+  const cmd = (words[i] ?? '').replace(/^.*\//, '')
+  if (!ALLOWLIST_READERS.has(cmd)) return false
+  // A command substitution inside the read runs a command of its own: each piece after a `$(` or a backtick (to its
+  // `)`, the naive segments may have cut it) is measured with this same rule (Dani 57649: `echo $(cp /tmp/a
+  // <allowlist>)` passed as a read).
   if (/\$\(|`/.test(s)) {
     for (const piece of s.split(/\$\(|`/).slice(1)) {
       const inner = piece.split(')')[0].replace(/^["'\s]+|["'\s]+$/g, '')
@@ -555,10 +520,7 @@ export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, c
   // root/store are compared as pathKey()s (real, on-disk case, every nameForms() form):
   // see realDeep and sameKey.
   const start = cwd ? resolve(String(cwd)) : null
-  const hooks = pathKey(resolve(store, '..', HOOKS_DIR_NAME))
-  // the caller already in the hooks dir: what it writes there may be a hook script (Samu 57556 (2))
-  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), hooks,
-    cwd: start, cwds: [start], unknownCwd: !!start && underKey(pathKey(start), hooks) }
+  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: start, cwds: [start] }
 }
 
 // The working directory after one segment: a literal `cd DIR` / `pushd DIR` moves it,
@@ -2727,13 +2689,8 @@ function decide(toolName, toolInput, opts = {}) {
       if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
       // the egress allowlist and the extra hooks: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
-      const before = protectedCtx.cwd
       cwdAfterSegment(seg, protectedCtx)
       if (!protectedCtx.cwds.includes(protectedCtx.cwd)) protectedCtx.cwds.push(protectedCtx.cwd)
-      const after = protectedCtx.cwd
-      if ((after && underKey(pathKey(after), protectedCtx.hooks)) || (!after && before && underKey(pathKey(before), protectedCtx.root))) {
-        protectedCtx.unknownCwd = true
-      }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and

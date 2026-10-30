@@ -178,23 +178,14 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
   })
 })
 
-// Samu 57515/57529: in the root an unresolved word may be the allowlist, so a segment holding one may only be a read;
-// the command word was the segment's first word, and the naive segments start with `do`, `(` or `cd`. And the
-// segments follow each cd unconditionally, also one that may not run: measured from every cwd passed, it only gets
-// stricter.
-describe('gate: a reading loop in the root, and a cd that may not run', () => {
+// Samu 57515/57529/57656 (this PR only tightens): the segments follow each cd unconditionally, also one that may not
+// run, so the mention is measured from every cwd passed (the caller's included); and a substitution inside a read
+// runs a command of its own (Dani 57649).
+describe('gate: a cd that may not run, and a command inside a substitution', () => {
   const from = (command: string, cwd: string) => gateDecision('Bash', { command }, { allowlistPath: allowlist, cwd })
-  const R = '@R@'
-  const at = (c: string) => c.replaceAll(R, root)
-  it.each([
-    ['a loop that reads after a cd to the root', `cd ${R}; for d in agents/abel/; do echo "$(cd $d; pwd)"; done`],
-    ['a loop with a plain substitution', `cd ${R}; for d in a; do echo "$(pwd)"; done`],
-    ['a cd to an unresolved directory, then a read', `cd ${R}; cd $d; pwd`],
-    ['the same in a subshell', `cd ${R}; (cd $d; pwd)`],
-    ['a loop of cds', `cd ${R}; for d in a; do cd $d; done`],
-  ])('%s passes, from the root and from elsewhere', (_, cmd) => {
-    expect(from(at(cmd), root)).toEqual({ deny: false })
-    expect(from(at(cmd), tmpdir())).toEqual({ deny: false })
+  it('a plain read with a substitution still passes in the root', () => {
+    expect(from('echo "$(date)"', root)).toEqual({ deny: false })
+    expect(from('cat a; ls', root)).toEqual({ deny: false })
   })
   it.each([
     ['a copy onto an unresolved target', 'cp a $f'],
@@ -205,13 +196,12 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
     ['a write after a cd into the store', 'cd store; cp a $f'],
     // measured from the caller's cwd too, from the first segment on: the price of "only stricter"
     ['a write after a cd out of the root', 'cd /tmp; cp a $f'],
-    // a cd from the install to a place the check cannot know (it may be the hooks dir): only reads after it
+    // a cd from the install to a place the check cannot know (it may be the hooks dir)
     ['a write after an unknown cd from the install', 'cd $d && touch x.py'],
   ])('%s stays denied from the root', (_, cmd) => {
     expect(from(cmd, root)).toEqual({ deny: true, reason: 'egress-allowlist' })
   })
-  // Dani 57550, Samu 57556: a cd into the hooks dir stays denied (1), and from a cwd inside it, the caller's or one a cd
-  // led to, a segment may only read (2)
+  // Dani 57550, Samu 57556: a cd into the hooks dir stays denied, from the root and from elsewhere
   const H = 'local-' + 'hooks'
   it.each([
     ['a touch after a cd into the hooks dir', `cd ${H} && touch x.py`],
@@ -224,13 +214,7 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
     expect(from(cmd, root).deny).toBe(true)
     expect(from(cmd.replace(H, join(root, H)), tmpdir()).deny).toBe(true)
   })
-  it('from a cwd inside the hooks dir only a read passes', () => {
-    mkdirSync(join(root, H), { recursive: true })
-    expect(from('touch x.py', join(root, H)).deny).toBe(true)
-    expect(from('cat gate.py', join(root, H))).toEqual({ deny: false })
-    expect(from(`cd ${root}; for d in a; do echo "$(cd $d; pwd)"; done`, join(root, H))).toEqual({ deny: false })
-  })
-  // Dani 57649: a "non-writing" first word must not carry a writer in its arguments; a substitution runs a command
+  // Dani 57649: no first word carries a writer in its arguments; a substitution runs a command of its own
   const A = 'store/egress-' + 'allowlist.json'
   const X = 'store/extra-' + 'hooks.json'
   it.each([
@@ -242,11 +226,9 @@ describe('gate: a reading loop in the root, and a cd that may not run', () => {
     ['a true with a substitution that copies', `true $(cp /tmp/a ${A})`],
     ['an echo of a substitution that copies', `echo $(cp /tmp/a ${A})`],
     ['the same quoted', `echo "$(cp /tmp/a ${A})"`],
-    // only a BARE closer and a for without a substitution are not commands (denied on the base too)
-    ['a closer with arguments', 'done cp /tmp/a $f'],
-    ['a loop over any substitution', 'for x in $(echo a); do :; done'],
-  ])('%s is denied from the root', (_, cmd) => {
+  ])('%s is denied, from the root and after a cd to it from elsewhere', (_, cmd) => {
     expect(from(cmd, root).deny).toBe(true)
+    expect(from(`cd ${root}; ${cmd}`, tmpdir()).deny).toBe(true)
   })
   it('a cd into the hooks dir through a variable stays denied from elsewhere', () => {
     mkdirSync(join(root, H), { recursive: true })
