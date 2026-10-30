@@ -273,14 +273,14 @@ describe('rule 5: the global npm dirs are measured before an npm install', () =>
       }
     }
   })
-  const withStubNpm = async (script: string, fn: () => Promise<void>): Promise<void> => {
+  const withStubNpm = async (script: string, fn: (dir: string) => Promise<void>): Promise<void> => {
     const dir = mkdtempSync(join(tmpdir(), 'stub-npm-'))
-    writeFileSync(join(dir, 'npm'), script)
-    chmodSync(join(dir, 'npm'), 0o755)
     const savedPath = process.env.PATH
-    process.env.PATH = dir + ':' + savedPath
     try {
-      await fn()
+      writeFileSync(join(dir, 'npm'), script)
+      chmodSync(join(dir, 'npm'), 0o755)
+      process.env.PATH = dir + ':' + savedPath
+      await fn(dir)
     } finally {
       if (savedPath === undefined) delete process.env.PATH
       else process.env.PATH = savedPath
@@ -288,13 +288,16 @@ describe('rule 5: the global npm dirs are measured before an npm install', () =>
     }
   }
   it('npm prefix -g that ignores SIGTERM is SIGKILLed at the timeout and reads as unmeasured', async () => {
-    await withStubNpm('#!/bin/sh\ntrap \'\' TERM\nexec sleep 10\n', async () => {
+    // The stub marks that it ignores SIGTERM before it sleeps: a SIGTERM that landed before the trap would end it
+    // early and pass the test without SIGKILL, so the marker must exist.
+    await withStubNpm('#!/bin/sh\ntrap \'\' TERM\ntouch "$(dirname "$0")/ready"\nexec sleep 10\n', async (dir) => {
       const t0 = Date.now()
-      const p = await readNpmGlobalPrefix(300)
+      const p = await readNpmGlobalPrefix(1000)
       const elapsed = Date.now() - t0
+      expect(existsSync(join(dir, 'ready'))).toBe(true)
       expect(p).toBeNull()
-      expect(elapsed).toBeGreaterThanOrEqual(250)
-      expect(elapsed).toBeLessThan(3000)
+      expect(elapsed).toBeGreaterThanOrEqual(900)
+      expect(elapsed).toBeLessThan(5000)
     })
   }, 15_000)
   it('a prefix that is not an absolute path reads as unmeasured: null, so the install runs the old way', async () => {
