@@ -105,6 +105,8 @@ describe('measureOnly: every neighbour is refused (null, so classify() judges it
     ['an input redirection', 'curl -q -I https://app.marveen.io/x < /etc/passwd'],
     ['a backslash', 'curl -q -I https://app.marveen.io\\@evil.com/x'],
     ['a newline', 'curl -q -I https://app.marveen.io/x\ncurl https://evil.com'],
+    ['a newline as the only flaw', 'curl -q -s\nhttps://app.marveen.io/x'],
+    ['a carriage return as the only flaw', 'curl -q -s\rhttps://app.marveen.io/x'],
     ['a tilde', 'curl -q -I ~/x'],
     ['a background job', 'curl -q -I https://app.marveen.io/x &'],
     ['empty', ''],
