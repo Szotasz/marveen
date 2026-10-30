@@ -11,6 +11,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
+import { agentGetsScheduleWrite, readScheduleWriters, SELF_PACE_SCHEDULE_WRITE_FLAG } from './self-pace-schedule-writers.js'
 import { agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
@@ -86,6 +87,13 @@ export function agentRunsStrict(name: string, profile?: ProfileTemplate): boolea
   } catch {
     return false
   }
+}
+
+// Does this agent's self-pace-gate hook command carry the schedule-write flag? The grant (the SELF_PACE_SCHEDULE_WRITERS
+// list) never reaches a strict profile: the doctrine of a strict agent forbids the schedule write, so its hook must not open
+// the route either. A profile that cannot be resolved counts as not strict (agentRunsStrict).
+export function agentGetsScheduleWriteFlag(name: string, profile?: ProfileTemplate): boolean {
+  return agentGetsScheduleWrite(name, readScheduleWriters()) && !agentRunsStrict(name, profile)
 }
 
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
@@ -1143,7 +1151,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) {
     injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
   }
-  if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
+  if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing, agentGetsScheduleWriteFlag(name, profile))
   // (e) the dashboard DB's security surface and this install's gate wiring
   // (APPROVALDBGATE1030): every sub-agent; the main agent's entry is
   // repo-shipped in the tracked .claude/settings.json.
@@ -1800,11 +1808,18 @@ export function agentGetsGovernanceGates(name: string): boolean {
 // Idempotently wire the self-pace-gate PreToolUse hook (blocks ScheduleWakeup /
 // Cron* / RemoteTrigger + the Bash self-injection routes). Same shape + dedupe
 // discipline as injectEmailSendGate.
-export function injectSelfPaceGate(existing: Record<string, unknown>): void {
+//
+// SCHEDWRITE1023: an agent named in SELF_PACE_SCHEDULE_WRITERS gets
+// --allow-schedule-write on the hook command (the same mechanism as the email
+// gate's --allow-thread-reply). The flag rides on the regenerated-on-every-spawn
+// settings.json, so removing the agent from the list removes it at the next spawn.
+// Without it, the command is byte-identical to what it was before the setting.
+export function injectSelfPaceGate(existing: Record<string, unknown>, scheduleWrite = false): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
+  const scriptPath = join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')
+  const command = scheduleWrite ? hookCommand(scriptPath, [SELF_PACE_SCHEDULE_WRITE_FLAG]) : hookCommand(scriptPath)
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -2825,7 +2840,14 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
-  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  const scheduleWrite = agentGetsGovernanceGates(name) && agentGetsScheduleWriteFlag(name, profile)
+  const paceCmdExpected = scheduleWrite
+    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'), [SELF_PACE_SCHEDULE_WRITE_FLAG])
+    : paceCmd
+  // The flag rides inside the invocation, so the flagged and the unflagged command are not
+  // substrings of each other: this one exact comparison sees a grant that arrived after the
+  // scaffold and a revocation (the agent left the list), with nothing else to compare.
+  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmdExpected)
   const dbGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
   const dbGateStale = ptu.some((e) => JSON.stringify(e).includes('db-write-gate.mjs')
     && (e as { matcher?: unknown })?.matcher !== DB_WRITE_GATE_MATCHER)
@@ -2857,7 +2879,7 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
-  if (needPace) injectSelfPaceGate(settings)
+  if (needPace) injectSelfPaceGate(settings, scheduleWrite)
   if (needDbGate) injectDbWriteGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
@@ -4728,6 +4750,20 @@ export function ensureFleetAuthSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// SCHEDWRITE1023: the schedule paragraph of the sub-agent doctrine. The default text is unchanged; an agent named in
+// SELF_PACE_SCHEDULE_WRITERS gets the conditional one, because the governance gate lets its schedule API write through
+// and the unconditional "you cannot create schedules" would contradict the hook.
+// `ask` is how the default text says to reach the main agent: the heredoc wording, or a strict agent's helper recipe
+// (strictPromptRecipes, #2232). A strict agent never gets the conditional text: its dontAsk mode denies the curl recipe it teaches.
+// The gate hook of a strict agent never carries the schedule-write flag either (agentGetsScheduleWriteFlag): at generation the doctrine
+// and the hook agree, listed or not. The generated text is not migrated: an agent that turns strict later
+// keeps the permissive text while the hook denies, which is the safe direction.
+export function scheduleDoctrineText(scheduleWrite: boolean, ask = '(a lenti, idézett heredoces alakban)', ownTokenSchedule = ''): string {
+  return scheduleWrite
+    ? `Ütemezést CSAK a dashboard ütemező API-n hozhatsz létre (POST ${dashboardOrigin}/api/schedules), mert a neved az ütemezés-író ügynökök listáján van (SELF_PACE_SCHEDULE_WRITERS); ez az EGYETLEN megengedett út. NEM írhatod a ~/.claude/scheduled-tasks/ mappát és a scheduled_tasks.json fájlt, NEM nyúlhatsz az SQLite táblához vagy a schedule-registry eszközhöz, és az önütemező eszközök (ScheduleWakeup, Cron*, RemoteTrigger, /loop) tiltottak: a governance-kapu (self-pace-gate) ezeket megtagadja. A POST curl-parancsában a -q legyen az ELSŐ argumentum (a kapu a ~/.curlrc nélküli alakot engedi át). Csak a kérő feladatához tartozó ütemezést hozz létre, a saját jövőbeli turnöd időzítésére soha.`
+    : `Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja${ownTokenSchedule}. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${ask}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.`
+}
+
 // #2232: the strict-profile agent's own recipe list. The generated blocks are rewritten on
 // every start, but the memory-save, daily-log, hot-list, move and schedule recipes live in the
 // creation-time text, which no start rewrites -- so an agent created before #2232, or switched to
@@ -4917,6 +4953,11 @@ export async function generateClaudeMd(name: string, description: string, model:
   // The profile is written before this runs (routes/agents.ts), so the new agent's mode is known.
   const strict = agentRunsStrict(name)
   const R = strictPromptRecipes(name)
+  const scheduleDoctrine = scheduleDoctrineText(
+    !strict && agentGetsGovernanceGates(name) && agentGetsScheduleWrite(name, readScheduleWriters()),
+    strict ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)',
+    ownTokenSchedule,
+  )
   const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
 Agent name: ${name}
 Description of what the agent should do: ${description}
@@ -4990,7 +5031,7 @@ TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id léte
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
-Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja${ownTokenSchedule}. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${strict ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)'}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
+${scheduleDoctrine}
 
 ${strict ? R.scheduleList : `Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
 curl -q -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/schedules
