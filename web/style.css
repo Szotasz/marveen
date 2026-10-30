@@ -7606,6 +7606,14 @@ a.oss-inv-name:hover { text-decoration: underline; }
   line-height: 1.4;
 }
 
+/* === Gromzo card: owner QR (GROMZOOWNERQR1030) === */
+.gromzo-card .gromzo-status { font-size: 13px; color: var(--text-muted); margin: 6px 0 12px; }
+.gromzo-card .mobile-login-warn { text-align: left; margin-top: 10px; }
+.gromzo-qr-area { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 14px; }
+.gromzo-qr-area[hidden] { display: none; }
+.gromzo-qr-area .mobile-login-warn, .gromzo-qr-area .modal-desc { text-align: center; max-width: 420px; }
+.gromzo-countdown { font-size: 13px; font-variant-numeric: tabular-nums; margin: 0; }
+
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
 .docs-content-toolbar .btn-compact { font-size: 12px; }
@@ -8383,3 +8391,5 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.gromzo-card > summary.gromzo-summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text-muted); user-select: none; }
+.gromzo-card[open] > summary.gromzo-summary { margin-bottom: 8px; color: var(--text); }

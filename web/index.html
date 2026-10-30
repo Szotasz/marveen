@@ -11,7 +11,7 @@
   <!-- QR generator for the mobile-login button (renders a scannable QR of the
        ?token= bootstrap URL on the already-authenticated desktop -- the token
        never travels through chat). MIT, dependency-free, same CDN as xterm. -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js" integrity="sha384-e9EFD6BGC90bkW9aDV5xbbBfzwN7G8YImHao2lfLVKV/hPB0E0go+H3I64h7oHtA" crossorigin="anonymous"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <link rel="icon" href="/api/marveen/avatar">
@@ -1352,6 +1352,28 @@
 
       <nav class="tab-nav" id="settingsTabNav" style="margin-bottom:0"></nav>
       <div id="settingsTabPanels"></div>
+
+      <!-- GROMZOOWNERQR1030: the Gromzo app's owner QR code, collapsed at the bottom of
+           Settings (the owner asked for a less prominent place for now). The first time it is the
+           registration code, afterwards the login code for a new phone. The code is
+           drawn client-side into #gromzoQr only, shown for at most 2 minutes, then
+           wiped. Rendered by setupGromzoCard() in app.js. -->
+      <details class="card gromzo-card" id="gromzoCard" style="margin-top:16px">
+        <summary class="gromzo-summary" data-i18n="gromzo.card.title">Gromzo (mobilapp)</summary>
+        <p class="modal-desc" data-i18n="gromzo.card.desc">Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.</p>
+        <p class="gromzo-status" id="gromzoStatus"></p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary btn-compact" id="gromzoAddPhoneBtn" data-i18n="gromzo.btn.add_phone">Telefon hozzáadása</button>
+        </div>
+        <p class="mobile-login-warn" id="gromzoError" hidden></p>
+        <div class="gromzo-qr-area" id="gromzoQrArea" hidden>
+          <div id="gromzoQr" class="mobile-login-qr"></div>
+          <p class="modal-desc" id="gromzoQrHint"></p>
+          <p class="gromzo-countdown" id="gromzoCountdown"></p>
+          <p class="mobile-login-warn" data-i18n="gromzo.qr.warn">A kód belépést ad a fiókodba. Csak a saját telefonoddal olvasd be, ne fotózd le és ne oszd meg.</p>
+          <button class="btn-secondary btn-compact" id="gromzoQrClose" data-i18n="gromzo.btn.hide">Kód elrejtése</button>
+        </div>
+      </details>
       <!-- Sticky save bar -- shown only when there are unsaved changes -->
       <div id="settingsSaveBar" style="display:none;position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:12px 24px;display:none;align-items:center;justify-content:space-between;gap:12px;z-index:10">
         <span id="settingsDirtyCount" style="font-size:13px;color:var(--text-muted)"></span>
