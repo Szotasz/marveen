@@ -243,10 +243,11 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
 
   it('reads the extras once, from agent-config, against the resolved primary', () => {
-    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name)\n      ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGatePolicy(name) != null }\n      : undefined)')
+    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name)\n      ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGateClosesTools(name) }\n      : undefined)')
   })
   it('#2375: the team scope is bound to the agent\'s own sender-role gate, and an owner-only launch is logged', () => {
-    expect(FN).toContain('senderRoleGate: readAgentSenderRoleGatePolicy(name) != null')
+    // GROMZOGATECONF1030: the team scope needs a gate that closes tools, not just one that exists.
+    expect(FN).toContain('senderRoleGate: readAgentSenderRoleGateClosesTools(name)')
     expect(FN).toContain("if (extraLaunch.gromzo === 'on' && extraLaunch.gromzoScope === 'owner') {")
   })
   it('GROMZOAGENTS1028: a gromzo-only launch still counts as having a channel, and a skipped one is logged', () => {

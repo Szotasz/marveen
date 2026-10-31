@@ -76,16 +76,20 @@ hook, so the sub-agents, which read the install-root project settings, never get
 the main session's next start.
 
 For the gromzo channel with `MXD_SCOPE=both` (the owner DM and the team in one session): the plugin writes the
-sender's verified role into the envelope (`sender_role="owner|colleague"`), so
+sender's role and whether the owner's device is verified into the envelope as two attributes (`sender_role="owner"`
+or `"colleague"`, and `verified="true"` or `"false"`). The owner is both together, so the sender key is the list of
+the two (the sender is their values joined with `|`); and an envelope that states `verified` as anything but `"true"`
+is never an owner's, whatever the keys say (GROMZOGATECONF1030: `sender_role="owner"` alone also comes from an
+unverified device of the owner):
 
 ```json
 "senderRoleGate": {
   "allowTools": ["mcp__plugin_gromzo-channel_gromzo__reply", "mcp__plugin_gromzo-channel_gromzo__typing", "ToolSearch"],
   "roles": [
-    { "channel": "gromzo", "sender": "owner", "role": "owner" },
+    { "channel": "gromzo", "sender": "owner|true", "role": "owner" },
     { "channel": "slack", "sender": "<owner's Slack user id>", "role": "owner" }
   ],
-  "senderKeys": { "gromzo": "sender_role", "slack": "user_id" }
+  "senderKeys": { "gromzo": ["sender_role", "verified"], "slack": "user_id" }
 }
 ```
 

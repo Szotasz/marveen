@@ -39,7 +39,7 @@ import {
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentSenderRoleGateClosesTools, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
@@ -2164,7 +2164,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   // state dir for the reaper, the state fence or the token probes to act on.
   const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,
     readAgentGromzo(name)
-      ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGatePolicy(name) != null }
+      ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGateClosesTools(name) }
       : undefined)
   if (extraLaunch.gromzo === 'on' && extraLaunch.gromzoScope === 'owner') {
     logger.warn({ name }, 'gromzo: owner DM only -- the team (colleague DMs, channels) needs a senderRoleGate in agent-config.json')
