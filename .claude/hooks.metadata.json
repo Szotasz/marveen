@@ -344,6 +344,14 @@
         "gate": true,
         "purpose": "PreToolUse gate: agent writes to the dashboard's SECURITY surface (APPROVALDBGATE1030), for EVERY agent, the main agent included.",
         "fingerprint": "ccb220ffc34e4c03f9b8267c0aee515a0a618a9ebd8e4650feb9e8c5c31be04e"
+      },
+      {
+        "index": 20,
+        "id": "pre-tool-use/shell-rescan-guard",
+        "hook": "shell-rescan-guard",
+        "gate": true,
+        "purpose": "PreToolUse gate: refuse a Bash command whose own TEXT will be re-scanned by the shell, because that is how prose becomes an executed command.",
+        "fingerprint": "dc80b8d05304d0e0c3e7015a34afe77f9b56f9f8c464800d65ac6b26f4f046b9"
       }
     ],
     "Stop": [
