@@ -44,7 +44,7 @@
 // Engine: scheduleSurfaceDeny in scripts/self-pace-gate.mjs (segments, quoting,
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -268,6 +268,22 @@ function gitWords(words) {
   if (words[i]?.value === 'env') { i++; while (i < words.length && (ASSIGN_RX.test(words[i].value) || words[i].value.startsWith('-'))) i++ }
   const rest = words.slice(i)
   return commandName(rest) === 'git' ? rest : null
+}
+
+// The directory after a segment (cwdAfterSegment), and one thing it cannot see: a cd joined to the next command by ";" or a
+// newline, not "&&", that may FAIL. bash then runs the next command in the old directory, so "cd <dir>; git ..." would
+// write the install when <dir> is missing (found while measuring Dani 60251's case 4). A target that does not exist now is
+// such a cd: the directory after it is unknown, which the git rule takes as the install. With "&&" a failed cd runs
+// nothing after it, and an existing directory is taken as reached. A FILE fails a cd too (Dani 60262: "cd <file> ||
+// git ..." runs the git only then), so the test is "a directory", not "exists".
+function isDirectory(p) {
+  try { return statSync(p).isDirectory() } catch { return false }
+}
+
+function moveCwd(own, seg, ctx) {
+  cwdAfterSegment(own, ctx)
+  const first = shellWords(String(own ?? '').trim())?.[0]?.value
+  if (ctx.cwd && seg.sep !== '&&' && (first === 'cd' || first === 'pushd') && !isDirectory(ctx.cwd)) ctx.cwd = null
 }
 
 // The main checkout this repo dir belongs to: the nearest directory up from it that has a .git entry.
@@ -601,7 +617,7 @@ export function installFileDeny(command, opts = {}) {
     }
     if (!rawHits.length && !usesTainted) {
       if (words && words.length && writesIntoCwd(words, name) && cwdReaches(ctx.cwd)) return true
-      cwdAfterSegment(own, ctx)
+      moveCwd(own, seg, ctx)
       continue
     }
     if (!words || !words.length) return true
@@ -622,7 +638,7 @@ export function installFileDeny(command, opts = {}) {
       continue
     }
     const hits = hitsIn(dataResidue(view, words, name, { surface: 'security' }), ctx)
-    if (!hits.length && !usesTainted) { cwdAfterSegment(own, ctx); continue } // only message data names it
+    if (!hits.length && !usesTainted) { moveCwd(own, seg, ctx); continue } // only message data names it
     if (READERS.has(name) || isReadOnlyFsCommand(words, name)) {
       // ...but not as the file list of a pipe into a program that acts on it (xargs rm)
       const next = segs[segs.indexOf(seg) + 1]
@@ -631,7 +647,7 @@ export function installFileDeny(command, opts = {}) {
         const nn = nw ? commandName(nw) : ''
         if (!nw || !(READERS.has(nn) || isReadOnlyFsCommand(nw, nn))) return true
       }
-      cwdAfterSegment(own, ctx)
+      moveCwd(own, seg, ctx)
       continue
     }
     if (name === 'git' && gitIsRead(words)) continue
@@ -719,7 +735,11 @@ export const GIT_GATE_MSG =
   'clean, restore --source, pull nem-origin forrasbol, es barmilyen -c. Mindenhol tiltott: a refs/remotes/* irasa ' +
   '(update-ref, refspec, branch -f origin-nevvel), a remote.*.url/pushurl/fetch, core.hooksPath, include.path, includeIf.*, ' +
   'url.*.insteadOf config-irasa (--global/--system is), es a GIT_CONFIG_*/GIT_DIR/GIT_WORK_TREE kornyezeti valtozo. ' +
-  'Fejleszteni worktree-ben kell. Elrontott prod fa helyreallitasa: ' + RESCUE_DOC + ', "Vesz-helyreallitas" szakasz ' +
+  'Fejleszteni worktree-ben kell: egy SAJAT, a telepitesen KIVULI worktree-ben minden git mehet (checkout, fetch, teszt), ' +
+  'de a celt LITERALIS abszolut uttal add meg: "git -C /Users/marvin/<worktree> ..." vagy "cd /Users/marvin/<worktree> && git ..." ' +
+  '(&&-vel). Valtozo ("-C $W") vagy $(...) eseten a kapu a celt nem ismeri, es a telepitesnek veszi; ugyanigy egy ' +
+  ';-vel lancolt cd utan, ha a mappa most nem letezik (bukott cd utan a git a telepitesben futna; APPROVALDBGATE1030, Dani 60251). ' +
+  'Elrontott prod fa helyreallitasa: ' + RESCUE_DOC + ', "Vesz-helyreallitas" szakasz ' +
   '(a gazda sajat terminaljaban, vagy jovahagyas-keressel a pontos paranccsal).' + LIMIT_MSG
 
 function allow() { process.exit(0) }
