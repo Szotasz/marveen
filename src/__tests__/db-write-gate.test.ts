@@ -722,6 +722,10 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash('cat @ROOT@/.git/config', wt)).toEqual(ALLOW)
   })
   it('the deny text names the rescue section by its file', () => {
+    // Samu 60400 (APPROVALDBGATE1030): a sqlite3 in a $(...) stays denied; the line names the way round it.
+    expect(DB_GATE_MSG).toContain('egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) a kapu nem olvassa, es tiltja: futtasd a sqlite3-at kulon parancskent, behelyettesites nelkul')
+    expect(gateDecision('Bash', { command: 'echo "x: $(sqlite3 -readonly store/claudeclaw.db "SELECT count(*) FROM agent_messages")"' }, { cwd: root, root }))
+      .toEqual({ deny: true, reason: 'db' })
     expect(GIT_GATE_MSG).toContain('docs/db-write-gate.md')
     expect(GIT_GATE_MSG).toContain('Vesz-helyreallitas')
     expect(INSTALL_FILE_GATE_MSG).toContain('docs/db-write-gate.md')
