@@ -54,6 +54,17 @@ describe('tryAcquirePidLock', () => {
     expect(readFileSync(file, 'utf-8')).toBe(String(SELF))
   })
 
+  it('T5b a leading zero is not a pid: 0 and 007 are stale even though the pid is alive and is a coordinator', () => {
+    for (const garbage of ['0', '007']) {
+      rmSync(file, { force: true })
+      writeFileSync(file, garbage)
+      const d = deps(true, 'node /x/dist/channel-coordinator.js')
+      expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: true, reclaimed: null })
+      expect(readFileSync(file, 'utf-8')).toBe(String(SELF))
+      expect(d.isAlive).not.toHaveBeenCalled()
+    }
+  })
+
   it('T6 accepts its own pid file unchanged', () => {
     writeFileSync(file, String(SELF))
     expect(tryAcquirePidLock(file, SELF, deps(true, 'channel-coordinator'))).toEqual({ ok: true, reclaimed: null })
