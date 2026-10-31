@@ -452,6 +452,23 @@ def topic_of(entry):
     return {"message_thread_id": t} if isinstance(t, int) and t > 0 else {}
 
 
+def claim_send(progress_dir, sid, message_id):
+    """Win-once guard, shared with the Stop hook (same marker name), so the same
+    answer can never be delivered twice by two different senders racing on one
+    placeholder: the Stop-hook enforce path and this watchdog both back-stop the
+    identical turn. Keyed by the unique placeholder message_id, so a leftover
+    marker cannot suppress a later turn's delivery."""
+    try:
+        fd = os.open(os.path.join(progress_dir, f"fbsent-{sid}-{message_id}.marker"),
+                     os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True  # guard unavailable, prefer delivering over silence
+
+
 def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None, answer_sent=False,
             synthetic=False, sent=None):
     """Deliver the real answer if we have one (sendMessage + drop the
@@ -612,15 +629,30 @@ def handle_dir(progress_dir):
         # One entry per inbound MESSAGE: a batched delivery leaves several for
         # one chat. The answer goes to each chat (and topic) once; a failed
         # send is not counted, so the next entry of that chat retries it
-        # (FALLBACKEGYSZER1019).
+        # (FALLBACKEGYSZER1019). That dedup is in-process only, so claim_send
+        # adds the half it cannot cover: it makes the send win-once against the
+        # Stop hook, which back-stops the very same turn from another process.
+        sid = os.path.basename(path)[:-len(".json")]
         modes = []
         sent = []
         sent_to = set()
         for p in pend:
             topic = topic_of(p)
-            dest = (str(p.get("chat_id")), topic.get("message_thread_id"))
-            mode = deliver(tok, p.get("chat_id"), p.get("message_id"),
-                           answer, progress_dir, topic, answer_sent=dest in sent_to,
+            cid, mid = p.get("chat_id"), p.get("message_id")
+            dest = (str(cid), topic.get("message_thread_id"))
+            # The claim is taken ONLY on the path that really sends (a synthetic
+            # answer never leaves the placeholder, it only edits it), so the
+            # outage edit cannot consume the win-once marker of a later genuine
+            # delivery.
+            if answer and not synthetic and not claim_send(progress_dir, sid, mid):
+                try:
+                    api(tok, "deleteMessage", {"chat_id": cid, "message_id": mid})
+                except Exception as e:
+                    log(progress_dir, f"dupe placeholder delete failed (mid={mid}): {e}")
+                modes.append("dupe-skipped")
+                continue
+            mode = deliver(tok, cid, mid, answer, progress_dir, topic,
+                           answer_sent=dest in sent_to,
                            synthetic=synthetic, sent=sent)
             if mode == "real-answer":
                 sent_to.add(dest)
