@@ -9,13 +9,18 @@ import { tmpdir } from 'node:os'
 // shared ~/.claude) and agentDir() (used to find the agent cwd) at the temp
 // sandbox built per test. tmpdir() stays real so we can create the sandbox.
 let SANDBOX = ''
+let AUTH_MODE: Record<string, string> = {}
 vi.mock('node:os', async (orig) => {
   const actual = await orig<typeof import('node:os')>()
   return { ...actual, homedir: () => join(SANDBOX, 'home') }
 })
 vi.mock('../web/agent-config.js', async (orig) => {
   const actual = await orig<typeof import('../web/agent-config.js')>()
-  return { ...actual, agentDir: (name: string) => join(SANDBOX, 'agents', name) }
+  return {
+    ...actual,
+    agentDir: (name: string) => join(SANDBOX, 'agents', name),
+    readAgentAuthMode: (name: string) => AUTH_MODE[name] ?? 'shared',
+  }
 })
 
 // Imported AFTER the mocks are registered.
@@ -48,6 +53,7 @@ function seedSharedClaude(home: string) {
 
 beforeEach(() => {
   SANDBOX = mkdtempSync(join(tmpdir(), 'isocfg-'))
+  AUTH_MODE = {}
   seedSharedClaude(join(SANDBOX, 'home'))
   mkdirSync(join(SANDBOX, 'agents', 'testagent'), { recursive: true })
 })
@@ -95,6 +101,17 @@ describe('ensureIsolatedChannelConfigDir', () => {
     writeFileSync(join(cfg, '.credentials.json'), '{"stale":true}')
     ensureIsolatedChannelConfigDir('testagent', 'telegram')
     expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+  })
+
+  it('keeps an own_team agent\'s own .credentials.json (OWNTEAMCREDWIPE1008)', () => {
+    // own_team: the file is the agent's own `claude auth login` credential, not a
+    // stale copy -- deleting it on every spawn logged the agent out.
+    AUTH_MODE.testagent = 'own_team'
+    const cfg = join(SANDBOX, 'agents', 'testagent', '.claude-config')
+    mkdirSync(cfg, { recursive: true })
+    writeFileSync(join(cfg, '.credentials.json'), '{"own":true}')
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(readFileSync(join(cfg, '.credentials.json'), 'utf-8')).toBe('{"own":true}')
   })
 
   it('OWNS settings.json (real file) with only the agent provider plugin enabled', () => {
