@@ -42,7 +42,7 @@ agent could widen its own gate for its next restart. A `senderRoleGate` still in
 logs a warning). At the dashboard's start a one-time move copies those values into the store: it runs only while the
 store file does not exist, and then writes it (`{}` when no agent had a gate), so a value an agent writes into its
 own `agent-config.json` later never reaches the store. An unreadable store fails closed: every sub-agent's gate is
-wired with a malformed policy (every tool denied in a member turn), and no agent gets the team scope.
+wired with a malformed policy (every tool denied in a member turn).
 
 The value, for one agent:
 
@@ -85,6 +85,11 @@ The main agent has no `agents/<name>/agent-config.json`; its table lives in `sto
 (`store/.main-extra-plugins.settings.json`, see `scripts/main-extra-plugins-settings.sh`) as a PreToolUse
 hook, so the sub-agents, which read the install-root project settings, never get it. A change takes effect at
 the main session's next start.
+
+A sub-agent with gromzo on always gets `MXD_SCOPE=both` (the owner DM and the team: colleague DMs and team
+channels), with or without a gate: no narrowing against the other channels, as on Slack (owner, 2026-10-31,
+GROMZOSCOPEBOTH1031). The gate stays optional and per agent; with an entry in the store the hook is wired as for
+any other sub-agent. Without one, a colleague's turn is held only by the plugin's instructions, not by a gate.
 
 For the gromzo channel with `MXD_SCOPE=both` (the owner DM and the team in one session): the plugin writes the
 sender's role and whether the owner's device is verified into the envelope as two attributes (`sender_role="owner"`

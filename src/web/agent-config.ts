@@ -533,33 +533,6 @@ export function senderRoleGatePolicyArg(config: unknown): string | null {
   return Buffer.from(JSON.stringify(value), 'utf-8').toString('base64url')
 }
 
-// The allow-list shapes that give the team scope (GROMZOGATECONF1030, Dani 59506): a concrete tool name (no glob
-// character), or every tool of ONE MCP server ("mcp__<server>__*"). Any other pattern may reach every tool.
-const CONCRETE_TOOL = /^[A-Za-z0-9_-]+$/
-const ONE_SERVER = /^mcp__[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*__\*$/
-
-/**
- * Whether the gate really closes tools in a colleague's turn (GROMZOGATECONF1030, Dani 57892 (2), 59506, Samu 59495):
- * the team scope (MXD_SCOPE=both) needs a non-empty allowTools whose every pattern is a concrete tool name or one
- * MCP server's prefix. A gate that only exists is not enough: allowTools ["*"] wires it and lets everything through.
- * No allowTools (a riskyTools deny-list only) leaves a tool installed later open (Dani 50388), and an empty one is
- * no decision for the team: neither counts. PURE: takes the parsed agent-config.json value.
- */
-export function senderRoleGateClosesTools(config: unknown): boolean {
-  if (!senderRoleGateEnabled(config)) return false
-  const gate = (config as Record<string, unknown>).senderRoleGate
-  if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return false
-  const allow = (gate as Record<string, unknown>).allowTools
-  if (!Array.isArray(allow) || allow.length === 0) return false
-  return allow.every((p) => typeof p === 'string' && (CONCRETE_TOOL.test(p) || ONE_SERVER.test(p)))
-}
-
-/** The team scope's check for an agent, from the store only (GROMZOGATECONF1030 (c)); an unreadable store: no team. */
-export function readAgentSenderRoleGateClosesTools(name: string, gatesPath: string = senderRoleGatesPath()): boolean {
-  const store = readSenderRoleGates(gatesPath)
-  return store.ok ? senderRoleGateClosesTools(storedGateConfig(store, name)) : false
-}
-
 /**
  * The gate's --policy for an agent, from the store only (GROMZOGATECONF1030 (c), Samu 59516): the agent's own
  * agent-config.json is no source any more (the agent can write it). An unreadable store fails closed: the gate is

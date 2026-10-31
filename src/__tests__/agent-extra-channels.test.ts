@@ -87,7 +87,7 @@ describe('buildExtraChannelLaunch', () => {
 describe('GROMZOAGENTS1028: the Gromzo channel rides the extra-channel launch', () => {
   const none = () => false
   it('on: the plugin id, its --channels arg, and MXD_AGENT/MXD_SCOPE, never a provider', () => {
-    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true, senderRoleGate: true })
+    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true })
     expect(l.gromzo).toBe('on')
     expect(l.providers).toEqual([])
     expect(l.pluginIds).toEqual([GROMZO_PLUGIN_ID])
@@ -95,28 +95,27 @@ describe('GROMZOAGENTS1028: the Gromzo channel rides the extra-channel launch', 
     expect(l.envExports).toBe('export MXD_AGENT="samu" && export MXD_SCOPE="both" && ')
     expect(GROMZO_PLUGIN_ID).toBe('gromzo-channel@gromzo-local')
   })
-  it('the team (both) only with a sender-role gate; without one, owner DM only (fail-closed, #2375 review)', () => {
-    const gated = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true, senderRoleGate: true })
-    expect(gated.gromzoScope).toBe('both')
-    const open = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true, senderRoleGate: false })
-    expect(open.gromzo).toBe('on')
-    expect(open.gromzoScope).toBe('owner')
-    expect(open.envExports).toBe('export MXD_AGENT="samu" && export MXD_SCOPE="owner" && ')
+  it('GROMZOSCOPEBOTH1031: every gromzo agent gets the team (both), no narrowing against the other channels (owner 2026-10-31)', () => {
+    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'zara', sockUsable: true })
+    expect(l.gromzo).toBe('on')
+    expect(l.gromzoScope).toBe('both')
+    expect(l.envExports).toBe('export MXD_AGENT="zara" && export MXD_SCOPE="both" && ')
+    expect(l.envExports).not.toContain('owner')
   })
   it('next to a tokened slack extra: both, slack first', () => {
-    const l = buildExtraChannelLaunch(['slack'], 'telegram', AGENT, () => true, { slug: 'zara', sockUsable: true, senderRoleGate: true })
+    const l = buildExtraChannelLaunch(['slack'], 'telegram', AGENT, () => true, { slug: 'zara', sockUsable: true })
     expect(l.providers).toEqual(['slack'])
     expect(l.pluginIds).toEqual([SL, GROMZO_PLUGIN_ID])
     expect(l.envExports).toContain('export SLACK_STATE_DIR=')
     expect(l.envExports.endsWith('export MXD_AGENT="zara" && export MXD_SCOPE="both" && ')).toBe(true)
   })
   it('no usable agent.sock: skipped, contributing nothing (fail-safe, like a tokenless extra)', () => {
-    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: false, senderRoleGate: true })
+    const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: false })
     expect(l).toMatchObject({ gromzo: 'skipped-no-socket', pluginIds: [], channelArgs: '', envExports: '' })
   })
   it('a name mxd would refuse never reaches the shell export', () => {
     for (const slug of ['Samu', 'sa mu', 'x"; rm -rf ~; "', '', 'a'.repeat(33), 'samu$(id)']) {
-      const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug, sockUsable: true, senderRoleGate: true })
+      const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug, sockUsable: true })
       expect(l).toMatchObject({ gromzo: 'skipped-bad-name', pluginIds: [], envExports: '' })
     }
   })
@@ -243,12 +242,11 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
 
   it('reads the extras once, from agent-config, against the resolved primary', () => {
-    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name)\n      ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGateClosesTools(name) }\n      : undefined)')
+    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name)\n      ? { slug: name, sockUsable: mxdAgentSockUsable() }\n      : undefined)')
   })
-  it('#2375: the team scope is bound to the agent\'s own sender-role gate, and an owner-only launch is logged', () => {
-    // GROMZOGATECONF1030: the team scope needs a gate that closes tools, not just one that exists.
-    expect(FN).toContain('senderRoleGate: readAgentSenderRoleGateClosesTools(name)')
-    expect(FN).toContain("if (extraLaunch.gromzo === 'on' && extraLaunch.gromzoScope === 'owner') {")
+  it('GROMZOSCOPEBOTH1031: the gromzo scope reads no sender-role gate, and no owner-only warning is left', () => {
+    expect(SRC).not.toContain('readAgentSenderRoleGateClosesTools')
+    expect(SRC).not.toContain("gromzoScope === 'owner'")
   })
   it('GROMZOAGENTS1028: a gromzo-only launch still counts as having a channel, and a skipped one is logged', () => {
     expect(FN).toContain("const hasExtraChannels = extraLaunch.providers.length > 0 || extraLaunch.gromzo === 'on'")

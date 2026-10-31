@@ -16,7 +16,7 @@ import {
   SENDER_ROLE_GATES_FILE,
   UNREADABLE_GATES_POLICY,
 } from '../web/sender-role-gate-store.js'
-import { readAgentSenderRoleGateClosesTools, readAgentSenderRoleGatePolicy } from '../web/agent-config.js'
+import { readAgentSenderRoleGatePolicy } from '../web/agent-config.js'
 
 const ON = { riskyTools: ['Bash'], roles: [{ channel: 'telegram', sender: '111111', role: 'owner' }] }
 const TEAM = { allowTools: ['mcp__plugin_gromzo-channel_gromzo__reply'], roles: [] }
@@ -70,24 +70,16 @@ describe('the launcher\'s readers read the store only', () => {
     expect(readAgentSenderRoleGatePolicy('nobody', gates)).toBeNull()
   })
 
-  it('an unreadable store fails closed: a malformed policy for every agent, and no team scope', () => {
+  it('an unreadable store fails closed: a malformed policy for every agent', () => {
     writeFileSync(gates, '{"a":')
     expect(readAgentSenderRoleGatePolicy('a', gates)).toBe(UNREADABLE_GATES_POLICY)
     expect(readAgentSenderRoleGatePolicy('nobody', gates)).toBe(UNREADABLE_GATES_POLICY)
     expect(decode(UNREADABLE_GATES_POLICY)).toBe('unreadable')
-    expect(readAgentSenderRoleGateClosesTools('a', gates)).toBe(false)
   })
 
-  it('the team scope needs a stored gate that closes tools', () => {
-    writeFileSync(gates, JSON.stringify({ team: TEAM, risky: ON }))
-    expect(readAgentSenderRoleGateClosesTools('team', gates)).toBe(true)
-    expect(readAgentSenderRoleGateClosesTools('risky', gates)).toBe(false)
-    expect(readAgentSenderRoleGateClosesTools('nobody', gates)).toBe(false)
-  })
-
-  it('source pin: neither reader opens agent-config.json', () => {
+  it('source pin: the reader does not open agent-config.json', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-config.ts'), 'utf-8')
-    for (const fn of ['readAgentSenderRoleGatePolicy', 'readAgentSenderRoleGateClosesTools']) {
+    for (const fn of ['readAgentSenderRoleGatePolicy']) {
       const start = src.indexOf(`export function ${fn}(`)
       expect(start).toBeGreaterThan(-1)
       const body = src.slice(start, src.indexOf('\n}\n', start))
