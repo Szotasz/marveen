@@ -1770,12 +1770,12 @@ fi
 if command -v ollama &>/dev/null || curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
 # A telepito letrehoz egy ollama.service systemd egységet és elindítja.
 # Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
-if ! curl -s "${OLLAMA_API}/api/version" &>/dev/null; then
+if ! curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
   echo -e "$(_t linux.ollama_starting)"
   sudo systemctl enable --now ollama 2>/dev/null || true
   # Megvarjuk amig az API valaszol (max 15 mp)
   for i in $(seq 1 15); do
-    curl -s "${OLLAMA_API}/api/version" &>/dev/null && break
+    curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null && break
     sleep 1
   done
 fi
@@ -1797,7 +1797,7 @@ ollama_pull() {
     warn "ollama API nem valaszol (${OLLAMA_API}) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
     return 0
   fi
-  if curl -s "${OLLAMA_API}/api/tags" | grep -q "\"$model\""; then
+  if curl -s --max-time 5 "${OLLAMA_API}/api/tags" | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
