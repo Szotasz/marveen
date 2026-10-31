@@ -283,7 +283,7 @@ describe('Telegram plugin-patch row', () => {
   })
 
   it('the forward patch is measured on its own: d4 in place, fwd missing says what that costs', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
       { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'anchor-missing:inbound meta user_id', evid: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' } },
     ] }))
@@ -315,7 +315,7 @@ describe('Telegram plugin-patch row', () => {
   // #1530 review: without the inbound log no owner write command can run, so
   // a missing `evid` patch must say exactly that.
   it('the evidence patch is measured on its own: missing says the write commands will not run', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
       { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'anchor-missing:channel notification', silent: 'patched', kbd: 'patched', invis: 'patched' } },
     ] }))
@@ -329,14 +329,14 @@ describe('Telegram plugin-patch row', () => {
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
       { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched' } },
     ] }))
-    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (válaszgombok): 0.0.8 (anchor-missing:reply send options) · a kérdések gomb nélkül mennek ki, a válasz betűvel jön; HIÁNYZIK (hangtalan válasz): 0.0.8 (anchor-missing:reply send options) · minden válasz hanggal érkezik, a státuszüzenetek is')
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (hangtalan válasz): 0.0.8 (anchor-missing:reply send options) · minden válasz hanggal érkezik, a státuszüzenetek is; HIÁNYZIK (válaszgombok): 0.0.8 (anchor-missing:reply send options) · a kérdések gomb nélkül mennek ki, a válasz betűvel jön')
   })
 
   // Without the silent-reply patch every reply still goes out, only with the notification sound.
   it('the silent-reply patch is measured on its own: missing says every reply rings', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(c67f5f34-kbd): w')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', silent: 'anchor-missing:reply file branch' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (hangtalan válasz): 0.0.8 (anchor-missing:reply file branch) · minden válasz hanggal érkezik, a státuszüzenetek is')
   })
