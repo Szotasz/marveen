@@ -544,6 +544,12 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
     expect(bash('pushd /nincs-ilyen-mappa-60251; git checkout develop')).toEqual(DENY_GIT)
     expect(bash('cd /nincs-ilyen-mappa-60251 && git checkout develop'), 'with &&: a failed cd runs nothing after it').toEqual(ALLOW)
     expect(bash('cd @WT@/nincs-ilyen; ls')).toEqual(ALLOW)
+    // A file fails a cd as a missing directory does (Dani 60262); with "||" the git runs only after that failure.
+    writeFileSync(join(wt, 'a-file.txt'), 'x')
+    expect(bash('cd @WT@/a-file.txt; git checkout develop')).toEqual(DENY_GIT)
+    expect(bash('cd @WT@/a-file.txt || git checkout develop')).toEqual(DENY_GIT)
+    expect(bash('cd /nincs-ilyen-mappa-60251 || git checkout develop')).toEqual(DENY_GIT)
+    expect(bash('cd @WT@/a-file.txt && git checkout develop'), 'with &&: nothing runs after the failed cd').toEqual(ALLOW)
   })
   it('the main checkout reached from elsewhere: -C, a subdirectory, --git-dir, an unresolved -C', () => {
     expect(bash('git -C @ROOT@ reset --hard origin/main', wt)).toEqual(DENY_GIT)

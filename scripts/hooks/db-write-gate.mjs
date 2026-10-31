@@ -44,7 +44,7 @@
 // Engine: scheduleSurfaceDeny in scripts/self-pace-gate.mjs (segments, quoting,
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -274,11 +274,16 @@ function gitWords(words) {
 // newline, not "&&", that may FAIL. bash then runs the next command in the old directory, so "cd <dir>; git ..." would
 // write the install when <dir> is missing (found while measuring Dani 60251's case 4). A target that does not exist now is
 // such a cd: the directory after it is unknown, which the git rule takes as the install. With "&&" a failed cd runs
-// nothing after it, and an existing target is taken as reached.
+// nothing after it, and an existing directory is taken as reached. A FILE fails a cd too (Dani 60262: "cd <file> ||
+// git ..." runs the git only then), so the test is "a directory", not "exists".
+function isDirectory(p) {
+  try { return statSync(p).isDirectory() } catch { return false }
+}
+
 function moveCwd(own, seg, ctx) {
   cwdAfterSegment(own, ctx)
   const first = shellWords(String(own ?? '').trim())?.[0]?.value
-  if (ctx.cwd && seg.sep !== '&&' && (first === 'cd' || first === 'pushd') && !existsSync(ctx.cwd)) ctx.cwd = null
+  if (ctx.cwd && seg.sep !== '&&' && (first === 'cd' || first === 'pushd') && !isDirectory(ctx.cwd)) ctx.cwd = null
 }
 
 // The main checkout this repo dir belongs to: the nearest directory up from it that has a .git entry.
