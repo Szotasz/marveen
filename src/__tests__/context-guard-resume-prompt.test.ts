@@ -102,7 +102,32 @@ describe('resumePrompt closing line is agent-dependent', () => {
     expect(p).toContain('transzkript')
     expect(p).toContain(CONSTRAINT)
   })
-  it('sub-agent: channel notice stays (their channel is the inter-agent queue)', () => {
-    expect(resumePrompt('samu', '/x/HANDOFF.md', true)).toContain('jelezz a csatornádon')
+  it('sub-agent: no channel notice, faulty handoff goes to the main agent via the queue', () => {
+    const p = resumePrompt('samu', '/x/HANDOFF.md', true)
+    expect(p).not.toContain('jelezz a csatornádon')
+    expect(p).toContain('NE küldj üzenetet')
+    expect(p).toContain('inter-agent üzenetben a fő ügynöknek (marveen)')
   })
+})
+
+// Owner request 2026-10-21: no agent may message a channel just because it
+// resumed with fresh context; pinned on every variant for both agent kinds.
+describe('resumePrompt never tells any agent to notify the channel', () => {
+  const variants: Array<[string, boolean, number | 'unknown' | null]> = [
+    ['no handoff', false, null],
+    ['fresh', true, null],
+    ['stale number', true, 42],
+    ['unknown', true, 'unknown'],
+  ]
+  for (const agent of ['samu', 'marveen']) {
+    for (const [label, had, stale] of variants) {
+      it(`${agent}: ${label}`, () => {
+        const p = resumePrompt(agent, '/x/HANDOFF.md', had, stale)
+        expect(p).not.toContain('jelezz a csatornádon')
+        expect(p).toMatch(/NE küldj üzenetet|NEM mehet ki/)
+        if (agent === 'samu') expect(p).toContain('(marveen)')
+        if (agent === 'marveen') expect(p).toContain('a gazdának ne küldj üzenetet')
+      })
+    }
+  }
 })

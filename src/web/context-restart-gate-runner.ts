@@ -62,7 +62,7 @@ const INITIAL_DELAY_MS = 3 * 60_000   // 3 min
  * The nudge text. Deliberately short: the substance is already in the session
  * as SessionStart context, and re-stating it here would only compete with it.
  */
-export function gateWakePrompt(): string {
+export function gateWakePrompt(name: string): string {
   return (
     '[CONTEXT-RESTART-GATE] Friss kontextussal indultal, mert a kapu ujrainditott (/clear). ' +
     'A visszatoltott blokkokban ott a torolt szal vege (utolso keresek, utolso valaszod, az atirat utja) ' +
@@ -70,7 +70,13 @@ export function gateWakePrompt(): string {
     'Olvasd be oket, ellenorizd a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan ahol abbamaradt. ' +
     'Ne kezdd elolrol ami mar kesz, es ne delegald ujra amit mar atadtal. ' +
     'Ha nem volt futo munkad, az is teljes erteku allapot -- olyankor ne talalj ki magadnak feladatot. ' +
-    'Rovid jelzest kuldj a sajat csatornadon, hogy friss kontextussal folytatod.'
+    // Owner request 2026-10-21: no channel notice about the fresh context (several
+    // agents' channel is the owner's Telegram); only a faulty restart is reported,
+    // by a sub-agent to the main agent over the inter-agent queue.
+    'A friss kontextusrol a csatornadra (Telegram) NE kuldj uzenetet. ' +
+    (name === MAIN_AGENT_ID
+      ? 'Ha az atadas hibas volt (hianyzik vagy olvashatatlan a visszatoltott blokk, vagy elveszett egy keres), azt a transzkriptben rogzitsd, a gazdanak ne kuldj uzenetet.'
+      : `Csak ha az atadas hibas volt (hianyzik vagy olvashatatlan a visszatoltott blokk, vagy elveszett egy keres), azt jelezd inter-agent uzenetben a fo ugynoknek (${MAIN_AGENT_ID}), a gazdanak ne.`)
   )
 }
 
@@ -615,7 +621,7 @@ async function deliverPendingWake(name: string, session: string, nowMs: number):
     // authenticate the "continue from the restored blocks" instruction. Same
     // outcome contract as sendPromptToSession; a deferred (busy) attempt
     // marks its anchor row failed and the retry creates a fresh one.
-    const outcome = await sendSystemDirective(name, session, gateWakePrompt(), null, {
+    const outcome = await sendSystemDirective(name, session, gateWakePrompt(name), null, {
       waitForIdle: true, onBusyTimeout: 'abort',
     })
     if (outcome === 'sent') {
