@@ -16,6 +16,7 @@ import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
 import { resolveDateFilter } from '../../date-range.js'
 import type { RouteContext } from './types.js'
+import { findDuplicateMemories, DEDUP_RECENT_LIMIT, type DedupCandidate } from '../memory-dedup.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
 // src/db.ts so the API rejects bad values before they even reach SQLite.
@@ -295,7 +296,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string; supersedes?: unknown }
+    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string; supersedes?: unknown; allow_duplicate?: unknown }
     if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
     // `supersedes`: ids of the author's own older memories this one replaces. A
     // malformed list is refused before anything is saved -- a caller that meant
@@ -332,11 +333,47 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       if ('error' in who) { json(res, { error: who.error }, 400); return true }
       replacingAuthor = who.author
     }
+    // Refuse a save that only repeats one of the saver's OWN live memories: agents
+    // re-saving the same fact fill their index with repeats. Other agents' rows
+    // are never candidates. `allow_duplicate === true` (strict boolean: "true",
+    // 1, ... do not override) skips the check. No await between here and the
+    // insert below: better-sqlite3 is synchronous, so two identical concurrent
+    // saves cannot both slip past this check.
+    // A replacing save is checked as the author it resolved above, and the rows it
+    // replaces are not candidates: saving a corrected text over its old row is what
+    // `supersedes` is for. Retracted rows are never candidates.
+    const saverId = replacingAuthor ?? (data.agent_id || MAIN_AGENT_ID)
+    if (data.allow_duplicate !== true) {
+      // The JS comparison sees only the saver's newest rows (bounded cost); a
+      // verbatim repeat of an older row is found by the SQL equality instead.
+      const content = data.content.trim()
+      // The id subquery is answered from the (agent_id, category) index alone, so
+      // only the window's rows are read in full, not every row of the agent.
+      const replaced = new Set(supersedes ?? [])
+      const recent = (getDb().prepare('SELECT id, content, category, created_at FROM memories WHERE id IN (SELECT id FROM memories WHERE agent_id = ? ORDER BY id DESC LIMIT ?) AND retracted_at IS NULL')
+        .all(saverId, DEDUP_RECENT_LIMIT) as DedupCandidate[]).filter((r) => !replaced.has(r.id))
+      const seen = new Set(recent.map((r) => r.id))
+      // The limit leaves room for the rows the save replaces, so they cannot crowd out an older live repeat.
+      const verbatim = (getDb().prepare('SELECT id, content, category, created_at FROM memories WHERE agent_id = ? AND content = ? AND retracted_at IS NULL ORDER BY id DESC LIMIT ?')
+        .all(saverId, content, 3 + replaced.size) as DedupCandidate[]).filter((r) => !seen.has(r.id) && !replaced.has(r.id))
+      const duplicates = findDuplicateMemories(content, [...recent, ...verbatim])
+      if (duplicates.length > 0) {
+        // Nothing is saved: the existing row stands exactly as it is. No content in the log.
+        logger.info({ agent: saverId, duplicateOf: duplicates.map((d) => d.id) }, 'Memory save refused: duplicate of an own memory')
+        json(res, {
+          ok: false,
+          error: 'duplicate',
+          duplicate_of: duplicates,
+          hint: 'Not saved: this repeats your own memory listed in duplicate_of. If it is genuinely new information, save again with allow_duplicate: true. If it replaces that memory, save again with supersedes: [<its id>].',
+        }, 409)
+        return true
+      }
+    }
     const replacing = supersedes !== undefined
       ? saveAgentMemorySuperseding(replacingAuthor!, data.content.trim(), category, data.keywords || undefined, supersedes)
       : null
     const result = replacing ?? saveAgentMemory(
-      data.agent_id || MAIN_AGENT_ID,
+      saverId,
       data.content.trim(),
       category,
       data.keywords || undefined,
