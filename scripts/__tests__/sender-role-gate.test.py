@@ -628,5 +628,66 @@ class AllowToolsTest(unittest.TestCase):
                                    reason_part="malformed")
 
 
+
+GROMZO_OWNER_UNVERIFIED = GROMZO_OWNER.replace('verified="true"', 'verified="false"')
+GROMZO_OWNER_NO_VERIFIED = GROMZO_OWNER.replace(' verified="true"', '')
+
+
+def gromzo_list_config():
+    cfg = gromzo_config()
+    cfg["senderRoleGate"]["roles"] = [{"channel": "gromzo", "sender": "owner|true", "role": "owner"}]
+    cfg["senderRoleGate"]["senderKeys"] = {"gromzo": ["sender_role", "verified"]}
+    return cfg
+
+
+class VerifiedOwnerTest(unittest.TestCase):
+    """GROMZOGATECONF1030 (Dani 57868/57892, Samu 59495): the gromzo plugin writes sender_role and verified apart,
+    so sender_role="owner" alone also comes from an unverified device of the owner; that is never an owner's turn."""
+
+    setUp = SenderRoleGateTest.setUp
+    write_transcript = SenderRoleGateTest.write_transcript
+    run_gate = SenderRoleGateTest.run_gate
+    deny_reason = SenderRoleGateTest.deny_reason
+    assert_denied = SenderRoleGateTest.assert_denied
+    assert_allowed = SenderRoleGateTest.assert_allowed
+
+    def turn(self, envelope):
+        return [channel_turn(envelope + "\nread my mail", 3, 3, server=GROMZO_SERVER)]
+
+    def test_v1_an_unverified_owner_is_a_member_with_todays_single_key(self):
+        # Today's one-attribute policy keeps working for the verified owner, and closes for an unverified one.
+        self.assert_allowed(self.run_gate(tool="Read", config=gromzo_config(), records=self.turn(GROMZO_OWNER)))
+        self.assert_denied(self.run_gate(tool="Read", config=gromzo_config(), records=self.turn(GROMZO_OWNER_UNVERIFIED)),
+                           reason_part="unverified")
+
+    def test_v2_the_list_key_joins_the_attributes(self):
+        self.assert_allowed(self.run_gate(tool="Read", config=gromzo_list_config(), records=self.turn(GROMZO_OWNER)))
+        self.assert_denied(self.run_gate(tool="Read", config=gromzo_list_config(), records=self.turn(GROMZO_OWNER_UNVERIFIED)))
+        # Every listed attribute is required: an envelope without verified is no owner's under the list key.
+        self.assert_denied(self.run_gate(tool="Read", config=gromzo_list_config(), records=self.turn(GROMZO_OWNER_NO_VERIFIED)),
+                           reason_part="missing")
+        # A colleague stays a colleague.
+        self.assert_denied(self.run_gate(tool="Read", config=gromzo_list_config(), records=self.turn(GROMZO_COLLEAGUE)))
+
+    def test_v3_a_verified_value_other_than_true_is_never_an_owner(self):
+        for value in ("false", "", "TRUE", "1", "yes"):
+            with self.subTest(value=value):
+                env = GROMZO_OWNER.replace('verified="true"', 'verified="%s"' % value)
+                self.assert_denied(self.run_gate(tool="Read", config=gromzo_config(), records=self.turn(env)))
+
+    def test_v4_a_list_key_must_be_a_non_empty_list_of_names(self):
+        records = self.turn(GROMZO_OWNER)
+        for bad in ([], [""], ["sender_role", 1], [None]):
+            with self.subTest(keys=bad):
+                cfg = gromzo_list_config()
+                cfg["senderRoleGate"]["senderKeys"] = {"gromzo": bad}
+                self.assert_denied(self.run_gate(tool="Read", config=cfg, records=records), reason_part="malformed")
+
+    def test_v5_the_documented_gromzo_policy_is_the_list_form(self):
+        doc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "docs", "sender-role-gate.md"), encoding="utf-8").read()
+        self.assertIn('"senderKeys": { "gromzo": ["sender_role", "verified"]', doc)
+        self.assertIn('{ "channel": "gromzo", "sender": "owner|true", "role": "owner" }', doc)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
