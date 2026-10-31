@@ -420,3 +420,70 @@ describe('the skill, schedule and memory deletes use it', () => {
     expect(EN).toContain(`'${key}':`)
   })
 })
+
+describe('the connector removes and deletes use it', () => {
+  const SITES = [
+    ['uninstall from the MCP catalog', 'async function catalogUninstall(item) {', 'connectors.confirm.remove', '/uninstall`, { method: \'DELETE\' })'],
+    ['delete a GitHub repo', "item.querySelector('.github-repo-delete').addEventListener('click'", 'connectors.confirm.repo_delete', "{ method: 'DELETE' })"],
+    ['delete a connector', "document.getElementById('connectorDeleteBtn').onclick", 'connectors.confirm.delete', "{ method: 'DELETE' })"],
+  ] as const
+
+  const handler = (anchor: string, request: string) => {
+    const i = APP.indexOf(anchor)
+    const j = i < 0 ? -1 : APP.indexOf(request, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + request.length)
+  }
+
+  it.each(SITES)('%s: a danger confirmDialog with its own title and button, no native confirm()', (_name, anchor, key, request) => {
+    const src = handler(anchor, request)
+    expect(src, 'handler or its request not found').not.toBe('')
+    expect(src).toContain('await confirmDialog({')
+    expect(src).toContain(`title: t('${key}_title')`)
+    expect(src).toContain(`message: t('${key}'`)
+    expect(src).toContain(`okLabel: t('${key}_ok')`)
+    expect(src).toContain('danger: true')
+    expect(src).not.toMatch(/(^|[^.\w])confirm\(/)
+  })
+
+  it.each(SITES)('%s: a "no" stops it -- the answer is checked before the request', (_name, anchor, _key, request) => {
+    const body = handler(anchor, request)
+    expect(body, 'handler or its request not found').not.toBe('')
+    const ask = body.indexOf('const confirmed = await confirmDialog({')
+    const guard = body.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(body.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the two hard-coded, unaccented questions are gone', () => {
+    expect(APP).not.toContain('`Torlod: ${r.name')
+    expect(APP).not.toContain('Biztosan torlod: ${connector.name}')
+  })
+
+  it('the GitHub repo install questions have their titles and buttons in both languages', () => {
+    for (const key of ['install_confirm_title', 'install_confirm_ok', 'scripts_skipped_confirm_title', 'scripts_skipped_confirm_ok', 'github_repos']) {
+      expect(HU).toContain(`'connectors.${key}':`)
+      expect(EN).toContain(`'connectors.${key}':`)
+    }
+  })
+
+  it('a multi-paragraph question keeps its line breaks', () => {
+    const CSS = readFileSync(new URL('../../web/style.css', import.meta.url), 'utf-8')
+    const rule = CSS.slice(CSS.indexOf('.confirm-dialog p {'), CSS.indexOf('}', CSS.indexOf('.confirm-dialog p {')))
+    expect(rule).toContain('white-space: pre-line')
+  })
+
+  it('the GitHub repo section has no unaccented labels left', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    for (const src of [APP, HTML]) {
+      expect(src).not.toContain('Telepites')
+      expect(src).not.toContain('GitHub repok')
+      expect(src).not.toContain('title="Frissites"')
+    }
+  })
+
+  it.each(SITES.flatMap(([, , key]) => [key, `${key}_title`, `${key}_ok`]))('%s is in both languages', (key) => {
+    expect(HU).toContain(`'${key}':`)
+    expect(EN).toContain(`'${key}':`)
+  })
+})

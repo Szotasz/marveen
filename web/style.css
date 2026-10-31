@@ -6602,6 +6602,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
   margin: 0 0 14px;
   font-size: 14px;
   line-height: 1.5;
+  white-space: pre-line;
 }
 .settings-reset-confirm-keys {
   list-style: none;

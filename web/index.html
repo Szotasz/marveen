@@ -943,13 +943,13 @@
         <div class="connector-external-paths">
           <div class="connector-external-header" id="githubReposToggle">
             <span class="connector-scope-toggle">▶</span>
-            GitHub repok <span class="connector-scope-count" id="githubRepoCount">0</span>
+            <span data-i18n="connectors.github_repos">GitHub-repók</span> <span class="connector-scope-count" id="githubRepoCount">0</span>
           </div>
           <div class="connector-external-body" id="githubReposBody" hidden>
             <div id="githubRepoList"></div>
             <div class="connector-external-add">
               <input type="text" id="githubRepoInput" class="input" placeholder="https://github.com/user/repo">
-              <button class="btn-secondary btn-compact" id="githubRepoAddBtn">Telepites</button>
+              <button class="btn-secondary btn-compact" id="githubRepoAddBtn" data-i18n="connectors.catalog.install_btn">Telepítés</button>
             </div>
             <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="githubRepoRunScripts"> <span data-i18n="connectors.run_scripts_label">npm install scriptek futtatása (a repó kódja lefut ezen a gépen)</span></label>
             <div id="githubRepoStatus" class="github-repo-status" hidden></div>
@@ -965,7 +965,7 @@
             <span data-i18n="oss.title">Átvett nyílt forrású projektek</span> <span class="connector-scope-count" id="ossInventoryCount">…</span>
           </div>
           <div class="connector-external-body" id="ossInventoryBody" hidden>
-            <div class="oss-inv-note" data-i18n="oss.note">A bejárás által az ágensek saját mappáiban talált kód: skill-forrás, git-klón, MCP, npm, pip. A fenti „GitHub repok” szám a dashboardon át telepített repókat számolja, ezeket nem.</div>
+            <div class="oss-inv-note" data-i18n="oss.note">A bejárás által az ágensek saját mappáiban talált kód: skill-forrás, git-klón, MCP, npm, pip. A fenti „GitHub-repók” szám a dashboardon át telepített repókat számolja, ezeket nem.</div>
             <div class="oss-inv-toolbar">
               <span class="oss-inv-meta" id="ossInventoryMeta"></span>
               <label class="oss-inv-check"><input type="checkbox" id="ossInventoryTransitive"> <span data-i18n="oss.show_transitive">Közvetett függőségek is (pip és npm)</span></label>
