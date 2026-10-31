@@ -353,8 +353,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       const recent = (getDb().prepare('SELECT id, content, category, created_at FROM memories WHERE id IN (SELECT id FROM memories WHERE agent_id = ? ORDER BY id DESC LIMIT ?) AND retracted_at IS NULL')
         .all(saverId, DEDUP_RECENT_LIMIT) as DedupCandidate[]).filter((r) => !replaced.has(r.id))
       const seen = new Set(recent.map((r) => r.id))
-      const verbatim = (getDb().prepare('SELECT id, content, category, created_at FROM memories WHERE agent_id = ? AND content = ? AND retracted_at IS NULL ORDER BY id DESC LIMIT 3')
-        .all(saverId, content) as DedupCandidate[]).filter((r) => !seen.has(r.id) && !replaced.has(r.id))
+      // The limit leaves room for the rows the save replaces, so they cannot crowd out an older live repeat.
+      const verbatim = (getDb().prepare('SELECT id, content, category, created_at FROM memories WHERE agent_id = ? AND content = ? AND retracted_at IS NULL ORDER BY id DESC LIMIT ?')
+        .all(saverId, content, 3 + replaced.size) as DedupCandidate[]).filter((r) => !seen.has(r.id) && !replaced.has(r.id))
       const duplicates = findDuplicateMemories(content, [...recent, ...verbatim])
       if (duplicates.length > 0) {
         // Nothing is saved: the existing row stands exactly as it is. No content in the log.

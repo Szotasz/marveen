@@ -171,6 +171,22 @@ describe('POST /api/memories duplicate refusal', () => {
     expect(rowById(second.body.id)?.retracted_at).toBeNull()
   })
 
+  it('superseding three newer copies still finds an older live copy past the window', async () => {
+    const x = 'the backup job snapshots every volume before the nightly compaction'
+    const first = await post({ agent_id: 'agent-d9', content: x })
+    expect(first.status).toBe(200)
+    await saveFillers('agent-d9', 'agent-d9')
+    const copies: number[] = []
+    for (let i = 0; i < 3; i++) {
+      const c = await post({ agent_id: 'agent-d9', content: x, allow_duplicate: true })
+      expect(c.status).toBe(200)
+      copies.push(c.body.id)
+    }
+    const r = await post({ agent_id: 'agent-d9', content: x, supersedes: copies })
+    expect(r.status).toBe(409)
+    expect(r.body.duplicate_of.map((d: { id: number }) => d.id)).toContain(first.body.id)
+  })
+
   it('a supersedes save without agent_id is checked as the X-Agent-Id author', async () => {
     const x = 'the object storage gateway enforces versioning on every uploaded artifact'
     const y = 'cluster pods restart whenever their liveness probe times out'
