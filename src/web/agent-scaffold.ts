@@ -17,6 +17,7 @@ import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
+import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
@@ -65,7 +66,7 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, A
 // the token itself and takes every payload from a file the agent writes with its file tool. The
 // allow-list entry is in templates/profiles/developer-junior.json. Every other agent keeps the
 // curl recipes byte for byte.
-const apiHelper = `bash ${join(PROJECT_ROOT, 'scripts', 'marveen-api.sh')}`
+const apiHelper = `bash ${shellWord(join(PROJECT_ROOT, 'scripts', 'marveen-api.sh'))}`
 
 // Where a strict agent writes a payload before it hands the path to the helper: its own
 // directory, the only place its profile lets it write.
