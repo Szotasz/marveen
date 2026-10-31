@@ -126,6 +126,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  withTmuxBatch,
   paneCurrentCommand,
   delay,
   resolveAgentProvider,
@@ -298,6 +299,11 @@ itt írhatod meg.
 // local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
 const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
 const remotePaneCache = new RemoteStatusCache<string | null>(3000)
+
+// One computed /api/agents/activity answer shared by every open dashboard tab.
+const ACTIVITY_CACHE_TTL_MS = 2000
+let activityCache: { at: number; entries: unknown[] } | null = null
+export function resetAgentsActivityCacheForTests(): void { activityCache = null }
 
 // Resolve an agent's run state, cached for remote agents to avoid blocking on
 // ssh. `isRemote` is passed by the caller (it already read the remote config).
@@ -741,7 +747,7 @@ function getAgentDetail(name: string): AgentDetail {
 }
 
 export function listAgentSummaries(): AgentSummary[] {
-  return listAgentNames().map(getAgentSummary)
+  return withTmuxBatch(() => listAgentNames().map(getAgentSummary))
 }
 
 // Max inter-agent messages a single main-agent inbox drain returns. The rest
@@ -946,41 +952,51 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const bgAgentsOf = (running: boolean, pane: string | null): { total: number; running: number; queued: number } | null =>
       running && pane !== null ? detectBackgroundAgents(pane) : null
 
+    const now = Date.now()
+    if (activityCache && now - activityCache.at >= 0 && now - activityCache.at < ACTIVITY_CACHE_TTL_MS) {
+      jsonMaybeGzip(req, res, activityCache.entries)
+      return true
+    }
+
     const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; bgAgents: { total: number; running: number; queued: number } | null; tail: string[] }> = []
 
-    // Main agent runs in the --channels session, not agent-<name>.
-    {
-      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
-      const running = mainPane !== null
-      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
-      entries.push({
-        name: MAIN_AGENT_ID,
-        isMain: true,
-        running,
-        state: paneActivityLabel(running, mainPane, mainPaneCommand),
-        mode: modeOf(running, mainPane),
-        bgAgents: bgAgentsOf(running, mainPane),
-        tail: tailOf(mainPane),
-      })
-    }
-
-    for (const name of withoutMainAgent(listAgentNames())) {
-      // Remote agents: resolve run state + pane through the short-TTL caches so
-      // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
-      const host = readAgentRemoteHost(name)
-      const runState = agentRunStateCached(name, host != null)
-      const running = runState === 'running'
-      let pane: string | null = null
-      if (running) {
-        pane = host
-          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
-          : capturePane(agentSessionName(name))
+    withTmuxBatch(() => {
+      // Main agent runs in the --channels session, not agent-<name>.
+      {
+        const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+        const running = mainPane !== null
+        const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
+        entries.push({
+          name: MAIN_AGENT_ID,
+          isMain: true,
+          running,
+          state: paneActivityLabel(running, mainPane, mainPaneCommand),
+          mode: modeOf(running, mainPane),
+          bgAgents: bgAgentsOf(running, mainPane),
+          tail: tailOf(mainPane),
+        })
       }
-      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
-      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane, paneCommand)
-      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), bgAgents: bgAgentsOf(running, pane), tail: tailOf(pane) })
-    }
 
+      for (const name of withoutMainAgent(listAgentNames())) {
+        // Remote agents: resolve run state + pane through the short-TTL caches so
+        // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
+        const host = readAgentRemoteHost(name)
+        const runState = agentRunStateCached(name, host != null)
+        const running = runState === 'running'
+        let pane: string | null = null
+        if (running) {
+          pane = host
+            ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+            : capturePane(agentSessionName(name))
+        }
+        const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+        const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane, paneCommand)
+        entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), bgAgents: bgAgentsOf(running, pane), tail: tailOf(pane) })
+      }
+    })
+
+    // Stamped after the compute: under load one compute can take most of the TTL itself.
+    activityCache = { at: Date.now(), entries }
     jsonMaybeGzip(req, res, entries)
     return true
   }
@@ -1028,25 +1044,27 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     const rows: AgentStatusRow[] = []
-    {
-      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
-      const running = mainPane !== null
-      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
-      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped', mainPaneCommand)))
-    }
-    for (const name of withoutMainAgent(listAgentNames())) {
-      const host = readAgentRemoteHost(name)
-      const runState = agentRunStateCached(name, host != null)
-      const running = runState === 'running'
-      let pane: string | null = null
-      if (running) {
-        pane = host
-          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
-          : capturePane(agentSessionName(name))
+    withTmuxBatch(() => {
+      {
+        const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+        const running = mainPane !== null
+        const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
+        rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped', mainPaneCommand)))
       }
-      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
-      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState, paneCommand)))
-    }
+      for (const name of withoutMainAgent(listAgentNames())) {
+        const host = readAgentRemoteHost(name)
+        const runState = agentRunStateCached(name, host != null)
+        const running = runState === 'running'
+        let pane: string | null = null
+        if (running) {
+          pane = host
+            ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+            : capturePane(agentSessionName(name))
+        }
+        const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+        rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState, paneCommand)))
+      }
+    })
 
     jsonMaybeGzip(req, res, rows)
     return true
