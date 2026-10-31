@@ -61,7 +61,7 @@ import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { recordChannelEvent } from './channel-event-log.js'
 import { notifyChannel, type AlertMeta } from '../notify.js'
 import type { PermPromptEscalationState } from './permission-prompt-escalation.js'
-import { sendRoutineAlert } from './routine-alert.js'
+import { sendRoutineAlert, sendOwnerActionAlert } from './routine-alert.js'
 import { runPermissionPromptPass, clearPermissionPromptAlert } from './permission-prompt-alert.js'
 import { getProvider, channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
@@ -1602,7 +1602,10 @@ export function createMainChannelsSession(): MainSessionCreateResult {
   supervisorWait = wait.state
   if (wait.verdict === 'stuck') {
     logger.error({ session: MAIN_CHANNELS_SESSION, supervisors: live, absentSinceMs: now - wait.state!.since }, 'Main channels session still absent next to a running channels.sh supervisor -- the supervisor looks stuck; not starting a second one')
-    sendRoutineAlert('main-session-supervisor-stuck', `⚠️ A ${MAIN_CHANNELS_SESSION} session ${Math.round((now - wait.state!.since) / 60_000)} perce hiányzik, pedig fut channels.sh supervisor (pid ${live.map((s) => s.pid).join(', ')}): valószínűleg beragadt. Másodikat nem indítok mellé; kézi ellenőrzés kell.`)
+    // Owner-action, not self-heal: this branch deliberately starts nothing
+    // (a second supervisor would double-own the session) -- a manual check is
+    // the only recovery, so NOTIFY_ROUTINE_ALERTS must not silence it.
+    sendOwnerActionAlert('main-session-supervisor-stuck', `⚠️ A ${MAIN_CHANNELS_SESSION} session ${Math.round((now - wait.state!.since) / 60_000)} perce hiányzik, pedig fut channels.sh supervisor (pid ${live.map((s) => s.pid).join(', ')}): valószínűleg beragadt. Másodikat nem indítok mellé; kézi ellenőrzés kell.`)
     return 'grace'
   }
   if (wait.verdict === 'wait') {
@@ -1809,7 +1812,9 @@ function verifyHardRestartLater(): void {
     () => paneRunsClaude(mainPaneDead(), getClaudePidForSession(MAIN_CHANNELS_SESSION)),
     () => {
       logger.error({ session: MAIN_CHANNELS_SESSION }, 'Hard restart reported success, but claude is not running in the main pane some minutes later')
-      sendRoutineAlert('main-hard-restart-no-claude', `⚠️ A ${MAIN_CHANNELS_SESSION} újraindítása után néhány perccel sem fut claude a fő pane-ben. A csatorna valószínűleg nem jött vissza; kézi ellenőrzés kell.`)
+      // Owner-action, not self-heal: the restart already ran and this is the
+      // verification that it did NOT take -- nothing further is attempted here.
+      sendOwnerActionAlert('main-hard-restart-no-claude', `⚠️ A ${MAIN_CHANNELS_SESSION} újraindítása után néhány perccel sem fut claude a fő pane-ben. A csatorna valószínűleg nem jött vissza; kézi ellenőrzés kell.`)
     },
   )
 }
