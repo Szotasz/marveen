@@ -1189,7 +1189,7 @@ describe('invis: invisible characters (invis1024)', () => {
     expect(text).toContain('MARVEEN-PATCH(cmd920-evid)')
     expect(text).toContain('MARVEEN-PATCH(c67f5f34-kbd)')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content' })
     const once = readFileSync(server, 'utf-8')
     expect(run(['--state', state]).status).toBe(0)
     expect(readFileSync(server, 'utf-8')).toBe(once)
@@ -1198,7 +1198,7 @@ describe('invis: invisible characters (invis1024)', () => {
   it('the --state JSON names the invis patch like the others', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', invis: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' })
   })
 
   it('system-status measures the invis patch on its own, with this marker', () => {
@@ -1206,7 +1206,7 @@ describe('invis: invisible characters (invis1024)', () => {
     try {
       const d = join(dir, 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
       mkdirSync(d, { recursive: true })
-      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'c67f5f34-kbd'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
+      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'tgsilent', 'c67f5f34-kbd'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
       const state = join(dir, 'state.json')
       writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
         { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', invis: 'anchor-missing:channel content' } },

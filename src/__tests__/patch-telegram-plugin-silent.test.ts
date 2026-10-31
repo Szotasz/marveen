@@ -64,10 +64,17 @@ function replyHandler(patched: string): { call: (args: Record<string, unknown>) 
     sent.push({ method, chat, opts }); return { message_id: sent.length }
   }
   const bot = { api: { sendMessage: rec('sendMessage'), sendPhoto: rec('sendPhoto'), sendDocument: rec('sendDocument') } }
+  // The kbd patch (a later patch of the same file) reaches into this handler
+  // too: buttons go only to a paired private chat (loadAccess), their labels are
+  // checked against PERMISSION_REPLY_RE (declared above the excerpt this runs),
+  // and the excerpt now also carries the evid lines (writeFileSync, renameSync,
+  // join, STATE_DIR) -- the same stand-ins the topics harness hands in.
   const names = ['mcp', 'CallToolRequestSchema', 'assertAllowedChat', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES',
-    'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'bot', 'extname', 'InputFile', 'PHOTO_EXTS']
+    'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'bot', 'extname', 'InputFile', 'PHOTO_EXTS',
+    'writeFileSync', 'renameSync', 'join', 'STATE_DIR', 'PERMISSION_REPLY_RE']
   new Function(...names, js)(mcp, {}, () => {}, () => {}, () => ({ size: 0 }), 50 * 1024 * 1024,
-    () => ({}), 4096, (text: string) => text.split('|'), bot, extname, class {}, new Set(['.png', '.jpg']))
+    () => ({ allowFrom: ['42'] }), 4096, (text: string) => text.split('|'), bot, extname, class {}, new Set(['.png', '.jpg']),
+    () => {}, () => {}, join, '/nonexistent', /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i)
   expect(handler).toBeDefined()
   return { call: args => handler!({ params: { name: 'reply', arguments: args } }), sent }
 }
@@ -142,9 +149,7 @@ describe('silent: reply without a notification sound', () => {
     expect(h.sent.map(s => s.method)).toEqual(['sendMessage', 'sendMessage'])
     for (const s of h.sent) expect(s.opts!.disable_notification).toBe(true)
     expect(h.sent[1].opts!.reply_markup).toEqual({
-      keyboard: [[{ text: 'A' }], [{ text: 'B' }]],
-      one_time_keyboard: true,
-      resize_keyboard: true,
+      inline_keyboard: [[{ text: 'A', callback_data: 'kbd:0' }], [{ text: 'B', callback_data: 'kbd:1' }]],
     })
     expect(h.sent[0].opts).not.toHaveProperty('reply_markup')
   })
@@ -212,7 +217,7 @@ describe('silent: reply without a notification sound', () => {
     expect(r.stderr).toMatch(/LOUD: reply file branch not found exactly once.*the reply tool has no silent option/)
     expect(readFileSync(server, 'utf-8')).not.toContain(SIL)
     expect(readState(state).files[0].patches).toEqual({
-      d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', silent: 'anchor-missing:reply file branch',
+      d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched',
     })
   })
 })
