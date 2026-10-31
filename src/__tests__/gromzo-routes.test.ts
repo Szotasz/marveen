@@ -215,6 +215,20 @@ describe('POST /api/gromzo/owner-qr', () => {
     expect(await r.json()).toEqual({ error: 'invite_outstanding' })
   })
 
+  it('GROMZORESETWAIT1031: the reset lock is 409 with retry_after, or 409 identity_reset_stalled with none', async () => {
+    fake.script.set('owner_invite', { ok: false, error: 'owner_invite_already_issued' })
+    fake.script.set('owner_login_code', { ok: false, error: 'identity_reset_in_progress', retry_after: 420 })
+    let r = await postQr()
+    expect(r.status).toBe(409)
+    expect(await r.json()).toEqual({ error: 'identity_reset_in_progress', retry_after: 420 })
+    fake.script.set('owner_login_code', { ok: false, error: 'identity_reset_stalled' })
+    r = await postQr()
+    expect(r.status).toBe(409)
+    expect(await r.json()).toEqual({ error: 'identity_reset_stalled' })
+    fake.script.set('owner_login_code', { ok: false, error: 'identity_reset_in_progress' })
+    expect(await (await postQr()).json()).toEqual({ error: 'identity_reset_in_progress' })
+  })
+
   it('mxd down: 503 not_running; upstream: 502', async () => {
     env.MXD_DASH_SOCK = fake.path + '.missing'
     try {

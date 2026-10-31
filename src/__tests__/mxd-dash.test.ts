@@ -138,6 +138,21 @@ describe('requestOwnerQr (the owner flow)', () => {
     })
   }
 
+  it('GROMZORESETWAIT1031: the reset lock passes its wait (1..86400 whole seconds) and its stall', async () => {
+    fake.script.set('owner_invite', { ok: false, error: 'owner_invite_already_issued' })
+    fake.script.set('owner_login_code', { ok: false, error: 'identity_reset_in_progress', retry_after: 420 })
+    expect(await requestOwnerQr(callFake())).toEqual({ ok: false, code: 'identity_reset_in_progress', retryAfter: 420 })
+    for (const bad of [0, -5, 86_401, 1.5, '420', null]) {
+      fake.script.set('owner_login_code', { ok: false, error: 'identity_reset_in_progress', retry_after: bad })
+      expect(await requestOwnerQr(callFake())).toEqual({ ok: false, code: 'identity_reset_in_progress' })
+    }
+    fake.script.set('owner_login_code', { ok: false, error: 'identity_reset_stalled' })
+    expect(await requestOwnerQr(callFake())).toEqual({ ok: false, code: 'identity_reset_stalled' })
+    // Another code never carries a wait.
+    fake.script.set('owner_login_code', { ok: false, error: 'rate_limited', retry_after: 60 })
+    expect(await requestOwnerQr(callFake())).toEqual({ ok: false, code: 'rate_limited' })
+  })
+
   it('a non-code error string becomes "refused" (nothing verbatim from upstream)', async () => {
     fake.script.set('owner_invite', { ok: false, error: 'Something <b>bad</b> happened' })
     expect(await requestOwnerQr(callFake())).toEqual({ ok: false, code: 'refused' })
