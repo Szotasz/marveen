@@ -28,7 +28,9 @@ function abandoned(to: string, createdAt?: number): number {
 describe('requeueAbandonedForAgent', () => {
   it('T1 requeues an abandoned message', () => {
     const id = abandoned('alice')
+    getDb().prepare('UPDATE agent_messages SET delivered_at = created_at WHERE id = ?').run(id)
     const before = row(id)
+    expect(before.delivered_at).not.toBeNull()
     expect(requeueAbandonedForAgent('alice')).toEqual([id])
     const r = row(id)
     expect(r.status).toBe('pending')
@@ -137,6 +139,26 @@ describe('requeueAbandonedForAgent', () => {
     const got = requeueAbandonedForAgent('alice', { now: NOW })
     expect(got).toEqual(ids.slice(0, 20))
     expect(row(last).status).toBe('failed')
+  })
+
+  it('cap 1: a row requeued before does not take the only slot', () => {
+    const now = 1_900_000_000
+    const old = abandoned('agent-c', now - 200)
+    const prev = abandoned('agent-c', now - 100)
+    getDb().prepare('UPDATE agent_messages SET requeued_at = ? WHERE id = ?').run(now - 50, prev)
+    expect(row(prev).status).toBe('failed') // still failed + abandoned text, but already revived once
+    expect(requeueAbandonedForAgent('agent-c', { cap: 1, now })).toEqual([old])
+    expect(row(prev).status).toBe('failed')
+  })
+
+  it('cap 1: a newer failed row with another reason does not take the only slot', () => {
+    const now = 1_900_000_000
+    const old = abandoned('agent-d', now - 200)
+    const other = createAgentMessage('s' + Math.random(), 'agent-d', 'x').id
+    markMessageFailed(other, 'some other failure')
+    setCreated(other, now - 100)
+    expect(requeueAbandonedForAgent('agent-d', { cap: 1, now })).toEqual([old])
+    expect(row(other).status).toBe('failed')
   })
 
   it('T8 cap 0 and maxAgeSec 0 do nothing', () => {
