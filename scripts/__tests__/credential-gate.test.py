@@ -19,7 +19,6 @@ Run: python3 <thisfile>   Exit 0 = all pass.
 """
 import json
 import os
-import re
 import sqlite3
 import stat
 import subprocess
@@ -37,20 +36,11 @@ import credential_lib as cl  # noqa: E402
 VAL = "Xk29proba"
 VAL2 = "Kiskert2099z"
 SHARED = "KozosPr0ba"
-ALL_VALUES = (VAL, VAL2, SHARED, "TitkosProba7", "4821", "Kert!proba", "probaUrlJelszo9")
-
-# "4821" is all digits: inside a random hex key, an HMAC digest or a timestamp it can occur
-# by chance. It counts as written only when no ASCII letter or digit touches it on either side.
-BOUNDED_VALUES = {"4821"}
-
-
-def value_in(value, text):
-    """Whether `value` occurs in `text`; a value in BOUNDED_VALUES only as a whole token."""
-    if value in BOUNDED_VALUES:
-        return re.search(r"(?<![0-9A-Za-z])" + re.escape(value) + r"(?![0-9A-Za-z])", text) is not None
-    return value in text
-
-
+# The PIN is all digits: ten of them, so it does not turn up by chance inside a hex key or an
+# HMAC digest in the gate's files, and as a Unix time it is far from now (the year 2161), so no
+# timestamp written there matches it either (a 4-digit PIN did, now and then).
+PIN = "6038274915"
+ALL_VALUES = (VAL, VAL2, SHARED, "TitkosProba7", PIN, "Kert!proba", "probaUrlJelszo9")
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 failed = []
@@ -204,11 +194,11 @@ def test_detector():
         "A jelszava a következő: titkosproba": 1,                        # bare word after a colon
         "Belépési adatok: admin / " + VAL2: 1,                           # user / password pair
         "Wi-Fi kulcs: \"Kert!proba\"": 1,
-        "PIN-kód: 4821": 1,
+        "PIN-kód: " + PIN: 1,
         "JELSZO: " + VAL: 1,                                             # unaccented, upper-case key
         "jelszo " + VAL: 1,
         "> jelszó: " + VAL: 1,                                           # a quoted earlier mail goes out too
-        "jelszó: " + VAL + ", PIN: 4821": 2,
+        "jelszó: " + VAL + ", PIN: " + PIN: 2,
         "https://user:probaUrlJelszo9@example.invalid/x": 1,
         "https://example.invalid/login?password=" + VAL + "&next=1": 1,
         "<p>jelszó: <b>" + VAL + "</b></p>": 1,                          # HTML body
@@ -528,28 +518,22 @@ def test_multi_recipient():
 
 def test_no_value_anywhere():
     print("(5) the value is never written")
-    check("the leak matcher finds a whole-token PIN",
-          value_in("4821", "PIN: 4821\n") and value_in("4821", '"4821"') and value_in("4821", "4821"))
-    check("the leak matcher ignores the PIN digits inside hex or a longer number",
-          not value_in("4821", "9c0e4821ab") and not value_in("4821", "1793394821")
-          and not value_in("4821", "4821ab") and not value_in("4821", "ab4821"))
-    check("the leak matcher still finds the other values inside a longer word", value_in(VAL, "xx" + VAL + "yy"))
-    leaks = []
-    for out in outputs:
-        leaks += [v for v in ALL_VALUES if v in out and v != "4821"]
-    check("no value in any stdout or stderr of the gate and the CLI", not leaks, repr(sorted(set(leaks))))
     td, store = make_store()
-    for body in (LETTER, "Jelszó: " + VAL2 + "\nPIN: 4821\n"):
+    for body in (LETTER, "Jelszó: " + VAL2 + "\nPIN: " + PIN + "\n"):
         r = gate(store, "Bash", bash_send(td, "ugyfel@example.invalid", body))
         cli(store, "ack", "--anchor", anchor_of(r), "--by", "teszt", "--reason", "sajat egyedi adat (proba)")
         gate(store, "Bash", bash_send(td, "ugyfel@example.invalid", body))
     cli(store, "shared-add", "--note", "proba", stdin=SHARED)
+    leaks = []
+    for out in outputs:
+        leaks += [v for v in ALL_VALUES if v in out]
+    check("no value in any stdout or stderr of the gate and the CLI", not leaks, repr(sorted(set(leaks))))
     files = {}
     for name in os.listdir(store):
         if name.startswith("credential-gate") and not name.endswith(".lock"):
             with open(os.path.join(store, name), encoding="utf-8") as fh:
                 files[name] = fh.read()
-    found = sorted({(n, v) for n, t in files.items() for v in ALL_VALUES if value_in(v, t)})
+    found = sorted({(n, v) for n, t in files.items() for v in ALL_VALUES if v in t})
     check("no value in the log, the state or any other gate file", not found, repr(found))
     check("the log shows length and an 8-hex fingerprint prefix",
           all(set(h) == {"keyword", "line", "length", "fp8"} and len(h["fp8"]) == 8
