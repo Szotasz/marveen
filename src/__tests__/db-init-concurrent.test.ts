@@ -136,4 +136,22 @@ describe('initDatabase: concurrent startups on one migrated file', () => {
       d.close()
     }
   }, 90_000)
+
+  it('a comment written after a restart on the migrated file is journaled by the homoglyph trigger', () => {
+    // The first initDatabase migrates the file, the second takes the restart path
+    // that drops and re-creates the trigger.
+    const dbPath = join(dir, 'comment.db')
+    initDatabase(dbPath)
+    initDatabase(dbPath)
+    const d = new Database(dbPath)
+    try {
+      const ins = d.prepare("INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, 1)")
+      const flagged = Number(ins.run('c-1', 'test', 'Cyrillic \u0430 comment').lastInsertRowid)
+      ins.run('c-1', 'test', 'plain ascii comment')
+      const rows = d.prepare("SELECT src_id, sample FROM homoglyph_findings WHERE src_table = 'kanban_comments'").all()
+      expect(rows).toEqual([{ src_id: String(flagged), sample: 'Cyrillic \u0430 comment' }])
+    } finally {
+      d.close()
+    }
+  })
 })
