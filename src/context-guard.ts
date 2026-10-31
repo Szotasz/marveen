@@ -288,9 +288,21 @@ export const CALIBRATION_OVERSHOOT_TOLERANCE = 1.25
  * did not guess is measured against the smaller tier until it exceeds it by the
  * tolerance -- e.g. a genuine 500k window observed in 200000..250000 reads as
  * over-full and may be restarted once before it grows past the step-up point.
- * No model in the fleet is configured that way today (every agent resolves to a
- * 200k window; only the `[1m]` suffix selects a larger one), and `limitTokens`
- * pins the denominator explicitly when an operator knows better.
+ * No model in the fleet is configured that way today, and `limitTokens` pins the
+ * denominator explicitly when an operator knows better.
+ *
+ * CORRECTED 2026-09-27 (doki measured, envibot verified, Roland approved): this
+ * paragraph used to claim that "every agent resolves to a 200k window; only the
+ * `[1m]` suffix selects a larger one". That contradicted ONE_MILLION_FAMILIES
+ * above, whose `/opus-[5-9]\b/` entry gives `claude-opus-5` a 1M window -- and on
+ * 2026-09-27 seven of the eight fleet agents ran on `claude-opus-5`, so the
+ * sentence was wrong for almost the whole fleet. It also caused a real error the
+ * same day: a reader took the 200k figure as the denominator for every agent and
+ * nearly published a table showing 130-210% context use. The raw token counts
+ * were right; only the divisor was wrong. Read `contextLimitForModel` for the
+ * per-model window; do not assume a fleet-wide default. Note that `/api/agents`
+ * exposes `contextTokens` but NO limit field, so a percentage always has to be
+ * computed from the model, never read off a response.
  */
 export function calibrateLimit(observedTokens: number, baseLimit: number): number {
   const explains = (limit: number): boolean =>
