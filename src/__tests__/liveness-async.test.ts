@@ -116,6 +116,8 @@ describe('etimeOutputToMs (shared by the sync and the async process-age probe)',
   it('converts ps etime output to milliseconds', () => {
     expect(etimeOutputToMs('      05:23\n')).toBe(323_000)
     expect(etimeOutputToMs('2-03:04:05\n')).toBe(183_845_000)
+    // A process 0 seconds old is age 0, not an unparseable -1.
+    expect(etimeOutputToMs('      00:00\n')).toBe(0)
   })
   it('keeps -1 for output it cannot parse', () => {
     expect(etimeOutputToMs('')).toBe(-1)
