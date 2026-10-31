@@ -30,7 +30,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from '
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
@@ -140,21 +140,122 @@ function readToken(): string {
 
 // Two pollers on one token = guaranteed 409. Refuse to start if another live
 // coordinator already holds the pid file. Stale pid (process gone) is reclaimed.
+export interface PidLockDeps {
+  isAlive(pid: number): boolean // kill(pid, 0): true on success or EPERM, false on ESRCH
+  // The process's command line. string = the command line; null = the process
+  // does not exist (gone); undefined = could not be determined (ps missing, denied, timed out).
+  argvOf(pid: number): string | null | undefined
+}
+export type PidLockResult =
+  | { ok: true; reclaimed: number | null }
+  | { ok: false; holder: number | null; reason: 'held' | 'unknown' | 'contention' }
+
+// True when some whitespace-separated token of argv has a last path segment of
+// exactly channel-coordinator.js / .ts (so `tail -f channel-coordinator.log` does not match).
+export function isCoordinatorArgv(argv: string): boolean {
+  return argv.split(/\s+/).some((tok) => {
+    const base = tok.slice(tok.lastIndexOf('/') + 1)
+    return base === 'channel-coordinator.js' || base === 'channel-coordinator.ts'
+  })
+}
+
+function parsePid(raw: string): number | null {
+  const t = raw.trim()
+  if (!/^[1-9][0-9]*$/.test(t)) return null
+  const n = Number(t)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+// A bare kill(pid, 0) is not enough: after a reboot or crash the recorded pid can
+// belong to an unrelated process (pid reuse), so the holder must also look like a
+// coordinator by its argv. A live pid whose argv cannot be read is treated as held
+// (fail closed). O_EXCL makes the create exclusive; reclaiming a stale file re-reads
+// it right before unlinking, which narrows but cannot fully close the window in which
+// two starters act on the same stale file (Node has no flock). Attempts are bounded;
+// if another starter keeps winning we refuse (the safe side).
+export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLockDeps): PidLockResult {
+  let reclaimed: number | null = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeFileSync(pidFile, String(selfPid), { flag: 'wx', mode: 0o600 })
+      return { ok: true, reclaimed }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+    }
+    let content: string
+    try { content = readFileSync(pidFile, 'utf-8') } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      throw err
+    }
+    const prev = parsePid(content)
+    if (prev !== null) {
+      if (prev === selfPid) return { ok: true, reclaimed: null }
+      if (deps.isAlive(prev)) {
+        const argv = deps.argvOf(prev)
+        if (argv === undefined) return { ok: false, holder: prev, reason: 'unknown' }
+        if (argv !== null && isCoordinatorArgv(argv)) return { ok: false, holder: prev, reason: 'held' }
+      }
+    }
+    // Stale: unlink only if the file is still exactly what the decision was based on.
+    let again: string
+    try { again = readFileSync(pidFile, 'utf-8') } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      throw err
+    }
+    if (again !== content) continue
+    try { unlinkSync(pidFile) } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    if (prev !== null) reclaimed = prev
+  }
+  return { ok: false, holder: null, reason: 'contention' }
+}
+
+export const realPidLockDeps: PidLockDeps = {
+  isAlive: (pid) => {
+    try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException)?.code === 'EPERM' }
+  },
+  argvOf: (pid) => {
+    // /bin/ps first (as elsewhere in the codebase), then ps from PATH for hosts
+    // that have no /bin/ps (e.g. NixOS).
+    // Empty output is "gone" only when kill(pid, 0) agrees: a ps that cannot
+    // inspect a live process can print nothing too. Anything else is unknown.
+    const goneOrUnknown = (): null | undefined => {
+      try { process.kill(pid, 0); return undefined } catch (k) {
+        return (k as NodeJS.ErrnoException)?.code === 'ESRCH' ? null : undefined
+      }
+    }
+    for (const ps of ['/bin/ps', 'ps']) {
+      try {
+        return execFileSync(ps, ['-p', String(pid), '-o', 'args='], { timeout: 2000, encoding: 'utf-8' }).trim() || goneOrUnknown()
+      } catch (err) {
+        const e = err as { status?: number | null; stdout?: string; code?: string }
+        if (e.code === 'ENOENT') continue
+        // ps exits 1 with no output when the pid does not exist.
+        if (e.status === 1 && !String(e.stdout ?? '').trim()) return goneOrUnknown()
+        return undefined // denied, timed out, killed: unknown
+      }
+    }
+    return undefined // no ps at all: unknown
+  },
+}
+
 function acquireSingleInstanceLock(): void {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  if (existsSync(PID_FILE)) {
-    const prev = parseInt(readFileSync(PID_FILE, 'utf-8').trim(), 10)
-    if (Number.isInteger(prev) && prev > 0 && prev !== process.pid) {
-      let alive = false
-      try { process.kill(prev, 0); alive = true } catch { alive = false }
-      if (alive) {
-        logger.error({ prev }, 'channel-coordinator: another live instance holds the pid lock, exiting')
-        process.exit(1)
-      }
-      logger.warn({ stalePid: prev }, 'channel-coordinator: reclaiming stale pid file')
+  const res = tryAcquirePidLock(PID_FILE, process.pid, realPidLockDeps)
+  if (!res.ok) {
+    if (res.reason === 'held') {
+      logger.error({ prev: res.holder }, 'channel-coordinator: another live instance holds the pid lock, exiting')
+    } else if (res.reason === 'unknown') {
+      logger.error({ prev: res.holder }, 'channel-coordinator: the pid lock holder is alive but its command line cannot be read; refusing to start')
+    } else {
+      logger.error('channel-coordinator: could not acquire the pid lock (another starter kept winning); exiting')
     }
+    process.exit(1)
   }
-  writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 })
+  if (res.ok && res.reclaimed != null) {
+    logger.warn({ stalePid: res.reclaimed }, 'channel-coordinator: reclaiming stale pid file')
+  }
 }
 
 function releaseLock(): void {
