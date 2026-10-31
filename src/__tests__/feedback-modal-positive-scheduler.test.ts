@@ -34,10 +34,6 @@ const mockIsReady = vi.fn(() => false)
 const mockClearModal = vi.fn(() => false)
 let capturePaneCalls = 0
 
-// Snapshots of local fires go to a tmp dir, not the checkout's store (NUDGESHORT1031).
-vi.mock('../web/scheduled-run-snapshot.js', async (importOriginal) =>
-  (await import('./helpers/scheduled-runs-tmp.js')).redirectScheduledRuns(await importOriginal()))
-
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))

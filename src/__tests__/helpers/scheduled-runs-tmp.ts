@@ -4,11 +4,10 @@
 // the typed prompt would only see the pointer -- a `not.toContain` on it passes
 // whatever the task text is.
 //
-// redirectScheduledRuns: the vi.mock factory body for '../web/scheduled-run-snapshot.js'.
-// Snapshots go to a bounded per-worker tmp dir (cleared on entry, the pattern of
+// redirectScheduledRuns: the vi.mock factory body for the snapshot module,
+// used by setup/scheduled-runs-tmp-seam.ts for the whole suite. Snapshots go to
+// a bounded per-worker tmp dir (cleared on entry, the pattern of
 // setup/default-ssh-dir-seam.ts), and the reference check accepts that dir.
-//   vi.mock('../web/scheduled-run-snapshot.js', async (importOriginal) =>
-//     (await import('./helpers/scheduled-runs-tmp.js')).redirectScheduledRuns(await importOriginal()))
 //
 // deliveredTaskText: what the agent ends up reading for a typed prompt -- the
 // body-file's text for a pointer, the prompt itself for an inline delivery.
