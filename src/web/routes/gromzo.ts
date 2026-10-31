@@ -69,6 +69,7 @@ export function httpStatusFor(code: string): number {
     case 'owner_invite_used':
     case 'no_owner':
     case 'identity_reset_in_progress':
+    case 'identity_reset_stalled':
     case 'team_lapsed':
     case 'team_unknown':
     case 'revoked':
@@ -95,8 +96,8 @@ function sendOwnerQr(res: http.ServerResponse, qr: OwnerQr): void {
   res.end(JSON.stringify({ kind: qr.kind, uri: qr.uri, expires_in: qr.expires_in }))
 }
 
-function failure(res: http.ServerResponse, code: string): void {
-  json(res, { error: code }, httpStatusFor(code))
+function failure(res: http.ServerResponse, code: string, retryAfter?: number): void {
+  json(res, retryAfter === undefined ? { error: code } : { error: code, retry_after: retryAfter }, httpStatusFor(code))
 }
 
 export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
@@ -141,7 +142,7 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
   }
   if (!result.ok) {
     logger.warn({ code: result.code }, 'gromzo: owner QR refused by mxd')
-    failure(res, result.code)
+    failure(res, result.code, result.retryAfter)
     return true
   }
   logger.info({ kind: result.qr.kind, expires_in: result.qr.expires_in }, 'gromzo: owner QR issued (the secret is not logged)')

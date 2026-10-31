@@ -20570,11 +20570,16 @@ async function openResearchDoc(agent, name) {
       })
       if (!r.ok) {
         let code = 'http_' + r.status
+        let wait = null
         try {
           const b = await r.json()
           code = String(b.code || b.error || code)
+          if (Number.isInteger(b.retry_after) && b.retry_after > 0) wait = b.retry_after
         } catch { /* keep the HTTP code */ }
-        showError(errorText(code))
+        // GROMZORESETWAIT1031: during the identity reset lock, when the code can be asked again.
+        showError(code === 'identity_reset_in_progress' && wait !== null
+          ? t('gromzo.err.identity_reset_wait', { min: Math.max(1, Math.ceil(wait / 60)) })
+          : errorText(code))
         btn.disabled = false
         loadStatus()
         return

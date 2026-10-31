@@ -2276,6 +2276,8 @@ window._i18n.hu = {
   'gromzo.err.timeout': 'A chat-szolgáltatás nem válaszolt időben. Próbáld újra egy perc múlva.',
   'gromzo.err.owner_session_required': 'Ehhez be kell lépned a dashboardra a jelszavaddal (tulajdonosi belépés). Ha még nincs dashboard-belépésed, előbb hozd létre, utána kérd a kódot.',
   'gromzo.err.identity_reset_in_progress': 'Folyamatban van a fiókod biztonsági visszaállítása. A kódot utána tudod kérni.',
+  'gromzo.err.identity_reset_wait': 'Folyamatban van a fiókod biztonsági visszaállítása. Az új kódot kb. {min} perc múlva kérheted.',
+  'gromzo.err.identity_reset_stalled': 'A fiókod biztonsági visszaállítása elakadt, ezért most nem adható ki kód. Szólj a rendszergazdának.',
   'gromzo.err.team_lapsed': 'Az előfizetésed lejárt, ezért most nem adható ki kód.',
   'gromzo.err.generic': 'Nem sikerült kódot kérni ({code}). Próbáld újra később.',
 }

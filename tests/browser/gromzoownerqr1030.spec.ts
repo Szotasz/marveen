@@ -138,4 +138,33 @@ test.describe('GROMZOOWNERQR1030 -- Gromzo card on Settings', () => {
     await page.locator('#gromzoAddPhoneBtn').click()
     await expect(page.locator('#gromzoError')).toHaveText(/Bridge key/)
   })
+
+  // GROMZORESETWAIT1031 (Samu 58730): during the identity reset lock the owner sees when to ask again; a stalled
+  // reset says so; with no time the sentence stays the general one.
+  for (const [lang, body, want] of [
+    ['hu', { error: 'identity_reset_in_progress', retry_after: 420 }, 'Az új kódot kb. 7 perc múlva kérheted.'],
+    ['hu', { error: 'identity_reset_in_progress', retry_after: 30 }, 'Az új kódot kb. 1 perc múlva kérheted.'],
+    ['en', { error: 'identity_reset_in_progress', retry_after: 721 }, 'You can request a new code in about 13 min.'],
+    ['hu', { error: 'identity_reset_in_progress' }, 'A kódot utána tudod kérni.'],
+    ['hu', { error: 'identity_reset_in_progress', retry_after: '420' }, 'A kódot utána tudod kérni.'],
+    ['hu', { error: 'identity_reset_stalled' }, 'elakadt, ezért most nem adható ki kód. Szólj a rendszergazdának.'],
+    ['en', { error: 'identity_reset_stalled' }, 'is stuck, so no code can be issued right now.'],
+  ] as const) {
+    test(`identity reset lock ${lang} ${JSON.stringify(body)}: ${want}`, async ({ page }) => {
+      const { errors } = await open(page, lang, { status: 409, body })
+      await page.locator('#gromzoAddPhoneBtn').click()
+      await expect(page.locator('#gromzoError')).toContainText(want)
+      await expect(page.locator('#gromzoQrArea')).toBeHidden()
+      await expect(page.locator('#gromzoAddPhoneBtn')).toBeEnabled()
+      if (lang === 'hu' && 'retry_after' in body && body.retry_after === 420) {
+        await page.locator('#gromzoCard').scrollIntoViewIfNeeded()
+        await page.screenshot({ path: 'test-results/gromzoresetwait1031-wait-hu.png', fullPage: false })
+      }
+      if (body.error === 'identity_reset_stalled' && lang === 'hu') {
+        await page.locator('#gromzoCard').scrollIntoViewIfNeeded()
+        await page.screenshot({ path: 'test-results/gromzoresetwait1031-stalled-hu.png', fullPage: false })
+      }
+      expect(errors.filter((e) => !/409/.test(e)), `page errors: ${errors.join(' | ')}`).toEqual([])
+    })
+  }
 })

@@ -145,7 +145,7 @@ export interface OwnerQr {
   expires_in: number
 }
 
-export type OwnerQrResult = { ok: true, qr: OwnerQr } | { ok: false, code: string }
+export type OwnerQrResult = { ok: true, qr: OwnerQr } | { ok: false, code: string, retryAfter?: number }
 
 /** The controller's login-secret prefix (marveen-mxd controller.rs OWNER_LOGIN_PREFIX,
  *  the app's JoinLink.loginSecretPrefix). */
@@ -221,5 +221,11 @@ export async function requestOwnerQr(call: MxdDashCall): Promise<OwnerQrResult> 
   const login = await call({ verb: 'owner_login_code' })
   if (login.ok === true) return qrFrom('login', login)
   const loginCode = errorCode(login)
+  // GROMZORESETWAIT1031: the identity reset lock says when it ends (mxd passes the controller's
+  // retry_after, seconds); only a whole number in 1..86400 is kept.
+  const wait = login.retry_after
+  if (loginCode === 'identity_reset_in_progress' && typeof wait === 'number' && Number.isInteger(wait) && wait >= 1 && wait <= 86_400) {
+    return { ok: false, code: loginCode, retryAfter: wait }
+  }
   return { ok: false, code: loginCode === 'no_owner' ? 'invite_outstanding' : loginCode }
 }
