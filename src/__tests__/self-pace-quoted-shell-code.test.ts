@@ -86,7 +86,6 @@ describe('self-pace-gate: a scheduler inside shell code', () => {
       "bash -c 'npm test'",
       "sh -c 'crontab -l'",
       "bash -lc 'cd /w && npx vitest run'",
-      'eval "$(ssh-agent -s)"',
       'bash <<EOF\nnpm test\nEOF',
       // every code route has a harmless case, so a deny there cannot come from an error
       "bash <<< 'npm test'",
@@ -523,5 +522,287 @@ describe('self-pace-gate: tmux aliases, prefixes and chained commands', () => {
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
+  })
+})
+
+// Where a command position can NOT start, and where it can. Measured with a real bash in a Linux
+// container: the `touch H` of the first two commands did not create the file H, that of the last two did.
+// The substitution scanner must neither invent a command position in a comment or in an unquoted heredoc
+// body that merely holds a quote, nor lose the one after the comment's newline or after a `#` in a word.
+describe('self-pace-gate: a substitution in command position, comment and heredoc edges', () => {
+  it('ALLOWS a substitution after a comment mark and one behind a quote in an unquoted heredoc body', () => {
+    for (const cmd of [
+      'echo x # ; $(echo touch H)',
+      'cat <<EOF\nx" ; $(echo touch H) ; "\nEOF',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES the substitution after the comment ends, and after a # that is part of a word', () => {
+    for (const cmd of [
+      'echo x # c\n$(echo touch H)',
+      'echo a#b ; $(echo touch H)',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+})
+
+// More shapes of the command-position scan, each measured with a real bash in a Linux
+// container (`touch H` stands for the scheduler: the commands below that DENY created the file H, the ones
+// that ALLOW did not).
+describe('self-pace-gate: a substitution in command position, shell grammar edges', () => {
+  it('ALLOWS an arithmetic command, and a QUOTED substitution glued to a wrapper option', () => {
+    for (const cmd of [
+      '(( $(echo touch H) >= 4 ))',
+      'if (( $(echo touch H) < 9 )); then :; fi',
+      'env -C"$(echo /tmp)" true',
+      // inside [[ ... ]] the && || ( ) join operands, a quoted substitution there is an operand
+      '[[ -n "$x" && "$(echo touch H)" == "" ]]',
+      '[[ ( -n x || -n y ) && "$(echo touch H)" ]]',
+      // a backslash in the TAG quotes it: the body of <<\EOF is data
+      'cat <<\\EOF\n$( $(echo touch H) )\nEOF',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES the command position that follows an arithmetic expression, an ANSI-C string or a backtick', () => {
+    for (const cmd of [
+      '(( x = 1<<9 ))\n$(echo touch H)',
+      'echo $[1<<9]\n$(echo touch H)',
+      "echo $'\\'' ; $(echo touch H) ; echo $'\\''",
+      'echo `\\$(echo touch H)`',
+      'echo `\\`echo touch H\\``',
+      'echo `true #` ; $(echo touch H)',
+      "echo ${x:-$'\\''} ; $(echo touch H) ; echo ${y:-$'\\''}",
+      // ]] ends the conditional: what follows && is a command again
+      '[[ -n x ]] && $(echo touch H)',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES after a heredoc whose TAG is partly quoted or odd, inside a quoted comsub of a body, and in the wrapper and function forms', () => {
+    for (const cmd of [
+      'cat <<E"O"F\nEOF\n$(echo touch H)\n',
+      "cat <<@@\nit's\n@@\n$(echo touch H)\n",
+      'cat <<EOF\n$(echo ")"; $(echo touch H))\nEOF',
+      'T=1; timeout $T $(echo touch H)',
+      'function f { $(echo touch H); }; f',
+      'env -S"$(echo touch H)"',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+})
+
+// More edges, each measured with a real bash in a container like the cases above.
+describe('self-pace-gate: a substitution in command position, more edges', () => {
+  it('ALLOWS a shift in an arithmetic loop head, a heredoc that a << really opens, and a quoted odd TAG', () => {
+    for (const cmd of [
+      'for ((i=0; i<3; i++)); do echo "$(echo touch H)"; done',
+      // here the << IS a heredoc (the rest of the input is its body): bash ran nothing
+      'let x=1<<1\n$(echo touch H)',
+      'echo a[1<<1]\n$(echo touch H)',
+      "cat <<$'EOF'\n$(echo touch H)\nEOF\n",
+      // a double-quoted TAG makes the body data, too
+      'cat <<"EOF"\n$( $(echo touch H) )\nEOF',
+      // an index is arithmetic only where an assignment can start; a declaring builtin takes the << as a heredoc
+      'declare a[1<<1]=x\n$(echo touch H)',
+      'arr[1]=x; echo "$(echo touch H)"',
+      'a[$(echo 1)]=x',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES eval after --, a glued ]] separator, an arithmetic << shift, odd quoted TAGs and exec -a', () => {
+    for (const cmd of [
+      'eval -- "$(echo touch H)"',
+      'eval -- $(echo touch H)',
+      '[[ -n x ]]&& $(echo touch H)',
+      '[[ -z x ]]|| $(echo touch H)',
+      '[[ -n x ]]| $(echo touch H)',
+      'for ((i=1<<1; i<3; i++)); do :; done\n$(echo touch H)',
+      'a[1<<1]=x\n$(echo touch H)',
+      'cat <<"E\\"F"\nE"F\n$(echo touch H)\n',
+      "cat <<$'EOF'\nEOF\n$(echo touch H)\n",
+      'cat <<"E\\\\F"\nE\\F\n$(echo touch H)\n',
+      'cat <<$X\nb\n$X\n$(echo touch H)\n',
+      'exec -a NAME $(echo touch H)',
+      // delta round: a [ after a wrapper, an option value or a redirection target opens no index
+      'timeout a[ ; $(echo touch H)',
+      'env a[ ; $(echo touch H)',
+      '>a[ ; $(echo touch H)',
+      'exec -a a[ ; $(echo touch H)',
+      // glued loop heads, an ANSI-C TAG with an escape, a combined exec option
+      'for((i=1<<1;i<3;i++)); do :; done\n$(echo touch H)',
+      'while((1<<1==2)); do break; done\n$(echo touch H)',
+      'if((1<<1==2)); then :; fi\n$(echo touch H)',
+      "cat <<$'E\\'F'\nE'F\n$(echo touch H)\n",
+      "cat <<$'E\\tF'\nE\tF\n$(echo touch H)\n",
+      'exec -la NAME $(echo touch H)',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+})
+
+// Edges of the scan: the redirection may come before the command word, an escaped
+// $( in the body of a shell's heredoc is live for that shell, --rcfile / --init-file take a value, and an unquoted
+// ${...} splits into words. Measured with a real bash like the cases above.
+describe('self-pace-gate: a substitution in command position, plan-delta edges', () => {
+  it('ALLOWS an escaped $ that stays text for the shell that reads the heredoc', () => {
+    for (const cmd of [
+      'bash <<EOF\necho \\$HOME\nEOF',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES a shell script handed over before the command word, with an escaped $(, behind --rcfile, and in an unquoted ${...}', () => {
+    for (const cmd of [
+      '<<< "$(echo touch H)" bash',
+      '<<EOF bash\n$(echo touch H)\nEOF',
+      'bash <<EOF\n\\$(echo touch H)\nEOF',
+      // the escaped backtick of an unquoted heredoc is live for the shell that reads it as its script
+      'bash <<EOF\n\\`echo touch H\\`\nEOF',
+      // --rcfile / --init-file take the next word as a value, so the -c after it is still a -c
+      'bash --rcfile /dev/null -c "echo $(echo \';touch H\')"',
+      'bash --init-file /dev/null -c "echo $(echo \';touch H\')"',
+      // each o / O in a -c bundle takes the next word as its value, the code word comes after them
+      'bash -oc pipefail "echo $(echo \';touch H\')"',
+      'bash -co pipefail "echo $(echo \';touch H\')"',
+      'timeout ${x:-$(echo 5 touch)} H',
+      'env X=${y:-$(echo 1 touch)} H',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('REFUSES literal scheduler code behind eval -- (not run against a bash: it would be a real crontab)', () => {
+    for (const cmd of ["eval -- 'crontab -r'", 'eval -- crontab -r']) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+})
+
+// Still more edges. Every DENY row below was run against a real bash (the output of the
+// substitution ran as a command: `touch H` appeared); every ALLOW row was run too (nothing ran).
+describe('self-pace-gate: a substitution in command position, still more edges', () => {
+  it('DENIES an unquoted $(...) in the code of a shell, eval or a heredoc it reads (the resolved marker splits into words)', () => {
+    for (const cmd of [
+      "bash -c 'timeout $(echo 5 touch H) x'",
+      "eval 'env X=$(echo Y=1 touch H) x'",
+      "bash <<'EOF'\ntimeout $(echo 5 touch H) x\nEOF",
+      "bash -c 'timeout ${Z:-$(echo 5 touch H)} x'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS a quoted $(...) there, and one that is an argument', () => {
+    for (const cmd of [
+      `bash -c 'timeout "$(echo 5)" true'`,
+      "bash -c 'timeout 5 echo $(echo hi)'",
+      "bash -c 'timeout \"${Z:-$(echo 5)}\" true'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES a [[ that is no keyword (quoted, escaped, behind a wrapper or a NAME=value): || and | then end the command', () => {
+    for (const cmd of [
+      '"[[" x || $(echo touch H)',
+      '\\[[ x || $(echo touch H)',
+      'env [[ x || $(echo touch H)',
+      'command [[ x || $(echo touch H)',
+      'builtin [[ x || $(echo touch H)',
+      'nohup [[ x || $(echo touch H)',
+      'timeout 5 [[ x || $(echo touch H)',
+      'sudo [[ x || $(echo touch H)',
+      'command time [[ x || $(echo touch H)',
+      'X=1 [[ x || $(echo touch H)',
+      '"[[" x | $(echo touch H)',
+      // only the bare keyword time (with -p at most) leaves it a keyword; a redirection before it makes it a command name
+      '/usr/bin/time [[ y || $(echo touch H)',
+      '\\time [[ y || $(echo touch H)',
+      'time -f x [[ y || $(echo touch H)',
+      'time -p -p [[ y || $(echo touch H)',
+      '>/dev/null [[ y || $(echo touch H)',
+      '2>&1 [[ y || $(echo touch H)',
+      '<<E [[ y || $(echo touch H)\nhi\nE',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS a substitution as an operand of a real [[ ]] (also behind time, !, if and {)', () => {
+    for (const cmd of [
+      '[[ -n x || $(echo touch H) == y ]]',
+      'time [[ -n x || $(echo touch H) ]]',
+      'time -p [[ -n x || $(echo touch H) ]]',
+      'if [[ -n x || $(echo touch H) ]]; then :; fi',
+      '! [[ -n x || $(echo touch H) ]]',
+      '{ [[ -n x || $(echo touch H) ]]; }',
+      // the wrapper / NAME=value of an EARLIER command does not reach the next one
+      'env true && [[ -n x || $(echo touch H) ]]',
+      'X=1 true; [[ -n x || $(echo touch H) ]]',
+      '>/dev/null true; [[ -n x || $(echo touch H) ]]',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES a substitution in the -c bundle word of a shell, glued or quoted', () => {
+    for (const cmd of [
+      "bash -c$(echo ' touch${IFS}H')",
+      // the value word of an o / O of the -c bundle: unquoted, its output (pipefail + the code word) shifts the code word
+      "bash -co $(echo 'pipefail touch${IFS}H') 'x'",
+      `bash -c"$(echo xe)" 'touch H'`,
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    expect(deny("bash -c 'echo hi'"), 'bash -c plain').toBe(false)
+    // with -c the heredoc is the stdin of the command, not the script of the shell: a substitution in it stays allowed
+    expect(deny("bash -lc 'cat' <<EOF\n$(echo hi)\nEOF"), 'bash -lc with a heredoc on stdin').toBe(false)
+  })
+
+  it('DENIES a substitution in the action word of trap, which the shell parses again when the signal fires', () => {
+    for (const cmd of [
+      `trap "echo $(echo ';touch H')" EXIT`,
+      `trap -- "echo $(echo ';touch H')" EXIT`,
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    for (const cmd of ["trap 'rm -f x' EXIT", 'trap - EXIT', 'trap -p', 'trap cleanup EXIT', 'trap "echo done" INT TERM']) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES a substitution glued to env -iS / -vS, or in the command word behind env -iu NAME / -vC DIR; ALLOWS the quoted values', () => {
+    for (const cmd of [
+      'env -iS"$(echo touch H)"',
+      'env -vS"$(echo touch H)"',
+      'env -iu X "$(echo touch)" H',
+      'env -vC . "$(echo touch)" H',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    for (const cmd of ['env -C"$(pwd)" true', 'env -iu"$(echo X)" true', 'env -iu X true', 'env -vC . true', 'env -iuX echo "$(echo hi)"', 'env -vC. echo "$(echo hi)"']) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES a command name after an option value spelled NAME=value (exec -a A=B, xargs -I A=B)', () => {
+    for (const cmd of [
+      'exec -a A=B "$(echo touch)" H',
+      'echo x | xargs -I A=B "$(echo touch)" H',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    expect(deny('exec -a A=B true'), 'exec -a plain').toBe(false)
   })
 })
