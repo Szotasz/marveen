@@ -17,6 +17,7 @@ import {
   type ModelResolution,
 } from '../model-profiles.js'
 import { expandAndValidateConfigDir, hasParentTraversal } from '../config-dir-path.js'
+import { readSenderRoleGates, senderRoleGatesPath, storedGateConfig, UNREADABLE_GATES_POLICY } from './sender-role-gate-store.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -553,21 +554,29 @@ export function senderRoleGateClosesTools(config: unknown): boolean {
   return allow.every((p) => typeof p === 'string' && (CONCRETE_TOOL.test(p) || ONE_SERVER.test(p)))
 }
 
-export function readAgentSenderRoleGateClosesTools(name: string): boolean {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    return senderRoleGateClosesTools(JSON.parse(readFileOr(configPath, '{}')))
-  } catch {
-    return false
-  }
+/** The team scope's check for an agent, from the store only (GROMZOGATECONF1030 (c)); an unreadable store: no team. */
+export function readAgentSenderRoleGateClosesTools(name: string, gatesPath: string = senderRoleGatesPath()): boolean {
+  const store = readSenderRoleGates(gatesPath)
+  return store.ok ? senderRoleGateClosesTools(storedGateConfig(store, name)) : false
 }
 
-export function readAgentSenderRoleGatePolicy(name: string): string | null {
-  const configPath = join(agentDir(name), 'agent-config.json')
+/**
+ * The gate's --policy for an agent, from the store only (GROMZOGATECONF1030 (c), Samu 59516): the agent's own
+ * agent-config.json is no source any more (the agent can write it). An unreadable store fails closed: the gate is
+ * wired with a policy the hook reads as malformed (every tool denied in a non-owner's turn).
+ */
+export function readAgentSenderRoleGatePolicy(name: string, gatesPath: string = senderRoleGatesPath()): string | null {
+  const store = readSenderRoleGates(gatesPath)
+  return store.ok ? senderRoleGatePolicyArg(storedGateConfig(store, name)) : UNREADABLE_GATES_POLICY
+}
+
+/** Whether the agent's own agent-config.json still carries a senderRoleGate, which is ignored now (the launcher logs it). */
+export function agentConfigCarriesSenderRoleGate(name: string): boolean {
   try {
-    return senderRoleGatePolicyArg(JSON.parse(readFileOr(configPath, '{}')))
+    const cfg: unknown = JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}'))
+    return !!cfg && typeof cfg === 'object' && !Array.isArray(cfg) && Object.hasOwn(cfg, 'senderRoleGate')
   } catch {
-    return null
+    return false
   }
 }
 

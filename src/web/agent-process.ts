@@ -39,7 +39,7 @@ import {
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentSenderRoleGateClosesTools, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentSenderRoleGateClosesTools, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
@@ -2167,7 +2167,11 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       ? { slug: name, sockUsable: mxdAgentSockUsable(), senderRoleGate: readAgentSenderRoleGateClosesTools(name) }
       : undefined)
   if (extraLaunch.gromzo === 'on' && extraLaunch.gromzoScope === 'owner') {
-    logger.warn({ name }, 'gromzo: owner DM only -- the team (colleague DMs, channels) needs a senderRoleGate in agent-config.json')
+    logger.warn({ name }, 'gromzo: owner DM only -- the team (colleague DMs, channels) needs a senderRoleGate in store/agent-sender-role-gates.json')
+  }
+  // GROMZOGATECONF1030 (c): the agent's own agent-config.json is no gate source any more (the agent can write it).
+  if (agentConfigCarriesSenderRoleGate(name)) {
+    logger.warn({ name }, 'senderRoleGate in agent-config.json is ignored: the gate is read from store/agent-sender-role-gates.json only')
   }
   if (extraLaunch.skipped.length > 0) {
     logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')

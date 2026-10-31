@@ -31,7 +31,8 @@ import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
 import { startChannelRequestWatcher, stopChannelRequestWatcher } from './web/channel-request-watcher.js'
 import { startStoreWatcher, stopStoreWatcher } from './store-watcher.js'
-import { AGENTS_BASE_DIR } from './web/agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readFileOr } from './web/agent-config.js'
+import { migrateSenderRoleGates } from './web/sender-role-gate-store.js'
 import {
   acquirePortLock,
   acquirePidfileLock,
@@ -494,6 +495,15 @@ async function main(): Promise<void> {
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+
+  // GROMZOGATECONF1030 (c): the sub-agents' sender-role gates move from their own agent-config.json (which the agent
+  // can write) into the store, which only the dashboard writes. Once: an existing store file means it is done.
+  try {
+    const moved = migrateSenderRoleGates(listAgentNames(), (n) => JSON.parse(readFileOr(join(agentDir(n), 'agent-config.json'), '{}')))
+    if (moved) logger.info({ agents: moved }, 'sender-role gates moved to store/agent-sender-role-gates.json (once)')
+  } catch (err) {
+    logger.error({ err }, 'sender-role gate migration failed')
+  }
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.

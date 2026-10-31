@@ -32,7 +32,19 @@ attribute text does not parse cleanly, and a chat message in which no envelope c
 
 ## Configuration
 
-Per agent, in `agents/<name>/agent-config.json`:
+Per sub-agent, in `store/agent-sender-role-gates.json` (per install, gitignored), keyed by the agent's name:
+`{"<name>": {...}}`, the value being the gate below. Only the dashboard (and the owner by hand) writes this file: it is on
+the install-file gate's protected list (`scripts/hooks/db-write-gate.mjs`), so no agent, the main agent included, can
+write it with a tool. The launcher and the gate read the table ONLY from there (GROMZOGATECONF1030 (c)).
+
+Before, the table sat in the agent's own `agents/<name>/agent-config.json`, which the agent itself can write: a deceived
+agent could widen its own gate for its next restart. A `senderRoleGate` still in that file is now ignored (the launcher
+logs a warning). At the dashboard's start a one-time move copies those values into the store: it runs only while the
+store file does not exist, and then writes it (`{}` when no agent had a gate), so a value an agent writes into its
+own `agent-config.json` later never reaches the store. An unreadable store fails closed: every sub-agent's gate is
+wired with a malformed policy (every tool denied in a member turn), and no agent gets the team scope.
+
+The value, for one agent:
 
 ```json
 "senderRoleGate": {
@@ -58,8 +70,7 @@ Per agent, in `agents/<name>/agent-config.json`:
 The key is off by default. With the key missing, or `riskyTools` missing or empty and no `allowTools`, the
 hook is not wired at all. At the agent's start the launcher copies the `senderRoleGate` value onto the hook's command line in the
 generated `.claude/settings.json` (`--policy`, base64url), next to every other gate, so a change to the table
-takes effect at the agent's next start, and an edit the agent itself makes to `agent-config.json` during the
-session does not change the running gate.
+takes effect at the agent's next start.
 
 Fail-closed: a malformed `senderRoleGate` value treats every tool as risky and every chat sender as a member
 (an owner at the terminal is still not blocked). An unreadable or empty transcript, a turn start that cannot be
