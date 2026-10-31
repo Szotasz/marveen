@@ -4,11 +4,12 @@ import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
-import { createAgentMessage } from '../db.js'
+import { recoverStuckInputForSession, sendAlert, clearParkedInputUnderLane, onClearResult } from './channel-monitor.js'
+import { createAgentMessage, listPendingTaskRetries, type PendingTaskRetryRow } from '../db.js'
 import {
   stuckInputSignature,
   parkedPasteSignature,
+  parkedScheduledPasteSignature,
   decideStuckInputRecovery,
   detectPaneState,
   type PaneState,
@@ -188,6 +189,96 @@ function recoverParkedPaste(
   return true
 }
 
+// SCHEDPASTE1030: a damaged scheduled-task tick (typed text + `[Pasted text #N]`
+// stubs, the scheduler's wrapper at the head; parkedScheduledPasteSignature) is
+// CLEARED, never Enter-submitted, and only when the box is provably blocking:
+//   - the same text has sat there for confirmMs (150s), and
+//   - the scheduler has been retrying a task for THIS agent for at least
+//     SCHED_PASTE_MIN_RETRY_MS (pending_task_retries) -- it reads the box as
+//     "busy or pending input", and a cleared tick is re-delivered by that retry.
+// The 2026-10-29 incident held the main pane for 16 hours behind such a box.
+// Local sessions only (the clear runs under the local send lane), MAIN included:
+// the head match rules out a human draft there.
+export const SCHED_PASTE_THRESHOLDS: StuckInputThresholds = {
+  confirmMs: 150_000,
+  dedupMs: 30_000,
+  maxAttempts: 3,
+}
+export const SCHED_PASTE_MIN_RETRY_MS = 10 * 60_000
+
+/** The oldest first_attempt (ms) of a task the scheduler keeps retrying for this agent, or null. */
+export function oldestRetryFor(rows: PendingTaskRetryRow[], agent: string): number | null {
+  let oldest: number | null = null
+  for (const r of rows) {
+    if (r.agent_name === agent && r.first_attempt > 0 && (oldest === null || r.first_attempt < oldest)) oldest = r.first_attempt
+  }
+  return oldest
+}
+
+/**
+ * Pure: clear now? decideStuckInputRecovery's spell (confirm window, dedup, attempt budget) plus the
+ * scheduler gate. A tick inside the spell but without a long enough retry spends no attempt.
+ */
+export function decideScheduledPasteClear(opts: {
+  sig: string | null
+  prev: StuckInputState
+  now: number
+  retryingSince: number | null
+}): { clear: boolean; next: StuckInputState } {
+  const { sig, prev, now, retryingSince } = opts
+  const d = decideStuckInputRecovery(sig, prev, now, SCHED_PASTE_THRESHOLDS)
+  const blocking = retryingSince !== null && now - retryingSince >= SCHED_PASTE_MIN_RETRY_MS
+  if (d.recover && !blocking) {
+    return { clear: false, next: { ...d.next, lastRecoverAt: prev.lastRecoverAt, attempts: prev.attempts } }
+  }
+  return { clear: d.recover, next: d.next }
+}
+
+export function scheduledPasteGiveUpAlertText(label: string, session: string): string {
+  return `⚠️ A(z) ${label} agens beviteli mezőjében egy sérült ütemezett feladat-szöveg ül, és ${SCHED_PASTE_THRESHOLDS.maxAttempts} törlési kísérlet után sem tűnt el, ezért az ütemező nem tud feladatot átadni. Kézi beavatkozás kell (tmux ${session}).`
+}
+
+const schedPasteState = new Map<string, StuckInputState>()
+const schedPasteAlerted = new Set<string>()
+
+// Returns true when a damaged scheduled tick is parked (handled or still waiting
+// out its gates), so the caller skips the bare-Enter paste path and the 'typing'
+// path this tick: an Enter would submit the broken tick.
+async function clearScheduledPaste(label: string, session: string): Promise<boolean> {
+  const pane = captureParkedInputView(session)
+  const sig = pane == null ? null : parkedScheduledPasteSignature(pane)
+  if (sig == null) {
+    schedPasteState.delete(session)
+    schedPasteAlerted.delete(session)
+    return false
+  }
+  const prev = schedPasteState.get(session) ?? NO_STATE
+  const { clear, next } = decideScheduledPasteClear({
+    sig, prev, now: Date.now(), retryingSince: oldestRetryFor(listPendingTaskRetries(), label),
+  })
+  schedPasteState.set(session, next)
+  if (clear) {
+    logger.warn({ label, session, attempt: next.attempts }, 'stuck-input-watcher: damaged scheduled-task paste parked and the scheduler is retrying behind it, clearing (no Enter; the retry re-delivers)')
+    const result = await clearParkedInputUnderLane(session)
+    if (result === 'skipped-locked') {
+      logger.info({ label, session }, 'stuck-input-watcher: scheduled-paste clear skipped, a delivery is in flight into this pane (fail-closed)')
+      return true
+    }
+    // clearInputBuffer verifies with stuckInputSignature, which is blind to a stub
+    // (the pane reads 'busy'), so check the box again with this path's own detector.
+    const after = captureParkedInputView(session)
+    const left = after == null ? null : (parkedScheduledPasteSignature(after) ?? stuckInputSignature(after))
+    onClearResult(session, left == null ? 'cleared' : 'left-fragment')
+    if (left == null) logger.info({ label, session }, 'stuck-input-watcher: damaged scheduled-task paste cleared')
+    else logger.warn({ label, session, left: left.slice(0, 80) }, 'stuck-input-watcher: scheduled-paste clear left text in the box')
+  } else if (next.attempts >= SCHED_PASTE_THRESHOLDS.maxAttempts && !schedPasteAlerted.has(session)) {
+    schedPasteAlerted.add(session)
+    logger.warn({ label, session }, 'stuck-input-watcher: damaged scheduled-task paste still parked after max clears, alerting')
+    sendAlert(scheduledPasteGiveUpAlertText(label, session))
+  }
+  return true
+}
+
 // Bare-Enter recovery (host-aware). Used for the MAIN session (host null) and
 // for REMOTE sub-agents, where the local-tmux clear+re-inject is not
 // available. channel-monitor owns the clear+re-inject escalation for these.
@@ -308,8 +399,10 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     try {
       // Parked paste placeholder takes precedence (mutually exclusive with a
       // typing-parked box); only run the normal 'typing' recovery when there is
-      // no stuck paste this tick.
-      if (!recoverParkedPaste(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, null, LOCAL_FAST_THRESHOLDS)) {
+      // no stuck paste this tick. A damaged scheduled tick (SCHEDPASTE1030) goes
+      // first: it is a paste too, but must be cleared, never Enter-submitted.
+      if (!(await clearScheduledPaste(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION))
+        && !recoverParkedPaste(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, null, LOCAL_FAST_THRESHOLDS)) {
         await checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
       }
     } catch (err) {
@@ -318,6 +411,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     for (const name of listAgentNames()) {
       if (!isAgentRunning(name)) {
         watchState.delete(resolveAgentSession(name))
+        schedPasteState.delete(resolveAgentSession(name))
         continue
       }
       const session = resolveAgentSession(name)
@@ -329,7 +423,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
         // handled first via a time-gated bare Enter (the 'typing'-gated paths
         // below never see it -- a placeholder reads as 'busy').
         if (host == null) {
-          if (!recoverParkedPaste(name, session, null, LOCAL_FAST_THRESHOLDS)) {
+          if (!(await clearScheduledPaste(name, session)) && !recoverParkedPaste(name, session, null, LOCAL_FAST_THRESHOLDS)) {
             await checkLocalSession(name, session, true, true)
           }
         } else {
