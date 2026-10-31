@@ -37,6 +37,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
+import { requeueAbandonedForAgent } from '../db.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
@@ -3104,6 +3105,16 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         send: (target, text) =>
           sendPromptToSession(target, text, null, { lockMode: 'deliver', onBusyTimeout: 'abort' }),
       })
+    }
+
+    // Messages the router gave up on while this session was down (it was absent
+    // for the whole retry window) go back in the queue, here at the one door
+    // every start passes. They are delivered with their real age.
+    try {
+      const requeued = requeueAbandonedForAgent(name)
+      if (requeued.length) logger.info({ name, ids: requeued }, 'requeued messages abandoned while the session was down')
+    } catch (err) {
+      logger.warn({ err, name }, 'could not requeue messages abandoned while the session was down')
     }
 
     return { ok: true }
