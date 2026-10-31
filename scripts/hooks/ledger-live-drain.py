@@ -39,6 +39,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 
 GRACE_SECONDS = 60
+MAX_FAST_ATTEMPTS = 5      # 2-min-cadence fires allowed before backing off
+BACKOFF_SECONDS = 1800     # after that, at most one fire per 30 min
 
 
 def _statefile(agent_id):
@@ -60,6 +62,29 @@ def _record_surfaced(path, message_id):
     try:
         with open(path, "w") as f:
             f.write(str(message_id))
+    except Exception:
+        pass
+
+
+def _attemptfile(agent_id):
+    """Consecutive-fire budget for ONE open message_id, beside the dedup marker."""
+    return _statefile(agent_id) + "-attempts"
+
+
+def _read_attempts(path):
+    """-> (message_id, count, last_ts); ("", 0, 0) when absent or unreadable."""
+    try:
+        with open(path) as f:
+            mid, count, last = f.read().strip().split(None, 2)
+        return mid, int(count), int(last)
+    except Exception:
+        return "", 0, 0
+
+
+def _write_attempts(path, message_id, count, last_ts):
+    try:
+        with open(path, "w") as f:
+            f.write(f"{message_id} {count} {last_ts}")
     except Exception:
         pass
 
@@ -104,6 +129,25 @@ def main():
     if _last_surfaced(path) == str(message_id):
         nothing()
     if precheck:
+        # THROTTLE (2026-09-20, measured): DEDUP above is recorded by the MODEL
+        # TURN, so a turn that never completes -- an API usage limit, a crashed
+        # session -- leaves the question open and this preCheck fires again two
+        # minutes later, forever. Measured on this install: 502 fires over the
+        # 18 hours the account was usage-limited, for two unanswered questions,
+        # each one an API call that could not possibly succeed.
+        # Fire at full cadence a few times (a transient blip deserves that), then
+        # back off, so an outage costs ~2 fires an hour instead of 30. Nothing is
+        # lost by capping: a question throttled here is still re-surfaced by
+        # ledger-replay.py on the next respawn.
+        apath = _attemptfile(agent_id)
+        seen, count, last = _read_attempts(apath)
+        now = int(time.time())
+        if seen != str(message_id):
+            count, last = 0, 0  # a different question -> fresh budget
+        if count >= MAX_FAST_ATTEMPTS and (now - last) < BACKOFF_SECONDS:
+            _write_attempts(apath, message_id, count, last)
+            nothing()
+        _write_attempts(apath, message_id, count + 1, now)
         sys.exit(0)  # something to surface: empty stdout lets the turn run
 
     snippet = (text or "").strip()
