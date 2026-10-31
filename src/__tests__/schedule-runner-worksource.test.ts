@@ -6,6 +6,19 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { worksourceItemStageAt, worksourcePendingHeadAt } from '../web/worksource-queue.js'
 import { agentDir } from '../web/agent-config.js'
 
+// The default gate read goes to store/agent-sender-role-gates.json (GROMZOGATECONF1030 (c)): a temp file here, so no
+// run writes a real store/ file.
+const { GATES } = vi.hoisted(() => {
+  const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
+  const { tmpdir } = require('node:os') as typeof import('node:os')
+  const { join } = require('node:path') as typeof import('node:path')
+  return { GATES: join(mkdtempSync(join(tmpdir(), 'srg-worksource-')), 'agent-sender-role-gates.json') }
+})
+vi.mock('../web/sender-role-gate-store.js', async (orig) => ({
+  ...(await orig<typeof import('../web/sender-role-gate-store.js')>()),
+  senderRoleGatesPath: () => GATES,
+}))
+
 const { scheduledWorksourceItemId, scheduledWorksourceMeta, shouldQueueScheduledToWorksource, decideTaskTimeout, isWorksourceItemStuckInPending } = await import('../web/schedule-runner.js')
 
 // readdir order is the filesystem's: for the pending/ head test it is forced to reverse-lexical, so the head is
@@ -350,7 +363,7 @@ describe('isWorksourceItemStuckInPending (the one predicate behind the ladder an
   })
 })
 
-describe('shouldQueueScheduledToWorksource: the default gate reads the agent config', () => {
+describe('shouldQueueScheduledToWorksource: the default gate reads the gate store', () => {
   // A name no live fleet member can collide with; its directory exists only during this describe.
   const NAME = 'zz-ws-gate-probe'
   const dir = agentDir(NAME)
@@ -363,8 +376,10 @@ describe('shouldQueueScheduledToWorksource: the default gate reads the agent con
     created = true
   })
   afterAll(() => { if (created) rmSync(dir, { recursive: true, force: true }) })
+  // `cfg` is the agent's view, { senderRoleGate?: ... }: its gate goes into the store under the agent's name.
   const writeConfig = (cfg: unknown): void => {
-    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify(cfg))
+    const c = cfg as Record<string, unknown>
+    writeFileSync(GATES, JSON.stringify(Object.hasOwn(c, 'senderRoleGate') ? { [NAME]: c.senderRoleGate } : {}))
   }
   it('an enabled sender-role gate keeps the typed path', () => {
     writeConfig({ senderRoleGate: { riskyTools: ['Bash'] } })
@@ -377,5 +392,15 @@ describe('shouldQueueScheduledToWorksource: the default gate reads the agent con
   it('no gate in the config does not', () => {
     writeConfig({})
     expect(shouldQueueScheduledToWorksource(NAME, null, () => true)).toBe(true)
+  })
+  it('a gate only in the agent\'s own agent-config.json is no gate (GROMZOGATECONF1030 (c))', () => {
+    writeConfig({})
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({ senderRoleGate: { riskyTools: ['Bash'] } }))
+    expect(shouldQueueScheduledToWorksource(NAME, null, () => true)).toBe(true)
+    rmSync(join(dir, 'agent-config.json'), { force: true })
+  })
+  it('an unreadable store keeps the typed path (it reads as a gate)', () => {
+    writeFileSync(GATES, '[1,')
+    expect(shouldQueueScheduledToWorksource(NAME, null, () => true)).toBe(false)
   })
 })

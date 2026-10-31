@@ -1,11 +1,23 @@
 /**
- * The sender-role gate (scripts/hooks/sender-role-gate.py) on a sub-agent, opt-in per agent through the
- * `senderRoleGate` key of its agent-config.json. Same method as credential-gate-wiring.test.ts: the FINAL
- * settings file after a re-render is asserted, not the inject function alone.
+ * The sender-role gate (scripts/hooks/sender-role-gate.py) on a sub-agent, opt-in per agent through its entry
+ * in store/agent-sender-role-gates.json (GROMZOGATECONF1030 (c): never the agent's own agent-config.json). Same
+ * method as credential-gate-wiring.test.ts: the FINAL settings file after a re-render is asserted, not the
+ * inject function alone. The store path points at a temp file here, so no run writes a real store/ file.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+const { GATES } = vi.hoisted(() => {
+  const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
+  const { tmpdir } = require('node:os') as typeof import('node:os')
+  const { join } = require('node:path') as typeof import('node:path')
+  return { GATES: join(mkdtempSync(join(tmpdir(), 'srg-wiring-')), 'agent-sender-role-gates.json') }
+})
+vi.mock('../web/sender-role-gate-store.js', async (orig) => ({
+  ...(await orig<typeof import('../web/sender-role-gate-store.js')>()),
+  senderRoleGatesPath: () => GATES,
+}))
 import {
   agentGetsSenderRoleGate,
   injectSenderRoleGate,
@@ -22,6 +34,7 @@ const agentRoot = (n: string) => join(AGENTS_BASE_DIR, n)
 const configPath = join(agentRoot(TEST_AGENT), 'agent-config.json')
 
 function cleanup(): void {
+  rmSync(GATES, { force: true })
   const root = agentRoot(TEST_AGENT)
   if (!existsSync(root)) return
   if (!root.startsWith(join(AGENTS_BASE_DIR, TEST_AGENT))) {
@@ -36,11 +49,16 @@ function cleanup(): void {
 beforeEach(cleanup)
 afterEach(cleanup)
 
-function render(config: unknown | undefined, fresh = true): string {
+// `config` is the agent's view, { senderRoleGate?: ... }: its gate goes into the STORE under the agent's name. The
+// agent's own agent-config.json is written separately (agentConfig), and must change nothing.
+function render(config: unknown | undefined, fresh = true, agentConfig?: unknown): string {
   if (fresh) cleanup()
   mkdirSync(join(agentRoot(TEST_AGENT), '.claude'), { recursive: true })
-  if (config === undefined) rmSync(configPath, { force: true })
-  else writeFileSync(configPath, JSON.stringify(config))
+  const cfg = config as Record<string, unknown> | undefined
+  if (config === undefined) rmSync(GATES, { force: true })
+  else writeFileSync(GATES, JSON.stringify(cfg && Object.hasOwn(cfg, 'senderRoleGate') ? { [TEST_AGENT]: cfg.senderRoleGate } : {}))
+  if (agentConfig === undefined) rmSync(configPath, { force: true })
+  else writeFileSync(configPath, JSON.stringify(agentConfig))
   writeAgentSettingsFromProfile(TEST_AGENT, loadProfileTemplate('default'))
   return readFileSync(agentSettingsPath(TEST_AGENT), 'utf-8')
 }
@@ -73,9 +91,9 @@ describe('sender-role gate wiring', () => {
     expect(policyOf(entries[0].hooks[0].command)).toEqual(ON.senderRoleGate)
   })
 
-  it('an edit to agent-config.json after the spawn does not change the wired table', () => {
+  it('an edit to the store after the spawn does not change the wired table', () => {
     const wired = gateEntries(render(ON))[0].hooks[0].command
-    writeFileSync(configPath, JSON.stringify({ senderRoleGate: { riskyTools: [] } }))
+    writeFileSync(GATES, JSON.stringify({ [TEST_AGENT]: { riskyTools: [] } }))
     const now = JSON.parse(readFileSync(agentSettingsPath(TEST_AGENT), 'utf-8')) as { hooks: { PreToolUse: Entry[] } }
     expect(now.hooks.PreToolUse.filter((e) => JSON.stringify(e).includes('sender-role-gate.py'))[0].hooks[0].command).toBe(wired)
   })
@@ -90,6 +108,29 @@ describe('sender-role gate wiring', () => {
     const entries = gateEntries(render({ senderRoleGate: 'yes' }))
     expect(entries).toHaveLength(1)
     expect(policyOf(entries[0].hooks[0].command)).toBe('yes')
+  })
+
+  // GROMZOGATECONF1030 (c), Samu 59516: the agent can write its own agent-config.json, so a gate there is no source.
+  it('a gate in the agent\'s own agent-config.json alone wires nothing', () => {
+    expect(gateEntries(render(undefined, true, ON))).toHaveLength(0)
+    expect(gateEntries(render({}, true, ON))).toHaveLength(0)
+  })
+
+  it('the store wins over the agent\'s own agent-config.json, which cannot loosen or turn off the table', () => {
+    const loose = { senderRoleGate: { riskyTools: [], allowTools: ['*'] } }
+    const entries = gateEntries(render(ON, true, loose))
+    expect(entries).toHaveLength(1)
+    expect(policyOf(entries[0].hooks[0].command)).toEqual(ON.senderRoleGate)
+    expect(gateEntries(render(ON, true, { senderRoleGate: { riskyTools: [] } }))).toHaveLength(1)
+  })
+
+  it('an unreadable store wires the hook with a malformed policy (fail closed), whatever agent-config.json says', () => {
+    render(undefined, true, { model: 'x' })
+    writeFileSync(GATES, '{"half":')
+    writeAgentSettingsFromProfile(TEST_AGENT, loadProfileTemplate('default'))
+    const entries = gateEntries(readFileSync(agentSettingsPath(TEST_AGENT), 'utf-8'))
+    expect(entries).toHaveLength(1)
+    expect(policyOf(entries[0].hooks[0].command)).toBe('unreadable')
   })
 })
 

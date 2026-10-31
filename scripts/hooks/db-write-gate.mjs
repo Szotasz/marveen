@@ -81,6 +81,9 @@ export const PROTECTED_INSTALL_PATHS = [
   { rel: 'scripts/self-pace-gate.mjs' },
   { rel: 'store/extra-hooks.json' },
   { rel: 'store/autonomy-config.json' },
+  // The sub-agents' sender-role gates (GROMZOGATECONF1030 (c), Samu 59516): only the dashboard writes them, so no
+  // agent can widen its own gate for its next restart.
+  { rel: 'store/agent-sender-role-gates.json' },
   // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
   // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
   { rel: '.git/config' },
@@ -119,7 +122,7 @@ export function installTargets(root = INSTALL_ROOT) {
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', '.claude', 'scripts', 'store', '.', '..', '~'])
+  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', '.claude', 'scripts', 'store', '.', '..', '~'])
 const GLOB_CHAR_RX = /[*?[{]/
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
@@ -695,7 +698,7 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'store/extra-hooks.json es store/autonomy-config.json fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
+  'store/extra-hooks.json, store/autonomy-config.json es store/agent-sender-role-gates.json fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
   'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet KOZVETLENUL futtatni is ' +

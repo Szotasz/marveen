@@ -2008,11 +2008,11 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
 }
 
 // The sender-role gate (scripts/hooks/sender-role-gate.py): in a turn that carries a chat message from a
-// sender who is not listed as an owner in the agent's agent-config.json `senderRoleGate`, the configured
-// risky tools are denied. Opt-in per agent: wired only when that key is set, and removed again on the
-// next spawn once it is not, so an agent without the key pays no hook at all. The table itself rides on
-// the hook's command line (--policy, see senderRoleGatePolicyArg): it is read from agent-config.json at
-// spawn, so an edit the agent makes to that file in this session cannot loosen the running gate.
+// sender who is not listed as an owner in the agent's `senderRoleGate`, the configured risky tools are
+// denied. Opt-in per agent: wired only when the agent has a gate, and removed again on the next spawn once
+// it has none, so an agent without one pays no hook at all. The table itself rides on the hook's command
+// line (--policy, see senderRoleGatePolicyArg): it is read at spawn from store/agent-sender-role-gates.json
+// only (GROMZOGATECONF1030 (c)), which no agent can write, never from the agent's own agent-config.json.
 const SENDER_ROLE_GATE_SCRIPT = 'sender-role-gate.py'
 
 // Sub-agents only here: the main agent's gate rides its session-only --settings file instead

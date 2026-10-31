@@ -24,8 +24,9 @@ not open (Dani 50388). riskyTools and allowTools add up: a tool on both is
 denied.
 
 What it reads:
-  --policy <base64url of the agent-config.json "senderRoleGate" value, copied
-  by the launcher at the agent's start> (or --config <an agent-config.json>
+  --policy <base64url of the agent's "senderRoleGate" value, copied by the
+  launcher at the agent's start from store/agent-sender-role-gates.json (a
+  sub-agent) or store/main-agent-config.json (the main agent)> (or --config <an agent-config.json>
   for tests and manual checks). The value:
   {"riskyTools": [glob patterns], "allowTools": [glob patterns], "roles":
   [{"channel","sender","role"}], "senderKeys": {channel: attribute or [attributes]}}.
@@ -117,10 +118,10 @@ def load_config(path):
     return classify_config(parsed)
 
 
-# What the launcher wires: base64url (no padding) of the senderRoleGate value, copied out of
-# agent-config.json at the agent's start. The table then sits in the generated settings.json next to
-# every other gate, so an edit the agent itself makes to agent-config.json in this session does not
-# change it.
+# What the launcher wires: base64url (no padding) of the senderRoleGate value, copied out of the
+# store at the agent's start (GROMZOGATECONF1030 (c): a sub-agent's from store/agent-sender-role-gates.json,
+# never from its own agent-config.json, which it can write). The table then sits in the generated
+# settings.json next to every other gate.
 POLICY_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 

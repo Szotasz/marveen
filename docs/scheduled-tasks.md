@@ -84,8 +84,8 @@ the row exists only when the cron path did not queue the item, and it is a
 dedupe key, not an occurrence key. A manual "Run now" gets its own id with its
 own timestamp.
 
-**The sender-role gate keeps the typed path.** An agent configured with
-`senderRoleGate` still gets its scheduled prompts typed into its pane, even
+**The sender-role gate keeps the typed path.** An agent with a sender-role gate
+(`store/agent-sender-role-gates.json`) still gets its scheduled prompts typed into its pane, even
 with `worksourceChannel: true`. A queued item reaches the agent inside a
 `<channel source="worksource" ...>` envelope, which the gate's hook treats as
 a non-owner sender and answers by denying the configured risky tools; a typed

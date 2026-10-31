@@ -1917,14 +1917,14 @@ export function scheduledWorksourceMeta(taskName: string, itemId: string): Recor
 // never be picked up. The main agent is excluded: it has no worksource
 // channel, and queueing its own scheduler's prompts would strand them.
 //
-// The sender-role gate (agent-config.json senderRoleGate) also keeps the typed
+// The sender-role gate (store/agent-sender-role-gates.json) also keeps the typed
 // path. A queued item reaches the agent inside a <channel> envelope, which the
 // gate's hook reads as a NON-OWNER sender and answers by denying the risky
 // tools; a typed prompt carries no envelope and is treated as the owner. The
 // item's `from: scheduler` meta is not an owner credential -- anything that
 // can write the queue directory can set it -- so it is deliberately not used
 // to lift the gate. A readFlag or readGate that throws keeps the typed path
-// too: a broken agent-config.json must not take the schedule down with it.
+// too: a broken config must not take the schedule down with it (an unreadable gate store reads as a gate).
 export function shouldQueueScheduledToWorksource(
   agentName: string,
   host: string | null,

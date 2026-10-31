@@ -38,6 +38,7 @@ function scaffold(dir: string): void {
   writeFileSync(join(dir, 'scripts', 'self-pace-gate.mjs'), '')
   writeFileSync(join(dir, 'store', 'extra-hooks.json'), '{}')
   writeFileSync(join(dir, 'store', 'autonomy-config.json'), '{}')
+  writeFileSync(join(dir, 'store', 'agent-sender-role-gates.json'), '{}')
 }
 // The install is a main checkout (a .git directory), the worktree has a .git file, as git makes them.
 function gitScaffold(): void {
@@ -213,11 +214,13 @@ describe('2. file-level writes of the database', () => {
 
 describe('3. this install\'s gate wiring and autonomy levels', () => {
   const REL = ['.claude/settings.json', '.claude/settings.local.json', 'scripts/hooks/gate.py', 'scripts/hooks/new.py',
-    'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json']
+    'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+    // GROMZOGATECONF1030 (c), Samu 59516: the sub-agents' sender-role gates, only the dashboard writes them.
+    'store/agent-sender-role-gates.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config'])
+      'store/agent-sender-role-gates.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config'])
   })
   for (const rel of REL) {
     it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])(`%s on the install's ${rel} is denied`, (tool) => {
@@ -297,6 +300,22 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a cd into the hooks first', `cd scripts/hooks && echo x > new.py`],
   ])('%s passes in the worktree', (_, cmd) => {
     expect(bash(cmd, wt)).toEqual(ALLOW)
+  })
+  // GROMZOGATECONF1030 (c), Samu 59516: a sub-agent cannot write the gate store, not even the dashboard's own way
+  // (a temp file renamed onto it); reading it stays free.
+  it.each([
+    ['a redirect', `echo '{"bence":{"allowTools":["*"]}}' > store/agent-sender-role-gates.json`],
+    ['tee', `echo '{}' | tee @ROOT@/store/agent-sender-role-gates.json`],
+    ['python writing it', `python3 -c "open('store/agent-sender-role-gates.json','w').write('{}')"`],
+    ['node writing it', `node -e "require('fs').writeFileSync('@ROOT@/store/agent-sender-role-gates.json','{}')"`],
+    ['a temp file renamed onto it', `echo '{}' > /tmp/g.json && mv /tmp/g.json @ROOT@/store/agent-sender-role-gates.json`],
+    ['rm of it', `rm store/agent-sender-role-gates.json`],
+  ])('the gate store: %s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  it('the gate store: a read passes in the install, a write passes in the worktree', () => {
+    expect(bash(`cat store/agent-sender-role-gates.json | jq .`)).toEqual(ALLOW)
+    expect(bash(`echo '{}' > store/agent-sender-role-gates.json`, wt)).toEqual(ALLOW)
   })
   it.each([
     ['cat', `cat .claude/settings.json`],
