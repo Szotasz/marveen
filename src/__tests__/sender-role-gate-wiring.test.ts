@@ -28,6 +28,7 @@ import {
 import { loadProfileTemplate } from '../web/profiles.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { buildExtraChannelLaunch } from '../web/agent-extra-channels.js'
 
 const TEST_AGENT = 'sender-role-gate-probe'
 const agentRoot = (n: string) => join(AGENTS_BASE_DIR, n)
@@ -122,6 +123,18 @@ describe('sender-role gate wiring', () => {
     expect(entries).toHaveLength(1)
     expect(policyOf(entries[0].hooks[0].command)).toEqual(ON.senderRoleGate)
     expect(gateEntries(render(ON, true, { senderRoleGate: { riskyTools: [] } }))).toHaveLength(1)
+  })
+
+  // GROMZOSCOPEBOTH1031 (owner 2026-10-31): the gate is optional next to gromzo, as next to Slack. A gromzo agent gets
+  // the team scope either way; with a stored gate the hook is wired as for any other agent.
+  it('a gromzo agent: both without a gate (no hook), both with one (hook wired)', () => {
+    const launch = () => buildExtraChannelLaunch([], 'slack', agentRoot(TEST_AGENT), () => false, { slug: TEST_AGENT, sockUsable: true })
+    expect(gateEntries(render(undefined, true, { gromzo: true }))).toHaveLength(0)
+    expect(launch().envExports).toContain('export MXD_SCOPE="both"')
+    const entries = gateEntries(render(ON, true, { gromzo: true }))
+    expect(entries).toHaveLength(1)
+    expect(policyOf(entries[0].hooks[0].command)).toEqual(ON.senderRoleGate)
+    expect(launch().envExports).toContain('export MXD_SCOPE="both"')
   })
 
   it('an unreadable store wires the hook with a malformed policy (fail closed), whatever agent-config.json says', () => {
