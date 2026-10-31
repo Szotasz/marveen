@@ -112,7 +112,7 @@ import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { isAgentBudgetHeld } from './agent-budget-alerts.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
-import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, squashWhitespace, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
@@ -679,7 +679,9 @@ export function isScheduledPromptStuck(pane: string | null, marker: string): boo
   const idx = pane.lastIndexOf('❯')
   if (idx < 0) return false
   const inputRegion = pane.slice(idx)
-  return /❯\s+\S/.test(inputRegion) && inputRegion.includes(marker)
+  // The marker can wrap across two box rows ("[Heartbeat:" / "name]"): match it
+  // without whitespace (squashWhitespace, NUDGESHORT1031).
+  return /❯\s+\S/.test(inputRegion) && squashWhitespace(inputRegion).includes(squashWhitespace(marker))
 }
 
 // isScheduledPromptStuck's blind spot: a prompt taller than the pane. The ❯
