@@ -6,6 +6,9 @@
  * so `22%` became `22\%` and `snake_case` became `snake\_case`: a query holding
  * `%` or `_` never matched the memory or log that contains it, while a plain
  * word did. The escaper belongs to `LIKE ? ESCAPE '\'` only.
+ *
+ * The JS filter also folds case on both sides (query, content, keywords): an
+ * upper-case query finds a lower-case row and the other way round.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
@@ -106,6 +109,30 @@ describe('/api/recall date= + q=: the query is compared literally', () => {
     const us = await recall(`/api/recall?agent=agent-a&date=${DAY_ISO}&q=${q('o_t')}`)
     expect(us.body.memories).toEqual([])
     expect(us.body.logs).toEqual([])
+  })
+
+  it('an upper-case query matches lower-case memories and logs', async () => {
+    const r = await recall(`/api/recall?agent=agent-a&date=${DAY_ISO}&q=TOMATOES`)
+    expect(r.status).toBe(200)
+    expect(r.body.memories.map((m: any) => m.content)).toEqual(['plain control memory about tomatoes'])
+    expect(r.body.logs.map((l: any) => l.content)).toEqual(['## 12:00 -- watered the tomatoes'])
+  })
+
+  it('a lower-case query matches mixed-case memories and logs', async () => {
+    insertMemory('Ordered more Cucumbers for the shed')
+    insertLog('## 13:00 -- picked the CUCUMBERS')
+    const r = await recall(`/api/recall?agent=agent-a&date=${DAY_ISO}&q=cucumbers`)
+    expect(r.status).toBe(200)
+    expect(r.body.memories.map((m: any) => m.content)).toEqual(['Ordered more Cucumbers for the shed'])
+    expect(r.body.logs.map((l: any) => l.content)).toEqual(['## 13:00 -- picked the CUCUMBERS'])
+  })
+
+  it('the keywords column ignores case too', async () => {
+    insertMemory('keyword-case row', 'Harvest, Q4')
+    const lower = await recall(`/api/recall?agent=agent-a&date=${DAY_ISO}&q=harvest`)
+    expect(lower.body.memories.map((m: any) => m.content)).toEqual(['keyword-case row'])
+    const upper = await recall(`/api/recall?agent=agent-a&date=${DAY_ISO}&q=HARVEST`)
+    expect(upper.body.memories.map((m: any) => m.content)).toEqual(['keyword-case row'])
   })
 })
 
