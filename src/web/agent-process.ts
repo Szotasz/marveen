@@ -126,6 +126,7 @@ import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
+import { isOpenRouterOneMillionModel } from '../context-guard.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -1755,7 +1756,9 @@ export function resolveProviderEnv(
     const keyRef = secretShellRef('openrouter-fleet-key') ?? '""'
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      // A 1M OpenRouter model needs the CLI told the real window (it caps unknown
+      // ids at 200k); context-guard.ts reads the same predicate, the two are a pair.
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ${isOpenRouterOneMillionModel(model) ? 'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && ' : ''}`,
     }
   }
   if (isOllama) {
