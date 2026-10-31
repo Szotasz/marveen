@@ -519,6 +519,32 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
   ])('%s is denied in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(DENY_GIT)
   })
+  // APPROVALDBGATE1030 scope (Marveen 60242, Dani 60251, measured through the install's hook: probes/dbgate-git-scope.sh):
+  // an own worktree OUTSIDE the install is free, also from an agent's dir inside it, when the target is a literal path;
+  // a variable, a substitution or a cd chained with ";" leaves the target unknown, and that is the install.
+  it('an own worktree outside the install, from an agent\'s dir: a literal target passes, an unknown one is the install', () => {
+    gitScaffold()
+    const agent = join(root, 'agents', 'dani')
+    expect(bash('git -C @WT@ checkout -q --detach 0123abc', agent)).toEqual(ALLOW)
+    expect(bash('cd @WT@ && git checkout -q --detach 0123abc', agent)).toEqual(ALLOW)
+    expect(bash('cd @WT@ && git fetch -q origin main && git merge-tree --write-tree origin/main HEAD', agent)).toEqual(ALLOW)
+    expect(bash('W=@WT@; git -C $W checkout -q --detach 0123abc', agent)).toEqual(DENY_GIT)
+    expect(bash('git -C $(echo @WT@) checkout -q --detach 0123abc', agent).deny).toBe(true)
+    expect(GIT_GATE_MSG).toContain('de a celt LITERALIS abszolut uttal add meg: "git -C /Users/marvin/<worktree> ..." vagy "cd /Users/marvin/<worktree> && git ..."')
+  })
+  // A cd joined by ";" that may fail runs the next command in the OLD directory (bash goes on): a missing target leaves the
+  // directory unknown, the install; an existing one, or any target with "&&", is taken as reached.
+  it('a cd joined by ";" to a missing directory: the git after it is the install\'s', () => {
+    gitScaffold()
+    const agent = join(root, 'agents', 'dani')
+    expect(bash('cd @WT@; git fetch -q origin main', agent)).toEqual(ALLOW)
+    expect(bash('cd @WT@/nincs-ilyen; git checkout develop', agent)).toEqual(DENY_GIT)
+    expect(bash('cd /nincs-ilyen-mappa-60251; git checkout develop')).toEqual(DENY_GIT)
+    expect(bash('cd /nincs-ilyen-mappa-60251\ngit reset --hard origin/main')).toEqual(DENY_GIT)
+    expect(bash('pushd /nincs-ilyen-mappa-60251; git checkout develop')).toEqual(DENY_GIT)
+    expect(bash('cd /nincs-ilyen-mappa-60251 && git checkout develop'), 'with &&: a failed cd runs nothing after it').toEqual(ALLOW)
+    expect(bash('cd @WT@/nincs-ilyen; ls')).toEqual(ALLOW)
+  })
   it('the main checkout reached from elsewhere: -C, a subdirectory, --git-dir, an unresolved -C', () => {
     expect(bash('git -C @ROOT@ reset --hard origin/main', wt)).toEqual(DENY_GIT)
     expect(bash('git reset --hard origin/main', join(root, 'scripts'))).toEqual(DENY_GIT)
