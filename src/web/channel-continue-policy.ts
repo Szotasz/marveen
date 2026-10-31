@@ -54,14 +54,27 @@ export interface ContinueDecisionInput {
    * resume where a slack-primary one would not (Dani, #1710 review).
    */
   extraProviders?: readonly string[]
+  /** agent-config.json `"continue": false` (see readContinueOptOut): this agent is always launched fresh. */
+  continueOptOut?: boolean
 }
 
 export interface ContinueDecision { useContinue: boolean; reason: string }
+
+/** The reason decideContinueFlag gives for a per-agent opt-out; the launch path logs it by this name. */
+export const CONTINUE_OPT_OUT_REASON = 'per-agent opt-out (agent-config.json "continue": false)'
+
+/** Per-agent opt-out from `--continue`. Only a literal JSON
+ *  false counts: absent, true, a string, a broken or non-object config keep
+ *  today's decision, so an install without the key is unchanged. */
+export function readContinueOptOut(rawConfigJson: string): boolean {
+  try { return JSON.parse(rawConfigJson)?.continue === false } catch { return false }
+}
 
 /** Pure decision. Every "no" names its reason so the launch log says why a context was dropped. */
 export function decideContinueFlag(i: ContinueDecisionInput): ContinueDecision {
   if (!i.hasPriorSession) return { useContinue: false, reason: 'no prior session to continue' }
   if (i.fresh) return { useContinue: false, reason: 'fresh launch requested' }
+  if (i.continueOptOut) return { useContinue: false, reason: CONTINUE_OPT_OUT_REASON }
   const extras = i.extraProviders ?? []
   if (!i.hasChannel && extras.length === 0) return { useContinue: true, reason: 'channel-less agent keeps its context' }
   if (i.isMainAgent) return { useContinue: false, reason: 'main agent lifecycle is service-managed; not in scope' }
