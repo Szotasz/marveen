@@ -283,6 +283,14 @@ describe('TRUSTED_PEER_PREAMBLE', () => {
     expect(TRUSTED_PEER_PREAMBLE).toMatch(/examples/i)
     expect(TRUSTED_PEER_PREAMBLE).toMatch(/escalate/i)
   })
+
+  // NUDGESHORT1031: typed before every trusted message, so it stays short; the
+  // first line is what pane-state's TRUSTED_PREAMBLE_MARKER keys on.
+  it('stays short and keeps its first line', () => {
+    expect(TRUSTED_PEER_PREAMBLE.length).toBeLessThan(650)
+    expect(TRUSTED_PEER_PREAMBLE.split('\n')[0]).toBe('TEAM MEMBER NOTICE -- the next <trusted-peer source="..."> ... </trusted-peer>')
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/not adversarial/)
+  })
 })
 
 describe('sanitizeCapabilityTag', () => {
