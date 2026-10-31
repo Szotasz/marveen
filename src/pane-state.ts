@@ -1774,7 +1774,18 @@ export function shouldRetrySubmit(
   const safeMin = typeof rawMin === 'number' && Number.isFinite(rawMin) ? rawMin : 16
   const minHint = Math.max(safeMin, 1)
   if (payloadHint.length < minHint) return false
-  return inputBox.includes(payloadHint)
+  // Compared without whitespace: the TUI wraps the box at the pane width and
+  // indents the continuation rows, so a 96-char hint never sits on one row of an
+  // 80-col pane. Before NUDGESHORT1031 such prompts were taller than the pane
+  // and the overfull path caught them; a short scheduled pointer fits the box,
+  // and on 2026-10-31 02:15 one parked there with nothing re-pressing Enter.
+  return squashWhitespace(inputBox).includes(squashWhitespace(payloadHint))
+}
+
+// Text with every whitespace run removed, for matching typed text against a
+// wrapped capture of it (row breaks, continuation indent, a word split across rows).
+export function squashWhitespace(text: string): string {
+  return text.replace(/\s+/g, '')
 }
 
 /**

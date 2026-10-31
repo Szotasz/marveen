@@ -111,6 +111,7 @@ import {
 import { runScheduledTaskNow, runHeartbeatGapCheck, runPreCheckAsync, runPreCheck } from '../web/schedule-runner.js'
 import { tryHandleSchedules } from '../web/routes/schedules.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { deliveredTaskText } from './helpers/scheduled-runs-tmp.js'
 
 function call(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -145,7 +146,7 @@ function plant(name: string, prompt: string, frontmatterName = name): void {
   writeFileSync(join(dir, 'task-config.json'), JSON.stringify({ schedule: '0 8 * * *', agent: AGENT, enabled: true, targetSession: 'schedsrc-test-session', createdAt: 1 }, null, 2))
 }
 
-const sentPrompts = () => mockSendPrompt.mock.calls.map(c => String(c[1] ?? ''))
+const sentPrompts = () => mockSendPrompt.mock.calls.map(c => deliveredTaskText(String(c[1] ?? '')))
 const skipWarned = (name: string) =>
   mockWarn.mock.calls.some(c => typeof c[1] === 'string' && c[1].includes('NOT firing') && c[1].includes(`"${name}"`))
 const cronGatePasses = (name: string) =>

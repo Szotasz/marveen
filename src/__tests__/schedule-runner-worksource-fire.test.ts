@@ -3,6 +3,7 @@ import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 import type { PendingTaskRetryRow } from '../db.js'
 import { detectPaneState } from '../pane-state.js'
 import { BOT_NAME, MAIN_AGENT_ID } from '../config.js'
+import { deliveredTaskText } from './helpers/scheduled-runs-tmp.js'
 
 // Scheduled tasks reach a worksource agent through its queue, not the keyboard.
 // Driven through the REAL tick (same harness as
@@ -362,7 +363,7 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     const [agent, itemId, prompt, meta] = mockEnqueue.mock.calls[0]
     expect(agent).toBe(AGENT)
     expect(String(itemId)).toMatch(/^sched-/)
-    expect(String(prompt)).toContain('WS task prompt')
+    expect(deliveredTaskText(String(prompt))).toContain('WS task prompt')
     expect((meta as Record<string, string>).from).toBe('scheduler')
     expect(sentPrompts).toHaveLength(0)
     expect(runsForTask()).toContainEqual([TASK_NAME, AGENT, 'fired'])
@@ -379,8 +380,17 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     mockEnqueue.mockClear()
     await runOneTick()
     expect(mockEnqueue).toHaveBeenCalledTimes(1)
-    const queuedPrompt = mockEnqueue.mock.calls[0][2]
-    expect(queuedPrompt).toBe(typedPrompt)
+    const queuedPrompt = String(mockEnqueue.mock.calls[0][2])
+    // Each fire writes its own snapshot (NUDGESHORT1031), so the two differ only in
+    // that file's path and hash: the pointer and the file text must match otherwise.
+    const sameFire = (p: string) => {
+      const file = p.match(/body-file="([^"]+)"/)?.[1]
+      expect(file).toBeDefined()
+      // The file's first line is the provenance header with the fire time; the text after it is the prompt.
+      const text = deliveredTaskText(p)
+      return [p, text.slice(text.indexOf('-->\n') + 4)].map((t) => t.split(file!).join('<body-file>').replace(/body-sha256="[0-9a-f]{64}"/, '')).join('\n--\n')
+    }
+    expect(sameFire(queuedPrompt)).toBe(sameFire(typedPrompt))
   })
 
   it('flag off: the typed path, and the queue is not touched', async () => {

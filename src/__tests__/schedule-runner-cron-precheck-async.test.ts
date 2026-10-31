@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
+import { deliveredTaskText } from './helpers/scheduled-runs-tmp.js'
 
 // CRONPRECHECKSYNC1007. The cron loop ran a task's pre-check with spawnSync on
 // the dashboard's event loop. A pre-check that calls the dashboard's own API
@@ -32,7 +33,6 @@ vi.mock('../web/schedule-registry.js', () => ({
   registerScheduledTask: () => 'test-hash',
   unregisterScheduledTask: () => true,
 }))
-
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
@@ -167,8 +167,8 @@ describe('the cron loop\'s pre-check runs off the event loop (CRONPRECHECKSYNC10
     expect(served).toBe(1)
     const prompts = mockSendPrompt.mock.calls.map(c => String(c[1]))
     expect(prompts.length).toBe(1)
-    expect(prompts[0]).toContain('dashboard said: msg-1')
-    expect(prompts[0]).toContain('Do the thing.')
+    expect(deliveredTaskText(prompts[0])).toContain('dashboard said: msg-1')
+    expect(deliveredTaskText(prompts[0])).toContain('Do the thing.')
   })
 
   it('the task is disabled WHILE its pre-check runs -> no fire, and no run is recorded for it', async () => {

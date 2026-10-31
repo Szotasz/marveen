@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
+import { deliveredTaskText } from './helpers/scheduled-runs-tmp.js'
 
 // SCHEDRECHECK1007 (a #1749 review follow-up): a tick reads the task list ONCE,
 // and every await inside it -- here: the fire of the task before -- lets the
@@ -41,7 +42,6 @@ vi.mock('../web/schedule-registry.js', () => ({
   registerScheduledTask: () => 'test-hash',
   unregisterScheduledTask: () => true,
 }))
-
 vi.mock('../logger.js', () => ({
   logger: { info: (...a: unknown[]) => mockLoggerInfo(...a), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
@@ -157,7 +157,7 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     await runOneTick()
     expect(sentTo('first-session')).toHaveLength(1)
     expect(sentTo('second-session')).toHaveLength(1)
-    expect(sentTo('second-session')[0].prompt).toContain('SECOND task prompt, original')
+    expect(deliveredTaskText(sentTo('second-session')[0].prompt)).toContain('SECOND task prompt, original')
   })
 
   it('the second task is disabled while the first one fires -> it does not fire', async () => {
@@ -181,8 +181,8 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     await runOneTick()
     const second = sentTo('second-session')
     expect(second).toHaveLength(1)
-    expect(second[0].prompt).toContain('SECOND task prompt, EDITED')
-    expect(second[0].prompt).not.toContain('SECOND task prompt, original')
+    expect(deliveredTaskText(second[0].prompt)).toContain('SECOND task prompt, EDITED')
+    expect(deliveredTaskText(second[0].prompt)).not.toContain('SECOND task prompt, original')
   })
 
   // SCHEDFRESH1007 (1): the target list is from the tick's snapshot too.
@@ -222,7 +222,7 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     mockReadScheduledTask.mockImplementation(() => null)
     await runOneTick()
     expect(sentTo('second-session')).toHaveLength(1)
-    expect(sentTo('second-session')[0].prompt).toContain('SECOND task prompt, original')
+    expect(deliveredTaskText(sentTo('second-session')[0].prompt)).toContain('SECOND task prompt, original')
   })
 
   it('a folder named after the task but holding ANOTHER task is not taken for it', async () => {
@@ -231,7 +231,7 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     await runOneTick()
     const second = sentTo('second-session')
     expect(second).toHaveLength(1)
-    expect(second[0].prompt).toContain('SECOND task prompt, original')
+    expect(deliveredTaskText(second[0].prompt)).toContain('SECOND task prompt, original')
   })
 
   // SCHEDALLPIN1007 (an old gap, not from #1752): nothing pinned that an 'all'
@@ -242,6 +242,6 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     mockListScheduledTasks.mockReturnValue([task({ name: 'cc-all-task', prompt: 'to everyone', agent: 'all' })])
     await runOneTick()
     expect(sentTo(MAIN_CHANNELS_SESSION)).toHaveLength(1)
-    expect(sentTo(MAIN_CHANNELS_SESSION)[0].prompt).toContain('to everyone')
+    expect(deliveredTaskText(sentTo(MAIN_CHANNELS_SESSION)[0].prompt)).toContain('to everyone')
   })
 })
