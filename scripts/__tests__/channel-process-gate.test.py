@@ -69,6 +69,9 @@ NODE_MCP_NAMING = ("4006191 4005921 node /opt/mcp/server.js --allowed-dir "
                    "/home/user/local-plugins/gromzo/gromzo-channel")
 # Not a worker: the directory root appears inside a longer path, not as its prefix.
 NODE_NOT_UNDER_ROOT = "4006192 4005921 node /x/home/user/local-plugins/gromzo/gromzo-channel/dist/server.js"
+# Not a worker: a sibling directory whose name merely starts with the root. It is named
+# <root>-gromzo-channel so that a root check without the "/" would read it as gromzo-channel.
+NODE_SIBLING_OF_ROOT = "4006193 4005921 node /home/user/local-plugins/gromzo-gromzo-channel/dist/server.js"
 
 
 def run_three(ps_rows, markets=MARKETS, extra_markets=()):
@@ -143,6 +146,12 @@ class GateTest(unittest.TestCase):
 
     def test_the_directory_root_must_be_a_prefix_not_a_substring(self):
         r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_NOT_UNDER_ROOT])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_sibling_directory_starting_with_the_root_is_not_under_it(self):
+        """The root must be followed by "/" (a directory boundary)."""
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_SIBLING_OF_ROOT])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
 
