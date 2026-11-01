@@ -20853,6 +20853,13 @@ async function openResearchDoc(agent, name) {
       state.textContent = st.text
       state.setAttribute('aria-live', 'polite')
       main.append(name, state)
+      // The agent's picture on Gromzo (Samu 64526): say up front what would stop it (too large, not PNG/JPEG, ...).
+      if (!row.main && row.avatarProblem) {
+        const pic = document.createElement('span')
+        pic.className = 'gromzo-agent-state is-warn'
+        pic.textContent = t('gromzo.agents.avatar.' + row.avatarProblem)
+        main.append(pic)
+      }
       li.append(main)
       if (!row.main) {
         const l = local.get(row.slug)

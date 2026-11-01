@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
   CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, resetPendingGromzoConsents,
-  slugRefusal, type GromzoAgentDeps,
+  sendGromzoAvatar, slugRefusal, type GromzoAgentDeps,
 } from '../web/gromzo-agents.js'
 import type { MxdDashReply, MxdDashRequest } from '../web/mxd-dash.js'
 
@@ -22,11 +22,12 @@ interface World {
   replies: Record<string, Array<MxdDashReply | ((r: MxdDashRequest) => MxdDashReply)>>
   clock: { t: number }
   heldSet: Set<string>
+  avatars: Map<string, Buffer>
 }
 
 function world(agents = ['abel', 'samu', 'zara']): World {
   const w: World = {
-    calls: [], flags: new Map(), writes: [], restarted: [], replies: {}, clock: { t: 1_000_000 }, heldSet: new Set(),
+    calls: [], flags: new Map(), writes: [], restarted: [], replies: {}, clock: { t: 1_000_000 }, heldSet: new Set(), avatars: new Map(),
     deps: undefined as never,
   }
   w.deps = {
@@ -42,6 +43,8 @@ function world(agents = ['abel', 'samu', 'zara']): World {
     displayName: (s) => s[0]!.toUpperCase() + s.slice(1),
     isRunning: () => true,
     held: async () => new Set(w.heldSet),
+    readAvatar: (s) => (w.avatars.has(s) ? { ok: true, bytes: w.avatars.get(s)! } : { ok: false, code: 'no_avatar' }),
+    avatarProblem: (s) => (w.avatars.has(s) ? null : 'no_avatar'),
     restartOne: (s) => { w.restarted.push(s) },
     now: () => w.clock.t,
   }
@@ -323,5 +326,47 @@ describe('one pending add at a time; a held agent may be asked again (Ábel 6416
     w.heldSet.add('zara')
     const rows = await listGromzoAgents(w.deps)
     expect(rows.filter((r) => r.held).map((r) => r.slug)).toEqual(['zara'])
+  })
+})
+
+describe('the agent picture (Samu 64526)', () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16, 1)])
+
+  it('sends the bytes as base64 with the slug; the answer says whether mxd applied it now', async () => {
+    const w = world()
+    w.avatars.set('zara', PNG)
+    w.replies.agent_avatar = [{ ok: true, applied: true }]
+    expect(await sendGromzoAvatar('zara', w.deps)).toEqual({ ok: true, state: 'avatar_sent', applied: true, bytes: PNG.length })
+    expect(w.calls).toEqual([{ verb: 'agent_avatar', slug: 'zara', image: PNG.toString('base64') }])
+  })
+
+  it('a refused slug reads no file and asks mxd nothing', async () => {
+    const w = world()
+    let reads = 0
+    w.deps.readAvatar = () => { reads++; return { ok: true, bytes: PNG } }
+    for (const slug of ['../x', MAIN_AGENT_ID, 'nobody']) expect((await sendGromzoAvatar(slug, w.deps)).ok).toBe(false)
+    expect(reads).toBe(0)
+    expect(w.calls).toEqual([])
+  })
+
+  it('a picture that cannot go (missing, too large, wrong format) is that code, and mxd is not asked', async () => {
+    const w = world()
+    w.deps.readAvatar = () => ({ ok: false, code: 'avatar_too_large' })
+    expect(await sendGromzoAvatar('zara', w.deps)).toEqual({ ok: false, code: 'avatar_too_large' })
+    expect(w.calls).toEqual([])
+  })
+
+  it('mxd refusing (rate_limited, bad_image) is passed on', async () => {
+    const w = world()
+    w.avatars.set('zara', PNG)
+    w.replies.agent_avatar = [{ ok: false, error: 'rate_limited' }]
+    expect(await sendGromzoAvatar('zara', w.deps)).toEqual({ ok: false, code: 'rate_limited' })
+  })
+
+  it('the list says per agent what would stop its picture; the main agent never', async () => {
+    const w = world()
+    w.avatars.set('zara', PNG)
+    const rows = await listGromzoAgents(w.deps)
+    expect(rows.map((r) => [r.slug, r.avatarProblem])).toEqual([[MAIN_AGENT_ID, null], ['abel', 'no_avatar'], ['samu', 'no_avatar'], ['zara', null]])
   })
 })
