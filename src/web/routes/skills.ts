@@ -10,7 +10,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import {
-  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, queueProposedSkill, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
+  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, queueProposedSkill, parseProposedFiles, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
   type SkillTarget,
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
@@ -424,7 +424,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   // approval backs the old version up (skill-quarantine.ts). Proposing needs only the dashboard
   // token every agent holds; approving stays owner-only (see the pending routes above).
   if (path === '/api/skills/propose' && method === 'POST') {
-    let body: { name?: unknown; skill_md?: unknown; reason?: unknown }
+    let body: { name?: unknown; skill_md?: unknown; reason?: unknown; files?: unknown }
     try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
     const rawName = typeof body?.name === 'string' ? body.name : ''
     const name = sanitizeSkillName(rawName)
@@ -434,12 +434,15 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const skillMd = body?.skill_md
     if (typeof skillMd !== 'string' || !skillMd.trim()) { json(res, { error: 'skill_md (the full SKILL.md text) is required' }, 400); return true }
     if (Buffer.byteLength(skillMd) > MAX_PROPOSED_SKILL_BYTES) { json(res, { error: `skill_md is over ${MAX_PROPOSED_SKILL_BYTES} bytes` }, 400); return true }
+    // SKILLSPLIT1101: optional references/<name>.md files next to the SKILL.md (skill-quarantine.ts parseProposedFiles).
+    const parsed = parseProposedFiles(body?.files, Buffer.byteLength(skillMd))
+    if (!parsed.ok) { json(res, { error: parsed.error }, 400); return true }
     const reason = typeof body?.reason === 'string' ? body.reason.slice(0, 2000) : undefined
     const proposedBy = typeof ctx.auth?.agent === 'string' && ctx.auth.agent ? ctx.auth.agent : undefined
-    const r = queueProposedSkill(name, skillMd, { proposedBy, reason })
+    const r = queueProposedSkill(name, skillMd, { proposedBy, reason, files: parsed.files })
     if (!r.ok) { json(res, { error: r.error }, r.status); return true }
-    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, proposedBy }, 'Global skill proposed and queued for approval')
-    json(res, { ok: true, name, pending: true, id: r.meta.id, replaces: !!r.meta.replaces })
+    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy }, 'Global skill proposed and queued for approval')
+    json(res, { ok: true, name, pending: true, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [] })
     return true
   }
 

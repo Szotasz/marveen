@@ -12405,6 +12405,11 @@ function renderPendingSkills(box, list) {
     card.appendChild(pendingEl('div', p.target && p.target.scope === 'agent' ? 'skills-pending-target' : 'skills-pending-target is-global', where))
     if (p.replaces) card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.replaces', { name: p.name })))
     if (p.reason) card.appendChild(pendingEl('div', 'skills-pending-intro', t('skills.pending.reason', { reason: p.reason })))
+    // SKILLSPLIT1101: which references/*.md the proposal brought, and which of them overwrite a live file.
+    if (Array.isArray(p.proposedFiles) && p.proposedFiles.length) {
+      const list = p.proposedFiles.map((f) => `${f.path} (${t(f.replaced ? 'skills.pending.proposed_file_replaced' : 'skills.pending.proposed_file_new')})`).join(', ')
+      card.appendChild(pendingEl('div', p.proposedFiles.some((f) => f.replaced) ? 'skills-pending-sub is-flagged' : 'skills-pending-sub', t('skills.pending.proposed_files', { n: p.proposedFiles.length, list })))
+    }
     if (p.replaces && typeof p.liveSkillMd === 'string') {
       const cur = pendingEl('details', 'skills-pending-file')
       cur.appendChild(pendingEl('summary', null, t('skills.pending.current_version')))

@@ -72,6 +72,9 @@ export interface PendingMeta {
   // 'propose' only: who sent it (the authenticated agent, when the request carried one) and why.
   proposedBy?: string
   reason?: string
+  // 'propose' only (SKILLSPLIT1101): the references/*.md files the proposal brought, and whether each
+  // overwrote a file of the live skill. Informational, for the approver; the hash binds the files themselves.
+  proposedFiles?: Array<{ path: string; replaced: boolean }>
 }
 
 export interface ScanFile {
@@ -226,9 +229,52 @@ export type ProposeResult =
   | { ok: true; meta: PendingMeta }
   | { ok: false; status: number; error: string }
 
+// SKILLSPLIT1101 (Samu 65105): a proposal may bring reference files next to its SKILL.md, so a long skill can be
+// split (SKILL.md under 500 lines, the details in references/). ONLY flat references/<name>.md: no subdirectory,
+// no "..", no absolute path, no backslash, no hidden name, markdown only, text only. They land in the pending
+// directory like the SKILL.md, so the scan shows them in full and the approval hash binds them; on approval they
+// overwrite or add to the live skill's references/, and every other live file stays (the pending dir is a copy).
+export const MAX_PROPOSED_FILES = 20
+export const MAX_PROPOSED_FILE_BYTES = MAX_PROPOSED_SKILL_BYTES
+export const MAX_PROPOSED_TOTAL_BYTES = 1024 * 1024
+const PROPOSED_FILE_RE = /^references\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$/
+
+export type ProposedFiles = Array<{ path: string; content: string }>
+// A UTF-16 surrogate without its pair: not encodable as UTF-8 (String.prototype.isWellFormed is ES2024, past our lib).
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+// The `files` field of a proposal, checked: a JSON object of path -> text. Absent or null is no files.
+export function parseProposedFiles(raw: unknown, skillMdBytes: number): { ok: true; files: ProposedFiles } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, files: [] }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'files must be an object of "references/<name>.md": text' }
+  const entries = Object.entries(raw as Record<string, unknown>)
+  if (entries.length > MAX_PROPOSED_FILES) return { ok: false, error: `files: at most ${MAX_PROPOSED_FILES} files` }
+  let total = skillMdBytes
+  const files: ProposedFiles = []
+  for (const [path, content] of entries) {
+    if (!PROPOSED_FILE_RE.test(path) || path.includes('..')) {
+      return { ok: false, error: `files: ${JSON.stringify(path.slice(0, 120))} is not allowed (only references/<name>.md, no subdirectory)` }
+    }
+    if (typeof content !== 'string') return { ok: false, error: `files: ${path} must be text` }
+    // Text only: no NUL, and no lone surrogate (it would be written as U+FFFD, not as what was sent).
+    if (content.includes('\0') || LONE_SURROGATE_RE.test(content)) return { ok: false, error: `files: ${path} is not plain UTF-8 text` }
+    const bytes = Buffer.byteLength(content)
+    if (bytes > MAX_PROPOSED_FILE_BYTES) return { ok: false, error: `files: ${path} is over ${MAX_PROPOSED_FILE_BYTES} bytes` }
+    total += bytes
+    if (total > MAX_PROPOSED_TOTAL_BYTES) return { ok: false, error: `skill_md and files together are over ${MAX_PROPOSED_TOTAL_BYTES} bytes` }
+    files.push({ path, content })
+  }
+  return { ok: true, files }
+}
+
 // A complete SKILL.md proposed by an agent for the GLOBAL root. Never written into a skill root here.
-export function queueProposedSkill(name: string, skillMd: string, opts: { proposedBy?: string; reason?: string } = {}): ProposeResult {
+export function queueProposedSkill(name: string, skillMd: string, opts: { proposedBy?: string; reason?: string; files?: ProposedFiles } = {}): ProposeResult {
   const target: SkillTarget = { scope: 'global' }
+  const files = opts.files ?? []
+  // The same gate as the route, here too: this function is the one that writes.
+  for (const f of files) {
+    if (!PROPOSED_FILE_RE.test(f.path) || f.path.includes('..')) return { ok: false, status: 400, error: `files: ${f.path} is not allowed` }
+  }
   for (const pid of listIds()) {
     const m = readMeta(pid)
     if (m && m.name === name && sameTarget(m.target, target)) {
@@ -252,11 +298,35 @@ export function queueProposedSkill(name: string, skillMd: string, opts: { propos
   // in, so the approver sees, and the hash binds, exactly the directory that goes live.
   if (replaces) cpSync(live, join(dir, 'skill'), { recursive: true, verbatimSymlinks: true })
   atomicWriteFileSync(join(dir, 'skill', 'SKILL.md'), skillMd)
+  const proposedFiles: Array<{ path: string; replaced: boolean }> = []
+  if (files.length) {
+    const refDir = join(dir, 'skill', 'references')
+    // The copied live skill had no symlink (checked above); still, write only into a real directory.
+    let rst: ReturnType<typeof lstatSync> | null
+    try { rst = lstatSync(refDir) } catch { rst = null }
+    if (rst && (rst.isSymbolicLink() || !rst.isDirectory())) {
+      rmSync(dir, { recursive: true, force: true })
+      return { ok: false, status: 400, error: 'The live skill\'s references is not a directory; it cannot take proposed files' }
+    }
+    mkdirSync(refDir, { recursive: true })
+    for (const f of files) {
+      const abs = join(dir, 'skill', f.path)
+      let fst: ReturnType<typeof lstatSync> | null
+      try { fst = lstatSync(abs) } catch { fst = null }
+      if (fst && !fst.isFile()) {
+        rmSync(dir, { recursive: true, force: true })
+        return { ok: false, status: 400, error: `files: ${f.path} exists in the live skill and is not a regular file` }
+      }
+      atomicWriteFileSync(abs, f.content)
+      proposedFiles.push({ path: f.path, replaced: !!fst })
+    }
+  }
   const meta: PendingMeta = {
     id, name, target, source: 'propose', createdAt: new Date().toISOString(),
     ...(replaces ? { replaces } : {}),
     ...(opts.proposedBy ? { proposedBy: opts.proposedBy } : {}),
     ...(opts.reason ? { reason: opts.reason } : {}),
+    ...(proposedFiles.length ? { proposedFiles } : {}),
   }
   writeMeta(dir, meta)
   return { ok: true, meta }
