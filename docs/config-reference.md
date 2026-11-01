@@ -631,6 +631,9 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = a text módú ügynököknél is átirat készül a bejövő hangüzenetről (alapból ki; az ügynökönkénti `voice.transcribeInbound` felülírja). Lásd `voice.md` |
 | `PERMISSION_ALERT_MARKS` | Mikor szóljon a figyelő egy megválaszolatlan engedélykérő dialógusról: vesszővel elválasztott időpontok a dialógus megjelenésétől (alapból `15m,30m,1h,2h,8h,24h`; egy al-ügynök kérdéséről a fő ügynök azonnal üzenetet kap, a gazda az első időponttól; `s`/`m`/`h`/`d`, a puszta szám perc). Az utolsó érték egyben az ismétlési idő; a `0` első értékként azonnali jelzés. Értelmezhetetlen értéknél az alapértelmezés marad, naplózva |
+| `WEB_ONLY` | `true` = minden háttér-szolgáltatás ki (ütemező, router, monitorok, worker-előindítás). **Csak a folyamat környezetéből hat** (`WEB_ONLY=true node dist/index.js`); a `.env`-be írva hatástalan, mert nincs dotenv |
+| `MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES` | Egy második példány (git worktree, ideiglenes mappában álló klón) WEB_ONLY nélkül sem futtat háttér-szolgáltatást, mert az ütemezője a globális ütemezett feladatokat az élő sessionökbe lőné. `1` = mégis fusson (szándékos teszt-példány), és ezt indításkor figyelmeztetésként naplózza. **Csak a folyamat környezetéből hat**, mint a `WEB_ONLY`. Második példánynak a git worktree és az ideiglenes mappában (`/tmp`, `/private/tmp`, `/var/folders`, az OS tmpdir) álló klón számít: egy ezeken KÍVÜLI sima `git clone` telepítésnek számít, ott a szolgáltatások futnak, tehát ott a `WEB_ONLY=true` a védelem |
+| `MXD_DASH_SOCK` | A marveen-mxd dash.sock útja. **Fordítva: csak a `.env` fájlból olvasódik** (hívásonként), a folyamat környezetéből nem; nélküle a platform-alapértelmezett, éles socket. Teszt-példánynál a saját `.env`-jébe írd |
 
 ---
 

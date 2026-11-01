@@ -42,7 +42,7 @@ describe('web.ts wiring', () => {
     const after = src.slice(end)
     expect(after).toContain(call)
     const startup = after.indexOf(call)
-    expect(after.lastIndexOf('if (!webOnly)', startup)).toBeGreaterThan(-1)
+    expect(after.lastIndexOf('if (!servicesOff)', startup)).toBeGreaterThan(-1)
     expect(startup).toBeLessThan(after.indexOf('Token usage auto-collect started'))
   })
 })

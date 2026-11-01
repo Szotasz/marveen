@@ -25,7 +25,8 @@ describe('the default task seed runs only in the instance that owns the install'
   it('the rotation heartbeat seed sits in the same register branch (Dani 64715: the same class)', () => {
     const guard = web.indexOf('  if (!hookDecision.register) {\n    logger.info({ reason: hookDecision.reason }, \'Default scheduled tasks not seeded (second instance)\')\n  } else {')
     const call = web.indexOf('      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })')
-    const branchEnd = web.indexOf('\n  }\n\n  sweepOrphanedBackgroundTasks()', guard)
+    // The branch ends right before the orphan sweep (since #2419 behind its own servicesOff gate).
+    const branchEnd = web.indexOf('\n  }\n\n  // The orphan sweep kills', guard)
     expect(guard).toBeGreaterThan(-1)
     expect(call).toBeGreaterThan(guard)
     expect(branchEnd).toBeGreaterThan(call)
