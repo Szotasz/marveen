@@ -266,6 +266,24 @@ describe('OFF: a new proposal supersedes a waiting one of the same name', () => 
     expect(existsSync(SUPERSEDED())).toBe(false)
   })
 
+  // Dani 65889: between queueing and archiving, the superseding one stands beside the waiting one. A third proposal
+  // of the name in that window must not slip in as a second replacement: 409, nothing written, nothing archived.
+  it('U8: two of one name already waiting (a superseding one mid-flight): a third is 409, nothing written or archived', async () => {
+    const first = waiting()
+    const second = q.queueProposedSkill('good-skill', MD('good-skill', 'mid-flight\n'), { mayReplacePending: () => true })
+    if (!second.ok) throw new Error(second.error)
+    expect(second.waiting).toBe(first)
+    const before = pendingIds().sort()
+    expect(before).toEqual([first, second.meta.id].sort())
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'third\n') })
+    expect(r.status).toBe(409)
+    expect(r.body).toEqual({ error: 'A skill with this name is already waiting for approval' })
+    expect(pendingIds().sort()).toEqual(before)
+    expect(existsSync(SUPERSEDED())).toBe(false)
+    expect(existsSync(join(GLOBAL, 'good-skill'))).toBe(false)
+    expect(auditLines()).toEqual([])
+  })
+
   it('U7: an archived one never comes back: not listed, not approvable, not even with the quarantine ON again', async () => {
     const old = waiting()
     const oldHash = q.getPending(old)!.hash
