@@ -32,6 +32,9 @@ export interface GromzoAgentDeps {
   writeFlag: (slug: string, on: boolean) => void
   displayName: (slug: string) => string
   isRunning: (slug: string) => boolean
+  /** Runs the synchronous row building in one batch (the route: withTmuxBatch, so the run state costs one
+   *  tmux call per server instead of one per agent). Optional: without it the rows are built as they are. */
+  batch?: <T>(fn: () => T) => T
   /** The slugs mxd's last start held back (dash status held_agents); empty when unknown. */
   held: () => Promise<Set<string>>
   /** Restarts that ONE agent, once mxd is back from its reload (fire and forget). */
@@ -87,20 +90,23 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
   const held = await deps.held()
   const now = deps.now()
   dropExpired(now)
-  const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, pendingUntil: null }]
-  for (const slug of [...deps.agents()].sort()) {
-    if (slug === MAIN_AGENT_ID) continue
-    rows.push({
-      slug,
-      name: deps.displayName(slug),
-      main: false,
-      gromzo: deps.readFlag(slug),
-      running: deps.isRunning(slug),
-      held: held.has(slug),
-      pendingUntil: pending.get(slug)?.expiresAt ?? null,
-    })
+  const build = (): GromzoAgentRow[] => {
+    const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, pendingUntil: null }]
+    for (const slug of [...deps.agents()].sort()) {
+      if (slug === MAIN_AGENT_ID) continue
+      rows.push({
+        slug,
+        name: deps.displayName(slug),
+        main: false,
+        gromzo: deps.readFlag(slug),
+        running: deps.isRunning(slug),
+        held: held.has(slug),
+        pendingUntil: pending.get(slug)?.expiresAt ?? null,
+      })
+    }
+    return rows
   }
-  return rows
+  return deps.batch ? deps.batch(build) : build()
 }
 
 /** Switch on: the owner's consent first (in the app); the flag only after mxd added the agent. */

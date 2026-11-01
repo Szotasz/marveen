@@ -267,6 +267,19 @@ describe('disable', () => {
 })
 
 describe('the list', () => {
+  it('the rows are built inside ONE batch (the route: withTmuxBatch, one tmux call per server), run state included', async () => {
+    const w = world()
+    let inBatch = false
+    let batches = 0
+    const runs: boolean[] = []
+    w.deps.batch = <T>(fn: () => T): T => { batches++; inBatch = true; try { return fn() } finally { inBatch = false } }
+    w.deps.isRunning = () => { runs.push(inBatch); return true }
+    await listGromzoAgents(w.deps)
+    expect(batches).toBe(1)
+    expect(runs.length).toBe(4)
+    expect(runs.every(Boolean)).toBe(true)
+  })
+
   it('the main agent first, always on and never switchable; then the fleet sorted, with flags', async () => {
     const w = world(['zara', 'abel', MAIN_AGENT_ID])
     w.flags.set('zara', true)
