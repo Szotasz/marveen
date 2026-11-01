@@ -325,7 +325,7 @@ describe('the agent switch routes', () => {
   it('all four sit behind the auth gate', () => {
     expect(requiresAuth('/api/gromzo/agents', 'GET')).toBe(true)
     expect(requiresAuth('/api/gromzo/agents/zara/enable', 'POST')).toBe(true)
-    expect(requiresAuth('/api/gromzo/agents/zara/consent', 'GET')).toBe(true)
+    expect(requiresAuth('/api/gromzo/agents/zara/consent', 'POST')).toBe(true)
     expect(requiresAuth('/api/gromzo/agents/zara/disable', 'POST')).toBe(true)
   })
 
@@ -333,7 +333,7 @@ describe('the agent switch routes', () => {
     replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
     for (const p of [{ kind: 'token' }, { kind: 'token', tokenAgent: 'samu', agent: 'samu' }, { kind: 'device', device: 'phone', deviceId: 1 }, { kind: 'federation', peer: 'x' }, undefined]) {
       principal = p
-      for (const r of [await fetch(origin + '/api/gromzo/agents'), await post('zara/enable'), await fetch(origin + '/api/gromzo/agents/zara/consent'), await post('zara/disable')]) {
+      for (const r of [await fetch(origin + '/api/gromzo/agents'), await post('zara/enable'), await post('zara/consent'), await post('zara/disable')]) {
         expect(r.status, JSON.stringify(p)).toBe(403)
       }
     }
@@ -345,7 +345,10 @@ describe('the agent switch routes', () => {
     expect((await post('zara/enable', { 'Content-Type': 'text/plain' })).status).toBe(415)
     expect((await post('zara/disable', { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403)
     expect((await fetch(origin + '/api/gromzo/agents/zara/enable')).status).toBe(405)
-    expect((await post('zara/consent')).status).toBe(405)
+    // the consent check changes state (it may add the agent, write its flag, restart it): POST only, behind the gates
+    expect((await fetch(origin + '/api/gromzo/agents/zara/consent')).status).toBe(405)
+    expect((await post('zara/consent', { 'Content-Type': 'text/plain' })).status).toBe(415)
+    expect((await post('zara/consent', { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403)
     expect((await fetch(origin + '/api/gromzo/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(405)
     expect(calls).toEqual([])
   })
@@ -365,7 +368,7 @@ describe('the agent switch routes', () => {
     replies.agent_add = [{ ok: true, consent_id: ID, expires_in: 600 }]
     await keep(await post('zara/enable'))
     replies.agent_add_check = [{ ok: true, state: 'added', slug: 'samu', restart: true }]
-    await keep(await fetch(origin + '/api/gromzo/agents/zara/consent'))
+    await keep(await post('zara/consent'))
     await keep(await fetch(origin + '/api/gromzo/agents'))
     replies.agent_add = [{ ok: true, consent_id: ID, expires_in: 600 }]
     await keep(await post('samu/enable'))
@@ -383,18 +386,30 @@ describe('the agent switch routes', () => {
     expect(e.status).toBe(200)
     expect(await e.json()).toEqual({ state: 'pending', expires_in: 600 })
     replies.agent_add_check = [{ ok: true, state: 'added', slug: 'zara', restart: true }]
-    const c = await fetch(origin + '/api/gromzo/agents/zara/consent?id=consent-evilevilevil')
+    const c = await post('zara/consent?id=consent-evilevilevil', { 'Content-Type': 'application/json' }, JSON.stringify({ id: 'consent-evilevilevil' }))
     expect(await c.json()).toEqual({ state: 'added' })
     expect(calls.map((x) => x.verb === 'agent_add_check' ? x.id : x.verb)).toEqual(['agent_add', 'consent-aaaaaaaaaaaa'])
     expect(flags.get('zara')).toBe(true)
     expect(restarted).toEqual(['zara'])
   })
 
+  it('consent_mismatch: 409 names the slug mxd actually added; neither flag is written, nothing restarted (Dani 64260)', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    await post('zara/enable')
+    replies.agent_add_check = [{ ok: true, state: 'added', slug: 'samu', restart: true }]
+    const r = await post('zara/consent')
+    expect(r.status).toBe(409)
+    expect(await r.json()).toEqual({ error: 'consent_mismatch', added_slug: 'samu' })
+    expect(flags.size).toBe(0)
+    expect(restarted).toEqual([])
+    expect(logged.join('\n')).toContain('"added":"samu"')
+  })
+
   it('codes map to statuses: a bad slug 400, unknown 404, the main agent 409, no pending 409, rate_limited 429, mxd down 503', async () => {
     expect((await post('Bad%20Slug/enable')).status).toBe(400)
     expect((await post('nobody/enable')).status).toBe(404)
     expect((await post(encodeURIComponent(MAIN_ID) + '/disable')).status).toBe(409)
-    expect((await fetch(origin + '/api/gromzo/agents/zara/consent')).status).toBe(409)
+    expect((await post('zara/consent')).status).toBe(409)
     expect(calls).toEqual([])
     replies.agent_remove = [{ ok: false, error: 'rate_limited' }]
     const r = await post('zara/disable')
