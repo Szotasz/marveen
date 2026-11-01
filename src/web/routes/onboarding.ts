@@ -19,7 +19,7 @@ import {
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
 import type { RouteContext } from './types.js'
 
@@ -393,7 +393,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // It replaces the credential the whole fleet runs on, so the shared
     // dashboard token alone is not enough once a dashboard login exists
     // (the first-run wizard runs before that, and is unaffected).
-    if (!mayIssueCredentials(ctx.auth, req)) {
+    if (!mayActAsOwner(ctx.auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }

@@ -3,16 +3,30 @@
 // Credential issuance stays on mayIssueCredentials (its own PR). Real resolveAuth, real sessions, real device keys.
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { initDatabase, getDb, getDashboardUser } from '../db.js'
+// Routes that write (operator access) write into a throwaway store, never the checkout's.
+const TMP_STORE = vi.hoisted(() => ({ dir: '' }))
+vi.mock('../config.js', async (orig) => {
+  const { mkdtempSync: mk } = await import('node:fs')
+  const { tmpdir: td } = await import('node:os')
+  const { join: j } = await import('node:path')
+  TMP_STORE.dir = mk(j(td(), 'owner-action-store-'))
+  return { ...(await orig<typeof import('../config.js')>()), STORE_DIR: TMP_STORE.dir }
+})
+import { initDatabase, getDb, getDashboardUser, getRecentConfigChanges } from '../db.js'
 import { resolveAuth, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { mayActAsOwner, mayIssueCredentials, ownerCookieSession, tryHandleAuth } from '../web/routes/auth.js'
+import { bridgeOwner, mayActAsOwner, mayIssueCredentials, ownerCookieSession, tryHandleAuth } from '../web/routes/auth.js'
 import { isOwnerSession } from '../web/routes/gromzo.js'
 import { tryHandleSkills } from '../web/routes/skills.js'
 import { tryHandleFleetFreeze } from '../web/routes/fleet-freeze.js'
-import { createDeviceKey, revokeDeviceKey, _clearDeviceKeyCacheForTest } from '../web/auth-device-keys.js'
+import { tryHandleSecurity } from '../web/routes/security.js'
+import { tryHandleOperatorAccess } from '../web/routes/operator-access.js'
+import { tryHandleOnboarding } from '../web/routes/onboarding.js'
+import { tryHandleClaudePlansLogin } from '../web/routes/claude-plans-login.js'
+import { createDeviceKey, getDeviceKey, revokeDeviceKey, _clearDeviceKeyCacheForTest } from '../web/auth-device-keys.js'
 import { _clearSessionCacheForTest, createSession, revokeSession } from '../web/auth-sessions.js'
 import { logger } from '../logger.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -102,7 +116,7 @@ describe('the predicate (the five-case matrix, Samu 65617, and Dani 65623 (c))',
     expect(mayActAsOwner({ kind: 'token' }, req)).toBe(true)
   })
 
-  it('B7: credential issuance is untouched: mayIssueCredentials still refuses a key with a cookie; isOwnerSession reads the same cookie branch', () => {
+  it('B7: mayIssueCredentials itself still refuses a key with a cookie (the key branch lives in mayActAsOwner only); isOwnerSession reads the same cookie branch', () => {
     const req = reqWith({ authorization: `Bearer ${keyOf()}`, cookie: cookieHeader() })
     const auth = authOf(req)
     expect(mayIssueCredentials(auth, req)).toBe(false)
@@ -135,7 +149,7 @@ describe('the predicate (the five-case matrix, Samu 65617, and Dani 65623 (c))',
   })
 })
 
-describe('which call site asks which predicate (source pin, the 9 + 8 sites)', () => {
+describe('which call site asks which predicate (source pin, all 17 sites)', () => {
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
   it('the non-issuing owner actions take the Bridge key beside the cookie', () => {
@@ -143,11 +157,17 @@ describe('which call site asks which predicate (source pin, the 9 + 8 sites)', (
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, 0])
     }
   })
-  it('credential issuance stays on mayIssueCredentials', () => {
-    // auth.ts: its 4 issuance sites, plus the one call inside mayActAsOwner itself
+  it('credential issuance takes it too (PR-2); mayIssueCredentials is left only inside mayActAsOwner', () => {
+    // auth.ts: users list/create/delete and key mint, plus the Bridge's second gate on key revoke (Dani 65912)
     for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 1], ['claude-plans-login.ts', 1]] as const) {
-      expect([f, count(f, 'mayIssueCredentials'), count(f, 'mayActAsOwner')]).toEqual([f, n, 0])
+      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, f === 'auth.ts' ? 1 : 0])
     }
+  })
+  it('the kind gates in front of issuance let only the Bridge owner through as a device', () => {
+    expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\) && !bridgeOwner\(auth, req\)/g) ?? []).length).toBe(6)
+    expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\)\) \{/g) ?? []).length).toBe(0)
+    expect(src('security.ts')).toContain('!bridgeOwner(auth, req)')
+    expect(src('operator-access.ts')).toContain('!bridgeOwner(auth, req)')
   })
 })
 
@@ -179,8 +199,79 @@ describe('on the real routes', () => {
     expect(refusedByOwnerGate(await hit(tryHandleFleetFreeze, 'POST', '/api/fleet/unfreeze', { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, {}))).toBe(true)
   })
 
-  it('R3: minting a device key (credential issuance) stays refused for key + cookie', async () => {
-    const r = await hit(tryHandleAuth, 'POST', '/api/auth/device-keys', { authorization: `Bearer ${keyOf()}`, cookie: cookieHeader() }, { name: 'another' })
-    expect(r.status).toBe(403)
+  // PR-2 (Dani 65623 (2)): credential issuance on the Bridge key beside the owner's cookie; never the key alone.
+  it('R3: device keys: key + cookie mints (201), lists and revokes; the key alone, or an operator key with the cookie, is refused', async () => {
+    const key = keyOf()
+    const withCookie = { authorization: `Bearer ${key}`, cookie: cookieHeader() }
+    const minted = await hit(tryHandleAuth, 'POST', '/api/auth/device-keys', withCookie, { name: 'another' })
+    expect(minted.status).toBe(201)
+    expect((await hit(tryHandleAuth, 'GET', '/api/auth/device-keys', withCookie)).status).toBe(200)
+    const other = createDeviceKey('to-revoke')
+    expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${other.id}`, withCookie)).status).toBe(200)
+    expect((await hit(tryHandleAuth, 'POST', '/api/auth/device-keys', { authorization: `Bearer ${key}` }, { name: 'nope' })).status).toBe(403)
+    expect((await hit(tryHandleAuth, 'GET', '/api/auth/device-keys', { authorization: `Bearer ${key}` })).status).toBe(403)
+    const op = keyOf('operator')
+    expect((await hit(tryHandleAuth, 'POST', '/api/auth/device-keys', { authorization: `Bearer ${op}`, cookie: cookieHeader() }, { name: 'nope' })).status).toBe(403)
+    // the list has only its kind gate: an operator key beside the cookie must not read the keys either
+    expect((await hit(tryHandleAuth, 'GET', '/api/auth/device-keys', { authorization: `Bearer ${op}`, cookie: cookieHeader() })).status).toBe(403)
+    expect(bridgeOwner(authOf(reqWith({ authorization: `Bearer ${op}`, cookie: cookieHeader() })), reqWith({ cookie: cookieHeader() }))).toBe(false)
+  })
+
+  it('R6: the fleet Claude credential and the plan login: key + cookie passes the owner gate (then validation or the status); the key alone is refused', async () => {
+    const key = keyOf()
+    const withCookie = { authorization: `Bearer ${key}`, cookie: cookieHeader(), 'content-type': 'application/json' }
+    const bare = { authorization: `Bearer ${key}`, 'content-type': 'application/json' }
+    // an empty body is refused as "missing" before any probe or write
+    expect(await hit(tryHandleOnboarding, 'POST', '/api/onboarding/claude-auth', withCookie, {})).toMatchObject({ status: 400 })
+    expect(refusedByOwnerGate(await hit(tryHandleOnboarding, 'POST', '/api/onboarding/claude-auth', bare, {}))).toBe(true)
+    // a full key that is not a paired Bridge (no install id): the cookie is what lets it in
+    expect((await hit(tryHandleClaudePlansLogin, 'GET', '/api/claude-plans/login/status', withCookie)).status).toBe(200)
+    expect(refusedByOwnerGate(await hit(tryHandleClaudePlansLogin, 'GET', '/api/claude-plans/login/status', bare))).toBe(true)
+  })
+
+  // Dani 65912 (1) and (2): revoking a key (for a paired Bridge also its SSH line) is the one route where bridgeOwner
+  // was the only gate.
+  it('R3b: revoking a key: the key alone and an operator key with the cookie revoke nothing; key + cookie revokes, and the audit names the owner', async () => {
+    const prevSsh = process.env.MARVEEN_SSH_DIR
+    process.env.MARVEEN_SSH_DIR = mkdtempSync(join(tmpdir(), 'owner-action-ssh-'))
+    try {
+      const key = keyOf()
+      const target = createDeviceKey('Paired', { installId: 'install-r3b' })
+      expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${key}` })).status).toBe(403)
+      expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${keyOf('operator')}`, cookie: cookieHeader() })).status).toBe(403)
+      expect(getDeviceKey(target.id)).not.toBeNull()
+      const spy = vi.spyOn(logger, 'info')
+      const r = await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${key}`, cookie: cookieHeader() })
+      expect(r.status).toBe(200)
+      expect(getDeviceKey(target.id)).toBeNull()
+      expect(spy.mock.calls.some((c) => String(c[1]).includes('owner action on a Bridge key') && (c[0] as any)?.owner === 'owner')).toBe(true)
+      spy.mockRestore()
+      expect(getRecentConfigChanges(5).find((c) => c.key === 'security.bridge_revoke')?.actor).toBe('bridge:owner')
+    } finally {
+      if (prevSsh === undefined) delete process.env.MARVEEN_SSH_DIR
+      else process.env.MARVEEN_SSH_DIR = prevSsh
+    }
+  })
+
+  it('R4: dashboard users: key + cookie adds and removes one; a logged-out cookie does not', async () => {
+    const key = keyOf()
+    const withCookie = { authorization: `Bearer ${key}`, cookie: cookieHeader() }
+    expect((await hit(tryHandleAuth, 'POST', '/api/auth/users', withCookie, { username: 'second', password: 'super-secret-pw' })).status).toBe(201)
+    expect((await hit(tryHandleAuth, 'DELETE', '/api/auth/users/second', withCookie)).status).toBe(200)
+    revokeSession(cookie)
+    expect((await hit(tryHandleAuth, 'POST', '/api/auth/users', withCookie, { username: 'third', password: 'super-secret-pw' })).status).toBe(403)
+  })
+
+  it('R5: Bridge enrolment and operator access pass their kind gate and owner gate with key + cookie (then validation); the key alone is refused', async () => {
+    const key = keyOf()
+    const withCookie = { authorization: `Bearer ${key}`, cookie: cookieHeader(), 'content-type': 'application/json' }
+    const enroll = await hit(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', withCookie, { key_line: 'x', name: '' })
+    expect(enroll.status).toBe(400)
+    expect((await hit(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, { key_line: 'x', name: '' })).status).toBe(403)
+    const op = await hit(tryHandleOperatorAccess, 'PUT', '/api/operator-access', withCookie, {})
+    expect(op.status).toBe(200)
+    // the audit names the owner behind the Bridge key, not 'token'
+    expect(getRecentConfigChanges(5).find((c) => c.key === 'operator-access')?.actor).toBe('bridge:owner')
+    expect((await hit(tryHandleOperatorAccess, 'PUT', '/api/operator-access', { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, {})).status).toBe(403)
   })
 })
