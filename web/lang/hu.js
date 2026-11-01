@@ -841,6 +841,8 @@ window._i18n.hu = {
   'skills.pending.origin_proposed_new': 'a javaslat hozza (új)',
   'skills.pending.origin_proposed_replaced': 'a javaslat hozza (felülírja a meglévőt)',
   'skills.pending.origin_from_live': 'a live skillből, változatlanul',
+  'skills.pending.origin_not_proposed_changed': 'MÓDOSULT, NEM a javaslatban: eltér a live skill fájljától',
+  'skills.pending.origin_not_proposed_missing': 'NEM a javaslatban, és a live skillben nincs ilyen fájl',
   'skills.pending.current_version': 'A most élő SKILL.md (összevetéshez)',
   'skills.pending.files': 'Fájlok ({n})',
   'skills.pending.findings_truncated': 'A jelzéslista elérte a plafonját, ezért nem teljes; a fájlok viszont teljes egészükben fent vannak.',

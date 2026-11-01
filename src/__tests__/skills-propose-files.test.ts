@@ -214,6 +214,76 @@ describe('POST /api/skills/propose with files', () => {
     }
   })
 
+  it('F11 (Dani 65296): a copied live file changed in the pending dir after the proposal is not called unchanged; nor is one with no live twin', async () => {
+    const live = join(GLOBAL, 'long-skill')
+    mkdirSync(join(live, 'references'), { recursive: true })
+    writeFileSync(join(live, 'SKILL.md'), 'old skill')
+    writeFileSync(join(live, 'references', 'keep.md'), 'keep me')
+    writeFileSync(join(live, 'references', 'same.md'), 'same')
+    const r = await propose({ name: 'long-skill', skill_md: MD, files: { 'references/details.md': 'new details' } })
+    expect(r.status).toBe(200)
+    // Right after the proposal: every copied file equals its live twin.
+    expect(q.getPending(r.body.id)!.liveDrift).toBeUndefined()
+    // After it: one copied file changed (same size, other bytes), one file added that is not the proposal's.
+    writeFileSync(join(PENDING, r.body.id, 'skill', 'references', 'keep.md'), 'KEEP me')
+    writeFileSync(join(PENDING, r.body.id, 'skill', 'references', 'sneaky.md'), 'not proposed')
+    const p = q.getPending(r.body.id)!
+    expect(p.liveDrift).toEqual([
+      { path: 'references/keep.md', live: 'changed' },
+      { path: 'references/sneaky.md', live: 'missing' },
+    ])
+    // The list (no texts) carries it too, and the card's origin follows it.
+    expect(q.listPending().find((x) => x.id === r.body.id)!.liveDrift).toEqual(p.liveDrift)
+    const src = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+    const start = src.indexOf('function pendingFileOrigin(')
+    const origin = new Function(`${src.slice(start, src.indexOf('\n}\n', start) + 2)}; return pendingFileOrigin`)() as (p: unknown, path: string) => string | null
+    expect(origin(p, 'references/keep.md')).toBe('not_proposed_changed')
+    expect(origin(p, 'references/sneaky.md')).toBe('not_proposed_missing')
+    expect(origin(p, 'references/same.md')).toBe('from_live')
+    expect(origin(p, 'references/details.md')).toBe('proposed_new')
+    for (const lang of ['hu', 'en']) {
+      const l = readFileSync(join(__dirname, '..', '..', 'web', 'lang', `${lang}.js`), 'utf-8')
+      for (const k of ['origin_not_proposed_changed', 'origin_not_proposed_missing']) expect(l, `${lang} ${k}`).toContain(`'skills.pending.${k}'`)
+    }
+  })
+
+  it('F11c (Dani 65335): a drift row is flagged AND open, so it cannot be skipped; an unchanged copy is neither', () => {
+    const src = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+    const fnSrc = (name: string) => { const s = src.indexOf(`function ${name}(`); expect(s, name).toBeGreaterThan(-1); return src.slice(s, src.indexOf('\n}\n', s) + 2) }
+    // A minimal DOM: just what pendingEl and pendingFileRow touch.
+    type El = { tag: string; className: string; textContent: string; open: boolean; children: El[]; appendChild: (c: El) => El }
+    const document = { createElement: (tag: string): El => { const el: El = { tag, className: '', textContent: '', open: false, children: [], appendChild: (c) => { el.children.push(c); return c } }; return el } }
+    const t = (k: string) => k
+    const row = new Function('document', 't', `${fnSrc('pendingEl')}\n${fnSrc('pendingFileRow')}; return pendingFileRow`)(document, t) as (f: unknown, origin: string | null) => El
+    const file = { path: 'references/keep.md', size: 7, kind: 'markdown', executable: false, sha256: 'x', text: 'keep me' }
+    for (const origin of ['not_proposed_changed', 'not_proposed_missing']) {
+      const det = row(file, origin)
+      expect(det.open, origin).toBe(true)
+      expect(det.children[0].className, origin).toBe('is-flagged')
+    }
+    const same = row(file, 'from_live')
+    expect(same.open).toBe(false)
+    expect(same.children[0].className).toBe('')
+  })
+
+  it('F11b: a live twin that is no longer a regular file (a directory now) counts as missing', async () => {
+    const live = join(GLOBAL, 'long-skill')
+    mkdirSync(join(live, 'references'), { recursive: true })
+    writeFileSync(join(live, 'SKILL.md'), 'old skill')
+    writeFileSync(join(live, 'references', 'keep.md'), 'keep me')
+    const r = await propose({ name: 'long-skill', skill_md: MD })
+    rmSync(join(live, 'references', 'keep.md'))
+    mkdirSync(join(live, 'references', 'keep.md'))
+    expect(q.getPending(r.body.id)!.liveDrift).toEqual([{ path: 'references/keep.md', live: 'missing' }])
+  })
+
+  it('F12: a new skill (no live one): its own files are no drift; a file added to the pending dir is "missing"', async () => {
+    const r = await propose({ name: 'long-skill', skill_md: MD, files: { 'references/a.md': 'a' } })
+    expect(q.getPending(r.body.id)!.liveDrift).toBeUndefined()
+    writeFileSync(join(PENDING, r.body.id, 'skill', 'references', 'b.md'), 'b')
+    expect(q.getPending(r.body.id)!.liveDrift).toEqual([{ path: 'references/b.md', live: 'missing' }])
+  })
+
   it('F9: queueProposedSkill checks the paths itself too (it is the function that writes)', () => {
     for (const path of ['references/../../x.md', 'references/a..b.md', 'references/X.md']) {
       expect(q.queueProposedSkill('long-skill', MD, { files: [{ path, content: 'x' }] }), path).toMatchObject({ ok: false, status: 400 })

@@ -589,6 +589,8 @@ window._i18n.en = {
   'skills.pending.origin_proposed_new': 'from the proposal (new)',
   'skills.pending.origin_proposed_replaced': 'from the proposal (overwrites the existing one)',
   'skills.pending.origin_from_live': 'from the live skill, unchanged',
+  'skills.pending.origin_not_proposed_changed': 'CHANGED, NOT in the proposal: differs from the live skill\'s file',
+  'skills.pending.origin_not_proposed_missing': 'NOT in the proposal, and the live skill has no such file',
   'skills.pending.current_version': 'Current live SKILL.md (for comparison)',
   'skills.pending.files': 'Files ({n})',
   'skills.pending.findings_truncated': 'The findings list hit its cap and is incomplete; the files above are still shown in full.',
