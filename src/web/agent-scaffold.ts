@@ -68,17 +68,11 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, A
 // curl recipes byte for byte.
 const apiHelper = `bash ${shellWord(join(PROJECT_ROOT, 'scripts', 'marveen-api.sh'))}`
 
-// Where a strict agent writes a payload before it hands the path to the helper: its own
-// directory, the only place its profile lets it write.
-function strictPayloadPath(name: string): string {
-  return join(agentDir(name), 'api-payload.txt')
-}
-
 // VOICETOKENLEAK1101 PR-A1 (#2080 review 5727304277, Samu 64933, Dani 64941): the generated sections give EVERY agent
 // the helper recipes, not only a strict one: a curl recipe's `$(cat <token>)` puts the token VALUE on the curl argv,
 // visible in ps to every process of the same user. One payload file per recipe kind, in the agent's own directory
 // (the main agent's: the project root, git-ignored as /api-*.txt), overwritten on every use, so they never pile up.
-export type ApiPayloadKind = 'uzenet' | 'jovahagyas' | 'memoria' | 'eredmeny'
+export type ApiPayloadKind = 'uzenet' | 'jovahagyas' | 'memoria' | 'naplo' | 'eredmeny'
 export function apiPayloadPath(name: string, kind: ApiPayloadKind): string {
   return join(name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name), `api-${kind}.txt`)
 }
@@ -4833,6 +4827,32 @@ const STRICT_API_BLOCK_RE = new RegExp(
   `${STRICT_API_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${STRICT_API_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+// The recipe list both the strict-api block and the api-helper block carry: the calls of the creation-time body
+// (memory save, search, hot list, move, daily log, message), each text from its fixed per-kind file.
+function helperBodyRecipeLines(name: string): string[] {
+  return [
+    '```bash',
+    `${apiHelper} memory-save ${name} warm "kulcsszo1, kulcsszo2" ${shellWord(apiPayloadPath(name, 'memoria'))}`,
+    `${apiHelper} memory-search ${name} KULCSSZO --category warm`,
+    `${apiHelper} memory-list ${name} hot`,
+    `${apiHelper} memory-move <ID> cold ${name}`,
+    `${apiHelper} daily-log ${name} ${shellWord(apiPayloadPath(name, 'naplo'))}`,
+    `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${shellWord(apiPayloadPath(name, 'uzenet'))}`,
+    '```',
+    '',
+    '- A keresés kimenetének ELSŐ sora az `X-Memory-Search` fejléc, ezt KÖTELEZŐ elolvasni: `relaxed=true`',
+    '  esetén amit látsz, az mentett közelítés, nem bizonyíték; `MISSING` esetén a keresés el sem indult.',
+    '  Hiány-állításhoz tedd hozzá a `--strict` kapcsolót. A keresőszót a segéd maga kódolja, az ékezetes szó is megy.',
+    `- ${ONE_FILE_ONE_SEND}`,
+    '- A tier hot, warm, cold vagy shared. Az átsorolás csak a tier-t állítja, a tartalmat nem kell újraküldeni.',
+  ]
+}
+
+const helperExitCodes = [
+  '- Kilépési kód: 0 = rendben; 1 = a szerver hibát adott; 2 = rossz hívás vagy nincs token, semmi nem ment el;',
+  '  3 = a dashboard nem érhető el vagy nem válaszolt (írásnál ismétlés előtt olvass vissza).',
+]
+
 export function buildStrictApiBody(name: string): string {
   return [
     '## Dashboard-hívások a strict profilodban',
@@ -4840,29 +4860,81 @@ export function buildStrictApiBody(name: string): string {
     'A profilod `dontAsk` módban fut: a parancs-behelyettesítést, a csövet és minden nem engedélyezett',
     'parancsot a Claude Code kérdés nélkül megtagadja. Ezért MINDEN dashboard-hívásod EGY segéden megy,',
     `amelynek az igéit a \`${apiHelper} --help\` sorolja fel. A tokent a segéd maga olvassa.`,
-    'A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba',
-    `(pl. \`${strictPayloadPath(name)}\`), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
+    'A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba (a lenti recept a fájlt',
+    'is megnevezi), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.',
     '',
     'Ha ennek a fájlnak egy MÁSIK része tokenes `curl`-receptet ad, az nálad nem fut le: helyette ezeket használd.',
     '',
-    '```bash',
-    `${apiHelper} memory-save ${name} warm "kulcsszo1, kulcsszo2" <fájl>`,
-    `${apiHelper} memory-search ${name} KULCSSZO --category warm`,
-    `${apiHelper} memory-list ${name} hot`,
-    `${apiHelper} memory-move <ID> cold ${name}`,
-    `${apiHelper} daily-log ${name} <fájl>`,
-    `${apiHelper} message ${name} ${MAIN_AGENT_ID} <fájl>`,
-    '```',
-    '',
-    '- A keresés kimenetének ELSŐ sora az `X-Memory-Search` fejléc, ezt KÖTELEZŐ elolvasni: `relaxed=true`',
-    '  esetén amit látsz, az mentett közelítés, nem bizonyíték; `MISSING` esetén a keresés el sem indult.',
-    '  Hiány-állításhoz tedd hozzá a `--strict` kapcsolót.',
-    '- A tier hot, warm, cold vagy shared. Az átsorolás csak a tier-t állítja, a tartalmat nem kell újraküldeni.',
+    ...helperBodyRecipeLines(name),
     `- Ütemezést nem hozhatsz létre, és nem is listázhatsz: ha kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) a \`message\` igével (név, leírás, prompt, cron, ágens, típus).`,
     '- Törlő ige nincs: a törlés gazda-döntés (data_delete).',
-    '- Kilépési kód: 0 = rendben; 1 = a szerver hibát adott; 2 = rossz hívás vagy nincs token, semmi nem ment el;',
-    '  3 = a dashboard nem érhető el vagy nem válaszolt (írásnál ismétlés előtt olvass vissza).',
+    ...helperExitCodes,
   ].join('\n')
+}
+
+// VOICETOKENLEAK1101 PR-A2 (Samu 64954): the creation-time body of an agent created before PR-A2 keeps its curl
+// recipes (memory save, daily log, search, hot list, move, unknown-sender ping), and no start rewrites the body. This
+// block carries the helper recipes for every non-strict agent whose settings allow the helper (agentUsesApiHelper) and
+// says they OVERRIDE the curl recipes elsewhere in the file: a curl recipe puts the token value on its argv. A strict
+// agent has the strict-api block instead. The main agent gets it too, as this marker block only (Samu 65192,
+// Marveen 65196): its body is its owner's and stays byte for byte as it is. The block goes away when the agent becomes
+// strict or its settings start denying the helper (its text would then be false).
+const API_HELPER_BEGIN = '<!-- BEGIN GENERATED: api-helper (auto-generated, do not edit by hand) -->'
+const API_HELPER_END = '<!-- END GENERATED: api-helper -->'
+const API_HELPER_BLOCK_RE = new RegExp(
+  `${API_HELPER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${API_HELPER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildApiHelperBody(name: string): string {
+  return [
+    '## Dashboard-hívások: a segéd (ez ÍRJA FELÜL a curl-recepteket)',
+    '',
+    `MINDEN dashboard-hívásod EGY segéden megy, amelynek az igéit a \`${apiHelper} --help\` sorolja fel. A tokent a`,
+    'segéd maga olvassa, így az soha nem kerül parancssorba. A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd',
+    'a saját mappádba (a lenti recept a fájlt is megnevezi), és a fájl útját add át: a shell a szöveget sosem látja,',
+    'tehát a benne álló backtick vagy `$(...)` nem fut le.',
+    '',
+    'Ha ennek a fájlnak egy MÁSIK része tokenes `curl`-receptet ad (memória mentés, keresés, hot-lista, átsorolás, napi',
+    'napló, ismeretlen sender jelzése), az régi alak: a token ÉRTÉKÉT a parancssorba teszi, ahol minden',
+    'azonos felhasználójú folyamat látja. Helyette ezeket használd:',
+    '',
+    ...helperBodyRecipeLines(name),
+    '- Az ütemezések LISTÁZÁSA marad a fájlban álló `curl -q` alakban: a kapu pontosan azt engedi.',
+    '- Törlő ige nincs: a törlés gazda-döntés (data_delete).',
+    ...helperExitCodes,
+  ].join('\n')
+}
+
+export function ensureApiHelperSection(name: string): void {
+  // The main agent too (Samu 65192, Marveen 65196): ONLY as this marker block in the root CLAUDE.md, like its other
+  // generated sections; the owner's body text around it is never touched.
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const hasBlock = API_HELPER_BLOCK_RE.test(existing)
+  let updated: string
+  if (!agentRunsStrict(name) && agentUsesApiHelper(name)) {
+    const block = `${API_HELPER_BEGIN}\n${buildApiHelperBody(name)}\n${API_HELPER_END}`
+    updated = hasBlock
+      ? existing.replace(API_HELPER_BLOCK_RE, block)
+      : existing.trimEnd() + '\n\n' + block + '\n'
+  } else {
+    if (!hasBlock) return
+    updated = existing.replace(new RegExp(`\\n*${API_HELPER_BLOCK_RE.source}`), '')
+    if (!updated.endsWith('\n')) updated += '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
 }
 
 export function ensureStrictApiSection(name: string): void {
@@ -4896,14 +4968,20 @@ export function ensureStrictApiSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
-// #2232: the helper recipes a strict-profile agent gets in place of the curl lines of the
-// creation prompt below. For every other agent the prompt is unchanged byte for byte.
-function strictPromptRecipes(name: string) {
-  const file = strictPayloadPath(name)
+// #2232: the helper recipes a strict-profile agent gets in place of the curl lines of the creation prompt below;
+// since VOICETOKENLEAK1101 PR-A2 every agent whose settings allow the helper (agentUsesApiHelper) gets them too, with
+// a neutral intro (the dontAsk sentence is strict-only). One fixed payload file per recipe kind, in the agent's dir.
+function strictPromptRecipes(name: string, strict = true) {
+  const mem = shellWord(apiPayloadPath(name, 'memoria'))
+  const log = shellWord(apiPayloadPath(name, 'naplo'))
+  const msg = shellWord(apiPayloadPath(name, 'uzenet'))
+  const mode = strict
+    ? 'A profilod dontAsk módban fut, ezért a parancs-behelyettesítést, a csövet és minden nem engedélyezett parancsot a Claude Code kérdés nélkül megtagadja. A tokent a segéd maga olvassa.'
+    : 'A tokent a segéd maga olvassa, így az ÉRTÉKE soha nem kerül parancssorba, ahol minden azonos felhasználójú folyamat látná.'
   return {
-    intro: `Minden dashboard-hívásod EGY segéden megy: ${apiHelper} <ige> ... (az igék: ${apiHelper} --help). A profilod dontAsk módban fut, ezért a parancs-behelyettesítést, a csövet és minden nem engedélyezett parancsot a Claude Code kérdés nélkül megtagadja. A tokent a segéd maga olvassa. A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba (${file}), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
-    save: `${apiHelper} memory-save AGENT_NAME CATEGORY "kulcsszo1, kulcsszo2" ${file}\n(a fájlban: MIT)`,
-    dailyLog: `${apiHelper} daily-log AGENT_NAME ${file}\n(a fájlban: ## HH:MM -- Tema, utána: Mi tortent, mi lett az eredmeny)`,
+    intro: `Minden dashboard-hívásod EGY segéden megy: ${apiHelper} <ige> ... (az igék: ${apiHelper} --help). ${mode} A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba (a recept a fájlt is megnevezi), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba. ${ONE_FILE_ONE_SEND}`,
+    save: `${apiHelper} memory-save AGENT_NAME CATEGORY "kulcsszo1, kulcsszo2" ${mem}\n(a fájlban: MIT)`,
+    dailyLog: `${apiHelper} daily-log AGENT_NAME ${log}\n(a fájlban: ## HH:MM -- Tema, utána: Mi tortent, mi lett az eredmeny)`,
     search: `${apiHelper} memory-search AGENT_NAME KULCSSZO --category warm`,
     searchLabel: 'A kimenet ELSŐ sora az X-Memory-Search fejléc, és KÖTELEZŐ elolvasni (ha MISSING, a keresés el sem indult).',
     strictFlag: 'a --strict kapcsolót',
@@ -4912,7 +4990,7 @@ function strictPromptRecipes(name: string) {
     move: `${apiHelper} memory-move <ID> cold AGENT_NAME`,
     scheduleAsk: '(a lenti message igével, a szöveg fájlban)',
     scheduleList: `Listázni sem tudsz: a segéd ütemezést nem kezel. Ha látnod kell a meglévő ütemezéseket, azt is ${BOT_NAME}-től kérd.`,
-    ping: `${apiHelper} message AGENT_NAME ${MAIN_AGENT_ID} ${file}\n(a fájlban: Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?)`,
+    ping: `${apiHelper} message AGENT_NAME ${MAIN_AGENT_ID} ${msg}\n(a fájlban: Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?)`,
     pingNote: 'A sender szövegét a Write eszközzel írd a fájlba, és csak a fájl útját add át a segédnek: így a shell sosem látja a szöveget, tehát az idegen üzenet nem futhat parancsként a gépeden.',
   }
 }
@@ -5009,7 +5087,7 @@ export async function generateClaudeMd(name: string, description: string, model:
     : `Ha nincs kijelölt közös meghajtó, MIELŐTT bárhova írsz, kérd el ${OWNER_NAME}-tól a megfelelő Drive mappát.`
   // The profile is written before this runs (routes/agents.ts), so the new agent's mode is known.
   const strict = agentRunsStrict(name)
-  const R = strictPromptRecipes(name)
+  const R = strictPromptRecipes(name, strict)
   // The generated sections (autonomy, skill) are rendered as on every start: helper recipes unless the settings deny it.
   const helper = agentUsesApiHelper(name)
   const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
@@ -5047,24 +5125,24 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-${strict ? R.intro : `Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.${ownTokenIntro}
+${helper ? R.intro + ownTokenIntro.replace('Ez a SAJÁT tokened, és csak', 'A segéd a SAJÁT tokenedet küldi (AGENT_TOKENS), és az csak') : `Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.${ownTokenIntro}
 A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.`}
 
 Memória mentés:
-${strict ? R.save : `curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'`}
+${helper ? R.save : `curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'`}
 
 Napi napló (append-only):
-${strict ? R.dailyLog : `curl -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'`}
+${helper ? R.dailyLog : `curl -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'`}
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-${strict ? R.search : `curl -s -D /tmp/mem-fejlec-AGENT_NAME.txt -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+${helper ? R.search : `curl -s -D /tmp/mem-fejlec-AGENT_NAME.txt -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
 grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt`}
 
-${strict ? R.searchLabel : 'A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni.'} A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
+${helper ? R.searchLabel : 'A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni.'} A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
 relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
-Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá ${strict ? R.strictFlag : 'a &strict=1-et'}: ott az üres válasz pontosan azt jelenti, aminek látszik.
-${strict ? `Időszakra szűrés: ${R.dateFilter}` : 'Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva.'} A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
+Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá ${helper ? R.strictFlag : 'a &strict=1-et'}: ott az üres válasz pontosan azt jelenti, aminek látszik.
+${helper ? `Időszakra szűrés: ${R.dateFilter}` : 'Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva.'} A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
@@ -5072,10 +5150,10 @@ A dashboard-memória EGYIK tierje sem töltődik be magától a kontextusodba, s
 Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
 
 1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
-${strict ? R.hotList : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"`}
+${helper ? R.hotList : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"`}
 
 2. Átsorolás (a category-only PATCH elég, a tartalmat NEM kell újraküldeni):
-${strict ? R.move : `curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"cold","updated_by":"AGENT_NAME"}'`}
+${helper ? R.move : `curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"cold","updated_by":"AGENT_NAME"}'`}
 
 Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
 
@@ -5085,7 +5163,7 @@ TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id léte
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
-Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja${ownTokenSchedule}. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${strict ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)'}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
+Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja${ownTokenSchedule}. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${helper ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)'}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
 
 ${strict ? R.scheduleList : `Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
 curl -q -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/schedules
@@ -5132,14 +5210,14 @@ Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az ak
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
 Példa ping ${BOT_NAME}-nek:
-${strict ? R.ping : `curl -s -X POST ${dashboardOrigin}/api/messages \\
+${helper ? R.ping : `curl -s -X POST ${dashboardOrigin}/api/messages \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $(cat ${tokenPath})" \\
   --data-binary @- <<'JSON'
 {"from":"AGENT_NAME","to":"${MAIN_AGENT_ID}","content":"Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?"}
 JSON`}
 
-${strict ? R.pingNote : `Az IDÉZETT heredoc KÖTELEZŐ itt (\`<<'JSON'\`, nem \`<<JSON\` -- az utóbbi ugyanúgy
+${helper ? R.pingNote : `Az IDÉZETT heredoc KÖTELEZŐ itt (\`<<'JSON'\`, nem \`<<JSON\` -- az utóbbi ugyanúgy
 behelyettesít): a sender saját szövegét viszed a payloadba, és a
 \`-d "{...}"\` dupla idézőjeles alakban a shell a backtickot és a \`$(...)\`-t VÉGREHAJTJA,
 tehát az idegen üzenet parancsot futtatna a gépeden. Nyers " jelet a beidézett

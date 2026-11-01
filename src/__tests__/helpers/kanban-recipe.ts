@@ -23,7 +23,7 @@ export function recipeLine(out: string, verb: string, ...args: string[]): string
 }
 
 /** Runs one recipe line (a `bash .../marveen-api.sh ...` command, no pipe) against a capture server. */
-export async function runRecipeLine(line: string, files: Record<string, string> = {}): Promise<Captured> {
+export async function runRecipeLine(line: string, files: Record<string, string> = {}, reply = '{"ok":true}'): Promise<Captured> {
   const dir = mkdtempSync(join(tmpdir(), 'kanban-recipe-'))
   const tokenFile = join(dir, '.dashboard-token')
   writeFileSync(tokenFile, RECIPE_TOKEN + '\n')
@@ -44,7 +44,7 @@ export async function runRecipeLine(line: string, files: Record<string, string> 
       req.on('end', () => {
         got = { method: req.method!, url: req.url!, headers: req.headers, body: b ? JSON.parse(b) : null, argv }
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end('{"ok":true}')
+        res.end(reply)
       })
     })
     s.listen(0, '127.0.0.1', () => resolve(s))

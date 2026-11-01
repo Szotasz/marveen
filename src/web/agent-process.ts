@@ -99,7 +99,7 @@ import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -2407,6 +2407,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     ensureMessageCloseSection(name)
     // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
     ensureStrictApiSection(name)
+    // VOICETOKENLEAK1101 PR-A2: every other agent on the helper gets the same recipes, overriding its body curl.
+    ensureApiHelperSection(name)
     ensureBackgroundCheckpointSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
