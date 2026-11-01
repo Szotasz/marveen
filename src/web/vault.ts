@@ -252,6 +252,28 @@ export function setSecret(id: string, label: string, value: string): void {
   writeVault(store)
 }
 
+// The one rule for a secret's description: at most this many characters (after trimming),
+// and an empty one falls back to the id. Shared by POST and PATCH /api/vault so a label
+// saved by either route can always be edited by the other.
+export const VAULT_LABEL_MAX_LENGTH = 200
+
+export function normalizeVaultLabel(id: string, label: string): string {
+  return label.trim() || id
+}
+
+// Changes only the label (and updatedAt). The ciphertext is carried over byte
+// for byte: nothing is decrypted or re-encrypted, so the master key is not even
+// touched. Returns false when the id does not exist.
+export function updateSecretLabel(id: string, label: string): boolean {
+  const store = readVault()
+  const entry = store.entries.find(e => e.id === id)
+  if (!entry) return false
+  entry.label = label
+  entry.updatedAt = new Date().toISOString()
+  writeVault(store)
+  return true
+}
+
 export function getSecret(id: string): string | null {
   const store = readVault()
   const entry = store.entries.find(e => e.id === id)

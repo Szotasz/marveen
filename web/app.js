@@ -10644,51 +10644,65 @@ function renderVaultGrid(secrets) {
     })
   })
   list.querySelectorAll('.vault-card-edit').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id')
-      const label = btn.getAttribute('data-label')
+      const label = (btn.getAttribute('data-label') || '').trim() || id
       const card = btn.closest('.vault-card')
       const existing = card.querySelector('.vault-card-edit-form')
       if (existing) { existing.remove(); return }
       card.querySelector('.vault-card-value')?.remove()
-      const res = await fetch(`/api/vault/${encodeURIComponent(id)}`)
-      const data = await res.json()
-      if (!data.value) return
+      // The current value is never fetched here: leaving the value empty keeps it,
+      // and the card has its own Show button.
+      const initialLabel = label === id ? '' : label
       const form = document.createElement('div')
       form.className = 'vault-card-edit-form'
-      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
+      form.innerHTML = `<input type="text" class="input vault-edit-label" value="${escapeHtml(initialLabel)}" placeholder="${escapeHtml(id)}" aria-label="${escapeHtml(t('vault.field.desc_label'))}" style="font-size:13px;margin-bottom:6px"><input type="password" class="input vault-edit-value" value="" placeholder="${escapeHtml(t('vault.edit.value_placeholder'))}" aria-label="${escapeHtml(t('vault.field.value_label'))}" autocomplete="new-password" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
       card.appendChild(form)
+      const labelInput = form.querySelector('.vault-edit-label')
       const input = form.querySelector('.vault-edit-value')
-      input.focus()
-      input.select()
+      labelInput.focus()
       form.querySelector('.vault-edit-cancel').addEventListener('click', () => form.remove())
       form.querySelector('.vault-edit-save').addEventListener('click', async () => {
         const newVal = input.value
-        if (!newVal) return
+        const newLabel = labelInput.value.trim() || id
+        if (!newVal && newLabel === label) { form.remove(); return }
         const saveBtn = form.querySelector('.vault-edit-save')
         saveBtn.disabled = true
         saveBtn.textContent = '...'
-        const res = await fetch('/api/vault', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, label, value: newVal }),
-        })
-        if (!res.ok) {
-          const e = await res.json().catch(() => ({}))
-          showToast('Frissítés sikertelen: ' + (e.error || res.status))
+        const request = newVal
+          ? ['/api/vault', 'POST', { id, label: newLabel, value: newVal }]
+          : [`/api/vault/${encodeURIComponent(id)}`, 'PATCH', { label: newLabel }]
+        let failure = null
+        try {
+          const res = await fetch(request[0], {
+            method: request[1],
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request[2]),
+          })
+          if (!res.ok) {
+            const e = await res.json().catch(() => ({}))
+            failure = e.error || res.status
+          }
+        } catch (err) {
+          failure = err && err.message ? err.message : String(err)
+        }
+        if (failure !== null) {
+          showToast(t('vault.toast.update_error') + ': ' + failure)
           saveBtn.disabled = false
-          saveBtn.textContent = 'Mentés'
+          saveBtn.textContent = t('vault.btn.save')
           return
         }
         form.remove()
-        showToast('Kulcs frissitve es szinkronizalva')
+        showToast(t(newVal ? 'vault.toast.updated_synced' : 'vault.toast.label_updated'))
         loadVaultPage()
         loadVault()
       })
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') form.querySelector('.vault-edit-save').click()
-        if (e.key === 'Escape') form.remove()
-      })
+      for (const el of [labelInput, input]) {
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') form.querySelector('.vault-edit-save').click()
+          if (e.key === 'Escape') form.remove()
+        })
+      }
     })
   })
   list.querySelectorAll('.vault-card-delete').forEach(btn => {
