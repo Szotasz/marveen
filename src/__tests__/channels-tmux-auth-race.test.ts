@@ -55,11 +55,28 @@ function bash(script: string, env: Record<string, string> = {}): string {
   })
 }
 
+// A bare `start-server` forks a server that has no session; it exits a moment
+// later, not at once. A client that lands inside that window reaches the live
+// server and `set-environment -g` succeeds (rc 0), so the tests below that
+// assert "the server is gone" flaked under load (15/400 runs with 2x-core CPU
+// load in a container, tmux 3.3a). This waits, up to 5 s, for the server to be
+// really gone. Measured on tmux 3.3a: `list-sessions` on a live empty server
+// answers rc 0 with no output; on an exited one rc 1 and "no server running",
+// and the socket FILE stays behind after the exit, so its existence is no
+// probe. Another tmux version may remove the socket on exit; `list-sessions`
+// then says "error connecting to <sock> (No such file or directory)", which
+// also means gone (not measured on other versions). If the server is still
+// there after 5 s the test fails loudly, here, instead of measuring the race.
+function waitServerGone(s: string): string {
+  const gone = `tmux -S ${s} list-sessions 2>&1 >/dev/null | grep -Eq 'no server running|No such file or directory'`
+  return `for _ in $(seq 1 50); do ${gone} && break; sleep 0.1; done; ${gone} || { echo 'server did not exit after start-server' >&2; exit 1; }`
+}
+
 describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)', () => {
   it('root cause: start-server alone keeps no server, so set-environment -g is lost', () => {
     dir = mkdtempSync(join(tmpdir(), 'tmuxrace-'))
     sock = join(dir, 's')
-    const out = bash(`tmux -S ${sock} start-server; tmux -S ${sock} set-environment -g X 1 2>&1; echo rc=$?`)
+    const out = bash(`tmux -S ${sock} start-server; ${waitServerGone(sock)}; tmux -S ${sock} set-environment -g X 1 2>&1; echo rc=$?`)
     expect(out).toMatch(/no server running/)
   })
 
@@ -97,6 +114,7 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
     const out = join(dir, 'pane-env')
     bash(`
       tmux -S ${sock} start-server
+      ${waitServerGone(sock)}
       tmux -S ${sock} set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null
       env -u CLAUDE_CODE_OAUTH_TOKEN tmux -S ${sock} new-session -d -s worker "sleep 30"
       tmux -S ${sock} new-session -d -s channels "printenv CLAUDE_CODE_OAUTH_TOKEN > ${out}.tmp; echo rc=\\$? >> ${out}.tmp; mv ${out}.tmp ${out}; sleep 30"
