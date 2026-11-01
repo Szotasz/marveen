@@ -247,6 +247,25 @@ describe('POST /api/skills/propose with files', () => {
     }
   })
 
+  it('F11c (Dani 65335): a drift row is flagged AND open, so it cannot be skipped; an unchanged copy is neither', () => {
+    const src = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+    const fnSrc = (name: string) => { const s = src.indexOf(`function ${name}(`); expect(s, name).toBeGreaterThan(-1); return src.slice(s, src.indexOf('\n}\n', s) + 2) }
+    // A minimal DOM: just what pendingEl and pendingFileRow touch.
+    type El = { tag: string; className: string; textContent: string; open: boolean; children: El[]; appendChild: (c: El) => El }
+    const document = { createElement: (tag: string): El => { const el: El = { tag, className: '', textContent: '', open: false, children: [], appendChild: (c) => { el.children.push(c); return c } }; return el } }
+    const t = (k: string) => k
+    const row = new Function('document', 't', `${fnSrc('pendingEl')}\n${fnSrc('pendingFileRow')}; return pendingFileRow`)(document, t) as (f: unknown, origin: string | null) => El
+    const file = { path: 'references/keep.md', size: 7, kind: 'markdown', executable: false, sha256: 'x', text: 'keep me' }
+    for (const origin of ['not_proposed_changed', 'not_proposed_missing']) {
+      const det = row(file, origin)
+      expect(det.open, origin).toBe(true)
+      expect(det.children[0].className, origin).toBe('is-flagged')
+    }
+    const same = row(file, 'from_live')
+    expect(same.open).toBe(false)
+    expect(same.children[0].className).toBe('')
+  })
+
   it('F11b: a live twin that is no longer a regular file (a directory now) counts as missing', async () => {
     const live = join(GLOBAL, 'long-skill')
     mkdirSync(join(live, 'references'), { recursive: true })
