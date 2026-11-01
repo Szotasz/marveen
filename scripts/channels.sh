@@ -1873,15 +1873,18 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
       sleep 1
       continue
       ;;
+    # 2.1.296 dropped "channel" and the colon from the ready banner
+    # ("Listening for messages from <x>"); match both wordings.
+    # Before the welcome branch (Dani 63870, #2389): a pane that shows the ready
+    # banner is never answered with the welcome's blind Enter, which would land
+    # in the live input box.
+    *"Listening for channel messages"*|*"Listening for messages from"*)
+      break
+      ;;
     *"Welcome to Claude Code"*)
       $TMUX send-keys -t "=$SESSION:" Enter
       sleep 1
       continue
-      ;;
-    # 2.1.296 dropped "channel" and the colon from the ready banner
-    # ("Listening for messages from <x>"); match both wordings.
-    *"Listening for channel messages"*|*"Listening for messages from"*)
-      break
       ;;
   esac
 done

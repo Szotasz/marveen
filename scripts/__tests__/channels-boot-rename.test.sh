@@ -113,7 +113,9 @@ eq "someone else's text in the box: no extra Enter"  "1" "$(enters)"
 eq "...exit 0"                                        "0" "$RC"
 
 FAKE_CAPTURE_FAIL=1 run "$PARKED"
-eq "an unreadable pane: no extra Enter, exit 0"       "1" "$(enters)"
+eq "an unreadable pane is an unknown screen: nothing is typed (Dani 63870)" "0" "$(grep -c '^send-keys' "$FAKE_LOG")"
+eq "...exit 3"                                        "3" "$RC"
+case "$(cat "$FAKE_DIR/err")" in *"the pane cannot be read, NOT typing"*) pass "...and the skip is logged" ;; *) fail "...and the skip is logged" "the pane cannot be read, NOT typing" "$(cat "$FAKE_DIR/err")" ;; esac
 
 FAKE_SEND_FAIL=1 run "$DONE"
 eq "the first send fails: exit 2"                     "2" "$RC"
@@ -211,6 +213,11 @@ if [ -n "$fallback" ] && [ "$fallback" -le 6 ]; then pass "...inside the else br
 # #2389: the startup guard's window. The two parsing lines are taken from
 # channels.sh itself and run here, so the test follows the real code.
 eq "the fixed 12-pass guard loop is gone"             "0" "$(grep -c '^for i in 1 2 3 4 5 6 7 8 9 10 11 12; do$' "$CHANNELS")"
+# Dani 63870: the ready banner is matched before the welcome's blind Enter in the guard.
+guard_loop="$(sed -n '/^while \[ "\$i" -lt "\$_boot_guard_s" \]; do$/,/^done$/p' "$CHANNELS")"
+ready_at="$(printf '%s\n' "$guard_loop" | grep -n 'Listening for channel messages' | head -1 | cut -d: -f1)"
+welcome_at="$(printf '%s\n' "$guard_loop" | grep -n '"Welcome to Claude Code"' | head -1 | cut -d: -f1)"
+if [ -n "$ready_at" ] && [ -n "$welcome_at" ] && [ "$ready_at" -lt "$welcome_at" ]; then pass "the ready banner's branch comes before the welcome's blind Enter"; else fail "ready before welcome" "ready < welcome" "ready=$ready_at welcome=$welcome_at"; fi
 eq "the guard loop is bounded by _boot_guard_s"       "1" "$(grep -c '^while \[ "\$i" -lt "\$_boot_guard_s" \]; do$' "$CHANNELS")"
 guard_parse="$(grep -E '^_boot_guard_s="\$\{CHANNELS_BOOT_GUARD_S:-90\}"$|^case "\$_boot_guard_s" in ' "$CHANNELS")"
 eq "...both parsing lines are found"                  "2" "$(printf '%s\n' "$guard_parse" | grep -c .)"
