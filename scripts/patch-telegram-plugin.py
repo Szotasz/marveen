@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Take /status and /help away from the Telegram channel plugin (ELSOKOR922 D-4),
-mark forwarded messages in the inbound meta (forwarded="1"), record every
+mark forwarded messages in the inbound meta (forwarded="1"), carry the
+excerpt a reply quotes (reply_to_message_id, reply_to_text), record every
 inbound message the bot receives (the evidence owner WRITE commands need),
 strip the invisible Unicode characters a pasted or forwarded text can carry
 out of the text handed to the model, and -- only while
@@ -56,6 +57,7 @@ MARKER = "// MARVEEN-PATCH(elsokor922-d4): /status and /help belong to the comma
 FWD_MARKER = "// MARVEEN-PATCH(elsokor922-fwd): forwarded flag for the command hook"
 EVID_MARKER = "// MARVEEN-PATCH(cmd920-evid): inbound evidence for owner write commands"
 KBD_MARKER = "// MARVEEN-PATCH(c67f5f34-kbd): one-tap answer buttons"
+QUOTE_MARKER = "// MARVEEN-PATCH(quote1101): quoted excerpt of a reply"
 SILENT_MARKER = "// MARVEEN-PATCH(tgsilent): reply without a notification sound"
 
 # Each anchor is the handler's full block, up to its closing `})` at column 0.
@@ -70,6 +72,22 @@ ANCHORS = [
 # test bot, 2026-09-23: a forwarded /status ran). One meta key more, right
 # after user_id, and the hook refuses to run a forwarded command.
 FWD_ANCHOR = ("inbound meta user_id", re.compile(r"^( *)user_id: String\(from\.id\),\n", re.MULTILINE))
+
+# When the owner replies to an earlier message (Telegram "Reply", or a
+# selected part of it), the update carries reply_to_message and, for a
+# selection, quote -- but the meta drops both, so the session sees only "erre"
+# with nothing to point at (owner report, 2026-11-01). Two meta keys more:
+# reply_to_message_id, and reply_to_text, a single-line EXCERPT only (the
+# selected part when there is one, else the start of the quoted message;
+# whitespace collapsed, at most 300 characters), never the whole history.
+# reply_to_selected="1" marks that the excerpt is the owner's own selection.
+QUOTE_ANCHOR = ("inbound meta ts", re.compile(r"^( *)ts: new Date\(\(ctx\.message\?\.date \?\? 0\) \* 1000\)\.toISOString\(\),\n", re.MULTILINE))
+QUOTE_INSERT = (
+    "{indent}...(ctx.message?.reply_to_message ? {{ reply_to_message_id: String(ctx.message.reply_to_message.message_id), "
+    "reply_to_text: (ctx.message.quote?.text ?? ctx.message.reply_to_message.text ?? ctx.message.reply_to_message.caption ?? '')"
+    ".replace(/\\s+/g, ' ').trim().slice(0, 300), ...(ctx.message.quote?.text ? {{ reply_to_selected: '1' }} : {{}}) }} : {{}}), "
+    + QUOTE_MARKER + "\n"
+)
 
 # Owner WRITE commands (/model, /context clear, ...) run only when the message
 # they came in is on record HERE, in the plugin process, the one place that
@@ -312,6 +330,9 @@ PATCHES = [
     {"name": "evid", "marker": EVID_MARKER, "anchors": [EVID_ANCHOR], "mode": "insert-before",
      "insert": EVID_INSERT,
      "fallback": "no inbound evidence is recorded, owner write commands are refused"},
+    {"name": "quote", "marker": QUOTE_MARKER, "anchors": [QUOTE_ANCHOR], "mode": "insert-before",
+     "insert": QUOTE_INSERT,
+     "fallback": "a quoted reply arrives without the quoted excerpt"},
     # an anchor may carry its own mode and insert (name, regex, mode, insert): the kbd lines differ.
     # "apply" replaces apply_patch for a patch that must also rebuild an older version of itself.
     # silent shares three anchors with kbd and runs BEFORE it: apply_kbd strips and rebuilds its own
