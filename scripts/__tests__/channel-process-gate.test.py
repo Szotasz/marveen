@@ -433,5 +433,111 @@ class DefaultStatePathTest(unittest.TestCase):
                              "the gate conjured an orphan ~/marveen")
 
 
+class TestFixtureFalseAlarmTest(unittest.TestCase):
+    """CHANGATEFP1101 (2026-11-01 15:35:07, a false alarm to the owner): a full suite's fake `claude --channels`
+    processes (the channel-poller-reap tests) were announced as sessions with a dead telegram worker. The names are the
+    two from the live state file (`pid:21153`, `pid:22176`): outside every tmux pane, from marketplaces nobody knows.
+    Measured against the stub notifier, never the owner."""
+
+    FAKE_DETACHED = ("21153 1 /private/tmp/vitest-x/bin/claude --channels "
+                     "plugin:telegram@guards-cf075d41-pane-parent-15518-1793543701020")
+    FAKE_FOREIGN = ("22176 1 /private/tmp/vitest-y/bin/claude --channels "
+                    "plugin:telegram@own-uid-35ea0375-foreign-15525-1793543705514")
+    # The same fake started INSIDE an agent's pane tree (the suite runs in agent-heimdall's pane): the pane pid
+    # 2972889 is the real claude, the suite below it, the fake below that.
+    SUITE_NODE = "5100001 2972889 node /home/user/marveen/node_modules/.bin/vitest run"
+    FAKE_IN_PANE = ("5100002 5100001 /tmp/vitest-z/bin/claude --channels "
+                    "plugin:telegram@guards-cf075d41-pane-parent-15518-1793543701020")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.log = os.path.join(self.dir, "sent.log")
+        self.stub = os.path.join(self.dir, "stub-notify.sh")
+        with open(self.stub, "w") as fh:
+            fh.write("#!/bin/bash\nprintf '%s\\n' \"$1\" >> \"$STUB_LOG\"\nexit 0\n")
+        os.chmod(self.stub, 0o755)
+        self.state = os.path.join(self.dir, "state.json")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _run(self, rows, markets=None):
+        import json as _json
+        ps = os.path.join(self.dir, "ps.txt")
+        tm = os.path.join(self.dir, "tmux.txt")
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER] + list(rows)) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX)
+        km = os.path.join(self.dir, "km.json")
+        with open(km, "w") as fh:
+            _json.dump(MARKETS if markets is None else markets, fh)
+        env = dict(os.environ, CHANNEL_GATE_NOTIFY_CMD=self.stub, STUB_LOG=self.log)
+        cmd = [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm, "--state", self.state,
+               "--marketplaces-file", km, "--notify", "--json"]
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    def sent(self):
+        try:
+            with open(self.log, encoding="utf-8") as fh:
+                return [l for l in fh.read().splitlines() if l]
+        except OSError:
+            return []
+
+    def test_the_incidents_fake_claudes_outside_every_pane_are_not_sessions(self):
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, self.FAKE_DETACHED, self.FAKE_FOREIGN])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("pid:", r.stdout)
+        self.assertEqual(self.sent(), [], "nothing goes to the owner for a test fixture")
+
+    def test_a_claude_outside_every_pane_is_not_a_session_even_from_a_known_marketplace(self):
+        # Only the pane rule stops this one: the official marketplace is known, but no tmux pane is above it.
+        detached = "21154 1 /private/tmp/vitest-q/bin/claude --channels plugin:telegram@claude-plugins-official"
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, detached])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("pid:21154", r.stdout)
+        self.assertEqual(self.sent(), [])
+
+    def test_a_fake_inside_an_agents_pane_from_an_unknown_marketplace_is_not_a_channel(self):
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, OTHER, OTHER_BUN, self.SUITE_NODE, self.FAKE_IN_PANE])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("guards-cf075d41", r.stdout)
+        self.assertEqual(self.sent(), [])
+
+    def test_a_real_session_with_a_dead_worker_still_alarms(self):
+        # The real main session declares telegram+discord (the built-in official marketplace), its discord worker is gone.
+        r = self._run([CLAUDE_BOTH, BUN_TG, self.FAKE_DETACHED])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("main-agent-channels", self.sent()[0])
+        self.assertIn("discord", self.sent()[0])
+
+    def test_a_known_non_official_marketplace_still_counts(self):
+        # The marveen-marketplace slack worker is missing: a known marketplace, so it is measured and red.
+        r = self._run(["4005921 888007 /opt/homebrew/bin/claude --channels plugin:slack-channel@marveen-marketplace"])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("marveen-marketplace/slack-channel", r.stdout)
+
+    def test_without_a_readable_registry_nothing_is_dropped(self):
+        # No registry to read: a dead worker of ANY marketplace inside a pane is still reported, never hidden.
+        r = self._run(["4005921 888007 /opt/homebrew/bin/claude --channels plugin:telegram@some-other-market"], markets=[])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("some-other-market/telegram", r.stdout)
+
+    def test_the_stuck_pid_keys_leave_the_state(self):
+        import json as _json
+        with open(self.state, "w") as fh:
+            _json.dump({"pid:21153": {"missing": ["guards-x/telegram"], "announced": ["guards-x/telegram"]},
+                        "main-agent-channels": {"missing": [], "announced": []}}, fh)
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(self.state, encoding="utf-8") as fh:
+            st = _json.load(fh)
+        self.assertNotIn("pid:21153", st)
+        self.assertIn("main-agent-channels", st)
+        self.assertEqual(self.sent(), [], "no 'recovered' line for a key that was never a session")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

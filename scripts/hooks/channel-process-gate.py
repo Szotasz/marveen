@@ -101,6 +101,28 @@ def directory_marketplaces(files):
     return out
 
 
+# CHANGATEFP1101 (2026-11-01 15:35, a false alarm to the owner): a full test suite's fake `claude --channels
+# plugin:telegram@<fixture-name>` processes (the channel-poller-reap tests) were read as live sessions with a dead
+# worker. A declared channel counts only from a marketplace this install knows: every marketplace the registries name
+# (any source), plus Claude Code's built-in official one. With no readable registry nothing is dropped, so a real
+# dead worker is never hidden by an unreadable file.
+BUILTIN_MARKETS = {"claude-plugins-official"}
+
+
+def known_marketplaces(files):
+    """-> the marketplace names the given registries list (any source type); empty when none is readable."""
+    out = set()
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            out.update(k for k in data.keys() if isinstance(k, str))
+    return out
+
+
 def worker_paths(argv):
     """The paths a runtime child actually runs from: the --cwd value and the
     script it executes (the first argument that is not an option). Any other
@@ -191,9 +213,14 @@ def session_name(pid, procs, tmux_map):
     return f"pid:{pid}"
 
 
-def measure(procs, tmux_map, dir_markets=None):
-    """-> list of {session, pid, declared:[], alive:[], missing:[]}"""
+def measure(procs, tmux_map, dir_markets=None, known=None):
+    """-> list of {session, pid, declared:[], alive:[], missing:[]}
+
+    Only a `claude --channels` inside one of OUR tmux panes counts (its pid chain reaches a pane), and in it only the
+    channels of a known marketplace (CHANGATEFP1101): a process outside every pane (a test suite's fake claude) is not
+    a session of ours."""
     dir_markets = dir_markets or {}
+    markets = (set(known) | BUILTIN_MARKETS) if known else None
     out = []
     for pid, p in sorted(procs.items()):
         args = p["args"]
@@ -201,7 +228,12 @@ def measure(procs, tmux_map, dir_markets=None):
             continue
         if not re.search(r"(^|/)claude(\s|$)", args.split()[0] + " "):
             continue
+        session = session_name(pid, procs, tmux_map)
+        if session.startswith("pid:"):
+            continue
         declared = {f"{m.group(2)}/{m.group(1)}" for m in DECL_RE.finditer(args)}
+        if markets is not None:
+            declared = {d for d in declared if d.split("/", 1)[0] in markets}
         if not declared:
             continue
         alive = set()
@@ -212,7 +244,7 @@ def measure(procs, tmux_map, dir_markets=None):
             if name:
                 alive.add(name)
         out.append({
-            "session": session_name(pid, procs, tmux_map),
+            "session": session,
             "pid": pid,
             "declared": sorted(declared),
             "alive": sorted(alive),
@@ -303,8 +335,8 @@ def main():
         print("MERESI HIBA: ures ps-kimenet", file=sys.stderr)
         return 2
 
-    rows = measure(procs, parse_tmux(tmux_text),
-                   directory_marketplaces(a.marketplaces_file or MARKETPLACE_FILES))
+    registries = a.marketplaces_file or MARKETPLACE_FILES
+    rows = measure(procs, parse_tmux(tmux_text), directory_marketplaces(registries), known_marketplaces(registries))
     if a.only:
         rows = [r for r in rows if r["session"] == a.only]
         if not rows:
@@ -361,6 +393,10 @@ def main():
             print(f"ERTESITES {'elkuldve' if ok else 'NEM ment ki'} ({key}: "
                   f"{'hianyzik' if r['missing'] else 'helyreallt'})", file=sys.stderr)
         st[key] = entry
+    # A "pid:<n>" key came from a process outside every tmux pane, which is never measured any more (CHANGATEFP1101);
+    # it would stay in the state for good.
+    for key in [k for k in st if k.startswith("pid:")]:
+        del st[key]
     save_state(st)
     if send_failed:
         return 3
