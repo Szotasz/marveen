@@ -78,7 +78,7 @@ const {
   resolveAuth, gateRequest, isScheduleWrite, agentScopeDenial, AGENT_TOKEN_ALLOWLIST, isAgentVaultReadAllowed,
 } = await import('../web/auth-gate.js')
 const {
-  ensureAgentToken, createAgentTokenResolver, dashboardTokenPathFor, matchAgentToken,
+  ensureAgentToken, createAgentTokenResolver, dashboardTokenPathFor, matchAgentToken, helperTokenEnv,
   migrateAgentClaudeMdTokenRefs, revertAgentClaudeMdTokenRefs, syncAgentTokenOnStart, loadAgentTokens, agentTokenPath, mainTokenPath,
 } = await import('../web/agent-tokens.js')
 const { mayIssueCredentials } = await import('../web/routes/auth.js')
@@ -218,6 +218,56 @@ describe('token provisioning (ensureAgentToken)', () => {
     expect(dashboardTokenPathFor('gamma', base, true)).toBe(mainTokenPath())
     // AGENT_TOKENS off: the shared path, even though the agent's file exists
     expect(dashboardTokenPathFor(AGENT, base, false)).toBe(mainTokenPath())
+  })
+
+  // VOICETOKENLEAK1101 PR-A0: scripts/marveen-api.sh reads MARVEEN_TOKEN_FILE, else the SHARED token. The launch
+  // command points it at the agent's own token exactly when its curl recipes would have used that one.
+  it('helperTokenEnv: the own token path when the agent has one, else unset (never the shared token by inheritance)', () => {
+    const q = (x: string) => `'${x}'`
+    expect(helperTokenEnv(AGENT, q, base, true)).toBe(`export MARVEEN_TOKEN_FILE='${agentTokenPath(AGENT, base)}' && `)
+    expect(helperTokenEnv(MAIN_AGENT_ID, q, base, true)).toBe('unset MARVEEN_TOKEN_FILE && ')
+    mkdirSync(join(base, 'gamma'), { recursive: true })
+    expect(helperTokenEnv('gamma', q, base, true)).toBe('unset MARVEEN_TOKEN_FILE && ')
+    // the path the helper is pointed at is the same one the agent's curl recipes used
+    for (const name of [AGENT, 'gamma']) {
+      const env = helperTokenEnv(name, q, base, true)
+      const own = dashboardTokenPathFor(name, base, true)
+      expect(env.startsWith('export') ? env.includes(own) : own === mainTokenPath(), name).toBe(true)
+    }
+  })
+
+  it('helperTokenEnv: AGENT_TOKENS off adds nothing, so the launch command is byte for byte the old one (Dani 64975/4)', () => {
+    const q = (x: string) => `'${x}'`
+    mkdirSync(join(base, 'gamma'), { recursive: true })
+    for (const name of [AGENT, 'gamma', MAIN_AGENT_ID]) expect(helperTokenEnv(name, q, base, false), name).toBe('')
+  })
+
+  it('helperTokenEnv: only the path, never the token value (the launch command shows in ps) (Dani 64975/2)', () => {
+    const value = readFileSync(agentTokenPath(AGENT, base), 'utf-8').trim()
+    expect(value.length).toBeGreaterThan(8)
+    const env = helperTokenEnv(AGENT, (x) => `'${x}'`, base, true)
+    expect(env).toContain(agentTokenPath(AGENT, base))
+    expect(env).not.toContain(value)
+    expect(env).not.toContain(MAIN_TOKEN)
+  })
+
+  it('helperTokenEnv: a sub-agent with the switch on but no own file is a visible WARN, not a silent shared token (Dani 64975/1)', async () => {
+    const { logger } = await import('../logger.js')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    try {
+      mkdirSync(join(base, 'delta'), { recursive: true })
+      expect(helperTokenEnv('delta', (x) => `'${x}'`, base, true)).toBe('unset MARVEEN_TOKEN_FILE && ')
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][1])).toMatch(/no own token file.*SHARED token/)
+      warn.mockClear()
+      // the narrowed agent, the main agent and the switch off say nothing
+      helperTokenEnv(AGENT, (x) => x, base, true)
+      helperTokenEnv(MAIN_AGENT_ID, (x) => x, base, true)
+      helperTokenEnv('delta', (x) => x, base, false)
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('migrates the literal shared-token path in the agent CLAUDE.md, idempotently', () => {

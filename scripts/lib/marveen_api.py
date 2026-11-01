@@ -398,6 +398,12 @@ def main(argv):
         # marveen-api.sh asks this before it hands the message verb to agent-msg.sh, which reads
         # the same two variables.
         return 0
+    if argv[0] == '--check-token':
+        # ...and this one too: the token file the way the other verbs read it (missing, unreadable
+        # or empty -> exit 2, nothing sent). agent-msg.sh alone would send an empty Bearer for an
+        # empty file (VOICETOKENLEAK1101 PR-A0).
+        read_token()
+        return 0
     verb, rest = argv[0], argv[1:]
     try:
         method, path, body, headers, flags = build_request(verb, rest)

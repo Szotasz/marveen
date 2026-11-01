@@ -198,6 +198,31 @@ function isDanglingLink(path: string): boolean {
 }
 
 /**
+ * The launch-command piece that tells scripts/marveen-api.sh which token to read (VOICETOKENLEAK1101 PR-A0).
+ * The helper reads MARVEEN_TOKEN_FILE, else the SHARED store/.dashboard-token. A sub-agent with its own token
+ * (AGENT_TOKENS on, its file in place: dashboardTokenPathFor) must send THAT one, the narrower token the server
+ * confines to the agent API; otherwise the helper would write with the shared token, a wider scope than the
+ * agent's own curl recipes had. So, with the switch on: export the agent's own path when it has one; else unset
+ * the variable, so a value inherited from the tmux server's environment never picks the token for the agent, and
+ * a sub-agent without its own file says so in the log (it is on the shared token, a wider scope) instead of
+ * looking like the narrowed one. Only the PATH is exported, never the token value (the launch command shows in
+ * pane_start_command and ps). With the switch off (the default) the piece is empty: the launch command stays
+ * byte for byte what it was.
+ * Not an isolation boundary: the agent runs as the same OS user, can read store/.dashboard-token and can override
+ * the variable. It keeps an agent from widening its scope BY ACCIDENT.
+ */
+export function helperTokenEnv(name: string, quote: (s: string) => string, baseDir: string = agentsBaseDir(), enabled: boolean = agentTokensEnabled()): string {
+  if (!enabled) return ''
+  const own = dashboardTokenPathFor(name, baseDir, true)
+  if (own !== mainTokenPath()) return `export MARVEEN_TOKEN_FILE=${quote(own)} && `
+  if (isPlausibleAgentName(name)) {
+    logger.warn({ name, path: agentTokenPath(name, baseDir) },
+      'agent token: AGENT_TOKENS is on but the agent has no own token file; marveen-api.sh uses the SHARED token for it (wider scope) until a start provisions one')
+  }
+  return 'unset MARVEEN_TOKEN_FILE && '
+}
+
+/**
  * The token file an agent's generated instructions should `cat`.
  * Main agent, or AGENT_TOKENS off -> store/.dashboard-token. A sub-agent with
  * the switch on -> its own file, but ONLY once that file exists as a valid

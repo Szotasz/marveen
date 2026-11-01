@@ -20,6 +20,8 @@ if [ "${1:-}" = "message" ]; then
   shift
   # agent-msg.sh reads MARVEEN_API_BASE and MARVEEN_TOKEN_FILE too: the same guard first.
   python3 "$DIR/lib/marveen_api.py" --check-env || exit 2
+  # The token file it will read: missing, unreadable or empty stops here, never an empty Bearer.
+  python3 "$DIR/lib/marveen_api.py" --check-token || exit 2
   PRIORITY=()
   ARGS=()
   while [ "$#" -gt 0 ]; do

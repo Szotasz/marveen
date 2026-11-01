@@ -241,6 +241,40 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     expect(seen).toHaveLength(0)
   })
 
+  it('a set MARVEEN_TOKEN_FILE that is missing or empty never falls back to the shared token (VOICETOKENLEAK1101 PR-A0)', async () => {
+    // The agent's own (narrowed) token is the only one it may send once the launch command names it: a copied
+    // root WITH a shared store/.dashboard-token, so a fallback would be a request on the wire.
+    const root = mkdtempSync(join(tmpdir(), 'marveen-api-fallback-'))
+    mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+    mkdirSync(join(root, 'store'), { recursive: true })
+    for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py')]) {
+      copyFileSync(join(REPO, 'scripts', f), join(root, 'scripts', f))
+    }
+    const SHARED = 'shared-token-SHOULD-NOT-SEND'
+    writeFileSync(join(root, 'store', '.dashboard-token'), SHARED + '\n', 'utf-8')
+    const runIn = (args: string[], env: Record<string, string>) => new Promise<number>((resolve) => {
+      execFile('bash', [join(root, 'scripts', 'marveen-api.sh'), ...args], {
+        env: { PATH: process.env.PATH!, MARVEEN_API_BASE: `http://127.0.0.1:${port(api)}`, ...env }, timeout: 20_000,
+      }, (err) => resolve(err ? (typeof err.code === 'number' ? err.code : -1) : 0))
+    })
+    // control: the fixture does reach the server with the shared token when nothing names another file
+    expect(await runIn(['directive-verify', '1'], {})).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].headers.authorization).toBe(`Bearer ${SHARED}`)
+    seen = []
+    const missing = join(root, 'agents', 'alfa', '.dashboard-token')
+    mkdirSync(join(root, 'agents', 'empty'), { recursive: true })
+    const empty = join(root, 'agents', 'empty', '.dashboard-token')
+    writeFileSync(empty, '\n', 'utf-8')
+    for (const tf of [missing, empty]) {
+      expect(await runIn(['directive-verify', '1'], { MARVEEN_TOKEN_FILE: tf }), tf).toBe(2)
+      expect(await runIn(['memory-save', 'alfa', 'warm', 'k', file('fb.txt', 'x')], { MARVEEN_TOKEN_FILE: tf }), tf).toBe(2)
+      // the message verb (agent-msg.sh) is stopped by the same check before it starts
+      expect(await runIn(['message', 'alfa', 'samu', file('fb2.txt', 'x')], { MARVEEN_TOKEN_FILE: tf }), tf).toBe(2)
+    }
+    expect(seen).toHaveLength(0)
+  })
+
   it('a non-2xx answer exits 1 with the status', async () => {
     reply = { status: 409, body: '{"error":"already_consumed"}' }
     const r = await run(['approval-consume', 'ab12', 'memory_maintenance', 'dani'])
