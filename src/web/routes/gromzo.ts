@@ -156,29 +156,83 @@ async function restartAfterMxdReload(slug: string): Promise<void> {
 
 /** After mxd's reload: an add (its flag is on by now) sends the agent's dashboard picture, before the agent restarts;
  *  a remove (flag off) sends nothing. A failure is logged and changes nothing else: the add stands. */
-export async function avatarAfterReload(slug: string, retryDelayMs = 2_000): Promise<void> {
-  if (agentDeps.readFlag(slug)) await pushAvatarAfterAdd(slug, retryDelayMs)
+export async function avatarAfterReload(slug: string, retryDelayMs = 2_000, appliedRetryMs = AVATAR_APPLIED_RETRY_MS): Promise<void> {
+  if (agentDeps.readFlag(slug)) await pushAvatarAfterAdd(slug, retryDelayMs, appliedRetryMs)
+  else logger.info({ slug }, 'gromzo agents: no picture sent (the switch is off: a remove)')
 }
 
-/** The picture after an add: a few tries while mxd may still be settling after its reload (transport failure or
- *  "unavailable"), then give up. Logs the slug and the size only. */
-export async function pushAvatarAfterAdd(slug: string, retryDelayMs = 2_000): Promise<void> {
+// mxd's agent_avatar takes one picture per agent per minute (marveen-mxd main.rs take_avatar), so a try again after
+// "stored, not set yet" waits a little over a minute.
+export const AVATAR_APPLIED_RETRY_MS = 65_000
+const AVATAR_APPLIED_TRIES = 3
+
+/** One send, with a few tries while mxd may still be settling after its reload (transport failure or "unavailable"). */
+async function sendAvatarSettling(slug: string, retryDelayMs: number): Promise<GromzoAgentOutcome> {
+  let o: GromzoAgentOutcome = { ok: false, code: 'io' }
   for (let attempt = 1; attempt <= 3; attempt++) {
-    let o: GromzoAgentOutcome
     try { o = await sendGromzoAvatar(slug, agentDeps) } catch (e) {
       o = { ok: false, code: e instanceof MxdDashError ? e.code : 'io' }
     }
-    if (o.ok) {
-      if (o.state === 'avatar_sent') logger.info({ slug, bytes: o.bytes, applied: o.applied }, 'gromzo agents: picture sent after the add')
-      return
-    }
+    if (o.ok) return o
     const retry = o.code === 'unavailable' || o.code === 'not_running' || o.code === 'timeout' || o.code === 'io'
-    if (!retry || attempt === 3) {
-      logger.warn({ slug, code: o.code }, 'gromzo agents: picture NOT sent after the add (the add stands)')
-      return
-    }
+    if (!retry || attempt === 3) return o
     await new Promise((r) => setTimeout(r, retryDelayMs))
   }
+  return o
+}
+
+/** The picture after an add. Logs the slug and the size only, and every outcome (GAZDA-TESZT build 19, Samu 65189:
+ *  an add whose picture never showed). mxd answers applied=false when it stored the picture but could not set it on
+ *  the agent (the new agent was not running there yet, right after its reload); it would set it only at the agent's
+ *  NEXT start. So that is a WARN, and the picture goes again in the background, a little over a minute apart, until
+ *  mxd sets it, the switch goes off, or the tries run out. The agent restart never waits for it. */
+export async function pushAvatarAfterAdd(slug: string, retryDelayMs = 2_000, appliedRetryMs = AVATAR_APPLIED_RETRY_MS): Promise<void> {
+  const o = await sendAvatarSettling(slug, retryDelayMs)
+  if (!o.ok) {
+    logger.warn({ slug, code: o.code }, 'gromzo agents: picture NOT sent after the add (the add stands)')
+    return
+  }
+  if (o.state !== 'avatar_sent') {
+    logger.warn({ slug, state: o.state }, 'gromzo agents: picture send answered an unexpected state')
+    return
+  }
+  if (o.applied) {
+    logger.info({ slug, bytes: o.bytes, applied: true }, 'gromzo agents: picture sent after the add')
+    return
+  }
+  // At most one try-again line per agent (Dani 65222/2): a second add or a restart while one runs would run into
+  // mxd's one-per-minute limit with a parallel line.
+  if (avatarRetrying.has(slug)) {
+    logger.warn({ slug, bytes: o.bytes, applied: false }, 'gromzo agents: picture stored by mxd but NOT set on the agent yet; a try again already runs for it')
+    return
+  }
+  logger.warn({ slug, bytes: o.bytes, applied: false }, 'gromzo agents: picture stored by mxd but NOT set on the agent yet; sending it again')
+  avatarRetrying.add(slug)
+  void retryUntilApplied(slug, retryDelayMs, appliedRetryMs)
+    .catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: picture retry failed'))
+    .finally(() => avatarRetrying.delete(slug))
+}
+
+const avatarRetrying = new Set<string>()
+
+async function retryUntilApplied(slug: string, retryDelayMs: number, gapMs: number): Promise<void> {
+  for (let tryNo = 2; tryNo <= AVATAR_APPLIED_TRIES; tryNo++) {
+    await new Promise((r) => setTimeout(r, gapMs))
+    if (!agentDeps.readFlag(slug)) {
+      logger.info({ slug }, 'gromzo agents: picture retry stopped (the switch went off)')
+      return
+    }
+    const o = await sendAvatarSettling(slug, retryDelayMs)
+    if (o.ok && o.state === 'avatar_sent' && o.applied) {
+      logger.info({ slug, bytes: o.bytes, applied: true, try: tryNo }, 'gromzo agents: picture set on the agent')
+      return
+    }
+    if (!o.ok && o.code !== 'rate_limited') {
+      logger.warn({ slug, code: o.code, try: tryNo }, 'gromzo agents: picture NOT sent on the retry (the add stands)')
+      return
+    }
+  }
+  logger.warn({ slug, tries: AVATAR_APPLIED_TRIES }, 'gromzo agents: picture still NOT set on the agent; mxd sets the stored one at the agent\'s next start')
 }
 
 const defaultAgentDeps: GromzoAgentDeps = {
