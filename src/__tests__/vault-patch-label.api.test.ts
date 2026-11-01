@@ -1,7 +1,7 @@
 // PATCH /api/vault/:id (#2396): rename a secret's label without touching its value.
 // Black-box: drives the dashboard route handler against a real vault in a temp store.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type http from 'node:http'
@@ -91,6 +91,38 @@ describe('PATCH /api/vault/:id renames the label of an existing secret', () => {
     expect(after.label).toBe('Renamed label')
     expect(after.createdAt).toBe(before.createdAt)
     expect(await valueOf(ID)).toEqual({ id: ID, value: VALUE })
+  })
+
+  it('ignores every other body field: a value in the body leaves the stored ciphertext byte-identical', async () => {
+    // The entry for an id inside vault.json, whatever the container shape (map keyed by id, or list of {id,...}).
+    const stored = (): Record<string, unknown> => {
+      const walk = (node: unknown): Record<string, unknown> | undefined => {
+        if (!node || typeof node !== 'object') return undefined
+        const o = node as Record<string, unknown>
+        if (o[ID] && typeof o[ID] === 'object') return o[ID] as Record<string, unknown>
+        if (o.id === ID) return o
+        for (const v of Object.values(o)) { const f = walk(v); if (f) return f }
+        return undefined
+      }
+      const e = walk(JSON.parse(readFileSync(join(STORE, 'vault.json'), 'utf-8')))
+      expect(e).toBeDefined()
+      return e!
+    }
+    // Everything but the label and bookkeeping timestamps: the encrypted payload and its iv/tag/etc.
+    const cipherPart = (e: Record<string, unknown>) => {
+      const { label: _l, updatedAt: _u, id: _i, ...rest } = e
+      return JSON.stringify(rest)
+    }
+    const before = cipherPart(stored())
+    expect(before.length).toBeGreaterThan(2)
+
+    const res = await patch(ID, { label: 'x', value: 'other-plaintext-should-be-ignored' })
+    expect(res.statusCode).toBe(200)
+    expect(json(res)).toEqual({ ok: true })
+    expect((await entry(ID))!.label).toBe('x')
+    expect(await valueOf(ID)).toEqual({ id: ID, value: VALUE })
+    expect(cipherPart(stored())).toBe(before)
+    expect(readFileSync(join(STORE, 'vault.json'), 'utf-8')).not.toContain('other-plaintext-should-be-ignored')
   })
 
   it('accepts a 50-character label', async () => {
