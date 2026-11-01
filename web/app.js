@@ -20744,7 +20744,7 @@ async function openResearchDoc(agent, name) {
 
 // === Gromzo card: which agents are on Gromzo (GROMZOAGENTPICK1101) ===
 // GET /api/gromzo/agents lists the fleet; switching on asks the owner to approve in the
-// app (POST .../enable), then this panel asks .../consent every few seconds until the
+// app (POST .../enable), then this panel asks POST .../consent every few seconds until the
 // owner decided (the server paces the real mxd check to one per ~11 s). Switching off
 // is POST .../disable. Only the owner's dashboard session may do any of it; the
 // consent id never reaches the browser.
@@ -20888,11 +20888,15 @@ async function openResearchDoc(agent, name) {
     if (!slugs.length || document.hidden) { stopPolling(); return }
     for (const slug of slugs) {
       try {
-        const r = await fetch('/api/gromzo/agents/' + encodeURIComponent(slug) + '/consent', { cache: 'no-store' })
+        const r = await post(slug, 'consent')
         if (!r.ok) {
-          const code = await codeOf(r)
+          let code = 'http_' + r.status
+          let added = ''
+          try { const e = await r.json(); code = String(e.code || e.error || code); added = typeof e.added_slug === 'string' ? e.added_slug : '' } catch { /* keep the HTTP code */ }
           // mxd reloading or a transient refusal: keep waiting; a gone consent ends the wait.
           if (code === 'no_pending') local.delete(slug)
+          // The approval belonged to another agent and mxd added THAT one (its switch here stays off).
+          else if (code === 'consent_mismatch' && added) local.set(slug, { kind: 'error', text: t('gromzo.agents.err.consent_mismatch_added', { slug: added }) })
           else if (!['not_running', 'timeout', 'rate_limited', 'too_soon', 'unavailable', 'io'].includes(code)) local.set(slug, { kind: 'error', text: agentErr(code) })
           continue
         }

@@ -54,7 +54,8 @@ export interface GromzoAgentRow {
 export type GromzoAgentOutcome =
   | { ok: true, state: 'pending', expiresIn: number }
   | { ok: true, state: 'added' | 'removed' | 'on' | 'refused' | 'expired' | 'used' }
-  | { ok: false, code: string }
+  /** added: on consent_mismatch, the slug mxd actually added (its flag stays as it was). */
+  | { ok: false, code: string, added?: string }
 
 /** slug -> the consent asked for it (server side only). */
 const pending = new Map<string, { consentId: string, expiresAt: number }>()
@@ -137,7 +138,7 @@ export async function checkGromzoAgent(slug: string, deps: GromzoAgentDeps): Pro
   if (r.state === 'pending') return stillPending
   pending.delete(slug)
   if (r.state !== 'added') return { ok: true, state: r.state }
-  if (r.slug !== slug) return { ok: false, code: 'consent_mismatch' }
+  if (r.slug !== slug) return { ok: false, code: 'consent_mismatch', added: r.slug }
   deps.writeFlag(slug, true)
   deps.restartOne(slug)
   return { ok: true, state: 'added' }

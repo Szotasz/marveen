@@ -2326,6 +2326,7 @@ window._i18n.hu = {
   'gromzo.agents.err.bad_name': 'Az ügynök megjelenített neve nem használható a Gromzóban.',
   'gromzo.agents.err.reserved_name': 'Ez a megjelenített név foglalt a Gromzóban.',
   'gromzo.agents.err.consent_mismatch': 'A jóváhagyás nem ehhez az ügynökhöz tartozott, ezért semmi nem változott. Kapcsold be újra.',
+  'gromzo.agents.err.consent_mismatch_added': 'A jóváhagyás egy másik ügynökhöz tartozott: a chat-szolgáltatás a(z) {slug} ügynököt vette fel, ennél semmi nem változott.',
   'gromzo.agents.err.no_pending': 'Nincs függő jóváhagyás ennél az ügynöknél.',
   'gromzo.agents.err.not_linked': 'A chat-szolgáltatás még nincs összekapcsolva a csapatoddal, ezért most nem lehet ügynököt kapcsolni.',
   'gromzo.agents.err.not_running': 'A chat-szolgáltatás (mxd) nem fut ezen a gépen, ezért most nem lehet ügynököt kapcsolni.',

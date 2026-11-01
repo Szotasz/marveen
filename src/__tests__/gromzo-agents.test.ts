@@ -137,7 +137,7 @@ describe('the consent id is the server\'s, bound to its slug (Dani 64126)', () =
     w.replies.agent_add = [addOk(ID_A)]
     await enableGromzoAgent('zara', w.deps)
     w.replies.agent_add_check = [added('samu')]
-    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'consent_mismatch' })
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'consent_mismatch', added: 'samu' })
     expect(w.writes).toEqual([])
     expect(w.restarted).toEqual([])
     expect(w.flags.get('samu')).toBeUndefined()

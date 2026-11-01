@@ -6,7 +6,9 @@
 //                                 code for a new phone (see mxd-dash.ts requestOwnerQr)
 //   GET  /api/gromzo/agents                    -> the fleet's agents and whether each is on Gromzo
 //   POST /api/gromzo/agents/:slug/enable       -> asks the owner (in the app) to approve the agent
-//   GET  /api/gromzo/agents/:slug/consent      -> the pending consent; once approved, mxd adds the agent
+//   POST /api/gromzo/agents/:slug/consent      -> the pending consent; once approved, mxd adds the agent
+//                                               (a state change: POST, behind the JSON + Origin gate; the
+//                                               read side is GET /api/gromzo/agents, pendingUntil per row)
 //   POST /api/gromzo/agents/:slug/disable      -> takes the agent off Gromzo
 //   (GROMZOAGENTPICK1101; the rules are in ../gromzo-agents.ts. All four: the owner's session only.)
 //
@@ -176,15 +178,18 @@ function sendOutcome(res: http.ServerResponse, slug: string, action: string, o: 
     json(res, o.state === 'pending' ? { state: o.state, expires_in: o.expiresIn } : { state: o.state })
     return
   }
-  logger.warn({ slug, action, code: o.code }, 'gromzo agents: switch refused or failed')
-  failure(res, o.code)
+  logger.warn({ slug, action, code: o.code, ...(o.added ? { added: o.added } : {}) }, 'gromzo agents: switch refused or failed')
+  // consent_mismatch: mxd added ANOTHER agent than the one asked for (Dani 64260); the answer names it.
+  if (o.added) json(res, { error: o.code, added_slug: o.added }, httpStatusFor(o.code))
+  else failure(res, o.code)
 }
 
 async function handleAgents(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   const action = AGENT_ACTION_RE.exec(path)
   if (path !== AGENTS_PATH && !action) return false
-  const wantMethod = path === AGENTS_PATH || action?.[2] === 'consent' ? 'GET' : 'POST'
+  // Every action changes state (the consent check may add the agent, write its flag and restart it): POST only.
+  const wantMethod = path === AGENTS_PATH ? 'GET' : 'POST'
   if (method !== wantMethod) { methodNotAllowed(res, method, [wantMethod]); return true }
   if (wantMethod === 'POST') {
     if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }

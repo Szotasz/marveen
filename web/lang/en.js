@@ -2324,6 +2324,7 @@ window._i18n.en = {
   'gromzo.agents.err.bad_name': 'The agent\'s display name cannot be used on Gromzo.',
   'gromzo.agents.err.reserved_name': 'This display name is reserved on Gromzo.',
   'gromzo.agents.err.consent_mismatch': 'The approval belonged to another agent, so nothing changed. Switch it on again.',
+  'gromzo.agents.err.consent_mismatch_added': 'The approval belonged to another agent: the chat service added {slug}, and nothing changed for this one.',
   'gromzo.agents.err.no_pending': 'No approval is pending for this agent.',
   'gromzo.agents.err.not_linked': 'The chat service is not linked to your team yet, so agents cannot be switched now.',
   'gromzo.agents.err.not_running': 'The chat service (mxd) is not running on this machine, so agents cannot be switched now.',
