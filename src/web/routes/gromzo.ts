@@ -44,16 +44,21 @@ import {
   checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, type GromzoAgentDeps, type GromzoAgentOutcome,
 } from '../gromzo-agents.js'
 import { listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
-import { isAgentRunning, restartAgentProcess } from '../agent-process.js'
+import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
 import type { RouteContext } from './types.js'
 
-/** The owner's dashboard session, and nothing else: a session principal, or the
- *  shared token sent alongside a valid session cookie (a logged-in owner whose
- *  browser also keeps the access token). Never the bare token, not even before the
- *  first login exists; never a sub-agent token, a device key or a federation peer. */
+/** The owner's dashboard session, and nothing else: a session principal, or a
+ *  credential sent alongside a valid session cookie of the owner's password login:
+ *  the shared token (a logged-in owner whose browser also keeps the access token),
+ *  or a FULL device key (the Bridge: its webview sends the key on every call, and
+ *  the owner signs in with the password inside it; GROMZOAGENTPICK1101, Samu 64370).
+ *  Never a bare credential, not even before the first login exists; never a
+ *  sub-agent token, an operator key or a federation peer. */
 export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMessage): boolean {
   if (auth?.kind === 'session') return true
-  if (auth?.kind !== 'token' || auth.tokenAgent) return false
+  const sharedToken = auth?.kind === 'token' && !auth.tokenAgent
+  const fullDeviceKey = auth?.kind === 'device' && auth.scope === 'full'
+  if (!sharedToken && !fullDeviceKey) return false
   const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   return !!cookie && resolveSession(cookie) !== null
 }
@@ -154,6 +159,8 @@ const defaultAgentDeps: GromzoAgentDeps = {
   writeFlag: (slug, on) => writeAgentGromzo(slug, on),
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   isRunning: (slug) => isAgentRunning(slug),
+  // One tmux list-sessions per server for the whole list, not one sync call per agent.
+  batch: (fn) => withTmuxBatch(fn),
   held: async () => {
     // dash status carries held_agents only when it is not empty (marveen-mxd link.rs status).
     try {
