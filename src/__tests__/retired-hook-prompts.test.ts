@@ -91,8 +91,16 @@ describe('the shipped retired list', () => {
     expect(new Set(raw.PreCompact).size).toBe(raw.PreCompact.length)
   })
 
-  it('its newest entry is the prompt the review found: the global skill folder instruction', () => {
-    expect(RETIRED.PreCompact[0]).toContain('mkdir -p ~/.claude/skills/')
+  it('its newest entry is the prompt before PR-C (one shared api-payload.txt), then the one the review found', () => {
+    // VOICETOKENLEAK1101 PR-C: the #2434-era stock prompt, retired when the payload files went per kind
+    expect(RETIRED.PreCompact[0]).toContain('api-payload.txt')
+    expect(CURRENT).not.toContain('api-payload.txt')
+    // exactly the template prompt before PR-C: PR-C's line pass makes it the current one, and it is not the older
+    // review-era prompt (which still told to mkdir in the global skill folder)
+    expect(RETIRED.PreCompact[0]).not.toBe(CURRENT)
+    expect(afterHelperPass(RETIRED.PreCompact[0])).toBe(CURRENT)
+    expect(RETIRED.PreCompact[0]).not.toContain('mkdir -p ~/.claude/skills/')
+    expect(RETIRED.PreCompact[1]).toContain('mkdir -p ~/.claude/skills/')
     expect(CURRENT).not.toContain('mkdir -p ~/.claude/skills/')
   })
 
@@ -160,6 +168,58 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
     if (scopeRoot) rmSync(scopeRoot, { recursive: true, force: true })
   })
 
+  // Dani 65499/1, Samu 65501: a prompt someone rewrote by hand is not replaced; only the exact shipped lines move on.
+  it('a prompt written by hand, with no shipped line in it, stays byte for byte', () => {
+    const own = 'A saját PreCompact szövegem.\n\nMentsd, amit fontosnak tartasz, a saját fájljaidból:\n  bash /x/marveen-api.sh memory-save SAJAT_NEVED warm "k" sajat-memoria.txt'
+    write(own)
+    ensureAgentHooks(PROBE, scopes())
+    expect(read()).toBe(own)
+  })
+
+  it('a partly edited prompt: a customised line stays verbatim, only the exact old shipped lines move on', () => {
+    const lines = RETIRED.PreCompact[0].split('\n')
+    const memAt = lines.findIndex((l) => l.includes('memory-save SAJAT_NEVED warm') && l.includes('api-payload.txt'))
+    expect(memAt).toBeGreaterThan(-1)
+    const custom = lines[memAt]!.replace('"kulcsszo1, kulcsszo2"', '"sajat, kulcsszo"')
+    lines[memAt] = custom
+    const edited = lines.join('\n')
+    write(edited)
+    ensureAgentHooks(PROBE, scopes())
+    const out = read() as string
+    expect(out).not.toBe(CURRENT)
+    expect(out.split('\n')).toContain(custom) // the operator's own line, untouched (still api-payload.txt)
+    expect(out).toContain('daily-log SAJAT_NEVED api-naplo.txt') // an exact shipped line moved on
+    expect(out.split('\n').length).toBe(lines.length)
+  })
+
+  // Dani 65499/2, Samu 65501: the rest of the agent's settings.json stays as it was, and the file reads back as JSON.
+  it('the other fields of the hook and of settings.json stay as they were, and the file is valid JSON', () => {
+    const before = {
+      model: 'keep-me',
+      permissions: { allow: ['Bash(ls:*)'], deny: ['Bash(sudo:*)'] },
+      hooks: {
+        PreCompact: [{ matcher: 'auto', hooks: [
+          { type: 'command', command: 'echo before-the-prompt', timeout: 7 },
+          { type: 'agent', prompt: RETIRED.PreCompact[0], timeout: 180 },
+          { type: 'command', command: 'echo after-the-prompt' },
+        ] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'echo my-stop-hook' }] }],
+      },
+    }
+    writeFileSync(settings, JSON.stringify(before, null, 2))
+    ensureAgentHooks(PROBE, scopes())
+    const after = JSON.parse(readFileSync(settings, 'utf-8'))
+    expect(after.model).toBe('keep-me')
+    expect(after.permissions.allow).toEqual(before.permissions.allow)
+    const entry = after.hooks.PreCompact[0]
+    expect(entry.matcher).toBe('auto')
+    expect(entry.hooks[0]).toEqual(before.hooks.PreCompact[0].hooks[0])
+    expect(entry.hooks[1]).toEqual({ type: 'agent', prompt: CURRENT, timeout: 180 })
+    expect(entry.hooks[2]).toEqual(before.hooks.PreCompact[0].hooks[2])
+    // what was there in Stop is still there, first and unchanged (the template may add its own after it)
+    expect(after.hooks.Stop[0]).toEqual(before.hooks.Stop[0])
+  })
+
   it('an agent still on the previous stock prompt gets the current one', () => {
     write(RETIRED.PreCompact[0])
     ensureAgentHooks(PROBE, scopes())
@@ -174,11 +234,25 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
     }
   })
 
-  it('an edited prompt is left as it is', () => {
+  it('an edited prompt is not replaced: the operator line stays, only the exact shipped lines move on', () => {
     const edited = `${RETIRED.PreCompact[0]}\nmy own line, written by the operator`
     write(edited)
     ensureAgentHooks(PROBE, scopes())
-    expect(read()).toBe(edited)
+    // the line pass (upgradePreCompactRecipesToHelper) still turns its exact api-payload.txt lines into the per-kind
+    // ones (PR-C); the retired-list pass does not take it to the template prompt
+    expect(read()).toBe(afterHelperPass(edited))
+    expect(read()).toContain('my own line, written by the operator')
+    expect(read()).not.toContain('api-payload.txt')
+  })
+
+  // VOICETOKENLEAK1101 PR-C (Samu 65492): the stock prompt with one shared api-payload.txt becomes the template prompt
+  // (per-kind files) word for word, in one start.
+  it('the stock prompt before PR-C (one shared api-payload.txt) reaches the template prompt in one start', () => {
+    expect(RETIRED.PreCompact[0]).toContain('api-payload.txt')
+    write(RETIRED.PreCompact[0])
+    ensureAgentHooks(PROBE, scopes())
+    expect(read()).toBe(CURRENT)
+    expect(read()).not.toContain('api-payload.txt')
   })
 
   it('the last shipped curl prompt reaches the template prompt in one start', () => {
@@ -202,7 +276,7 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
     const old = resolveTemplatePlaceholders(pre.split('{{PROJECT_ROOT}}/store/.dashboard-token').join('~/ClaudeClaw/store/.dashboard-token'))
     expect(RETIRED.PreCompact).not.toContain(old)
     expect(RETIRED.PreCompact.map(afterHelperPass)).not.toContain(old)
-    expect(afterHelperPass(old)).toBe(resolveTemplatePlaceholders(fixture('precompact-prompt-2340.txt')))
+    expect(afterHelperPass(old)).toBe(afterHelperPass(resolveTemplatePlaceholders(fixture('precompact-prompt-2340.txt'))))
     write(old)
     ensureAgentHooks(PROBE, scopes())
     expect(read()).toBe(CURRENT)

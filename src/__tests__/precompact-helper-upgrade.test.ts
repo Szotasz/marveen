@@ -7,6 +7,7 @@ import {
   resolveTemplatePlaceholders,
   upgradePreCompactRecipesToHelper,
   upgradeTaskStateHeaderInHookPrompts,
+  PRECOMPACT_PAYLOAD_INTRO,
 } from '../web/agent-scaffold.js'
 
 // #2338: the PreCompact prompt's save recipes (memory, daily log, task state) were raw
@@ -32,9 +33,20 @@ function pre2338Prompt(): string {
 
 // The prompt #2340 shipped (develop ed5cca8f0): its helper sections 1 and 3 with the old
 // skill section 2, frozen. upgradePreCompactRecipesToHelper on its own turns a curl prompt
-// into this one; ensureAgentHooks' retired-list pass then takes it to the template prompt.
+// into this one, with VOICETOKENLEAK1101 PR-C's per-kind payload files (perKind);
+// ensureAgentHooks' retired-list pass then takes it to the template prompt.
+const H = 'bash {{PROJECT_ROOT}}/scripts/marveen-api.sh'
+const PER_KIND: Array<[string, string]> = [
+  ['Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):', PRECOMPACT_PAYLOAD_INTRO],
+  [`  ${H} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`, `  ${H} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-memoria.txt`],
+  [`  ${H} daily-log SAJAT_NEVED api-payload.txt`, `  ${H} daily-log SAJAT_NEVED api-naplo.txt`],
+]
+/** PR-C's three line changes, on a prompt as shipped or as resolved. */
+function perKind(s: string): string {
+  return PER_KIND.reduce((t, [o, n]) => t.split(o).join(n).split(resolveTemplatePlaceholders(o)).join(resolveTemplatePlaceholders(n)), s)
+}
 function post2340Prompt(): string {
-  return readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-2340.txt'), 'utf-8')
+  return perKind(readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-2340.txt'), 'utf-8'))
 }
 
 function hooksWith(prompt: string): Record<string, unknown> {
@@ -52,11 +64,12 @@ describe('templates/settings.json.template PreCompact prompt (#2338)', () => {
     expect(p).not.toContain('$(cat')
   })
 
-  it('names the helper for all three saves, each payload from a file', () => {
+  it('names the helper for all three saves, each payload from its own file (PR-C)', () => {
     const p = templatePrompt()
-    const H = 'bash {{PROJECT_ROOT}}/scripts/marveen-api.sh'
-    expect(p).toContain(`${H} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`)
-    expect(p).toContain(`${H} daily-log SAJAT_NEVED api-payload.txt`)
+    expect(p).toContain(`${H} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-memoria.txt`)
+    expect(p).toContain(`${H} daily-log SAJAT_NEVED api-naplo.txt`)
+    expect(p.split("\n")).toContain(PRECOMPACT_PAYLOAD_INTRO)
+    expect(p).not.toContain('api-payload.txt')
     expect(p).toContain(`${H} taskstate-save SAJAT_NEVED api-payload.json`)
   })
 })
@@ -149,9 +162,10 @@ describe('upgradePreCompactRecipesToHelper', () => {
     expect(p).not.toMatch(/curl\b.*\/api\//)
     expect(p).not.toContain('.dashboard-token')
     expect(p).not.toContain('Használd a curl parancsokat:')
-    expect(p).toContain('/scripts/marveen-api.sh memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt')
-    expect(p).toContain('/scripts/marveen-api.sh daily-log SAJAT_NEVED api-payload.txt')
-    expect(p).toContain('Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):')
+    expect(p).toContain('/scripts/marveen-api.sh memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-memoria.txt')
+    expect(p).toContain('/scripts/marveen-api.sh daily-log SAJAT_NEVED api-naplo.txt')
+    expect(p.split("\n")).toContain(PRECOMPACT_PAYLOAD_INTRO)
+    expect(p).not.toContain('api-payload.txt')
   })
 
   it('a curl line inside a longer line (not the exact shipped line) is not touched', () => {
