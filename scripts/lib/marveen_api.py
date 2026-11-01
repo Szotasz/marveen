@@ -148,14 +148,39 @@ def read_token():
     return token
 
 
+# VOICETOKENLEAK1101 PR-A1 (Dani 65157/1, Samu 65160): the generated recipes name ONE fixed payload file per kind
+# (api-uzenet.txt, api-memoria.txt, ...). Two texts prepared in one round would both send the second. So a file with
+# that name is emptied after a successful send, and an empty one stops the call: an old text is never sent again.
+PAYLOAD_NAME_RE = re.compile(r'^api-[a-z]+\.txt$')
+SENT_PAYLOADS = []
+
+
+def is_recipe_payload(path):
+    return path != '-' and PAYLOAD_NAME_RE.fullmatch(os.path.basename(path)) is not None
+
+
 def read_text(path):
     if path == '-':
         return sys.stdin.read()
     try:
         with open(path, encoding='utf-8') as f:
-            return f.read()
+            text = f.read()
     except OSError as e:
         fail_usage(f'cannot read {path}: {e.strerror}')
+    if is_recipe_payload(path):
+        if not text.strip():
+            fail_usage(f'{path} is empty: a recipe payload file is emptied after each send, write the new text first')
+        SENT_PAYLOADS.append(path)
+    return text
+
+
+def empty_sent_payloads():
+    for p in SENT_PAYLOADS:
+        try:
+            with open(p, 'w', encoding='utf-8'):
+                pass
+        except OSError as e:
+            print(f'WARN: sent, but could not empty {p} ({e.strerror}); empty it before the next use.', file=sys.stderr)
 
 
 def take_flag(args, flag):
@@ -436,6 +461,7 @@ def main(argv):
         label = resp_headers.get('X-Memory-Search') if resp_headers else None
         print(f'X-Memory-Search: {label}' if label else 'X-Memory-Search: MISSING (the search did not run as asked)')
     if 200 <= status < 300:
+        empty_sent_payloads()
         print(text)
         return 0
     print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)

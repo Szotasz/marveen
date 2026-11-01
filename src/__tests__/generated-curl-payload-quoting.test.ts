@@ -53,10 +53,13 @@ const MARKER_END = '<!-- END GENERATED: autonomy-wiring -->'
 // A payload the shell expands: -d / --data followed by a double quote.
 const SHELL_EXPANDING_PAYLOAD = /(?:^|\s)(?:-d|--data|--data-raw)\s+"/
 
-function writtenAutonomyBlock(agentName: string): string {
+// VOICETOKENLEAK1101 PR-A1: an agent gets the helper recipes unless its settings deny scripts/marveen-api.sh; the curl
+// examples this file guards are that fallback, so by default the agent's settings deny the helper here.
+function writtenAutonomyBlock(agentName: string, denyHelper = true): string {
   const dir = join(tmpRoot, 'agents', agentName)
-  mkdirSync(dir, { recursive: true })
+  mkdirSync(join(dir, '.claude'), { recursive: true })
   writeFileSync(join(dir, 'CLAUDE.md'), `# ${agentName}\n`, 'utf-8')
+  if (denyHelper) writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }), 'utf-8')
   ensureAutonomySection(agentName)
   const file = readFileSync(join(dir, 'CLAUDE.md'), 'utf-8')
   const from = file.indexOf(MARKER_BEGIN)
@@ -66,7 +69,21 @@ function writtenAutonomyBlock(agentName: string): string {
   return file.slice(from, to)
 }
 
-describe('generated autonomy block: no shell-expanding curl payload', () => {
+describe('generated autonomy block, the helper recipes (the default, VOICETOKENLEAK1101 PR-A1)', () => {
+  it('no token, no curl: level 1 and level 2 go through the helper, the text from a file in the agent dir', () => {
+    const block = writtenAutonomyBlock('helper-agent', false)
+    for (const s of ['$(cat', '.dashboard-token', 'Authorization']) expect(block, s).not.toContain(s)
+    expect(block).not.toMatch(/\bcurl\b/)
+    const own = join(tmpRoot, 'agents', 'helper-agent')
+    expect(block).toContain(`marveen-api.sh message helper-agent agent-a ${join(own, 'api-uzenet.txt')}`)
+    expect(block).toContain(`marveen-api.sh approval-request helper-agent CATEGORY_KEY 3600 ${join(own, 'api-jovahagyas.txt')}`)
+    expect(block).toContain('marveen-api.sh approval-consume <id> CATEGORY_KEY helper-agent')
+    // the pointer to the strict-profile section is only for a strict agent
+    expect(block).not.toContain('strict profilodban')
+  })
+})
+
+describe('generated autonomy block, the curl fallback: no shell-expanding curl payload', () => {
   it('the measure is not vacuous -- the written block really carries curl examples', () => {
     const block = writtenAutonomyBlock('meter-check-agent')
     const curlLines = block.split('\n').filter((l) => l.trimStart().startsWith('curl '))

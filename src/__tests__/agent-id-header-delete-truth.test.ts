@@ -69,8 +69,16 @@ describe('agent-id-header: what it says about delete and versions (VERZIOTORLES1
     expect(body).toMatch(/így utána semmiből nem állítható vissza/)
   })
 
-  it('tells the reader to read the row out before a delete, with the read endpoint', () => {
-    expect(body).toMatch(/előtte olvasd ki[\s\S]{0,60}GET \/api\/memories\/<id>`/)
+  // VOICETOKENLEAK1101 PR-A1: the helper has no delete verb, so the default (helper) text names the delete an owner
+  // decision; the curl fallback (a profile that denies the helper) still tells how to read the row out first.
+  it('the helper text: the update goes through the helper with a payload file, and a delete is an owner decision', () => {
+    expect(body).toMatch(/marveen-api\.sh memory-update <id> agent-b \S+api-memoria\.txt/)
+    expect(body).toMatch(/nincs törlő igéje[\s\S]{0,60}gazda-döntés \(data_delete\)/)
+    for (const s of ['$(cat', '.dashboard-token', 'Authorization']) expect(body, s).not.toContain(s)
+  })
+
+  it('the curl fallback tells the reader to read the row out before a delete, with the read endpoint', () => {
+    expect(buildAgentIdHeaderBody('agent-b', false)).toMatch(/előtte olvasd ki[\s\S]{0,60}GET \/api\/memories\/<id>`/)
   })
 })
 

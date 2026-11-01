@@ -2,22 +2,21 @@
 // substitution never matches the allow-list. Every `curl ... -H "Authorization: Bearer
 // $(cat <token>)"` recipe in its CLAUDE.md was therefore auto-denied, and the five generated
 // blocks are rewritten on every start, so a hand fix did not survive. A strict agent now gets
-// its recipes through scripts/marveen-api.sh; every other agent keeps the curl recipes.
+// its recipes through scripts/marveen-api.sh. Since VOICETOKENLEAK1101 PR-A1 every other agent does too in the
+// generated blocks (the curl recipe put the token value on its argv), unless its settings deny the helper.
 //
 // What is pinned here, on the files the generator really writes:
 //   1. a strict agent's CLAUDE.md (all generated blocks, and the creation prompt) carries no
 //      command substitution, no token header and no curl recipe;
 //   2. every helper command line in it is one the allow-list entry matches, and names a verb the
 //      helper knows;
-//   3. a non-strict agent still gets the curl recipes, and the strict-api block never touches it;
+//   3. a non-strict agent gets the helper recipes in the generated blocks (curl only where its settings deny the
+//      helper, with a WARN), and the strict-api block never touches it;
 //   4. the strict-api block goes away when the profile stops being strict;
 //   5. the allow-list entry and the start-path wiring exist;
-//   6. the skill section's proposal recipe follows the profile too (ensureSkillSectionCurrent).
-// That the non-strict output is byte-identical to develop was measured once for the PR
-// (a render of all six surfaces before and after the change, cmp IDENTICAL); a golden copy
-// here would break on every unrelated copy edit.
+//   6. the skill section's proposal recipe follows the same choice (ensureSkillSectionCurrent).
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, cpSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, cpSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -194,23 +193,94 @@ describe('a strict agent gets no recipe its dontAsk mode denies', () => {
   })
 })
 
-describe('a non-strict agent keeps the curl recipes', () => {
-  it('each recipe block still carries the token curl, and none names the helper', () => {
+// VOICETOKENLEAK1101 PR-A1 (#2080 review 5727304277, Samu 64933, Dani 64941): a curl recipe's `$(cat <token>)` puts
+// the token VALUE on the curl argv, so every agent whose settings allow the helper gets the helper recipes in the
+// generated blocks; the strict-api block and its pointer stay strict-only.
+describe('a non-strict agent gets the helper recipes in the generated blocks', () => {
+  it('no substitution, no token, no curl in any recipe block, and the helper in each', () => {
     stageAgent('plain-b', null)
     const file = startBlocks('plain-b')
-    expect(file).not.toContain('marveen-api.sh')
     expect(file).not.toContain('strict-api')
+    expect(file).not.toContain('strict profilodban')
+    for (const title of BLOCK_TITLES) expect(file, `block missing: ${title}`).toContain(title)
+    // Dani 64941/3: 0 hits for these four in the generated blocks (the creation-time body is PR-A2)
+    for (const s of ['$(cat', '.dashboard-token', 'Authorization']) expect(file, s).not.toContain(s)
+    expect(file).not.toMatch(/\bcurl\b/)
     for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
-      expect(part, part.slice(0, 60)).toContain('Authorization: Bearer $(cat ')
+      expect(helperLines(part).length, part.slice(0, 60)).toBeGreaterThan(0)
+    }
+    for (const line of helperLines(file)) {
+      expect(line.startsWith(HELPER_CMD + ' '), line).toBe(true)
+      expect(helperVerbs.has(line.slice(HELPER_CMD.length + 1).split(' ')[0]), line).toBe(true)
+      expect(line.replace(/<[^<>\s]+>/g, 'X'), line).not.toMatch(/\$\(|`|\||;|&&|<|>/)
     }
   })
 
-  it('the creation prompt keeps the curl recipes', async () => {
+  it('the payload files: one fixed name per recipe, in the agent own dir (Dani 64941/2)', () => {
+    stageAgent('plain-b', null)
+    const file = startBlocks('plain-b')
+    const own = join(tmpRoot, 'agents', 'plain-b')
+    const files = [...new Set([...file.matchAll(/\S+\.txt\b/g)].map((m) => m[0]))].sort()
+    expect(files).toEqual(['api-eredmeny', 'api-jovahagyas', 'api-memoria', 'api-uzenet'].map((k) => join(own, `${k}.txt`)))
+  })
+
+  it('every block that names a payload file says: one file, one send (Dani 65157/1, Samu 65160)', () => {
+    stageAgent('plain-o', null)
+    const file = startBlocks('plain-o')
+    const parts = file.split('<!-- BEGIN GENERATED: ').slice(1).filter((p) => /api-[a-z]+\.txt/.test(p))
+    expect(parts.length).toBe(3) // autonomy (message + approval), message-close, agent-id
+    for (const p of parts) expect(p, p.slice(0, 40)).toContain(S.ONE_FILE_ONE_SEND)
+    const autonomy = parts.find((p) => p.startsWith('autonomy-wiring'))!
+    expect(autonomy.split(S.ONE_FILE_ONE_SEND).length - 1).toBe(2)
+  })
+
+  it('the main agent too: its payload files in the project root, which git ignores', () => {
+    writeFileSync(join(tmpRoot, 'CLAUDE.md'), '# main\n', 'utf-8')
+    S.ensureAutonomySection('agent-a')
+    S.ensureMessageCloseSection('agent-a')
+    const file = readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')
+    expect(file).toContain(`${HELPER_CMD} message agent-a agent-a ${join(tmpRoot, 'api-uzenet.txt')}`)
+    expect(file).toContain(`--result-file ${join(tmpRoot, 'api-eredmeny.txt')}`)
+    expect(file).not.toContain('$(cat')
+    expect(readFileSync(join(REPO, '.gitignore'), 'utf-8').split('\n')).toContain('/api-*.txt')
+  })
+
+  it('settings that deny the helper keep the curl recipes, and say so in the log (Dani 64941/1)', async () => {
+    const { logger } = await import('../logger.js')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    try {
+      stageAgent('denied-h', null)
+      mkdirSync(join(tmpRoot, 'agents', 'denied-h', '.claude'), { recursive: true })
+      writeFileSync(join(tmpRoot, 'agents', 'denied-h', '.claude', 'settings.json'),
+        JSON.stringify({ permissions: { deny: [`Bash(${HELPER_CMD} memory-save:*)`] } }), 'utf-8')
+      expect(S.agentUsesApiHelper('denied-h')).toBe(false)
+      const file = startBlocks('denied-h')
+      expect(file).not.toContain('marveen-api.sh')
+      for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
+        expect(part, part.slice(0, 60)).toContain('Authorization: Bearer $(cat ')
+      }
+      const said = warn.mock.calls.filter((c) => String(c[1]).includes('deny scripts/marveen-api.sh'))
+      expect(said).toHaveLength(1)
+      expect(said[0][0]).toMatchObject({ name: 'denied-h' })
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a strict agent keeps the helper even if a deny rule would hit it (its dontAsk mode denies curl anyway)', () => {
+    stageAgent('strict-x', 'developer-junior')
+    mkdirSync(join(tmpRoot, 'agents', 'strict-x', '.claude'), { recursive: true })
+    writeFileSync(join(tmpRoot, 'agents', 'strict-x', '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }), 'utf-8')
+    expect(S.agentUsesApiHelper('strict-x')).toBe(true)
+  })
+
+  it('the creation prompt: the skill section is the helper one, the body keeps its curl recipes until PR-A2', async () => {
     stageAgent('plain-b', null)
     const { prompt } = await creation('plain-b')
-    expect(prompt).not.toContain('marveen-api.sh')
-    // memory save, daily log, search, hot list, move, schedule listing, skill proposal, stranger ping
-    expect(prompt.split('$(cat ').length - 1).toBe(8)
+    expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(['skill-propose'])
+    // memory save, daily log, search, hot list, move, schedule listing, stranger ping
+    expect(prompt.split('$(cat ').length - 1).toBe(7)
   })
 
   it('ensureStrictApiSection does not touch a non-strict file at all', () => {
@@ -251,7 +321,7 @@ describe('the skill section follows the profile', () => {
   const [retired] = S.readRetiredSkillSections(retiredPath)
   const doc = (section: string) => `# Ágens\n\n${section}\n\n## Időkezelés\n\nx\n`
 
-  it('an unedited old section: a strict agent gets the helper recipe, a non-strict one the curl', () => {
+  it('an unedited old section: a strict and a non-strict agent both get the helper recipe (PR-A1)', () => {
     expect(retired).toContain('## Öntanulás és Skill rendszer')
     const strictPath = stageAgent('strict-a', 'developer-junior', doc(retired))
     const plainPath = stageAgent('plain-b', null, doc(retired))
@@ -265,19 +335,62 @@ describe('the skill section follows the profile', () => {
     expect(strict).not.toContain('$(')
     expect(strict).not.toContain('/api/skills/propose')
     const plain = readFileSync(plainPath, 'utf-8')
-    expect(plain).toBe(doc(S.buildSkillSection()))
-    expect(plain).toContain('/api/skills/propose')
-    expect(plain).not.toContain('marveen-api.sh')
+    expect(plain).toBe(doc(S.buildSkillSection('plain-b')))
+    expect(plain).not.toContain('/api/skills/propose')
+    expect(plain).not.toContain('$(')
   })
 
-  it('an unedited current section follows a profile switch, both ways, and a second start writes nothing', () => {
-    const path = stageAgent('strict-g', 'developer-junior', doc(S.buildSkillSection()))
-    expect(S.ensureSkillSectionCurrent('strict-g', retiredPath)).toBe(true)
-    expect(readFileSync(path, 'utf-8')).toBe(doc(S.buildSkillSection('strict-g')))
-    expect(S.ensureSkillSectionCurrent('strict-g', retiredPath)).toBe(false)
-    writeFileSync(join(tmpRoot, 'agents', 'strict-g', 'agent-config.json'), JSON.stringify({}))
-    expect(S.ensureSkillSectionCurrent('strict-g', retiredPath)).toBe(true)
+  it('an unedited curl section is upgraded, it follows a helper deny both ways, and a second start writes nothing', () => {
+    const path = stageAgent('plain-g', null, doc(S.buildSkillSection()))
+    expect(S.ensureSkillSectionCurrent('plain-g', retiredPath)).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe(doc(S.buildSkillSection('plain-g')))
+    expect(S.ensureSkillSectionCurrent('plain-g', retiredPath)).toBe(false)
+    const settings = join(tmpRoot, 'agents', 'plain-g', '.claude', 'settings.json')
+    mkdirSync(dirname(settings), { recursive: true })
+    writeFileSync(settings, JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }))
+    expect(S.ensureSkillSectionCurrent('plain-g', retiredPath)).toBe(true)
     expect(readFileSync(path, 'utf-8')).toBe(doc(S.buildSkillSection()))
+    writeFileSync(settings, JSON.stringify({}))
+    expect(S.ensureSkillSectionCurrent('plain-g', retiredPath)).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toBe(doc(S.buildSkillSection('plain-g')))
+  })
+})
+
+describe('which settings deny the helper (VOICETOKENLEAK1101 PR-A1, Dani 64941/1)', () => {
+  it('bashRuleMatches: prefix, glob, exact and the bare Bash rule', () => {
+    const cmd = `${HELPER_CMD} memory-save x`
+    expect(S.bashRuleMatches('Bash', cmd)).toBe(true)
+    expect(S.bashRuleMatches('Bash(bash:*)', cmd)).toBe(true)
+    expect(S.bashRuleMatches(`Bash(${HELPER_CMD} memory-save:*)`, cmd)).toBe(true)
+    expect(S.bashRuleMatches(`Bash(${HELPER_CMD} daily-log:*)`, cmd)).toBe(false)
+    expect(S.bashRuleMatches('Bash(*marveen-api.sh*)', cmd)).toBe(true)
+    expect(S.bashRuleMatches(cmd.replace(/^/, 'Bash(') + ')', cmd)).toBe(true)
+    for (const r of ['Bash(curl -X POST:*)', 'Bash(sudo:*)', 'Bash(rm:*)', 'Bash(*/sudo *)', 'Read(**/.env)', 'Bash(git push -f:*)']) {
+      expect(S.bashRuleMatches(r, cmd), r).toBe(false)
+    }
+  })
+
+  it('every shipped profile lets the helper run (none of their deny rules hits a helper verb)', () => {
+    const profiles = readdirSync(join(REPO, 'templates', 'profiles')).filter((f) => f.endsWith('.json'))
+    expect(profiles.length).toBeGreaterThanOrEqual(7)
+    for (const f of profiles) {
+      const p = JSON.parse(readFileSync(join(REPO, 'templates', 'profiles', f), 'utf-8'))
+      // the profile's own rules plus the floor every agent's settings get (writeAgentSettingsFromProfile)
+      const deny = [...(p.filesystem?.deny ?? []), ...S.FLEET_BASELINE_DENY, ...S.FLEET_SUDO_DENY, ...S.bashEgressDeny(true), ...S.bashEgressDeny(false), ...S.LEGACY_BASH_EGRESS_DENY]
+        .map((r: string) => resolveProfilePlaceholders(r, { HOME: '/home/x', AGENT_DIR: '/agent' }))
+      for (const verb of ['message', 'message-close', 'memory-search', 'memory-save', 'approval-consume', 'skill-propose']) {
+        expect(deny.filter((r: string) => S.bashRuleMatches(r, `${HELPER_CMD} ${verb} x`)), `${f} ${verb}`).toEqual([])
+      }
+    }
+  })
+
+  it('the main agent reads its project settings: the shipped curl -X POST deny does not hit the helper', () => {
+    mkdirSync(join(tmpRoot, '.claude'), { recursive: true })
+    writeFileSync(join(tmpRoot, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(sudo:*)', 'Bash(curl -X POST:*)'] } }))
+    expect(S.apiHelperDenyRule('agent-a')).toBeNull()
+    writeFileSync(join(tmpRoot, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }))
+    expect(S.apiHelperDenyRule('agent-a')).toBe('Bash(bash:*)')
+    writeFileSync(join(tmpRoot, '.claude', 'settings.json'), '{}')
   })
 })
 

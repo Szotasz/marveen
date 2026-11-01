@@ -64,10 +64,18 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
     expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,120}szokásos módon/)
   })
 
-  it('the example sends a real JSON boolean false, not the string', () => {
-    expect(body).toContain(`'{"status":"done","notify":false}'`)
-    expect(body).not.toContain('"notify":"false"')
-    expect(body).toMatch(/string 400-at kap/)
+  it('the example closes without the ack through the helper (VOICETOKENLEAK1101 PR-A1)', () => {
+    expect(body).toMatch(/marveen-api\.sh message-close <id> --no-notify/)
+    expect(body).toMatch(/--result-file \S+api-eredmeny\.txt/)
+    expect(body).not.toContain('$(cat')
+    expect(body).not.toContain('Authorization')
+  })
+
+  it('the curl fallback (a profile that denies the helper) sends a real JSON boolean false, not the string', () => {
+    const curl = buildMessageCloseBody(false)
+    expect(curl).toContain(`'{"status":"done","notify":false}'`)
+    expect(curl).not.toContain('"notify":"false"')
+    expect(curl).toMatch(/string 400-at kap/)
   })
 
   it('says a second close of a closed message is a 409 that needs no retry or report', () => {
@@ -75,9 +83,10 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
     expect(body).toMatch(/Ez nem hiba, nem kell ismételni vagy jelenteni\./)
   })
 
-  it('the example is a PUT on the message id, with the bearer token', () => {
-    expect(body).toMatch(/curl -s -X PUT \S+\/api\/messages\/<id>/)
-    expect(body).toMatch(/Authorization: Bearer \$\(cat /)
+  it('the curl fallback is a PUT on the message id, with the bearer token', () => {
+    const curl = buildMessageCloseBody(false)
+    expect(curl).toMatch(/curl -s -X PUT \S+\/api\/messages\/<id>/)
+    expect(curl).toMatch(/Authorization: Bearer \$\(cat /)
   })
 })
 

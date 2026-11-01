@@ -166,3 +166,6 @@ local-hooks/
 /kanban-*-eredmeny.txt
 /kanban-*-bizonyitek.txt
 /kanban-*-kerdes.txt
+
+# VOICETOKENLEAK1101 PR-A1 (Dani 64941/2): the main agent's dashboard-API payload files (written in the project root)
+/api-*.txt

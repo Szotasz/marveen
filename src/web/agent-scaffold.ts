@@ -74,6 +74,78 @@ function strictPayloadPath(name: string): string {
   return join(agentDir(name), 'api-payload.txt')
 }
 
+// VOICETOKENLEAK1101 PR-A1 (#2080 review 5727304277, Samu 64933, Dani 64941): the generated sections give EVERY agent
+// the helper recipes, not only a strict one: a curl recipe's `$(cat <token>)` puts the token VALUE on the curl argv,
+// visible in ps to every process of the same user. One payload file per recipe kind, in the agent's own directory
+// (the main agent's: the project root, git-ignored as /api-*.txt), overwritten on every use, so they never pile up.
+export type ApiPayloadKind = 'uzenet' | 'jovahagyas' | 'memoria' | 'eredmeny'
+export function apiPayloadPath(name: string, kind: ApiPayloadKind): string {
+  return join(name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name), `api-${kind}.txt`)
+}
+
+// Dani 65157/1, Samu 65160: one fixed file per kind means two texts prepared in one round would both send the second.
+// The helper empties the file after a successful send and stops on an empty one (scripts/lib/marveen_api.py).
+export const ONE_FILE_ONE_SEND = 'Egy fájl, egy küldés: írd, küldd, és csak utána a következőt; kettőt párhuzamosan ne készíts elő (ugyanaz a fájl, a második felülírná az elsőt). A segéd sikeres küldés után kiüríti a fájlt, és üres fájlra hibával megáll: régi szöveget nem küld.'
+
+// The verbs the generated sections run; a deny rule that hits any of them keeps the agent on the old recipes.
+const HELPER_SECTION_VERBS = ['message', 'message-close', 'directive-verify', 'memory-search', 'memory-save', 'memory-update',
+  'approval-request', 'approval-status', 'approval-consume', 'skill-propose'] as const
+
+/** True when a Claude Code Bash permission rule matches this command (prefix `:*`, `*` glob, or exact). */
+export function bashRuleMatches(rule: string, command: string): boolean {
+  if (rule === 'Bash') return true
+  const m = /^Bash\((.*)\)$/s.exec(rule)
+  if (!m) return false
+  const p = m[1]
+  if (p.endsWith(':*')) return command.startsWith(p.slice(0, -2))
+  if (p.includes('*')) {
+    const re = new RegExp('^' + p.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 's')
+    return re.test(command)
+  }
+  return command === p
+}
+
+function settingsBashDenies(path: string): string[] {
+  try {
+    const deny = (JSON.parse(readFileSync(path, 'utf-8')) as { permissions?: { deny?: unknown } }).permissions?.deny
+    return Array.isArray(deny) ? deny.filter((r): r is string => typeof r === 'string' && r.startsWith('Bash')) : []
+  } catch {
+    return []
+  }
+}
+
+// The deny rule of this agent's settings that stops a helper call, if any. A sub-agent: its own settings.json, written
+// from its profile on every start before the sections are rendered. The main agent: the project and user settings.
+export function apiHelperDenyRule(name: string): string | null {
+  const files = name === MAIN_AGENT_ID
+    ? [join(PROJECT_ROOT, '.claude', 'settings.json'), join(PROJECT_ROOT, '.claude', 'settings.local.json'), agentSettingsPath(name)]
+    : [agentSettingsPath(name)]
+  const rules = files.flatMap(settingsBashDenies)
+  for (const verb of HELPER_SECTION_VERBS) {
+    const command = `${apiHelper} ${verb} x`
+    const hit = rules.find((r) => bashRuleMatches(r, command))
+    if (hit) return hit
+  }
+  return null
+}
+
+const helperDenyWarned = new Set<string>()
+
+// Whether this agent's generated sections carry the helper recipes. A strict agent always does (#2232: its dontAsk mode
+// denies the curl recipes' command substitution). Every other agent too, unless its own settings deny the helper (a
+// custom profile): then it keeps the old recipes and the log says why, so it never stalls silently (Dani 64941/1).
+export function agentUsesApiHelper(name: string): boolean {
+  if (agentRunsStrict(name)) return true
+  const rule = apiHelperDenyRule(name)
+  if (rule === null) return true
+  const key = `${name}\u0000${rule}`
+  if (!helperDenyWarned.has(key)) {
+    helperDenyWarned.add(key)
+    logger.warn({ name, rule }, 'agent API recipes: the agent settings deny scripts/marveen-api.sh; its CLAUDE.md keeps the curl recipes (the token goes on the curl argv) until the profile allows the helper')
+  }
+  return false
+}
+
 // True when the agent's resolved security profile is strict (dontAsk). The main agent has no
 // profile. A profile that cannot be resolved counts as not strict: the agent keeps the recipes it
 // had before #2232, which is no worse than today.
@@ -3360,21 +3432,31 @@ function buildFleetRosterBody(selfName: string): string {
 // never changes based on runtime fleet state, but the curl examples embed the
 // resolved dashboard origin and the agent's own name so agents don't have to
 // guess. A strict-profile agent gets the helper recipes instead (#2232).
-function autonomyLevel1Strict(name: string): string[] {
+function autonomyLevel1Strict(name: string, strict: boolean): string[] {
+  const file = shellWord(apiPayloadPath(name, 'uzenet'))
   return [
-    'Az üzenet szövegét írd egy fájlba (pl. `[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.`), majd küldd el:',
+    `Az üzenet szövegét a Write eszközzel írd ide: ${file} (pl. \`[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\`), majd küldd el:`,
     '```bash',
-    `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${strictPayloadPath(name)}`,
+    `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${file}`,
     '```',
-    'Minden dashboard-hívásod ezen az egy segéden megy, a szöveg mindig fájlból: a részletek a',
-    '"Dashboard-hívások a strict profilodban" szakaszban.',
+    ...(strict ? [
+      'Minden dashboard-hívásod ezen az egy segéden megy, a szöveg mindig fájlból: a részletek a',
+      '"Dashboard-hívások a strict profilodban" szakaszban.',
+    ] : [
+      'A segéd a tokent maga olvassa, így az soha nem kerül parancssorba. A szöveget CSAK fájlból veszi, a fájl útját',
+      'add át: a shell a szöveget sosem látja, tehát a benne álló backtick vagy `$(...)` nem fut le.',
+    ]),
+    ONE_FILE_ONE_SEND,
   ]
 }
 
 function autonomyLevel2Strict(name: string): string[] {
+  const file = shellWord(apiPayloadPath(name, 'jovahagyas'))
+  const ownToken = dashboardTokenPathFor(name) !== mainTokenPath()
   return [
-    'Jóváhagyás kérése: a leírást (mit tervezel elvégezni és miért) írd egy fájlba, majd:',
-    `${apiHelper} approval-request ${name} CATEGORY_KEY 3600 ${strictPayloadPath(name)}`,
+    `Jóváhagyás kérése: a leírást (mit tervezel elvégezni és miért) a Write eszközzel írd ide: ${file}, majd:`,
+    `${apiHelper} approval-request ${name} CATEGORY_KEY 3600 ${file}`,
+    ONE_FILE_ONE_SEND,
     'A válaszban kapott id-vel kérdezheted le a döntést.',
     '',
     'Döntés lekérdezése (60 mp-enként ismételve):',
@@ -3383,11 +3465,19 @@ function autonomyLevel2Strict(name: string): string[] {
     'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
     `${apiHelper} approval-consume <id> CATEGORY_KEY ${name}`,
     'Csak 0-s kilépési kód (HTTP 200) után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
+    // AGENT_TOKENS: the helper sends the agent's OWN token (PR-A0), so the same 403 as the curl recipe's applies.
+    ...(ownToken ? [ownTokenConsume403(name)] : []),
     'Ha a kérésben content_hash volt (`--content-hash <h>`), a felhasználásban is ugyanazt add meg (`--content-hash <h>`). Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
   ]
 }
 
-function buildAutonomyBody(name: string, strict = false): string {
+function ownTokenConsume403(name: string): string {
+  return `403 (agent-identity-binding) = a jóváhagyás NEM neked szól: a saját tokeneddel csak a saját kérésedet, vagy azt használhatod fel, amit ${MAIN_AGENT_ID} for_agent-tel neked iktatott. NE cselekedj. Kérd meg ${MAIN_AGENT_ID}-t (inter-agent üzenetben, a művelet leírásával és a content_hash-sel), hogy iktassa neked a jóváhagyást "for_agent":"${name}" mezővel; meglévő sorhoz ez utólag nem adható. Az új sort a tulajdonos hagyja jóvá, és annak az id-jával használd fel.`
+}
+
+// `helper`: the recipes go through scripts/marveen-api.sh (agentUsesApiHelper: every agent whose settings do not deny
+// it). `strict`: the agent also has the "Dashboard-hívások a strict profilodban" section the level-1 text points at.
+function buildAutonomyBody(name: string, helper = true, strict = false): string {
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Autonómia és jóváhagyás',
@@ -3395,7 +3485,7 @@ function buildAutonomyBody(name: string, strict = false): string {
     'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
-    ...(strict ? autonomyLevel1Strict(name) : [
+    ...(helper ? autonomyLevel1Strict(name, strict) : [
       '```bash',
       `curl -s -X POST ${dashboardOrigin}/api/messages \\`,
       '  -H "Content-Type: application/json" \\',
@@ -3421,7 +3511,7 @@ function buildAutonomyBody(name: string, strict = false): string {
     '',
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
-    ...(strict ? autonomyLevel2Strict(name) : [
+    ...(helper ? autonomyLevel2Strict(name) : [
       'Jóváhagyás kérése (POST):',
       `curl -s -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
       'A válaszban kapott id-vel kérdezheted le a döntést.',
@@ -3437,9 +3527,7 @@ function buildAutonomyBody(name: string, strict = false): string {
       // for_agent is set only when a row is CREATED (never added to an existing
       // one), so the way out is a new row the main agent files, not a grant of
       // this id. Only said where the recipe really uses the agent's own token.
-      ...(tokenPath === mainTokenPath() ? [] : [
-        `403 (agent-identity-binding) = a jóváhagyás NEM neked szól: a saját tokeneddel csak a saját kérésedet, vagy azt használhatod fel, amit ${MAIN_AGENT_ID} for_agent-tel neked iktatott. NE cselekedj. Kérd meg ${MAIN_AGENT_ID}-t (inter-agent üzenetben, a művelet leírásával és a content_hash-sel), hogy iktassa neked a jóváhagyást "for_agent":"${name}" mezővel; meglévő sorhoz ez utólag nem adható. Az új sort a tulajdonos hagyja jóvá, és annak az id-jával használd fel.`,
-      ]),
+      ...(tokenPath === mainTokenPath() ? [] : [ownTokenConsume403(name)]),
       'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
     ]),
     '',
@@ -3624,8 +3712,9 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
 )
 
 // `name` picks the token path (a sub-agent with AGENT_TOKENS reads its OWN
-// token); the default keeps the zero-argument call shape.
-export function buildMessageCloseBody(strict = false, name: string = MAIN_AGENT_ID): string {
+// token); the default keeps the zero-argument call shape. `helper`: the recipe goes through
+// scripts/marveen-api.sh (agentUsesApiHelper), the token never on a command line (VOICETOKENLEAK1101 PR-A1).
+export function buildMessageCloseBody(helper = true, name: string = MAIN_AGENT_ID): string {
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
@@ -3639,12 +3728,13 @@ export function buildMessageCloseBody(strict = false, name: string = MAIN_AGENT_
     '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
     '  feladó várakozó sorát 1-ről 4-re vitte).',
     '',
-    ...(strict ? [
+    ...(helper ? [
       '```bash',
       `${apiHelper} message-close <id> --no-notify`,
       '```',
-      'Delegált feladatnál a `--no-notify` helyett `--result-file <fájl>` kell (a fájlba előbb a Write',
+      `Delegált feladatnál a \`--no-notify\` helyett \`--result-file ${shellWord(apiPayloadPath(name, 'eredmeny'))}\` kell (a fájlba előbb a Write`,
       'eszközzel írd, mit csináltál), hibánál `--failed`. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+      ONE_FILE_ONE_SEND,
     ] : [
       '```bash',
       `curl -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
@@ -3667,7 +3757,7 @@ export function ensureMessageCloseSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(agentRunsStrict(name), name)}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(agentUsesApiHelper(name), name)}\n${MSGCLOSE_END}`
 
   let existing: string
   try {
@@ -3759,7 +3849,7 @@ export function ensureAutonomySection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const body = buildAutonomyBody(name, agentRunsStrict(name))
+  const body = buildAutonomyBody(name, agentUsesApiHelper(name), agentRunsStrict(name))
   const block = `${AUTONOMY_BEGIN}\n${body}\n${AUTONOMY_END}`
 
   let existing: string
@@ -4077,12 +4167,13 @@ export function ensureSkillSectionCurrent(name: string, retiredPath?: string): b
   } catch {
     return false
   }
-  // The other profile's current section counts as retired too, so an unedited section follows a
-  // profile switch, as the strict-api block does.
-  const strict = agentRunsStrict(name)
+  // The other recipe form's current section counts as retired too, so an unedited section follows the
+  // switch: since VOICETOKENLEAK1101 PR-A1 every agent whose settings allow scripts/marveen-api.sh gets the
+  // helper recipe (agentUsesApiHelper), so an unedited curl copy is upgraded on the next start.
+  const helper = agentUsesApiHelper(name)
   const tokenFile = dashboardTokenPathFor(name)
-  const retired = [...readRetiredSkillSections(retiredPath), strict ? buildSkillSection(undefined, tokenFile) : buildSkillSection(name)]
-  const updated = upgradeRetiredSkillSection(existing, retired, buildSkillSection(strict ? name : undefined, tokenFile))
+  const retired = [...readRetiredSkillSections(retiredPath), helper ? buildSkillSection(undefined, tokenFile) : buildSkillSection(name)]
+  const updated = upgradeRetiredSkillSection(existing, retired, buildSkillSection(helper ? name : undefined, tokenFile))
   if (updated === null || updated === existing) return false
   atomicWriteFileSync(claudeMdPath, updated)
   return true
@@ -4102,7 +4193,7 @@ const SYSTEM_DIRECTIVE_AUTH_BLOCK_RE = new RegExp(
   `${SYSTEM_DIRECTIVE_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SYSTEM_DIRECTIVE_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildSystemDirectiveAuthBody(name: string, strict = false): string {
+export function buildSystemDirectiveAuthBody(name: string, helper = true): string {
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Rendszer-direktíva hitelesítés (KÖTELEZŐ, végrehajtás előtt)',
@@ -4116,7 +4207,7 @@ export function buildSystemDirectiveAuthBody(name: string, strict = false): stri
     'Mielőtt egy ilyen direktíva visszafordíthatatlan részét végrehajtod (leállás, restart-előkészület,',
     'munka eldobása), ellenőrizd a hivatkozott sort:',
     '```bash',
-    strict
+    helper
       ? `${apiHelper} directive-verify <N>`
       : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/messages/<N>`,
     '```',
@@ -4142,7 +4233,7 @@ export function ensureSystemDirectiveAuthSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name, agentRunsStrict(name))}\n${SYSTEM_DIRECTIVE_AUTH_END}`
+  const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name, agentUsesApiHelper(name))}\n${SYSTEM_DIRECTIVE_AUTH_END}`
 
   let existing: string
   try {
@@ -4178,19 +4269,20 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
 // versions with the row on purpose (#1357), so that promise was false, and a
 // customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
 // ties this text to that behaviour.
-export function buildAgentIdHeaderBody(name: string, strict = false): string {
+export function buildAgentIdHeaderBody(name: string, helper = true): string {
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
     'A flotta EGYETLEN közös Bearer tokent használ, ezért a dashboard nem látja, melyik',
-    ...(strict ? [
+    ...(helper ? [
       'ágens hívta. A memória-írásoknál (`memory-save`, `memory-move`, `memory-update`) a segéd magától',
       'elküldi a saját nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
       '',
       '```bash',
-      `${apiHelper} memory-update <id> ${name} ${strictPayloadPath(name)}`,
+      `${apiHelper} memory-update <id> ${name} ${shellWord(apiPayloadPath(name, 'memoria'))}`,
       '```',
+      ONE_FILE_ONE_SEND,
     ] : [
       'ágens hívta. A memória-írásoknál (`PUT` / `DELETE /api/memories/<id>`) küldd el a saját',
       'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
@@ -4210,7 +4302,7 @@ export function buildAgentIdHeaderBody(name: string, strict = false): string {
     'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
     'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
     'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
-    ...(strict ? [
+    ...(helper ? [
       'együtt a verzióit is törli, így utána semmiből nem állítható vissza. A segédnek nincs törlő igéje:',
       'a törlés gazda-döntés (data_delete), ha kellene, jelezd a fő ágensnek.',
     ] : [
@@ -4227,7 +4319,7 @@ export function ensureAgentIdHeaderSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name, agentRunsStrict(name))}\n${AGENT_ID_HEADER_END}`
+  const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name, agentUsesApiHelper(name))}\n${AGENT_ID_HEADER_END}`
 
   let existing: string
   try {
@@ -4540,7 +4632,7 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // AGENT_NAME for the model to substitute -- this body is written deterministically,
 // so the header dump file is genuinely per-agent and two agents searching at the
 // same time cannot read each other's label out of one shared /tmp path.
-export function buildMemorySearchLabelBody(name: string, strict = false): string {
+export function buildMemorySearchLabelBody(name: string, helper = true): string {
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
@@ -4548,7 +4640,7 @@ export function buildMemorySearchLabelBody(name: string, strict = false): string
     'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
     'maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint',
     'egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a',
-    ...(strict ? [
+    ...(helper ? [
       'segéd a fejlécet MINDIG kiírja a válasz ELSŐ soraként, és azt az első sort KÖTELEZŐ elolvasni:',
       '',
       '```bash',
@@ -4570,7 +4662,7 @@ export function buildMemorySearchLabelBody(name: string, strict = false): string
     '  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.',
     '',
     'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
-    ...(strict ? [
+    ...(helper ? [
       '`--strict` kapcsolót: ott az üres válasz pontosan azt jelenti, aminek látszik.',
       '',
       'Időszakra szűrés: `--date tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
@@ -4584,7 +4676,7 @@ export function buildMemorySearchLabelBody(name: string, strict = false): string
     'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
     'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
     '',
-    ...(strict ? [
+    ...(helper ? [
       'A segéd a keresőszót maga kódolja, tehát az ékezetes szó is megy. Ha az első sor',
       '`X-Memory-Search: MISSING`, a keresés nem úgy futott, ahogy kérted (pl. 400-at kapott): az elszállt',
       'kérés, nem üres találat.',
@@ -4622,7 +4714,7 @@ export function ensureMemorySearchLabelSection(name: string): void {
   // context on every session start.
   if (!hasBlock && /x-memory-search/i.test(existing)) return
 
-  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentRunsStrict(name))}\n${MEMORY_SEARCH_LABEL_END}`
+  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentUsesApiHelper(name))}\n${MEMORY_SEARCH_LABEL_END}`
   const updated = hasBlock
     ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, block)
     : existing.trimEnd() + '\n\n' + block + '\n'
@@ -4918,6 +5010,8 @@ export async function generateClaudeMd(name: string, description: string, model:
   // The profile is written before this runs (routes/agents.ts), so the new agent's mode is known.
   const strict = agentRunsStrict(name)
   const R = strictPromptRecipes(name)
+  // The generated sections (autonomy, skill) are rendered as on every start: helper recipes unless the settings deny it.
+  const helper = agentUsesApiHelper(name)
   const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
 Agent name: ${name}
 Description of what the agent should do: ${description}
@@ -5003,7 +5097,7 @@ Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00)
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le.
 
-${buildSkillSection(strict ? name : undefined, tokenPath)}
+${buildSkillSection(helper ? name : undefined, tokenPath)}
 
 ## Időkezelés
 
@@ -5082,7 +5176,7 @@ Output ONLY the markdown content, no code fences.`
   // see or rewrite them. Single source of truth: same builders as the
   // ensure*Section() functions used on every subsequent respawn.
   const fleetBody = buildFleetRosterBody(name)
-  const autonomyBody = buildAutonomyBody(name, strict)
+  const autonomyBody = buildAutonomyBody(name, helper, strict)
   cleaned = cleaned.trimEnd()
     + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + fleetBody + '\n' + FLEET_ROSTER_END
     + '\n\n' + AUTONOMY_BEGIN + '\n' + autonomyBody + '\n' + AUTONOMY_END + '\n'
