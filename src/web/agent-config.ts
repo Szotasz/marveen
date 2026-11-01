@@ -434,6 +434,15 @@ export function readAgentGromzo(name: string): boolean {
   }
 }
 
+// GROMZOAGENTPICK1101: the dashboard's switch writes the same flag readAgentGromzo reads.
+export function writeAgentGromzo(name: string, on: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (on) config.gromzo = true
+  else delete config.gromzo
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentExtraChannels(name: string, extras: readonly string[]): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   const config = readJsonObjectForWrite(configPath)

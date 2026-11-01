@@ -16365,6 +16365,7 @@ async function loadSettings() {
 
   renderAuthCard()
   if (typeof window.loadGromzoCard === 'function') window.loadGromzoCard()
+  if (typeof window.loadGromzoAgents === 'function') window.loadGromzoAgents()
 
   try {
     const res = await fetch('/api/settings')
@@ -20739,6 +20740,185 @@ async function openResearchDoc(agent, name) {
   // A hidden tab wipes it too; leaving the Settings page does (switchPage).
   document.addEventListener('visibilitychange', () => { if (document.hidden) clearQr(false) })
   window.clearGromzoQr = () => clearQr(false)
+})()
+
+// === Gromzo card: which agents are on Gromzo (GROMZOAGENTPICK1101) ===
+// GET /api/gromzo/agents lists the fleet; switching on asks the owner to approve in the
+// app (POST .../enable), then this panel asks .../consent every few seconds until the
+// owner decided (the server paces the real mxd check to one per ~11 s). Switching off
+// is POST .../disable. Only the owner's dashboard session may do any of it; the
+// consent id never reaches the browser.
+;(function setupGromzoAgents() {
+  const listEl = document.getElementById('gromzoAgentList')
+  const errEl = document.getElementById('gromzoAgentsError')
+  if (!listEl || !errEl) return
+  const POLL_MS = 6000
+  // slug -> { kind: 'pending'|'busy'|'error'|'restarting', text?, until? } (this page's view only)
+  const local = new Map()
+  let rows = []
+  let pollTimer = null
+
+  function agentErr(code) {
+    for (const key of ['gromzo.agents.err.' + code, 'gromzo.err.' + code]) {
+      const s = t(key)
+      if (s !== key) return s
+    }
+    return t('gromzo.agents.err.generic', { code })
+  }
+
+  async function codeOf(r) {
+    let code = 'http_' + r.status
+    try { const b = await r.json(); code = String(b.code || b.error || code) } catch { /* keep the HTTP code */ }
+    return code
+  }
+
+  function showError(msg) {
+    errEl.textContent = msg
+    errEl.hidden = !msg
+  }
+
+  function stateOf(row) {
+    if (row.main) return { cls: 'is-on', text: t('gromzo.agents.state.main') }
+    const l = local.get(row.slug)
+    if (l && l.kind === 'busy') return { cls: '', text: t('gromzo.agents.state.busy') }
+    if (l && l.kind === 'restarting') return { cls: 'is-on', text: t('gromzo.agents.state.restarting') }
+    if (l && l.kind === 'error') return { cls: 'is-error', text: l.text }
+    const until = (l && l.kind === 'pending' && l.until) || row.pendingUntil
+    if (until && until > Date.now()) {
+      const min = Math.max(1, Math.ceil((until - Date.now()) / 60000))
+      return { cls: 'is-pending', text: t('gromzo.agents.state.pending', { min }) }
+    }
+    if (row.held) return { cls: 'is-error', text: t('gromzo.agents.state.held') }
+    return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
+  }
+
+  function render() {
+    listEl.replaceChildren()
+    for (const row of rows) {
+      const li = document.createElement('li')
+      li.className = 'gromzo-agent-row'
+      const main = document.createElement('div')
+      main.className = 'gromzo-agent-main'
+      const name = document.createElement('span')
+      name.className = 'gromzo-agent-name'
+      name.textContent = row.name || row.slug
+      const st = stateOf(row)
+      const state = document.createElement('span')
+      state.className = 'gromzo-agent-state' + (st.cls ? ' ' + st.cls : '')
+      state.textContent = st.text
+      state.setAttribute('aria-live', 'polite')
+      main.append(name, state)
+      li.append(main)
+      if (!row.main) {
+        const l = local.get(row.slug)
+        const pending = (l && l.kind === 'pending') || (row.pendingUntil && row.pendingUntil > Date.now())
+        const disabled = !!pending || !!(l && (l.kind === 'busy' || l.kind === 'restarting'))
+        const label = row.name || row.slug
+        const mk = (on, primary, textKey) => {
+          const b = document.createElement('button')
+          b.className = primary ? 'btn-primary btn-compact' : 'btn-secondary btn-compact'
+          b.textContent = t(textKey)
+          b.setAttribute('aria-label', t(on ? 'gromzo.agents.aria.on' : 'gromzo.agents.aria.off', { name: label }))
+          b.disabled = disabled
+          b.addEventListener('click', () => (on ? switchOn(row) : switchOff(row)))
+          return b
+        }
+        const actions = document.createElement('div')
+        actions.className = 'gromzo-agent-actions'
+        // A held agent: mxd lists it but its last start held it back; ask for a new approval, or take it off.
+        if (row.held) actions.append(mk(true, true, 'gromzo.agents.btn.reapprove'))
+        if (row.gromzo) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
+        else if (!row.held) actions.append(mk(true, true, 'gromzo.agents.btn.on'))
+        li.append(actions)
+      }
+      listEl.append(li)
+    }
+  }
+
+  async function loadAgents() {
+    showError('')
+    try {
+      const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
+      if (!r.ok) { rows = []; render(); showError(agentErr(await codeOf(r))); return }
+      rows = (await r.json()).agents || []
+      for (const row of rows) if (row.pendingUntil && row.pendingUntil > Date.now() && !local.has(row.slug)) local.set(row.slug, { kind: 'pending', until: row.pendingUntil })
+      render()
+      ensurePolling()
+    } catch {
+      rows = []; render(); showError(agentErr('network'))
+    }
+  }
+
+  async function post(slug, action) {
+    return fetch('/api/gromzo/agents/' + encodeURIComponent(slug) + '/' + action, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store',
+    })
+  }
+
+  async function switchOn(row) {
+    local.set(row.slug, { kind: 'busy' }); render()
+    try {
+      const r = await post(row.slug, 'enable')
+      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      const b = await r.json()
+      if (b.state === 'pending') local.set(row.slug, { kind: 'pending', until: Date.now() + (Number(b.expires_in) || 600) * 1000 })
+      else local.delete(row.slug)
+      await loadAgents()
+    } catch {
+      local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
+    }
+  }
+
+  async function switchOff(row) {
+    if (!confirm(t('gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
+    local.set(row.slug, { kind: 'busy' }); render()
+    try {
+      const r = await post(row.slug, 'disable')
+      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      local.set(row.slug, { kind: 'restarting' })
+      await loadAgents()
+      setTimeout(() => { if (local.get(row.slug)?.kind === 'restarting') { local.delete(row.slug); loadAgents() } }, 15000)
+    } catch {
+      local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
+    }
+  }
+
+  async function pollOnce() {
+    const slugs = [...local].filter(([, l]) => l.kind === 'pending').map(([s]) => s)
+    if (!slugs.length || document.hidden) { stopPolling(); return }
+    for (const slug of slugs) {
+      try {
+        const r = await fetch('/api/gromzo/agents/' + encodeURIComponent(slug) + '/consent', { cache: 'no-store' })
+        if (!r.ok) {
+          const code = await codeOf(r)
+          // mxd reloading or a transient refusal: keep waiting; a gone consent ends the wait.
+          if (code === 'no_pending') local.delete(slug)
+          else if (!['not_running', 'timeout', 'rate_limited', 'too_soon', 'unavailable', 'io'].includes(code)) local.set(slug, { kind: 'error', text: agentErr(code) })
+          continue
+        }
+        const b = await r.json()
+        if (b.state === 'pending') continue
+        if (b.state === 'added' || b.state === 'on') {
+          local.set(slug, { kind: 'restarting' })
+          setTimeout(() => { if (local.get(slug)?.kind === 'restarting') { local.delete(slug); loadAgents() } }, 15000)
+        } else {
+          local.set(slug, { kind: 'error', text: t('gromzo.agents.result.' + b.state) })
+        }
+      } catch { /* network blip: the next round asks again */ }
+    }
+    await loadAgents()
+  }
+
+  function ensurePolling() {
+    const any = [...local.values()].some((l) => l.kind === 'pending')
+    if (any && !pollTimer) pollTimer = setInterval(pollOnce, POLL_MS)
+    if (!any) stopPolling()
+  }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ensurePolling() })
+  window.addEventListener('pagehide', stopPolling)
+  window.loadGromzoAgents = loadAgents
 })()
 
 // === Archivalt kartyak ===

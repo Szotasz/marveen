@@ -30,7 +30,10 @@ vi.mock('../env.js', async (importOriginal) => ({
 }))
 
 const { initDatabase, getDb, createDashboardUser } = await import('../db.js')
-const { tryHandleGromzo } = await import('../web/routes/gromzo.js')
+const { tryHandleGromzo, setGromzoAgentDepsForTest } = await import('../web/routes/gromzo.js')
+const { resetPendingGromzoConsents } = await import('../web/gromzo-agents.js')
+const { MxdDashError } = await import('../web/mxd-dash.js')
+const { MAIN_AGENT_ID: MAIN_ID } = await import('../config.js')
 const { requiresAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { createSession } = await import('../web/auth-sessions.js')
 const { isBlockedCrossOriginWrite } = await import('../web/csrf-origin.js')
@@ -284,5 +287,155 @@ describe('GET /api/gromzo/status', () => {
 
   it('POST on status is 405', async () => {
     expect((await fetch(origin + '/api/gromzo/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(405)
+  })
+})
+
+// GROMZOAGENTPICK1101: the agent switch's routes, with injected collaborators (the rules themselves are in
+// gromzo-agents.test.ts). Never the real dash.sock, never a real agent restart.
+describe('the agent switch routes', () => {
+  const calls: Array<Record<string, unknown>> = []
+  const restarted: string[] = []
+  const flags = new Map<string, boolean>()
+  let replies: Record<string, Array<Record<string, unknown>>> = {}
+  beforeEach(() => {
+    calls.length = 0; restarted.length = 0; flags.clear(); replies = {}
+    resetPendingGromzoConsents()
+    setGromzoAgentDepsForTest({
+      call: async (req) => {
+        calls.push(req)
+        const r = replies[req.verb]?.shift()
+        if (!r) throw new Error('unscripted ' + req.verb)
+        return r
+      },
+      agents: () => ['samu', 'zara'],
+      readFlag: (s) => flags.get(s) ?? false,
+      writeFlag: (s, on) => { flags.set(s, on) },
+      displayName: (s) => s,
+      isRunning: () => true,
+      held: async () => new Set(),
+      restartOne: (s) => { restarted.push(s) },
+      now: () => Date.now(),
+    })
+  })
+  afterAll(() => setGromzoAgentDepsForTest(null))
+
+  const post = (p: string, headers: Record<string, string> = { 'Content-Type': 'application/json' }, body = '{}') =>
+    fetch(origin + '/api/gromzo/agents/' + p, { method: 'POST', headers, body })
+
+  it('all four sit behind the auth gate', () => {
+    expect(requiresAuth('/api/gromzo/agents', 'GET')).toBe(true)
+    expect(requiresAuth('/api/gromzo/agents/zara/enable', 'POST')).toBe(true)
+    expect(requiresAuth('/api/gromzo/agents/zara/consent', 'GET')).toBe(true)
+    expect(requiresAuth('/api/gromzo/agents/zara/disable', 'POST')).toBe(true)
+  })
+
+  it('only the owner session: a token, a sub-agent, a device, a peer get 403 and mxd is not asked', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    for (const p of [{ kind: 'token' }, { kind: 'token', tokenAgent: 'samu', agent: 'samu' }, { kind: 'device', device: 'phone', deviceId: 1 }, { kind: 'federation', peer: 'x' }, undefined]) {
+      principal = p
+      for (const r of [await fetch(origin + '/api/gromzo/agents'), await post('zara/enable'), await fetch(origin + '/api/gromzo/agents/zara/consent'), await post('zara/disable')]) {
+        expect(r.status, JSON.stringify(p)).toBe(403)
+      }
+    }
+    expect(calls).toEqual([])
+    expect(flags.size).toBe(0)
+  })
+
+  it('POST needs JSON (415), a foreign Origin is 403, wrong methods are 405; mxd not asked', async () => {
+    expect((await post('zara/enable', { 'Content-Type': 'text/plain' })).status).toBe(415)
+    expect((await post('zara/disable', { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403)
+    expect((await fetch(origin + '/api/gromzo/agents/zara/enable')).status).toBe(405)
+    expect((await post('zara/consent')).status).toBe(405)
+    expect((await fetch(origin + '/api/gromzo/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(405)
+    expect(calls).toEqual([])
+  })
+
+  it('the list: the main agent and the fleet with their flags', async () => {
+    flags.set('zara', true)
+    const r = await fetch(origin + '/api/gromzo/agents')
+    expect(r.status).toBe(200)
+    const rows = (await r.json()).agents as Array<{ slug: string, gromzo: boolean, main: boolean }>
+    expect(rows.filter((x) => !x.main).map((x) => [x.slug, x.gromzo])).toEqual([['samu', false], ['zara', true]])
+  })
+
+  it('the consent id never reaches a response or the log (pending, added, mismatch, failure; Dani 64094 (6))', async () => {
+    const ID = 'consent-SECRETIDSECRET'
+    const bodies: string[] = []
+    const keep = async (r: Response) => { bodies.push(await r.text()); return r }
+    replies.agent_add = [{ ok: true, consent_id: ID, expires_in: 600 }]
+    await keep(await post('zara/enable'))
+    replies.agent_add_check = [{ ok: true, state: 'added', slug: 'samu', restart: true }]
+    await keep(await fetch(origin + '/api/gromzo/agents/zara/consent'))
+    await keep(await fetch(origin + '/api/gromzo/agents'))
+    replies.agent_add = [{ ok: true, consent_id: ID, expires_in: 600 }]
+    await keep(await post('samu/enable'))
+    replies.agent_add_check = [{ ok: false, error: 'upstream' }]
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls.filter((c) => c.verb === 'agent_add_check').map((c) => c.id)).toEqual([ID])
+    expect(logged.length).toBeGreaterThan(0)
+    for (const text of [...bodies, logged.join('\n')]) expect(text).not.toContain('SECRETIDSECRET')
+    expect(bodies.join('\n')).toContain('consent_mismatch')
+  })
+
+  it('enable -> pending; the consent check uses the server\'s id even when the client sends one', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    const e = await post('zara/enable', { 'Content-Type': 'application/json' }, JSON.stringify({ id: 'consent-evilevilevil' }))
+    expect(e.status).toBe(200)
+    expect(await e.json()).toEqual({ state: 'pending', expires_in: 600 })
+    replies.agent_add_check = [{ ok: true, state: 'added', slug: 'zara', restart: true }]
+    const c = await fetch(origin + '/api/gromzo/agents/zara/consent?id=consent-evilevilevil')
+    expect(await c.json()).toEqual({ state: 'added' })
+    expect(calls.map((x) => x.verb === 'agent_add_check' ? x.id : x.verb)).toEqual(['agent_add', 'consent-aaaaaaaaaaaa'])
+    expect(flags.get('zara')).toBe(true)
+    expect(restarted).toEqual(['zara'])
+  })
+
+  it('codes map to statuses: a bad slug 400, unknown 404, the main agent 409, no pending 409, rate_limited 429, mxd down 503', async () => {
+    expect((await post('Bad%20Slug/enable')).status).toBe(400)
+    expect((await post('nobody/enable')).status).toBe(404)
+    expect((await post(encodeURIComponent(MAIN_ID) + '/disable')).status).toBe(409)
+    expect((await fetch(origin + '/api/gromzo/agents/zara/consent')).status).toBe(409)
+    expect(calls).toEqual([])
+    replies.agent_remove = [{ ok: false, error: 'rate_limited' }]
+    const r = await post('zara/disable')
+    expect(r.status).toBe(429)
+    expect((await r.json()).error).toBe('rate_limited')
+    setGromzoAgentDepsForTest({
+      call: async () => { throw new MxdDashError('not_running') },
+      agents: () => ['zara'], readFlag: () => true, writeFlag: () => { throw new Error('no write') },
+      displayName: (s) => s, isRunning: () => true, held: async () => new Set(), restartOne: () => { throw new Error('no restart') }, now: () => Date.now(),
+    })
+    expect((await post('zara/disable')).status).toBe(503)
+  })
+})
+
+describe('the held list from the real dash status (fake dash.sock)', () => {
+  beforeEach(() => {
+    resetPendingGromzoConsents()
+    // the real call and held reader; a fixed fleet
+    setGromzoAgentDepsForTest({ agents: () => ['samu', 'zara'], readFlag: () => true, displayName: (s) => s, isRunning: () => true })
+  })
+  afterAll(() => setGromzoAgentDepsForTest(null))
+
+  it('held_agents slugs are read from status; anything that is not a slug is dropped', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true, held_agents: ['zara', '../samu', 7, 'Samu'] })
+    const r = await fetch(origin + '/api/gromzo/agents')
+    expect(r.status).toBe(200)
+    const rows = (await r.json()).agents as Array<{ slug: string, held: boolean }>
+    expect(rows.filter((x) => x.held).map((x) => x.slug)).toEqual(['zara'])
+    expect(fake.seen).toEqual(['status'])
+  })
+
+  it('no held_agents field (the empty case) or mxd down: nobody is held, the list still answers', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true })
+    let rows = (await (await fetch(origin + '/api/gromzo/agents')).json()).agents as Array<{ held: boolean }>
+    expect(rows.some((x) => x.held)).toBe(false)
+    env.MXD_DASH_SOCK = fake.path + '.gone'
+    try {
+      const r = await fetch(origin + '/api/gromzo/agents')
+      expect(r.status).toBe(200)
+      rows = (await r.json()).agents
+      expect(rows.some((x) => x.held)).toBe(false)
+    } finally { env.MXD_DASH_SOCK = fake.path }
   })
 })
