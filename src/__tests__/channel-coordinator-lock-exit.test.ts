@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { acquireSingleInstanceLock, type PidLockDeps } from '../channel-coordinator.js'
 
 class ExitCalled extends Error {
@@ -73,5 +74,21 @@ describe('acquireSingleInstanceLock exit behaviour', () => {
     expect(() => acquireSingleInstanceLock(pidFile, deps, exit)).not.toThrow()
     expect(exit).not.toHaveBeenCalled()
     expect(readFileSync(pidFile, 'utf-8')).toBe(String(process.pid))
+  })
+})
+
+// The exit above only protects the token if startup takes the lock at all, and
+// before it opens the ingest db or polls. main() drives the real token and the
+// real poll loop, so the call is pinned in the source text instead.
+describe('main() takes the lock first', () => {
+  it('calls acquireSingleInstanceLock() before initIngestDb()', () => {
+    const src = readFileSync(fileURLToPath(new URL('../channel-coordinator.ts', import.meta.url)), 'utf-8')
+    const start = src.indexOf('async function main(): Promise<void> {')
+    expect(start).toBeGreaterThan(-1)
+    const body = src.slice(start, src.indexOf('\n}\n', start))
+    const lines = body.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//'))
+    const lock = lines.indexOf('acquireSingleInstanceLock()')
+    expect(lock).toBeGreaterThan(0)
+    expect(lock).toBeLessThan(lines.indexOf('initIngestDb()'))
   })
 })
