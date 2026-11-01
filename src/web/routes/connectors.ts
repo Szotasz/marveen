@@ -784,7 +784,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
     if (label !== undefined && label !== null && typeof label !== 'string') { json(res, { error: 'label must be a string' }, 400); return true }
-    if (typeof label === 'string' && label.trim().length > VAULT_LABEL_MAX_LENGTH) {
+    // An unchanged stored label passes whatever its length (value rotation re-sends it); a new
+    // secret or a changed label is capped. listSecrets() never decrypts anything.
+    if (typeof label === 'string' && label.trim().length > VAULT_LABEL_MAX_LENGTH
+        && label.trim() !== listSecrets().find(s => s.id === id.trim())?.label) {
       json(res, { error: `label must be at most ${VAULT_LABEL_MAX_LENGTH} characters` }, 400)
       return true
     }

@@ -22,7 +22,7 @@ const getSecret = vi.fn(() => SECRET_VALUE)
 const setSecret = vi.fn()
 const syncSecret = vi.fn(() => ({ updated: 0, errors: [] }))
 vi.mock('../web/vault.js', () => ({
-  listSecrets: () => [],
+  listSecrets: () => [...h.labels].map(([id, label]) => ({ id, label, createdAt: '', updatedAt: '' })),
   setSecret: (...a: unknown[]) => (setSecret as any)(...a),
   deleteSecret: () => false,
   getSecret: (...a: unknown[]) => (getSecret as any)(...a),
@@ -85,6 +85,24 @@ describe('POST /api/vault label rule (shared with PATCH)', () => {
     const res = await post({ id: 'K1', label: 'a'.repeat(201), value: 'v' })
     expect(res.statusCode).toBe(400)
     expect(JSON.parse(res.body).error).toBe('label must be at most 200 characters')
+    expect(setSecret).not.toHaveBeenCalled()
+  })
+
+  it('an existing secret with a 300-char stored label can rotate its value with that same label', async () => {
+    const long = 'x'.repeat(300)
+    h.labels.set('LONG', long)
+    expect((await post({ id: 'LONG', label: long, value: 'new' })).statusCode).toBe(200)
+    expect(setSecret).toHaveBeenCalledWith('LONG', long, 'new')
+  })
+
+  it('the same secret with a different 300-char label is rejected', async () => {
+    h.labels.set('LONG', 'x'.repeat(300))
+    expect((await post({ id: 'LONG', label: 'y'.repeat(300), value: 'new' })).statusCode).toBe(400)
+    expect(setSecret).not.toHaveBeenCalled()
+  })
+
+  it('a new id with a 300-char label is rejected', async () => {
+    expect((await post({ id: 'FRESH', label: 'x'.repeat(300), value: 'v' })).statusCode).toBe(400)
     expect(setSecret).not.toHaveBeenCalled()
   })
 

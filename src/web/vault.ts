@@ -252,9 +252,11 @@ export function setSecret(id: string, label: string, value: string): void {
   writeVault(store)
 }
 
-// The one rule for a secret's description: at most this many characters (after trimming),
-// and an empty one falls back to the id. Shared by POST and PATCH /api/vault so a label
-// saved by either route can always be edited by the other.
+// The rule for a secret's description: an empty one falls back to the id, and a NEW or CHANGED
+// label is at most this many characters (after trimming). POST and PATCH /api/vault both
+// enforce it, but POST lets an unchanged stored label through, because other writers (import,
+// generated labels) and older data can already be longer and the edit form re-sends the label
+// when it rotates a value.
 export const VAULT_LABEL_MAX_LENGTH = 200
 
 export function normalizeVaultLabel(id: string, label: string): string {
