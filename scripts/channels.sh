@@ -1818,7 +1818,17 @@ _answer_accept_dialog() {
 }
 
 _eperm_restarted=0
-for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+# #2389: the guard watches the pane for CHANNELS_BOOT_GUARD_S seconds (default
+# 90, was a fixed 12). REPORTED (2026-10-31, Linux/Discord): on a lagging boot
+# the trust dialog was drawn after the 12 s window, nobody answered it, and the
+# session sat on it until the /rename step. The loop still leaves at once on the
+# ready banner, so a normal boot does not wait longer. Not a positive integer ->
+# the default.
+_boot_guard_s="${CHANNELS_BOOT_GUARD_S:-90}"
+case "$_boot_guard_s" in ''|*[!0-9]*|0) _boot_guard_s=90 ;; esac
+i=0
+while [ "$i" -lt "$_boot_guard_s" ]; do
+  i=$((i + 1))
   sleep 1
   pane=$($TMUX capture-pane -t "=$SESSION:" -p 2>/dev/null || true)
   case "$pane" in
@@ -1875,7 +1885,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       ;;
   esac
 done
-unset _eperm_restarted
+unset _eperm_restarted _boot_guard_s
 
 # Set agent name once the session is ready. (/remote-control dropped: the operator no
 # longer uses Remote Control.)
