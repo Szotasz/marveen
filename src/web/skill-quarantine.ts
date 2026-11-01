@@ -123,6 +123,11 @@ export interface PendingSkill extends PendingMeta {
   // full, so it cannot be approved here.
   approvable: boolean
   liveSkillMd?: string
+  // A proposal (SKILLSPLIT1101 follow-up, Dani 65296, Samu 65304): the files that are NOT the proposal's own
+  // (SKILL.md, proposedFiles) but differ from the live skill's file, byte for byte, or have no live file. They were
+  // meant to be copied from the live skill unchanged; the hash is computed when the skill is shown, so a change
+  // made in the pending dir after the proposal is inside it, and the card must not call such a file unchanged.
+  liveDrift?: Array<{ path: string; live: 'changed' | 'missing' }>
 }
 
 export const SKILL_PENDING_DIRNAME = 'skills-pending'
@@ -628,6 +633,26 @@ export function scanSkillDir(root: string): ScanReport {
   return { files, findings, totalBytes, truncated, findingsTruncated, unreviewable }
 }
 
+// The files of a replacement proposal that should equal the live skill's but do not (see PendingSkill.liveDrift).
+// Compared by sha256 against the live file, read without following a link; a live entry that is not a regular
+// file counts as missing. Bounded like the scan: a file over MAX_BYTES is not read and counts as changed.
+function driftFromLive(liveDir: string, report: ScanReport, meta: PendingMeta): Array<{ path: string; live: 'changed' | 'missing' }> {
+  const own = new Set(['SKILL.md', ...(meta.proposedFiles ?? []).map((f) => f.path)])
+  const out: Array<{ path: string; live: 'changed' | 'missing' }> = []
+  for (const f of report.files) {
+    if (own.has(f.path)) continue
+    const abs = join(liveDir, f.path)
+    let st: ReturnType<typeof lstatSync> | null
+    try { st = lstatSync(abs) } catch { st = null }
+    if (!st || !st.isFile()) { out.push({ path: f.path, live: 'missing' }); continue }
+    if (st.size !== f.size || st.size > MAX_BYTES) { out.push({ path: f.path, live: 'changed' }); continue }
+    let sha = ''
+    try { sha = createHash('sha256').update(readFileSync(abs)).digest('hex') } catch { /* unreadable: changed */ }
+    if (!f.sha256 || sha !== f.sha256) out.push({ path: f.path, live: 'changed' })
+  }
+  return out
+}
+
 // One pending skill with the FULL text of every non-binary file: what the
 // approver reads before the button (GET /api/skills/pending/:id).
 export function getPending(id: string): PendingSkill | null {
@@ -646,7 +671,13 @@ export function getPending(id: string): PendingSkill | null {
       }
     } catch { /* no readable live SKILL.md: leave it out */ }
   }
-  return { ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated && report.unreviewable.length === 0, ...(liveSkillMd !== undefined ? { liveSkillMd } : {}) }
+  // A new skill has no live twin: any file that is not the proposal's own then shows as 'missing'.
+  const liveDrift = meta.source === 'propose' ? driftFromLive(join(targetRoot(meta.target), meta.name), report, meta) : []
+  return {
+    ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated && report.unreviewable.length === 0,
+    ...(liveSkillMd !== undefined ? { liveSkillMd } : {}),
+    ...(liveDrift.length ? { liveDrift } : {}),
+  }
 }
 
 // The queue, without file texts (GET /api/skills/pending).

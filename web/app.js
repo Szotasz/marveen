@@ -12367,12 +12367,15 @@ function pendingFileOrigin(p, path) {
   if (path === 'SKILL.md') return p.replaces ? 'proposed_replaced' : 'proposed_new'
   const pf = Array.isArray(p.proposedFiles) ? p.proposedFiles.find((x) => x.path === path) : null
   if (pf) return pf.replaced ? 'proposed_replaced' : 'proposed_new'
+  // Not the proposal's, yet not equal to the live file (Dani 65296): never "unchanged".
+  const drift = Array.isArray(p.liveDrift) ? p.liveDrift.find((x) => x.path === path) : null
+  if (drift) return drift.live === 'missing' ? 'not_proposed_missing' : 'not_proposed_changed'
   return p.replaces ? 'from_live' : null
 }
 
 function pendingFileRow(f, origin) {
   const det = pendingEl('details', 'skills-pending-file')
-  const flagged = f.kind === 'script' || f.kind === 'binary' || f.executable
+  const flagged = f.kind === 'script' || f.kind === 'binary' || f.executable || (origin || '').startsWith('not_proposed')
   const sum = pendingEl('summary', flagged ? 'is-flagged' : null)
   const flags = [f.kind]
   if (f.executable) flags.push(t('skills.pending.executable'))
@@ -12391,7 +12394,7 @@ function pendingFileRow(f, origin) {
     det.appendChild(pendingEl('pre', null, f.strings))
     det.open = true
   }
-  if (f.path === 'SKILL.md' || origin === 'proposed_new' || origin === 'proposed_replaced') det.open = true
+  if (f.path === 'SKILL.md' || (origin && origin !== 'from_live')) det.open = true
   return det
 }
 
