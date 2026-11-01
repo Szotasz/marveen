@@ -559,7 +559,7 @@ describe('maybeRestartWedgedMainChannel wiring', () => {
       '',
       "  if \\(action === 'alert'\\) \\{",
       '    logger\\.error\\([^\\n]*\\)',
-      '    sendAlert\\(`⛔ A \\$\\{MAIN_CHANNELS_SESSION\\} bemenete beragadt [^`\\n]*`\\)',
+      '    sendAlert\\(`⛔ A \\$\\{MAIN_CHANNELS_SESSION\\} bemenete beragadt, [^`\\n]*`\\)',
       '    stuckLadder\\.noteCapAlert\\(\\)',
       '    return',
       '  \\}',
@@ -688,14 +688,14 @@ describe('decideMarveenRecoveryReport', () => {
 describe('stage-4 hard restart message reflects the result', () => {
   it('success says the restart was started', () => {
     const t = hardRestartStageAlertText('launchctl', 'main-session', { ok: true })
-    expect(t).toContain('elinditva')
+    expect(t).toContain('elindítva')
     expect(t).toContain('main-session')
-    expect(t).not.toContain('nem sikerult')
+    expect(t).not.toContain('nem sikerült')
   })
 
   it('failure carries the error', () => {
     const t = hardRestartStageAlertText('systemctl', 'main-session', { ok: false, error: 'tmux respawn-pane failed' })
-    expect(t).toContain('sem sikerult')
+    expect(t).toContain('sem sikerült')
     expect(t).toContain('tmux respawn-pane failed')
   })
 

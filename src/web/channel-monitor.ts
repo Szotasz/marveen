@@ -931,8 +931,8 @@ export function decideMarveenRecoveryReport(
 // Pure. The stage-4 message, written AFTER the hard restart returned so it
 // reports what actually happened instead of announcing an attempt.
 export function hardRestartStageAlertText(svcName: string, session: string, r: { ok: boolean; error?: string }): string {
-  if (r.ok) return `⚠️ Session resume nem segitett. Hard restart (${svcName}) elinditva a ${session} session-on.`
-  return `⚠️ Session resume nem segitett, es a hard restart (${svcName}) sem sikerult a ${session} session-on: ${r.error ?? 'ismeretlen hiba'}.`
+  if (r.ok) return `⚠️ Session resume nem segített. Hard restart (${svcName}) elindítva a ${session} session-on.`
+  return `⚠️ Session resume nem segített, és a hard restart (${svcName}) sem sikerült a ${session} session-on: ${r.error ?? 'ismeretlen hiba'}.`
 }
 
 function getMainAgentProvider(): ChannelProviderType {
@@ -1628,7 +1628,7 @@ export function createMainChannelsSession(): MainSessionCreateResult {
     // boot instead of stacking a respawn on a session that is still coming up.
     writeRespawnStamp()
     logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Main channels session absent -- recreating via channels.sh')
-    sendRoutineAlert('main-session-recreate', `♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
+    sendRoutineAlert('main-session-recreate', `♻️ A ${MAIN_CHANNELS_SESSION} session eltűnt -- újraindítom (channels.sh). Enélkül minden ütemezett feladat csendben kimaradna.`)
     return 'started'
   } catch (err) {
     logger.error({ err }, 'Failed to recreate main channels session via channels.sh')
@@ -1737,7 +1737,7 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
         return
       }
       logger.warn({ provider }, 'Post-resume guard: --continue resume came up WITHOUT the channels plugin (CC 2.1.193) -- escalating to fresh respawn (context dropped, memory persists)')
-      sendRoutineAlert('post-resume-fresh-respawn', `⚠️ A --continue resume suketen jott fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+      sendRoutineAlert('post-resume-fresh-respawn', `⚠️ A --continue resume süketen jött fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszélgetés elveszik, memória marad).`)
       respawnMarveenSessionFresh()
     } catch (err) {
       logger.warn({ err }, 'Post-resume guard probe failed (leaving recovery to the down-cascade)')
@@ -1944,7 +1944,7 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   }
   if (step.sendResolved) {
     logger.info({ session: MAIN_CHANNELS_SESSION }, 'Stuck main channel input cleared -- closing the cap alert')
-    sendAlert(`✅ A ${MAIN_CHANNELS_SESSION} bemenete felszabadult: a panel tetlen es a beviteli mezo ures. A beragadt-bemenet riasztas lezarva.`)
+    sendAlert(`✅ A ${MAIN_CHANNELS_SESSION} bemenete felszabadult: a panel tétlen és a beviteli mező üres. A beragadt-bemenet riasztás lezárva.`)
   }
   if (!parked) return
   // Busy-guard: never hard-restart while the main pane is actively generating --
@@ -1988,7 +1988,7 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   if (action === 'skip') return
   if (action === 'alert') {
     logger.error({ session: MAIN_CHANNELS_SESSION }, 'Stuck main channel input survived max restart escalations -- manual intervention needed')
-    sendAlert(`⛔ A ${MAIN_CHANNELS_SESSION} bemenete beragadt es ${STUCK_RESTART_MAX_CONSECUTIVE} automatikus respawn-pane sem szabaditotta ki. Kezi beavatkozas kell: inditsd ujra a ${SERVICE_ID}-channels szolgaltatast.`)
+    sendAlert(`⛔ A ${MAIN_CHANNELS_SESSION} bemenete beragadt, és ${STUCK_RESTART_MAX_CONSECUTIVE} automatikus respawn-pane sem szabadította ki. Kézi beavatkozás kell: indítsd újra a ${SERVICE_ID}-channels szolgáltatást.`)
     stuckLadder.noteCapAlert()
     return
   }
@@ -2400,7 +2400,7 @@ function checkMainKeepaliveStaleness(): void {
   const staleDueToSleep = ageMs != null && systemSleptBetween(now - ageMs, now)
   logger.warn({ ageMs, paneState, staleDueToSleep }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
   if (!staleDueToSleep) {
-    sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+    sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszélgetés elveszik, memória marad).`)
   }
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
@@ -2535,7 +2535,7 @@ async function handleMarveenDown(): Promise<void> {
     // Issue #189: a plain `tmux attach -t ...` may itself fail with "Permission
     // denied" when the operator is running it from another tmux session. Prefix
     // with `unset TMUX` so the hint works in both nested and non-nested cases.
-    sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`unset TMUX && tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
+    sendAlert(`🚨 Hard restart SEM segített. Kézzel kell megnézni: \`unset TMUX && tmux attach -t ${MAIN_CHANNELS_SESSION}\` és ${serviceCmd}.`)
     // Hand the channel to the independent backstops instead of holding them off
     // with the stamp of a hard restart that did not work -- our own stamp only,
     // and only after its settle time (retried on later gave_up ticks).
@@ -2545,7 +2545,7 @@ async function handleMarveenDown(): Promise<void> {
   if (marveenDownState.stage === 'gave_up') tryReleaseOwnRespawnStamp(now)
   if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {
     marveenDownState.lastAlertAt = now
-    sendAlert(`🚨 ${BOT_NAME} ${providerLabel} plugin meg mindig halott. Nezd meg kezzel.`)
+    sendAlert(`🚨 ${BOT_NAME} ${providerLabel} plugin még mindig halott. Nézd meg kézzel.`)
   }
 }
 
@@ -2596,8 +2596,8 @@ function handleMarveenUp(): void {
     // disruptive too; decideMarveenRecoveryReport owns the rule.
     if (report.notify) {
       sendAlert(
-        `✅ ${BOT_NAME} ${providerLabel} kapcsolat helyreallt (${downedFor}s kieses, ${stage} szint). ` +
-        `Ha a kieses alatt irtal es nem jott valasz, mindjart potolom.`,
+        `✅ ${BOT_NAME} ${providerLabel} kapcsolat helyreállt (${downedFor}s kiesés, ${stage} szint). ` +
+        `Ha a kiesés alatt írtál és nem jött válasz, mindjárt pótolom.`,
       )
     }
     marveenDownState = null

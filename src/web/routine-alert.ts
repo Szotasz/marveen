@@ -37,7 +37,7 @@ export function decideRoutineAlert(
 export function routineAlertSuffix(repeats: number, cooldownMs: number): string {
   if (repeats <= 0) return ''
   const minutes = Math.round(cooldownMs / 60000)
-  return `\n\n(Az elmult ${minutes} percben ${repeats + 1} ilyen volt. Ha nem all le magatol, nezz ra.)`
+  return `\n\n(Az elmúlt ${minutes} percben ${repeats + 1} ilyen volt. Ha nem áll le magától, nézz rá.)`
 }
 
 const states = new Map<string, RoutineAlertState>()
