@@ -5173,7 +5173,10 @@ export function ensureFleetAuthSection(name: string): void {
 // limits"). `command grep` is no fix on its own: it only works at the start of a
 // command line -- after `timeout`, `xargs` or `find -exec` it is "No such file or
 // directory", with 2>/dev/null a silent false zero. `/usr/bin/grep` works in
-// every position.
+// every position. The exposure is the bare `grep` that starts a command line or
+// a pipeline segment: behind `xargs`, `find -exec`, `timeout`, inside a script or
+// across ssh the real binary runs anyway, because the shim is a function of the
+// Bash tool's own shell.
 //
 // This is a property of the Claude Code runtime every agent runs in, not one
 // fleet's process, so it ships default-on. A marker block on the same contract as
@@ -5196,9 +5199,11 @@ export function buildShellGrepBody(): string {
     '  fokozat hamis „0”-t ír;',
     '- a `-o` és `.{0,N}` jellegű mintán hibával megáll (régebbi Claude Code-ban a memóriát is elfogyaszthatta).',
     '',
-    'Ezért titok-, audit- és teljességi kereséshez `/usr/bin/grep` kell, a cső minden fokozatában. A `command grep` csak a',
-    'parancssor elején működik, `timeout`, `xargs` vagy `find -exec` után nem. „Nincs találat” csak akkor fogadható el, ha',
-    'a pozitív kontroll talált: egy `.gitignore`-ban felsorolt fájlban, ugyanabban a parancsformában és ugyanabból a mappából.',
+    'Ezért titok-, audit- és teljességi kereséshez `/usr/bin/grep` kell, a cső minden fokozatában. A kockázat a parancssor',
+    'és a cső-szegmensek elején álló puszta `grep`: `xargs`, `find -exec`, `timeout`, egy szkript vagy az ssh mögött eleve a',
+    'rendszer grepje fut. A `command grep` csak a parancssor elején használható, ezek után nem. „Nincs találat” csak akkor',
+    'fogadható el, ha a pozitív kontroll talált: egy `.gitignore`-ban felsorolt fájlban, ugyanabban a parancsformában és',
+    'ugyanabból a mappából.',
   ].join('\n')
 }
 
