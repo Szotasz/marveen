@@ -358,6 +358,25 @@ describe('the agent switch routes', () => {
     expect(rows.filter((x) => !x.main).map((x) => [x.slug, x.gromzo])).toEqual([['samu', false], ['zara', true]])
   })
 
+  it('the consent id never reaches a response or the log (pending, added, mismatch, failure; Dani 64094 (6))', async () => {
+    const ID = 'consent-SECRETIDSECRET'
+    const bodies: string[] = []
+    const keep = async (r: Response) => { bodies.push(await r.text()); return r }
+    replies.agent_add = [{ ok: true, consent_id: ID, expires_in: 600 }]
+    await keep(await post('zara/enable'))
+    replies.agent_add_check = [{ ok: true, state: 'added', slug: 'samu', restart: true }]
+    await keep(await fetch(origin + '/api/gromzo/agents/zara/consent'))
+    await keep(await fetch(origin + '/api/gromzo/agents'))
+    replies.agent_add = [{ ok: true, consent_id: ID, expires_in: 600 }]
+    await keep(await post('samu/enable'))
+    replies.agent_add_check = [{ ok: false, error: 'upstream' }]
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls.filter((c) => c.verb === 'agent_add_check').map((c) => c.id)).toEqual([ID])
+    expect(logged.length).toBeGreaterThan(0)
+    for (const text of [...bodies, logged.join('\n')]) expect(text).not.toContain('SECRETIDSECRET')
+    expect(bodies.join('\n')).toContain('consent_mismatch')
+  })
+
   it('enable -> pending; the consent check uses the server\'s id even when the client sends one', async () => {
     replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
     const e = await post('zara/enable', { 'Content-Type': 'application/json' }, JSON.stringify({ id: 'consent-evilevilevil' }))
