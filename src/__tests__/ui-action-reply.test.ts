@@ -282,3 +282,42 @@ describe('#2427 the owner-session refusal is shown in the page language', () => 
     }
   })
 })
+
+// --- #2427 Bridge point (Dani 65605, Samu 65608): the owner-session text names the real path ---
+
+describe('#2427 the owner-session text is a working path, also in the Bridge', () => {
+  // The Bridge opens the dashboard with ?token=<its device key>, which the page keeps in
+  // localStorage and sends as Bearer; the owner gates refuse a device key. The button on the
+  // Settings > Security > Dashboard login card drops the stored key and reloads, so the window
+  // runs on the password session (measured on the live install 2026-11-01 22:21:51 -> 22:22:14).
+  it.each(['hu', 'en'] as const)('%s: names every UI label on the way, with their current text', (lang) => {
+    const text = DICTS[lang]['common.owner_session_required']
+    for (const k of ['settings.page_title', 'settings.module.security', 'auth.card.title', 'auth.card.token_mode_signin_btn']) {
+      expect(text, k).toContain(DICTS[lang][k])
+    }
+  })
+
+  it.each(['hu', 'en'] as const)('%s: says the Bridge opens with its key and that it repeats after a restart', (lang) => {
+    const text = DICTS[lang]['common.owner_session_required']
+    expect(text).toContain('Bridge')
+    expect(text).toMatch(lang === 'hu' ? /következő indításkor vagy újrakapcsolódáskor/ : /next start or reconnect/)
+  })
+})
+
+describe('toast duration follows the message length', () => {
+  const toastDuration = new Function(`${slice('function toastDuration(', '\n// The server')}\nreturn toastDuration`)() as (m: unknown, d: number) => number
+
+  it('a short message keeps the default 3 s', () => {
+    expect(toastDuration('Task paused', 3000)).toBe(3000)
+  })
+
+  it('the owner-session refusal stays long enough to be read (at most 15 s)', () => {
+    const msg = 'Hiba: ' + DICTS.hu['common.owner_session_required']
+    expect(toastDuration(msg, 3000)).toBeGreaterThanOrEqual(12000)
+    expect(toastDuration(msg, 3000)).toBeLessThanOrEqual(15000)
+  })
+
+  it('never shorter than the caller asked for', () => {
+    expect(toastDuration('short', 12000)).toBe(12000)
+  })
+})

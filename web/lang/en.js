@@ -64,7 +64,7 @@ window._i18n.en = {
   'overview.updates_subtitle':      'version check',
   'common.error_save':        'Error saving',
   'common.not_done':          'Not done: {msg}',
-  'common.owner_session_required': 'This needs the owner\'s dashboard login. If this window is signed in with the access token: Settings, the Dashboard login card, the Sign in with the dashboard password button, then try again.',
+  'common.owner_session_required': 'This needs the owner\'s dashboard password login, and this window is signed in with a key (the Bridge always opens this way, and so does a browser opened with the token link). To do: Settings, the Security tab, the Dashboard login card, the Sign in with the dashboard password button; enter your password if asked, then try again. The Bridge opens with its key again at its next start or reconnect; then repeat this.',
   'common.error_delete':      'Error deleting',
   'common.error_network':     'Network error: {msg}',
   'common.project':           'Project',

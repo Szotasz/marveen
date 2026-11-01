@@ -64,7 +64,7 @@ window._i18n.hu = {
   'overview.updates_subtitle':      'verzió ellenőrzés',
   'common.error_save':        'Hiba a mentés során',
   'common.not_done':          'Nem történt meg: {msg}',
-  'common.owner_session_required': 'Ehhez a gazda dashboard-belépése kell. Ha ez az ablak hozzáférési tokennel van belépve: Beállítások, Dashboard belépés kártya, Belépés a dashboard-jelszóval gomb, utána próbáld újra.',
+  'common.owner_session_required': 'Ehhez a gazda jelszavas dashboard-belépése kell, ez az ablak pedig kulccsal van belépve (a Bridge mindig így nyit, és a tokenes linkkel megnyitott böngésző is). Teendő: Beállítások, Biztonság fül, Dashboard belépés kártya, Belépés a dashboard-jelszóval gomb; ha kéri, add meg a jelszavad, és próbáld újra. A Bridge a következő indításkor vagy újrakapcsolódáskor ismét a kulccsal nyit, akkor ezt meg kell ismételni.',
   'common.error_delete':      'Hiba a törlés során',
   'common.error_network':     'Hálózati hiba: {msg}',
   'common.project':           'Projekt',

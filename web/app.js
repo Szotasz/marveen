@@ -3701,7 +3701,14 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 function showToast(msg, duration = 3000) {
   toast.textContent = msg
   toast.classList.add('visible')
-  setTimeout(() => toast.classList.remove('visible'), duration)
+  setTimeout(() => toast.classList.remove('visible'), toastDuration(msg, duration))
+}
+
+// A long message (a refusal with its reason and the steps to fix it) needs more
+// than the default 3 s to be read: about 60 ms per character, at most 15 s. Never
+// shorter than the duration the caller asked for.
+function toastDuration(msg, duration) {
+  return Math.max(duration, Math.min(15000, String(msg ?? '').length * 60))
 }
 
 // The server's answer decides what an action toast says (#2424-#2427): a refused
