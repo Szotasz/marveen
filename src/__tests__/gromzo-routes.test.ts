@@ -524,6 +524,43 @@ describe('the agent switch routes', () => {
     expect(logged.join('\n')).toMatch(/picture set on the agent[\s\S]*"try":2|"try":2[\s\S]*picture set on the agent/)
   })
 
+  // MXDAVATARAPPLY1101 (Samu 65642): mxd stored the picture while its agents were still starting and sets it itself
+  // once they run, so there is no fixed 65 s try again; an older mxd (no pending field) keeps the try-again line.
+  it('pending: stored while mxd starts its agents -> an INFO that mxd sets it, and NO try again', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false, pending: true }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    await settle()
+    expect(avatarCalls()).toBe(1)
+    const log = logged.join('\n')
+    expect(log).toContain('mxd sets it once they run (no try again)')
+    expect(log).not.toContain('NOT set on the agent yet')
+    expect(log).not.toContain('picture sent after the add')
+  })
+
+  it('pending only counts with applied=false; a pending on a retry ends the line too', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: true, pending: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    expect(logged.join('\n')).toContain('picture sent after the add')
+    calls.length = 0
+    logged.length = 0
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: true, applied: false, pending: true }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    await settle()
+    expect(avatarCalls()).toBe(2)
+    expect(logged.join('\n')).toMatch(/no try again\)[\s\S]*"try":2|"try":2[\s\S]*no try again\)/)
+  })
+
+  it('an older mxd: pending absent or not exactly true keeps the try-again line', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false, pending: 'yes' }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    await settle()
+    expect(avatarCalls()).toBe(2)
+    expect(logged.join('\n')).toContain('NOT set on the agent yet; sending it again')
+  })
+
   it('applied=false every time: bounded at 3 sends, then a WARN that the next agent start sets it; a rate limit counts as a try', async () => {
     flags.set('zara', true)
     replies.agent_avatar = [{ ok: true, applied: false }, { ok: false, error: 'rate_limited' }, { ok: true, applied: false }, { ok: true, applied: true }]

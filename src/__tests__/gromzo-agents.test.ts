@@ -336,8 +336,25 @@ describe('the agent picture (Samu 64526)', () => {
     const w = world()
     w.avatars.set('zara', PNG)
     w.replies.agent_avatar = [{ ok: true, applied: true }]
-    expect(await sendGromzoAvatar('zara', w.deps)).toEqual({ ok: true, state: 'avatar_sent', applied: true, bytes: PNG.length })
+    expect(await sendGromzoAvatar('zara', w.deps)).toEqual({ ok: true, state: 'avatar_sent', applied: true, pending: false, bytes: PNG.length })
     expect(w.calls).toEqual([{ verb: 'agent_avatar', slug: 'zara', image: PNG.toString('base64') }])
+  })
+
+  it('MXDAVATARAPPLY1101: pending is true only for applied=false with pending exactly true', async () => {
+    const w = world()
+    w.avatars.set('zara', PNG)
+    w.replies.agent_avatar = [
+      { ok: true, applied: false, pending: true },
+      { ok: true, applied: false },
+      { ok: true, applied: false, pending: 1 },
+      { ok: true, applied: true, pending: true },
+    ]
+    const got = []
+    for (let i = 0; i < 4; i++) {
+      const o = await sendGromzoAvatar('zara', w.deps)
+      got.push(o.ok && o.state === 'avatar_sent' ? [o.applied, o.pending] : null)
+    }
+    expect(got).toEqual([[false, true], [false, false], [false, false], [true, false]])
   })
 
   it('a refused slug reads no file and asks mxd nothing', async () => {

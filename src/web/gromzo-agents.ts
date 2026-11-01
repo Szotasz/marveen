@@ -64,7 +64,7 @@ export interface GromzoAgentRow {
 export type GromzoAgentOutcome =
   | { ok: true, state: 'pending', expiresIn: number }
   | { ok: true, state: 'added' | 'removed' | 'on' | 'refused' | 'expired' | 'used' }
-  | { ok: true, state: 'avatar_sent', applied: boolean, bytes: number }
+  | { ok: true, state: 'avatar_sent', applied: boolean, pending: boolean, bytes: number }
   /** added: on consent_mismatch, the slug mxd actually added (its flag stays as it was). */
   | { ok: false, code: string, added?: string }
 
@@ -182,5 +182,5 @@ export async function sendGromzoAvatar(slug: string, deps: GromzoAgentDeps): Pro
   if (!img.ok) return { ok: false, code: img.code }
   const r = await requestAgentAvatar(deps.call, slug, img.bytes)
   if (!r.ok) return { ok: false, code: r.code }
-  return { ok: true, state: 'avatar_sent', applied: r.applied, bytes: img.bytes.length }
+  return { ok: true, state: 'avatar_sent', applied: r.applied, pending: r.pending, bytes: img.bytes.length }
 }

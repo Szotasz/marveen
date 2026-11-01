@@ -293,10 +293,12 @@ export async function requestAgentRemove(call: MxdDashCall, slug: string): Promi
 // AgentCtl::avatar): {slug, image: base64 of the PNG/JPEG bytes} -> {ok, applied} (applied: set on the running
 // agent now; otherwise at its next start). Errors: bad_request, bad_image, rate_limited (one per slug per minute),
 // unknown_agent.
-export type AgentAvatarResult = { ok: true, applied: boolean } | { ok: false, code: string }
+/** pending (MXDAVATARAPPLY1101): mxd stored the picture while its agents were still starting, and sets it itself once
+ *  they run (and at every later start). An older mxd never sends it, so its absence keeps the try-again path. */
+export type AgentAvatarResult = { ok: true, applied: boolean, pending: boolean } | { ok: false, code: string }
 
 export async function requestAgentAvatar(call: MxdDashCall, slug: string, bytes: Buffer): Promise<AgentAvatarResult> {
   if (!MXD_AGENT_SLUG_RE.test(slug) || bytes.length === 0) return { ok: false, code: 'bad_request' }
   const r = await call({ verb: 'agent_avatar', slug, image: bytes.toString('base64') })
-  return r.ok === true ? { ok: true, applied: r.applied === true } : { ok: false, code: errorCode(r) }
+  return r.ok === true ? { ok: true, applied: r.applied === true, pending: r.applied !== true && r.pending === true } : { ok: false, code: errorCode(r) }
 }
