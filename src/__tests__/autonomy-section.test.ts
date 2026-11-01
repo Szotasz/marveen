@@ -66,7 +66,9 @@ describe('ensureAutonomySection -- main agent (PROJECT_ROOT/CLAUDE.md)', () => {
     expect(result).toContain(MARKER_BEGIN)
     expect(result).toContain(MARKER_END)
     expect(result).toContain('## Autonómia és jóváhagyás')
-    expect(result).toContain('/api/approvals')
+    // VOICETOKENLEAK1101 PR-A1: the main agent gets the helper recipes too, its payloads in the project root
+    expect(result).toContain('marveen-api.sh approval-request agent-a CATEGORY_KEY 3600')
+    expect(result).not.toContain('$(cat')
     // Persona content must be preserved
     expect(result).toContain('# Main Agent')
     expect(result).toContain('Persona content.')
@@ -102,31 +104,31 @@ describe('ensureAutonomySection', () => {
     expect(result).toContain('Existing content.')
     // Must contain the autonomy section heading
     expect(result).toContain('## Autonómia és jóváhagyás')
-    // Must contain the /api/approvals endpoint for level 2
-    expect(result).toContain('/api/approvals')
+    // Must contain the approval request for level 2 (through the helper since VOICETOKENLEAK1101 PR-A1)
+    expect(result).toContain('marveen-api.sh approval-request')
   })
 
-  it('(a) level 2 curl in the written block uses the agent name, not a placeholder', () => {
+  it('(a) level 2 recipe in the written block uses the agent name, not a placeholder', () => {
     setup('agent-b', '# Agent B\n')
     ensureAutonomySection('agent-b')
     const result = read('agent-b')
     // The approval POST must contain the actual agent name
-    const postIdx = result.indexOf('/api/approvals')
+    const postIdx = result.indexOf('approval-request')
     const snippet = result.slice(postIdx - 50, postIdx + 300)
     expect(snippet).toContain('agent-b')
     expect(snippet).not.toContain('AGENT_NAME')
   })
 
-  it('(a) level 1 block in the written file does NOT call /api/approvals', () => {
+  it('(a) level 1 block in the written file does NOT request an approval', () => {
     setup('level1-agent', '# Agent\n')
     ensureAutonomySection('level1-agent')
     const result = read('level1-agent')
     const level1Idx = result.indexOf('Level 1')
     const level2Idx = result.indexOf('Level 2')
     const level1Block = result.slice(level1Idx, level2Idx)
-    expect(level1Block).not.toContain('/api/approvals')
+    expect(level1Block).not.toContain('approval-request')
     // Level 1 must have inter-agent message and MEGÁLL
-    expect(level1Block).toContain('/api/messages')
+    expect(level1Block).toContain('marveen-api.sh message level1-agent')
     expect(level1Block).toContain('ÁLLJ MEG')
   })
 

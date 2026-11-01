@@ -130,7 +130,7 @@ describe('ensureMemorySearchLabelSection', () => {
   })
 })
 
-describe('buildMemorySearchLabelBody', () => {
+describe('buildMemorySearchLabelBody, the curl fallback (a profile that denies the helper)', () => {
   // Deterministic per-agent path. The scaffold copy is an LLM prompt carrying
   // the literal AGENT_NAME for the model to substitute; if that substitution is
   // ever missed, every agent dumps headers into ONE shared file and reads the
@@ -141,15 +141,15 @@ describe('buildMemorySearchLabelBody', () => {
   // which is the whole failure mode. EVERY occurrence has to carry the name.
   it('names the dump file after the agent, not a shared path', () => {
     for (const name of ['agent-b', 'agent-c']) {
-      const paths = buildMemorySearchLabelBody(name).match(/\/tmp\/mem-fejlec[^\s`"']*/g) ?? []
+      const paths = buildMemorySearchLabelBody(name, false).match(/\/tmp\/mem-fejlec[^\s`"']*/g) ?? []
       expect(paths.length).toBeGreaterThan(1)
       expect([...new Set(paths)]).toEqual([`/tmp/mem-fejlec-${name}.txt`])
     }
-    expect(buildMemorySearchLabelBody('agent-b')).not.toContain('AGENT_NAME')
+    expect(buildMemorySearchLabelBody('agent-b', false)).not.toContain('AGENT_NAME')
   })
 
   it('hands the caller a way to SEE the label and the words to read it with', () => {
-    const b = buildMemorySearchLabelBody('agent-b')
+    const b = buildMemorySearchLabelBody('agent-b', false)
     expect(b).toMatch(/curl[\s\S]{0,200}?-D /)
     expect(b.toLowerCase()).toContain('x-memory-search')
     expect(b).toContain('relaxed=true')
@@ -159,13 +159,13 @@ describe('buildMemorySearchLabelBody', () => {
   // The two corrections the #1380 review produced. Both are claims the endpoint
   // was measured on, and both are easy to lose in a rewording.
   it('says strict=1 is what an absence claim needs', () => {
-    expect(buildMemorySearchLabelBody('agent-b')).toContain('strict=1')
+    expect(buildMemorySearchLabelBody('agent-b', false)).toContain('strict=1')
   })
 
   // Card f90928e3: the date filter and the searchable diary are part of the
   // recipe every agent is given, in the generated block and in the template.
   it('teaches the date filter and the diary mirror', () => {
-    const b = buildMemorySearchLabelBody('agent-b')
+    const b = buildMemorySearchLabelBody('agent-b', false)
     expect(b).toContain('&date=tegnap')
     expect(b).toContain('&since=')
     expect(b).toContain('date=<tól>..<ig>')
@@ -189,7 +189,7 @@ describe('buildMemorySearchLabelBody', () => {
   // `relaxed=false; hits=0` is a real answer: the pre-review wording called
   // relaxed=false "a real hit" outright, which is false on an empty body.
   it('does not equate relaxed=false with having a hit', () => {
-    expect(buildMemorySearchLabelBody('agent-b')).toContain('hits=0')
+    expect(buildMemorySearchLabelBody('agent-b', false)).toContain('hits=0')
   })
 
   // A raw accented byte in q returns HTTP 400 with an empty body and NO
@@ -198,8 +198,30 @@ describe('buildMemorySearchLabelBody', () => {
   // body must warn to percent-encode (or use -G --data-urlencode) so no agent
   // reads a 400 as "no memory".
   it('warns that a raw accented q is a silent 400, not an empty result', () => {
-    const b = buildMemorySearchLabelBody('agent-b')
+    const b = buildMemorySearchLabelBody('agent-b', false)
     expect(b).toContain('400')
     expect(b).toContain('--data-urlencode')
+  })
+})
+
+// VOICETOKENLEAK1101 PR-A1: every agent whose settings allow scripts/marveen-api.sh gets the helper recipe, so the
+// token is never on a curl argv; the helper prints the label header as the FIRST line and encodes the query itself.
+describe('buildMemorySearchLabelBody, the helper recipe (the default)', () => {
+  it('searches through the helper with the agent name, no token, no curl', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toMatch(/marveen-api\.sh memory-search agent-b KULCSSZO/)
+    for (const s of ['$(cat', '.dashboard-token', 'Authorization', 'curl']) expect(b, s).not.toContain(s)
+  })
+
+  it('reads the label from the first line, names --strict, the date filter and MISSING', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toMatch(/ELSŐ sora/)
+    expect(b).toContain('--strict')
+    expect(b).toContain('--date tegnap')
+    expect(b).toContain('--since')
+    expect(b).toContain('date=<tól>..<ig>')
+    expect(b).toContain('X-Memory-Search: MISSING')
+    expect(b).toContain('relaxed=true')
+    expect(b).toContain('hits=0')
   })
 })

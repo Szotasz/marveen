@@ -56,7 +56,9 @@ describe('ensureAutonomySection: what a 403 on consume means for a sub-agent tok
     setup('consume-sub', true)
     ensureAutonomySection('consume-sub')
     const block = level2(read('consume-sub'))
-    expect(block).toContain(join(tmpRoot, 'agents', 'consume-sub', '.dashboard-token'))
+    // VOICETOKENLEAK1101 PR-A1: the recipe is the helper, which reads the agent's own token itself (PR-A0); no path
+    expect(block).not.toContain('.dashboard-token')
+    expect(block).toContain('marveen-api.sh approval-consume <id> CATEGORY_KEY consume-sub')
     const line = block.split('\n').find((l) => l.startsWith('403 (agent-identity-binding)'))
     expect(line, block).toBeDefined()
     expect(line).toContain('for_agent')
@@ -71,15 +73,15 @@ describe('ensureAutonomySection: what a 403 on consume means for a sub-agent tok
     expect(line).not.toContain('id-ját')
     expect(line).toContain('NE cselekedj')
     // after the consume recipe, so it reads as the answer to that call
-    expect(block.indexOf('/api/approvals/<id>/consume')).toBeLessThan(block.indexOf(line!))
+    expect(block.indexOf('approval-consume <id>')).toBeLessThan(block.indexOf(line!))
   })
 
-  it('with AGENT_TOKENS off (or no token file yet) the text is unchanged: shared token path, no such line', () => {
+  it('with AGENT_TOKENS off (or no token file yet) there is no such line (the helper recipe either way)', () => {
     tokensOn.value = '0'
     setup('consume-off', true)
     ensureAutonomySection('consume-off')
     const off = level2(read('consume-off'))
-    expect(off).toContain(join(tmpRoot, 'store', '.dashboard-token'))
+    expect(off).toContain('marveen-api.sh approval-consume <id>')
     expect(off).not.toContain('403 (agent-identity-binding)')
     tokensOn.value = '1'
     setup('consume-notoken', false)

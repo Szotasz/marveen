@@ -30,7 +30,8 @@ describe('ensureSkillSectionCurrent on real files', () => {
   it('replaces an unedited sub-agent section once, and the second run writes nothing', () => {
     const p = write('worker', doc(retired))
     expect(ensureSkillSectionCurrent('worker')).toBe(true)
-    expect(readFileSync(p, 'utf-8')).toBe(doc(buildSkillSection()))
+    // VOICETOKENLEAK1101 PR-A1: the helper recipe (worker's settings do not deny it), the token never on argv
+    expect(readFileSync(p, 'utf-8')).toBe(doc(buildSkillSection('worker')))
     expect(ensureSkillSectionCurrent('worker')).toBe(false)
   })
 
