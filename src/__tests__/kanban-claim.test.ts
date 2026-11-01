@@ -42,6 +42,7 @@ vi.mock('../settings-store.js', async (importOriginal) => {
   }
 })
 import type { RouteContext } from '../web/routes/types.js'
+import { recipeLine, runRecipeLine } from './helpers/kanban-recipe.js'
 
 function call(method: string, path: string, payload?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 200, body: null }
@@ -735,10 +736,8 @@ describe('the dispatch text carries the claim step only where the lock is on', (
   it('on: the claim call comes before the work steps and names the assignee', () => {
     claimLock.value = '1'
     const out = kanbanMoveInstructions('c1', 'cody')
-    expect(out).toContain('/api/kanban/c1/claim')
-    expect(out.indexOf('/api/kanban/c1/claim')).toBeLessThan(out.indexOf('/api/kanban/c1/comments'))
-    const claimLine = out.split('\n').findIndex((l) => l.includes('/api/kanban/c1/claim'))
-    expect(out.split('\n').slice(claimLine, claimLine + 5).join('\n')).toContain(`-d '{"agent":"cody"}'`)
+    expect(out).toContain('kanban-claim c1 cody')
+    expect(out.indexOf('kanban-claim c1 cody')).toBeLessThan(out.indexOf('kanban-comment c1 cody'))
     expect(out).toContain('409')
   })
 
@@ -746,9 +745,10 @@ describe('the dispatch text carries the claim step only where the lock is on', (
     claimLock.value = '1'
     createKanbanCard({ id: 'c1', title: 'One' })
     const out = kanbanMoveInstructions('c1', 'cody')
-    const claimLine = out.split('\n').findIndex((l) => l.includes('/api/kanban/c1/claim'))
-    const payload = out.split('\n').slice(claimLine).find((l) => l.includes("-d '"))!.match(/-d '(.*)'/)![1]
-    const r = await route('POST', '/api/kanban/c1/claim', JSON.parse(payload))
+    // The claim line run for real (scripts/marveen-api.sh against a capture server); its body goes to the real route.
+    const sent = await runRecipeLine(recipeLine(out, 'kanban-claim', 'c1', 'cody'))
+    expect([sent.method, sent.url]).toEqual(['POST', '/api/kanban/c1/claim'])
+    const r = await route('POST', '/api/kanban/c1/claim', sent.body)
     expect(r.status).toBe(200)
     expect(getKanbanCard('c1')!.claimed_by).toBe('cody')
   })
