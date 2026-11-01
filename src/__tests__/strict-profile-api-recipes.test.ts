@@ -226,6 +226,35 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     expect(files).toEqual(['api-eredmeny', 'api-jovahagyas', 'api-memoria', 'api-naplo', 'api-uzenet'].map((k) => join(own, `${k}.txt`)))
   })
 
+  // Dani 65347, Samu 65350: every recipe kind names ITS OWN file, everywhere the recipes are generated (the creation
+  // prompt and every block, for a permissive and a strict agent); a save and a log prepared in one round must never
+  // share a file. (A daily log on api-memoria.txt in the creation recipes stayed green before this assert.)
+  it('every recipe kind names its own payload file, in the creation prompt and in every block', async () => {
+    const KIND: Record<string, string> = {
+      'memory-save': 'memoria', 'memory-update': 'memoria', 'daily-log': 'naplo', message: 'uzenet',
+      'approval-request': 'jovahagyas',
+    }
+    const seen = new Set<string>()
+    for (const [name, profile] of [['plain-k', null], ['strict-k', 'developer-junior']] as const) {
+      stageAgent(name, profile)
+      const text = [(await creation(name)).prompt, startBlocks(name)].join('\n')
+      // message-close names its result file in the sentence next to it
+      const results = [...text.matchAll(/--result-file (\S+?)`/g)].map((m) => m[1]!)
+      expect(results.length, name).toBeGreaterThan(0)
+      for (const r of results) expect(r, name).toMatch(/\/api-eredmeny\.txt$/)
+      for (const line of helperLines(text)) {
+        const verb = line.slice(HELPER_CMD.length + 1).split(' ')[0]!
+        const files = [...line.matchAll(/api-([a-z]+)\.txt/g)].map((m) => m[1])
+        if (files.length === 0) continue
+        expect(KIND[verb], `${name}: unexpected verb with a payload file: ${line}`).toBeDefined()
+        for (const f of files) expect(f, `${name}: ${line}`).toBe(KIND[verb])
+        seen.add(verb)
+      }
+    }
+    // not vacuous: every kind was met
+    expect([...seen].sort()).toEqual(Object.keys(KIND).sort())
+  })
+
   it('every block that names a payload file says: one file, one send (Dani 65157/1, Samu 65160)', () => {
     stageAgent('plain-o', null)
     const file = startBlocks('plain-o')
