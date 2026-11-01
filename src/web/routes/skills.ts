@@ -10,7 +10,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import {
-  approvePending, getPending, importArchiveToPending, listPending, liveOrPending, nameConflict, queueGeneratedSkill, queueProposedSkill, parseProposedFiles, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
+  appendSkillAudit, approvePending, archiveSuperseded, getPending, importArchiveToPending, listPending, liveOrPending, nameConflict, quarantineOn, queueGeneratedSkill, queueProposedSkill, parseProposedFiles, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
   type SkillTarget,
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
@@ -444,10 +444,38 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (!parsed.ok) { json(res, { error: parsed.error }, 400); return true }
     const reason = typeof body?.reason === 'string' ? body.reason.slice(0, 2000) : undefined
     const proposedBy = typeof ctx.auth?.agent === 'string' && ctx.auth.agent ? ctx.auth.agent : undefined
-    const r = queueProposedSkill(name, skillMd, { proposedBy, reason, files: parsed.files })
+    // SKILLAPPROVALOFF1101 follow-up (Samu 65825, final shape Dani 65845 / Samu 65847): with the quarantine OFF, a new
+    // proposal of a name that is already waiting supersedes the waiting one, whoever sent either (OFF, any agent can
+    // put any new name live anyway, and the sender is self-declared, null on every proposal from before). The new one
+    // goes live on the OFF path first; only then is the waiting one archived. If the new one is held, it is dropped
+    // and the waiting one stays. ON keeps today's 409.
+    const off = !quarantineOn()
+    const r = queueProposedSkill(name, skillMd, { proposedBy, reason, files: parsed.files, ...(off ? { mayReplacePending: () => true } : {}) })
     if (!r.ok) { json(res, { error: r.error }, r.status); return true }
-    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy }, 'Global skill proposed and queued for approval')
-    json(res, { ok: true, name, ...(await liveOrPending(r.meta.id, serializeSkillsDir)), id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [] })
+    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy, supersedes: r.waiting }, 'Global skill proposed and queued for approval')
+    const lp = await liveOrPending(r.meta.id, serializeSkillsDir)
+    const { hash: _h, ...answer } = lp
+    let superseded: string | undefined
+    if (r.waiting) {
+      if (!lp.live) {
+        rejectPending(r.meta.id)
+        logger.warn({ name, id: r.meta.id, waiting: r.waiting }, 'skill: a superseding proposal was held, so the waiting one stays')
+        json(res, { error: `The new proposal could not go live (${lp.held ?? 'held'}); the waiting one of this name stays`, held: lp.held, waiting: r.waiting }, 409)
+        return true
+      }
+      const old = await serializeSkillsDir(() => archiveSuperseded(r.waiting!))
+      if (old) {
+        superseded = r.waiting
+        appendSkillAudit({
+          at: new Date().toISOString(), event: 'superseded_unquarantined', id: r.waiting, name, source: 'propose', target: { scope: 'global' },
+          proposedBy: old.proposedBy, hash: old.hash, replaces: false, findings: {}, findingsTruncated: false,
+          supersededBy: { id: r.meta.id, hash: lp.hash ?? null, proposedBy: proposedBy ?? null },
+        })
+      } else {
+        logger.error({ name, waiting: r.waiting }, 'skill: the superseded proposal could not be archived; it is still listed as waiting')
+      }
+    }
+    json(res, { ok: true, name, ...answer, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [], ...(superseded ? { superseded } : {}) })
     return true
   }
 

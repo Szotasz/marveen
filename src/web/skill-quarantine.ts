@@ -238,8 +238,14 @@ export const SKILL_REPLACED_DIRNAME = 'skills-replaced'
 export function replacedRoot(): string { return join(STORE_DIR, SKILL_REPLACED_DIRNAME) }
 export const MAX_PROPOSED_SKILL_BYTES = 256 * 1024
 
+// SKILLAPPROVALOFF1101 follow-up (Samu 65825): a pending proposal another proposal of the same name supersedes is
+// moved here, never deleted: <store>/skills-superseded/<id>/{meta.json, skill/}.
+export const SKILL_SUPERSEDED_DIRNAME = 'skills-superseded'
+export function supersededRoot(): string { return join(STORE_DIR, SKILL_SUPERSEDED_DIRNAME) }
+
 export type ProposeResult =
-  | { ok: true; meta: PendingMeta }
+  // waiting: the id of the waiting proposal of this name the caller allowed this one to supersede (still in place).
+  | { ok: true; meta: PendingMeta; waiting?: string }
   | { ok: false; status: number; error: string }
 
 // SKILLSPLIT1101 (Samu 65105): a proposal may bring reference files next to its SKILL.md, so a long skill can be
@@ -284,17 +290,29 @@ export function parseProposedFiles(raw: unknown, skillMdBytes: number): { ok: tr
 }
 
 // A complete SKILL.md proposed by an agent for the GLOBAL root. Never written into a skill root here.
-export function queueProposedSkill(name: string, skillMd: string, opts: { proposedBy?: string; reason?: string; files?: ProposedFiles } = {}): ProposeResult {
+// `mayReplacePending` (SKILLAPPROVALOFF1101 follow-up, Samu 65825, Dani 65845): when a proposal of this name is
+// already waiting and the caller lets this one supersede it, the new one is queued beside it and its id comes back as
+// `waiting`; the caller archives it (archiveSuperseded) only after the new one went live. Without it, or when it says
+// no, a waiting one of the same name is a 409.
+export function queueProposedSkill(
+  name: string,
+  skillMd: string,
+  opts: { proposedBy?: string; reason?: string; files?: ProposedFiles; mayReplacePending?: (waiting: PendingMeta) => boolean } = {},
+): ProposeResult {
   const target: SkillTarget = { scope: 'global' }
   const files = opts.files ?? []
   // The same gate as the route, here too: this function is the one that writes.
   for (const f of files) {
     if (!PROPOSED_FILE_RE.test(f.path) || f.path.includes('..')) return { ok: false, status: 400, error: `files: ${f.path} is not allowed` }
   }
+  let waiting: PendingMeta | null = null
   for (const pid of listIds()) {
     const m = readMeta(pid)
     if (m && m.name === name && sameTarget(m.target, target)) {
-      return { ok: false, status: 409, error: 'A skill with this name is already waiting for approval' }
+      if (waiting || !opts.mayReplacePending?.(m)) {
+        return { ok: false, status: 409, error: 'A skill with this name is already waiting for approval' }
+      }
+      waiting = m
     }
   }
   const live = join(targetRoot(target), name)
@@ -354,7 +372,27 @@ export function queueProposedSkill(name: string, skillMd: string, opts: { propos
     ...(proposedFiles.length ? { proposedFiles } : {}),
   }
   writeMeta(dir, meta)
-  return { ok: true, meta }
+  // The waiting one is NOT touched here: it moves aside only once the new one went live (archiveSuperseded), so a new
+  // proposal the scan holds never makes the old one disappear (Dani 65845).
+  return { ok: true, meta, ...(waiting ? { waiting: waiting.id } : {}) }
+}
+
+/** Moves a waiting proposal aside, whole, into the superseded area (never deleted, never loaded, never listed:
+ *  it is outside the pending area, so neither an approval nor switching the quarantine back ON brings it back).
+ *  Returns the hash it had, or null when it could not be moved (then it stays waiting). */
+export function archiveSuperseded(id: string): { hash: string; proposedBy: string | null } | null {
+  let meta: PendingMeta | null
+  try { meta = readMeta(id) } catch { meta = null }
+  if (!meta) return null
+  const from = entryDir(id)
+  const hash = skillDirHash(join(from, 'skill'), meta)
+  try {
+    mkdirSync(supersededRoot(), { recursive: true })
+    renameSync(from, join(supersededRoot(), id))
+  } catch {
+    return null
+  }
+  return { hash, proposedBy: meta.proposedBy ?? null }
 }
 
 // A scratch directory for extracting an upload, inside the pending area (same
@@ -819,7 +857,7 @@ export function quarantineOn(read: () => unknown = () => getEffectiveSettingValu
 
 export type SkillAuditLine = {
   at: string
-  event: 'live_unquarantined' | 'held_unquarantined'
+  event: 'live_unquarantined' | 'held_unquarantined' | 'superseded_unquarantined'
   id: string
   name: string
   source: PendingSource
@@ -831,6 +869,8 @@ export type SkillAuditLine = {
   findings: Record<string, number>
   findingsTruncated: boolean
   why?: string
+  // superseded_unquarantined only: the proposal that took its place.
+  supersededBy?: { id: string; hash: string | null; proposedBy: string | null }
 }
 
 export function appendSkillAudit(line: SkillAuditLine, file = join(STORE_DIR, SKILL_AUDIT_FILE)): void {
@@ -888,12 +928,12 @@ export async function liveOrPending(
   id: string,
   serialize: <T>(op: () => T) => Promise<T>,
   on: () => boolean = () => quarantineOn(),
-): Promise<{ pending: boolean; live: boolean; held?: string }> {
+): Promise<{ pending: boolean; live: boolean; held?: string; hash?: string }> {
   if (on()) return { pending: true, live: false }
   const g = await serialize(() => {
     try { return goLiveUnquarantined(id) } catch { return { live: false as const, status: 500, error: 'The skill could not go live; it waits for a decision' } }
   })
-  return g.live ? { pending: false, live: true } : { pending: true, live: false, held: g.error }
+  return g.live ? { pending: false, live: true, hash: g.hash } : { pending: true, live: false, held: g.error }
 }
 
 export function rejectPending(id: string): boolean {
