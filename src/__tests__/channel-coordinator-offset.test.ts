@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('../channel-coordinator/ingest.js', async (importOriginal) => {
@@ -106,5 +108,112 @@ describe('processBatch offset', () => {
     })
     expect(processBatch(asBatch(10, 11, 12))).toEqual({ offset: 12, stalled: false })
     expect(probe(11)).toBe(false)
+  })
+})
+
+// runLoop is not exported and drives real network + process probes, so its
+// offset bookkeeping cannot be exercised through the public surface. Instead we
+// pin the call site in the source text: slice the runLoop body out of the
+// module and assert exactly which values it hands to setOffset. If someone
+// swaps the batch offset for the batch's highest update_id (which skips the
+// updates the store failed to keep, so Telegram never redelivers them), these
+// tests go red.
+describe('runLoop persists only the offset processBatch returns (source pin)', () => {
+  // The coordinator module under pin, resolved next to this test file.
+  const sourceUrl = new URL('../channel-coordinator.ts', import.meta.url)
+
+  const countOccurrences = (haystack: string, needle: string): number =>
+    haystack.split(needle).length - 1
+
+  // Cut every line comment (from "//" to the end of the line). The runLoop body
+  // holds no "//" inside string or regex literals, so a plain cut is exact here.
+  const stripLineComments = (text: string): string =>
+    text
+      .split('\n')
+      .map((line) => {
+        const cut = line.indexOf('//')
+        return cut === -1 ? line : line.slice(0, cut)
+      })
+      .join('\n')
+
+  // Collapse every run of whitespace (including newlines) to one space.
+  const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
+  // The runLoop body: from its declaration line up to (not including) the
+  // bootstrap banner that follows it. Both anchors must be unambiguous.
+  function runLoopBody(src: string): string {
+    const anchors = ['async function runLoop(', '// ---- bootstrap']
+    for (const anchor of anchors) {
+      if (countOccurrences(src, anchor) !== 1) {
+        throw new Error(`anchor must occur exactly once in src, got ${countOccurrences(src, anchor)}: "${anchor}"`)
+      }
+    }
+    const lines = src.split('\n')
+    const start = lines.findIndex((line) => line.includes('async function runLoop('))
+    const end = lines.findIndex((line) => line.includes('// ---- bootstrap'))
+    return lines.slice(start, end).join('\n')
+  }
+
+  // Argument text of every setOffset(...) call in body, comments stripped,
+  // nested parentheses matched, whitespace collapsed. Order is source order.
+  function setOffsetArgs(body: string): string[] {
+    const stripped = stripLineComments(body)
+    const args: string[] = []
+    let at = stripped.indexOf('setOffset(')
+    while (at !== -1) {
+      const open = at + 'setOffset('.length - 1
+      let depth = 0
+      let close = -1
+      for (let i = open; i < stripped.length; i++) {
+        const ch = stripped[i]
+        if (ch === '(') depth++
+        else if (ch === ')') {
+          depth--
+          if (depth === 0) { close = i; break }
+        }
+      }
+      if (close === -1) throw new Error('setOffset( call with unbalanced parentheses')
+      args.push(collapse(stripped.slice(open + 1, close)))
+      at = stripped.indexOf('setOffset(', close)
+    }
+    return args
+  }
+
+  // The pinned shape: processBatch is destructured exactly once, and the first
+  // non-blank line after it persists exactly the returned offset, nothing else.
+  function batchOffsetComesStraightFromProcessBatch(body: string): boolean {
+    const stripped = stripLineComments(body)
+    const call = 'const { offset, stalled } = processBatch(updates)'
+    if (countOccurrences(collapse(stripped), call) !== 1) return false
+    const lines = stripped.split('\n').map(collapse)
+    const callIdx = lines.findIndex((line) => line.includes(call))
+    for (const next of lines.slice(callIdx + 1)) {
+      if (next === '') continue // a line that was only a comment
+      return next === 'if (offset != null) setOffset(SOURCE, offset)'
+    }
+    return false
+  }
+
+  it('the run loop writes the offset only through the two known calls', () => {
+    const src = readFileSync(fileURLToPath(sourceUrl), 'utf-8')
+    // The high-water seed on entering backfill, then the batch offset. Any
+    // third call, or a different value in either, fails this pin.
+    expect(setOffsetArgs(runLoopBody(src))).toEqual(['SOURCE, hw', 'SOURCE, offset'])
+  })
+
+  it('the batch offset comes straight from processBatch', () => {
+    const src = readFileSync(fileURLToPath(sourceUrl), 'utf-8')
+    expect(batchOffsetComesStraightFromProcessBatch(runLoopBody(src))).toBe(true)
+  })
+
+  it('the pin goes red on the highest-id mutant', () => {
+    const src = readFileSync(fileURLToPath(sourceUrl), 'utf-8')
+    const mutated = runLoopBody(src).replace(
+      'setOffset(SOURCE, offset)',
+      'setOffset(SOURCE, Math.max(...updates.map(u => u.update_id)))',
+    )
+    expect(mutated).not.toBe(runLoopBody(src)) // the mutant must actually differ
+    expect(setOffsetArgs(mutated)).not.toEqual(['SOURCE, hw', 'SOURCE, offset'])
+    expect(batchOffsetComesStraightFromProcessBatch(mutated)).toBe(false)
   })
 })
