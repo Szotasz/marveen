@@ -81,11 +81,16 @@ FWD_ANCHOR = ("inbound meta user_id", re.compile(r"^( *)user_id: String\(from\.i
 # selected part when there is one, else the start of the quoted message;
 # whitespace collapsed, at most 300 characters), never the whole history.
 # reply_to_selected="1" marks that the excerpt is the owner's own selection.
+# The 300 counts code points (Array.from), so an emoji is never cut in half; an
+# empty selection falls back to the quoted message (||, not ??); a reply to a
+# message with no text or caption (sticker, voice) carries no reply_to_text.
 QUOTE_ANCHOR = ("inbound meta ts", re.compile(r"^( *)ts: new Date\(\(ctx\.message\?\.date \?\? 0\) \* 1000\)\.toISOString\(\),\n", re.MULTILINE))
 QUOTE_INSERT = (
-    "{indent}...(ctx.message?.reply_to_message ? {{ reply_to_message_id: String(ctx.message.reply_to_message.message_id), "
-    "reply_to_text: (ctx.message.quote?.text ?? ctx.message.reply_to_message.text ?? ctx.message.reply_to_message.caption ?? '')"
-    ".replace(/\\s+/g, ' ').trim().slice(0, 300), ...(ctx.message.quote?.text ? {{ reply_to_selected: '1' }} : {{}}) }} : {{}}), "
+    "{indent}...(ctx.message?.reply_to_message ? ((excerpt, selected) => ({{ "
+    "reply_to_message_id: String(ctx.message.reply_to_message.message_id), "
+    "...(excerpt ? {{ reply_to_text: excerpt }} : {{}}), ...(selected ? {{ reply_to_selected: '1' }} : {{}}) }}))("
+    "Array.from((ctx.message.quote?.text || ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || '')"
+    ".replace(/\\s+/g, ' ').trim()).slice(0, 300).join(''), !!ctx.message.quote?.text) : {{}}), "
     + QUOTE_MARKER + "\n"
 )
 

@@ -1030,6 +1030,35 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
     }, 'ez', undefined)
     expect(inbound.notifications[2].params.meta).toMatchObject({ reply_to_message_id: '4', reply_to_text: 'kép felirat' })
   })
+
+  // #2416 review: the three edge cases.
+  it('quote1101: the 300 counts code points, an empty selection falls back, no text means no reply_to_text', async () => {
+    const inbound = inboundHarness(patched, stateDir)
+    const emoji = 'a'.repeat(299) + '\u{1F600}' + 'b'
+    await inbound.handleInbound({
+      from: { id: 42 }, chat: { id: 42, type: 'private' },
+      message: { message_id: 10, date: 1_700_000_000, reply_to_message: { message_id: 5, text: emoji } },
+    }, 'erre', undefined)
+    const cut = inbound.notifications[0].params.meta.reply_to_text
+    expect(Array.from(cut)).toHaveLength(300)
+    expect(cut.endsWith('\u{1F600}')).toBe(true)
+    expect(cut).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/) // no lone surrogate
+    await inbound.handleInbound({
+      from: { id: 42 }, chat: { id: 42, type: 'private' },
+      message: { message_id: 11, date: 1_700_000_000, reply_to_message: { message_id: 6, text: 'az eredeti' }, quote: { text: '' } },
+    }, 'erre', undefined)
+    const empty = inbound.notifications[1].params.meta
+    expect(empty.reply_to_text).toBe('az eredeti')
+    expect(empty).not.toHaveProperty('reply_to_selected')
+    await inbound.handleInbound({
+      from: { id: 42 }, chat: { id: 42, type: 'private' },
+      message: { message_id: 12, date: 1_700_000_000, reply_to_message: { message_id: 7, sticker: { file_id: 'x' } } },
+    }, 'ez', undefined)
+    const sticker = inbound.notifications[2].params.meta
+    expect(sticker.reply_to_message_id).toBe('7')
+    expect(sticker).not.toHaveProperty('reply_to_text')
+    expect(sticker).not.toHaveProperty('reply_to_selected')
+  })
 })
 
 // ISSUE2398KBD (marveen#2398): a question answered by TYPING kept its live buttons. The reply remembers the question
