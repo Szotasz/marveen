@@ -1321,6 +1321,32 @@ export interface BoundChannel {
    *  config gap (missing/empty access.json), which is not an ambiguity, just
    *  nothing to deliver to. */
   ambiguousCandidates?: number
+  /** Set only when chatId is null BECAUSE the agent is Discord-bound and its
+   *  access.json lists DM USER ids (allowFrom) but no channel (groups): a user id
+   *  is not a Discord delivery target (#2390). A config gap the owner must
+   *  close with a channel id, so it is reported, not just logged. */
+  discordNoChannel?: boolean
+}
+
+/** DISCORD (#2390): the Discord plugin's reply needs a CHANNEL id. Its outbound
+ *  gate (fetchAllowedChannel) starts with client.channels.fetch(id), and the
+ *  plugin's own comment says it plainly: "DM channel ID != user ID". So the
+ *  allowFrom entries, which are USER ids, are never a target here: handed in as
+ *  chat_id they fail with "Unknown Channel" (reported on a Discord install,
+ *  2026-10-31). Only an allowed guild channel (a groups key) is a target, the
+ *  same groups rule as for the other providers. allowFrom alone -> no target,
+ *  flagged so the caller can say so. Resolving a user id to its DM channel needs
+ *  the bot token on the plugin's side and is a separate change. */
+export function discordBoundChannelFromAccess(raw: unknown): { chatId: string | null; discordNoChannel?: true } {
+  if (!raw || typeof raw !== 'object') return { chatId: null }
+  const o = raw as Record<string, unknown>
+  const groups = o.groups
+  if (groups && typeof groups === 'object') {
+    const keys = Object.keys(groups as Record<string, unknown>)
+    if (keys.length > 0) return { chatId: keys[0] }
+  }
+  const users = Array.isArray(o.allowFrom) ? o.allowFrom.filter((x) => (typeof x === 'string' && x.trim() !== '') || typeof x === 'number') : []
+  return users.length > 0 ? { chatId: null, discordNoChannel: true } : { chatId: null }
 }
 
 /** The agent's own bound channel + chat, or {provider, chatId:null} when no
@@ -1336,6 +1362,9 @@ export function resolveBoundChannel(agentName: string, providerOverride?: Channe
     : channelStateDir(provider, agentDir(agentName))
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
+    // #2390: on Discord the allowFrom entries are user ids, never targets, so
+    // their count is no ambiguity either; only a groups channel resolves.
+    if (provider === 'discord') return { provider, ...discordBoundChannelFromAccess(raw) }
     const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
     // WRONGRECIP819: 2+ DM contacts is a GUESS, not a binding. Returning the
     // first one with a warn line still delivers to a possibly-wrong person,
@@ -1759,6 +1788,13 @@ const lastMcpMissing = new Map<string, string[]>()
 // The error-level log line stays per fire: logs are for the operator reading
 // them on purpose, the agent message is an interrupt.
 const ambiguousTargetAlerted = new Set<string>()
+// #2390: tasks already reported for a Discord binding with no channel id.
+const discordNoChannelAlerted = new Set<string>()
+
+/** The one-time notice for a Discord-bound task whose access.json has user ids only (#2390). */
+export function discordNoChannelNotice(taskName: string, agentName: string, scheduleId: string): string {
+  return `[FELHÍVÁS] A(z) "${taskName}" ütemezett feladat (agent: ${agentName}) Discordra kézbesítene, de nincs Discord csatorna-azonosító: az ágens Discord access.json-jában csak felhasználó-azonosító (allowFrom) van, a Discord plugin pedig csatorna-azonosítóra küld (felhasználó-azonosítóra "Unknown Channel" hibát ad). A kézbesítési utasítás kimaradt EBBŐL a futásból (nem küldtünk felhasználó-azonosítóra). Állítsd be a csatornát: PUT /api/schedules/${scheduleId} ({"channelProvider": "discord", "telegramChatId": "<Discord csatorna-azonosító>"}), vagy az install SCHEDULED_DELIVERY_CHANNEL beállítását ("discord:<csatorna-azonosító>"). A task-config.json kézi szerkesztése hash-eltérés miatt leállítja a feladatot.`
+}
 
 // Per target pane (host + session), the usage-limit episode the
 // pre-injection gate is tracking. In-memory on purpose: a dashboard restart
@@ -2158,6 +2194,7 @@ async function attemptFireTask(
         // Resolved cleanly: forget any earlier ambiguity alert for this task so
         // that removing the pin again is not silently swallowed.
         ambiguousTargetAlerted.delete(task.name)
+        discordNoChannelAlerted.delete(task.name)
         const isMain = agentName === MAIN_AGENT_ID
         const topic = resolveTaskTopicThreadId(task, { provider: bound.provider, chatId: bound.chatId }, isMain)
         if (topic.problem) {
@@ -2178,6 +2215,17 @@ async function attemptFireTask(
             MAIN_AGENT_ID,
             `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
           )
+        }
+        prefix = `[Utemezett feladat: ${task.name}] `
+      } else if (bound.discordNoChannel) {
+        // #2390: Discord-bound, but the access.json has only DM user ids. A user id
+        // as chat_id fails in the plugin with "Unknown Channel", so the delivery is
+        // skipped (bare tag) and the gap is reported once per task, like the
+        // ambiguous branch above, until a channel id resolves.
+        logger.error({ task: task.name, agent: agentName, provider: bound.provider }, 'scheduled task: Discord delivery has no channel id (allowFrom holds user ids only) -- skipping the delivery instruction instead of sending to a user id')
+        if (!discordNoChannelAlerted.has(task.name)) {
+          discordNoChannelAlerted.add(task.name)
+          createAgentMessage('system', MAIN_AGENT_ID, discordNoChannelNotice(task.name, agentName, task.dirName ?? task.name))
         }
         prefix = `[Utemezett feladat: ${task.name}] `
       } else {
