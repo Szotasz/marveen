@@ -83,6 +83,10 @@ export function apiPayloadPath(name: string, kind: ApiPayloadKind): string {
   return join(name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name), `api-${kind}.txt`)
 }
 
+// Dani 65157/1, Samu 65160: one fixed file per kind means two texts prepared in one round would both send the second.
+// The helper empties the file after a successful send and stops on an empty one (scripts/lib/marveen_api.py).
+export const ONE_FILE_ONE_SEND = 'Egy fájl, egy küldés: írd, küldd, és csak utána a következőt; kettőt párhuzamosan ne készíts elő (ugyanaz a fájl, a második felülírná az elsőt). A segéd sikeres küldés után kiüríti a fájlt, és üres fájlra hibával megáll: régi szöveget nem küld.'
+
 // The verbs the generated sections run; a deny rule that hits any of them keeps the agent on the old recipes.
 const HELPER_SECTION_VERBS = ['message', 'message-close', 'directive-verify', 'memory-search', 'memory-save', 'memory-update',
   'approval-request', 'approval-status', 'approval-consume', 'skill-propose'] as const
@@ -3442,6 +3446,7 @@ function autonomyLevel1Strict(name: string, strict: boolean): string[] {
       'A segéd a tokent maga olvassa, így az soha nem kerül parancssorba. A szöveget CSAK fájlból veszi, a fájl útját',
       'add át: a shell a szöveget sosem látja, tehát a benne álló backtick vagy `$(...)` nem fut le.',
     ]),
+    ONE_FILE_ONE_SEND,
   ]
 }
 
@@ -3451,6 +3456,7 @@ function autonomyLevel2Strict(name: string): string[] {
   return [
     `Jóváhagyás kérése: a leírást (mit tervezel elvégezni és miért) a Write eszközzel írd ide: ${file}, majd:`,
     `${apiHelper} approval-request ${name} CATEGORY_KEY 3600 ${file}`,
+    ONE_FILE_ONE_SEND,
     'A válaszban kapott id-vel kérdezheted le a döntést.',
     '',
     'Döntés lekérdezése (60 mp-enként ismételve):',
@@ -3728,6 +3734,7 @@ export function buildMessageCloseBody(helper = true, name: string = MAIN_AGENT_I
       '```',
       `Delegált feladatnál a \`--no-notify\` helyett \`--result-file ${shellWord(apiPayloadPath(name, 'eredmeny'))}\` kell (a fájlba előbb a Write`,
       'eszközzel írd, mit csináltál), hibánál `--failed`. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+      ONE_FILE_ONE_SEND,
     ] : [
       '```bash',
       `curl -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
@@ -4275,6 +4282,7 @@ export function buildAgentIdHeaderBody(name: string, helper = true): string {
       '```bash',
       `${apiHelper} memory-update <id> ${name} ${shellWord(apiPayloadPath(name, 'memoria'))}`,
       '```',
+      ONE_FILE_ONE_SEND,
     ] : [
       'ágens hívta. A memória-írásoknál (`PUT` / `DELETE /api/memories/<id>`) küldd el a saját',
       'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',

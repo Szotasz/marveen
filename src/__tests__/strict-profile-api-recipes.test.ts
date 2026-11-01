@@ -224,6 +224,16 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     expect(files).toEqual(['api-eredmeny', 'api-jovahagyas', 'api-memoria', 'api-uzenet'].map((k) => join(own, `${k}.txt`)))
   })
 
+  it('every block that names a payload file says: one file, one send (Dani 65157/1, Samu 65160)', () => {
+    stageAgent('plain-o', null)
+    const file = startBlocks('plain-o')
+    const parts = file.split('<!-- BEGIN GENERATED: ').slice(1).filter((p) => /api-[a-z]+\.txt/.test(p))
+    expect(parts.length).toBe(3) // autonomy (message + approval), message-close, agent-id
+    for (const p of parts) expect(p, p.slice(0, 40)).toContain(S.ONE_FILE_ONE_SEND)
+    const autonomy = parts.find((p) => p.startsWith('autonomy-wiring'))!
+    expect(autonomy.split(S.ONE_FILE_ONE_SEND).length - 1).toBe(2)
+  })
+
   it('the main agent too: its payload files in the project root, which git ignores', () => {
     writeFileSync(join(tmpRoot, 'CLAUDE.md'), '# main\n', 'utf-8')
     S.ensureAutonomySection('agent-a')

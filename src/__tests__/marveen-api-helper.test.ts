@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -211,6 +211,64 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0].url).toBe('/api/messages')
     expect(JSON.parse(seen[0].body)).toEqual({ from: 'dani', to: 'samu', content: 'Szia, "idézet" és `kód`' })
+  })
+})
+
+// VOICETOKENLEAK1101 PR-A1 (Dani 65157/1, Samu 65160): the generated recipes name one fixed file per kind
+// (api-<kind>.txt); two texts prepared in one round would both send the second. Such a file is emptied after a
+// successful send, an empty one stops the call, and a failed send keeps the text for the retry.
+describe('marveen-api.sh: a recipe payload file is sent once', () => {
+  const content = (p: string) => readFileSync(p, 'utf-8')
+
+  it('emptied after a 2xx, and the next call on the empty file exits 2 and sends nothing', async () => {
+    const p = file('api-memoria.txt', 'egyszer menjen ki')
+    expect((await run(['memory-save', 'dani', 'warm', 'k', p])).code).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect(content(p)).toBe('')
+    const again = await run(['memory-save', 'dani', 'warm', 'k', p])
+    expect(again.code).toBe(2)
+    expect(again.stderr).toMatch(/is empty: a recipe payload file is emptied after each send/)
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a non-2xx answer keeps the text (the retry can send it); a whitespace-only file counts as empty', async () => {
+    const p = file('api-naplo.txt', 'marad a hibánál')
+    reply = { status: 500, body: '{"error":"x"}' }
+    expect((await run(['daily-log', 'dani', p])).code).toBe(1)
+    expect(content(p)).toBe('marad a hibánál')
+    writeFileSync(p, ' \n\t\n')
+    reply = { status: 200, body: '{"ok":true}' }
+    expect((await run(['daily-log', 'dani', p])).code).toBe(2)
+    expect(seen).toHaveLength(1)
+  })
+
+  it('every payload verb of the recipes empties it: message-close --result-file, approval-request, memory-update', async () => {
+    const r = file('api-eredmeny.txt', 'kész')
+    expect((await run(['message-close', '7', '--result-file', r])).code).toBe(0)
+    const a = file('api-jovahagyas.txt', 'leírás')
+    expect((await run(['approval-request', 'dani', 'memory_maintenance', '3600', a])).code).toBe(0)
+    const m = file('api-memoria.txt', 'új')
+    expect((await run(['memory-update', '5', 'dani', m])).code).toBe(0)
+    for (const p of [r, a, m]) expect(content(p), p).toBe('')
+    expect(seen).toHaveLength(3)
+  })
+
+  it('the message verb too: emptied after the send, an empty one exits 2 before agent-msg.sh runs', async () => {
+    reply = { status: 200, body: '{"id":99}' }
+    const p = file('api-uzenet.txt', 'Szia `kód`')
+    const r = await run(['message', 'dani', 'samu', p])
+    expect(r.code, r.stderr + r.stdout).toBe(0)
+    expect(content(p)).toBe('')
+    const again = await run(['message', 'dani', 'samu', p])
+    expect(again.code).toBe(2)
+    expect(again.stderr).toMatch(/is empty/)
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a file with any other name is left as it is (a kanban result, a skill draft)', async () => {
+    const p = file('kanban-x-eredmeny.txt', 'marad')
+    expect((await run(['memory-save', 'dani', 'warm', 'k', p])).code).toBe(0)
+    expect(content(p)).toBe('marad')
   })
 })
 
