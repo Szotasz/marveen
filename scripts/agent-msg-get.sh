@@ -24,6 +24,8 @@ PORT="${PORT:-3420}"
 [[ -r "$TOKEN_FILE" ]] || { echo "FAIL: no dashboard token at ${TOKEN_FILE}" >&2; exit 3; }
 
 TOKEN="$(cat "$TOKEN_FILE")"
+# An exported TOKEN inherited from the caller keeps its export attribute through the assignment (Dani 65583): drop it.
+export -n TOKEN
 [[ -n "$TOKEN" ]] || { echo "FAIL: the dashboard token at ${TOKEN_FILE} is empty" >&2; exit 3; }
 
 # The HTTP status is checked, not assumed: a 404 body would otherwise print as an empty message.

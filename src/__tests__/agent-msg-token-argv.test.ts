@@ -1,9 +1,11 @@
 // VOICETOKENLEAK1101 round 3 (#2080 review "Token on argv: what remains", Samu 65565): scripts/agent-msg.sh (the
 // helper's message verb runs through it) and scripts/agent-msg-get.sh put the dashboard token on curl's argv
-// (-H "Authorization: Bearer $TOKEN"), which ps shows to every process of the same user. Now the header comes from a
-// 0600 temp file (curl -H @file) removed on exit, and agent-msg.sh's JSON body (the message text) goes on stdin.
-// A curl stub first on PATH records the argv it was started with, then runs the real curl, so what is checked is the
-// argument list a ps would show, and what reached a capture server.
+// (-H "Authorization: Bearer $TOKEN"), which ps shows to every process of the same user. Now curl reads the header
+// from a process substitution (-H @<(printf ...), nothing on disk), TOKEN is never in a child's environment (not even
+// when the caller exported a TOKEN of its own), and agent-msg.sh's JSON body (the message text) goes on stdin.
+// A curl stub first on PATH records the argv and the environment it was started with and the header source it got,
+// then runs the real curl, so what is checked is what a ps or a child's environment would show, and what reached a
+// capture server.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { execFile, execFileSync } from 'node:child_process'
@@ -105,6 +107,19 @@ describe('agent-msg.sh: the token and the message text are not on curl\'s argv',
     expect(readdirSync(tmp)).toEqual([])
   })
 
+  // Dani 65583: an exported TOKEN in the caller's environment kept its export attribute through the plain assignment,
+  // so curl's environment carried the dashboard token.
+  it('a TOKEN the caller exported does not carry the dashboard token into curl\'s environment', async () => {
+    const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', 'x'], {
+      MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: tokenFile, TOKEN: 'ambient-foreign-value',
+    })
+    expect(r.code, r.out).toBe(0)
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
+    const env = readFileSync(envLog, 'utf-8')
+    expect(env).not.toContain(TOKEN)
+    expect(env).not.toMatch(/^TOKEN=/m)
+  })
+
   it('unchanged: the exit code says what happened (an answer with no message id is a failure, not "sent")', async () => {
     reply = '{"error":"x"}'
     const before = seen.length
@@ -149,5 +164,17 @@ describe('agent-msg-get.sh: the token is not on curl\'s argv', () => {
     expectHeaderNotArgv(argv, readFileSync(envLog, 'utf-8'), readFileSync(hdrLog, 'utf-8'))
     expect(readdirSync(tmp)).toEqual([])
     expect(existsSync(join(root, 'store', '.dashboard-token'))).toBe(true)
+    // Dani 65583: the same with a TOKEN the caller exported
+    writeFileSync(envLog, '')
+    seen = []
+    reply = JSON.stringify({ id: 7, from_agent: 'dani', to_agent: 'samu', status: 'done', content: 'c', result: 'r' })
+    const r2 = await run(join(root, 'scripts', 'agent-msg-get.sh'), ['7'], {
+      MARVEEN_WEB_PORT: String(port()), TMPDIR: tmp, TOKEN: 'ambient-foreign-value',
+    })
+    reply = '{"id":1}'
+    expect(r2.code, r2.out).toBe(0)
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
+    expect(readFileSync(envLog, 'utf-8')).not.toContain(TOKEN)
+    expect(readFileSync(envLog, 'utf-8')).not.toMatch(/^TOKEN=/m)
   })
 })

@@ -85,6 +85,9 @@ FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or
 [ "$C" = "-" ] && C="$(cat)"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
+# An exported TOKEN in the caller's environment keeps its export attribute through the assignment above (Dani
+# 65583, measured): drop it, so no child process (curl among them) gets the dashboard token in its environment.
+export -n TOKEN
 [ -n "$TOKEN" ] || { echo "FAIL: the token file at $TOKEN_FILE is empty; nothing was sent"; exit 1; }
 # VOICETOKENLEAK1101 round 3 (#2080 review "Token on argv: what remains", Samu 65565, Dani 65569): the token never
 # goes on curl's argv, which ps shows to every process of the same user, and never on disk: curl reads the
