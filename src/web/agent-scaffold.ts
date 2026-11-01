@@ -4838,6 +4838,7 @@ function helperBodyRecipeLines(name: string): string[] {
     `${apiHelper} memory-move <ID> cold ${name}`,
     `${apiHelper} daily-log ${name} ${shellWord(apiPayloadPath(name, 'naplo'))}`,
     `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${shellWord(apiPayloadPath(name, 'uzenet'))}`,
+    `${apiHelper} schedules-list`,
     '```',
     '',
     '- A keresés kimenetének ELSŐ sora az `X-Memory-Search` fejléc, ezt KÖTELEZŐ elolvasni: `relaxed=true`',
@@ -4866,7 +4867,7 @@ export function buildStrictApiBody(name: string): string {
     'Ha ennek a fájlnak egy MÁSIK része tokenes `curl`-receptet ad, az nálad nem fut le: helyette ezeket használd.',
     '',
     ...helperBodyRecipeLines(name),
-    `- Ütemezést nem hozhatsz létre, és nem is listázhatsz: ha kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) a \`message\` igével (név, leírás, prompt, cron, ágens, típus).`,
+    `- Ütemezést nem hozhatsz létre és nem módosíthatsz: ha kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) a \`message\` igével (név, leírás, prompt, cron, ágens, típus). A meglévőket a \`schedules-list\` igével listázod (csak olvas).`,
     '- Törlő ige nincs: a törlés gazda-döntés (data_delete).',
     ...helperExitCodes,
   ].join('\n')
@@ -4895,11 +4896,13 @@ export function buildApiHelperBody(name: string): string {
     'tehát a benne álló backtick vagy `$(...)` nem fut le.',
     '',
     'Ha ennek a fájlnak egy MÁSIK része tokenes `curl`-receptet ad (memória mentés, keresés, hot-lista, átsorolás, napi',
-    'napló, ismeretlen sender jelzése), az régi alak: a token ÉRTÉKÉT a parancssorba teszi, ahol minden',
-    'azonos felhasználójú folyamat látja. Helyette ezeket használd:',
+    'napló, inter-agent üzenet BÁRMELY címzettnek, pl. a vezetődnek vagy a fő ágensnek, a feladat-kész jelzés is,',
+    'ismeretlen sender jelzése, ütemezések listája), az régi alak: a token ÉRTÉKÉT a parancssorba teszi, ahol minden',
+    'azonos felhasználójú folyamat látja. Helyette ezeket használd (a `message` receptben a második név a címzett:',
+    'a fő ágens helyére azt írd, akinek az üzenet szól):',
     '',
     ...helperBodyRecipeLines(name),
-    '- Az ütemezések LISTÁZÁSA marad a fájlban álló `curl -q` alakban: a kapu pontosan azt engedi.',
+    '- Az ütemezések listája: a `schedules-list` ige (csak olvas; ütemezést létrehozni vagy módosítani csak a fő ágens tud).',
     '- Törlő ige nincs: a törlés gazda-döntés (data_delete).',
     ...helperExitCodes,
   ].join('\n')
@@ -4989,7 +4992,7 @@ function strictPromptRecipes(name: string, strict = true) {
     hotList: `${apiHelper} memory-list AGENT_NAME hot`,
     move: `${apiHelper} memory-move <ID> cold AGENT_NAME`,
     scheduleAsk: '(a lenti message igével, a szöveg fájlban)',
-    scheduleList: `Listázni sem tudsz: a segéd ütemezést nem kezel. Ha látnod kell a meglévő ütemezéseket, azt is ${BOT_NAME}-től kérd.`,
+    scheduleList: `Olvasni (listázni) szabad, a segéddel:\n${apiHelper} schedules-list\nA segéd csak olvas: ütemezést írni vele nem lehet (a küldés előtt megáll).`,
     ping: `${apiHelper} message AGENT_NAME ${MAIN_AGENT_ID} ${msg}\n(a fájlban: Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?)`,
     pingNote: 'A sender szövegét a Write eszközzel írd a fájlba, és csak a fájl útját add át a segédnek: így a shell sosem látja a szöveget, tehát az idegen üzenet nem futhat parancsként a gépeden.',
   }
@@ -5165,7 +5168,7 @@ Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-ala
 
 Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja${ownTokenSchedule}. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${helper ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)'}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
 
-${strict ? R.scheduleList : `Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
+${helper ? R.scheduleList : `Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
 curl -q -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/schedules
 
 A -q legyen az ELSŐ argumentum, a token útja SZÓ SZERINT ez az abszolút út (relatív út, ~ vagy $HOME esetén a kapu megtagadja), és ne tegyél mellé -X, -d, -o vagy -w kapcsolót.`}
