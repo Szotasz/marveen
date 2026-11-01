@@ -116,12 +116,22 @@ export const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
 
 // Who may manage dashboard users (list/create/delete). 'session' is included
 // deliberately: a logged-in operator managing users is the existing behavior.
+// A device key only as the Bridge, beside the owner's cookie (bridgeOwner below).
 const USER_ADMIN_KINDS = ['token', 'session'] as const
 
-// Who may mint/list/revoke device keys. Deliberately the SAME operator set --
-// and deliberately NOT 'device': a device key that could mint further keys
-// would turn one leaked device into unlimited, unexpiring access.
+// Who may mint/list/revoke device keys. The same operator set. A device key ALONE
+// never: a key that could mint further keys would turn one leaked device into
+// unlimited, unexpiring access. BRIDGEPWLOGIN1101 PR-2 (Dani 65623 (2)): a FULL key
+// beside a valid owner session cookie may, because the proof there is the cookie,
+// which a leaked key does not carry: the owner signed in with the password in that
+// window, and logging out or the session's expiry ends it.
 const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
+
+/** The Bridge as the owner: a FULL device key with a valid owner session cookie beside it. No audit line here; the
+ *  owner gate that follows (mayActAsOwner) writes it. */
+export function bridgeOwner(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  return auth?.kind === 'device' && auth.scope === 'full' && ownerCookieSession(req) !== null
+}
 
 // DEVKEYMINT1022: issuing a credential (a device key, a Bridge pairing) and adding
 // or removing a dashboard user GRANT access, and the bearer token cannot tell the
@@ -152,14 +162,13 @@ export function ownerCookieSession(req?: http.IncomingMessage): string | null {
   return resolveSession(cookie)?.username ?? null
 }
 
-/** BRIDGEPWLOGIN1101 (Dani 65623 (1)): an owner action that issues NO credential (approvals, skill decisions,
- *  federation, autonomy, fleet freeze, fleet, settings). mayIssueCredentials, plus a FULL device key sent alongside
- *  a valid owner session cookie: the Bridge, whose webview sends its key on every call while the owner signed in
- *  with the password inside it. The cookie is the owner's proof; the key adds nothing and must not hide it.
- *  A bare device key never passes, not even before the first login exists (the first-run branch stays in
- *  mayIssueCredentials, for the shared token only); never an operator key, a peer or a sub-agent token.
- *  Credential issuance (device keys, users, Bridge enrolment, operator access, plan login) stays on
- *  mayIssueCredentials until its own PR. Each pass through the key branch is one audit line naming the owner. */
+/** BRIDGEPWLOGIN1101 (Dani 65623): every owner action, credential issuance included since PR-2 (device keys,
+ *  users, Bridge enrolment, operator access, the fleet's Claude credential, plan login). mayIssueCredentials, plus a
+ *  FULL device key sent alongside a valid owner session cookie: the Bridge, whose webview sends its key on every call
+ *  while the owner signed in with the password inside it. The cookie is the owner's proof; the key adds nothing and
+ *  must not hide it. A bare device key never passes, not even before the first login exists (the first-run branch
+ *  stays in mayIssueCredentials, for the shared token only); never an operator key, a peer or a sub-agent token.
+ *  Each pass through the key branch is one audit line naming the owner. */
 export function mayActAsOwner(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
   if (mayIssueCredentials(auth, req)) return true
   if (auth?.kind !== 'device' || auth.scope !== 'full') return false
@@ -344,13 +353,13 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'GET') {
-    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
     // The usernames are the first half of a password guess, so once a login
     // exists the list takes the owner's session too (DEVKEYFOLLOW1022).
-    if (!mayIssueCredentials(auth, req)) {
+    if (!mayActAsOwner(auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
@@ -359,11 +368,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
-    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (!mayIssueCredentials(auth, req)) {
+    if (!mayActAsOwner(auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
@@ -398,7 +407,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/device-keys' && method === 'GET') {
-    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
@@ -407,11 +416,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/device-keys' && method === 'POST') {
-    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (!mayIssueCredentials(auth, req)) {
+    if (!mayActAsOwner(auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
@@ -459,7 +468,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   const deviceKeyMatch = /^\/api\/auth\/device-keys\/(\d+)$/.exec(path)
   if (deviceKeyMatch && method === 'DELETE') {
-    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
@@ -490,11 +499,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   const delMatch = /^\/api\/auth\/users\/([^/]+)$/.exec(path)
   if (delMatch && method === 'DELETE') {
-    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (!mayIssueCredentials(auth, req)) {
+    if (!mayActAsOwner(auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
