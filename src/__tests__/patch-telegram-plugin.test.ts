@@ -240,7 +240,8 @@ function replyHandler(patched: string, allowFrom: string[] = ['42'], state: KbdS
   const sent: Sent[] = []
   let handler: ((req: unknown) => Promise<never>) | undefined
   const mcp = { setRequestHandler: (_schema: unknown, fn: (req: unknown) => Promise<never>) => { handler = fn } }
-  const bot = { api: { sendMessage: async (chat: string, text: string, opts: Record<string, unknown>) => { sent.push({ chat, text, opts }); return { message_id: sent.length } } } }
+  // A message sent into a topic comes back as a topic message (what Telegram answers), so the kbd line sees its thread.
+  const bot = { api: { sendMessage: async (chat: string, text: string, opts: Record<string, unknown>) => { sent.push({ chat, text, opts }); return { message_id: sent.length, ...(opts.message_thread_id != null ? { is_topic_message: true, message_thread_id: opts.message_thread_id } : {}) } } } }
   const names = ['mcp', 'CallToolRequestSchema', 'assertAllowedChat', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES',
     'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'bot', 'extname', 'InputFile', 'PHOTO_EXTS', 'PERMISSION_REPLY_RE',
     'marveenKbdAnswered', 'marveenKbdOpen']
@@ -256,7 +257,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(run().status).toBe(0)
     const text = readFileSync(server, 'utf-8')
     const lines = kbdLines(text)
-    expect(lines).toHaveLength(33)
+    expect(lines).toHaveLength(34)
     for (const l of lines) expect(l.endsWith(' ' + KBD_MARKER)).toBe(true)
     const reply = text.indexOf("name: 'reply'")
     const react = text.indexOf("name: 'react'")
@@ -415,7 +416,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     writeFileSync(server, patchedWithoutKbd(readFileSync(FIXTURE, 'utf-8')))
     const r = run()
     expect(r.stderr).toMatch(/patched .*\(kbd\)/)
-    expect(kbdLines(readFileSync(server, 'utf-8'))).toHaveLength(33)
+    expect(kbdLines(readFileSync(server, 'utf-8'))).toHaveLength(34)
   })
 
   it('a file with the FIRST kbd version (reply keyboard) is rebuilt in place: byte-identical to a fresh patching, no old line left', () => {
@@ -484,7 +485,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(readState(state).files[0].patches.kbd).toBe('already')
     const off = readFileSync(server, 'utf-8')
     expect(off).not.toContain('MARVEEN-PATCH(tgtopics)')
-    expect(kbdLines(off)).toHaveLength(33)
+    expect(kbdLines(off)).toHaveLength(34)
     const offAgain = run(['--topics', 'off', '--state', state])
     expect(offAgain.stderr).toBe('')
     run(['--topics', 'on', '--state', state])
@@ -559,6 +560,7 @@ interface TapSpec {
   noMessage?: boolean // no callbackQuery.message at all
   edit?: 'ok' | 'fail' // what editMessageReplyMarkup does
   answerFails?: boolean // answerCallbackQuery rejects (network)
+  extra?: Record<string, unknown> // more fields on the message (e.g. is_topic_message, message_thread_id)
 }
 
 const kb = (...labels: string[]): Btn[][] => labels.map((text, i) => [{ text, callback_data: 'kbd:' + i }])
@@ -618,6 +620,7 @@ function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbou
     const message = t.noMessage ? undefined : {
       message_id: t.messageId ?? 901,
       chat,
+      ...(t.extra ?? {}),
       ...(t.inaccessible ? { date: 0 } : { text: 'Kérdés', reply_markup: { inline_keyboard: t.markup ?? kb('Alfa', 'Béta', 'Gamma') } }),
     }
     const ctx: FakeCtx = {
@@ -1017,10 +1020,13 @@ describe('kbd: a question answered by typing loses its buttons (ISSUE2398KBD)', 
   })
   afterEach(() => rmSync(stateDir, { recursive: true, force: true }))
 
-  const typed = (text: string, o: { chat?: number; messageId?: number; noText?: boolean } = {}): FakeCtx => ({
+  const typed = (text: string, o: { chat?: number; messageId?: number; noText?: boolean; thread?: number } = {}): FakeCtx => ({
     from: { id: o.chat ?? 42, username: 'owner' },
     chat: { id: o.chat ?? 42, type: 'private' },
-    message: { message_id: o.messageId ?? 50, date: 1_700_000_000, ...(o.noText ? { photo: [] } : { text }) },
+    message: {
+      message_id: o.messageId ?? 50, date: 1_700_000_000, ...(o.noText ? { photo: [] } : { text }),
+      ...(o.thread != null ? { is_topic_message: true, message_thread_id: o.thread } : {}),
+    },
   })
 
   it('the reply remembers the question (the LAST chunk, the one with the keyboard); no buttons or an empty list remembers nothing', async () => {
@@ -1108,6 +1114,48 @@ describe('kbd: a question answered by typing loses its buttons (ISSUE2398KBD)', 
     const h = callbackHarness(patched, { state: st })
     expect((await h.press({ data: 'kbd:0', messageId: 1 })).answers).toEqual([{ text: ALREADY }])
     expect(h.delivered).toHaveLength(0)
+  })
+
+  it('topics: a question in topic 7 is closed only by a text typed into topic 7, not by topic 9 or the chat outside topics (Dani 64318)', async () => {
+    expect(run(['--topics', 'on']).status).toBe(0)
+    const topics = readFileSync(server, 'utf-8')
+    const st = kbdState()
+    const h = replyHandler(topics, ['42'], st)
+    await h.call({ chat_id: '42', text: 'Kérdés a 7-es topikban?', buttons: ['A', 'B'], message_thread_id: '7' })
+    await h.call({ chat_id: '42', text: 'Kérdés topik nélkül?', buttons: ['C', 'D'] })
+    expect(h.sent[0].opts.message_thread_id).toBe(7)
+    expect([...st.open.keys()].sort()).toEqual(['42', '42#7'])
+    const inbound = inboundHarness(topics, stateDir, st)
+    await inbound.handleInbound(typed('más téma', { thread: 9 }), 'más téma', undefined)
+    expect(inbound.markupEdits).toEqual([])
+    await inbound.handleInbound(typed('C', { messageId: 51 }), 'C', undefined)
+    expect(inbound.markupEdits.map(e => e.id)).toEqual([2])
+    expect([...st.open.keys()]).toEqual(['42#7'])
+    await inbound.handleInbound(typed('A', { messageId: 52, thread: 7 }), 'A', undefined)
+    expect(inbound.markupEdits.map(e => e.id)).toEqual([2, 1])
+    expect(st.open.size).toBe(0)
+    expect([...st.answered].sort()).toEqual(['42:1', '42:2'])
+  })
+
+  it('a message_thread_id WITHOUT is_topic_message (a reply outside topics) is no topic: it closes the question of the chat', async () => {
+    const st = kbdState()
+    await replyHandler(patched, ['42'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['A', 'B'] })
+    const inbound = inboundHarness(patched, stateDir, st)
+    const ctx = typed('A')
+    ;(ctx.message as Record<string, unknown>).message_thread_id = 1
+    await inbound.handleInbound(ctx, 'A', undefined)
+    expect(inbound.markupEdits.map(e => e.id)).toEqual([1])
+  })
+
+  it('topics: a tap takes its question off the list of ITS topic', async () => {
+    expect(run(['--topics', 'on']).status).toBe(0)
+    const topics = readFileSync(server, 'utf-8')
+    const st = kbdState()
+    await replyHandler(topics, ['42'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['Alfa', 'Béta'], message_thread_id: '7' })
+    const cb = callbackHarness(topics, { state: st })
+    const press = await cb.press({ data: 'kbd:0', messageId: 1, extra: { is_topic_message: true, message_thread_id: 7 } })
+    expect(press.answers).toEqual([{ text: '✓ Alfa' }])
+    expect(st.open.get('42#7')?.size ?? 0).toBe(0)
   })
 
   it('the open list and the answered Set stay bounded (emptied past 1000)', async () => {

@@ -173,7 +173,8 @@ KBD_CALLBACK = ("callback perm regex", re.compile(
         "  if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('Erre már válaszoltál.'); return }",
         "  if (marveenKbdAnswered.size >= 1000) marveenKbdAnswered.clear()",
         "  marveenKbdAnswered.add(kbdKey)",
-        "  marveenKbdOpen.get(String(kbdMsg.chat.id))?.delete(kbdMsg.message_id)",
+        "  marveenKbdOpen.get(kbdMsg.chat.id + ('is_topic_message' in kbdMsg && kbdMsg.is_topic_message "
+        "&& kbdMsg.message_thread_id != null ? '#' + kbdMsg.message_thread_id : ''))?.delete(kbdMsg.message_id)",
         "  try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: "
         "[[{ text: '✓ ' + kbdButton.text, callback_data: 'kbd:-' }]] } }) } "
         "catch { marveenKbdAnswered.delete(kbdKey); await kbdToast('Nem sikerült rögzíteni, írd be a választ.'); return }",
@@ -197,23 +198,29 @@ KBD_TS = ("inbound meta imagePath", re.compile(
 # from that chat takes the buttons off every open question there and marks them answered BEFORE the edit goes out,
 # so a late tap (an update already on its way) gets the "already answered" toast and delivers nothing. A tap takes
 # its own question off the open list. A permission reply ("yes abcde") returns earlier and leaves them alone; so does
-# a photo, voice or file. The edit is fire and forget: a message too old to edit keeps its buttons, the Set still
+# a photo, voice or file. The open list is keyed by chat AND topic (chat_id, plus '#<message_thread_id>' for a
+# topic message, the topics patch's own rule: is_topic_message), so a text typed into ANOTHER topic of the same chat
+# closes nothing (Dani 64318, Samu 64325). The edit is fire and forget: a message too old to edit keeps its buttons, the Set still
 # refuses the tap. Both containers are bounded like the Set (emptied past 1000 chats).
 KBD_OPEN = ("reply text chunk sent", re.compile(
     r"^( *)sentIds\.push\(sent\.message_id\)\n(?= *\}\n *\} catch \(err\) \{\n)", re.MULTILINE), "insert-after",
     _kbd_lines([
-        "if (kbdButtons?.length && i === chunks.length - 1) { if (marveenKbdOpen.size >= 1000 && !marveenKbdOpen.has(chat_id)) "
-        "marveenKbdOpen.clear(); marveenKbdOpen.set(chat_id, (marveenKbdOpen.get(chat_id) ?? new Set<number>()).add(sent.message_id)) }",
+        "if (kbdButtons?.length && i === chunks.length - 1) { const kbdOpenKey = chat_id + (sent.is_topic_message "
+        "&& sent.message_thread_id != null ? '#' + sent.message_thread_id : ''); if (marveenKbdOpen.size >= 1000 "
+        "&& !marveenKbdOpen.has(kbdOpenKey)) marveenKbdOpen.clear(); "
+        "marveenKbdOpen.set(kbdOpenKey, (marveenKbdOpen.get(kbdOpenKey) ?? new Set<number>()).add(sent.message_id)) }",
     ]))
 KBD_TYPED = ("inbound typing indicator", re.compile(r"^( *)// Typing indicator[^\n]*\n", re.MULTILINE), "insert-before",
     _kbd_lines([
-        "if (typeof ctx.message?.text === 'string' && marveenKbdOpen.has(chat_id)) {",
+        "const kbdOpenKey = chat_id + (ctx.message?.is_topic_message && ctx.message.message_thread_id != null "
+        "? '#' + ctx.message.message_thread_id : '')",
+        "if (typeof ctx.message?.text === 'string' && marveenKbdOpen.has(kbdOpenKey)) {",
         "  if (marveenKbdAnswered.size >= 1000) marveenKbdAnswered.clear()",
-        "  for (const kbdOpenId of marveenKbdOpen.get(chat_id)!) {",
+        "  for (const kbdOpenId of marveenKbdOpen.get(kbdOpenKey)!) {",
         "    marveenKbdAnswered.add(chat_id + ':' + kbdOpenId)",
         "    void bot.api.editMessageReplyMarkup(chat_id, kbdOpenId, { reply_markup: { inline_keyboard: [] } }).catch(() => {})",
         "  }",
-        "  marveenKbdOpen.delete(chat_id)",
+        "  marveenKbdOpen.delete(kbdOpenKey)",
         "}",
     ]))
 KBD_ANCHORS = [KBD_SCHEMA, KBD_CHECK, KBD_SEND, KBD_SET, KBD_CALLBACK, KBD_TS, KBD_OPEN, KBD_TYPED]
