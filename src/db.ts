@@ -1195,6 +1195,8 @@ export function initDatabase(dbPathOverride?: string): void {
   // completion receipt sent back over the bridge names the message the PEER knows -- our local
   // id means nothing on the other system. Null for local rows and for federated rows from before.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -5204,6 +5206,95 @@ export function markMessageFailed(id: number, error?: string): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
 }
 
+// The result text the router stores when it abandons a message because the
+// target session was absent for the whole retry window.
+export const ABANDONED_SESSION_ABSENT = 'Abandoned: target session absent for full retry window'
+
+export interface RequeueAbandonedOpts { maxAgeSec?: number; cap?: number; now?: number }
+
+// A "card anchor": a bracketed card id inside a handoff's content, e.g.
+// "[ABCDEF1234] deploy PROD". The id must look like a card id -- uppercase
+// letters and digits, 6-40 characters, at least one digit: plain bracketed
+// words ([HOLD], [URGENT]) are tags, not cards, and would match far too much
+// traffic to mean anything. Returned WITH the brackets, distinct, in order of
+// first appearance.
+const CARD_ANCHOR_RE = /\[([A-Z][A-Z0-9]{5,39})\]/g
+
+export function cardAnchors(content: string | null | undefined): string[] {
+  if (!content) return []
+  const anchors: string[] = []
+  for (const match of content.matchAll(CARD_ANCHOR_RE)) {
+    // a card id always has a digit in it, so [URGENT]-style tags stay out
+    if (/[0-9]/.test(match[1]) && !anchors.includes(match[0])) anchors.push(match[0])
+  }
+  return anchors
+}
+
+// Put an agent's messages that were abandoned while its session was down back
+// in its queue. Each row is revived at most once (requeued_at), so a row that
+// is abandoned again stays failed and does not re-notify. A row carrying a
+// delivered_at was delivered or closed before something overwrote it to failed,
+// and is never revived. Stop and urgent rows are never revived either: they
+// only meant something at the time they were sent. A row is also left failed
+// when the sender has moved on -- either the same sender wrote the same
+// recipient anything after the abandon, or it wrote a NEWER message to any
+// recipient carrying one of the row's card anchors (a bracketed id matching
+// /\[([A-Z][A-Z0-9]{5,39})\]/g with a digit in it): the card was re-sent or
+// re-delegated elsewhere, and reviving the old copy would duplicate the work.
+// The window (24 hours by default) and the cap (20 by default) bound the
+// backlog as a whole: of the eligible rows the newest `cap` are revived and
+// every remaining one is marked requeue_skipped_at and stays failed for good.
+// The rows themselves go back to 'pending' (not copies), so delivery shows
+// their real age. Returns the requeued ids, oldest first.
+export function requeueAbandonedForAgent(agent: string, opts: RequeueAbandonedOpts = {}): number[] {
+  const maxAgeSec = opts.maxAgeSec ?? 24 * 3600
+  const cap = opts.cap ?? 20
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  if (cap <= 0 || maxAgeSec <= 0) return []
+  return db.transaction(() => {
+    const rows = db.prepare(
+      `SELECT m.id, m.from_agent, m.content, COALESCE(m.completed_at, m.created_at) AS since_ts FROM agent_messages m
+       WHERE m.to_agent = ? AND m.status = 'failed' AND m.result = ? AND m.created_at >= ?
+         AND m.requeued_at IS NULL AND m.requeue_skipped_at IS NULL AND m.delivered_at IS NULL
+         -- a stop or an urgent message only means something at the time it was sent, so it is never revived
+         AND m.stop_authorized = 0 AND m.urgent = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_messages n
+           WHERE n.from_agent = m.from_agent AND n.to_agent = m.to_agent
+             AND n.id > m.id AND n.created_at >= COALESCE(m.completed_at, m.created_at)
+         )
+       ORDER BY m.created_at DESC, m.id DESC`
+    ).all(agent, ABANDONED_SESSION_ABSENT, now - maxAgeSec) as { id: number; from_agent: string; content: string | null; since_ts: number }[]
+    // The card-anchor half of "moved on". instr, not LIKE: LIKE is
+    // case-insensitive for ASCII in SQLite, and [abcdef1234] is a different
+    // card from [ABCDEF1234].
+    const anchorSentOn = db.prepare(
+      'SELECT 1 FROM agent_messages n WHERE n.from_agent = ? AND n.id > ? AND n.created_at >= ? AND instr(n.content, ?) > 0 LIMIT 1'
+    )
+    const revive = db.prepare(
+      "UPDATE agent_messages SET status = 'pending', result = NULL, completed_at = NULL, delivered_at = NULL, requeued_at = ? WHERE id = ? AND status = 'failed' AND result = ? AND requeued_at IS NULL AND delivered_at IS NULL"
+    )
+    const skip = db.prepare(
+      "UPDATE agent_messages SET requeue_skipped_at = ? WHERE id = ? AND status = 'failed' AND result = ? AND requeued_at IS NULL AND requeue_skipped_at IS NULL AND delivered_at IS NULL"
+    )
+    const kept: number[] = []
+    const skipped: number[] = []
+    for (const m of rows) {
+      // an anchor-blocked row is neither revived nor marked: the cap must
+      // count only rows the sender has NOT moved on from
+      if (cardAnchors(m.content).some(a => anchorSentOn.get(m.from_agent, m.id, m.since_ts, a))) continue
+      if (kept.length < cap) {
+        if (revive.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1) kept.push(m.id)
+      } else if (skip.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1) {
+        skipped.push(m.id)
+      }
+    }
+    if (skipped.length) logger.info({ agent, skipped: skipped.length, ids: skipped }, 'abandoned messages over the requeue cap stay failed')
+    // Selected newest first by created_at; hand them back oldest first.
+    return kept.reverse()
+  })()
+}
+
 // Close a message that is still OPEN (pending or delivered), atomically: the
 // status check and the write are one UPDATE, so of two concurrent closes only
 // one changes the row. Used by the PUT /api/messages/:id route, where a second
@@ -5244,6 +5335,19 @@ export function closeMessageAsRecipient(id: number, recipient: string, status: '
 // notice. The drain-inbox path deliberately keeps the unguarded variant (it
 // fails an already-delivered row).
 export function markPendingFederatedFailed(id: number, error: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
+}
+
+// The same status guard for the router's ABANDONED write: it may only fail a
+// row that is still pending. The router decides from the pending snapshot it
+// took at the top of the tick, with awaits in between, so a PUT
+// /api/messages/<id> close can land first; the unguarded markMessageFailed
+// would then overwrite that close with failed + abandoned, and a handoff that
+// HAD landed would read as abandoned. Returns false on such a row, so the
+// caller skips the sender's failure notice, which must only follow a close
+// THIS call performed.
+export function markPendingMessageFailed(id: number, error: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
 }

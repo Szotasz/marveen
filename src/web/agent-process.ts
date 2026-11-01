@@ -37,6 +37,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
+import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
@@ -2061,6 +2062,11 @@ function startRemoteAgentProcess(
     // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
     // resolves immediately; startRemoteAgentProcess stays synchronous (out of scope).
     void scheduleIdentitySetup(session, readAgentDisplayName(name), host)
+    // Messages the router gave up on while this session was down (it was absent
+    // for the whole retry window) go back in the queue here too: the router
+    // abandons remote agents' messages the same way, through the host.
+    // The sender and the main agent get a [ÚJRAKÉZBESÍTVE] notice for each revived row.
+    requeueAbandonedAndNotify(name, host)
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
@@ -3112,6 +3118,13 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
           sendPromptToSession(target, text, null, { lockMode: 'deliver', onBusyTimeout: 'abort' }),
       })
     }
+
+    // Messages the router gave up on while this session was down (it was absent
+    // for the whole retry window) go back in the queue. The requeue runs at both
+    // success returns: this local one and startRemoteAgentProcess's. They are
+    // delivered with their real age.
+    // The sender and the main agent get a [ÚJRAKÉZBESÍTVE] notice for each revived row.
+    requeueAbandonedAndNotify(name)
 
     return { ok: true }
   } catch (err) {
