@@ -2272,6 +2272,7 @@ window._i18n.en = {
   'gromzo.status.not_running': 'The Gromzo chat service (mxd) is not running on this machine, or is not installed.',
   'gromzo.status.unknown': 'The status cannot be read right now ({code}).',
   'gromzo.btn.add_phone': 'Add a phone',
+  'gromzo.owner_login.info': 'To switch agents and to add a phone, sign in with your dashboard password: only the password identifies the owner, not the Bridge or the access key. The sign-in stays in this window until you sign out or it expires.',
   'gromzo.btn.login': 'Sign in with password',
   'gromzo.btn.logout': 'Owner sign-out',
   'gromzo.btn.hide': 'Hide code',

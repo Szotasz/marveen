@@ -20705,10 +20705,11 @@ async function openResearchDoc(agent, name) {
           if (Number.isInteger(b.retry_after) && b.retry_after > 0) wait = b.retry_after
         } catch { /* keep the HTTP code */ }
         // GROMZORESETWAIT1031: during the identity reset lock, when the code can be asked again.
-        showError(code === 'identity_reset_in_progress' && wait !== null
+        // owner_session_required: the card's own notice says it, with the login button (no second message).
+        if (code === 'owner_session_required' && typeof window.gromzoOwnerLogin === 'function') window.gromzoOwnerLogin(true)
+        else showError(code === 'identity_reset_in_progress' && wait !== null
           ? t('gromzo.err.identity_reset_wait', { min: Math.max(1, Math.ceil(wait / 60)) })
           : errorText(code))
-        if (code === 'owner_session_required' && typeof window.gromzoOwnerLogin === 'function') window.gromzoOwnerLogin(true)
         btn.disabled = false
         loadStatus()
         return
@@ -20854,9 +20855,12 @@ async function openResearchDoc(agent, name) {
   // action needs the owner's password login as well (a session cookie next to the key). The login
   // button opens the dashboard's own login overlay; the logout button ends that session (the
   // Bridge has no other way to: its Settings show the device, not the session).
+  // Shown AHEAD of any click (the card's first list load answers owner_session_required), as a notice,
+  // not an error: the owner learns up front that the password login is the missing step (Samu 64431 (3)).
+  const ownerInfo = document.getElementById('gromzoOwnerInfo')
   const loginBtn = document.getElementById('gromzoLoginBtn')
   const logoutBtn = document.getElementById('gromzoLogoutBtn')
-  window.gromzoOwnerLogin = (needed) => { if (loginBtn) loginBtn.hidden = !needed }
+  window.gromzoOwnerLogin = (needed) => { if (ownerInfo) ownerInfo.hidden = !needed }
   if (loginBtn) loginBtn.addEventListener('click', () => { if (typeof window.mvShowLogin === 'function') window.mvShowLogin({ cancellable: true }) })
   if (logoutBtn) logoutBtn.addEventListener('click', async () => {
     try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* ignore */ }
@@ -20876,8 +20880,9 @@ async function openResearchDoc(agent, name) {
       const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
       if (!r.ok) {
         const code = await codeOf(r)
-        rows = []; render(); showError(agentErr(code))
+        rows = []; render()
         window.gromzoOwnerLogin(code === 'owner_session_required')
+        if (code !== 'owner_session_required') showError(agentErr(code))
         if (logoutBtn) logoutBtn.hidden = true
         return
       }

@@ -7619,6 +7619,9 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-qr-area[hidden] { display: none; }
 .gromzo-qr-area .mobile-login-warn, .gromzo-qr-area .modal-desc { text-align: center; max-width: 420px; }
 .gromzo-countdown { font-size: 13px; font-variant-numeric: tabular-nums; margin: 0; }
+.gromzo-owner-info { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 4px 0 14px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-card); }
+.gromzo-owner-info[hidden] { display: none; }
+.gromzo-owner-info-text { margin: 0; font-size: 13px; color: var(--text); }
 .gromzo-agents { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
 .gromzo-agents-title { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
 .gromzo-agents-limit { font-size: 12px; color: var(--text-muted); margin: 4px 0 10px; }

@@ -2274,6 +2274,7 @@ window._i18n.hu = {
   'gromzo.status.not_running': 'A Gromzo chat-szolgáltatás (mxd) nem fut ezen a gépen, vagy nincs telepítve.',
   'gromzo.status.unknown': 'Az állapot most nem kérdezhető le ({code}).',
   'gromzo.btn.add_phone': 'Telefon hozzáadása',
+  'gromzo.owner_login.info': 'Az ügynökök kapcsolásához és a telefon hozzáadásához be kell lépned a dashboard-jelszavaddal: a tulajdonost csak a jelszó azonosítja, a Bridge vagy a hozzáférési kulcs nem. A belépés ebben az ablakban megmarad, amíg ki nem jelentkezel, vagy le nem jár.',
   'gromzo.btn.login': 'Belépés jelszóval',
   'gromzo.btn.logout': 'Tulajdonosi kijelentkezés',
   'gromzo.btn.hide': 'Kód elrejtése',
