@@ -11,6 +11,7 @@ const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 const SIL = 'MARVEEN-PATCH(tgsilent)'
+const KBD = 'MARVEEN-PATCH(c67f5f34-kbd)'
 
 let cache = ''
 let server = ''
@@ -68,13 +69,15 @@ function replyHandler(patched: string): { call: (args: Record<string, unknown>) 
   // too: buttons go only to a paired private chat (loadAccess), their labels are
   // checked against PERMISSION_REPLY_RE (declared above the excerpt this runs),
   // and the excerpt now also carries the evid lines (writeFileSync, renameSync,
-  // join, STATE_DIR) -- the same stand-ins the topics harness hands in.
+  // join, STATE_DIR) -- the same stand-ins the topics harness hands in. A send
+  // with buttons records its message in marveenKbdOpen, declared with the kbd
+  // state above the excerpt, so the harness hands in a fresh Map.
   const names = ['mcp', 'CallToolRequestSchema', 'assertAllowedChat', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES',
     'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'bot', 'extname', 'InputFile', 'PHOTO_EXTS',
-    'writeFileSync', 'renameSync', 'join', 'STATE_DIR', 'PERMISSION_REPLY_RE']
+    'writeFileSync', 'renameSync', 'join', 'STATE_DIR', 'PERMISSION_REPLY_RE', 'marveenKbdOpen']
   new Function(...names, js)(mcp, {}, () => {}, () => {}, () => ({ size: 0 }), 50 * 1024 * 1024,
     () => ({ allowFrom: ['42'] }), 4096, (text: string) => text.split('|'), bot, extname, class {}, new Set(['.png', '.jpg']),
-    () => {}, () => {}, join, '/nonexistent', /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i)
+    () => {}, () => {}, join, '/nonexistent', /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i, new Map<string, Set<number>>())
   expect(handler).toBeDefined()
   return { call: args => handler!({ params: { name: 'reply', arguments: args } }), sent }
 }
@@ -175,7 +178,8 @@ describe('silent: reply without a notification sound', () => {
 
     run(['--topics', 'off'])
     const off = readFileSync(server, 'utf-8')
-    expect(off).not.toContain('message_thread_id')
+    // topics off takes every thread id out; the kbd lines key their open buttons by topic themselves
+    expect(off.split('\n').filter(l => l.includes('message_thread_id') && !l.includes(KBD))).toEqual([])
     expect(off.split('\n').filter(l => l.includes(SIL))).toHaveLength(6)
     copyFileSync(FIXTURE, server)
     run()
