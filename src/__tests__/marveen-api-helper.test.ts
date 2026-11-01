@@ -184,6 +184,26 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen).toHaveLength(0)
   })
 
+  it('kanban-assign: a PUT of the assignee (an agent name or the owner\'s name with accents), the actor optional (VOICETOKENLEAK1101)', async () => {
+    let r = await run(['kanban-assign', 'card-1', 'marveen', '--actor', 'cody'])
+    expect(r.code).toBe(0)
+    expect(seen.at(-1)!.method).toBe('PUT')
+    expect(seen.at(-1)!.url).toBe('/api/kanban/card-1')
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({ assignee: 'marveen', actor: 'cody' })
+    expect(seen.at(-1)!.headers.authorization).toBe(`Bearer ${TOKEN}`)
+    r = await run(['kanban-assign', 'card-1', 'Sára Tüttő'])
+    expect(r.code).toBe(0)
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({ assignee: 'Sára Tüttő' })
+  })
+
+  it('kanban-assign: an assignee or a card id that is not one plain value exits 2 and sends nothing', async () => {
+    for (const args of [['card-1', '../x'], ['card-1', 'a/b'], ['card-1', 'x\ny'], ['card-1', ''], ['card-1', '-lead'], ['card/1', 'marveen'], ['card-1', 'marveen', '--actor', 'Bad Actor']]) {
+      const r = await run(['kanban-assign', ...args])
+      expect(r.code, JSON.stringify(args)).toBe(2)
+    }
+    expect(seen).toEqual([])
+  })
+
   it('message: goes through agent-msg.sh with the text from the file', async () => {
     reply = { status: 200, body: '{"id":99}' }
     const r = await run(['message', 'dani', 'samu', file('msg.txt', 'Szia, "idézet" és `kód`')])

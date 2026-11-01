@@ -38,6 +38,9 @@ CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # the status set belongs to the server; this only keeps the value one plain token
 STATUS_RE = re.compile(r'^[a-z][a-z_]{1,31}$')
 PRIORITIES = ('low', 'normal', 'high', 'urgent')
+# a card's assignee: an agent name, or the owner's name as the board holds it ("Szabolcs"); letters (any script),
+# digits, space, '.', '-', '_'; a JSON value in the body, never a path or a shell word
+ASSIGNEE_RE = re.compile(r'^[^\W_][\w .-]{0,63}$')
 
 USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   message <from> <to> <content-file> [--priority high|normal]
@@ -60,6 +63,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file>
+  kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
@@ -362,6 +366,15 @@ def build_request(verb, args):
         if ttl is not None:
             body['ttl_seconds'] = int(check(ttl, ID_RE, 'ttl'))
         return 'POST', f'/api/kanban/{card}/{verb.split("-")[1]}', body, headers, {}
+    if verb == 'kanban-assign':
+        # VOICETOKENLEAK1101 round 2: the kanban dispatch's hand-back step (PUT /api/kanban/<id> {assignee}).
+        actor = take_opt(args, '--actor')
+        card, assignee = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        body = {'assignee': check(assignee, ASSIGNEE_RE, 'assignee')}
+        if actor is not None:
+            body['actor'] = check(actor, NAME_RE, 'agent name')
+        return 'PUT', f'/api/kanban/{card}', body, headers, {}
     if verb == 'kanban-comment':
         card, author, content_file = positional(args, 3, verb)
         check(card, CARD_ID_RE, 'card id')
