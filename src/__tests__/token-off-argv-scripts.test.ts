@@ -16,7 +16,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, readFileSync, chmodSync, realpathSync, cpSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, readFileSync, chmodSync, realpathSync, cpSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -282,5 +282,95 @@ describe('install-prod-tree-guard-hook.sh: the generated post-checkout hook\'s a
     const hook = readFileSync(join(repo, '.git', 'hooks', 'post-checkout'), 'utf-8')
     expect(hook).toContain(`-H @<(printf 'Authorization: Bearer %s\\n' "$(cat "$TOKEN_FILE")")`)
     expect(hook).not.toContain('-H "Authorization: Bearer')
+  })
+})
+
+// Dani 65802 (3)-(5), Samu 65806: an installed hook changes only when the installer runs again. On an update that
+// pulls new code, update.sh runs scripts/sync-hooks.sh, which runs every scripts/install-*-hook.sh, this installer
+// among them (the call goes through a glob, so a grep for the installer's name does not find it). These pin that
+// path and show what it does to an old hook of ours and to a foreign one. A host updated by a bare git pull (not
+// update.sh) still needs the installer run by hand.
+describe('the update path refreshes an installed post-checkout hook', () => {
+  const NEW_LINE = `-H @<(printf 'Authorization: Bearer %s\\n' "$(cat "$TOKEN_FILE")") \\`
+  const OLD_LINE = '-H "Authorization: Bearer $(cat "$TOKEN_FILE")" \\'
+  let n = 0
+  function repoWith(installer: string): string {
+    const repo = join(dir, `sync-${n++}`)
+    mkdirSync(join(repo, 'scripts'), { recursive: true })
+    mkdirSync(join(repo, 'store'), { recursive: true })
+    execFileSync('git', ['-C', repo, 'init', '-q', '-b', 'develop'])
+    writeFileSync(join(repo, 'x.txt'), 'x')
+    execFileSync('git', ['-C', repo, 'add', '.'])
+    execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
+    writeFileSync(join(repo, 'store', '.dashboard-token'), TOKEN + '\n')
+    writeFileSync(join(repo, 'scripts', 'install-prod-tree-guard-hook.sh'), installer)
+    return repo
+  }
+  const realInstaller = () => readFileSync(join(REPO, 'scripts', 'install-prod-tree-guard-hook.sh'), 'utf-8')
+  /** The installer as it was before this change: the generated hook puts the token on curl's argv. */
+  function oldInstaller(): string {
+    const s = realInstaller()
+    expect(s.split(NEW_LINE).length - 1).toBe(1)
+    return s.replace(NEW_LINE, OLD_LINE)
+  }
+  function syncHooks(repo: string): void {
+    // The update's own step: the real sync-hooks.sh next to the real installer.
+    copyFileSync(join(REPO, 'scripts', 'sync-hooks.sh'), join(repo, 'scripts', 'sync-hooks.sh'))
+    writeFileSync(join(repo, 'scripts', 'install-prod-tree-guard-hook.sh'), realInstaller())
+    const r = spawnSync('bash', [join(repo, 'scripts', 'sync-hooks.sh')], { cwd: repo, encoding: 'utf-8', timeout: 20000 })
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stdout).toContain('install-prod-tree-guard-hook.sh')
+  }
+  const hookPath = (repo: string) => join(repo, '.git', 'hooks', 'post-checkout')
+
+  it('update.sh runs scripts/sync-hooks.sh, and sync-hooks.sh runs every scripts/install-*-hook.sh', () => {
+    const update = readFileSync(join(REPO, 'update.sh'), 'utf-8')
+    expect(update).toContain('bash "$INSTALL_DIR/scripts/sync-hooks.sh"')
+    const sync = readFileSync(join(REPO, 'scripts', 'sync-hooks.sh'), 'utf-8')
+    expect(sync).toContain('for installer in "$SCRIPT_DIR"/install-*-hook.sh; do')
+    expect(sync).toContain('bash "$installer"')
+  })
+
+  it('an old hook of ours (the token on curl\'s argv) becomes the new form, and stays executable', () => {
+    const repo = repoWith(oldInstaller())
+    const first = spawnSync('bash', [join(repo, 'scripts', 'install-prod-tree-guard-hook.sh')], { cwd: repo, encoding: 'utf-8', timeout: 20000 })
+    expect(first.status, first.stderr).toBe(0)
+    expect(readFileSync(hookPath(repo), 'utf-8')).toContain(OLD_LINE) // not vacuous: the old form was installed
+    const mode = statSync(hookPath(repo)).mode & 0o777
+    syncHooks(repo)
+    const hook = readFileSync(hookPath(repo), 'utf-8')
+    expect(hook).toContain(NEW_LINE)
+    expect(hook).not.toContain(OLD_LINE)
+    expect(statSync(hookPath(repo)).mode & 0o777).toBe(mode)
+    expect(mode & 0o100).toBe(0o100)
+    // Our own old copy is replaced, never kept as a backup.
+    expect(existsSync(hookPath(repo) + '.pre-prod-guard.bak')).toBe(false)
+  })
+
+  it('a foreign post-checkout is not overwritten: it is kept, byte for byte, as post-checkout.pre-prod-guard.bak', () => {
+    const repo = repoWith(realInstaller())
+    const foreign = '#!/bin/sh\n# someone else\'s hook\necho foreign\n'
+    mkdirSync(join(repo, '.git', 'hooks'), { recursive: true })
+    writeFileSync(hookPath(repo), foreign, { mode: 0o755 })
+    syncHooks(repo)
+    expect(readFileSync(hookPath(repo) + '.pre-prod-guard.bak', 'utf-8')).toBe(foreign)
+    expect(readFileSync(hookPath(repo), 'utf-8')).toContain(NEW_LINE)
+  })
+
+  it('the generated hook carries no token and no "Bearer $": the quoted heredoc writes the text as it is', () => {
+    const repo = repoWith(realInstaller())
+    syncHooks(repo)
+    const hook = readFileSync(hookPath(repo), 'utf-8')
+    expect(hook).not.toContain(TOKEN)
+    expect(hook).not.toContain('Bearer $')
+  })
+
+  // The process substitution is bash: run under sh it is a syntax error and the alert would never go. Every one of
+  // these runs under the interpreter its first line names (git runs the hook by its shebang).
+  it('interpreter: the four scripts and the generated hook name bash', () => {
+    for (const s of ['doctor.sh', 'migrate.sh', 'watchdog.sh']) expect(readFileSync(join(REPO, 'scripts', s), 'utf-8').split('\n')[0], s).toBe('#!/bin/bash')
+    const repo = repoWith(realInstaller())
+    syncHooks(repo)
+    expect(readFileSync(hookPath(repo), 'utf-8').split('\n')[0]).toBe('#!/usr/bin/env bash')
   })
 })
