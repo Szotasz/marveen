@@ -230,7 +230,10 @@ type Sent = { chat: string; text: string; opts: Record<string, unknown> }
 // Runs the PATCHED tool-call handler of the fixture (the verbatim 0.0.7 block) with a fake bot: what the reply tool
 // really passes to sendMessage. Only the reply case runs; the names the other cases use are never evaluated.
 // `allowFrom` is what loadAccess() says: the chat ids (= user ids) the buttons may go to.
-function replyHandler(patched: string, allowFrom: string[] = ['42']): { call: (args: Record<string, unknown>) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>; sent: Sent[] } {
+type KbdState = { answered: Set<string>; open: Map<string, Set<number>> }
+const kbdState = (): KbdState => ({ answered: new Set(), open: new Map() })
+
+function replyHandler(patched: string, allowFrom: string[] = ['42'], state: KbdState = kbdState()): { call: (args: Record<string, unknown>) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>; sent: Sent[] } {
   const start = patched.indexOf('mcp.setRequestHandler(CallToolRequestSchema')
   expect(start).toBeGreaterThan(0)
   const js = ts.transpileModule(patched.slice(start), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
@@ -239,10 +242,11 @@ function replyHandler(patched: string, allowFrom: string[] = ['42']): { call: (a
   const mcp = { setRequestHandler: (_schema: unknown, fn: (req: unknown) => Promise<never>) => { handler = fn } }
   const bot = { api: { sendMessage: async (chat: string, text: string, opts: Record<string, unknown>) => { sent.push({ chat, text, opts }); return { message_id: sent.length } } } }
   const names = ['mcp', 'CallToolRequestSchema', 'assertAllowedChat', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES',
-    'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'bot', 'extname', 'InputFile', 'PHOTO_EXTS', 'PERMISSION_REPLY_RE']
+    'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'bot', 'extname', 'InputFile', 'PHOTO_EXTS', 'PERMISSION_REPLY_RE',
+    'marveenKbdAnswered', 'marveenKbdOpen']
   new Function(...names, js)(mcp, {}, () => {}, () => {}, () => ({ size: 0 }), 50 * 1024 * 1024,
     () => ({ allowFrom }), 4096, (text: string) => text.split('|'), bot, () => '', class {}, new Set(),
-    /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i)
+    /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i, state.answered, state.open)
   expect(handler).toBeDefined()
   return { call: args => handler!({ params: { name: 'reply', arguments: args } }), sent }
 }
@@ -252,7 +256,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(run().status).toBe(0)
     const text = readFileSync(server, 'utf-8')
     const lines = kbdLines(text)
-    expect(lines).toHaveLength(23)
+    expect(lines).toHaveLength(33)
     for (const l of lines) expect(l.endsWith(' ' + KBD_MARKER)).toBe(true)
     const reply = text.indexOf("name: 'reply'")
     const react = text.indexOf("name: 'react'")
@@ -270,7 +274,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     run()
     const lines = readFileSync(server, 'utf-8').split('\n')
     const re = lines.findIndex(l => l.startsWith('const PERMISSION_REPLY_RE = '))
-    expect(lines[re + 1]).toBe(`const marveenKbdAnswered = new Set<string>() ${KBD_MARKER}`)
+    expect(lines[re + 1]).toBe(`const marveenKbdAnswered = new Set<string>(), marveenKbdOpen = new Map<string, Set<number>>() ${KBD_MARKER}`)
     const perm = lines.findIndex(l => l.startsWith('  const m = /^perm:'))
     expect(lines[perm + 1]).toBe(`  if (data.startsWith('kbd:')) { ${KBD_MARKER}`)
     const close = lines.findIndex((l, i) => i > perm && l === `  } ${KBD_MARKER}`)
@@ -411,7 +415,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     writeFileSync(server, patchedWithoutKbd(readFileSync(FIXTURE, 'utf-8')))
     const r = run()
     expect(r.stderr).toMatch(/patched .*\(kbd\)/)
-    expect(kbdLines(readFileSync(server, 'utf-8'))).toHaveLength(23)
+    expect(kbdLines(readFileSync(server, 'utf-8'))).toHaveLength(33)
   })
 
   it('a file with the FIRST kbd version (reply keyboard) is rebuilt in place: byte-identical to a fresh patching, no old line left', () => {
@@ -480,7 +484,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(readState(state).files[0].patches.kbd).toBe('already')
     const off = readFileSync(server, 'utf-8')
     expect(off).not.toContain('MARVEEN-PATCH(tgtopics)')
-    expect(kbdLines(off)).toHaveLength(23)
+    expect(kbdLines(off)).toHaveLength(33)
     const offAgain = run(['--topics', 'off', '--state', state])
     expect(offAgain.stderr).toBe('')
     run(['--topics', 'on', '--state', state])
@@ -567,7 +571,7 @@ function transpile(code: string): string {
   return ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 }
 
-function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbound?: InboundFn } = {}) {
+function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbound?: InboundFn; state?: KbdState } = {}) {
   const setLine = patched.split('\n').find(l => l.startsWith('const marveenKbdAnswered = '))
   expect(setLine).toBeDefined()
   expect(syntaxErrors(setLine!)).toEqual([])
@@ -576,7 +580,8 @@ function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbou
   expect(start).toBeGreaterThan(0)
   expect(end).toBeGreaterThan(start)
   expect(patched.indexOf(setLine!)).toBeLessThan(start) // module level, ahead of the handler
-  const js = transpile(setLine + '\n' + patched.slice(start, end))
+  // With a shared state (o.state) the module-level line is not evaluated: the containers come in as parameters.
+  const js = transpile((o.state ? '' : setLine + '\n') + patched.slice(start, end))
   const events: string[] = []
   const delivered: Array<{ ctx: FakeCtx; text: string; img: unknown }> = []
   const gateCalls: unknown[][] = []
@@ -594,12 +599,14 @@ function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbou
   const mcp = { notification: (n: unknown) => { permNotifications.push(n); return Promise.resolve() } }
   class InlineKeyboard { text() { return this } }
   const set = new Function('bot', 'loadAccess', 'handleInbound', 'pendingPermissions', 'mcp', 'InlineKeyboard', 'gate', 'saveAccess',
-    'marveenApprovalCallback', 'STATE_DIR', 'readFileSync', 'fetch', 'MARVEEN_APV_ENV_AT_LOAD', 'PERMISSION_REPLY_RE', js + '\nreturn marveenKbdAnswered')(
+    'marveenApprovalCallback', 'STATE_DIR', 'readFileSync', 'fetch', 'MARVEEN_APV_ENV_AT_LOAD', 'PERMISSION_REPLY_RE',
+    ...(o.state ? ['marveenKbdAnswered', 'marveenKbdOpen'] : []), js + '\nreturn marveenKbdAnswered')(
     bot, () => ({ allowFrom: o.allowFrom ?? ['42'] }), handleInbound, pendingPermissions, mcp, InlineKeyboard,
     (...a: unknown[]) => { gateCalls.push(a); return { action: 'pair', code: 'abc123' } },
     (...a: unknown[]) => { saveCalls.push(a) },
     async (_ctx: FakeCtx, data: string) => { approvals.push(data) }, '/scratch-state', () => '',
-    () => { throw new Error('no network in a test') }, {}, /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i) as Set<string>
+    () => { throw new Error('no network in a test') }, {}, /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i,
+    ...(o.state ? [o.state.answered, o.state.open] : [])) as Set<string>
   expect(handler).toBeDefined()
   expect(set).toBeInstanceOf(Set)
 
@@ -647,19 +654,25 @@ type Notification = { method: string; params: { content: string; meta: Record<st
 type EvidenceRec = { chat_id: string; message_id: string | null; text: string; at: number }
 
 // The PATCHED handleInbound of the fixture with a gate that delivers (what gate() says for a paired owner in a private chat).
-function inboundHarness(patched: string, stateDir: string) {
+function inboundHarness(patched: string, stateDir: string, state: KbdState = kbdState()) {
   const start = patched.indexOf('async function handleInbound(')
   const end = patched.indexOf('// --- Server instructions')
   expect(start).toBeGreaterThan(0)
   expect(end).toBeGreaterThan(start)
   const notifications: Notification[] = []
   const mcp = { notification: (n: Notification) => { notifications.push(n); return Promise.resolve() } }
-  const bot = { api: { sendChatAction: async () => {}, setMessageReaction: async () => {} } }
+  const markupEdits: Array<{ chat: string; id: number; markup: unknown }> = []
+  let markupFails = false
+  const bot = { api: {
+    sendChatAction: async () => {}, setMessageReaction: async () => {},
+    editMessageReplyMarkup: async (chat: string, id: number, markup: unknown) => { markupEdits.push({ chat, id, markup }); if (markupFails) throw new Error('400 message can\'t be edited') },
+  } }
   const handleInbound = new Function('gate', 'PERMISSION_REPLY_RE', 'mcp', 'bot', 'STATE_DIR', 'join', 'writeFileSync', 'statSync', 'renameSync',
-    transpile(patched.slice(start, end)) + '\nreturn handleInbound')(
-    () => ({ action: 'deliver', access: {} }), /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i, mcp, bot, stateDir, join, writeFileSync, statSync, renameSync) as InboundFn
+    'marveenKbdAnswered', 'marveenKbdOpen', transpile(patched.slice(start, end)) + '\nreturn handleInbound')(
+    () => ({ action: 'deliver', access: {} }), /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i, mcp, bot, stateDir, join, writeFileSync, statSync, renameSync,
+    state.answered, state.open) as InboundFn
   const evidence = (): EvidenceRec[] => readEvidenceLines(stateDir).filter(l => l !== '').map(l => JSON.parse(l) as EvidenceRec)
-  return { handleInbound, notifications, evidence }
+  return { handleInbound, notifications, evidence, markupEdits, failEdits: () => { markupFails = true } }
 }
 
 describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 2676132e N2)', () => {
@@ -988,6 +1001,124 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
     }, 'x', undefined)
     expect(inbound.notifications[0].params.meta.forwarded).toBe('1')
     expect(inbound.notifications[0].params.meta.user).toBe('42')
+  })
+})
+
+// ISSUE2398KBD (marveen#2398): a question answered by TYPING kept its live buttons. The reply remembers the question
+// per chat; the next typed text from that chat takes the buttons off (editMessageReplyMarkup, empty keyboard) and
+// marks the question answered first, so a late tap delivers nothing.
+describe('kbd: a question answered by typing loses its buttons (ISSUE2398KBD)', () => {
+  let patched = ''
+  let stateDir = ''
+  beforeEach(() => {
+    expect(run(['--topics', 'off']).status).toBe(0)
+    patched = readFileSync(server, 'utf-8')
+    stateDir = mkdtempSync(join(tmpdir(), 'tg-kbd-typed-'))
+  })
+  afterEach(() => rmSync(stateDir, { recursive: true, force: true }))
+
+  const typed = (text: string, o: { chat?: number; messageId?: number; noText?: boolean } = {}): FakeCtx => ({
+    from: { id: o.chat ?? 42, username: 'owner' },
+    chat: { id: o.chat ?? 42, type: 'private' },
+    message: { message_id: o.messageId ?? 50, date: 1_700_000_000, ...(o.noText ? { photo: [] } : { text }) },
+  })
+
+  it('the reply remembers the question (the LAST chunk, the one with the keyboard); no buttons or an empty list remembers nothing', async () => {
+    const st = kbdState()
+    const h = replyHandler(patched, ['42'], st)
+    await h.call({ chat_id: '42', text: 'Első|Kérdés?', buttons: ['A', 'B'] })
+    expect([...st.open.get('42') ?? []]).toEqual([2])
+    await h.call({ chat_id: '42', text: 'Sima válasz' })
+    await h.call({ chat_id: '42', text: 'Köszönöm.', buttons: [] })
+    expect([...st.open.get('42') ?? []]).toEqual([2])
+    expect(h.sent[3].opts.reply_markup).toEqual({ remove_keyboard: true }) // the explicit empty list: unchanged
+  })
+
+  it('a typed answer takes the buttons off every open question of that chat, marks them answered, and is still delivered', async () => {
+    const st = kbdState()
+    const h = replyHandler(patched, ['42'], st)
+    await h.call({ chat_id: '42', text: 'Első kérdés?', buttons: ['A', 'B'] })
+    await h.call({ chat_id: '42', text: 'Második kérdés?', buttons: ['C', 'D'] })
+    const inbound = inboundHarness(patched, stateDir, st)
+    await inbound.handleInbound(typed('A, és D'), 'A, és D', undefined)
+    expect(inbound.markupEdits).toEqual([
+      { chat: '42', id: 1, markup: { reply_markup: { inline_keyboard: [] } } },
+      { chat: '42', id: 2, markup: { reply_markup: { inline_keyboard: [] } } },
+    ])
+    expect([...st.answered].sort()).toEqual(['42:1', '42:2'])
+    expect(st.open.has('42')).toBe(false)
+    expect(inbound.notifications.map(n => n.params.content)).toEqual(['A, és D'])
+    await inbound.handleInbound(typed('még valami', { messageId: 51 }), 'még valami', undefined)
+    expect(inbound.markupEdits).toHaveLength(2) // nothing left open
+  })
+
+  it('a late tap on a question answered by typing delivers nothing: the "already answered" toast only', async () => {
+    const st = kbdState()
+    await replyHandler(patched, ['42'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['Alfa', 'Béta', 'Gamma'] })
+    const inbound = inboundHarness(patched, stateDir, st)
+    await inbound.handleInbound(typed('Béta'), 'Béta', undefined)
+    const h = callbackHarness(patched, { state: st })
+    const r = await h.press({ data: 'kbd:1', messageId: 1 }) // the update still carries the old keyboard
+    expect(r.answers).toEqual([{ text: ALREADY }])
+    expect(r.edits).toHaveLength(0)
+    expect(h.delivered).toHaveLength(0)
+    expect(inbound.notifications).toHaveLength(1)
+  })
+
+  it('a tap takes its own question off the open list: a later typed message edits nothing', async () => {
+    const st = kbdState()
+    await replyHandler(patched, ['42'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['Alfa', 'Béta', 'Gamma'] })
+    const h = callbackHarness(patched, { state: st })
+    const r = await h.press({ data: 'kbd:0', messageId: 1 })
+    expect(r.answers).toEqual([{ text: '✓ Alfa' }])
+    expect(st.open.get('42')?.size ?? 0).toBe(0)
+    const inbound = inboundHarness(patched, stateDir, st)
+    await inbound.handleInbound(typed('köszi'), 'köszi', undefined)
+    expect(inbound.markupEdits).toEqual([])
+  })
+
+  it('a photo, a voice note or a permission reply leaves the buttons alone; so does a typed message in another chat', async () => {
+    const st = kbdState()
+    await replyHandler(patched, ['42', '77'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['A', 'B'] })
+    const inbound = inboundHarness(patched, stateDir, st)
+    await inbound.handleInbound(typed('', { noText: true }), 'képaláírás', undefined)
+    await inbound.handleInbound(typed('yes abcde'), 'yes abcde', undefined)
+    await inbound.handleInbound(typed('más chat', { chat: 77 }), 'más chat', undefined)
+    expect(inbound.markupEdits).toEqual([])
+    expect([...st.open.get('42') ?? []]).toEqual([1])
+    expect(st.answered.size).toBe(0)
+  })
+
+  it('an edit Telegram refuses (a message too old to edit) still delivers the text, and the tap stays refused', async () => {
+    const st = kbdState()
+    await replyHandler(patched, ['42'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['Alfa', 'Béta'] })
+    const inbound = inboundHarness(patched, stateDir, st)
+    inbound.failEdits()
+    const unhandled: unknown[] = []
+    const onUnhandled = (e: unknown) => { unhandled.push(e) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await inbound.handleInbound(typed('Alfa'), 'Alfa', undefined)
+      await new Promise(r => setTimeout(r, 20))
+    } finally { process.off('unhandledRejection', onUnhandled) }
+    expect(unhandled).toEqual([]) // the refused edit is swallowed, never an unhandled rejection in the plugin
+    expect(inbound.markupEdits).toHaveLength(1)
+    expect(inbound.notifications.map(n => n.params.content)).toEqual(['Alfa'])
+    expect(st.answered.has('42:1')).toBe(true)
+    const h = callbackHarness(patched, { state: st })
+    expect((await h.press({ data: 'kbd:0', messageId: 1 })).answers).toEqual([{ text: ALREADY }])
+    expect(h.delivered).toHaveLength(0)
+  })
+
+  it('the open list and the answered Set stay bounded (emptied past 1000)', async () => {
+    const st = kbdState()
+    for (let c = 0; c < 1000; c++) st.open.set(String(1000 + c), new Set([1]))
+    await replyHandler(patched, ['42'], st).call({ chat_id: '42', text: 'Kérdés?', buttons: ['A'] })
+    expect([...st.open.keys()]).toEqual(['42'])
+    for (let k = 0; k < 1000; k++) st.answered.add('9:' + k)
+    const inbound = inboundHarness(patched, stateDir, st)
+    await inbound.handleInbound(typed('A'), 'A', undefined)
+    expect([...st.answered]).toEqual(['42:1'])
   })
 })
 
