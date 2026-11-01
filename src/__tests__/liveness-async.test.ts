@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { readFileSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawn, execFileSync } from 'node:child_process'
@@ -130,7 +130,8 @@ try { tmuxBin = execFileSync('/bin/sh', ['-c', 'command -v tmux'], { encoding: '
 
 describe.skipIf(!tmuxBin)('getClaudePidForSessionAsync against an isolated tmux server', () => {
   it('finds a claude that is the pane process AND one that runs under a shell, like the sync probe', async () => {
-    const sockDir = mkdtempSync(join(tmpdir(), 'livenessasync-'))
+    // tmux reports the socket path resolved (macOS: /var/... is /private/var/...), so compare against the realpath.
+    const sockDir = realpathSync(mkdtempSync(join(tmpdir(), 'livenessasync-')))
     const saved = { TMUX: process.env.TMUX, TMUX_TMPDIR: process.env.TMUX_TMPDIR }
     const tmux = (args: string[]) => execFileSync(tmuxBin as string, args, { encoding: 'utf-8', env: { ...process.env, TMUX: '', TMUX_TMPDIR: sockDir } })
     try {
