@@ -14,6 +14,11 @@ const realHome = process.env.HOME
 process.env.HOME = tmpHome
 afterAll(() => { process.env.HOME = realHome; rmSync(tmpHome, { recursive: true, force: true }); rmSync(tmpRoot, { recursive: true, force: true }) })
 
+// SKILLAPPROVALOFF1101: this file pins the quarantine ON (the hold for approval); the OFF path is skill-quarantine-switch.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  return { ...actual, getEffectiveSettingValue: (k: string) => (k === 'SKILL_QUARANTINE' ? '1' : actual.getEffectiveSettingValue(k)) }
+})
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'host-main',

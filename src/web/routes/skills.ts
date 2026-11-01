@@ -10,7 +10,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import {
-  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, queueProposedSkill, parseProposedFiles, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
+  approvePending, getPending, importArchiveToPending, listPending, liveOrPending, nameConflict, queueGeneratedSkill, queueProposedSkill, parseProposedFiles, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
   type SkillTarget,
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
@@ -447,7 +447,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const r = queueProposedSkill(name, skillMd, { proposedBy, reason, files: parsed.files })
     if (!r.ok) { json(res, { error: r.error }, r.status); return true }
     logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy }, 'Global skill proposed and queued for approval')
-    json(res, { ok: true, name, pending: true, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [] })
+    json(res, { ok: true, name, ...(await liveOrPending(r.meta.id, serializeSkillsDir)), id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [] })
     return true
   }
 
@@ -480,7 +480,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     const queued = queueGeneratedSkill(target, skillName, skillMd)
     logger.info({ name: skillName, id: queued.id }, 'Global skill generated and queued for approval')
-    json(res, { ok: true, name: skillName, pending: true, id: queued.id })
+    json(res, { ok: true, name: skillName, ...(await liveOrPending(queued.id, serializeSkillsDir)), id: queued.id })
     return true
   }
 
@@ -494,7 +494,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (!r.ok) { json(res, { error: r.error }, r.status); return true }
       const names = r.queued.map((q) => q.name)
       logger.info({ skills: names }, 'Global skill(s) imported and queued for approval')
-      json(res, { ok: true, imported: names, pending: true, ids: r.queued.map((q) => q.id) })
+      const each: Array<{ name: string, id: string, pending: boolean, live: boolean, held?: string }> = []
+      for (const q of r.queued) each.push({ name: q.name, id: q.id, ...(await liveOrPending(q.id, serializeSkillsDir)) })
+      json(res, { ok: true, imported: names, pending: each.some((e) => e.pending), ids: r.queued.map((q) => q.id), skills: each })
     } catch (err) {
       logger.error({ err }, 'Failed to import global skill')
       json(res, { error: 'Failed to extract .skill file' }, 500)

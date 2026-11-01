@@ -164,6 +164,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Kulcs | Típus | Alapérték | Leírás | Újraindítás |
 |-------|-------|-----------|--------|-------------|
 | `AGENT_TOKENS` | boolean | `0` (ki) | Saját dashboard-token minden al-ügynöknek (`agents/<név>/.dashboard-token`), szerveroldali hatókörrel és azonosság-kötéssel; lásd `agens-azonositas-api.md` 8. fejezet | nem (az al-ügynök következő indításakor lép életbe) |
+| `SKILL_QUARANTINE` | boolean | `0` (ki) | Skill-karantén. Ki: az új vagy javított skill (javaslat, generálás, import) azonnal élesedik, a scan, a hash-kötés és egy auditsor (`store/skills-audit.jsonl`) mellett; ami a scan számára nem mutatható teljesen, jóváhagyásra vár. Be: minden új skill a gazda jóváhagyásáig vár. Kikapcsolni az API-n csak a dashboard-belépéssel lehet | nem |
 
 **Registry -- Heartbeat modul:**
 

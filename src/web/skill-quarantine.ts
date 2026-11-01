@@ -27,7 +27,13 @@
 // the injection shapes the browser-content hook already names
 // (scripts/hooks/browser-content-notice.py), plus a few install/exec shapes
 // that a skill has no business carrying. An empty list does not mean safe.
-// The load-bearing control is that nothing goes live without that approval.
+// The load-bearing control is that nothing goes live without that approval,
+// while the switch is ON. SKILLAPPROVALOFF1101 (owner, 2026-11-01): the hold is
+// a switch, SKILL_QUARANTINE, OFF by default. OFF, a queued skill goes live at
+// once on the same path (goLiveUnquarantined below): scanned, bound to the
+// scanned hash, one audit line in store/skills-audit.jsonl, and what the scan
+// cannot show in full still waits. There, the scan and the audit are a record,
+// not a gate.
 //
 // Not covered here (stated, not hidden):
 //   - an agent writing a skill directory directly with its file tools. For its
@@ -50,11 +56,13 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { MAIN_AGENT_ID, STORE_DIR } from '../config.js'
+import { logger } from '../logger.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
@@ -793,6 +801,99 @@ export function approvePending(id: string, hash: unknown): ApproveResult {
   }
   rmSync(entryDir(id), { recursive: true, force: true })
   return { ok: true, name: meta.name, path: dest, ...(backup ? { backup } : {}) }
+}
+
+// --- The switch (SKILLAPPROVALOFF1101) ------------------------------------------------------------------------
+// The owner (Slack 2026-11-01 22:35): "switchable, and off by default". OFF: a queued skill goes live at once, on the
+// SAME path an approval takes: queued into the pending area, scanned, then approvePending() with the hash of exactly
+// the content the scan read (hashed before and after the scan; a change in between keeps it pending). What the scan
+// cannot show in full (approvePending's own bounds) stays pending for a decision, as with the switch on. Every
+// outcome is one audit line. ON: today's quarantine, unchanged. A settings read that fails counts as ON.
+
+const TRUTHY = ['1', 'true', 'yes', 'on']
+export const SKILL_AUDIT_FILE = 'skills-audit.jsonl'
+
+export function quarantineOn(read: () => unknown = () => getEffectiveSettingValue('SKILL_QUARANTINE')): boolean {
+  try { return TRUTHY.includes(String(read()).trim().toLowerCase()) } catch { return true }
+}
+
+export type SkillAuditLine = {
+  at: string
+  event: 'live_unquarantined' | 'held_unquarantined'
+  id: string
+  name: string
+  source: PendingSource
+  target: SkillTarget
+  proposedBy: string | null
+  hash: string | null
+  replaces: boolean
+  // Counts only: the pattern name and how many hits. Never an excerpt, never a file's text.
+  findings: Record<string, number>
+  findingsTruncated: boolean
+  why?: string
+}
+
+export function appendSkillAudit(line: SkillAuditLine, file = join(STORE_DIR, SKILL_AUDIT_FILE)): void {
+  try {
+    appendFileSync(file, JSON.stringify(line) + '\n', { mode: 0o600 })
+  } catch (err) {
+    // The audit line is part of the off path, so its loss is never silent.
+    logger.error({ id: line.id, name: line.name, err: err instanceof Error ? err.message : String(err) }, 'skill audit: the line was NOT written')
+  }
+}
+
+export type GoLiveResult =
+  | { live: true; name: string; path: string; hash: string; backup?: string }
+  | { live: false; status: number; error: string }
+
+// `seams` are a test's way in to change the files after the first hash (before the scan) and after the scan (before
+// the approval): in both windows a change keeps the skill pending.
+export function goLiveUnquarantined(
+  id: string,
+  audit: (l: SkillAuditLine) => void = appendSkillAudit,
+  seams: { afterHash?: () => void; afterScan?: () => void } = {},
+): GoLiveResult {
+  const skillRoot = join(entryDir(id), 'skill')
+  let meta: PendingMeta | null
+  try { meta = readMeta(id) } catch { meta = null }
+  if (!meta) return { live: false, status: 404, error: 'Pending skill not found' }
+  const before = skillDirHash(skillRoot, meta)
+  seams.afterHash?.()
+  const p = getPending(id)
+  seams.afterScan?.()
+  if (!p) return { live: false, status: 404, error: 'Pending skill not found' }
+  const findings: Record<string, number> = {}
+  for (const f of p.report.findings) findings[f.pattern] = (findings[f.pattern] ?? 0) + 1
+  const base = {
+    at: new Date().toISOString(), id, name: p.name, source: p.source, target: p.target, proposedBy: p.proposedBy ?? null,
+    replaces: !!p.replaces, findings, findingsTruncated: p.report.findingsTruncated,
+  }
+  const r = before === p.hash
+    ? approvePending(id, p.hash)
+    : { ok: false as const, status: 409, error: 'The pending skill changed while it was scanned; it waits for a decision' }
+  if (!r.ok) {
+    audit({ ...base, event: 'held_unquarantined', hash: p.hash, why: r.error })
+    logger.warn({ id, name: p.name, status: r.status }, 'skill: quarantine is off, but this one did not go live; it waits for a decision')
+    return { live: false, status: r.status, error: r.error }
+  }
+  audit({ ...base, event: 'live_unquarantined', hash: p.hash })
+  logger.info({ id, name: p.name, source: p.source, findings: p.report.findings.length }, 'skill: live at once (quarantine off), scanned and audited')
+  return { live: true, name: r.name, path: r.path, hash: p.hash, ...(r.backup ? { backup: r.backup } : {}) }
+}
+
+/** The answer fields of a route that queued `id`. Switch ON: pending, as before. OFF: it goes live here, under the
+ *  same skills-dir lock as an approval (`serialize`, the route passes serializeSkillsDir), or, when it cannot, it stays
+ *  pending and `held` says why. */
+export async function liveOrPending(
+  id: string,
+  serialize: <T>(op: () => T) => Promise<T>,
+  on: () => boolean = () => quarantineOn(),
+): Promise<{ pending: boolean; live: boolean; held?: string }> {
+  if (on()) return { pending: true, live: false }
+  const g = await serialize(() => {
+    try { return goLiveUnquarantined(id) } catch { return { live: false as const, status: 500, error: 'The skill could not go live; it waits for a decision' } }
+  })
+  return g.live ? { pending: false, live: true } : { pending: true, live: false, held: g.error }
 }
 
 export function rejectPending(id: string): boolean {
