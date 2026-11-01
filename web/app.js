@@ -13497,10 +13497,10 @@ async function pollChatThread() {
   container.querySelectorAll('.chat-bubble-row[data-sig]').forEach(r => { maxId = Math.max(maxId, Number(r.dataset.msgId) || 0) })
   let changed = false
   for (const m of sorted) {
-    const row = container.querySelector(`.chat-bubble-row[data-msg-id="${m.id}"]`)
+    const row = container.querySelector(`.chat-bubble-row[data-msg-id="${CSS.escape(String(m.id))}"]`)
     if (row) {
       if (row.dataset.sig === chatMsgSig(m)) continue
-      container.querySelector(`.chat-bubble-row[data-msg-id="${m.id}-result"]`)?.remove()
+      container.querySelector(`.chat-bubble-row[data-msg-id="${CSS.escape(String(m.id) + '-result')}"]`)?.remove()
       row.insertAdjacentHTML('beforebegin', buildBubbleHtml(m))
       row.remove()
       changed = true
