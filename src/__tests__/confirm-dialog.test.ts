@@ -487,3 +487,64 @@ describe('the connector removes and deletes use it', () => {
     expect(EN).toContain(`'${key}':`)
   })
 })
+
+describe('the Vault deletes use it', () => {
+  const SITES = [
+    ['delete a secret from the Connectors list', "<span class=\"github-repo-date\">${escapeHtml(s.id)} &middot; ${date}</span>", 'vault.confirm.delete', "{ method: 'DELETE' })"],
+    ['delete an SSH key', "tbody.querySelectorAll('.ssh-key-delete-btn').forEach", 'vault.ssh.confirm.key_delete', "{ method: 'DELETE' })"],
+    ['delete an SSH server', "document.querySelectorAll('.ssh-delete-btn').forEach", 'vault.ssh.confirm.server_delete', "{ method: 'DELETE' })"],
+    ['delete a secret from the Vault page', "list.querySelectorAll('.vault-card-delete').forEach", 'vault.confirm.delete', "{ method: 'DELETE' })"],
+  ] as const
+
+  const handler = (anchor: string, request: string) => {
+    const i = APP.indexOf(anchor)
+    const j = i < 0 ? -1 : APP.indexOf(request, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + request.length)
+  }
+
+  it.each(SITES)('%s: a danger confirmDialog with its own title and button, no native confirm()', (_name, anchor, key, request) => {
+    const src = handler(anchor, request)
+    expect(src, 'handler or its request not found').not.toBe('')
+    expect(src).toContain('await confirmDialog({')
+    expect(src).toContain(`title: t('${key}_title')`)
+    expect(src).toContain(`message: t('${key}', { name: `)
+    expect(src).toContain(`okLabel: t('${key}_ok')`)
+    expect(src).toContain('danger: true')
+    expect(src).not.toMatch(/(^|[^.\w])confirm\(/)
+  })
+
+  it.each(SITES)('%s: a "no" stops it -- the answer is checked before the request', (_name, anchor, _key, request) => {
+    const body = handler(anchor, request)
+    expect(body, 'handler or its request not found').not.toBe('')
+    const ask = body.indexOf('const confirmed = await confirmDialog({')
+    const guard = body.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(body.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the hard-coded questions and the "Törlés sikertelen" toast are gone', () => {
+    expect(APP).not.toContain('`Torlod: ${s.label}?`')
+    expect(APP).not.toContain('`Torlod: ${id}?`')
+    expect(APP).not.toContain('`Törlöd: ${id}?`')
+    expect(APP).not.toContain('Biztosan törlöd ezt a kulcsot?')
+    expect(APP).not.toContain("showToast('Törlés sikertelen')")
+  })
+
+  it('no unaccented "Torles" tooltip is left', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    expect(APP).not.toContain('title="Torles"')
+    expect(HTML).not.toContain('title="Torles"')
+  })
+
+  it.each([...new Set(SITES.flatMap(([, , key]) => [key, `${key}_title`, `${key}_ok`]))])('%s is in both languages and names the item', (key) => {
+    expect(HU).toContain(`'${key}':`)
+    expect(EN).toContain(`'${key}':`)
+    if (!key.endsWith('_title') && !key.endsWith('_ok')) {
+      for (const lang of [HU, EN]) {
+        const line = lang.split('\n').find(l => l.includes(`'${key}':`)) || ''
+        expect(line).toContain('{name}')
+      }
+    }
+  })
+})

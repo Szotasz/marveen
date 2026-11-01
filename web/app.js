@@ -9980,11 +9980,17 @@ async function loadVault() {
       const item = document.createElement('div')
       item.className = 'connector-external-item'
       const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
-      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="Torles" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
+      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="${t('common.btn.delete')}" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
-        if (!confirm(`Torlod: ${s.label}?`)) return
+        const confirmed = await confirmDialog({
+          title: t('vault.confirm.delete_title'),
+          message: t('vault.confirm.delete', { name: s.label }),
+          okLabel: t('vault.confirm.delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         const res = await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
-        if (!res.ok) { showToast('Törlés sikertelen'); return }
+        if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
         loadVault()
       })
       list.appendChild(item)
@@ -10139,7 +10145,14 @@ function renderSshKeys() {
   })
   tbody.querySelectorAll('.ssh-key-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Biztosan törlöd ezt a kulcsot?')) return
+      const key = _sshKeys.find(k => k.id === btn.dataset.id)
+      const confirmed = await confirmDialog({
+        title: t('vault.ssh.confirm.key_delete_title'),
+        message: t('vault.ssh.confirm.key_delete', { name: (key && key.label) || btn.dataset.id }),
+        okLabel: t('vault.ssh.confirm.key_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
       await loadSshKeys()
     })
@@ -10267,11 +10280,18 @@ function renderSshServers() {
   document.querySelectorAll('.ssh-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
-      if (!confirm(`Törlöd: ${id}?`)) return
+      const server = _sshServers.find(s => s.id === id)
+      const confirmed = await confirmDialog({
+        title: t('vault.ssh.confirm.server_delete_title'),
+        message: t('vault.ssh.confirm.server_delete', { name: (server && server.name) || id }),
+        okLabel: t('vault.ssh.confirm.server_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
         await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
         await loadSshServers()
-      } catch { showToast('Törlés sikertelen') }
+      } catch { showToast(t('vault.toast.delete_error')) }
     })
   })
 
@@ -10760,9 +10780,15 @@ function renderVaultGrid(secrets) {
   list.querySelectorAll('.vault-card-delete').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
-      if (!confirm(`Torlod: ${id}?`)) return
+      const confirmed = await confirmDialog({
+        title: t('vault.confirm.delete_title'),
+        message: t('vault.confirm.delete', { name: id }),
+        okLabel: t('vault.confirm.delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       const res = await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      if (!res.ok) { showToast('Törlés sikertelen'); return }
+      if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
       loadVaultPage()
       loadVault()
     })
@@ -11097,7 +11123,7 @@ async function loadExternalPaths() {
     for (const p of paths) {
       const item = document.createElement('div')
       item.className = 'connector-external-item'
-      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="Torles">&times;</button>`
+      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="${t('common.btn.delete')}">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
         await fetch('/api/connectors/external-paths', {
           method: 'DELETE',
