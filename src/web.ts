@@ -801,7 +801,11 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     }
   }
 
-  sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
+  // The orphan sweep kills a background task's tmux session past its time limit; a second instance reads a copied
+  // database, so it could stop a LIVE fleet session on the shared tmux server (Dani 64963, Samu 64966).
+  if (!servicesOff) {
+    sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
+  }
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())

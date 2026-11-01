@@ -71,6 +71,14 @@ describe('web.ts wiring (source pins)', () => {
     }
   })
 
+  it('the orphan background-task sweep (it kills tmux sessions) sits behind servicesOff (Dani 64963)', () => {
+    const call = src.indexOf('    sweepOrphanedBackgroundTasks().catch(')
+    expect(call).toBeGreaterThan(servicesOff)
+    const gate = '  if (!servicesOff) {\n'
+    expect(src.lastIndexOf(gate, call)).toBe(call - gate.length)
+    expect(src.match(/sweepOrphanedBackgroundTasks\(\)/g)).toHaveLength(1)
+  })
+
   it('no service between the decision and the hook backfill is gated by webOnly alone', () => {
     const firstService = src.indexOf('const routerInterval =')
     expect(firstService).toBeGreaterThan(servicesOff)
