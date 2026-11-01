@@ -13363,7 +13363,7 @@ async function loadChatAgentList() {
 }
 
 // Pagination state for the open thread
-const chatThreadState = { agent: null, minLoadedId: null, hasMore: true, loading: false, liveSig: null, liveTimer: null }
+const chatThreadState = { agent: null, minLoadedId: null, hasMore: true, loading: false, liveSig: null, liveTimer: null, loadedCount: 0 }
 const CHAT_PAGE_SIZE = 10
 const CHAT_LOAD_MORE = 20
 
@@ -13375,6 +13375,7 @@ async function loadChatThread(agentName) {
   chatThreadState.minLoadedId = null
   chatThreadState.hasMore = true
   chatThreadState.loading = false
+  chatThreadState.loadedCount = 0
 
   const owner = chatOwnerName()
   const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : chatDisplayName(agentName)
@@ -13471,6 +13472,14 @@ function buildBubbleHtml(m) {
 // The reply is a plain message object handed to buildBubbleHtml, so it goes
 // through the same template and escaping as every other bubble. It is sent by
 // the RECIPIENT, so from/to are swapped; it keeps the request's id.
+//
+// The shared id is deliberate: the reply is the result column of that same
+// message, not a message of its own, and the #id chip should name the message
+// the owner can look up. Two rows therefore carry one data-msg-id, the request
+// first and its reply right after it; a lookup that needs the reply must take
+// the LAST row with that id (or the one with the reply badge), not the first.
+// Giving the reply an id of its own would mean a non-numeric value in the
+// m.id sink, which the HTML-sink allowlist pins as the integer primary key.
 function chatWithReplies(sorted) {
   const owner = chatOwnerName()
   const out = []
@@ -13497,6 +13506,14 @@ function chatListSig(msgs) {
   return msgs.map(m => `${m.id}:${m.status || ''}:${String(m.result || '').length}:${m.completed_at || ''}`).join(',')
 }
 
+// Oldest first. created_at is whole seconds, so a tie is broken by id: the API
+// pages newest first by (created_at, id), and with created_at alone the page
+// drawn and the page polled could hold different ids at a same-second boundary,
+// so the signatures would never match and every poll would redraw.
+function chatSortAsc(msgs) {
+  return [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0) || a.id - b.id)
+}
+
 // Live refresh of the open thread. Before this the view only changed on the
 // manual reload button, so an agent's reply (or the done badge) stayed
 // invisible until the owner clicked. Polls the newest page; when it differs
@@ -13504,7 +13521,13 @@ function chatListSig(msgs) {
 // load (fetchChatPage 'replace'), so there is no second render path. Runs only
 // while a thread is open; skipped while the tab or the panel is hidden, a load
 // runs, or the owner has scrolled up to read older messages (the redraw would
-// drop those pages and jump the view -- the next poll catches up).
+// jump the view -- the next poll catches up).
+//
+// The change check looks at the newest page only, but the redraw fetches as
+// many messages as are currently loaded (capped at the API's 200), so older
+// pages the owner paginated in survive the redraw instead of collapsing the
+// thread back to one page.
+const CHAT_LIVE_REDRAW_MAX = 200
 const CHAT_LIVE_POLL_MS = 5000
 function startChatLivePoll() {
   stopChatLivePoll()
@@ -13527,11 +13550,16 @@ async function pollChatThread() {
     msgs = await res.json()
   } catch { return }
   if (!Array.isArray(msgs) || chatThreadState.agent !== agent || chatThreadState.loading) return
-  const sorted = [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  const sorted = chatSortAsc(msgs)
   if (chatListSig(sorted) === chatThreadState.liveSig) return
+  // New messages push the oldest loaded ones out of a same-size window, so the
+  // redraw asks for that many more.
+  const drawnIds = new Set(String(chatThreadState.liveSig || '').split(',').map(s => s.split(':')[0]))
+  const added = sorted.filter(m => !drawnIds.has(String(m.id))).length
+  const limit = Math.min(Math.max(CHAT_PAGE_SIZE, chatThreadState.loadedCount + added), CHAT_LIVE_REDRAW_MAX)
   chatThreadState.minLoadedId = null
   chatThreadState.hasMore = true
-  await fetchChatPage(agent, null, CHAT_PAGE_SIZE, 'replace')
+  await fetchChatPage(agent, null, limit, 'replace')
 }
 
 async function fetchChatPage(agentName, beforeId, limit, mode) {
@@ -13547,7 +13575,7 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
     const res = await fetch(url)
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const msgs = await res.json()
-    const sorted = Array.isArray(msgs) ? [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0)) : []
+    const sorted = Array.isArray(msgs) ? chatSortAsc(msgs) : []
 
     if (mode === 'replace') {
       if (sorted.length === 0) {
@@ -13558,11 +13586,13 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
         container.scrollTop = container.scrollHeight
       }
       if (sorted.length < limit) chatThreadState.hasMore = false
-      chatThreadState.liveSig = chatListSig(sorted)
+      chatThreadState.liveSig = chatListSig(sorted.slice(-CHAT_PAGE_SIZE))
+      chatThreadState.loadedCount = sorted.length
     } else { // prepend
       if (loadingIndicator) loadingIndicator.style.display = 'none'
       if (!sorted.length) { chatThreadState.hasMore = false; chatThreadState.loading = false; return }
       if (sorted.length < limit) chatThreadState.hasMore = false
+      chatThreadState.loadedCount += sorted.length
       const prevHeight = container.scrollHeight
       const indicator = document.getElementById('chatLoadingTop')
       const html = chatWithReplies(sorted).map(buildBubbleHtml).join('')
@@ -13598,7 +13628,7 @@ function renderChatBubbles(msgs, agentName) {
     container.innerHTML = '<p class="activity-empty">' + t('messages.empty_thread') + '</p>'
     return
   }
-  const sorted = [...msgs].sort((a,b) => (a.created_at||0) - (b.created_at||0))
+  const sorted = chatSortAsc(msgs)
   container.innerHTML = chatWithReplies(sorted).map(buildBubbleHtml).join('')
   container.scrollTop = container.scrollHeight
 }
