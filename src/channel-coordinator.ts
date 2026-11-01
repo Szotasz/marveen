@@ -27,7 +27,7 @@
 // drains, persists offset, exits cleanly.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile, execFileSync } from 'node:child_process'
@@ -240,9 +240,9 @@ export const realPidLockDeps: PidLockDeps = {
   },
 }
 
-function acquireSingleInstanceLock(): void {
-  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  const res = tryAcquirePidLock(PID_FILE, process.pid, realPidLockDeps)
+export function acquireSingleInstanceLock(pidFile: string = PID_FILE, deps: PidLockDeps = realPidLockDeps, exit: (code: number) => never = process.exit): void {
+  if (!existsSync(dirname(pidFile))) mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 })
+  const res = tryAcquirePidLock(pidFile, process.pid, deps)
   if (!res.ok) {
     if (res.reason === 'held') {
       logger.error({ prev: res.holder }, 'channel-coordinator: another live instance holds the pid lock, exiting')
@@ -251,7 +251,7 @@ function acquireSingleInstanceLock(): void {
     } else {
       logger.error('channel-coordinator: could not acquire the pid lock (another starter kept winning); exiting')
     }
-    process.exit(1)
+    exit(1)
   }
   if (res.ok && res.reclaimed != null) {
     logger.warn({ stalePid: res.reclaimed }, 'channel-coordinator: reclaiming stale pid file')
