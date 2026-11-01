@@ -1362,10 +1362,17 @@
         <summary class="gromzo-summary" data-i18n="gromzo.card.title">Gromzo (mobilapp)</summary>
         <p class="modal-desc" data-i18n="gromzo.card.desc">Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.</p>
         <p class="gromzo-status" id="gromzoStatus"></p>
+        <div class="gromzo-owner-info" id="gromzoOwnerInfo" role="status" hidden>
+          <p class="gromzo-owner-info-text" data-i18n="gromzo.owner_login.info">Az ügynökök kapcsolásához és a telefon hozzáadásához be kell lépned a dashboard-jelszavaddal: a tulajdonost csak a jelszó azonosítja, a Bridge vagy a hozzáférési kulcs nem. A belépés ebben az ablakban megmarad, amíg ki nem jelentkezel, vagy le nem jár.</p>
+          <button class="btn-primary btn-compact" id="gromzoLoginBtn" data-i18n="gromzo.btn.login">Belépés jelszóval</button>
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary btn-compact" id="gromzoAddPhoneBtn" data-i18n="gromzo.btn.add_phone">Telefon hozzáadása</button>
         </div>
         <p class="mobile-login-warn" id="gromzoError" hidden></p>
+        <div class="gromzo-owner-logout">
+          <button class="btn-secondary btn-compact" id="gromzoLogoutBtn" hidden data-i18n="gromzo.btn.logout">Tulajdonosi kijelentkezés</button>
+        </div>
         <div class="gromzo-qr-area" id="gromzoQrArea" hidden>
           <div id="gromzoQr" class="mobile-login-qr"></div>
           <p class="modal-desc" id="gromzoQrHint"></p>

@@ -35,7 +35,7 @@ const { resetPendingGromzoConsents } = await import('../web/gromzo-agents.js')
 const { MxdDashError } = await import('../web/mxd-dash.js')
 const { MAIN_AGENT_ID: MAIN_ID } = await import('../config.js')
 const { requiresAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
-const { createSession } = await import('../web/auth-sessions.js')
+const { createSession, revokeSession } = await import('../web/auth-sessions.js')
 const { isBlockedCrossOriginWrite } = await import('../web/csrf-origin.js')
 
 let fake: FakeMxdDash
@@ -154,6 +154,72 @@ describe('auth and same-origin', () => {
     expect((await postQr()).status).toBe(403)
     const sid = createSession({ userId: u.id, username: u.username })
     expect((await postQr({ 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
+  })
+})
+
+// GROMZOAGENTPICK1101 (Samu 64370, Dani 64374): the Bridge sends its device key on every call; an owner action
+// passes only with the owner's password-login session cookie on the same request. The key alone never.
+describe('the Bridge: a full device key plus the owner session cookie', () => {
+  const FULL = { kind: 'device', device: 'Macbookom', deviceId: 3, scope: 'full' }
+  const OPERATOR = { kind: 'device', device: 'op', deviceId: 9, scope: 'operator' }
+  const SUBAGENT = { kind: 'token', tokenAgent: 'samu', agent: 'samu' }
+  let sid = ''
+  beforeEach(() => {
+    const u = createDashboardUser('owner', 'x')
+    sid = createSession({ userId: u.id, username: u.username })
+    fake.script.set('owner_invite', INVITE_OK)
+    fake.script.set('status', { ok: true, running: true, linked: true })
+  })
+  const withCookie = (c: string) => ({ 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE_NAME}=${c}` })
+  const agents = (headers: Record<string, string> = {}) => fetch(origin + '/api/gromzo/agents', { headers })
+
+  it('the key alone: 403 on both the owner QR and the agent list, mxd never asked', async () => {
+    principal = FULL
+    expect((await postQr()).status).toBe(403)
+    expect((await agents()).status).toBe(403)
+    expect(fake.seen).toEqual([])
+  })
+
+  it('the key plus a valid session cookie: the owner (QR 200, list 200)', async () => {
+    principal = FULL
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
+  })
+
+  it('the key plus a revoked (logged out), unknown or other-named cookie: 403', async () => {
+    principal = FULL
+    revokeSession(sid)
+    expect((await postQr(withCookie(sid))).status).toBe(403)
+    expect((await postQr(withCookie('not-a-session'))).status).toBe(403)
+    const other = createSession({ userId: 1, username: 'owner' })
+    expect((await postQr({ 'Content-Type': 'application/json', Cookie: `mv_operator=${other}` })).status).toBe(403)
+    expect(fake.seen).toEqual([])
+  })
+
+  it('the key plus an EXPIRED session cookie (past the 30-day absolute life): 403', async () => {
+    principal = FULL
+    const real = Date.now()
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(real + 31 * 24 * 3600 * 1000)
+    try {
+      expect((await postQr(withCookie(sid))).status).toBe(403)
+    } finally { spy.mockRestore() }
+    expect(fake.seen).toEqual([])
+  })
+
+  it('an operator key or a sub-agent token with a valid session cookie: 403', async () => {
+    for (const p of [OPERATOR, SUBAGENT]) {
+      principal = p
+      expect((await postQr(withCookie(sid))).status, JSON.stringify(p)).toBe(403)
+      expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status, JSON.stringify(p)).toBe(403)
+    }
+    expect(fake.seen).toEqual([])
+  })
+
+  it('the Origin gate still runs on the key-plus-cookie path', async () => {
+    principal = FULL
+    const r = await postQr({ ...withCookie(sid), Origin: 'https://evil.example' })
+    expect(r.status).toBe(403)
+    expect(fake.seen).toEqual([])
   })
 })
 

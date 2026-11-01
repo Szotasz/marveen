@@ -185,7 +185,10 @@ function mainAgentId() {
 
   // Full-screen username+password login overlay. Posts to /api/auth/login; on
   // success the browser has the mv_session cookie and we reload authenticated.
-  function showLoginOverlay() {
+  // opts.cancellable: opened on purpose from a page that already works (the Bridge, whose
+  // device key authenticates every call: a Gromzo owner action needs the password login on
+  // top of it, GROMZOAGENTPICK1101), so it gets a Cancel button.
+  function showLoginOverlay(opts) {
     if (document.getElementById('mv-login-overlay')) return
     const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
     const overlay = document.createElement('div')
@@ -201,6 +204,15 @@ function mainAgentId() {
         '<div class="mv-auth-err" id="mv-login-err"></div>' +
       '</form>'
     document.body.appendChild(overlay)
+    if (opts && opts.cancellable) {
+      const cancel = document.createElement('button')
+      cancel.type = 'button'
+      cancel.id = 'mv-login-cancel'
+      cancel.className = 'btn-secondary btn-compact'
+      cancel.textContent = tr('auth.login.cancel', 'Cancel')
+      cancel.addEventListener('click', () => overlay.remove())
+      overlay.querySelector('#mv-login-form').appendChild(cancel)
+    }
     const form = overlay.querySelector('#mv-login-form')
     const userEl = overlay.querySelector('#mv-login-user')
     const passEl = overlay.querySelector('#mv-login-pass')
@@ -235,6 +247,8 @@ function mainAgentId() {
     })
     setTimeout(() => userEl.focus(), 50)
   }
+
+  window.mvShowLogin = (opts) => showLoginOverlay(opts)
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
   // The user pastes the access token (the value after ?token= in the server's
@@ -20720,7 +20734,9 @@ async function openResearchDoc(agent, name) {
           if (Number.isInteger(b.retry_after) && b.retry_after > 0) wait = b.retry_after
         } catch { /* keep the HTTP code */ }
         // GROMZORESETWAIT1031: during the identity reset lock, when the code can be asked again.
-        showError(code === 'identity_reset_in_progress' && wait !== null
+        // owner_session_required: the card's own notice says it, with the login button (no second message).
+        if (code === 'owner_session_required' && typeof window.gromzoOwnerLogin === 'function') window.gromzoOwnerLogin(true)
+        else showError(code === 'identity_reset_in_progress' && wait !== null
           ? t('gromzo.err.identity_reset_wait', { min: Math.max(1, Math.ceil(wait / 60)) })
           : errorText(code))
         btn.disabled = false
@@ -20864,11 +20880,43 @@ async function openResearchDoc(agent, name) {
     }
   }
 
+  // GROMZOAGENTPICK1101 (Bridge): the Bridge's device key authenticates every call, but an owner
+  // action needs the owner's password login as well (a session cookie next to the key). The login
+  // button opens the dashboard's own login overlay; the logout button ends that session (the
+  // Bridge has no other way to: its Settings show the device, not the session).
+  // Shown AHEAD of any click (the card's first list load answers owner_session_required), as a notice,
+  // not an error: the owner learns up front that the password login is the missing step (Samu 64431 (3)).
+  const ownerInfo = document.getElementById('gromzoOwnerInfo')
+  const loginBtn = document.getElementById('gromzoLoginBtn')
+  const logoutBtn = document.getElementById('gromzoLogoutBtn')
+  window.gromzoOwnerLogin = (needed) => { if (ownerInfo) ownerInfo.hidden = !needed }
+  if (loginBtn) loginBtn.addEventListener('click', () => { if (typeof window.mvShowLogin === 'function') window.mvShowLogin({ cancellable: true }) })
+  if (logoutBtn) logoutBtn.addEventListener('click', async () => {
+    try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* ignore */ }
+    window.location.reload()
+  })
+  async function showLogoutIfDevice() {
+    if (!logoutBtn) return
+    try {
+      const s = await (await fetch('/api/auth/status', { cache: 'no-store' })).json()
+      logoutBtn.hidden = s.method !== 'device'
+    } catch { logoutBtn.hidden = true }
+  }
+
   async function loadAgents() {
     showError('')
     try {
       const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
-      if (!r.ok) { rows = []; render(); showError(agentErr(await codeOf(r))); return }
+      if (!r.ok) {
+        const code = await codeOf(r)
+        rows = []; render()
+        window.gromzoOwnerLogin(code === 'owner_session_required')
+        if (code !== 'owner_session_required') showError(agentErr(code))
+        if (logoutBtn) logoutBtn.hidden = true
+        return
+      }
+      window.gromzoOwnerLogin(false)
+      void showLogoutIfDevice()
       rows = (await r.json()).agents || []
       for (const row of rows) if (row.pendingUntil && row.pendingUntil > Date.now() && !local.has(row.slug)) local.set(row.slug, { kind: 'pending', until: row.pendingUntil })
       render()
