@@ -91,6 +91,10 @@ const EXPECTED: Record<string, string[]> = {
     'memory-frontmatter-bash-gate.py @ Bash',
     // APPROVALDBGATE1030: security tables, the database file, the install's gate wiring
     'db-write-gate.mjs @ Bash|Write|Edit|MultiEdit|NotebookEdit',
+    // Refuses a Bash command whose own text the shell would re-scan (a backtick
+    // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
+    // any internal error, so it cannot wedge a session.
+    'shell-rescan-guard.py @ Bash',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   StopFailure: ['ledger-turn-failure.py'],

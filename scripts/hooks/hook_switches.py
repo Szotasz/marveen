@@ -59,6 +59,7 @@ DEFAULT_NON_DISABLEABLE = frozenset({
     "digest-provenance-gate",
     "credential-gate",
     "destructive-gate",
+    "shell-rescan-guard",       # a Bash command whose own text the shell would re-scan
     "secret-gate",
     "sender-role-gate",
     # state integrity
