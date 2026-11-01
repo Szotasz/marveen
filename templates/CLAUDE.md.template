@@ -289,7 +289,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 - Egyéni: a főágensnek NINCS privát hely, a munkakönyvtára maga a projekt-gyökér, és annak `.claude/skills/` mappáját a sub-ágensek is látják. Hova írj és mit mérj előbb: lásd lent a "Skill-útvonal csapda" szakaszt
 
 ### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) írj SKILL.md-t. A fő ágensnek nincs csak-saját skill-mappája, ezért minden új vagy javított skill javaslatként megy: a gazda jóváhagyásáig karanténban vár, és ha a név már él, jóváhagyáskor a régi változat mentésre kerül.
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) írj SKILL.md-t. A fő ágensnek nincs csak-saját skill-mappája, ezért minden új vagy javított skill javaslatként megy. Hogy azonnal élesedik (a scan és az audit akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a SKILL_QUARANTINE kapcsoló dönti el, a válasz `live` mezője megmondja; ha a név már él, élesedéskor a régi változat mentésre kerül.
 
 Az indokot (miért kell, mit javít) előbb írd az `.claude/skill-javaslat/indok.txt` fájlba a Write eszközzel, utána futtasd az alábbi blokkot.
 
@@ -318,7 +318,7 @@ SKILLEOF
 bash scripts/marveen-api.sh skill-propose SKILL-NEV .claude/skill-javaslat/SKILL.md --reason-file .claude/skill-javaslat/indok.txt
 ```
 
-A javaslat a karanténba megy (`POST /api/skills/propose`), a segéd `skill-propose` igéje küldi.
+A javaslatot (`POST /api/skills/propose`) a segéd `skill-propose` igéje küldi; a karantén-kapcsoló állásától függően azonnal élesedik, vagy jóváhagyásra vár.
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:

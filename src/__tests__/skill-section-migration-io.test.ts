@@ -12,7 +12,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   return { ...actual, agentDir: (name: string) => join(H.root, 'agents', name) }
 })
 
-const { ensureSkillSectionCurrent, buildSkillSection, readRetiredSkillSections } = await import('../web/agent-scaffold.js')
+const { ensureSkillSectionCurrent, buildSkillSection, readRetiredSkillSections, preQuarantineSwitchSection, SKILL_SECTION_SWITCH_SENTENCES } = await import('../web/agent-scaffold.js')
 const { MAIN_AGENT_ID } = await import('../config.js')
 
 const write = (name: string, text: string) => {
@@ -47,6 +47,25 @@ describe('ensureSkillSectionCurrent on real files', () => {
     const p = write('edited', doc(edited))
     expect(ensureSkillSectionCurrent('edited')).toBe(false)
     expect(readFileSync(p, 'utf-8')).toBe(doc(edited))
+  })
+
+  // SKILLAPPROVALOFF1101: an agent whose section was generated before the quarantine became a switch (it says every
+  // proposal waits) gets today's section at its next start; an edited one stays.
+  it('the section from before the quarantine switch is migrated; an edited one is not', () => {
+    const now = buildSkillSection('switch-worker')
+    const before = preQuarantineSwitchSection(now)
+    for (const [old, cur] of SKILL_SECTION_SWITCH_SENTENCES) {
+      expect(now).toContain(cur)
+      expect(before).toContain(old)
+      expect(before).not.toContain(cur)
+    }
+    const p = write('switch-worker', doc(before))
+    expect(ensureSkillSectionCurrent('switch-worker')).toBe(true)
+    expect(readFileSync(p, 'utf-8')).toBe(doc(now))
+    const edited = before.replace('Generálj skill-t', 'Írj skill-t')
+    const q = write('switch-edited', doc(edited))
+    expect(ensureSkillSectionCurrent('switch-edited')).toBe(false)
+    expect(readFileSync(q, 'utf-8')).toBe(doc(edited))
   })
 
   it('runs on every agent start, right after the skills-path trap section', () => {

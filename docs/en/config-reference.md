@@ -161,6 +161,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | Key | Type | Default | Description | Restart |
 |-----|------|---------|-------------|---------|
 | `AGENT_TOKENS` | boolean | `0` (off) | Own dashboard token for every sub-agent (`agents/<name>/.dashboard-token`) with a server-side scope and identity binding; see `docs/agens-azonositas-api.md` section 8 | no (applies at the sub-agent's next start) |
+| `SKILL_QUARANTINE` | boolean | `0` (off) | Skill quarantine. Off: a new or improved skill (proposal, generation, import) goes live at once, with the scan, the hash binding and an audit line (`store/skills-audit.jsonl`); what the scan cannot show in full waits for approval. On: every new skill waits for the owner's approval. Turning it off over the API takes the dashboard login | no |
 
 **Registry -- Heartbeat module:**
 

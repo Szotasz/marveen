@@ -17,6 +17,12 @@ const agentPrompt = (hooks: Hooks | undefined, event: string): unknown =>
 const TPL = load('settings.json.template') as { hooks: Hooks }
 const RETIRED = load('retired-hook-prompts.json') as { PreCompact: string[] }
 const CURRENT = agentPrompt(TPL.hooks, 'PreCompact') as string
+// Newest first: the prompt before SKILL_QUARANTINE (SKILLAPPROVALOFF1101), the one before PR-C, the review-era one.
+const PRE_SWITCH = RETIRED.PreCompact[0]!
+const PRE_PRC = RETIRED.PreCompact[1]!
+const REVIEW_ERA = RETIRED.PreCompact[2]!
+const QUARANTINE_OLD = 'A gazda jóváhagyásáig karanténban vár; ha a név már él, cserejavaslat lesz, és jóváhagyáskor a régi változat mentésre kerül.'
+const QUARANTINE_NEW = 'Hogy azonnal élesedik (a scan és az audit akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a SKILL_QUARANTINE kapcsoló dönti el, a válasz live mezője megmondja; ha a név már él, cserejavaslat lesz, és élesedéskor a régi változat mentésre kerül.'
 const fixture = (f: string) => readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', f), 'utf-8')
 // What upgradePreCompactRecipesToHelper alone makes of a prompt.
 const afterHelperPass = (prompt: string): string => {
@@ -91,16 +97,26 @@ describe('the shipped retired list', () => {
     expect(new Set(raw.PreCompact).size).toBe(raw.PreCompact.length)
   })
 
-  it('its newest entry is the prompt before PR-C (one shared api-payload.txt), then the one the review found', () => {
+  // SKILLAPPROVALOFF1101: the quarantine became a switch, so the prompt no longer says every proposal waits.
+  it('its newest entry is the prompt before SKILL_QUARANTINE: the same text but the one quarantine sentence', () => {
+    expect(PRE_SWITCH).toContain(QUARANTINE_OLD)
+    expect(CURRENT).not.toContain(QUARANTINE_OLD)
+    expect(CURRENT).toContain(QUARANTINE_NEW)
+    expect(PRE_SWITCH.replace(QUARANTINE_OLD, QUARANTINE_NEW)).toBe(CURRENT)
+    // and the PR-C line pass of the entry before it gives exactly the prompt before the switch
+    expect(afterHelperPass(PRE_PRC)).toBe(PRE_SWITCH)
+  })
+
+  it('its entry before that is the prompt before PR-C (one shared api-payload.txt), then the one the review found', () => {
     // VOICETOKENLEAK1101 PR-C: the #2434-era stock prompt, retired when the payload files went per kind
-    expect(RETIRED.PreCompact[0]).toContain('api-payload.txt')
+    expect(PRE_PRC).toContain('api-payload.txt')
     expect(CURRENT).not.toContain('api-payload.txt')
     // exactly the template prompt before PR-C: PR-C's line pass makes it the current one, and it is not the older
     // review-era prompt (which still told to mkdir in the global skill folder)
-    expect(RETIRED.PreCompact[0]).not.toBe(CURRENT)
-    expect(afterHelperPass(RETIRED.PreCompact[0])).toBe(CURRENT)
-    expect(RETIRED.PreCompact[0]).not.toContain('mkdir -p ~/.claude/skills/')
-    expect(RETIRED.PreCompact[1]).toContain('mkdir -p ~/.claude/skills/')
+    expect(PRE_PRC).not.toBe(CURRENT)
+    expect(afterHelperPass(PRE_PRC)).toBe(PRE_SWITCH)
+    expect(PRE_PRC).not.toContain('mkdir -p ~/.claude/skills/')
+    expect(REVIEW_ERA).toContain('mkdir -p ~/.claude/skills/')
     expect(CURRENT).not.toContain('mkdir -p ~/.claude/skills/')
   })
 
@@ -177,7 +193,7 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
   })
 
   it('a partly edited prompt: a customised line stays verbatim, only the exact old shipped lines move on', () => {
-    const lines = RETIRED.PreCompact[0].split('\n')
+    const lines = PRE_PRC.split('\n')
     const memAt = lines.findIndex((l) => l.includes('memory-save SAJAT_NEVED warm') && l.includes('api-payload.txt'))
     expect(memAt).toBeGreaterThan(-1)
     const custom = lines[memAt]!.replace('"kulcsszo1, kulcsszo2"', '"sajat, kulcsszo"')
@@ -200,7 +216,7 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
       hooks: {
         PreCompact: [{ matcher: 'auto', hooks: [
           { type: 'command', command: 'echo before-the-prompt', timeout: 7 },
-          { type: 'agent', prompt: RETIRED.PreCompact[0], timeout: 180 },
+          { type: 'agent', prompt: PRE_PRC, timeout: 180 },
           { type: 'command', command: 'echo after-the-prompt' },
         ] }],
         Stop: [{ hooks: [{ type: 'command', command: 'echo my-stop-hook' }] }],
@@ -220,8 +236,14 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
     expect(after.hooks.Stop[0]).toEqual(before.hooks.Stop[0])
   })
 
+  it('an agent on the prompt before the switch (SKILLAPPROVALOFF1101) gets the current one in one start', () => {
+    write(PRE_SWITCH)
+    ensureAgentHooks(PROBE, scopes())
+    expect(read()).toBe(CURRENT)
+  })
+
   it('an agent still on the previous stock prompt gets the current one', () => {
-    write(RETIRED.PreCompact[0])
+    write(PRE_PRC)
     ensureAgentHooks(PROBE, scopes())
     expect(read()).toBe(CURRENT)
   })
@@ -235,7 +257,7 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
   })
 
   it('an edited prompt is not replaced: the operator line stays, only the exact shipped lines move on', () => {
-    const edited = `${RETIRED.PreCompact[0]}\nmy own line, written by the operator`
+    const edited = `${PRE_PRC}\nmy own line, written by the operator`
     write(edited)
     ensureAgentHooks(PROBE, scopes())
     // the line pass (upgradePreCompactRecipesToHelper) still turns its exact api-payload.txt lines into the per-kind
@@ -248,8 +270,8 @@ describe('ensureAgentHooks migrates a stock PreCompact prompt', () => {
   // VOICETOKENLEAK1101 PR-C (Samu 65492): the stock prompt with one shared api-payload.txt becomes the template prompt
   // (per-kind files) word for word, in one start.
   it('the stock prompt before PR-C (one shared api-payload.txt) reaches the template prompt in one start', () => {
-    expect(RETIRED.PreCompact[0]).toContain('api-payload.txt')
-    write(RETIRED.PreCompact[0])
+    expect(PRE_PRC).toContain('api-payload.txt')
+    write(PRE_PRC)
     ensureAgentHooks(PROBE, scopes())
     expect(read()).toBe(CURRENT)
     expect(read()).not.toContain('api-payload.txt')

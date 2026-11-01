@@ -16,6 +16,11 @@ const AGENTS = join(tmpRoot, 'agents')
 const ORIG_HOME = process.env.HOME
 process.env.HOME = HOME
 
+// SKILLAPPROVALOFF1101: this file pins the quarantine ON (the hold for approval); the OFF path is skill-quarantine-switch.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  return { ...actual, getEffectiveSettingValue: (k: string) => (k === 'SKILL_QUARANTINE' ? '1' : actual.getEffectiveSettingValue(k)) }
+})
 vi.mock('../config.js', async (orig) => {
   const actual = await orig<typeof import('../config.js')>()
   return { ...actual, PROJECT_ROOT: tmpRoot, STORE_DIR: STORE }

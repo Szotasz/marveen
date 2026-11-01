@@ -4003,7 +4003,9 @@ function buildSkillsPathTrapBody(name: string): string {
     '',
     '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide közvetlenül NE',
     '   írj: új globális skill vagy egy meglévő javítása CSAK javaslatként megy',
-    '   (`POST /api/skills/propose`), a gazda jóváhagyásáig karanténban vár. A',
+    '   (`POST /api/skills/propose`). Hogy azonnal élesedik (a scan és az audit',
+    '   akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a',
+    '   SKILL_QUARANTINE kapcsoló dönti el; a válasz `live` mezője megmondja. A',
     '   skill-futtatás base directory-ja a saját config-gyökeredet MUTATHATJA --',
     '   attól még a flottáé.',
   ]
@@ -4155,6 +4157,20 @@ export function readRetiredSkillSections(
   }
 }
 
+// SKILLAPPROVALOFF1101: the two sentences of the skill section that changed when the quarantine became a switch, as
+// they read before. preQuarantineSwitchSection turns today's section back into that text, so an agent still carrying
+// it (unedited) is migrated like one on a retired stock section.
+export const SKILL_SECTION_SWITCH_SENTENCES: ReadonlyArray<readonly [before: string, now: string]> = [
+  [
+    'csak javaslatként megy (lásd lent), és a gazda jóváhagyásáig karanténban vár.',
+    'csak javaslatként megy (lásd lent). Hogy azonnal élesedik (a scan és az audit akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a SKILL_QUARANTINE kapcsoló dönti el; a válasz `live` mezője megmondja, melyik történt.',
+  ],
+  ['a javaslat csere: jóváhagyáskor a régi változat mentésre kerül.', 'a javaslat csere: élesedéskor a régi változat mentésre kerül.'],
+]
+export function preQuarantineSwitchSection(section: string): string {
+  return SKILL_SECTION_SWITCH_SENTENCES.reduce((s, [before, now]) => s.replace(now, before), section)
+}
+
 // Called on every startAgentProcess(), like the sections above. Sub-agents only:
 // the main agent's CLAUDE.md belongs to its owner and is never rewritten here
 // (the pull request description says how the owner updates it).
@@ -4173,8 +4189,12 @@ export function ensureSkillSectionCurrent(name: string, retiredPath?: string): b
   // helper recipe (agentUsesApiHelper), so an unedited curl copy is upgraded on the next start.
   const helper = agentUsesApiHelper(name)
   const tokenFile = dashboardTokenPathFor(name)
-  const retired = [...readRetiredSkillSections(retiredPath), helper ? buildSkillSection(undefined, tokenFile) : buildSkillSection(name)]
-  const updated = upgradeRetiredSkillSection(existing, retired, buildSkillSection(helper ? name : undefined, tokenFile))
+  const otherForm = helper ? buildSkillSection(undefined, tokenFile) : buildSkillSection(name)
+  const thisForm = buildSkillSection(helper ? name : undefined, tokenFile)
+  // SKILLAPPROVALOFF1101: the section as both forms read before the quarantine became a switch. It carries the agent's
+  // own token path and name, so it cannot be a fixed entry of the retired file: it is rebuilt from today's form.
+  const retired = [...readRetiredSkillSections(retiredPath), otherForm, preQuarantineSwitchSection(otherForm), preQuarantineSwitchSection(thisForm)]
+  const updated = upgradeRetiredSkillSection(existing, retired, thisForm)
   if (updated === null || updated === existing) return false
   atomicWriteFileSync(claudeMdPath, updated)
   return true
@@ -5033,7 +5053,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 
 ### Skill-ek helye
 - Egyéni: a te munkakönyvtárad .claude/skills/ mappája. Csak te látod; ide közvetlenül írsz.
-- Globális: ~/.claude/skills/ (minden ágens látja). Ide közvetlenül NE írj: új globális skill vagy egy meglévő javítása csak javaslatként megy (lásd lent), és a gazda jóváhagyásáig karanténban vár.
+- Globális: ~/.claude/skills/ (minden ágens látja). Ide közvetlenül NE írj: új globális skill vagy egy meglévő javítása csak javaslatként megy (lásd lent). Hogy azonnal élesedik (a scan és az audit akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a SKILL_QUARANTINE kapcsoló dönti el; a válasz \`live\` mezője megmondja, melyik történt.
 - CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
 
 ### Automatikus skill generálás
@@ -5043,7 +5063,7 @@ mkdir -p .claude/skills/SKILL-NEV
 A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
 
 ### Globális skill: csak javaslatként
-Ha a skill minden ágensnek hasznos, vagy egy meglévő globális skillt javítanál, írd meg a teljes SKILL.md-t piszkozatba, és küldd el. Ha a név már él, a javaslat csere: jóváhagyáskor a régi változat mentésre kerül. Meglévő globális skill javításánál a mostani szövegből indulj (cat ~/.claude/skills/NEV/SKILL.md), és a TELJES javított szöveget küldd.
+Ha a skill minden ágensnek hasznos, vagy egy meglévő globális skillt javítanál, írd meg a teljes SKILL.md-t piszkozatba, és küldd el. Ha a név már él, a javaslat csere: élesedéskor a régi változat mentésre kerül. Meglévő globális skill javításánál a mostani szövegből indulj (cat ~/.claude/skills/NEV/SKILL.md), és a TELJES javított szöveget küldd.
 
 ${strictAgent ? strictSkillProposeRecipe(strictAgent) : `mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
 (a teljes SKILL.md, ugyanazzal a szerkezettel, mint egy saját skillé)
