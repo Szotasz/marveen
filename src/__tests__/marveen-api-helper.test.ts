@@ -256,6 +256,19 @@ describe('marveen-api.sh: a recipe payload file is sent once', () => {
     expect(seen).toHaveLength(1)
   })
 
+  // APPROVALSLACK1030 (2): the letter goes with the request, so the server can recompute its anchor.
+  it('approval-request --payload-file sends the JSON object as action_payload; a broken file sends nothing', async () => {
+    const env = { envelope: { to: ['a@example.com'], cc: [], text: 'Szia' } }
+    await run(['approval-request', 'dani', 'email_send', '3600', file('pa.txt', 'Levél'), '--content-hash', 'a'.repeat(64), '--payload-file', file('p.json', JSON.stringify(env))])
+    const body = JSON.parse(seen[seen.length - 1].body)
+    expect(JSON.parse(body.action_payload)).toEqual(env)
+    expect(body.content_hash).toBe('a'.repeat(64))
+    const before = seen.length
+    const bad = await run(['approval-request', 'dani', 'email_send', '3600', file('pb.txt', 'Levél'), '--payload-file', file('q.json', '{not json')])
+    expect(bad.code).not.toBe(0)
+    expect(seen.length).toBe(before)
+  })
+
   it('every payload verb of the recipes empties it: message-close --result-file, approval-request, memory-update', async () => {
     const r = file('api-eredmeny.txt', 'kész')
     expect((await run(['message-close', '7', '--result-file', r])).code).toBe(0)

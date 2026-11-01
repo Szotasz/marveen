@@ -148,6 +148,12 @@ export async function ownerDmVerdict(channel: string, ownerUserId: string | null
   }
 }
 
+/** The main agent's bot token (xoxb), or null: the dashboard's own Slack calls use it (APPROVALSLACK1030 (2)). */
+export function mainBotToken(deps: Partial<SlackDeps> = {}): string | null {
+  const d: SlackDeps = { ...defaultDeps, ...deps }
+  return tokenFrom(mainSlackStateDir(d.readFile), d)
+}
+
 function tokenFrom(dir: string, deps: SlackDeps): string | null {
   const raw = deps.readFile(join(dir, '.env'))
   if (!raw) return null

@@ -68,10 +68,11 @@ const DENY_FILE = { deny: true, reason: 'install-file' }
 const ALLOW = { deny: false }
 
 describe('1. SQL writes on the security tables', () => {
-  it('the table list is the decided six', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys'])
+  // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
+  it('the table list is the decided seven', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys'])
   })
-  for (const t of ['approvals', 'approval_events', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,

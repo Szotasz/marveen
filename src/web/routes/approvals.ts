@@ -13,7 +13,10 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
-import { sendOwnerMessage, sendOwnerSlackDm } from '../../notify.js'
+import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
+import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
+import { reactionRoute, reactionsOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
@@ -214,12 +217,30 @@ function fallbackInBand(approval: Approval, reason: string): void {
 // message), and a failed note does NOT fall back in-band -- the only requester
 // allowed on this path is the main agent, which already knows the action is
 // approved; an [APPROVAL_REQUEST] marker would mislead it.
-function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null): void {
+// APPROVALSLACK1030 (2): what the reaction path reads, in one place (tests replace it).
+export const reactionDeps: RouteDeps = {
+  setting: (key) => String(getEffectiveSettingValue(key) ?? ''),
+  token: () => mainBotToken(),
+  ownerTarget: async () => (await slackTargetFor('owner')) || '',
+  verdict: (channel, owner) => ownerDmVerdict(channel, owner),
+  drift: (current) => noticeTargetDrift(current),
+  chunk: SLACK_CHUNK,
+}
+
+function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false): void {
   const informative = chatApprovedMessageId != null
-  const text = informative
+  let text = informative
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId)
     : buildOwnerApprovalText(approval)
   void (async () => {
+    // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
+    // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
+    if (!informative && reactionsOn(reactionDeps.setting)) {
+      const expires = approval.timeout_at ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }) : 'nincs'
+      const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl())
+      if (route.ok && await postReactionPrompt(approval, route)) return
+      text += '\n' + dashboardOnlyLine(route.ok ? 'slack_post_failed' : route.reason)
+    }
     // APPROVALSLACK1030: an owner who moved to Slack (NOTIFY_SLACK_TARGET set) while the channel provider stays
     // Telegram got the request on Telegram (measured 2026-10-30: both of the day's requests logged this function's
     // Telegram branch, its messageId and no provider). The owner asked for Slack only: the request goes to the owner's
@@ -354,10 +375,20 @@ export function fileServerApproval(params: {
     timeout_at: computeTimeoutAt(params.category, undefined),
     content_hash: params.content_hash,
   })
-  notifyOwner(approval)
+  // serverFiled: the description is the server's own words, so the reaction path may show it (APPROVALSLACK1030 (2)).
+  notifyOwner(approval, null, true)
   notifyMainAgent(approval)
   logger.info({ id: approval.id, agent_id: approval.agent_id, category: approval.category }, 'Approval request filed by the server')
   return approval
+}
+
+/** APPROVALSLACK1030 (2): the owner's Slack reactions, read by the server (idle while the switch is off). */
+export function startApprovalReactionSweeper(): NodeJS.Timeout {
+  return startApprovalSlackSweeper({
+    setting: reactionDeps.setting,
+    token: reactionDeps.token,
+    alert: (t) => { void sendOwnerSlackDm(t).catch(() => {}) },
+  })
 }
 
 export function startApprovalTimeoutSweeper(): NodeJS.Timeout {

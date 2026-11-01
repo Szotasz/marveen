@@ -1713,6 +1713,23 @@ export function initDatabase(dbPathOverride?: string): void {
   // only; never updated. NULL (every older row) = no grant: the filer's own
   // token, and the main token, behave as before.
   try { db.exec('ALTER TABLE approvals ADD COLUMN for_agent TEXT') } catch { /* already exists */ }
+  // APPROVALSLACK1030 (2): the request as it was posted into the owner's Slack DM, for the server's own reaction check.
+  // The owner id is a SNAPSHOT taken at posting (a later change of SLACK_OWNER_USER_ID does not move an open request);
+  // text_sha256 is over the exact posted text; decided_at closes the row once (a later reaction change only logs).
+  // A security table: the db-write-gate denies an agent's write on it, like approvals.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_slack_posts (
+      approval_id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      text_sha256 TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      bot_user_id TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      decision TEXT
+    )
+  `)
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -7484,6 +7501,46 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
         telegram_message_id = COALESCE(?, telegram_message_id)
     WHERE id = ? AND status = 'pending'
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+}
+
+// APPROVALSLACK1030 (2): the posted request (approval_slack_posts).
+export interface ApprovalSlackPostRow {
+  approval_id: string
+  channel: string
+  ts: string
+  text_sha256: string
+  owner_user_id: string
+  bot_user_id: string
+  posted_at: number
+  decided_at: number | null
+  decision: string | null
+}
+
+export function recordApprovalSlackPost(p: { approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string }): boolean {
+  return db.prepare(`
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000)).changes > 0
+}
+
+/** Posts still waiting for the owner: undecided, the request pending and not timed out, oldest first. */
+export function pendingApprovalSlackPosts(limit = 50): ApprovalSlackPostRow[] {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    SELECT p.* FROM approval_slack_posts p JOIN approvals a ON a.id = p.approval_id
+    WHERE p.decided_at IS NULL AND a.status = 'pending' AND (a.timeout_at IS NULL OR a.timeout_at > ?)
+    ORDER BY p.posted_at ASC, p.rowid ASC LIMIT ?
+  `).all(now, limit) as ApprovalSlackPostRow[]
+}
+
+export function getApprovalSlackPost(approvalId: string): ApprovalSlackPostRow | undefined {
+  return db.prepare('SELECT * FROM approval_slack_posts WHERE approval_id = ?').get(approvalId) as ApprovalSlackPostRow | undefined
+}
+
+/** Closes the row ONCE: false when it was already decided (a later reaction change does not reopen anything). */
+export function markApprovalSlackPostDecided(approvalId: string, decision: string): boolean {
+  return db.prepare('UPDATE approval_slack_posts SET decided_at = ?, decision = ? WHERE approval_id = ? AND decided_at IS NULL')
+    .run(Math.floor(Date.now() / 1000), decision, approvalId).changes > 0
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

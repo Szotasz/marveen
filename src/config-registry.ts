@@ -899,10 +899,25 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
     default: '',
-    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll.',
+    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll. Ha a Slack-reakciós jóváhagyás be van kapcsolva, ennek a felhasználónak a ✅/❌ reakciója dönt; minden változásáról a RÉGI azonosító DM-et kap.',
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // APPROVALSLACK1030 (2), Samu 65935: this id names whose Slack reaction approves, so ANY change of it needs the
+    // owner's session; with the shared token an agent could make itself the approver.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    key: 'APPROVAL_SLACK_REACTIONS',
+    type: 'string',
+    default: 'off',
+    description: 'Slack-reakciós jóváhagyás (APPROVALSLACK1030): bekapcsolva (on) a jóváhagyás-kérés a gazda Slack-DM-jébe EGY üzenetként megy, és a gazda ✅ (jóváhagy) vagy ❌ (elutasít) reakcióját a szerver maga ellenőrzi. Csak kifejezett SLACK_OWNER_USER_ID mellett, és csak olyan kérésre, amelynek tartalmát a szerver ellenőrizni tudja (levélnél a teljes boríték, a horgonnyal egyezően); minden más kérésnél a döntés a dashboardon marad. Alapból KI.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    // Switching it ON opens one more way to approve: that needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
     key: 'SCHEDULED_DELIVERY_CHANNEL',
