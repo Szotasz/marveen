@@ -278,7 +278,7 @@ describe('#2427 the owner-session refusal is shown in the page language', () => 
   it.each(['hu', 'en'] as const)('the new keys exist in %s', (lang) => {
     for (const k of ['common.not_done', 'common.owner_session_required', 'memories.toast.save_refused', 'memories.toast.destructive_refused', 'messages.queued']) {
       expect(DICTS[lang][k], k).toBeTruthy()
-      expect(DICTS[lang][k]).not.toMatch(/[–—]/)
+      expect(DICTS[lang][k]).not.toMatch(/[\u2013\u2014]/)
     }
   })
 })
