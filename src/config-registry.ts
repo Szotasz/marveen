@@ -847,10 +847,12 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',
-    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy.',
+    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy. Egy D-vel kezdődő azonosítóra a jóváhagyás-kérések is közvetlenül ide mennek; minden változásáról a RÉGI cél értesítést kap.',
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // APPROVALSLACK1030 (Samu 66026): the owner's approval requests go here, so ANY change needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'NOTIFY_SLACK_ALERT_TARGET',
