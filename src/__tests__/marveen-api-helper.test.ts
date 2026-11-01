@@ -470,6 +470,9 @@ describe('marveen-api.sh: schedules are read only', () => {
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
     '    built = [[v] + list(m.build_request(v, s[v])[:2]) for v in verbs if v != "message"]',
     '    print(json.dumps({"verbs": verbs, "samples": sorted(s), "built": built}))',
+    'elif mode == "guard-base":',
+    '    m.api_base = lambda: sys.argv[3]',
+    '    print(m.schedule_write_refused("POST", sys.argv[4]) or "ALLOWED")',
     'else:',
     '    meth, path = sys.argv[3], sys.argv[4]',
     '    m.build_request = lambda verb, args: (meth, path, {"x": 1}, {}, {})',
@@ -509,6 +512,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     for (const [method, path] of [
       ['POST', SCHED], ['PUT', `${SCHED}/x`], ['DELETE', `${SCHED}/x`], ['PATCH', `${SCHED}/x/enable`],
       ['POST', '/api/x/../' + 'schedules'], ['POST', '/api/%73chedules'], ['post', `${SCHED}?a=1`], ['POST', `${SCHED}/`],
+      ['POST', `/${SCHED}`], ['POST', `//${SCHED}/x`],
     ]) {
       const r = await py(['forged', method!, path!])
       expect(r.code, `${method} ${path}`).toBe(2)
@@ -520,5 +524,34 @@ describe('marveen-api.sh: schedules are read only', () => {
     expect(seen.map((s) => [s.method, s.url])).toEqual([['GET', SCHED]])
     // a non-GET elsewhere is not this guard's business
     expect((await py(['forged', 'POST', `${SCHED}x`])).code).toBe(0)
+  })
+
+  // Dani 65495: a base with a path, a query or a fragment turned the verb's own path into a query or a fragment, so a
+  // kanban-comment went out as POST /api/schedules past the guard. The base is an origin only now, and the guard
+  // looks at the path of the URL really sent.
+  it('MARVEEN_API_BASE with a path, a query or a fragment exits 2 and sends nothing, for any verb', async () => {
+    const origin = `http://127.0.0.1:${port(api)}`
+    const c = file('c.txt', 'komment')
+    for (const base of [`${origin}${SCHED}`, `${origin}${SCHED}?x=`, `${origin}${SCHED}#`, `${origin}/x`, `${origin}?a`, `${origin}#f`]) {
+      const r = await run(['kanban-comment', 'c-1', 'dani', c], { MARVEEN_API_BASE: base })
+      expect(r.code, base).toBe(2)
+      expect(r.stderr, base).toMatch(/must be an origin only.*nothing was sent/)
+      const m = await run(['message', 'dani', 'samu', file('m.txt', 'x')], { MARVEEN_API_BASE: base })
+      expect(m.code, `message ${base}`).toBe(2)
+    }
+    expect(seen).toHaveLength(0)
+    // the origin itself, with or without a trailing slash, still works
+    for (const base of [origin, `${origin}/`]) {
+      expect((await run(['kanban-list'], { MARVEEN_API_BASE: base })).code, base).toBe(0)
+    }
+    expect(seen.map((s) => s.url)).toEqual(['/api/kanban', '/api/kanban'])
+  })
+
+  it('the guard itself looks at the path of the URL really sent, even if a base with a path got past the env check', async () => {
+    for (const base of [`http://127.0.0.1:1${SCHED}?x=`, `http://127.0.0.1:1${SCHED}#`, `http://127.0.0.1:1/${SCHED}?`]) {
+      const r = await py(['guard-base', base, '/api/kanban/c-1/comments'])
+      expect(r.stdout, base).toMatch(/only reads schedules/)
+    }
+    expect((await py(['guard-base', 'http://127.0.0.1:1', '/api/kanban/c-1/comments'])).stdout.trim()).toBe('ALLOWED')
   })
 })

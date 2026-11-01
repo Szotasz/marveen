@@ -125,6 +125,13 @@ def check_env():
         if not on_loopback and b not in configured:
             return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
                     'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
+        # VOICETOKENLEAK1101 PR-B (Dani 65495): an ORIGIN only. A base carrying a path, a query or a fragment
+        # (http://127.0.0.1:3420/api/schedules?x=) would turn every verb's own path into a query or a fragment, so the
+        # request would go to that path instead: the schedule-write guard and the agent's own scope would look at the
+        # wrong path.
+        if u.path not in ('', '/') or u.query or u.fragment or '?' in b or '#' in b or not u.netloc:
+            return (f'MARVEEN_API_BASE={b} must be an origin only (scheme://host[:port]), with no path, query or '
+                    'fragment; nothing was sent.')
     token_file = os.environ.get('MARVEEN_TOKEN_FILE')
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
@@ -235,7 +242,10 @@ def schedule_write_refused(method, path):
     text, and a helper call names no route, so the gate cannot see what a verb sends: this is the one place where the
     path is put together, so the guard sits here, for every verb, before anything is sent. Any method but GET under
     the schedule route (after normalising the path) is refused."""
-    route = posixpath.normpath(urllib.parse.unquote(path.split('?', 1)[0]))
+    # The path the request will really go to (Dani 65495): the final URL's, not the verb's alone. Unquoted, leading
+    # slashes collapsed (POSIX normpath keeps a leading //), then normalised.
+    sent = urllib.parse.urlsplit(api_base() + path).path
+    route = posixpath.normpath('/' + urllib.parse.unquote(sent).lstrip('/'))
     if (route == SCHEDULE_ROUTE or route.startswith(SCHEDULE_ROUTE + '/')) and method.upper() != 'GET':
         return f'{method} {route}: the helper only reads schedules (writes are the main agent\'s); nothing was sent.'
     return None
