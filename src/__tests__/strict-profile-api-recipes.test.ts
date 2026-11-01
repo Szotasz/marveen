@@ -20,6 +20,7 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, cpSync
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-strictapi-test-'))
@@ -95,6 +96,7 @@ function startBlocks(name: string): string {
   S.ensureMemorySearchLabelSection(name)
   S.ensureMessageCloseSection(name)
   S.ensureStrictApiSection(name)
+  S.ensureApiHelperSection(name)
   return readFileSync(path, 'utf-8')
 }
 
@@ -203,9 +205,9 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     expect(file).not.toContain('strict-api')
     expect(file).not.toContain('strict profilodban')
     for (const title of BLOCK_TITLES) expect(file, `block missing: ${title}`).toContain(title)
-    // Dani 64941/3: 0 hits for these four in the generated blocks (the creation-time body is PR-A2)
+    // Dani 64941/3: 0 hits for these four in the generated blocks (the api-helper block names "curl" in prose only, as the old form it overrides)
     for (const s of ['$(cat', '.dashboard-token', 'Authorization']) expect(file, s).not.toContain(s)
-    expect(file).not.toMatch(/\bcurl\b/)
+    expect(file.split('\n').filter((l) => /^\s*curl\s/.test(l))).toEqual([])
     for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
       expect(helperLines(part).length, part.slice(0, 60)).toBeGreaterThan(0)
     }
@@ -221,14 +223,14 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     const file = startBlocks('plain-b')
     const own = join(tmpRoot, 'agents', 'plain-b')
     const files = [...new Set([...file.matchAll(/\S+\.txt\b/g)].map((m) => m[0]))].sort()
-    expect(files).toEqual(['api-eredmeny', 'api-jovahagyas', 'api-memoria', 'api-uzenet'].map((k) => join(own, `${k}.txt`)))
+    expect(files).toEqual(['api-eredmeny', 'api-jovahagyas', 'api-memoria', 'api-naplo', 'api-uzenet'].map((k) => join(own, `${k}.txt`)))
   })
 
   it('every block that names a payload file says: one file, one send (Dani 65157/1, Samu 65160)', () => {
     stageAgent('plain-o', null)
     const file = startBlocks('plain-o')
     const parts = file.split('<!-- BEGIN GENERATED: ').slice(1).filter((p) => /api-[a-z]+\.txt/.test(p))
-    expect(parts.length).toBe(3) // autonomy (message + approval), message-close, agent-id
+    expect(parts.length).toBe(4) // autonomy (message + approval), message-close, agent-id, api-helper (PR-A2)
     for (const p of parts) expect(p, p.slice(0, 40)).toContain(S.ONE_FILE_ONE_SEND)
     const autonomy = parts.find((p) => p.startsWith('autonomy-wiring'))!
     expect(autonomy.split(S.ONE_FILE_ONE_SEND).length - 1).toBe(2)
@@ -275,12 +277,34 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     expect(S.agentUsesApiHelper('strict-x')).toBe(true)
   })
 
-  it('the creation prompt: the skill section is the helper one, the body keeps its curl recipes until PR-A2', async () => {
+  // VOICETOKENLEAK1101 PR-A2: the creation-time body goes through the helper too; the schedules read is the one
+  // curl left (the self-pace gate allows exactly that form until PR-B), and the dontAsk sentence stays strict-only.
+  it('the creation prompt: every recipe through the helper, the schedules read the one curl (until PR-B)', async () => {
     stageAgent('plain-b', null)
     const { prompt } = await creation('plain-b')
-    expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(['skill-propose'])
-    // memory save, daily log, search, hot list, move, schedule listing, stranger ping
-    expect(prompt.split('$(cat ').length - 1).toBe(7)
+    expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
+      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'skill-propose', 'message'],
+    )
+    expect(prompt.split('$(cat ').length - 1).toBe(1)
+    expect(prompt).not.toContain('dontAsk')
+    expect(prompt).toContain('Olvasni (listázni) szabad')
+  })
+
+  // Dani 64941/3 for the WHOLE generated CLAUDE.md: the creation prompt the model copies, the file it returns and the
+  // blocks every start writes. The named exception is the schedules read (PR-B); "curl" may stay in prose (the
+  // self-pace rule names the clients it forbids), never as a recipe line.
+  it('the whole generated CLAUDE.md: no token, no curl recipe, except the named schedules read', async () => {
+    stageAgent('plain-w', null)
+    const { prompt, out } = await creation('plain-w')
+    writeFileSync(join(tmpRoot, 'agents', 'plain-w', 'CLAUDE.md'), out, 'utf-8')
+    const text = [prompt, startBlocks('plain-w')].join('\n')
+    const isSchedulesRead = (l: string) => l.includes('/api/schedules')
+    const tokenLines = text.split('\n').filter((l) => /\$\(cat|\.dashboard-token|Authorization/.test(l))
+    expect(tokenLines.filter((l) => !isSchedulesRead(l))).toEqual([])
+    expect(tokenLines.filter(isSchedulesRead)).toHaveLength(1)
+    const curlRecipes = text.split('\n').filter((l) => /^\s*curl\s/.test(l))
+    expect(curlRecipes.filter((l) => !isSchedulesRead(l))).toEqual([])
+    expect(text).toContain('<!-- BEGIN GENERATED: api-helper')
   })
 
   it('ensureStrictApiSection does not touch a non-strict file at all', () => {
@@ -313,6 +337,103 @@ describe('the strict-api block follows the profile', () => {
     writeFileSync(join(tmpRoot, 'agents', 'strict-f', 'agent-config.json'), JSON.stringify({}))
     S.ensureStrictApiSection('strict-f')
     expect(readFileSync(path, 'utf-8')).toBe('# strict-f\n\n## Utána\n\nszöveg\n')
+  })
+})
+
+describe('the api-helper block (VOICETOKENLEAK1101 PR-A2): an existing agent body gets the helper recipes', () => {
+  const block = (p: string) => readFileSync(p, 'utf-8').match(/<!-- BEGIN GENERATED: api-helper[\s\S]*?<!-- END GENERATED: api-helper -->/)?.[0] ?? ''
+
+  it('a non-strict agent: written once (idempotent), saying it overrides the curl recipes, no token in it', () => {
+    const path = stageAgent('plain-h', null, '# plain-h\n\nkézi törzs curl-lel\n')
+    S.ensureApiHelperSection('plain-h')
+    const once = readFileSync(path, 'utf-8')
+    S.ensureApiHelperSection('plain-h')
+    expect(readFileSync(path, 'utf-8')).toBe(once)
+    const b = block(path)
+    expect(b).toContain('ÍRJA FELÜL')
+    for (const s of ['$(cat', '.dashboard-token', 'Authorization']) expect(b, s).not.toContain(s)
+    const own = join(tmpRoot, 'agents', 'plain-h')
+    expect(helperLines(b)).toEqual([
+      `${HELPER_CMD} memory-save plain-h warm "kulcsszo1, kulcsszo2" ${join(own, 'api-memoria.txt')}`,
+      `${HELPER_CMD} memory-search plain-h KULCSSZO --category warm`,
+      `${HELPER_CMD} memory-list plain-h hot`,
+      `${HELPER_CMD} memory-move <ID> cold plain-h`,
+      `${HELPER_CMD} daily-log plain-h ${join(own, 'api-naplo.txt')}`,
+      `${HELPER_CMD} message plain-h agent-a ${join(own, 'api-uzenet.txt')}`,
+    ])
+    expect(once.startsWith('# plain-h\n\nkézi törzs curl-lel\n')).toBe(true)
+  })
+
+  it('never for a strict agent (it has the strict-api block)', () => {
+    const strictPath = stageAgent('strict-h', 'developer-junior')
+    S.ensureApiHelperSection('strict-h')
+    expect(block(strictPath)).toBe('')
+  })
+
+  // Samu 65192, Marveen 65196: the main agent gets the block too, ONLY as a marker block; the owner's body is byte for
+  // byte what it was, and its payload files sit in the project root, which git ignores.
+  it('the main agent: the block appended to the root CLAUDE.md, the owner body byte for byte unchanged, idempotent', () => {
+    const body = '# Fő ágens\n\nA gazda szövege, curl-recepttel:\ncurl -s -X POST http://localhost:3420/api/memories -H "Authorization: Bearer $(cat store/.dashboard-token)"\n'
+    const root = join(tmpRoot, 'CLAUDE.md')
+    writeFileSync(root, body, 'utf-8')
+    S.ensureApiHelperSection('agent-a')
+    const once = readFileSync(root, 'utf-8')
+    expect(once.startsWith(body.trimEnd())).toBe(true)
+    expect(once.slice(0, once.indexOf('<!-- BEGIN GENERATED: api-helper')).trimEnd()).toBe(body.trimEnd())
+    const b = block(root)
+    expect(b).toContain('ÍRJA FELÜL')
+    expect(b).toContain(`${HELPER_CMD} memory-save agent-a warm "kulcsszo1, kulcsszo2" ${join(tmpRoot, 'api-memoria.txt')}`)
+    expect(b).toContain(`${HELPER_CMD} message agent-a agent-a ${join(tmpRoot, 'api-uzenet.txt')}`)
+    S.ensureApiHelperSection('agent-a')
+    expect(readFileSync(root, 'utf-8')).toBe(once)
+  })
+
+  it('the main agent payload files are ignored by git in the project root (git check-ignore on this repo)', () => {
+    for (const k of ['memoria', 'naplo', 'uzenet', 'jovahagyas', 'eredmeny']) {
+      const out = execFileSync('git', ['-C', REPO, 'check-ignore', '-v', `api-${k}.txt`], { encoding: 'utf-8' })
+      expect(out, k).toMatch(/\.gitignore:\d+:\/api-\*\.txt\s/)
+    }
+  })
+
+  it('the dashboard start writes it for the main agent, next to its other generated sections', () => {
+    const src = readFileSync(join(REPO, 'src', 'web.ts'), 'utf-8')
+    const close = src.indexOf('ensureMessageCloseSection(MAIN_AGENT_ID)')
+    const helper = src.indexOf('ensureApiHelperSection(MAIN_AGENT_ID)')
+    expect(close).toBeGreaterThan(0)
+    expect(helper).toBeGreaterThan(close)
+  })
+
+  it('removed when the agent becomes strict or its settings deny the helper, back when allowed again', () => {
+    const original = '# plain-r\n\nkézi törzs\n'
+    const path = stageAgent('plain-r', null, original)
+    S.ensureApiHelperSection('plain-r')
+    expect(block(path)).not.toBe('')
+    const settings = join(tmpRoot, 'agents', 'plain-r', '.claude', 'settings.json')
+    mkdirSync(dirname(settings), { recursive: true })
+    writeFileSync(settings, JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }))
+    S.ensureApiHelperSection('plain-r')
+    expect(readFileSync(path, 'utf-8')).toBe(original)
+    writeFileSync(settings, '{}')
+    S.ensureApiHelperSection('plain-r')
+    expect(block(path)).not.toBe('')
+    writeFileSync(join(tmpRoot, 'agents', 'plain-r', 'agent-config.json'), JSON.stringify({ securityProfile: 'developer-junior' }))
+    S.ensureApiHelperSection('plain-r')
+    expect(readFileSync(path, 'utf-8')).toBe(original)
+  })
+
+  it('the strict-api block carries the same per-kind payload files, no shared api-payload.txt', () => {
+    const b = S.buildStrictApiBody('strict-p')
+    const own = join(tmpRoot, 'agents', 'strict-p')
+    for (const k of ['memoria', 'naplo', 'uzenet']) expect(b).toContain(join(own, `api-${k}.txt`))
+    expect(b).not.toContain('api-payload.txt')
+  })
+
+  it('the agent start writes the api-helper block right after the strict-api block', () => {
+    const src = readFileSync(join(REPO, 'src', 'web', 'agent-process.ts'), 'utf-8')
+    const strictAt = src.indexOf('ensureStrictApiSection(name)')
+    const helperAt = src.indexOf('ensureApiHelperSection(name)')
+    expect(strictAt).toBeGreaterThan(0)
+    expect(helperAt).toBeGreaterThan(strictAt)
   })
 })
 

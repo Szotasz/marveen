@@ -13,7 +13,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-helper-recipes-'))
 // The generated lines name <PROJECT_ROOT>/scripts/marveen-api.sh: the real scripts, copied under the mocked root.
 mkdirSync(join(tmpRoot, 'scripts', 'lib'), { recursive: true })
-for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py')]) {
+for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py'), join('lib', 'homoglyph.py'), join('lib', 'mixed_script.py')]) {
   copyFileSync(join(REPO, 'scripts', f), join(tmpRoot, 'scripts', f))
 }
 
@@ -94,5 +94,32 @@ describe('the generated helper recipes run for real', () => {
     expect(got.method).toBe('POST')
     expect(got.url).toBe('/api/approvals/9/consume')
     expect(got.body).toMatchObject({ category: 'memory_maintenance', consumer: AGENT, content_hash: 'sha256:0123abcd' })
+  })
+})
+
+// VOICETOKENLEAK1101 PR-A2: the api-helper block an existing agent gets in place of its creation-time curl recipes.
+describe('the api-helper block recipes run for real', () => {
+  const body = () => S.buildApiHelperBody(AGENT)
+
+  it('daily-log: POST /api/daily-log with the content from api-naplo.txt', async () => {
+    const got = await runRecipeLine(recipeLine(body(), 'daily-log', AGENT), { 'api-naplo.txt': '## 18:40 -- Tema\nMi tortent' })
+    expect(got.method).toBe('POST')
+    expect(got.url).toBe('/api/daily-log')
+    expect(got.body).toMatchObject({ agent_id: AGENT, content: '## 18:40 -- Tema\nMi tortent' })
+  })
+
+  it('memory-list hot and memory-move: the agent own rows, a category-only PATCH with updated_by', async () => {
+    const list = await runRecipeLine(recipeLine(body(), 'memory-list', AGENT))
+    const u = new URL(list.url, 'http://x')
+    expect([list.method, u.pathname, u.searchParams.get('agent'), u.searchParams.get('category')]).toEqual(['GET', '/api/memories', AGENT, 'hot'])
+    const move = await runRecipeLine(recipeLine(body(), 'memory-move').replace('<ID>', '5'))
+    expect([move.method, move.url]).toEqual(['PATCH', '/api/memories/5'])
+    expect(move.body).toEqual({ category: 'cold', updated_by: AGENT })
+  })
+
+  it('message: the unknown-sender ping goes through agent-msg.sh with the text from api-uzenet.txt', async () => {
+    const got = await runRecipeLine(recipeLine(body(), 'message', AGENT), { 'api-uzenet.txt': 'Ismeretlen sender `x` $(nem fut)' }, '{"id":1}')
+    expect([got.method, got.url]).toEqual(['POST', '/api/messages'])
+    expect(got.body).toMatchObject({ from: AGENT, to: 'agent-a', content: 'Ismeretlen sender `x` $(nem fut)' })
   })
 })
