@@ -22,7 +22,8 @@
 //   a faster poll from the panel gets the pending answer back without a call.
 
 import { MAIN_AGENT_ID } from '../config.js'
-import { MXD_AGENT_SLUG_RE, checkAgentAdd, requestAgentAdd, requestAgentRemove, type MxdDashCall } from './mxd-dash.js'
+import { MXD_AGENT_SLUG_RE, checkAgentAdd, requestAgentAdd, requestAgentAvatar, requestAgentRemove, type MxdDashCall } from './mxd-dash.js'
+import type { AvatarProblem, AvatarRead } from './gromzo-avatar.js'
 
 export interface GromzoAgentDeps {
   call: MxdDashCall
@@ -35,6 +36,10 @@ export interface GromzoAgentDeps {
   /** Runs the synchronous row building in one batch (the route: withTmuxBatch, so the run state costs one
    *  tmux call per server instead of one per agent). Optional: without it the rows are built as they are. */
   batch?: <T>(fn: () => T) => T
+  /** The agent's picture, read under the guards of gromzo-avatar.ts (no symlink, size before read, magic bytes). */
+  readAvatar: (slug: string) => AvatarRead
+  /** What would stop the picture from being sent, without reading it (the list shows it); null = fine. */
+  avatarProblem: (slug: string) => AvatarProblem | null
   /** The slugs mxd's last start held back (dash status held_agents); empty when unknown. */
   held: () => Promise<Set<string>>
   /** Restarts that ONE agent, once mxd is back from its reload (fire and forget). */
@@ -50,6 +55,8 @@ export interface GromzoAgentRow {
   running: boolean
   /** mxd lists it, but its last start held it back (the owner can ask for a new approval). */
   held: boolean
+  /** Why its picture cannot go to Gromzo (missing, too large, not PNG/JPEG, not a plain file); null = fine. */
+  avatarProblem: AvatarProblem | null
   /** A consent is waiting for the owner in the app (until this time, ms). */
   pendingUntil: number | null
 }
@@ -57,6 +64,7 @@ export interface GromzoAgentRow {
 export type GromzoAgentOutcome =
   | { ok: true, state: 'pending', expiresIn: number }
   | { ok: true, state: 'added' | 'removed' | 'on' | 'refused' | 'expired' | 'used' }
+  | { ok: true, state: 'avatar_sent', applied: boolean, bytes: number }
   /** added: on consent_mismatch, the slug mxd actually added (its flag stays as it was). */
   | { ok: false, code: string, added?: string }
 
@@ -91,7 +99,7 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
   const now = deps.now()
   dropExpired(now)
   const build = (): GromzoAgentRow[] => {
-    const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, pendingUntil: null }]
+    const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, avatarProblem: null, pendingUntil: null }]
     for (const slug of [...deps.agents()].sort()) {
       if (slug === MAIN_AGENT_ID) continue
       rows.push({
@@ -101,6 +109,7 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
         gromzo: deps.readFlag(slug),
         running: deps.isRunning(slug),
         held: held.has(slug),
+        avatarProblem: deps.avatarProblem(slug),
         pendingUntil: pending.get(slug)?.expiresAt ?? null,
       })
     }
@@ -161,4 +170,17 @@ export async function disableGromzoAgent(slug: string, deps: GromzoAgentDeps): P
   deps.writeFlag(slug, false)
   deps.restartOne(slug)
   return { ok: true, state: 'removed' }
+}
+
+/** Sends the agent's dashboard picture to Gromzo (mxd agent_avatar), after an add. The slug is checked first; the
+ *  file is read only for a slug that passed. A failure is only that: it never undoes the add. There is no other
+ *  path: a picture the agent writes later is never sent automatically (Dani 64587, Samu 64633). */
+export async function sendGromzoAvatar(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
+  const refused = slugRefusal(slug, deps)
+  if (refused) return { ok: false, code: refused }
+  const img = deps.readAvatar(slug)
+  if (!img.ok) return { ok: false, code: img.code }
+  const r = await requestAgentAvatar(deps.call, slug, img.bytes)
+  if (!r.ok) return { ok: false, code: r.code }
+  return { ok: true, state: 'avatar_sent', applied: r.applied, bytes: img.bytes.length }
 }

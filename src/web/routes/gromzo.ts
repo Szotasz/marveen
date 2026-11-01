@@ -41,9 +41,10 @@ export const OWNER_QR_SESSION_REQUIRED = {
 }
 import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
-  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, type GromzoAgentDeps, type GromzoAgentOutcome,
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, sendGromzoAvatar, type GromzoAgentDeps, type GromzoAgentOutcome,
 } from '../gromzo-agents.js'
-import { listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
+import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
+import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
 import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
 import type { RouteContext } from './types.js'
 
@@ -147,9 +148,37 @@ async function restartAfterMxdReload(slug: string): Promise<void> {
     } catch { /* still reloading */ }
     await new Promise((r) => setTimeout(r, 2_000))
   }
+  await avatarAfterReload(slug)
   const res = await restartAgentProcess(slug)
   if (res.ok) logger.info({ slug }, 'gromzo agents: the agent restarted for its Gromzo switch')
   else logger.error({ slug, error: res.error }, 'gromzo agents: the agent did NOT restart after its Gromzo switch')
+}
+
+/** After mxd's reload: an add (its flag is on by now) sends the agent's dashboard picture, before the agent restarts;
+ *  a remove (flag off) sends nothing. A failure is logged and changes nothing else: the add stands. */
+export async function avatarAfterReload(slug: string, retryDelayMs = 2_000): Promise<void> {
+  if (agentDeps.readFlag(slug)) await pushAvatarAfterAdd(slug, retryDelayMs)
+}
+
+/** The picture after an add: a few tries while mxd may still be settling after its reload (transport failure or
+ *  "unavailable"), then give up. Logs the slug and the size only. */
+export async function pushAvatarAfterAdd(slug: string, retryDelayMs = 2_000): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let o: GromzoAgentOutcome
+    try { o = await sendGromzoAvatar(slug, agentDeps) } catch (e) {
+      o = { ok: false, code: e instanceof MxdDashError ? e.code : 'io' }
+    }
+    if (o.ok) {
+      if (o.state === 'avatar_sent') logger.info({ slug, bytes: o.bytes, applied: o.applied }, 'gromzo agents: picture sent after the add')
+      return
+    }
+    const retry = o.code === 'unavailable' || o.code === 'not_running' || o.code === 'timeout' || o.code === 'io'
+    if (!retry || attempt === 3) {
+      logger.warn({ slug, code: o.code }, 'gromzo agents: picture NOT sent after the add (the add stands)')
+      return
+    }
+    await new Promise((r) => setTimeout(r, retryDelayMs))
+  }
 }
 
 const defaultAgentDeps: GromzoAgentDeps = {
@@ -159,6 +188,9 @@ const defaultAgentDeps: GromzoAgentDeps = {
   writeFlag: (slug, on) => writeAgentGromzo(slug, on),
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   isRunning: (slug) => isAgentRunning(slug),
+  // agentDir(slug) only for a slug slugRefusal passed (sendGromzoAvatar checks first; the list only names fleet agents).
+  readAvatar: (slug) => readAgentAvatar(agentDir(slug)),
+  avatarProblem: (slug) => avatarProblem(agentDir(slug)),
   // One tmux list-sessions per server for the whole list, not one sync call per agent.
   batch: (fn) => withTmuxBatch(fn),
   held: async () => {

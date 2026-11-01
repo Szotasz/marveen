@@ -30,9 +30,10 @@ vi.mock('../env.js', async (importOriginal) => ({
 }))
 
 const { initDatabase, getDb, createDashboardUser } = await import('../db.js')
-const { tryHandleGromzo, setGromzoAgentDepsForTest } = await import('../web/routes/gromzo.js')
+const { tryHandleGromzo, setGromzoAgentDepsForTest, pushAvatarAfterAdd, avatarAfterReload } = await import('../web/routes/gromzo.js')
 const { resetPendingGromzoConsents } = await import('../web/gromzo-agents.js')
 const { MxdDashError } = await import('../web/mxd-dash.js')
+const AVATAR_PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('PIXELBYTESPIXELBYTES')])
 const { MAIN_AGENT_ID: MAIN_ID } = await import('../config.js')
 const { requiresAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { createSession, revokeSession } = await import('../web/auth-sessions.js')
@@ -379,6 +380,8 @@ describe('the agent switch routes', () => {
       displayName: (s) => s,
       isRunning: () => true,
       held: async () => new Set(),
+      readAvatar: (s) => (s === 'zara' ? { ok: true, bytes: AVATAR_PNG } : s === 'samu' ? { ok: false, code: 'avatar_too_large' } : { ok: false, code: 'no_avatar' }),
+      avatarProblem: (s) => (s === 'zara' ? null : s === 'samu' ? 'avatar_too_large' : 'no_avatar'),
       restartOne: (s) => { restarted.push(s) },
       now: () => Date.now(),
     })
@@ -469,6 +472,54 @@ describe('the agent switch routes', () => {
     expect(flags.size).toBe(0)
     expect(restarted).toEqual([])
     expect(logged.join('\n')).toContain('"added":"samu"')
+  })
+
+  it('no manual picture route (owner, Slack 15:48): POST .../avatar is not a route', async () => {
+    expect((await post('zara/avatar')).status).toBe(404)
+    expect(calls).toEqual([])
+  })
+
+  it('the list load sends no picture (only an add does; Samu 64633)', async () => {
+    flags.set('zara', true)
+    expect((await fetch(origin + '/api/gromzo/agents')).status).toBe(200)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(calls.filter((c) => c.verb === 'agent_avatar')).toEqual([])
+  })
+
+  it('after an add: the picture goes, with up to 3 tries while mxd settles; a refusal or no picture never throws (the add stands)', async () => {
+    replies.agent_avatar = [{ ok: false, error: 'unavailable' }, { ok: false, error: 'unavailable' }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0)
+    expect(calls.filter((c) => c.verb === 'agent_avatar')).toHaveLength(3)
+    expect(logged.join('\n')).toContain('picture sent after the add')
+    // never the picture in any form: not base64, not a Buffer, not its bytes
+    for (const leak of [AVATAR_PNG.toString('base64'), '"Buffer"', 'PIXELBYTES', 'avatar.png']) expect(logged.join('\n')).not.toContain(leak)
+    calls.length = 0
+    replies.agent_avatar = [{ ok: false, error: 'rate_limited' }]
+    await expect(pushAvatarAfterAdd('zara', 0)).resolves.toBeUndefined()
+    expect(calls).toHaveLength(1) // no retry on a real refusal
+    calls.length = 0
+    replies.agent_avatar = [{ ok: false, error: 'unavailable' }, { ok: false, error: 'unavailable' }, { ok: false, error: 'unavailable' }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0)
+    expect(calls).toHaveLength(3) // bounded
+    calls.length = 0
+    await expect(pushAvatarAfterAdd('samu', 0)).resolves.toBeUndefined() // too large: no call at all
+    expect(calls).toEqual([])
+    expect(logged.join('\n')).toContain('picture NOT sent after the add (the add stands)')
+  })
+
+  it('after the reload: an add (flag on) sends the picture, a remove (flag off) sends nothing', async () => {
+    replies.agent_avatar = [{ ok: true, applied: true }]
+    await avatarAfterReload('zara', 0)
+    expect(calls).toEqual([])
+    flags.set('zara', true)
+    await avatarAfterReload('zara', 0)
+    expect(calls.map((c) => [c.verb, c.slug])).toEqual([['agent_avatar', 'zara']])
+  })
+
+  it('the list carries avatarProblem per row', async () => {
+    flags.set('zara', true)
+    const rows = (await (await fetch(origin + '/api/gromzo/agents')).json()).agents as Array<{ slug: string, avatarProblem: string | null }>
+    expect(rows.filter((r) => r.slug !== MAIN_ID).map((r) => [r.slug, r.avatarProblem])).toEqual([['samu', 'avatar_too_large'], ['zara', null]])
   })
 
   it('codes map to statuses: a bad slug 400, unknown 404, the main agent 409, no pending 409, rate_limited 429, mxd down 503', async () => {

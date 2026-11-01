@@ -7633,6 +7633,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-agent-state.is-on { color: var(--success); }
 .gromzo-agent-state.is-pending { color: var(--accent); }
 .gromzo-agent-state.is-error { color: var(--danger); }
+.gromzo-agent-state.is-warn { color: var(--accent); }
 .gromzo-agent-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
 .gromzo-agent-row .btn-compact { min-height: 36px; }
 

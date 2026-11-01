@@ -288,3 +288,15 @@ export async function requestAgentRemove(call: MxdDashCall, slug: string): Promi
   const r = await call({ verb: 'agent_remove', slug })
   return r.ok === true ? { ok: true } : { ok: false, code: errorCode(r) }
 }
+
+// GROMZOAGENTPICK1101 (Samu 64526): the agent's picture, through mxd's agent_avatar verb (marveen-mxd main.rs
+// AgentCtl::avatar): {slug, image: base64 of the PNG/JPEG bytes} -> {ok, applied} (applied: set on the running
+// agent now; otherwise at its next start). Errors: bad_request, bad_image, rate_limited (one per slug per minute),
+// unknown_agent.
+export type AgentAvatarResult = { ok: true, applied: boolean } | { ok: false, code: string }
+
+export async function requestAgentAvatar(call: MxdDashCall, slug: string, bytes: Buffer): Promise<AgentAvatarResult> {
+  if (!MXD_AGENT_SLUG_RE.test(slug) || bytes.length === 0) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'agent_avatar', slug, image: bytes.toString('base64') })
+  return r.ok === true ? { ok: true, applied: r.applied === true } : { ok: false, code: errorCode(r) }
+}
