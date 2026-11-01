@@ -98,7 +98,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { syncAgentTokenOnStart } from './agent-tokens.js'
+import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
@@ -2791,6 +2791,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       )
     }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
+    // VOICETOKENLEAK1101 PR-A0: scripts/marveen-api.sh reads the agent's OWN token when it has one (AGENT_TOKENS).
+    const helperTokenEnvPiece = helperTokenEnv(name, shSingleQuote)
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
     // immediately with an obscure "No deferred tool marker found" error
@@ -2953,7 +2955,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
