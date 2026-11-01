@@ -1088,14 +1088,24 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
     if (typeof first === 'string' && first.trim()) return first.trim()
     if (typeof first === 'number') return String(first)
   }
+  // #2404 (WRONGRECIP819, the #2403 Discord rule on every provider): exactly one allowed group or channel is the target;
+  // two or more are no target at all. The key order is insertion order, a re-pairing can reorder it, and everyone in a
+  // group or channel reads what lands there, so the first key would be a guess that can leak. resolveBoundChannel
+  // turns 2+ into ambiguousCandidates, so the delivery is skipped and reported.
+  const targets = groupOrChannelTargets(o)
+  return targets.length === 1 ? targets[0]! : null
+}
+
+/** The allowed groups (Telegram, Discord: `groups`) and channels (Slack: `channels`) of an access.json, in file order. */
+export function groupOrChannelTargets(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object') return []
+  const o = raw as Record<string, unknown>
+  const out: string[] = []
   for (const key of ['groups', 'channels'] as const) {
     const map = o[key]
-    if (map && typeof map === 'object') {
-      const keys = Object.keys(map as Record<string, unknown>)
-      if (keys.length > 0) return keys[0]
-    }
+    if (map && typeof map === 'object' && !Array.isArray(map)) out.push(...Object.keys(map as Record<string, unknown>))
   }
-  return null
+  return out
 }
 
 
@@ -1375,6 +1385,11 @@ export function resolveBoundChannel(agentName: string, providerOverride?: Channe
     // and the log line is read only after the damage. Refuse instead: the
     // caller skips delivery and raises the ambiguity where someone acts on it.
     if (candidates > 1) return { provider, chatId: null, ambiguousCandidates: candidates }
+    // #2404: with no DM contact, two or more allowed groups/channels are the same kind of guess.
+    if (candidates === 0) {
+      const targets = groupOrChannelTargets(raw).length
+      if (targets > 1) return { provider, chatId: null, ambiguousCandidates: targets }
+    }
     return { provider, chatId: chatIdFromAccessConfig(raw) }
   } catch { return { provider, chatId: null } }
 }
@@ -2211,13 +2226,13 @@ async function attemptFireTask(
         // branch below) but this is NOT a config gap, it is an unresolved
         // author decision, so it gets error-level visibility plus a direct
         // nudge to fix it, instead of a log line nobody is watching.
-        logger.error({ task: task.name, agent: agentName, provider: bound.provider, candidates: bound.ambiguousCandidates }, 'scheduled task: delivery target is ambiguous (2+ DM contacts, no pinned chat id) -- skipping the delivery instruction instead of guessing')
+        logger.error({ task: task.name, agent: agentName, provider: bound.provider, candidates: bound.ambiguousCandidates }, 'scheduled task: delivery target is ambiguous (2+ DM contacts, or 2+ allowed groups/channels; no pinned chat id) -- skipping the delivery instruction instead of guessing')
         if (!ambiguousTargetAlerted.has(task.name)) {
           ambiguousTargetAlerted.add(task.name)
           createAgentMessage(
             'system',
             MAIN_AGENT_ID,
-            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges cimzett van az agens access.json-jaban (DM-kontakt az allowFrom-ban, vagy Discordon csatorna a groups-ban), es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
+            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges cimzett van az agens access.json-jaban (DM-kontakt az allowFrom-ban, vagy engedelyezett csoport/csatorna a groups/channels alatt), es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
           )
         }
         prefix = `[Utemezett feladat: ${task.name}] `

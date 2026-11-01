@@ -63,6 +63,14 @@ describe('chatIdFromAccessConfig (pure core)', () => {
     expect(chatIdFromAccessConfig({ allowFrom: [], channels: { C0000000001: {} } })).toBe('C0000000001')
   })
 
+  it('2+ allowed groups or channels are no target, in either order, also one of each (#2404)', () => {
+    expect(chatIdFromAccessConfig({ allowFrom: [], groups: { '-1001': {}, '-1002': {} } })).toBeNull()
+    expect(chatIdFromAccessConfig({ allowFrom: [], groups: { '-1002': {}, '-1001': {} } })).toBeNull()
+    expect(chatIdFromAccessConfig({ allowFrom: [], channels: { C1: {}, C2: {} } })).toBeNull()
+    expect(chatIdFromAccessConfig({ allowFrom: [], channels: { C2: {}, C1: {} } })).toBeNull()
+    expect(chatIdFromAccessConfig({ allowFrom: [], groups: { '-1001': {} }, channels: { C1: {} } })).toBeNull()
+  })
+
   it('prefers the DM allowlist entry over a group/channel fallback', () => {
     expect(chatIdFromAccessConfig({ allowFrom: ['U0000000001'], channels: { C0123: {} } })).toBe('U0000000001')
   })
@@ -178,6 +186,9 @@ describe('schedule-runner source contract (sentinel removed, provider-aware)', (
     const ambiguousIdx = src.indexOf('scheduled task: delivery target is ambiguous')
     const nextPrefixIdx = src.indexOf('prefix = `[Utemezett feladat: ${task.name}] `', ambiguousIdx)
     expect(nextPrefixIdx, 'ambiguous branch must fall through to the bare prefix').toBeGreaterThan(ambiguousIdx)
+    // #2404: the log and the notice name both kinds of candidate, on every provider
+    expect(src).toContain('2+ DM contacts, or 2+ allowed groups/channels; no pinned chat id')
+    expect(src).toContain('vagy engedelyezett csoport/csatorna a groups/channels alatt')
   })
 
   it('the [FELHIVAS] notice is ONE-SHOT per task, while the error log stays per fire', () => {
@@ -272,6 +283,42 @@ describe('resolveTaskChannelTarget genuinely exercises the ambiguous branch (not
     const target = resolveTaskChannelTarget({ agent: FIXTURE_AGENT })
     expect(target.chatId).toBe('111111')
     expect(target.ambiguousCandidates).toBeUndefined()
+  })
+
+  // #2404 (the #2403 Discord rule on every provider): with no DM contact, two or more allowed groups (Telegram) or
+  // channels (Slack) are ambiguous, in either key order; exactly one is the target.
+  const access = (provider: string, body: unknown) => {
+    mkdirSync(join(FIXTURE_DIR, '.claude', 'channels', provider), { recursive: true })
+    writeFileSync(join(FIXTURE_DIR, '.claude', 'channels', provider, 'access.json'), JSON.stringify(body))
+  }
+
+  it('telegram: 2 allowed groups and no DM contact are ambiguous, in either order (#2404)', () => {
+    for (const groups of [{ '-1001': {}, '-1002': {} }, { '-1002': {}, '-1001': {} }]) {
+      access('telegram', { allowFrom: [], groups })
+      const t = resolveTaskChannelTarget({ agent: FIXTURE_AGENT, channelProvider: 'telegram' })
+      expect(t.chatId, JSON.stringify(groups)).toBeNull()
+      expect(t.ambiguousCandidates).toBe(2)
+    }
+  })
+
+  it('slack: 2 allowed channels and no DM contact are ambiguous, in either order (#2404)', () => {
+    for (const channels of [{ C0000000001: {}, C0000000002: {} }, { C0000000002: {}, C0000000001: {} }]) {
+      access('slack', { allowFrom: [], channels })
+      const t = resolveTaskChannelTarget({ agent: FIXTURE_AGENT, channelProvider: 'slack' })
+      expect(t.chatId, JSON.stringify(channels)).toBeNull()
+      expect(t.ambiguousCandidates).toBe(2)
+    }
+  })
+
+  it('exactly one allowed group or channel is the target; one DM contact still wins over groups (#2404)', () => {
+    access('telegram', { allowFrom: [], groups: { '-1001': {} } })
+    expect(resolveTaskChannelTarget({ agent: FIXTURE_AGENT, channelProvider: 'telegram' })).toMatchObject({ chatId: '-1001' })
+    access('slack', { allowFrom: [], channels: { C0000000001: {} } })
+    expect(resolveTaskChannelTarget({ agent: FIXTURE_AGENT, channelProvider: 'slack' })).toMatchObject({ chatId: 'C0000000001' })
+    access('telegram', { allowFrom: ['111111'], groups: { '-1001': {}, '-1002': {} } })
+    const t = resolveTaskChannelTarget({ agent: FIXTURE_AGENT, channelProvider: 'telegram' })
+    expect(t.chatId).toBe('111111')
+    expect(t.ambiguousCandidates).toBeUndefined()
   })
 
   it('an explicit telegramChatId pin bypasses the ambiguity check entirely, even with 2+ contacts', () => {
