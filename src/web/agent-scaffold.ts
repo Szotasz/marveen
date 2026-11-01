@@ -702,6 +702,8 @@ const PRECOMPACT_TOKENS = ['{{PROJECT_ROOT}}/store/.dashboard-token', '~/ClaudeC
 const precompactCurls = (indent: string, path: string, extraHeaders: string, body: string) =>
   PRECOMPACT_PORTS.flatMap((port) => PRECOMPACT_TOKENS.map((token) =>
     `${indent}curl -s -X POST http://localhost:${port}/api/${path} -H 'Content-Type: application/json'${extraHeaders} -H "Authorization: Bearer $(cat ${token})" -d '${body}'`))
+// The PreCompact prompt's payload line, as templates/settings.json.template ships it (a test ties the two).
+export const PRECOMPACT_PAYLOAD_INTRO = 'Használd a segédet (előtte a mentendő szöveget a Write eszközzel írd a munkamappádba: a memóriát az api-memoria.txt, a naplót az api-naplo.txt fájlba). Egy fájl, egy küldés: írd, küldd, és csak utána a következőt; kettőt párhuzamosan ne készíts elő (a második felülírná az elsőt). A segéd sikeres küldés után kiüríti a fájlt, és üres fájlra hibával megáll: régi szöveget nem küld.'
 // [old shipped spellings, the line that replaces them]
 const PRECOMPACT_HELPER_UPGRADES: ReadonlyArray<readonly [readonly string[], string]> = [
   [
@@ -709,17 +711,22 @@ const PRECOMPACT_HELPER_UPGRADES: ReadonlyArray<readonly [readonly string[], str
       `A ${bot} /api/* Bearer tokenes. A token a projekt gyökerében: cat ${token}`)),
     `A {{BOT_NAME}} /api/* hívásai EGY segéden mennek: ${API_HELPER_TPL} <ige> (az igék: ${API_HELPER_TPL} --help). A tokent a segéd maga olvassa, ezért nem kell sem nyers curl, sem parancs-behelyettesítés: szigorú profilon ezeket a Claude Code kérdés nélkül megtagadja. A szöveget a segéd CSAK fájlból veszi: előbb a Write eszközzel írd a munkamappádba, és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
   ],
+  // VOICETOKENLEAK1101 PR-C (Samu 65492): one payload file per kind. The prompt saves a memory AND writes a log in one
+  // round; on one shared api-payload.txt, two texts prepared ahead would send the second twice (Dani 65157/1). The
+  // #2338 helper lines (api-payload.txt) are old spellings too now, so an agent they reached moves on as well.
   [
-    ['Használd a curl parancsokat:'],
-    'Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):',
+    ['Használd a curl parancsokat:', 'Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):'],
+    PRECOMPACT_PAYLOAD_INTRO,
   ],
   [
-    precompactCurls('  ', 'memories', '', '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'),
-    `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`,
+    [...precompactCurls('  ', 'memories', '', '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'),
+      `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`],
+    `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-memoria.txt`,
   ],
   [
-    precompactCurls('  ', 'daily-log', '', '{"agent_id":"SAJAT_NEVED","content":"..."}'),
-    `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-payload.txt`,
+    [...precompactCurls('  ', 'daily-log', '', '{"agent_id":"SAJAT_NEVED","content":"..."}'),
+      `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-payload.txt`],
+    `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-naplo.txt`,
   ],
   [
     precompactCurls('', 'agent-taskstate/SAJAT_NEVED', " -H 'X-Agent-Id: SAJAT_NEVED'", PRECOMPACT_TASKSTATE_BODY),
