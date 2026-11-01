@@ -7322,6 +7322,11 @@ a.oss-inv-name:hover { text-decoration: underline; }
 }
 .bubble-out .bubble-id-chip { background: rgba(255,255,255,0.25); color: #fff; }
 .bubble-in .bubble-id-chip { background: var(--bg-hover); color: var(--text-muted); }
+/* Status/reply badges keep their theme colours on the neutral incoming bubble, but on the
+   accent-filled outgoing bubble those colours vanish (measured: green "reply" badge 1.14:1,
+   accent "failed" badge 1.0:1). A dark tint, not the id chip's white one: white on a
+   white-tinted accent is only 2.3:1, on a 20% black tint it is 4.6:1 (AA). */
+.bubble-out .badge { background: rgba(0,0,0,0.2); color: #fff; }
 .bubble-text { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .bubble-out .bubble-text { color: #fff; }
 .bubble-time { font-size: 10px; opacity: 0.55; text-align: right; margin-top: 2px; }
