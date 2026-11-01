@@ -37,7 +37,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
-import { requeueAbandonedForAgent } from '../db.js'
+import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentSenderRoleGateClosesTools, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
@@ -2063,12 +2063,8 @@ function startRemoteAgentProcess(
     // Messages the router gave up on while this session was down (it was absent
     // for the whole retry window) go back in the queue here too: the router
     // abandons remote agents' messages the same way, through the host.
-    try {
-      const requeued = requeueAbandonedForAgent(name)
-      if (requeued.length) logger.info({ name, host, ids: requeued }, 'requeued messages abandoned while the session was down')
-    } catch (err) {
-      logger.warn({ err, name, host }, 'could not requeue messages abandoned while the session was down')
-    }
+    // The sender and the main agent get a [ÚJRAKÉZBESÍTVE] notice for each revived row.
+    requeueAbandonedAndNotify(name, host)
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
@@ -3123,12 +3119,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // for the whole retry window) go back in the queue. The requeue runs at both
     // success returns: this local one and startRemoteAgentProcess's. They are
     // delivered with their real age.
-    try {
-      const requeued = requeueAbandonedForAgent(name)
-      if (requeued.length) logger.info({ name, ids: requeued }, 'requeued messages abandoned while the session was down')
-    } catch (err) {
-      logger.warn({ err, name }, 'could not requeue messages abandoned while the session was down')
-    }
+    // The sender and the main agent get a [ÚJRAKÉZBESÍTVE] notice for each revived row.
+    requeueAbandonedAndNotify(name)
 
     return { ok: true }
   } catch (err) {

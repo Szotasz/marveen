@@ -10,6 +10,7 @@ import {
   markMessageFailed,
   ABANDONED_SESSION_ABSENT,
   markPendingFederatedFailed,
+  markPendingMessageFailed,
   setMessageResult,
   createAgentMessage,
   lastMessageFromAgentAt,
@@ -39,7 +40,8 @@ import {
 } from './agent-process.js'
 import { detectPaneState, detectQuotaWall, detectsBlockingMenu, detectsFirstRunGate, detectsHeldPeerMessage, detectsPermissionDialog, permissionPromptSummary, type FirstRunGateKind, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
-import { classifyAgentMessage, isChannelInboundSender, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { shouldNotifySenderOfFailure } from './requeue-notice.js'
 import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-router-window.js'
@@ -199,21 +201,10 @@ function notifyOrchestratorOfPullStale(msg: AgentMessage, ageMs: number): void {
   }
 }
 
-/**
- * Card 71263d15 (A), 01603e03: may the SENDER of a failed message get a notice?
- *
- * The sender got an id back when it posted, so on its side the send looks done;
- * until now only the main agent heard about the failure. The exceptions keep the
- * notice from looping or doubling: 'system' rows get no receipt (a failed notice
- * cannot beget another), the main agent already gets the orchestrator notice, a
- * channel-inbound sender is a person on a channel rather than an agent inbox, and a
- * federated sender is notifyDelegationFailed's job.
- */
-export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: string): boolean {
-  if (!fromAgent || fromAgent === 'system' || fromAgent === mainAgentId) return false
-  if (isQualifiedId(fromAgent) || fromAgent.includes('/')) return false
-  return !isChannelInboundSender(fromAgent)
-}
+// Moved to ./requeue-notice.ts (the requeue notices need it, and importing it
+// back from here would have been the cycle); re-exported so existing importers
+// of this module keep working.
+export { shouldNotifySenderOfFailure } from './requeue-notice.js'
 
 /** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060).
  *  It also names where the FULL text is (GET /api/messages/<id>): the preview stops at 220
@@ -1029,9 +1020,9 @@ export async function runMessageRouterTick(): Promise<void> {
       const absentForMs = continuousAbsenceMs(msg.to_agent, sessionExists, now)
       if (!worksourceServing && shouldAbandon(sessionExists, absentForMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, absentForMs }, 'Agent message abandoned: target session absent for full retry window')
-        const closed = markMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)
+        const closed = markPendingMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)
         if (!closed) {
-          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+          logger.warn({ id: msg.id }, 'markPendingMessageFailed affected 0 rows (closed or deleted concurrently?)')
         }
         notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         // Only the row this call closed earns a sender notice: a row closed concurrently
