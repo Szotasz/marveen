@@ -20788,6 +20788,7 @@ async function openResearchDoc(agent, name) {
       const min = Math.max(1, Math.ceil((until - Date.now()) / 60000))
       return { cls: 'is-pending', text: t('gromzo.agents.state.pending', { min }) }
     }
+    if (row.held) return { cls: 'is-error', text: t('gromzo.agents.state.held') }
     return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
   }
 
@@ -20811,13 +20812,24 @@ async function openResearchDoc(agent, name) {
       if (!row.main) {
         const l = local.get(row.slug)
         const pending = (l && l.kind === 'pending') || (row.pendingUntil && row.pendingUntil > Date.now())
-        const btn = document.createElement('button')
-        btn.className = row.gromzo ? 'btn-secondary btn-compact' : 'btn-primary btn-compact'
-        btn.textContent = t(row.gromzo ? 'gromzo.agents.btn.off' : 'gromzo.agents.btn.on')
-        btn.setAttribute('aria-label', t(row.gromzo ? 'gromzo.agents.aria.off' : 'gromzo.agents.aria.on', { name: row.name || row.slug }))
-        btn.disabled = !!pending || (l && (l.kind === 'busy' || l.kind === 'restarting'))
-        btn.addEventListener('click', () => (row.gromzo ? switchOff(row) : switchOn(row)))
-        li.append(btn)
+        const disabled = !!pending || !!(l && (l.kind === 'busy' || l.kind === 'restarting'))
+        const label = row.name || row.slug
+        const mk = (on, primary, textKey) => {
+          const b = document.createElement('button')
+          b.className = primary ? 'btn-primary btn-compact' : 'btn-secondary btn-compact'
+          b.textContent = t(textKey)
+          b.setAttribute('aria-label', t(on ? 'gromzo.agents.aria.on' : 'gromzo.agents.aria.off', { name: label }))
+          b.disabled = disabled
+          b.addEventListener('click', () => (on ? switchOn(row) : switchOff(row)))
+          return b
+        }
+        const actions = document.createElement('div')
+        actions.className = 'gromzo-agent-actions'
+        // A held agent: mxd lists it but its last start held it back; ask for a new approval, or take it off.
+        if (row.held) actions.append(mk(true, true, 'gromzo.agents.btn.reapprove'))
+        if (row.gromzo) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
+        else if (!row.held) actions.append(mk(true, true, 'gromzo.agents.btn.on'))
+        li.append(actions)
       }
       listEl.append(li)
     }

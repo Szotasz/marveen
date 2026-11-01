@@ -13,6 +13,10 @@
 // - Only the agent in question is touched: its flag, and a restart of that one agent (so the Gromzo plugin loads or
 //   goes). Nothing else is restarted, and a failure is that row's, not the others'.
 // - A removal mxd refused leaves the flag as it is: the list never shows "off" for an agent mxd still runs.
+// - One pending add at a time (Ábel 64168): a second slug is refused with add_in_progress until the first is decided
+//   or lapses.
+// - A held agent (mxd listed it, but its last start held it back: dash status held_agents) may be asked for again,
+//   even with its flag on; the list shows it as held.
 // - agent_add_check costs mxd an install_proof challenge, and mxd answers too_soon within MIN_ADD_CHECK_S (10 s,
 //   one shared clock for every slug). The dashboard holds its own checks to one per CHECK_GAP_MS across all slugs:
 //   a faster poll from the panel gets the pending answer back without a call.
@@ -28,6 +32,8 @@ export interface GromzoAgentDeps {
   writeFlag: (slug: string, on: boolean) => void
   displayName: (slug: string) => string
   isRunning: (slug: string) => boolean
+  /** The slugs mxd's last start held back (dash status held_agents); empty when unknown. */
+  held: () => Promise<Set<string>>
   /** Restarts that ONE agent, once mxd is back from its reload (fire and forget). */
   restartOne: (slug: string) => void
   now: () => number
@@ -39,6 +45,8 @@ export interface GromzoAgentRow {
   main: boolean
   gromzo: boolean
   running: boolean
+  /** mxd lists it, but its last start held it back (the owner can ask for a new approval). */
+  held: boolean
   /** A consent is waiting for the owner in the app (until this time, ms). */
   pendingUntil: number | null
 }
@@ -74,10 +82,11 @@ export function slugRefusal(slug: string, deps: Pick<GromzoAgentDeps, 'agents'>)
   return null
 }
 
-export function listGromzoAgents(deps: GromzoAgentDeps): GromzoAgentRow[] {
+export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAgentRow[]> {
+  const held = await deps.held()
   const now = deps.now()
   dropExpired(now)
-  const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), pendingUntil: null }]
+  const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, pendingUntil: null }]
   for (const slug of [...deps.agents()].sort()) {
     if (slug === MAIN_AGENT_ID) continue
     rows.push({
@@ -86,6 +95,7 @@ export function listGromzoAgents(deps: GromzoAgentDeps): GromzoAgentRow[] {
       main: false,
       gromzo: deps.readFlag(slug),
       running: deps.isRunning(slug),
+      held: held.has(slug),
       pendingUntil: pending.get(slug)?.expiresAt ?? null,
     })
   }
@@ -96,11 +106,12 @@ export function listGromzoAgents(deps: GromzoAgentDeps): GromzoAgentRow[] {
 export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
   const refused = slugRefusal(slug, deps)
   if (refused) return { ok: false, code: refused }
-  if (deps.readFlag(slug)) return { ok: true, state: 'on' }
+  if (deps.readFlag(slug) && !(await deps.held()).has(slug)) return { ok: true, state: 'on' }
   const now = deps.now()
   dropExpired(now)
   const waiting = pending.get(slug)
   if (waiting) return { ok: true, state: 'pending', expiresIn: Math.max(1, Math.round((waiting.expiresAt - now) / 1000)) }
+  if (pending.size > 0) return { ok: false, code: 'add_in_progress' }
   const r = await requestAgentAdd(deps.call, slug, deps.displayName(slug))
   if (!r.ok) return { ok: false, code: r.code }
   pending.set(slug, { consentId: r.consentId, expiresAt: now + r.expiresIn * 1000 })

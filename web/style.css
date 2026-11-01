@@ -7623,14 +7623,15 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-agents-title { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
 .gromzo-agents-limit { font-size: 12px; color: var(--text-muted); margin: 4px 0 10px; }
 .gromzo-agent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.gromzo-agent-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; min-height: 44px; }
-.gromzo-agent-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gromzo-agent-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; min-height: 44px; }
+.gromzo-agent-main { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .gromzo-agent-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .gromzo-agent-state { font-size: 12px; color: var(--text-muted); }
 .gromzo-agent-state.is-on { color: var(--success); }
 .gromzo-agent-state.is-pending { color: var(--accent); }
 .gromzo-agent-state.is-error { color: var(--danger); }
-.gromzo-agent-row .btn-compact { min-height: 36px; flex-shrink: 0; }
+.gromzo-agent-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+.gromzo-agent-row .btn-compact { min-height: 36px; }
 
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }

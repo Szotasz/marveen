@@ -21,11 +21,12 @@ interface World {
   /** The next replies, by verb (shifted per call); a function throws or answers from the request. */
   replies: Record<string, Array<MxdDashReply | ((r: MxdDashRequest) => MxdDashReply)>>
   clock: { t: number }
+  heldSet: Set<string>
 }
 
 function world(agents = ['abel', 'samu', 'zara']): World {
   const w: World = {
-    calls: [], flags: new Map(), writes: [], restarted: [], replies: {}, clock: { t: 1_000_000 },
+    calls: [], flags: new Map(), writes: [], restarted: [], replies: {}, clock: { t: 1_000_000 }, heldSet: new Set(),
     deps: undefined as never,
   }
   w.deps = {
@@ -40,6 +41,7 @@ function world(agents = ['abel', 'samu', 'zara']): World {
     writeFlag: (s, on) => { w.writes.push([s, on]); w.flags.set(s, on) },
     displayName: (s) => s[0]!.toUpperCase() + s.slice(1),
     isRunning: () => true,
+    held: async () => new Set(w.heldSet),
     restartOne: (s) => { w.restarted.push(s) },
     now: () => w.clock.t,
   }
@@ -81,7 +83,7 @@ describe('enable: the owner approves in the app first, the flag only after mxd a
     expect(w.calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'Zara' }])
     expect(w.writes).toEqual([])
     expect(w.restarted).toEqual([])
-    expect(listGromzoAgents(w.deps).find((r) => r.slug === 'zara')?.pendingUntil).toBe(w.clock.t + 600_000)
+    expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.pendingUntil).toBe(w.clock.t + 600_000)
   })
 
   it('a second enable while pending asks mxd nothing (one consent per slug)', async () => {
@@ -120,8 +122,10 @@ describe('the consent id is the server\'s, bound to its slug (Dani 64126)', () =
     const w = world()
     w.replies.agent_add = [addOk(ID_A), addOk(ID_B)]
     await enableGromzoAgent('zara', w.deps)
+    w.replies.agent_add_check = [{ ok: true, state: 'refused' }, added('samu')]
+    await checkGromzoAgent('zara', w.deps)
     await enableGromzoAgent('samu', w.deps)
-    w.replies.agent_add_check = [added('samu')]
+    later(w)
     expect(await checkGromzoAgent('samu', w.deps)).toEqual({ ok: true, state: 'added' })
     expect(w.calls.at(-1)).toEqual({ verb: 'agent_add_check', id: ID_B })
     expect(w.writes).toEqual([['samu', true]])
@@ -158,7 +162,7 @@ describe('the consent id is the server\'s, bound to its slug (Dani 64126)', () =
       expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state })
       expect(w.writes).toEqual([])
       expect(w.restarted).toEqual([])
-      expect(listGromzoAgents(w.deps).find((r) => r.slug === 'zara')?.pendingUntil).toBeNull()
+      expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.pendingUntil).toBeNull()
     }
   })
 
@@ -191,9 +195,9 @@ describe('agent_add_check pacing (mxd MIN_ADD_CHECK_S, one clock for every slug)
     const w = world()
     w.replies.agent_add = [addOk(ID_A), addOk(ID_B)]
     await enableGromzoAgent('zara', w.deps)
-    await enableGromzoAgent('samu', w.deps)
-    w.replies.agent_add_check = [{ ok: true, state: 'pending' }]
+    w.replies.agent_add_check = [{ ok: true, state: 'refused' }]
     await checkGromzoAgent('zara', w.deps)
+    await enableGromzoAgent('samu', w.deps)
     expect(await checkGromzoAgent('samu', w.deps)).toMatchObject({ ok: true, state: 'pending' })
     expect(w.calls.filter((c) => c.verb === 'agent_add_check')).toHaveLength(1)
   })
@@ -263,10 +267,48 @@ describe('disable', () => {
 })
 
 describe('the list', () => {
-  it('the main agent first, always on and never switchable; then the fleet sorted, with flags', () => {
+  it('the main agent first, always on and never switchable; then the fleet sorted, with flags', async () => {
     const w = world(['zara', 'abel', MAIN_AGENT_ID])
     w.flags.set('zara', true)
-    const rows = listGromzoAgents(w.deps)
+    const rows = await listGromzoAgents(w.deps)
     expect(rows.map((r) => [r.slug, r.main, r.gromzo])).toEqual([[MAIN_AGENT_ID, true, true], ['abel', false, false], ['zara', false, true]])
+  })
+})
+
+describe('one pending add at a time; a held agent may be asked again (Ábel 64168)', () => {
+  it('a second slug while one is pending: add_in_progress, no call', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A)]
+    await enableGromzoAgent('zara', w.deps)
+    expect(await enableGromzoAgent('samu', w.deps)).toEqual({ ok: false, code: 'add_in_progress' })
+    expect(w.calls.filter((c) => c.verb === 'agent_add')).toHaveLength(1)
+  })
+
+  it('once the first lapsed, the second may go', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 60), addOk(ID_B)]
+    await enableGromzoAgent('zara', w.deps)
+    later(w, 60_000)
+    expect(await enableGromzoAgent('samu', w.deps)).toMatchObject({ ok: true, state: 'pending' })
+  })
+
+  it('flag on but held: enable asks mxd again; flag on and not held: no call', async () => {
+    const w = world()
+    w.flags.set('zara', true)
+    w.heldSet.add('zara')
+    w.replies.agent_add = [addOk()]
+    expect(await enableGromzoAgent('zara', w.deps)).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'Zara' }])
+    w.flags.set('samu', true)
+    expect(await enableGromzoAgent('samu', w.deps)).toEqual({ ok: true, state: 'on' })
+    expect(w.calls).toHaveLength(1)
+  })
+
+  it('the list marks held agents', async () => {
+    const w = world()
+    w.flags.set('zara', true)
+    w.heldSet.add('zara')
+    const rows = await listGromzoAgents(w.deps)
+    expect(rows.filter((r) => r.held).map((r) => r.slug)).toEqual(['zara'])
   })
 })

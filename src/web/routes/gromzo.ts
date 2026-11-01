@@ -37,7 +37,7 @@ export const OWNER_QR_SESSION_REQUIRED = {
   error: "The owner QR needs the owner's dashboard login. The access token never gets it, not even before the first login exists: set up the dashboard login first.",
   code: 'owner_session_required',
 }
-import { mxdDashCall, MxdDashError, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
+import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
   checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, type GromzoAgentDeps, type GromzoAgentOutcome,
 } from '../gromzo-agents.js'
@@ -74,6 +74,8 @@ export function httpStatusFor(code: string): number {
     case 'no_pending':
     case 'consent_mismatch':
     case 'agent_exists':
+    case 'add_in_progress':
+    case 'pending_exists':
     case 'too_many_agents':
     case 'bad_slug':
     case 'reserved_slug':
@@ -150,14 +152,22 @@ const defaultAgentDeps: GromzoAgentDeps = {
   writeFlag: (slug, on) => writeAgentGromzo(slug, on),
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   isRunning: (slug) => isAgentRunning(slug),
+  held: async () => {
+    // dash status carries held_agents only when it is not empty (marveen-mxd link.rs status).
+    try {
+      const r = await call({ verb: 'status' })
+      const h = r.held_agents
+      return new Set(Array.isArray(h) ? h.filter((x): x is string => typeof x === 'string' && MXD_AGENT_SLUG_RE.test(x)) : [])
+    } catch { return new Set() }
+  },
   restartOne: (slug) => { void restartAfterMxdReload(slug).catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: restart failed')) },
   now: () => Date.now(),
 }
 let agentDeps: GromzoAgentDeps = defaultAgentDeps
 
-/** Test seam: the agent switch's collaborators (null puts the real ones back). */
-export function setGromzoAgentDepsForTest(deps: GromzoAgentDeps | null): void {
-  agentDeps = deps ?? defaultAgentDeps
+/** Test seam: replace some of the agent switch's collaborators (null puts the real ones back). */
+export function setGromzoAgentDepsForTest(deps: Partial<GromzoAgentDeps> | null): void {
+  agentDeps = deps ? { ...defaultAgentDeps, ...deps } : defaultAgentDeps
 }
 
 function sendOutcome(res: http.ServerResponse, slug: string, action: string, o: GromzoAgentOutcome): void {
@@ -186,7 +196,7 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
     return true
   }
   if (!action) {
-    json(res, { agents: listGromzoAgents(agentDeps) })
+    json(res, { agents: await listGromzoAgents(agentDeps) })
     return true
   }
   let slug: string

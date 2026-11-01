@@ -312,6 +312,7 @@ describe('the agent switch routes', () => {
       writeFlag: (s, on) => { flags.set(s, on) },
       displayName: (s) => s,
       isRunning: () => true,
+      held: async () => new Set(),
       restartOne: (s) => { restarted.push(s) },
       now: () => Date.now(),
     })
@@ -383,8 +384,39 @@ describe('the agent switch routes', () => {
     setGromzoAgentDepsForTest({
       call: async () => { throw new MxdDashError('not_running') },
       agents: () => ['zara'], readFlag: () => true, writeFlag: () => { throw new Error('no write') },
-      displayName: (s) => s, isRunning: () => true, restartOne: () => { throw new Error('no restart') }, now: () => Date.now(),
+      displayName: (s) => s, isRunning: () => true, held: async () => new Set(), restartOne: () => { throw new Error('no restart') }, now: () => Date.now(),
     })
     expect((await post('zara/disable')).status).toBe(503)
+  })
+})
+
+describe('the held list from the real dash status (fake dash.sock)', () => {
+  beforeEach(() => {
+    resetPendingGromzoConsents()
+    // the real call and held reader; a fixed fleet
+    setGromzoAgentDepsForTest({ agents: () => ['samu', 'zara'], readFlag: () => true, displayName: (s) => s, isRunning: () => true })
+  })
+  afterAll(() => setGromzoAgentDepsForTest(null))
+
+  it('held_agents slugs are read from status; anything that is not a slug is dropped', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true, held_agents: ['zara', '../samu', 7, 'Samu'] })
+    const r = await fetch(origin + '/api/gromzo/agents')
+    expect(r.status).toBe(200)
+    const rows = (await r.json()).agents as Array<{ slug: string, held: boolean }>
+    expect(rows.filter((x) => x.held).map((x) => x.slug)).toEqual(['zara'])
+    expect(fake.seen).toEqual(['status'])
+  })
+
+  it('no held_agents field (the empty case) or mxd down: nobody is held, the list still answers', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true })
+    let rows = (await (await fetch(origin + '/api/gromzo/agents')).json()).agents as Array<{ held: boolean }>
+    expect(rows.some((x) => x.held)).toBe(false)
+    env.MXD_DASH_SOCK = fake.path + '.gone'
+    try {
+      const r = await fetch(origin + '/api/gromzo/agents')
+      expect(r.status).toBe(200)
+      rows = (await r.json()).agents
+      expect(rows.some((x) => x.held)).toBe(false)
+    } finally { env.MXD_DASH_SOCK = fake.path }
   })
 })
