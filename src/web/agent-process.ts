@@ -425,7 +425,7 @@ function maybeAlertSharedConfigCollision(name: string): void {
     'isolated-config: fleet OAuth token missing with multiple RUNNING same-provider channel sub-agents -- shared ~/.claude plugin-slot collision, bots may go deaf',
   )
   void notifyChannel(
-    `⚠️ Flotta-figyelmeztetes: hianyzik a fleet OAuth token (store/.claude-oauth-token), es ${count} AZONOS csatorna-providerü sub-agent fut egyszerre. Izolacio nelkul mind a kozos ~/.claude-ot hasznalja, igy a plugin-slot utkozhet es bot nemulhat el. Javitas: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fajlba, majd inditsd ujra az agenseket.`,
+    `⚠️ Flotta-figyelmeztetés: hiányzik a fleet OAuth token (store/.claude-oauth-token), és ${count} AZONOS csatorna-providerű sub-agent fut egyszerre. Izoláció nélkül mind a közös ~/.claude-ot használja, így a plugin-slot ütközhet, és egy bot elnémulhat. Javítás: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fájlba, majd indítsd újra az ágenseket.`,
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
@@ -4962,9 +4962,9 @@ async function clearStaleParkedInputInLane(
     if (stage === 'owner') {
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
-        `🚨 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce all egy parkolt sor, ` +
-        `es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ` +
-        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d.` +
+        `🚨 A fő ágens (${session}) input-mezőjében ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce áll egy parkolt sor, ` +
+        `és emiatt a csatorna nem dolgoz fel bejövő üzenetet. KÉZI FELOLDÁS (pár másodperc): ` +
+        `tmux attach -t ${session}, majd Ctrl-C és utána Ctrl-U (a sor törlése), végül kilépés: Ctrl-B d.` +
         // No conversation content in an alert that goes to a non-owner chat.
         (alertIsRedirected() ? '' : ` A parkolt sor eleje: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
@@ -4991,9 +4991,9 @@ async function clearStaleParkedInputInLane(
         return false
       }
       notifyChannel(
-        `🧹 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce allt egy parkolt sor, ` +
-        `es emiatt minden utemezett feladat varakozott. A sort KIMENTETTUK es a mezot kitisztitottuk, ` +
-        `hogy a csatorna ujra dolgozzon. A szoveg itt van: ${rescuedPath}`,
+        `🧹 A fő ágens (${session}) input-mezőjében ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce állt egy parkolt sor, ` +
+        `és emiatt minden ütemezett feladat várakozott. A sort KIMENTETTÜK, és a mezőt kitisztítottuk, ` +
+        `hogy a csatorna újra dolgozzon. A szöveg itt van: ${rescuedPath}`,
       ).catch(() => { /* notify is best-effort */ })
       logger.warn(
         { session, parked: parked.slice(0, 60), fails, rescuedPath },
@@ -5038,9 +5038,9 @@ async function clearStaleParkedInputInLane(
     if (!escalated && fails >= SUBAGENT_PARKED_ESCALATE_AFTER) {
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
-        `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
-        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell.` +
-        (alertIsRedirected() ? '' : ` Reszlet: "${preview}"`),
+        `⚠️ Egy sub-agent (${session}) input-mezőjébe beragadt egy parkolt sor, ` +
+        `az auto-tisztítás ${fails}x sikertelen, lehet, hogy kézi beavatkozás kell.` +
+        (alertIsRedirected() ? '' : ` Részlet: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')

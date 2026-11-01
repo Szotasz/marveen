@@ -198,11 +198,11 @@ if [ -n "$boot_epoch" ] && [ "$boot_epoch" -gt 0 ] 2>/dev/null; then
   if [ "$seen_boot" != "$boot_epoch" ] && [ "$uptime_s" -ge "$BOOT_REPORT_AFTER" ]; then
     ka_now=0; [ -f "$KEEPALIVE_FILE" ] && ka_now="$(mtime_of "$KEEPALIVE_FILE")"
     if [ "$ka_now" -gt 0 ] && [ $(( now - ka_now )) -lt "$STALE_AFTER" ]; then
-      verdict="a Telegram-csatorna el"
+      verdict="a Telegram-csatorna él"
     else
-      verdict="a Telegram-csatorna NEM el -- nezd meg a gepet"
+      verdict="a Telegram-csatorna NEM él, nézd meg a gépet"
     fi
-    if send_alarm "A gep ujraindult ($(date -r "$boot_epoch" '+%H:%M' 2>/dev/null || echo '?')), ujra futok. Allapot: ${verdict}."; then
+    if send_alarm "A gép újraindult ($(date -r "$boot_epoch" '+%H:%M' 2>/dev/null || echo '?')), újra futok. Állapot: ${verdict}."; then
       printf '%s\n' "$boot_epoch" > "$BOOT_MARKER"
       log "boot report sent (boot_epoch=$boot_epoch, $verdict)"
     else
@@ -225,7 +225,7 @@ if [ "$age" -lt "$STALE_AFTER" ]; then
   if [ "$outage_started" != "0" ]; then
     down_for=$(( now - outage_started ))
     if [ "$last_alarm" != "0" ]; then
-      send_alarm "A Telegram-csatorna ujra el. Kimaradas: $(( down_for / 60 )) perc." || true
+      send_alarm "A Telegram-csatorna újra él. Kimaradás: $(( down_for / 60 )) perc." || true
     fi
     log "recovered after ${down_for}s (alarmed=$([ "$last_alarm" != 0 ] && echo yes || echo no))"
     outage_started=0; restart_done=0; last_alarm=0; save_state
@@ -243,7 +243,7 @@ fi
 
 if [ "$age" -ge "$ALARM_AFTER" ]; then
   if [ "$last_alarm" = "0" ] || [ $(( now - last_alarm )) -ge "$REALARM_EVERY" ]; then
-    if send_alarm "A Telegram-csatorna $(( age / 60 )) perce nem el. Automatikus ujrainditas: $([ "$restart_done" = "0" ] && echo "nem tortent" || echo "megtortent, nem segitett"). A gepen a naplo: store/channel-outage-alarm.log"; then
+    if send_alarm "A Telegram-csatorna $(( age / 60 )) perce nem él. Automatikus újraindítás: $([ "$restart_done" = "0" ] && echo "nem történt" || echo "megtörtént, nem segített"). A gépen a napló: store/channel-outage-alarm.log"; then
       last_alarm="$now"
     fi
   fi

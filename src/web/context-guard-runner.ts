@@ -279,12 +279,12 @@ async function closeEpisodesAfterSweep(): Promise<void> {
 async function reportKilledFacts(name: string, episode: Episode | null, why: string): Promise<Episode | null> {
   const facts = unreportedKilled(episode)
   if (!episode || facts.length === 0) return episode
-  const labels = facts.map((e) => `${quoteLabel(e.label)} (${e.state === 'running' ? 'futott, felbeszakadt' : 'sorban vart, el sem indult'})`)
+  const labels = facts.map((e) => `${quoteLabel(e.label)} (${e.state === 'running' ? 'futott, félbeszakadt' : 'sorban várt, el sem indult'})`)
   logger.error({ name, why, jobs: facts.map((e) => ({ label: e.label, state: e.state, pid: e.pid })) },
     'context-guard: a restart of this agent STOPPED its heavy-job gate job(s)')
   const text =
-    `[CONTEXT-GUARD] A(z) "${name}" agens restartja (${why}) LEALLITOTTA a nehez-feladat kapus feladata(i)t: ${labels.join(', ')}. ` +
-    `Az eredmenyuk nincs meg; a kilepesi kodot a ${heavyJobLogForPrompt()} adja. Ha a feladat meg kell, inditsd ujra a kapun at.`
+    `[CONTEXT-GUARD] A(z) "${name}" ágens restartja (${why}) LEÁLLÍTOTTA a nehéz-feladat kapus feladata(i)t: ${labels.join(', ')}. ` +
+    `Az eredményük nincs meg; a kilépési kódot a ${heavyJobLogForPrompt()} adja. Ha a feladat még kell, indítsd újra a kapun át.`
   try {
     if (name === MAIN_AGENT_ID) {
       const delivered: unknown = await notifyChannel(text)
@@ -1243,10 +1243,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // alert goes to the operator channel, for the same reason as the
           // rescue-failure alert below.
           const text =
-            `[CONTEXT-GUARD] A(z) "${name}" agenst most ujrainditom, pedig el a nehez-feladat kapus (heavy-job-gate) feladata: ` +
-            heavyToAlert.map((e) => `${quoteLabel(e.label)} (${e.state === 'running' ? 'fut' : 'sorban var'}, ~${Math.round((nowMs - e.firstSeenMs) / 60_000)} perce latom)`).join(', ') +
-            `. Egy restart-igenyt osszesen legfeljebb ${cfg.heavyJobDeferMaxMinutes} percig tartok vissza, akarhany kapus feladat jon-megy. Most nem tartom tovabb: a restart ezt LEALLITJA ` +
-            `(futo: 143, sorban varo: nem indul el). Ok: ${decision.reason}. A friss session resume-promptja megnevezi, mi tortent vele.`
+            `[CONTEXT-GUARD] A(z) "${name}" ágenst most újraindítom, pedig él a nehéz-feladat kapus (heavy-job-gate) feladata: ` +
+            heavyToAlert.map((e) => `${quoteLabel(e.label)} (${e.state === 'running' ? 'fut' : 'sorban vár'}, ~${Math.round((nowMs - e.firstSeenMs) / 60_000)} perce látom)`).join(', ') +
+            `. Egy restart-igényt összesen legfeljebb ${cfg.heavyJobDeferMaxMinutes} percig tartok vissza, akárhány kapus feladat jön-megy. Most nem tartom tovább: a restart ezt LEÁLLÍTJA ` +
+            `(futó: 143, sorban váró: nem indul el). Ok: ${decision.reason}. A friss session resume-promptja megnevezi, mi történt vele.`
           try {
             if (name === MAIN_AGENT_ID) {
               // `unknown`, not the declared type: notifyChannel resolves void on
@@ -1344,10 +1344,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 // operator notification channel instead.
                 if (name === MAIN_AGENT_ID) {
                   await notifyChannel(
-                    `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a FO-AGENSNEL (${name}). ` +
+                    `[CONTEXT-GUARD] ${count}. EGYMÁST KÖVETŐ bukott mentés a FŐ-ÁGENSNÉL (${name}). ` +
                     `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
-                    `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
-                    'A guard kb. 10 percenkent ujraprobalja; ez a riasztas orankent ismetlodik, amig tart.',
+                    `. Utolsó hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                    'A guard kb. 10 percenként újrapróbálja; ez a riasztás óránként ismétlődik, amíg tart.',
                   )
                 } else {
                 const msg = createAgentMessage(
