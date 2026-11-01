@@ -59,7 +59,8 @@ main_rename_dialog_visible() {
 # check then saw no box, read it as "submitted", and the text appeared in the
 # box afterwards, parked for 4 and 9 hours. Polls every MAIN_RENAME_POLL_S
 # (default 1) up to MAIN_RENAME_READY_TRIES (default 60) captures. An
-# unreadable pane returns 0 at once, silently, as before.
+# unreadable pane is an unknown screen too (Dani 63870): exit 1, logged, nothing
+# is typed.
 #
 # Exit 1 when the prompt never shows (#2389): the rename is then NOT typed, and
 # that is logged. REPORTED (2026-10-31, Linux/Discord): a folder-trust dialog
@@ -72,7 +73,10 @@ main_rename_dialog_visible() {
 main_rename_wait_prompt() {
   local tmux="$1" target="$2" n=0 tries="${MAIN_RENAME_READY_TRIES:-60}" pane="" why
   while [ "$n" -lt "$tries" ]; do
-    pane="$("$tmux" capture-pane -p -t "$target" 2>/dev/null)" || return 0
+    if ! pane="$("$tmux" capture-pane -p -t "$target" 2>/dev/null)"; then
+      echo "$(date '+%F %T') channels.sh: boot /rename -- the pane cannot be read, NOT typing (#2389)" >&2
+      return 1
+    fi
     if main_rename_prompt_drawn "$pane" && ! main_rename_dialog_visible "$pane"; then
       return 0
     fi
