@@ -2158,6 +2158,8 @@ window._i18n.en = {
   'auth.login.username':          'Username',
   'auth.login.password':          'Password',
   'auth.login.cancel':            'Cancel',
+  'auth.login.later':             'Later',
+  'auth.login.bridge_desc':       'Sign in with your dashboard password to approve, decide and change settings from here.',
   'auth.login.submit':            'Sign in',
   'auth.login.err_empty':         'Enter a username and password.',
   'auth.login.err_invalid':       'Invalid credentials.',

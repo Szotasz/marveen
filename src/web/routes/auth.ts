@@ -186,16 +186,22 @@ const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 // authenticated keeps its exact old meaning for token callers (existing probes
 // parse only that field): a valid bearer -> authenticated:true. A device key is
 // an authenticated principal too (method:'device', device:<key name>).
-function statusPayload(auth: RouteContext['auth']) {
+// owner_session (BRIDGEPWLOGIN1101, Samu 64763): whether the owner's password session rides on THIS request (a
+// session principal, or a valid owner cookie beside the bearer). A bool only (no id, no expiry), and only for a caller
+// that could hold one: absent for an anonymous caller, an operator key and a sub-agent token. The Bridge reads it to
+// offer the password login once per run.
+function statusPayload(auth: RouteContext['auth'], req?: http.IncomingMessage) {
   const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device'
   const method = authenticated ? auth!.kind : null
   const user = auth?.kind === 'session' ? auth.user ?? null : null
   const device = auth?.kind === 'device' ? auth.device ?? null : null
+  const mayHoldOwner = auth?.kind === 'session' || (auth?.kind === 'token' && !auth.tokenAgent) || (auth?.kind === 'device' && auth.scope === 'full')
   return {
     authenticated,
     method,
     user,
     device,
+    ...(mayHoldOwner ? { owner_session: auth?.kind === 'session' || ownerCookieSession(req) !== null } : {}),
     login_available: countDashboardUsers(false) >= 1,
     setup_required: countDashboardUsers(true) === 0,
   }
@@ -205,7 +211,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
 
   if (path === '/api/auth/status' && method === 'GET') {
-    json(res, statusPayload(auth))
+    json(res, statusPayload(auth, req))
     return true
   }
 

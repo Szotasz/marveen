@@ -204,13 +204,22 @@ function mainAgentId() {
         '<div class="mv-auth-err" id="mv-login-err"></div>' +
       '</form>'
     document.body.appendChild(overlay)
+    if (opts && opts.later) {
+      // BRIDGEPWLOGIN1101: the offer on opening the Bridge says what the login is for.
+      const desc = overlay.querySelector('.mv-auth-desc')
+      if (desc) desc.textContent = tr('auth.login.bridge_desc', 'Sign in with your dashboard password to approve, decide and change settings from here.')
+    }
     if (opts && opts.cancellable) {
       const cancel = document.createElement('button')
       cancel.type = 'button'
       cancel.id = 'mv-login-cancel'
       cancel.className = 'btn-secondary btn-compact'
-      cancel.textContent = tr('auth.login.cancel', 'Cancel')
-      cancel.addEventListener('click', () => overlay.remove())
+      cancel.textContent = opts.later ? tr('auth.login.later', 'Later') : tr('auth.login.cancel', 'Cancel')
+      cancel.addEventListener('click', () => {
+        // "Later" quiets the offer for this run of the window (sessionStorage), not for good.
+        if (opts.later) { try { sessionStorage.setItem(LOGIN_LATER_KEY, '1') } catch { /* storage blocked */ } }
+        overlay.remove()
+      })
       overlay.querySelector('#mv-login-form').appendChild(cancel)
     }
     const form = overlay.querySelector('#mv-login-form')
@@ -249,6 +258,26 @@ function mainAgentId() {
   }
 
   window.mvShowLogin = (opts) => showLoginOverlay(opts)
+
+  // BRIDGEPWLOGIN1101 (Samu 64763, plan A): the Bridge opens the dashboard with its device key, which never makes the
+  // owner. When a password login exists and no owner session rides on this window, offer it once per run, with
+  // "Later". The key stays: the overlay's login adds the cookie beside it, and the owner gates take the pair. Only a
+  // full key gets owner_session in the status at all, so an operator key is never offered this.
+  const LOGIN_LATER_KEY = 'mv-login-later'
+  async function offerOwnerLoginOnce() {
+    try { if (sessionStorage.getItem(LOGIN_LATER_KEY) === '1') return } catch { /* storage blocked: offer it */ }
+    if (!sessionToken) return
+    let s = null
+    try {
+      const r = await originalFetch('/api/auth/status', { headers: { Authorization: 'Bearer ' + sessionToken }, cache: 'no-store' })
+      if (r.ok) s = await r.json()
+    } catch { return }
+    if (!s || s.method !== 'device' || !s.login_available || s.owner_session !== false) return
+    showLoginOverlay({ cancellable: true, later: true })
+  }
+  window.mvOfferOwnerLogin = offerOwnerLoginOnce
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { void offerOwnerLoginOnce() })
+  else void offerOwnerLoginOnce()
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
   // The user pastes the access token (the value after ?token= in the server's

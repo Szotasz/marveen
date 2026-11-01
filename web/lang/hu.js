@@ -2160,6 +2160,8 @@ window._i18n.hu = {
   'auth.login.username':          'Felhasználónév',
   'auth.login.password':          'Jelszó',
   'auth.login.cancel':            'Mégse',
+  'auth.login.later':             'Később',
+  'auth.login.bridge_desc':       'Lépj be a dashboard-jelszóval, hogy innen is jóváhagyhass, dönthess és beállíthass.',
   'auth.login.submit':            'Belépés',
   'auth.login.err_empty':         'Adj meg felhasználónevet és jelszót.',
   'auth.login.err_invalid':       'Hibás belépési adatok.',

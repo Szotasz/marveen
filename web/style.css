@@ -8018,6 +8018,16 @@ body {
 }
 .mv-auth-card button:hover { background: var(--accent-hover); }
 .mv-auth-card button:disabled { opacity: 0.6; cursor: default; }
+/* The overlay's second button (Cancel, or Later on the Bridge offer) reads as the shared secondary button, centered;
+   the rule above would otherwise paint it as a second primary. */
+.mv-auth-card button.btn-secondary {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  justify-content: center;
+}
+.mv-auth-card button.btn-secondary:hover { background: var(--bg-input); border-color: var(--accent); color: var(--accent); }
 .mv-auth-err {
   color: var(--danger);
   font-size: 13px;
