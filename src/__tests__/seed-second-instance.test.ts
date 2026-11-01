@@ -22,6 +22,18 @@ describe('the default task seed runs only in the instance that owns the install'
     expect(web.split('ensureDefaultScheduledTasks()').length - 1).toBe(1)
   })
 
+  it('the rotation heartbeat seed sits in the same register branch (Dani 64715: the same class)', () => {
+    const guard = web.indexOf('  if (!hookDecision.register) {\n    logger.info({ reason: hookDecision.reason }, \'Default scheduled tasks not seeded (second instance)\')\n  } else {')
+    const call = web.indexOf('      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })')
+    const branchEnd = web.indexOf('\n  }\n\n  sweepOrphanedBackgroundTasks()', guard)
+    expect(guard).toBeGreaterThan(-1)
+    expect(call).toBeGreaterThan(guard)
+    expect(branchEnd).toBeGreaterThan(call)
+    // The else branch holds no closing brace at its own indent before the call: the call is inside it.
+    expect(web.slice(guard, call).split('\n  }\n').length - 1).toBe(0)
+    expect(web.split('ensureRotationHeartbeatTask(').length - 1).toBe(1)
+  })
+
   it('every second-instance kind says no (the decision the seed now follows)', () => {
     const notAGitFile = () => false
     expect(shouldRegisterHooks({ projectRoot: '/Users/x/repo/.claude/worktrees/wt1', webOnly: false, isGitFile: notAGitFile }).register).toBe(false)
