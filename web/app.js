@@ -13070,6 +13070,9 @@ const MSG_STATUS_META = {
   delivered: { label: () => t('messages.status.delivered'), cls: 'badge-active' },
   done: { label: () => t('messages.status.done'), cls: 'badge-active' },
   failed: { label: () => t('messages.status.failed'), cls: 'badge-paused' },
+  // badges of the reply bubble chatWithReplies() adds after an owner's closed message
+  reply: { label: () => t('messages.conv.reply_label'), cls: 'badge-active' },
+  reply_failed: { label: () => t('messages.conv.reply_label'), cls: 'badge-paused' },
 }
 async function resolveOwnerName() {
   try {
@@ -13288,7 +13291,7 @@ async function loadChatAgentList() {
 }
 
 // Pagination state for the open thread
-const chatThreadState = { agent: null, minLoadedId: null, hasMore: true, loading: false }
+const chatThreadState = { agent: null, minLoadedId: null, hasMore: true, loading: false, liveSig: null, liveTimer: null }
 const CHAT_PAGE_SIZE = 10
 const CHAT_LOAD_MORE = 20
 
@@ -13328,6 +13331,7 @@ async function loadChatThread(agentName) {
 
   // Initial load
   await fetchChatPage(agentName, null, CHAT_PAGE_SIZE, 'replace')
+  startChatLivePoll()
   // Mark thread as read (localStorage last-seen)
   const threadData = (await fetch('/api/messages/threads').then(r => r.ok ? r.json() : []).catch(() => []))
     .find(t => t.agent === agentName)
@@ -13362,7 +13366,7 @@ function buildBubbleHtml(m) {
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
   const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
   const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
-  const requestBubble = `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}" data-sig="${escapeHtml(chatMsgSig(m))}">
+  return `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}">
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
     <div class="chat-bubble ${isOutgoing ? 'bubble-out' : 'bubble-in'}">
       <div class="bubble-meta">
@@ -13377,38 +13381,85 @@ function buildBubbleHtml(m) {
     </div>
     ${isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(mainAgentId(), 28)}</div>` : ''}
   </div>`
-  // The ANSWER to a closed message lives in its `result` column, not in a row
-  // of its own, so this view used to end at the request: the badge turned
-  // "done" and the reply was nowhere on screen (measured twice on 2026-10-30,
-  // both times read as "the agent never answered" -- it had, in 24 s).
-  //
-  // Drawn ONLY for the owner's own messages, on purpose. Agent -> agent, the
-  // close also creates a reverse `[Eredmeny]` message (shouldNotifyDelegator in
-  // routes/messages.ts), which already renders as its own bubble further down
-  // the thread -- rendering `result` there too would show the same answer
-  // twice. That notification is skipped when the sender is not a registered
-  // agent, which is exactly the owner's case (they send under OWNER_NAME), so
-  // this is the one path where the answer has no row to appear in.
-  const closed = m.status === 'done' || m.status === 'failed'
-  const replyText = closed && m.from_agent === chatOwnerName() ? String(m.result || '').trim() : ''
-  if (!replyText) return requestBubble
-  // The result is produced by the RECIPIENT, so the reply bubble is sent by
-  // m.to_agent -- the same side test the request bubble makes for m.from_agent.
-  const replyOutgoing = m.to_agent === mainAgentId()
-  const replyWhen = m.completed_at ? new Date(m.completed_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
-  return requestBubble + `<div class="chat-bubble-row ${replyOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}-result">
-    ${!replyOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(m.to_agent, 28)}</div>` : ''}
-    <div class="chat-bubble ${replyOutgoing ? 'bubble-out' : 'bubble-in'}">
-      <div class="bubble-meta">
-        ${!replyOutgoing ? `<span class="bubble-sender">${escapeHtml(chatDisplayName(m.to_agent))}</span>` : ''}
-        <span class="bubble-id-chip">#${m.id}</span>
-        <span class="badge ${m.status === 'failed' ? 'badge-paused' : 'badge-active'}" style="font-size:10px">${escapeHtml(t('messages.conv.reply_label'))}</span>
-      </div>
-      <div class="bubble-text">${escapeHtml(replyText)}</div>
-      <div class="bubble-time">${replyWhen}</div>
-    </div>
-    ${replyOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(mainAgentId(), 28)}</div>` : ''}
-  </div>`
+}
+
+// The ANSWER to a closed message lives in its `result` column, not in a row
+// of its own, so this view used to end at the request: the badge turned
+// "done" and the reply was nowhere on screen (measured twice on 2026-10-30,
+// both times read as "the agent never answered" -- it had, in 24 s).
+//
+// Drawn ONLY for the owner's own messages, on purpose. Agent -> agent, the
+// close also creates a reverse `[Eredmeny]` message (shouldNotifyDelegator in
+// routes/messages.ts), which already renders as its own bubble further down
+// the thread -- rendering `result` there too would show the same answer
+// twice. That notification is skipped when the sender is not a registered
+// agent, which is exactly the owner's case (they send under OWNER_NAME), so
+// this is the one path where the answer has no row to appear in.
+//
+// The reply is a plain message object handed to buildBubbleHtml, so it goes
+// through the same template and escaping as every other bubble. It is sent by
+// the RECIPIENT, so from/to are swapped; it keeps the request's id.
+function chatWithReplies(sorted) {
+  const owner = chatOwnerName()
+  const out = []
+  for (const m of sorted) {
+    out.push(m)
+    const closed = m.status === 'done' || m.status === 'failed'
+    const replyText = closed && owner && m.from_agent === owner ? String(m.result || '').trim() : ''
+    if (!replyText) continue
+    out.push({
+      id: m.id,
+      from_agent: m.to_agent,
+      to_agent: m.from_agent,
+      content: replyText,
+      status: m.status === 'failed' ? 'reply_failed' : 'reply',
+      created_at: m.completed_at || null,
+    })
+  }
+  return out
+}
+
+// What the newest page shows that can change after it is drawn: new ids, the
+// status badge and the reply (result) of a closed message.
+function chatListSig(msgs) {
+  return msgs.map(m => `${m.id}:${m.status || ''}:${String(m.result || '').length}:${m.completed_at || ''}`).join(',')
+}
+
+// Live refresh of the open thread. Before this the view only changed on the
+// manual reload button, so an agent's reply (or the done badge) stayed
+// invisible until the owner clicked. Polls the newest page; when it differs
+// from what was last drawn, the thread is redrawn through the normal initial
+// load (fetchChatPage 'replace'), so there is no second render path. Runs only
+// while a thread is open; skipped while the tab or the panel is hidden, a load
+// runs, or the owner has scrolled up to read older messages (the redraw would
+// drop those pages and jump the view -- the next poll catches up).
+const CHAT_LIVE_POLL_MS = 5000
+function startChatLivePoll() {
+  stopChatLivePoll()
+  chatThreadState.liveTimer = setInterval(pollChatThread, CHAT_LIVE_POLL_MS)
+}
+function stopChatLivePoll() {
+  if (chatThreadState.liveTimer) clearInterval(chatThreadState.liveTimer)
+  chatThreadState.liveTimer = null
+}
+async function pollChatThread() {
+  const agent = chatThreadState.agent
+  const container = document.getElementById('chatBubbles')
+  if (!agent || !container) { stopChatLivePoll(); return }
+  if (document.hidden || container.offsetParent === null || chatThreadState.loading) return
+  if (container.scrollHeight - container.scrollTop - container.clientHeight >= 60) return
+  let msgs
+  try {
+    const res = await fetch(`/api/messages?agent=${encodeURIComponent(agent)}&limit=${CHAT_PAGE_SIZE}`)
+    if (!res.ok) return
+    msgs = await res.json()
+  } catch { return }
+  if (!Array.isArray(msgs) || chatThreadState.agent !== agent || chatThreadState.loading) return
+  const sorted = [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  if (chatListSig(sorted) === chatThreadState.liveSig) return
+  chatThreadState.minLoadedId = null
+  chatThreadState.hasMore = true
+  await fetchChatPage(agent, null, CHAT_PAGE_SIZE, 'replace')
 }
 
 async function fetchChatPage(agentName, beforeId, limit, mode) {
@@ -13431,17 +13482,18 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
         container.innerHTML = '<p class="activity-empty">' + t('messages.empty_thread') + '</p>'
       } else {
         container.innerHTML = '<div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">' + t('messages.loading') + '</div>'
-        container.insertAdjacentHTML('beforeend', sorted.map(buildBubbleHtml).join(''))
+        container.insertAdjacentHTML('beforeend', chatWithReplies(sorted).map(buildBubbleHtml).join(''))
         container.scrollTop = container.scrollHeight
       }
       if (sorted.length < limit) chatThreadState.hasMore = false
+      chatThreadState.liveSig = chatListSig(sorted)
     } else { // prepend
       if (loadingIndicator) loadingIndicator.style.display = 'none'
       if (!sorted.length) { chatThreadState.hasMore = false; chatThreadState.loading = false; return }
       if (sorted.length < limit) chatThreadState.hasMore = false
       const prevHeight = container.scrollHeight
       const indicator = document.getElementById('chatLoadingTop')
-      const html = sorted.map(buildBubbleHtml).join('')
+      const html = chatWithReplies(sorted).map(buildBubbleHtml).join('')
       if (indicator) {
         indicator.insertAdjacentHTML('afterend', html)
       } else {
@@ -13467,53 +13519,6 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
   }
 }
 
-// What a rendered bubble shows that can change after it is drawn: the status badge
-// and the reply (result) of a closed message. The live refresh below compares this
-// to decide whether a row has to be redrawn.
-function chatMsgSig(m) {
-  return `${m.status || ''}|${String(m.result || '').length}|${m.completed_at || ''}`
-}
-
-// Live refresh of the open thread. Before this the view only changed on the manual
-// reload button, so an agent's reply (or the done badge) stayed invisible until the
-// owner clicked. Polls the newest page only: rows already on screen are redrawn in
-// place when their signature changed, newer ids are appended, older paginated rows
-// are left alone. Skipped while the tab or the panel is hidden, or a load runs.
-const CHAT_LIVE_POLL_MS = 5000
-async function pollChatThread() {
-  const agent = chatThreadState.agent
-  const container = document.getElementById('chatBubbles')
-  if (!agent || !container || document.hidden || container.offsetParent === null || chatThreadState.loading) return
-  let msgs
-  try {
-    const res = await fetch(`/api/messages?agent=${encodeURIComponent(agent)}&limit=${CHAT_PAGE_SIZE}`)
-    if (!res.ok) return
-    msgs = await res.json()
-  } catch { return }
-  if (!Array.isArray(msgs) || chatThreadState.agent !== agent || chatThreadState.loading) return
-  const sorted = [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
-  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60
-  let maxId = 0
-  container.querySelectorAll('.chat-bubble-row[data-sig]').forEach(r => { maxId = Math.max(maxId, Number(r.dataset.msgId) || 0) })
-  let changed = false
-  for (const m of sorted) {
-    const row = container.querySelector(`.chat-bubble-row[data-msg-id="${CSS.escape(String(m.id))}"]`)
-    if (row) {
-      if (row.dataset.sig === chatMsgSig(m)) continue
-      container.querySelector(`.chat-bubble-row[data-msg-id="${CSS.escape(String(m.id) + '-result')}"]`)?.remove()
-      row.insertAdjacentHTML('beforebegin', buildBubbleHtml(m))
-      row.remove()
-      changed = true
-    } else if (m.id > maxId) {
-      container.querySelector('.activity-empty')?.remove()
-      container.insertAdjacentHTML('beforeend', buildBubbleHtml(m))
-      changed = true
-    }
-  }
-  if (changed && atBottom) container.scrollTop = container.scrollHeight
-}
-setInterval(pollChatThread, CHAT_LIVE_POLL_MS)
-
 function renderChatBubbles(msgs, agentName) {
   const container = document.getElementById('chatBubbles')
   if (!container) return
@@ -13522,7 +13527,7 @@ function renderChatBubbles(msgs, agentName) {
     return
   }
   const sorted = [...msgs].sort((a,b) => (a.created_at||0) - (b.created_at||0))
-  container.innerHTML = sorted.map(buildBubbleHtml).join('')
+  container.innerHTML = chatWithReplies(sorted).map(buildBubbleHtml).join('')
   container.scrollTop = container.scrollHeight
 }
 
