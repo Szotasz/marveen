@@ -5990,7 +5990,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
 }
 
 .skill-health-label.skill-health-ok   { background: var(--success-soft, rgba(34,197,94,.15)); color: var(--success); }
-.skill-health-label.skill-health-warn { background: rgba(245,158,11,.15); color: var(--warning, #f59e0b); }
+.skill-health-label.skill-health-warn { background: rgba(245,158,11,.15); color: var(--accent); }
 .skill-health-label.skill-health-err  { background: var(--danger-soft, rgba(239,68,68,.15)); color: var(--danger); }
 
 .skill-keyword-tag {
@@ -7619,6 +7619,18 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-qr-area[hidden] { display: none; }
 .gromzo-qr-area .mobile-login-warn, .gromzo-qr-area .modal-desc { text-align: center; max-width: 420px; }
 .gromzo-countdown { font-size: 13px; font-variant-numeric: tabular-nums; margin: 0; }
+.gromzo-agents { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.gromzo-agents-title { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.gromzo-agents-limit { font-size: 12px; color: var(--text-muted); margin: 4px 0 10px; }
+.gromzo-agent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.gromzo-agent-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; min-height: 44px; }
+.gromzo-agent-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gromzo-agent-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.gromzo-agent-state { font-size: 12px; color: var(--text-muted); }
+.gromzo-agent-state.is-on { color: var(--success); }
+.gromzo-agent-state.is-pending { color: var(--accent); }
+.gromzo-agent-state.is-error { color: var(--danger); }
+.gromzo-agent-row .btn-compact { min-height: 36px; flex-shrink: 0; }
 
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
@@ -7640,7 +7652,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .naplo-search { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
 .naplo-summary { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
 .naplo-empty { color: var(--text-muted); font-size: 14px; text-align: center; margin-top: 40px; }
-.naplo-empty.error { color: var(--danger, #ef4444); }
+.naplo-empty.error { color: var(--danger); }
 .naplo-timeline { display: flex; flex-direction: column; gap: 1px; }
 .naplo-entry { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border); font-size: 13px; }
 .naplo-entry-meta { display: flex; align-items: center; gap: 8px; }
