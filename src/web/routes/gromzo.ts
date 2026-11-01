@@ -29,8 +29,7 @@
 import type http from 'node:http'
 import { logger } from '../../logger.js'
 import { json, methodNotAllowed, readBody } from '../http-helpers.js'
-import { parseCookies, SESSION_COOKIE_NAME } from '../auth-gate.js'
-import { resolveSession } from '../auth-sessions.js'
+import { ownerCookieSession } from './auth.js'
 
 /** The 403 body. Same code as auth.ts OWNER_SESSION_REQUIRED (the panel keys its
  *  sentence on it), but its own text: that one says the token works before the
@@ -60,8 +59,7 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
   const sharedToken = auth?.kind === 'token' && !auth.tokenAgent
   const fullDeviceKey = auth?.kind === 'device' && auth.scope === 'full'
   if (!sharedToken && !fullDeviceKey) return false
-  const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-  return !!cookie && resolveSession(cookie) !== null
+  return ownerCookieSession(req) !== null
 }
 
 const STATUS_PATH = '/api/gromzo/status'

@@ -140,8 +140,33 @@ export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.Incom
   // login exists: that bare-token rule is about the SHARED token.
   if (auth.tokenAgent) return false
   if (countDashboardUsers(true) === 0) return true
+  return ownerCookieSession(req) !== null
+}
+
+/** The owner's password-login session riding on this request as its cookie: its user name, or null. The ONE place
+ *  the cookie branch is decided (BRIDGEPWLOGIN1101, Dani 65623 (a)): isOwnerSession (gromzo.ts), mayIssueCredentials
+ *  and mayActAsOwner all read it, so expiry, idle limit and logout (resolveSession) are the same for every gate. */
+export function ownerCookieSession(req?: http.IncomingMessage): string | null {
   const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
-  return !!cookie && resolveSession(cookie) !== null
+  if (!cookie) return null
+  return resolveSession(cookie)?.username ?? null
+}
+
+/** BRIDGEPWLOGIN1101 (Dani 65623 (1)): an owner action that issues NO credential (approvals, skill decisions,
+ *  federation, autonomy, fleet freeze, fleet, settings). mayIssueCredentials, plus a FULL device key sent alongside
+ *  a valid owner session cookie: the Bridge, whose webview sends its key on every call while the owner signed in
+ *  with the password inside it. The cookie is the owner's proof; the key adds nothing and must not hide it.
+ *  A bare device key never passes, not even before the first login exists (the first-run branch stays in
+ *  mayIssueCredentials, for the shared token only); never an operator key, a peer or a sub-agent token.
+ *  Credential issuance (device keys, users, Bridge enrolment, operator access, plan login) stays on
+ *  mayIssueCredentials until its own PR. Each pass through the key branch is one audit line naming the owner. */
+export function mayActAsOwner(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  if (mayIssueCredentials(auth, req)) return true
+  if (auth?.kind !== 'device' || auth.scope !== 'full') return false
+  const owner = ownerCookieSession(req)
+  if (owner === null) return false
+  logger.info({ owner, auth: 'device', device: auth.device, method: req?.method, path: req?.url?.split('?')[0] }, 'owner action on a Bridge key: the owner session beside it')
+  return true
 }
 
 export const CLI_RECOVERY_ONLY = {

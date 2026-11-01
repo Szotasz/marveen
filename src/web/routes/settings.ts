@@ -6,7 +6,7 @@ import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 
 // A change the registry marks as loosening a security control (SettingDefinition.loosens) needs the
 // owner. The shared fleet token is held by every agent, so it cannot be told apart from the agent
@@ -14,7 +14,7 @@ import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 // (mayIssueCredentials, #2163): the owner's session, also when the browser sends the stored token
 // alongside it; the bare token only before the first dashboard login exists.
 function ownerCredential(ctx: RouteContext): boolean {
-  return mayIssueCredentials(ctx.auth, ctx.req)
+  return mayActAsOwner(ctx.auth, ctx.req)
 }
 const LOOSEN_FORBIDDEN = {
   ...OWNER_SESSION_REQUIRED,
