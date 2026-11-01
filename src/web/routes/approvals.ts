@@ -15,7 +15,7 @@ import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from 
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage, sendOwnerSlackDm } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -512,7 +512,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // PATCH writes); a string id is kept in the owner note and the log line.
     let chatApprovedMessageId: number | string | null = null
     if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
-      if (!mayIssueCredentials(ctx.auth, req)) {
+      if (!mayActAsOwner(ctx.auth, req)) {
         logger.warn({ agent_id, category, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'born-approved approval refused: no owner session')
         json(res, OWNER_ONLY, 403)
         return true
@@ -684,7 +684,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     // Approving takes the owner (see OWNER_ONLY); rejecting or timing out does not, since
     // an agent that cancels a request gains nothing by it.
-    if (status === 'approved' && !mayIssueCredentials(ctx.auth, req)) {
+    if (status === 'approved' && !mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: idMatch[1], resolved_by, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'approval approve refused: no owner session')
       json(res, OWNER_ONLY, 403)
       return true

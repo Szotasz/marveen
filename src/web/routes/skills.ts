@@ -18,7 +18,7 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName } from '../sanitize.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -285,7 +285,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // browser sends the stored token alongside it; the bare token only before the first dashboard
     // login exists. Reject is held to the same bar, so an agent cannot discard what is waiting for
     // the owner's review either.
-    if (!mayIssueCredentials(ctx.auth, req)) {
+    if (!mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: pendingActionMatch[1], action: pendingActionMatch[2], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Pending skill decision refused: no owner session')
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true

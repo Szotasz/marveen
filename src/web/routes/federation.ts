@@ -50,7 +50,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 export const FEDERATION_VERSION = 1
@@ -303,7 +303,7 @@ const FED_OWNER_SESSION_REQUIRED = {
 }
 
 function refuseUnlessOwner(ctx: RouteContext): boolean {
-  if (mayIssueCredentials(ctx.auth, ctx.req)) return false
+  if (mayActAsOwner(ctx.auth, ctx.req)) return false
   logger.warn({ fed: true, path: ctx.path, method: ctx.method, kind: ctx.auth?.kind }, 'federation: credential issuance refused (owner session required)')
   json(ctx.res, FED_OWNER_SESSION_REQUIRED, 403)
   return true

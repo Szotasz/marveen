@@ -24,7 +24,7 @@ import {
   type FleetFreezeMode, type FleetFreezeState,
 } from '../fleet-freeze.js'
 import { json, readBody } from '../http-helpers.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 4 * 1024
@@ -127,7 +127,7 @@ export async function tryHandleFleetFreeze(ctx: RouteContext): Promise<boolean> 
   }
 
   if (path === '/api/fleet/unfreeze' && method === 'POST') {
-    if (!mayIssueCredentials(auth, req)) {
+    if (!mayActAsOwner(auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
