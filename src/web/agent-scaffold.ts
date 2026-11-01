@@ -4729,6 +4729,79 @@ export function ensureFleetAuthSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// SHELLGREP1101: the Bash tool's bare `grep` is not the system grep. Claude Code's
+// shell snapshot defines `grep` (and `find`, `rg`) as its embedded search engine
+// (ugrep with `--ignore-files --hidden -I --exclude-dir=.git ...`), so a recursive
+// `grep -r` silently skips gitignored files, the .git directory and any binary or
+// non-UTF-8 input -- exactly where secrets tend to live (.env, token files,
+// .git/config). Measured 2026-11-01: over one tree of *.md/*.sh files the shim
+// read 1703 of 5609 files; a piped `grep -c` after a binary stage printed a
+// real-looking 0; and an older embedded ugrep (7.5.0) grew to 8-12 GB within a
+// minute on a `-o -i -E '.{0,80}word.{0,80}'` context pattern until the kernel
+// OOM-killed it (nine times on one host; 7.8.4 stops with "exceeds complexity
+// limits"). `command grep` is no fix on its own: it only works at the start of a
+// command line -- after `timeout`, `xargs` or `find -exec` it is "No such file or
+// directory", with 2>/dev/null a silent false zero. `/usr/bin/grep` works in
+// every position. The exposure is the bare `grep` that starts a command line or
+// a pipeline segment: behind `xargs`, `find -exec`, `timeout`, inside a script or
+// across ssh the real binary runs anyway, because the shim is a function of the
+// Bash tool's own shell.
+//
+// This is a property of the Claude Code runtime every agent runs in, not one
+// fleet's process, so it ships default-on. A marker block on the same contract as
+// ensureFleetAuthSection, including its skip-where-already-documented rule: an
+// agent file that already prescribes `/usr/bin/grep` by hand gets no second copy.
+const SHELL_GREP_BEGIN = '<!-- BEGIN GENERATED: shell-grep (auto-generated, do not edit by hand) -->'
+const SHELL_GREP_END = '<!-- END GENERATED: shell-grep -->'
+const SHELL_GREP_BLOCK_RE = new RegExp(
+  `${SHELL_GREP_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SHELL_GREP_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildShellGrepBody(): string {
+  return [
+    '## Keresés a shellben: a puszta `grep` nem a rendszer grepje',
+    '',
+    'A Bash-eszközben a `grep` (és az `rg`) a Claude Code beépített keresője, és csendben mást talál, mint a rendszer grepje:',
+    '- rekurzívan kihagyja a `.gitignore`-ban felsorolt fájlokat és a `.git` mappát, pedig a titkok épp ilyenekben',
+    '  szoktak lenni (`.env`, tokenfájl, `.git/config`);',
+    '- a bináris vagy nem UTF-8 bemenetet kihagyja: ilyenkor `-c`-vel is üres a kimenete, egy csőben pedig a következő',
+    '  fokozat hamis „0”-t ír;',
+    '- a `-o` és `.{0,N}` jellegű mintán hibával megáll (régebbi Claude Code-ban a memóriát is elfogyaszthatta).',
+    '',
+    'Ezért titok-, audit- és teljességi kereséshez `/usr/bin/grep` kell, a cső minden fokozatában. A kockázat a parancssor',
+    'és a cső-szegmensek elején álló puszta `grep`: `xargs`, `find -exec`, `timeout`, egy szkript vagy az ssh mögött eleve a',
+    'rendszer grepje fut. A `command grep` csak a parancssor elején használható, ezek után nem. „Nincs találat” csak akkor',
+    'fogadható el, ha a pozitív kontroll talált: egy `.gitignore`-ban felsorolt fájlban, ugyanabban a parancsformában és',
+    'ugyanabból a mappából.',
+  ].join('\n')
+}
+
+export function ensureShellGrepSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const hasBlock = SHELL_GREP_BLOCK_RE.test(existing)
+  // Hand-written copy already present and no block of ours: leave it alone.
+  if (!hasBlock && /\/usr\/bin\/grep/.test(existing)) return
+
+  const block = `${SHELL_GREP_BEGIN}\n${buildShellGrepBody()}\n${SHELL_GREP_END}`
+  const updated = hasBlock
+    ? existing.replace(SHELL_GREP_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // #2232: the strict-profile agent's own recipe list. The generated blocks are rewritten on
 // every start, but the memory-save, daily-log, hot-list, move and schedule recipes live in the
 // creation-time text, which no start rewrites -- so an agent created before #2232, or switched to
