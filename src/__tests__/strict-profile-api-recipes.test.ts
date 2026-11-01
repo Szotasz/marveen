@@ -363,6 +363,26 @@ describe('the api-helper block (VOICETOKENLEAK1101 PR-A2): an existing agent bod
     expect(once.startsWith('# plain-h\n\nkézi törzs curl-lel\n')).toBe(true)
   })
 
+  // Dani 65448, Samu 65462: the override sentence must name EVERY kind of body recipe it overrides; it named no
+  // inter-agent message, so an agent could follow the body's curl for a message to its lead (or the "task done" ping).
+  it('the override sentence names every kind of body recipe, the inter-agent message to any recipient too', async () => {
+    stageAgent('plain-n', null)
+    const prompt = (await creation('plain-n')).prompt
+    const block = S.buildApiHelperBody('plain-n').replace(/\s+/g, ' ')
+    const sentence = block.slice(block.indexOf('Ha ennek a fájlnak egy MÁSIK része'), block.indexOf('Helyette ezeket használd'))
+    const NAMED: Record<string, string> = {
+      'memory-save': 'memória mentés', 'memory-search': 'keresés', 'memory-list': 'hot-lista', 'memory-move': 'átsorolás',
+      'daily-log': 'napi napló', message: 'inter-agent üzenet BÁRMELY címzettnek', 'schedules-list': 'ütemezések listája',
+    }
+    const bodyVerbs = helperLines(prompt).map((l) => l.split(' ')[2]!).filter((v) => v !== 'skill-propose')
+    expect(bodyVerbs.length).toBeGreaterThanOrEqual(7)
+    for (const v of bodyVerbs) {
+      expect(NAMED[v], `body verb without a name in the test: ${v}`).toBeDefined()
+      expect(sentence, v).toContain(NAMED[v])
+    }
+    expect(sentence).toContain('a vezetődnek vagy a fő ágensnek, a feladat-kész jelzés is')
+  })
+
   it('never for a strict agent (it has the strict-api block)', () => {
     const strictPath = stageAgent('strict-h', 'developer-junior')
     S.ensureApiHelperSection('strict-h')
