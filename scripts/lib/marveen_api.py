@@ -33,6 +33,8 @@ ID_RE = re.compile(r'^[0-9]{1,18}$')
 APPROVAL_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 CATEGORY_KEY_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 HASH_RE = re.compile(r'^[A-Za-z0-9:_-]{8,128}$')
+# SKILLSPLIT1101: the server's rule (skill-quarantine.ts PROPOSED_FILE_RE) for the file name part.
+REF_FILE_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,99}\.md$')
 # a card id is one path segment: no '/', '.', '?' or '#', so it cannot leave /api/kanban/<id>/
 CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # the status set belongs to the server; this only keeps the value one plain token
@@ -56,7 +58,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
-  skill-propose <skill-name> <skill-md-file> [--reason-file <file>]
+  skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
+                (each --ref-file goes as references/<its file name>, markdown only)
   kanban-list
   kanban-create <assignee> <low|normal|high|urgent> <title-file>
   kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
@@ -342,6 +345,13 @@ def build_request(verb, args):
         return 'POST', f'/api/approvals/{approval_id}/consume', body, headers, {}
     if verb == 'skill-propose':
         reason_file = take_opt(args, '--reason-file')
+        # SKILLSPLIT1101: a long skill split into SKILL.md + references/*.md; each file under its own name.
+        ref_files = []
+        while True:
+            ref = take_opt(args, '--ref-file')
+            if ref is None:
+                break
+            ref_files.append(ref)
         name, skill_md_file = positional(args, 2, verb)
         check(name, NAME_RE, 'skill name')
         body = {'name': name, 'skill_md': read_text(skill_md_file)}
@@ -349,6 +359,16 @@ def build_request(verb, args):
             fail_usage('skill-propose: the SKILL.md is empty')
         if reason_file is not None:
             body['reason'] = read_text(reason_file)
+        if ref_files:
+            files = {}
+            for ref in ref_files:
+                base = os.path.basename(ref)
+                check(base, REF_FILE_RE, 'reference file name (lowercase letters, digits, . _ -, ending in .md)')
+                key = f'references/{base}'
+                if key in files:
+                    fail_usage(f'skill-propose: {base} is given twice')
+                files[key] = read_text(ref)
+            body['files'] = files
         return 'POST', '/api/skills/propose', body, headers, {}
     if verb == 'kanban-list':
         positional(args, 0, verb)

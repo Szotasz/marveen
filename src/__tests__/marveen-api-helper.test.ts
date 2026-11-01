@@ -99,6 +99,20 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(JSON.parse(seen[1].body)).toEqual({ name: 'my-skill', skill_md: md })
   })
 
+  it('skill-propose --ref-file (SKILLSPLIT1101): each file goes as references/<its name>; a bad or repeated name is a usage error', async () => {
+    const md = '---\nname: my-skill\n---\nsee references\n'
+    const mdFile = file('s.md', md)
+    const r = await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('details.md', 'részletek `x`\n'), '--ref-file', file('b-2.md', 'b')])
+    expect(r.code).toBe(0)
+    expect(JSON.parse(seen[0].body)).toEqual({ name: 'my-skill', skill_md: md, files: { 'references/details.md': 'részletek `x`\n', 'references/b-2.md': 'b' } })
+    expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('notes.txt', 'x')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('.hidden.md', 'x')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('Upper.md', 'x')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('dup.md', 'x'), '--ref-file', file('dup.md', 'y')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file'])).code).toBe(2)
+    expect(seen).toHaveLength(1)
+  })
+
   it('memory-search: the accented query is encoded, and the label header is printed first', async () => {
     reply = { status: 200, body: '[]', headers: { 'X-Memory-Search': 'strict=true; relaxed=false; hits=0' } }
     const r = await run(['memory-search', 'dani', 'funkcionális', '--category', 'warm', '--strict', '--since', '2026-10-01'])

@@ -12360,13 +12360,24 @@ function pendingEl(tag, cls, text) {
   return el
 }
 
-function pendingFileRow(f) {
+// SKILLSPLIT1101 (Dani 65108): where a file of a proposal comes from, so on a 15-file replacement the approver
+// sees what to read: the proposal's own SKILL.md and references (new or overwriting), or copied from the live skill.
+function pendingFileOrigin(p, path) {
+  if (!p || p.source !== 'propose') return null
+  if (path === 'SKILL.md') return p.replaces ? 'proposed_replaced' : 'proposed_new'
+  const pf = Array.isArray(p.proposedFiles) ? p.proposedFiles.find((x) => x.path === path) : null
+  if (pf) return pf.replaced ? 'proposed_replaced' : 'proposed_new'
+  return p.replaces ? 'from_live' : null
+}
+
+function pendingFileRow(f, origin) {
   const det = pendingEl('details', 'skills-pending-file')
   const flagged = f.kind === 'script' || f.kind === 'binary' || f.executable
   const sum = pendingEl('summary', flagged ? 'is-flagged' : null)
   const flags = [f.kind]
   if (f.executable) flags.push(t('skills.pending.executable'))
   if (f.shebang) flags.push(f.shebang)
+  if (origin) flags.push(t(`skills.pending.origin_${origin}`))
   sum.appendChild(pendingEl('code', null, f.path))
   sum.appendChild(pendingEl('span', null, ` ${f.size} B · ${flags.join(' · ')}`))
   det.appendChild(sum)
@@ -12380,7 +12391,7 @@ function pendingFileRow(f) {
     det.appendChild(pendingEl('pre', null, f.strings))
     det.open = true
   }
-  if (f.path === 'SKILL.md') det.open = true
+  if (f.path === 'SKILL.md' || origin === 'proposed_new' || origin === 'proposed_replaced') det.open = true
   return det
 }
 
@@ -12405,6 +12416,11 @@ function renderPendingSkills(box, list) {
     card.appendChild(pendingEl('div', p.target && p.target.scope === 'agent' ? 'skills-pending-target' : 'skills-pending-target is-global', where))
     if (p.replaces) card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.replaces', { name: p.name })))
     if (p.reason) card.appendChild(pendingEl('div', 'skills-pending-intro', t('skills.pending.reason', { reason: p.reason })))
+    // SKILLSPLIT1101: which references/*.md the proposal brought, and which of them overwrite a live file.
+    if (Array.isArray(p.proposedFiles) && p.proposedFiles.length) {
+      const list = p.proposedFiles.map((f) => `${f.path} (${t(f.replaced ? 'skills.pending.proposed_file_replaced' : 'skills.pending.proposed_file_new')})`).join(', ')
+      card.appendChild(pendingEl('div', p.proposedFiles.some((f) => f.replaced) ? 'skills-pending-sub is-flagged' : 'skills-pending-sub', t('skills.pending.proposed_files', { n: p.proposedFiles.length, list })))
+    }
     if (p.replaces && typeof p.liveSkillMd === 'string') {
       const cur = pendingEl('details', 'skills-pending-file')
       cur.appendChild(pendingEl('summary', null, t('skills.pending.current_version')))
@@ -12418,10 +12434,10 @@ function renderPendingSkills(box, list) {
     const rest = files.filter((f) => !risky.includes(f))
     if (risky.length) {
       card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.scripts', { n: risky.length })))
-      for (const f of risky) card.appendChild(pendingFileRow(f))
+      for (const f of risky) card.appendChild(pendingFileRow(f, pendingFileOrigin(p, f.path)))
     }
     card.appendChild(pendingEl('div', 'skills-pending-sub', t('skills.pending.files', { n: rest.length })))
-    for (const f of rest) card.appendChild(pendingFileRow(f))
+    for (const f of rest) card.appendChild(pendingFileRow(f, pendingFileOrigin(p, f.path)))
 
     card.appendChild(pendingEl('div', 'skills-pending-sub',
       report.findings.length ? t('skills.pending.findings', { n: report.findings.length }) : t('skills.pending.no_findings')))
