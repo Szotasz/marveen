@@ -1021,13 +1021,14 @@ export async function runMessageRouterTick(): Promise<void> {
       if (!worksourceServing && shouldAbandon(sessionExists, absentForMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, absentForMs }, 'Agent message abandoned: target session absent for full retry window')
         const closed = markPendingMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)
-        if (!closed) {
+        // Only the row this call closed earns the failure notices: a row closed concurrently
+        // was not failed by us, and must not be reported as failed to anyone.
+        if (closed) {
+          notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
+          notifySenderOfFailedHandoff(msg, 'a címzett munkamenete a teljes türelmi ablakban (60 perc) folyamatosan hiányzott')
+        } else {
           logger.warn({ id: msg.id }, 'markPendingMessageFailed affected 0 rows (closed or deleted concurrently?)')
         }
-        notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
-        // Only the row this call closed earns a sender notice: a row closed concurrently
-        // was not failed by us, and must not be reported as failed.
-        if (closed) notifySenderOfFailedHandoff(msg, 'a címzett munkamenete a teljes türelmi ablakban (60 perc) folyamatosan hiányzott')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         continue

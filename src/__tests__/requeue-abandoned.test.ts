@@ -239,10 +239,12 @@ describe('requeueAbandonedForAgent', () => {
     const ids: number[] = []
     for (let i = 0; i < 21; i++) ids.push(abandoned('alice', NOW - 1000 + i))
     const last = ids[20]
-    setCreated(last, NOW - 5 * DAY)
+    // the highest id, but the oldest row, still inside the 24 h window: only the cap keeps it out
+    setCreated(last, NOW - 2 * HOUR)
     const got = requeueAbandonedForAgent('alice', { now: NOW })
     expect(got).toEqual(ids.slice(0, 20))
     expect(row(last).status).toBe('failed')
+    expect(row(last).requeue_skipped_at).toBe(NOW)
   })
 
   it('cap 1: a row requeued before does not take the only slot', () => {
@@ -525,6 +527,23 @@ describe('requeue wiring', () => {
     expect(src).toContain('markPendingMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)')
     expect(src).not.toContain('markMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)')
     expect(src).not.toContain('Abandoned: target session absent for full retry window')
+  })
+
+  it('a row the router did not close itself earns no failure notice, neither to the main agent nor to the sender', () => {
+    const src = stripComments(readFileSync(join(here, '../web/message-router.ts'), 'utf8'))
+    const start = src.indexOf('const closed = markPendingMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)')
+    expect(start).toBeGreaterThan(0)
+    const branch = src.slice(start, src.indexOf('routerInjectFailures.delete(msg.id)', start))
+    const guard = branch.indexOf('if (closed) {')
+    const orElse = branch.indexOf('} else {')
+    expect(guard).toBeGreaterThan(0)
+    expect(orElse).toBeGreaterThan(guard)
+    for (const call of ['notifyOrchestratorOfFailedHandoff(msg,', 'notifySenderOfFailedHandoff(msg,']) {
+      const at = branch.indexOf(call)
+      expect(at, call).toBeGreaterThan(guard)
+      expect(at, call).toBeLessThan(orElse)
+      expect(branch.indexOf(call, at + 1), call).toBe(-1)
+    }
   })
 
   it('requeue-notice imports neither agent-process nor the router', () => {
