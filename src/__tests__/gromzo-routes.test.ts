@@ -507,10 +507,85 @@ describe('the agent switch routes', () => {
     expect(logged.join('\n')).toContain('picture NOT sent after the add (the add stands)')
   })
 
-  it('after the reload: an add (flag on) sends the picture, a remove (flag off) sends nothing', async () => {
+  // GAZDA-TESZT build 19 (Samu 65189): Nora's add answered applied=false (mxd stored the picture, the new agent was not
+  // running there yet) and it was logged as "picture sent", with no try again: the picture never showed.
+  const settle = () => new Promise((r) => setTimeout(r, 40))
+  const avatarCalls = () => calls.filter((c) => c.verb === 'agent_avatar').length
+
+  it('applied=false: a WARN (stored, not set), then sent again in the background until mxd sets it', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    const log0 = logged.join('\n')
+    expect(log0).toContain('picture stored by mxd but NOT set on the agent yet')
+    expect(log0).not.toContain('picture sent after the add')
+    await settle()
+    expect(avatarCalls()).toBe(2)
+    expect(logged.join('\n')).toMatch(/picture set on the agent[\s\S]*"try":2|"try":2[\s\S]*picture set on the agent/)
+  })
+
+  it('applied=false every time: bounded at 3 sends, then a WARN that the next agent start sets it; a rate limit counts as a try', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: false, error: 'rate_limited' }, { ok: true, applied: false }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    await settle()
+    expect(avatarCalls()).toBe(3)
+    expect(logged.join('\n')).toContain("picture still NOT set on the agent; mxd sets the stored one at the agent's next start")
+  })
+
+  it('the retry stops when the switch went off meanwhile, and on a real refusal', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    flags.set('zara', false)
+    await settle()
+    expect(avatarCalls()).toBe(1)
+    expect(logged.join('\n')).toContain('picture retry stopped (the switch went off)')
+    calls.length = 0
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: false, error: 'unknown_agent' }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    await settle()
+    expect(avatarCalls()).toBe(2)
+    expect(logged.join('\n')).toContain('picture NOT sent on the retry (the add stands)')
+  })
+
+  it('one try-again line per agent at a time (Dani 65222/2); each send reads the current file, the log never the picture', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: true, applied: false }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 20)
+    await pushAvatarAfterAdd('zara', 0, 20) // a second add while the first line waits
+    expect(logged.join('\n')).toContain('a try again already runs for it')
+    await new Promise((r) => setTimeout(r, 120))
+    expect(avatarCalls()).toBe(3) // 2 first sends + ONE retry, not two
+    const sent = calls.filter((c) => c.verb === 'agent_avatar').map((c) => c.image)
+    expect(new Set(sent).size).toBe(1)
+    expect(sent[0]).toBe(AVATAR_PNG.toString('base64'))
+    for (const leak of [AVATAR_PNG.toString('base64'), '"Buffer"', 'PIXELBYTES']) expect(logged.join('\n')).not.toContain(leak)
+    // the line is free again once it ended
+    calls.length = 0
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: true, applied: true }]
+    await pushAvatarAfterAdd('zara', 0, 1)
+    await settle()
+    expect(avatarCalls()).toBe(2)
+  })
+
+  it('the agent restart does not wait for the background tries', async () => {
+    flags.set('zara', true)
+    replies.agent_avatar = [{ ok: true, applied: false }, { ok: true, applied: true }]
+    const t0 = Date.now()
+    await pushAvatarAfterAdd('zara', 0, 400)
+    expect(Date.now() - t0).toBeLessThan(200)
+    expect(avatarCalls()).toBe(1)
+    await new Promise((r) => setTimeout(r, 500)) // let the line end, so no later test inherits it
+    expect(avatarCalls()).toBe(2)
+  })
+
+  it('after the reload: an add (flag on) sends the picture, a remove (flag off) sends nothing, and says so', async () => {
     replies.agent_avatar = [{ ok: true, applied: true }]
     await avatarAfterReload('zara', 0)
     expect(calls).toEqual([])
+    expect(logged.join('\n')).toContain('no picture sent (the switch is off: a remove)')
     flags.set('zara', true)
     await avatarAfterReload('zara', 0)
     expect(calls.map((c) => [c.verb, c.slug])).toEqual([['agent_avatar', 'zara']])
