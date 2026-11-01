@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { createAgentMessage, failPendingFederatedMessages } from '../../db.js'
+import { createAgentMessage, failPendingFederatedMessages, closeOutboundByFederatedReceipt, COMPLETION_REPORT_PREFIX } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { isKnownAgent, readAgentDisplayName, readAgentModel } from '../agent-config.js'
@@ -309,6 +309,46 @@ function refuseUnlessOwner(ctx: RouteContext): boolean {
   return true
 }
 
+// ---- completion receipt from a peer -------------------------------------------
+
+/**
+ * A peer's completion receipt ("[Eredmény] msg_id:<our id> status:<done|failed>", written by
+ * routes/messages.ts federatedReceipt on the PEER's side) names the row WE sent it. Before
+ * this, the receipt arrived as an ordinary inbound message and our own outbound row stayed
+ * `delivered` forever (measured 2026-11-01: msg 773 to kitti/kitti, receipt 774 arrived,
+ * 773 still delivered). Now the receipt also closes that row.
+ *
+ * Strict on purpose: only the exact header line the receipt builder writes, a numeric id
+ * (our ids are integers; "ismeretlen" -- the peer had no ref -- closes nothing), and only
+ * done/failed. The body after the blank line becomes the row's result.
+ */
+const RECEIPT_HEADER_RE = /^\[Eredmény\] msg_id:(\d{1,15}) status:(done|failed)$/
+
+export function parseFederatedReceipt(content: string): { id: number; status: 'done' | 'failed'; result: string } | null {
+  if (!content.startsWith(COMPLETION_REPORT_PREFIX)) return null
+  const nl = content.indexOf('\n')
+  const header = nl === -1 ? content : content.slice(0, nl)
+  const m = RECEIPT_HEADER_RE.exec(header)
+  if (!m) return null
+  const id = Number(m[1])
+  if (!Number.isSafeInteger(id) || id <= 0) return null
+  const result = nl === -1 ? '' : content.slice(nl + 1).replace(/^\n/, '')
+  return { id, status: m[2] as 'done' | 'failed', result }
+}
+
+/**
+ * Close our outbound row a peer's receipt names. Only for a PEER-AUTHENTICATED caller: a
+ * dashboard-token smoke test has no peer, so it cannot close anything. The DB write itself
+ * checks that the row was sent to THIS peer (closeOutboundByFederatedReceipt), so a peer
+ * cannot close a message we sent someone else by naming its id.
+ */
+export function applyFederatedReceipt(callerPeerId: string | null, content: string): number | null {
+  if (callerPeerId === null) return null
+  const r = parseFederatedReceipt(content)
+  if (!r) return null
+  return closeOutboundByFederatedReceipt(r.id, callerPeerId, r.status, r.result) ? r.id : null
+}
+
 // ---- route handler ------------------------------------------------------------
 
 export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
@@ -377,6 +417,12 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       { remoteRef: callerPeerId !== null ? verdict.ref : null })
     if (callerPeerId !== null && verdict.ref !== null) rememberRef(`${callerPeerId}:${verdict.ref}`, msg.id)
     logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, from: verdict.from, to: verdict.to, ref: verdict.ref }, 'federation inbox: message accepted')
+    // The receipt is still delivered as a message (the agent reads the result there); this
+    // only moves our own outbound row out of `delivered`.
+    const closedOutbound = applyFederatedReceipt(callerPeerId, verdict.content)
+    if (closedOutbound !== null) {
+      logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, closedOutbound }, 'federation inbox: completion receipt closed our outbound row')
+    }
     json(res, { id: msg.id, ref: verdict.ref }, 202)
     return true
   }
