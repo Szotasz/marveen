@@ -34,7 +34,7 @@ APPROVAL_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 CATEGORY_KEY_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 HASH_RE = re.compile(r'^[A-Za-z0-9:_-]{8,128}$')
 # SKILLSPLIT1101: the server's rule (skill-quarantine.ts PROPOSED_FILE_RE) for the file name part.
-REF_FILE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$')
+REF_FILE_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,99}\.md$')
 # a card id is one path segment: no '/', '.', '?' or '#', so it cannot leave /api/kanban/<id>/
 CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # the status set belongs to the server; this only keeps the value one plain token
@@ -338,7 +338,7 @@ def build_request(verb, args):
             files = {}
             for ref in ref_files:
                 base = os.path.basename(ref)
-                check(base, REF_FILE_RE, 'reference file name (letters, digits, . _ -, ending in .md)')
+                check(base, REF_FILE_RE, 'reference file name (lowercase letters, digits, . _ -, ending in .md)')
                 key = f'references/{base}'
                 if key in files:
                     fail_usage(f'skill-propose: {base} is given twice')

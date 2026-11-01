@@ -107,6 +107,7 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(JSON.parse(seen[0].body)).toEqual({ name: 'my-skill', skill_md: md, files: { 'references/details.md': 'részletek `x`\n', 'references/b-2.md': 'b' } })
     expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('notes.txt', 'x')])).code).toBe(2)
     expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('.hidden.md', 'x')])).code).toBe(2)
+    expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('Upper.md', 'x')])).code).toBe(2)
     expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file', file('dup.md', 'x'), '--ref-file', file('dup.md', 'y')])).code).toBe(2)
     expect((await run(['skill-propose', 'my-skill', mdFile, '--ref-file'])).code).toBe(2)
     expect(seen).toHaveLength(1)

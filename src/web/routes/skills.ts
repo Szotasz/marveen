@@ -425,7 +425,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   // token every agent holds; approving stays owner-only (see the pending routes above).
   if (path === '/api/skills/propose' && method === 'POST') {
     let body: { name?: unknown; skill_md?: unknown; reason?: unknown; files?: unknown }
-    try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    // Strict UTF-8 (SKILLSPLIT1101, Dani 65108): Buffer.toString() would turn an invalid byte into U+FFFD silently,
+    // so the approver would read, and the skill would carry, something other than what was sent.
+    let bodyText: string
+    const rawBody = await readBody(req)
+    try { bodyText = new TextDecoder('utf-8', { fatal: true }).decode(rawBody) } catch { json(res, { error: 'The body is not valid UTF-8' }, 400); return true }
+    try { body = JSON.parse(bodyText) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
     const rawName = typeof body?.name === 'string' ? body.name : ''
     const name = sanitizeSkillName(rawName)
     if (!name || name !== rawName) { json(res, { error: 'Invalid skill name (use lowercase letters, digits and hyphens)' }, 400); return true }

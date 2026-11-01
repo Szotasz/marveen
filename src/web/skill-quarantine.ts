@@ -234,10 +234,13 @@ export type ProposeResult =
 // no "..", no absolute path, no backslash, no hidden name, markdown only, text only. They land in the pending
 // directory like the SKILL.md, so the scan shows them in full and the approval hash binds them; on approval they
 // overwrite or add to the live skill's references/, and every other live file stays (the pending dir is a copy).
+// A proposal never deletes a file: it only adds or overwrites.
 export const MAX_PROPOSED_FILES = 20
 export const MAX_PROPOSED_FILE_BYTES = MAX_PROPOSED_SKILL_BYTES
 export const MAX_PROPOSED_TOTAL_BYTES = 1024 * 1024
-const PROPOSED_FILE_RE = /^references\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$/
+// A whitelist (Dani 65108): lowercase ASCII only, one level. Lowercase because the macOS filesystem does not tell
+// References/X.md from references/x.md, so two keys could land on one file; ASCII so no NFC/NFD twin either.
+const PROPOSED_FILE_RE = /^references\/[a-z0-9][a-z0-9._-]{0,99}\.md$/
 
 export type ProposedFiles = Array<{ path: string; content: string }>
 // A UTF-16 surrogate without its pair: not encodable as UTF-8 (String.prototype.isWellFormed is ES2024, past our lib).
@@ -318,6 +321,15 @@ export function queueProposedSkill(name: string, skillMd: string, opts: { propos
         return { ok: false, status: 400, error: `files: ${f.path} exists in the live skill and is not a regular file` }
       }
       atomicWriteFileSync(abs, f.content)
+      // Read back without following: what went in must be a regular file inside a real directory.
+      let after: ReturnType<typeof lstatSync> | null
+      try { after = lstatSync(abs) } catch { after = null }
+      let dirAfter: ReturnType<typeof lstatSync> | null
+      try { dirAfter = lstatSync(refDir) } catch { dirAfter = null }
+      if (!after || !after.isFile() || !dirAfter || dirAfter.isSymbolicLink() || !dirAfter.isDirectory()) {
+        rmSync(dir, { recursive: true, force: true })
+        return { ok: false, status: 400, error: `files: ${f.path} could not be written as a regular file` }
+      }
       proposedFiles.push({ path: f.path, replaced: !!fst })
     }
   }

@@ -26,7 +26,7 @@ type Auth = import('../web/routes/types.js').RouteContext['auth']
 async function call(method: string, path: string, body: unknown, auth: Auth) {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = { writeHead(s: number) { out.status = s; return res }, setHeader() {}, end(c?: string) { if (c) try { out.body = JSON.parse(c) } catch { out.body = c } } }
-  const raw = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
+  const raw = body === undefined ? [] : [Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
   const req = Readable.from(raw) as unknown as http.IncomingMessage
   req.headers = {}
   const url = new URL(`http://localhost${path}`)
@@ -94,6 +94,12 @@ describe('POST /api/skills/propose with files', () => {
     const p = q.getPending(r.body.id)!
     writeFileSync(join(PENDING, r.body.id, 'skill', 'references', 'details.md'), 'swapped')
     expect(q.approvePending(r.body.id, p.hash)).toMatchObject({ ok: false, status: 409 })
+    // A file smuggled in after the proposal: the same.
+    const r2 = await propose({ name: 'other-skill', skill_md: MD, files: { 'references/details.md': 'shown' } })
+    const p2 = q.getPending(r2.body.id)!
+    writeFileSync(join(PENDING, r2.body.id, 'skill', 'references', 'extra.md'), 'smuggled')
+    expect(q.approvePending(r2.body.id, p2.hash)).toMatchObject({ ok: false, status: 409 })
+    expect(existsSync(join(GLOBAL, 'other-skill'))).toBe(false)
   })
 
   it('F5: path gates: only flat references/<name>.md; every other path is 400 and nothing is queued', async () => {
@@ -102,6 +108,10 @@ describe('POST /api/skills/propose with files', () => {
       'references/sub/x.md', 'references/x.txt', 'references/x.md.sh', 'references/.hidden.md', 'references/x',
       'references\\x.md', 'references/x\\..\\y.md', 'SKILL.md', 'scripts/x.md', 'x.md', 'references/', 'references/x.md ',
       ' references/x.md', 'references/x y.md', 'references/x\n.md', 'Références/x.md', 'references/ü.md',
+      // Lowercase only (Dani 65108: the macOS filesystem folds case), and no ".." even inside a name.
+      'References/x.md', 'references/X.md', 'references/Details.md', 'references/x.MD', 'references/a..b.md',
+      // NFD twin of a name (e + combining acute): not ASCII.
+      'references/e\u0301.md',
     ]
     for (const path of bad) {
       const r = await propose({ name: 'long-skill', skill_md: MD, files: { [path]: 'x' } })
@@ -131,6 +141,23 @@ describe('POST /api/skills/propose with files', () => {
     const raw = `{"name":"long-skill","skill_md":${JSON.stringify(MD)},"files":{"references/x.md":"a\\ud800b"}}`
     expect((await propose(raw)).status).toBe(400)
     expect(pendingIds()).toEqual([])
+    // Invalid UTF-8 in the raw body (a 0xFF byte inside a file's text): 400, not a silent U+FFFD.
+    const head = Buffer.from(`{"name":"long-skill","skill_md":${JSON.stringify(MD)},"files":{"references/x.md":"a`)
+    expect((await propose(Buffer.concat([head, Buffer.from([0xff]), Buffer.from('b"}}')]))).status).toBe(400)
+    expect(pendingIds()).toEqual([])
+    // Per file: exactly the limit passes, one byte more does not (see above).
+    const one = await propose({ name: 'edge-one', skill_md: MD, files: { 'references/x.md': 'a'.repeat(q.MAX_PROPOSED_FILE_BYTES) } })
+    expect(one.status).toBe(200)
+    // Total: SKILL.md + files exactly at the limit passes, one byte more is 400.
+    const mdBytes = Buffer.byteLength(MD)
+    const fill = (extra: number) => {
+      let left = q.MAX_PROPOSED_TOTAL_BYTES - mdBytes + extra
+      const files: Record<string, string> = {}
+      for (let i = 0; left > 0; i++) { const n = Math.min(left, q.MAX_PROPOSED_FILE_BYTES); files[`references/t${i}.md`] = 'a'.repeat(n); left -= n }
+      return files
+    }
+    expect((await propose({ name: 'edge-total', skill_md: MD, files: fill(1) })).status).toBe(400)
+    expect((await propose({ name: 'edge-total', skill_md: MD, files: fill(0) })).status).toBe(200)
     // At the limits it passes: MAX files, each small.
     const ok = await propose({ name: 'long-skill', skill_md: MD, files: Object.fromEntries(Array.from({ length: q.MAX_PROPOSED_FILES }, (_, i) => [`references/f${i}.md`, 'x'])) })
     expect(ok.status).toBe(200)
@@ -158,9 +185,44 @@ describe('POST /api/skills/propose with files', () => {
     expect(pendingIds()).toEqual([])
   })
 
-  it('F9: queueProposedSkill checks the paths itself too (it is the function that writes)', () => {
-    const r = q.queueProposedSkill('long-skill', MD, { files: [{ path: 'references/../../x.md', content: 'x' }] })
-    expect(r).toMatchObject({ ok: false, status: 400 })
+  it('F8b: a live references that is a regular file cannot take a proposed file', async () => {
+    const live = join(GLOBAL, 'long-skill')
+    mkdirSync(live, { recursive: true })
+    writeFileSync(join(live, 'SKILL.md'), 'old')
+    writeFileSync(join(live, 'references'), 'not a dir')
+    expect((await propose({ name: 'long-skill', skill_md: MD, files: { 'references/a.md': 'x' } })).status).toBe(400)
     expect(pendingIds()).toEqual([])
+  })
+
+  it('F10: the approver card tells each file\'s origin (web/app.js pendingFileOrigin)', () => {
+    const src = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+    const start = src.indexOf('function pendingFileOrigin(')
+    const end = src.indexOf('\n}\n', start)
+    expect(start).toBeGreaterThan(-1)
+    const origin = new Function(`${src.slice(start, end + 2)}; return pendingFileOrigin`)() as (p: unknown, path: string) => string | null
+    const p = { source: 'propose', replaces: { hash: 'h' }, proposedFiles: [{ path: 'references/a.md', replaced: true }, { path: 'references/b.md', replaced: false }] }
+    expect(origin(p, 'SKILL.md')).toBe('proposed_replaced')
+    expect(origin(p, 'references/a.md')).toBe('proposed_replaced')
+    expect(origin(p, 'references/b.md')).toBe('proposed_new')
+    expect(origin(p, 'references/keep.md')).toBe('from_live')
+    expect(origin(p, 'scripts/run.sh')).toBe('from_live')
+    expect(origin({ source: 'propose', proposedFiles: [] }, 'SKILL.md')).toBe('proposed_new')
+    expect(origin({ source: 'import' }, 'SKILL.md')).toBeNull()
+    for (const lang of ['hu', 'en']) {
+      const l = readFileSync(join(__dirname, '..', '..', 'web', 'lang', `${lang}.js`), 'utf-8')
+      for (const k of ['origin_proposed_new', 'origin_proposed_replaced', 'origin_from_live', 'proposed_files']) expect(l, `${lang} ${k}`).toContain(`'skills.pending.${k}'`)
+    }
+  })
+
+  it('F9: queueProposedSkill checks the paths itself too (it is the function that writes)', () => {
+    for (const path of ['references/../../x.md', 'references/a..b.md', 'references/X.md']) {
+      expect(q.queueProposedSkill('long-skill', MD, { files: [{ path, content: 'x' }] }), path).toMatchObject({ ok: false, status: 400 })
+    }
+    expect(pendingIds()).toEqual([])
+    // And the parser on its own (the route's gate; the writer above would otherwise mask it).
+    for (const path of ['references/a..b.md', 'references/X.md', 'references/sub/x.md']) {
+      expect(q.parseProposedFiles({ [path]: 'x' }, 10).ok, path).toBe(false)
+    }
+    expect(q.parseProposedFiles({ 'references/a.b-c_d.md': 'x' }, 10).ok).toBe(true)
   })
 })
