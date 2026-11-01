@@ -161,3 +161,8 @@ supabase/.temp
 
 # Install-local hook scripts named by store/extra-hooks.json (docs/config-reference.md)
 local-hooks/
+
+# VOICETOKENLEAK1101 (Dani 64894): the main agent's kanban recipe payload files (written in the project root)
+/kanban-*-eredmeny.txt
+/kanban-*-bizonyitek.txt
+/kanban-*-kerdes.txt

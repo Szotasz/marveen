@@ -241,8 +241,11 @@ function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: 
 //
 // The id is caller-supplied on POST /api/kanban (a readable slug, trimmed, not
 // shape-checked), so it is free text too: only an id of this shape is put in
-// the message, anything else is reported instead of dispatched.
-export const DISPATCH_SAFE_CARD_ID_RE = /^[A-Za-z0-9._-]{1,80}$/
+// the message, anything else is reported instead of dispatched. The shape is the
+// one scripts/lib/marveen_api.py takes (CARD_ID_RE), since every step of the recipe
+// goes through it (VOICETOKENLEAK1101, Dani 64894): no '.', so never a '..' path
+// segment; at most 64 characters.
+export const DISPATCH_SAFE_CARD_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const DISPATCH_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
 
 export function buildKanbanDispatchContent(card: { id: string; priority?: string | null }, target: string): string {

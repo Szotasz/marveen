@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { kanbanMoveInstructions } from '../web/routes/kanban.js'
+import { kanbanMoveInstructions, DISPATCH_SAFE_CARD_ID_RE } from '../web/routes/kanban.js'
 import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 import { recipeLine, runRecipeLine, RECIPE_TOKEN } from './helpers/kanban-recipe.js'
+import { execFileSync as git } from 'node:child_process'
+import { join } from 'node:path'
+import { PROJECT_ROOT } from '../config.js'
 
 // The status probe: the one line that pipes the board into a program.
 const probeLine = (out: string): string | undefined =>
@@ -159,5 +162,19 @@ describe('kanbanMoveInstructions', () => {
     expect(escalation).toBeGreaterThan(-1)
     expect(ranking).toBeGreaterThan(step2)
     expect(ranking).toBeLessThan(escalation)
+  })
+
+  // Dani 64894 (2): only an id the helper takes is dispatched, so a recipe step never fails on the id, and a '..' never
+  // reaches a path. (3): the main agent's payload files land in the project root, where git must ignore them.
+  it('dispatches only the helper\'s card-id shape: no dot, at most 64 characters', () => {
+    for (const ok of ['abc123', 'A_b-9', 'x'.repeat(64)]) expect(DISPATCH_SAFE_CARD_ID_RE.test(ok), ok).toBe(true)
+    for (const bad of ['a.b', '..', 'x'.repeat(65), 'a b', 'a/b', '']) expect(DISPATCH_SAFE_CARD_ID_RE.test(bad), bad).toBe(false)
+  })
+
+  it("the main agent's payload files are ignored by git", () => {
+    for (const f of ['kanban-abc123-eredmeny.txt', 'kanban-abc123-bizonyitek.txt', 'kanban-abc123-kerdes.txt']) {
+      const r = git('git', ['-C', PROJECT_ROOT, 'check-ignore', '-q', join(PROJECT_ROOT, f)], { stdio: 'pipe' })
+      expect(r).toBeDefined() // check-ignore exits 0 only when ignored (a non-zero exit throws)
+    }
   })
 })

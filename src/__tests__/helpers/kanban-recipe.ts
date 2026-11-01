@@ -27,14 +27,15 @@ export async function runRecipeLine(line: string, files: Record<string, string> 
   const dir = mkdtempSync(join(tmpdir(), 'kanban-recipe-'))
   const tokenFile = join(dir, '.dashboard-token')
   writeFileSync(tokenFile, RECIPE_TOKEN + '\n')
-  const words = line.trim().split(/\s+/)
-  if (words[0] !== 'bash' || !words[1]!.endsWith('marveen-api.sh')) throw new Error('not a helper line: ' + line)
-  const argv = words.slice(1).map((w) => {
-    if (!w.endsWith('.txt')) return w
+  // The line runs as the agent runs it: through bash, so its quoting (a name with a space) counts. The .txt payload
+  // files it names are swapped for temp files first.
+  const cmd = line.trim().replace(/\S+\.txt\b/g, (w) => {
     const p = join(dir, basename(w))
     writeFileSync(p, files[basename(w)] ?? 'tartalom')
     return p
   })
+  if (!/^bash \S+marveen-api\.sh /.test(cmd)) throw new Error('not a helper line: ' + line)
+  const argv = ['-c', cmd]
   let got: Captured | null = null
   const srv: Server = await new Promise((resolve) => {
     const s = createServer((req, res) => {
