@@ -200,6 +200,120 @@ describe('OFF: live at once, on the approval path, audited', () => {
   })
 })
 
+// SKILLAPPROVALOFF1101 follow-up (Samu 65825): a proposal still waiting from before the switch went OFF blocked the
+// same name with a 409, and only the owner session could reject it. OFF, a new proposal of that name supersedes it.
+describe('OFF: a new proposal supersedes a waiting one of the same name', () => {
+  const SUPERSEDED = () => join(STORE, q.SKILL_SUPERSEDED_DIRNAME)
+  const waiting = (proposedBy?: string) => {
+    const r = q.queueProposedSkill('good-skill', MD('good-skill', 'the waiting text\n'), proposedBy ? { proposedBy } : {})
+    if (!r.ok) throw new Error(r.error)
+    return r.meta.id
+  }
+
+  it('U1: a waiting one with no recorded sender: the new one goes live, the old one is moved aside whole, one audit line ties them', async () => {
+    const old = waiting()
+    const oldHash = q.getPending(old)!.hash
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'the new text\n') })
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ live: true, pending: false, superseded: old })
+    expect(r.body.hash).toBeUndefined()
+    expect(readFileSync(join(GLOBAL, 'good-skill', 'SKILL.md'), 'utf8')).toBe(MD('good-skill', 'the new text\n'))
+    expect(pendingIds()).toEqual([])
+    expect(readFileSync(join(SUPERSEDED(), old, 'skill', 'SKILL.md'), 'utf8')).toBe(MD('good-skill', 'the waiting text\n'))
+    expect(JSON.parse(readFileSync(join(SUPERSEDED(), old, 'meta.json'), 'utf8')).id).toBe(old)
+    const sup = auditLines().find((l) => l.event === 'superseded_unquarantined')
+    const live = auditLines().find((l) => l.event === 'live_unquarantined')
+    expect(sup).toMatchObject({ id: old, name: 'good-skill', hash: oldHash, proposedBy: null, supersededBy: { id: r.body.id, proposedBy: 'soma' } })
+    expect(sup.supersededBy.hash).toBe(live.hash)
+  })
+
+  it('U2: a waiting one from the same sender is superseded too', async () => {
+    const old = waiting('soma')
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'v2\n') })
+    expect(r.body).toMatchObject({ live: true, superseded: old })
+  })
+
+  it('U3: a waiting one from another known sender is superseded too (the sender is self-declared; Dani 65845)', async () => {
+    const old = waiting('zara')
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'v2\n') })
+    expect(r.body).toMatchObject({ live: true, superseded: old })
+    expect(auditLines().find((l) => l.event === 'superseded_unquarantined')).toMatchObject({ id: old, proposedBy: 'zara', supersededBy: { proposedBy: 'soma' } })
+  })
+
+  it('U4: a new one the scan holds is dropped, and the waiting one stays waiting, untouched', async () => {
+    // A replacement copies the live skill's files: a compiled program there makes the new proposal unreviewable.
+    mkdirSync(join(GLOBAL, 'good-skill'), { recursive: true })
+    writeFileSync(join(GLOBAL, 'good-skill', 'SKILL.md'), MD('good-skill', 'live\n'))
+    writeFileSync(join(GLOBAL, 'good-skill', 'tool'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]))
+    const old = waiting()
+    const oldHash = q.getPending(old)!.hash
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'v2\n') })
+    expect(r.status).toBe(409)
+    expect(String(r.body.held)).toContain('cannot be reviewed')
+    expect(r.body.waiting).toBe(old)
+    expect(pendingIds()).toEqual([old])
+    expect(q.getPending(old)!.hash).toBe(oldHash)
+    expect(existsSync(SUPERSEDED())).toBe(false)
+    expect(readFileSync(join(GLOBAL, 'good-skill', 'SKILL.md'), 'utf8')).toBe(MD('good-skill', 'live\n'))
+    expect(auditLines().map((l) => l.event)).toEqual(['held_unquarantined'])
+  })
+
+  it('U4b: a write that fails touches nothing', () => {
+    const old = waiting()
+    const r = q.queueProposedSkill('good-skill', MD('good-skill'), { files: [{ path: 'references/../x.md', content: 'x' }] as any, mayReplacePending: () => true })
+    expect(r.ok).toBe(false)
+    expect(pendingIds()).toEqual([old])
+    expect(existsSync(SUPERSEDED())).toBe(false)
+  })
+
+  // Dani 65889: between queueing and archiving, the superseding one stands beside the waiting one. A third proposal
+  // of the name in that window must not slip in as a second replacement: 409, nothing written, nothing archived.
+  it('U8: two of one name already waiting (a superseding one mid-flight): a third is 409, nothing written or archived', async () => {
+    const first = waiting()
+    const second = q.queueProposedSkill('good-skill', MD('good-skill', 'mid-flight\n'), { mayReplacePending: () => true })
+    if (!second.ok) throw new Error(second.error)
+    expect(second.waiting).toBe(first)
+    const before = pendingIds().sort()
+    expect(before).toEqual([first, second.meta.id].sort())
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'third\n') })
+    expect(r.status).toBe(409)
+    expect(r.body).toEqual({ error: 'A skill with this name is already waiting for approval' })
+    expect(pendingIds().sort()).toEqual(before)
+    expect(existsSync(SUPERSEDED())).toBe(false)
+    expect(existsSync(join(GLOBAL, 'good-skill'))).toBe(false)
+    expect(auditLines()).toEqual([])
+  })
+
+  it('U7: an archived one never comes back: not listed, not approvable, not even with the quarantine ON again', async () => {
+    const old = waiting()
+    const oldHash = q.getPending(old)!.hash
+    expect((await propose({ name: 'good-skill', skill_md: MD('good-skill', 'v2\n') })).body.superseded).toBe(old)
+    sw.value = '1'
+    expect(q.listPending().map((p) => p.id)).not.toContain(old)
+    expect(q.getPending(old)).toBeNull()
+    expect(q.approvePending(old, oldHash)).toMatchObject({ ok: false, status: 404 })
+    expect(existsSync(join(SUPERSEDED(), old, 'meta.json'))).toBe(true)
+  })
+
+  it('U5: ON, the waiting one keeps the name: 409, nothing moved', async () => {
+    sw.value = '1'
+    const old = waiting()
+    const r = await propose({ name: 'good-skill', skill_md: MD('good-skill', 'v2\n') })
+    expect(r.status).toBe(409)
+    // today's answer, word for word: the new one is refused before anything is written
+    expect(r.body).toEqual({ error: 'A skill with this name is already waiting for approval' })
+    expect(pendingIds()).toEqual([old])
+    expect(existsSync(SUPERSEDED())).toBe(false)
+    expect(auditLines()).toEqual([])
+  })
+
+  it('U6: without the caller\'s consent the function itself keeps the 409', () => {
+    waiting()
+    const r = q.queueProposedSkill('good-skill', MD('good-skill', 'v2\n'), {})
+    expect(r).toMatchObject({ ok: false, status: 409 })
+  })
+})
+
 describe('ON: the hold, unchanged', () => {
   it('S8: a proposal waits, nothing goes live, no audit line', async () => {
     sw.value = '1'
