@@ -12,7 +12,14 @@ const failing = () => Object.assign(new Error('spawnSync /bin/sh ENOBUFS'), { co
 vi.mock('node:child_process', async (orig) => ({
   ...(await orig<typeof import('node:child_process')>()),
   execSync: () => { throw failing() },
+  // REAPERENOBUFS1101: the env scan runs /bin/ps through execFileSync now; it fails the same way.
+  execFileSync: () => { throw failing() },
 }))
+// The ps path on any host (CI is Linux, where the scan would read /proc instead).
+vi.mock('node:fs', async (orig) => {
+  const real = await orig<typeof import('node:fs')>()
+  return { ...real, existsSync: (p: string) => (p === '/proc/self' ? false : real.existsSync(p)) }
+})
 
 const { execFailure, stateDirPluginPollerPids } = await import('../web/channel-poller-reap.js')
 const { logger } = await import('../logger.js')
@@ -28,11 +35,12 @@ describe('TESTENVLEAK1101: no environment in a failed scan\'s log line', () => {
     expect(execFailure(Object.assign(new Error('x'), { stdout: Buffer.from(envDump) })).stdoutBytes).toBe(Buffer.byteLength(envDump))
   })
 
-  it('a failing env scan logs no token-like value and no stdout field (the real catch, execSync failing)', () => {
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+  it('a failing env scan logs no token-like value and no stdout field (the real catch, ps failing)', () => {
+    // REAPERENOBUFS1101: a failed scan is logged at error level (a blind reaper is never quiet).
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never)
     expect(stateDirPluginPollerPids('telegram', '/tmp/leakprobe-chan')).toEqual([])
-    expect(warn).toHaveBeenCalled()
-    const logged = JSON.stringify(warn.mock.calls)
+    expect(error).toHaveBeenCalled()
+    const logged = JSON.stringify(error.mock.calls)
     expect(logged).not.toContain(SECRET)
     expect(logged).not.toMatch(/[A-Z][A-Z0-9_]*(TOKEN|SECRET|PASSWORD|KEY)=\S/)
     expect(logged).not.toContain('"stdout"')
@@ -45,7 +53,8 @@ describe('TESTENVLEAK1101: no environment in a failed scan\'s log line', () => {
     expect(src).not.toMatch(/logger\.\w+\(\s*\{(?:[^}]*[{,]\s*)?err\s*[,}:]/)
     expect(src).not.toMatch(/logger\.\w+\(\s*err\s*[,)]/)
     const catches = [...src.matchAll(/catch \((\w+)\) \{\n\s+logger\.\w+\(([^\n]*)/g)]
-    expect(catches.length).toBeGreaterThanOrEqual(5)
+    // REAPERENOBUFS1101: the two env-scan catches became one (envScanOrEmpty), so 4 logging catches remain.
+    expect(catches.length).toBeGreaterThanOrEqual(4)
     for (const [, name, args] of catches) expect(args, args).toContain(`execFailure(${name})`)
   })
 })
