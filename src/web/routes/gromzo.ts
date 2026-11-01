@@ -200,6 +200,13 @@ export async function pushAvatarAfterAdd(slug: string, retryDelayMs = 2_000, app
     logger.info({ slug, bytes: o.bytes, applied: true }, 'gromzo agents: picture sent after the add')
     return
   }
+  // MXDAVATARAPPLY1101: mxd's agents were still starting; it stored the picture and sets it itself once they run
+  // (and again at every later start), so a try again a minute later would only wait for what mxd already does.
+  // An older mxd never answers pending: the try-again line below stays for it.
+  if (o.pending) {
+    logger.info({ slug, bytes: o.bytes, applied: false, pending: true }, 'gromzo agents: picture stored by mxd while its agents start; mxd sets it once they run (no try again)')
+    return
+  }
   // At most one try-again line per agent (Dani 65222/2): a second add or a restart while one runs would run into
   // mxd's one-per-minute limit with a parallel line.
   if (avatarRetrying.has(slug)) {
@@ -225,6 +232,10 @@ async function retryUntilApplied(slug: string, retryDelayMs: number, gapMs: numb
     const o = await sendAvatarSettling(slug, retryDelayMs)
     if (o.ok && o.state === 'avatar_sent' && o.applied) {
       logger.info({ slug, bytes: o.bytes, applied: true, try: tryNo }, 'gromzo agents: picture set on the agent')
+      return
+    }
+    if (o.ok && o.state === 'avatar_sent' && o.pending) {
+      logger.info({ slug, bytes: o.bytes, applied: false, pending: true, try: tryNo }, 'gromzo agents: picture stored by mxd while its agents start; mxd sets it once they run (no try again)')
       return
     }
     if (!o.ok && o.code !== 'rate_limited') {
