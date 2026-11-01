@@ -92,6 +92,9 @@ done
 for need in grep cp; do
   [ -x "$STUB/$need" ] || fail "the curated PATH carries $need (otherwise this case proves nothing)"
 done
+# bash 3.2 answers a `PATH=... command -v` from its hash table (filled by the
+# oracle's own calls), so clear it before every "really has no" check.
+hash -r
 if PATH="$STUB" command -v sha256sum >/dev/null 2>&1 || PATH="$STUB" command -v shasum >/dev/null 2>&1; then
   fail "the curated PATH really has no checksum tool"
 else
@@ -138,6 +141,7 @@ mkcurated() { # dir [extra cmds...]
 SHIM="$TMP/bin-badsqlite"; mkcurated "$SHIM"
 printf '#!/bin/sh\necho "sqlite3: shim failure" >&2\nexit 1\n' > "$SHIM/sqlite3"
 chmod +x "$SHIM/sqlite3"
+hash -r
 if PATH="$SHIM" command -v python3 >/dev/null 2>&1; then
   fail "the curated PATH really has no python3"
 else
@@ -188,6 +192,7 @@ NOSQLPY="$TMP/bin-nosqlite-py"; mkcurated "$NOSQLPY" python3
 echo ""
 echo "(5) no sqlite3, python3 present -> python3 online backup, exit 0"
 [ -x "$NOSQLPY/python3" ] && pass "the curated PATH carries python3" || fail "the curated PATH carries python3"
+hash -r
 if PATH="$NOSQLPY" command -v sqlite3 >/dev/null 2>&1; then
   fail "the curated PATH really has no sqlite3"
 else
