@@ -764,21 +764,31 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     }
   }
 
-  try {
-    ensureDefaultScheduledTasks()
-    logger.info('Default scheduled tasks seeded')
-  } catch (err) {
-    logger.warn({ err }, 'Scheduled tasks seed skipped')
-  }
+  // A second instance (a worktree checkout, a temp root, WEB_ONLY staging) never seeds the user-global scheduled
+  // tasks dir: it reads the "removed default" tombstones from its OWN store, so it could write back a default the
+  // owner deleted, and every task it writes is the live fleet's (Ábel 64492, Dani 64510; measured 2026-11-01 15:23 on
+  // a worktree instance). The same decision as the hook registration above.
+  // The rotation heartbeat task below is the same class (Dani 64715): it writes the global dir too, its tombstone
+  // and its switch (CLAUDE_ROTATION_ENABLED) are the instance's own.
+  if (!hookDecision.register) {
+    logger.info({ reason: hookDecision.reason }, 'Default scheduled tasks not seeded (second instance)')
+  } else {
+    try {
+      ensureDefaultScheduledTasks()
+      logger.info('Default scheduled tasks seeded')
+    } catch (err) {
+      logger.warn({ err }, 'Scheduled tasks seed skipped')
+    }
 
-  // Claude plan rotation needs its heartbeat task; installs that turned
-  // rotation on before this was automatic (or updated into it) get it here.
-  // Never overwrites an existing task, and honors an operator's deletion.
-  try {
-    const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
-    if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
-  } catch (err) {
-    logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
+    // Claude plan rotation needs its heartbeat task; installs that turned
+    // rotation on before this was automatic (or updated into it) get it here.
+    // Never overwrites an existing task, and honors an operator's deletion.
+    try {
+      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
+      if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
+    } catch (err) {
+      logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
+    }
   }
 
   sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
