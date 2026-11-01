@@ -1,6 +1,7 @@
 // BRIDGEPWLOGIN1101 (Samu 64763, plan A): /api/auth/status says whether the owner's password session rides on the
 // request (owner_session, a bool, only for a caller that could hold one), and the dashboard, opened with a full device
-// key (the Bridge), offers the password login once per run with "Later". Real resolveAuth, sessions and keys for the
+// key (the Bridge), offers the password login on the first owner refusal (403 owner_session_required, Samu 65968), with
+// "Later". Real resolveAuth, sessions and keys for the
 // server; the shipped web/app.js function, evaluated from the file, for the client.
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
@@ -144,7 +145,7 @@ describe('the offer on opening the Bridge (web/app.js offerOwnerLoginOnce)', () 
     expect(w.shown).toEqual([])
   })
 
-  it('O4: the overlay keeps the key (no removeItem), "Later" writes the run-only flag, and both languages carry the texts', () => {
+  it('O4: the overlay keeps the key (no removeItem), "Later" writes the run-only flag, both languages carry the texts, and nothing is offered on load', () => {
     const overlay = extractFn('showLoginOverlay')
     expect(overlay).not.toContain('removeItem')
     expect(overlay).toMatch(/if \(opts\.later\) \{ try \{ sessionStorage\.setItem\(LOGIN_LATER_KEY, '1'\)/)
@@ -154,7 +155,34 @@ describe('the offer on opening the Bridge (web/app.js offerOwnerLoginOnce)', () 
       expect(src).toContain(`'auth.login.later':             '${later}'`)
       expect(src).toContain("'auth.login.bridge_desc':")
     }
-    // and it runs on load
-    expect(APP).toMatch(/document\.readyState === 'loading'\) document\.addEventListener\('DOMContentLoaded', \(\) => \{ void offerOwnerLoginOnce\(\) \}\)/)
+    // Samu 65968: nothing on load; the fetch wrapper offers it on a 403
+    expect(APP).not.toMatch(/DOMContentLoaded', \(\) => \{ void offerOwnerLoginOnce/)
+    expect(APP).not.toMatch(/^\s*(?:else )?void offerOwnerLoginOnce\(\)/m)
+    expect(APP).toMatch(/const res = await originalFetch\(input, init\)\n(?:\s*\/\/.*\n)*\s*if \(res\.status === 403\) void maybeOfferOnOwnerRefusal\(res, isSameOriginApi\)/)
+  })
+
+  // Samu 65968: the moment is the first refusal of an owner action, not the opening of the window.
+  it('O5: a 403 owner_session_required offers it once per page; another 403, a non-API call or a body that is not JSON does not', async () => {
+    const mk = () => {
+      const state = { seen: false }
+      let offers = 0
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      const fn = new Function('ownerOffer', 'offerOwnerLoginOnce', `${extractFn('maybeOfferOnOwnerRefusal')}; return maybeOfferOnOwnerRefusal`)(
+        state, async () => { offers++ }) as (res: unknown, isApi: boolean) => Promise<void>
+      return { fn, state, count: () => offers }
+    }
+    const resp = (status: number, body: unknown) => ({ status, clone: () => ({ json: async () => { if (body === 'not json') throw new Error('bad'); return body } }) })
+    let w = mk()
+    await w.fn(resp(403, { code: 'owner_session_required' }), true)
+    await w.fn(resp(403, { code: 'owner_session_required' }), true)
+    expect(w.count()).toBe(1)
+    expect(w.state.seen).toBe(true)
+    w = mk()
+    await w.fn(resp(403, { code: 'forbidden_credential' }), true)
+    await w.fn(resp(401, { code: 'owner_session_required' }), true)
+    await w.fn(resp(403, { code: 'owner_session_required' }), false)
+    await w.fn(resp(403, 'not json'), true)
+    expect(w.count()).toBe(0)
+    expect(w.state.seen).toBe(false)
   })
 })
