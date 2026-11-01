@@ -13362,7 +13362,7 @@ function buildBubbleHtml(m) {
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
   const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
   const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
-  const requestBubble = `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}">
+  const requestBubble = `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}" data-sig="${escapeHtml(chatMsgSig(m))}">
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
     <div class="chat-bubble ${isOutgoing ? 'bubble-out' : 'bubble-in'}">
       <div class="bubble-meta">
@@ -13466,6 +13466,53 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
     chatThreadState.loading = false
   }
 }
+
+// What a rendered bubble shows that can change after it is drawn: the status badge
+// and the reply (result) of a closed message. The live refresh below compares this
+// to decide whether a row has to be redrawn.
+function chatMsgSig(m) {
+  return `${m.status || ''}|${String(m.result || '').length}|${m.completed_at || ''}`
+}
+
+// Live refresh of the open thread. Before this the view only changed on the manual
+// reload button, so an agent's reply (or the done badge) stayed invisible until the
+// owner clicked. Polls the newest page only: rows already on screen are redrawn in
+// place when their signature changed, newer ids are appended, older paginated rows
+// are left alone. Skipped while the tab or the panel is hidden, or a load runs.
+const CHAT_LIVE_POLL_MS = 5000
+async function pollChatThread() {
+  const agent = chatThreadState.agent
+  const container = document.getElementById('chatBubbles')
+  if (!agent || !container || document.hidden || container.offsetParent === null || chatThreadState.loading) return
+  let msgs
+  try {
+    const res = await fetch(`/api/messages?agent=${encodeURIComponent(agent)}&limit=${CHAT_PAGE_SIZE}`)
+    if (!res.ok) return
+    msgs = await res.json()
+  } catch { return }
+  if (!Array.isArray(msgs) || chatThreadState.agent !== agent || chatThreadState.loading) return
+  const sorted = [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60
+  let maxId = 0
+  container.querySelectorAll('.chat-bubble-row[data-sig]').forEach(r => { maxId = Math.max(maxId, Number(r.dataset.msgId) || 0) })
+  let changed = false
+  for (const m of sorted) {
+    const row = container.querySelector(`.chat-bubble-row[data-msg-id="${m.id}"]`)
+    if (row) {
+      if (row.dataset.sig === chatMsgSig(m)) continue
+      container.querySelector(`.chat-bubble-row[data-msg-id="${m.id}-result"]`)?.remove()
+      row.insertAdjacentHTML('beforebegin', buildBubbleHtml(m))
+      row.remove()
+      changed = true
+    } else if (m.id > maxId) {
+      container.querySelector('.activity-empty')?.remove()
+      container.insertAdjacentHTML('beforeend', buildBubbleHtml(m))
+      changed = true
+    }
+  }
+  if (changed && atBottom) container.scrollTop = container.scrollHeight
+}
+setInterval(pollChatThread, CHAT_LIVE_POLL_MS)
 
 function renderChatBubbles(msgs, agentName) {
   const container = document.getElementById('chatBubbles')
