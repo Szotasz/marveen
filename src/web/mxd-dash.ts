@@ -66,14 +66,15 @@ export interface MxdDashOptions {
 }
 
 export type MxdDashReply = Record<string, unknown>
-export type MxdDashCall = (request: { verb: string }) => Promise<MxdDashReply>
+export type MxdDashRequest = { verb: string } & Record<string, unknown>
+export type MxdDashCall = (request: MxdDashRequest) => Promise<MxdDashReply>
 
 /**
  * Sends ONE request line to dash.sock and reads ONE reply line.
  * Resolves with the parsed reply object (ok:true or ok:false alike); rejects only
  * with an MxdDashError.
  */
-export function mxdDashCall(request: { verb: string }, opts: MxdDashOptions = {}): Promise<MxdDashReply> {
+export function mxdDashCall(request: MxdDashRequest, opts: MxdDashOptions = {}): Promise<MxdDashReply> {
   const socketPath = opts.socketPath ?? resolveMxdDashSock()
   const timeoutMs = opts.timeoutMs ?? MXD_DASH_TIMEOUT_MS
   const maxReply = opts.maxReply ?? MXD_DASH_MAX_REPLY
@@ -228,4 +229,62 @@ export async function requestOwnerQr(call: MxdDashCall): Promise<OwnerQrResult> 
     return { ok: false, code: loginCode, retryAfter: wait }
   }
   return { ok: false, code: loginCode === 'no_owner' ? 'invite_outstanding' : loginCode }
+}
+
+// ---------------------------------------------------------------------------
+// GROMZOAGENTPICK1101: the owner's agents on Gromzo, through mxd's dash.sock agent verbs (marveen-mxd
+// main.rs Dash::reply, mxd #37). Measured from the mxd source (main 405d483):
+//   agent_add {slug, name}  -> {ok, consent_id, expires_in}: a consent request in the owner's app; nothing
+//                              is written before the owner approves.
+//   agent_add_check {id}    -> {ok, state} while pending / refused / expired / used; once approved mxd uses
+//                              the consent (its slug comes from the controller, consent_mismatch otherwise),
+//                              adds the agent and answers {ok, state: "added", slug, restart: true}, then
+//                              reloads itself.
+//   agent_remove {slug}     -> {ok, restart: true}, then mxd reloads; unknown_agent when it is not listed.
+// The dashboard never writes mxd's config.toml: only these verbs.
+
+/** mxd's slug rule (agents_store slug_ok); the dashboard checks it before any call. */
+export const MXD_AGENT_SLUG_RE = /^[a-z0-9-]{1,32}$/
+/** A consent id as the controller issues it: printable, no spaces, bounded. */
+const CONSENT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/
+
+export type AgentAddResult = { ok: true, consentId: string, expiresIn: number } | { ok: false, code: string }
+export type AgentConsentState = 'pending' | 'refused' | 'expired' | 'used'
+export type AgentAddCheckResult =
+  | { ok: true, state: AgentConsentState }
+  | { ok: true, state: 'added', slug: string }
+  | { ok: false, code: string }
+export type AgentRemoveResult = { ok: true } | { ok: false, code: string }
+
+/** Asks the owner (in the app) to approve `slug` on Gromzo. */
+export async function requestAgentAdd(call: MxdDashCall, slug: string, name: string): Promise<AgentAddResult> {
+  if (!MXD_AGENT_SLUG_RE.test(slug) || !name.trim() || name.length > 64) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'agent_add', slug, name })
+  if (r.ok !== true) return { ok: false, code: errorCode(r) }
+  const id = r.consent_id
+  const exp = r.expires_in
+  if (typeof id !== 'string' || !CONSENT_ID_RE.test(id) || typeof exp !== 'number' || !Number.isInteger(exp) || exp <= 0) {
+    return { ok: false, code: 'bad_reply' }
+  }
+  return { ok: true, consentId: id, expiresIn: exp }
+}
+
+/** The consent's state; when it was approved, mxd adds the agent in the same call and names its slug. */
+export async function checkAgentAdd(call: MxdDashCall, consentId: string): Promise<AgentAddCheckResult> {
+  if (!CONSENT_ID_RE.test(consentId)) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'agent_add_check', id: consentId })
+  if (r.ok !== true) return { ok: false, code: errorCode(r) }
+  const state = r.state
+  if (state === 'added') {
+    return typeof r.slug === 'string' && MXD_AGENT_SLUG_RE.test(r.slug) ? { ok: true, state: 'added', slug: r.slug } : { ok: false, code: 'bad_reply' }
+  }
+  if (state === 'pending' || state === 'refused' || state === 'expired' || state === 'used') return { ok: true, state }
+  return { ok: false, code: 'bad_reply' }
+}
+
+/** Takes `slug` off mxd's agent list (mxd reloads, and only that agent stops). */
+export async function requestAgentRemove(call: MxdDashCall, slug: string): Promise<AgentRemoveResult> {
+  if (!MXD_AGENT_SLUG_RE.test(slug)) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'agent_remove', slug })
+  return r.ok === true ? { ok: true } : { ok: false, code: errorCode(r) }
 }

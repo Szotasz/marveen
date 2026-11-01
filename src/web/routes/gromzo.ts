@@ -4,6 +4,11 @@
 //   POST /api/gromzo/owner-qr  -> the owner's QR code: the first registration's join
 //                                 code, or, once the owner is registered, the login
 //                                 code for a new phone (see mxd-dash.ts requestOwnerQr)
+//   GET  /api/gromzo/agents                    -> the fleet's agents and whether each is on Gromzo
+//   POST /api/gromzo/agents/:slug/enable       -> asks the owner (in the app) to approve the agent
+//   GET  /api/gromzo/agents/:slug/consent      -> the pending consent; once approved, mxd adds the agent
+//   POST /api/gromzo/agents/:slug/disable      -> takes the agent off Gromzo
+//   (GROMZOAGENTPICK1101; the rules are in ../gromzo-agents.ts. All four: the owner's session only.)
 //
 // Who may ask for the QR: ONLY the owner's dashboard session. This is stricter than
 // issuing a device key (routes/auth.ts mayIssueCredentials, DEVKEYMINT1022), which
@@ -33,6 +38,11 @@ export const OWNER_QR_SESSION_REQUIRED = {
   code: 'owner_session_required',
 }
 import { mxdDashCall, MxdDashError, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
+import {
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, type GromzoAgentDeps, type GromzoAgentOutcome,
+} from '../gromzo-agents.js'
+import { listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
+import { isAgentRunning, restartAgentProcess } from '../agent-process.js'
 import type { RouteContext } from './types.js'
 
 /** The owner's dashboard session, and nothing else: a session principal, or the
@@ -48,6 +58,8 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
 
 const STATUS_PATH = '/api/gromzo/status'
 const OWNER_QR_PATH = '/api/gromzo/owner-qr'
+const AGENTS_PATH = '/api/gromzo/agents'
+const AGENT_ACTION_RE = /^\/api\/gromzo\/agents\/([^/]{1,64})\/(enable|disable|consent)$/
 
 /** The dash.sock client (the socket path is read per call: MXD_DASH_SOCK or the default). */
 const call: MxdDashCall = (request) => mxdDashCall(request)
@@ -56,7 +68,22 @@ const call: MxdDashCall = (request) => mxdDashCall(request)
  *  the panel turns it into a sentence (web/lang gromzo.err.*). */
 export function httpStatusFor(code: string): number {
   switch (code) {
-    case 'rate_limited': return 429
+    case 'bad_request': return 400
+    case 'unknown_agent': return 404
+    case 'main_agent':
+    case 'no_pending':
+    case 'consent_mismatch':
+    case 'agent_exists':
+    case 'too_many_agents':
+    case 'bad_slug':
+    case 'reserved_slug':
+    case 'bad_name':
+    case 'reserved_name':
+      return 409
+    case 'rate_limited':
+    case 'too_soon':
+      return 429
+    case 'agents_not_running':
     case 'not_running':
     case 'no_access':
     case 'forbidden':
@@ -100,8 +127,86 @@ function failure(res: http.ServerResponse, code: string, retryAfter?: number): v
   json(res, retryAfter === undefined ? { error: code } : { error: code, retry_after: retryAfter }, httpStatusFor(code))
 }
 
+/** After mxd's reload (it exits ~0.5 s after an add or a remove): wait until dash.sock answers again, up to ~60 s,
+ *  then restart that ONE agent so its Gromzo plugin loads or goes. Nothing else is restarted. */
+async function restartAfterMxdReload(slug: string): Promise<void> {
+  await new Promise((r) => setTimeout(r, 2_000))
+  for (let i = 0; i < 30; i++) {
+    try {
+      const r = await call({ verb: 'status' })
+      if (r.ok === true && r.running === true) break
+    } catch { /* still reloading */ }
+    await new Promise((r) => setTimeout(r, 2_000))
+  }
+  const res = await restartAgentProcess(slug)
+  if (res.ok) logger.info({ slug }, 'gromzo agents: the agent restarted for its Gromzo switch')
+  else logger.error({ slug, error: res.error }, 'gromzo agents: the agent did NOT restart after its Gromzo switch')
+}
+
+const defaultAgentDeps: GromzoAgentDeps = {
+  call: (request) => call(request),
+  agents: () => listAgentNames(),
+  readFlag: (slug) => readAgentGromzo(slug),
+  writeFlag: (slug, on) => writeAgentGromzo(slug, on),
+  displayName: (slug) => readAgentDisplayName(slug) || slug,
+  isRunning: (slug) => isAgentRunning(slug),
+  restartOne: (slug) => { void restartAfterMxdReload(slug).catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: restart failed')) },
+  now: () => Date.now(),
+}
+let agentDeps: GromzoAgentDeps = defaultAgentDeps
+
+/** Test seam: the agent switch's collaborators (null puts the real ones back). */
+export function setGromzoAgentDepsForTest(deps: GromzoAgentDeps | null): void {
+  agentDeps = deps ?? defaultAgentDeps
+}
+
+function sendOutcome(res: http.ServerResponse, slug: string, action: string, o: GromzoAgentOutcome): void {
+  if (o.ok) {
+    logger.info({ slug, action, state: o.state }, 'gromzo agents: switch')
+    json(res, o.state === 'pending' ? { state: o.state, expires_in: o.expiresIn } : { state: o.state })
+    return
+  }
+  logger.warn({ slug, action, code: o.code }, 'gromzo agents: switch refused or failed')
+  failure(res, o.code)
+}
+
+async function handleAgents(ctx: RouteContext): Promise<boolean> {
+  const { req, res, path, method, auth } = ctx
+  const action = AGENT_ACTION_RE.exec(path)
+  if (path !== AGENTS_PATH && !action) return false
+  const wantMethod = path === AGENTS_PATH || action?.[2] === 'consent' ? 'GET' : 'POST'
+  if (method !== wantMethod) { methodNotAllowed(res, method, [wantMethod]); return true }
+  if (wantMethod === 'POST') {
+    if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }
+    try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+  }
+  if (!isOwnerSession(auth, req)) {
+    logger.warn({ kind: auth?.kind, path }, 'gromzo agents: refused (needs the owner session)')
+    json(res, OWNER_QR_SESSION_REQUIRED, 403)
+    return true
+  }
+  if (!action) {
+    json(res, { agents: listGromzoAgents(agentDeps) })
+    return true
+  }
+  let slug: string
+  try { slug = decodeURIComponent(action[1]!) } catch { failure(res, 'bad_request'); return true }
+  try {
+    const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps)
+      : action[2] === 'disable' ? await disableGromzoAgent(slug, agentDeps)
+        : await checkGromzoAgent(slug, agentDeps)
+    sendOutcome(res, slug, action[2]!, o)
+  } catch (e) {
+    const code = e instanceof MxdDashError ? e.code : 'io'
+    logger.warn({ slug, action: action[2], code }, 'gromzo agents: dash.sock failed')
+    failure(res, code)
+  }
+  return true
+}
+
 export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
+  if (await handleAgents(ctx)) return true
   if (path !== STATUS_PATH && path !== OWNER_QR_PATH) return false
 
   if (path === STATUS_PATH) {
