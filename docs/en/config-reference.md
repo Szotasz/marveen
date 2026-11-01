@@ -582,6 +582,9 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
 | `BOT_NAME` | Main agent name (e.g. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = transcribe inbound voice notes for text-mode agents too (default off; per-agent `voice.transcribeInbound` overrides). See `voice.md` |
+| `WEB_ONLY` | `true` = every background service off (schedule runner, router, monitors, worker pre-start). **Read from the process environment only** (`WEB_ONLY=true node dist/index.js`); a `.env` line has no effect, there is no dotenv |
+| `MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES` | A second instance (git worktree, a clone under a temp dir) runs no background services even without WEB_ONLY, because its schedule runner would fire the global scheduled tasks into the live sessions. `1` = run them anyway (a deliberate test instance), logged as a warning at start. **Process environment only**, as `WEB_ONLY` |
+| `MXD_DASH_SOCK` | marveen-mxd's dash.sock path. **The other way round: read from the `.env` file only** (per call), never from the process environment; without it the platform default, the live socket. A test instance sets it in its own `.env` |
 
 ---
 
