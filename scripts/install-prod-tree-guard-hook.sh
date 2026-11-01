@@ -293,9 +293,11 @@ if [ -z "$GUARD_BODY" ]; then
   echo "[prod-tree-guard] FIGYELEM: a branch-valtas riasztas NEM ert celba (a JSON payload nem allt elo -- python3 hianyzik?) -- a koordinator nem tud a valtasrol" >&2
   exit 0
 fi
+# VOICETOKENLEAK1101 round 3: the token reaches curl from a process substitution (printf is a builtin: nothing on
+# any argv, nothing on disk); the body is already on stdin.
 GUARD_HTTP="$(printf '%s' "$GUARD_BODY" | curl -s -m 5 -X POST "$ORIGIN/api/messages" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")") \
   -o /dev/null -w '%{http_code}' \
   --data-binary @- 2>/dev/null)" || GUARD_HTTP="000"
 case "$GUARD_HTTP" in
