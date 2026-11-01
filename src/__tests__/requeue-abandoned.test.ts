@@ -172,6 +172,46 @@ describe('requeueAbandonedForAgent', () => {
   it('T9 constant text', () => {
     expect(ABANDONED_SESSION_ABSENT).toBe('Abandoned: target session absent for full retry window')
   })
+
+  it('a stop row is never revived', () => {
+    const id = abandoned('alice', NOW - 3 * DAY)
+    getDb().prepare('UPDATE agent_messages SET stop_authorized = 1 WHERE id = ?').run(id)
+    expect(requeueAbandonedForAgent('alice', { now: NOW })).toEqual([])
+    const r = row(id)
+    expect(r.status).toBe('failed')
+    expect(r.result).toBe(ABANDONED_SESSION_ABSENT)
+    expect(r.requeued_at).toBeNull()
+  })
+
+  it('an urgent row is never revived', () => {
+    const id = abandoned('alice', NOW - 3 * DAY)
+    getDb().prepare('UPDATE agent_messages SET urgent = 1 WHERE id = ?').run(id)
+    expect(requeueAbandonedForAgent('alice', { now: NOW })).toEqual([])
+    const r = row(id)
+    expect(r.status).toBe('failed')
+    expect(r.result).toBe(ABANDONED_SESSION_ABSENT)
+    expect(r.requeued_at).toBeNull()
+  })
+
+  it('control: the same row without the flags is revived', () => {
+    const id = abandoned('alice', NOW - 3 * DAY)
+    expect(row(id).stop_authorized).toBe(0)
+    expect(row(id).urgent).toBe(0)
+    expect(requeueAbandonedForAgent('alice', { now: NOW })).toEqual([id])
+    expect(row(id).status).toBe('pending')
+  })
+
+  it('a stop row does not block a plain row next to it', () => {
+    // Two different senders (the helper picks a random one), so neither row's
+    // "same sender moved on" check can see the other.
+    const stop = abandoned('alice', NOW - 3 * DAY)
+    getDb().prepare('UPDATE agent_messages SET stop_authorized = 1 WHERE id = ?').run(stop)
+    const plain = abandoned('alice', NOW - 3 * DAY + 10)
+    expect(row(stop).from_agent).not.toBe(row(plain).from_agent)
+    expect(requeueAbandonedForAgent('alice', { now: NOW })).toEqual([plain])
+    expect(row(stop).status).toBe('failed')
+    expect(row(plain).status).toBe('pending')
+  })
 })
 
 // Static wiring: the function is only useful if every agent start calls it, and
@@ -190,6 +230,23 @@ describe('requeue wiring', () => {
     expect(call).toBeGreaterThan(brief)
     expect(brief).toBeGreaterThan(0)
     const ret = body.indexOf('return { ok: true }', brief)
+    expect(ret).toBeGreaterThan(call)
+  })
+
+  it('startRemoteAgentProcess requeues before its success return', () => {
+    const src = stripComments(readFileSync(join(here, '../web/agent-process.ts'), 'utf8'))
+    const start = src.indexOf('function startRemoteAgentProcess(')
+    expect(start).toBeGreaterThan(0)
+    const nextFn = src.indexOf('\nfunction ', start + 1)
+    const nextExport = src.indexOf('\nexport ', start + 1)
+    const end = nextFn === -1 ? nextExport : nextExport === -1 ? nextFn : Math.min(nextFn, nextExport)
+    expect(end).toBeGreaterThan(start)
+    const body = src.slice(start, end)
+    const call = body.indexOf('requeueAbandonedForAgent(name)')
+    const setup = body.indexOf('scheduleIdentitySetup(')
+    expect(setup).toBeGreaterThan(0)
+    expect(call).toBeGreaterThan(setup)
+    const ret = body.indexOf('return { ok: true }', setup)
     expect(ret).toBeGreaterThan(call)
   })
 

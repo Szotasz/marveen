@@ -5229,6 +5229,8 @@ export function requeueAbandonedForAgent(agent: string, opts: RequeueAbandonedOp
       `SELECT m.id FROM agent_messages m
        WHERE m.to_agent = ? AND m.status = 'failed' AND m.result = ? AND m.created_at >= ?
          AND m.requeued_at IS NULL
+         -- a stop or an urgent message only means something at the time it was sent, so it is never revived
+         AND m.stop_authorized = 0 AND m.urgent = 0
          AND NOT EXISTS (
            SELECT 1 FROM agent_messages n
            WHERE n.from_agent = m.from_agent AND n.to_agent = m.to_agent

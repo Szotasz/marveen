@@ -2060,6 +2060,15 @@ function startRemoteAgentProcess(
     // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
     // resolves immediately; startRemoteAgentProcess stays synchronous (out of scope).
     void scheduleIdentitySetup(session, readAgentDisplayName(name), host)
+    // Messages the router gave up on while this session was down (it was absent
+    // for the whole retry window) go back in the queue here too: the router
+    // abandons remote agents' messages the same way, through the host.
+    try {
+      const requeued = requeueAbandonedForAgent(name)
+      if (requeued.length) logger.info({ name, host, ids: requeued }, 'requeued messages abandoned while the session was down')
+    } catch (err) {
+      logger.warn({ err, name, host }, 'could not requeue messages abandoned while the session was down')
+    }
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
@@ -3111,8 +3120,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     }
 
     // Messages the router gave up on while this session was down (it was absent
-    // for the whole retry window) go back in the queue, here at the one door
-    // every start passes. They are delivered with their real age.
+    // for the whole retry window) go back in the queue. The requeue runs at both
+    // success returns: this local one and startRemoteAgentProcess's. They are
+    // delivered with their real age.
     try {
       const requeued = requeueAbandonedForAgent(name)
       if (requeued.length) logger.info({ name, ids: requeued }, 'requeued messages abandoned while the session was down')
