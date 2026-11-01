@@ -603,6 +603,253 @@ def _rm_allowed(toks, argstart, cwd):
     return True, ''
 
 
+# --- Az eles adatbazis csonkitasa ertelmezo NELKUL (5BBA912C / 8356747b) -----
+# A kapu eddig a TORLEST nezte (rm, mv, shred, dd), az ADATBAZIS FELULIRASAT nem.
+# Merve 2026-11-01-en az eles kapun: a `: > store/claudeclaw.db`, a `tee`, a
+# `truncate -s 0`, a `cp /dev/null`, a `sed -i`, a `gzip` es tarsaik -- 23 alakbol
+# 23 ATMENT, es ugyanigy a Write/Edit eszkoz is. A hatas ugyanaz, mint egy rm-e:
+# a flotta teljes allapota (kanban, memoria, uzenetsor) egyetlen redirecttel nullaz.
+#
+# Mi szamit vedett adatbazisnak: a <ROOT>/store ALATTI (alkonyvtarakkal, tehat a
+# store/backups is) .db / .sqlite / .sqlite3 fajl, a -wal / -shm / -journal
+# parjaval. A celt symlinken AT oldjuk fel (realpath), mert az iras -- az rm-mel
+# ellentetben -- a link CELJAT csonkitja.
+#
+# Mi NEM valtozik: az OLVASAS (cp db /tmp/x, sqlite3, grep, gzip -c) es a vedett
+# utvonalon KIVULI iras (egy masolat a scratch-ben, /tmp/claudeclaw.db). Az SQL-t
+# (sqlite3 DELETE) a kapu tovabbra sem nezi -- az mas dontes.
+#
+# A $VALTOZO-s celt eloszor a PARANCSON BELULI hozzarendelesekbol oldjuk fel
+# (`D=/x/y`, `F="$D/z"`, `T=$(mktemp -d ...)`). A mktemp-bol jovo konyvtar friss,
+# tehat ami alatta van, az nem az eles adatbazis. Ami igy sem oldhato fel, az CSAK
+# akkor blokk, ha a cel-szoveg `store/...db` alaku: egy `> $OUT` vagy `cp x $TMP/a.db`
+# kulonben minden tesztepito parancsot megallitana. Merve 2026-11-01, 18 828 valos
+# hivason: a feloldas nelkul 6 uj blokk, mind hamis pozitiv (fixture-epites mktemp-
+# vagy literal-konyvtarba), a feloldassal 0.
+_DB_NAME_RE = re.compile(r'\.(db|sqlite3?)(-wal|-shm|-journal)?$', re.I)
+_DB_UNRESOLVED_RE = re.compile(r'(?:^|/)store/(?:[^/]*/)*[^/]*\.(db|sqlite3?)(-wal|-shm|-journal)?$', re.I)
+_ASSIGN_RE = re.compile(
+    r'(?:^|[\s;{(&|])(?:local\s+|export\s+|declare\s+)?([A-Za-z_]\w*)='
+    r'(?:"([^"]*)"|\'([^\']*)\'|(\$\([^()]*\))|([^\s;|&"\'`()]*))')
+_MKTEMP_RE = re.compile(r'^\$\(\s*mktemp\b')
+_VAR_REF_RE = re.compile(r'\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))')
+_TEMP, _AMBIG = object(), object()
+
+
+def _assigned_vars(text):
+    """NEV -> ertek / _TEMP (mktemp) / _AMBIG, a shell SORRENDJEBEN kiertekelve:
+    minden ertek a hozzarendeles PILLANATABAN ismert valtozokkal oldodik fel, igy egy
+    kesobbi `HOME=...` nem ir vissza egy korabbi `B="$HOME/x"`-be. Ketszer, kulonbozo
+    ertekkel hozzarendelt nev _AMBIG: nem tudjuk, a vizsgalt szegmensnel melyik el."""
+    env = {}
+    for m in _ASSIGN_RE.finditer(text):
+        name = m.group(1)
+        val = next(g for g in m.groups()[1:] if g is not None)
+        if _MKTEMP_RE.match(val):
+            val = _TEMP
+        elif not val.strip() or '`' in val or '$(' in val:
+            # Ures ertek = a scannable() kifeheritette (szokozos idezett szoveg,
+            # pl. "$(cd /x && pwd)") vagy tenyleg ures -- egyik sem ismert ertek.
+            val = _AMBIG
+        else:
+            val = _expand(val, env)
+        prev = env.get(name)
+        if name in env and prev is not val and prev != val:
+            env[name] = _AMBIG
+        else:
+            env[name] = val
+    return env
+
+
+def _expand(s, env):
+    """$NEV / ${NEV} behelyettesitese a mar feloldott env-bol. _TEMP, ha barmelyik
+    hivatkozas mktemp-konyvtar; a fel nem oldhato hivatkozas szo szerint marad."""
+    temp = [False]
+
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        v = env.get(name)
+        if v is None and name == 'HOME':
+            return HOME
+        if v is _TEMP:
+            temp[0] = True
+            return ''
+        if v is None or v is _AMBIG:
+            return m.group(0)
+        return v
+    r = _VAR_REF_RE.sub(sub, s)
+    return _TEMP if temp[0] else r
+# A tomorito az eredetit a tomoritett parjaval CSERELI LE, kiveve ezekkel.
+_COMPRESSORS = ('gzip', 'bzip2', 'xz', 'lzma', 'zstd', 'lz4', 'compress')
+_COMPRESS_KEEP = ('-c', '--stdout', '--to-stdout', '-k', '--keep', '-l', '--list',
+                  '-t', '--test', '-d', '--decompress')
+# Masolo parancsok: CSAK a celjuk szamit, a forrasuk olvasas.
+_COPIERS = ('cp', 'install', 'ln', 'rsync')
+_REDIR_STOP = set(' \t;&|<>()')
+
+
+def _store_dir():
+    try:
+        return os.path.realpath(os.path.join(PROJECT_ROOT, 'store'))
+    except OSError:
+        return os.path.join(PROJECT_ROOT, 'store')
+
+
+def _db_target(raw, cwd, env=None):
+    """None, ha a cel nem vedett adatbazis; kulonben az indoklas szovege."""
+    if not raw or raw in ('-', '/dev/null') or raw.startswith('/dev/'):
+        return None
+    if '$' in raw and env is not None:
+        exp = _expand(raw, env)
+        if exp is _TEMP:
+            return None
+        if exp is not _AMBIG:
+            raw = exp
+    if any(c in raw for c in RM_UNRESOLVABLE):
+        if _DB_UNRESOLVED_RE.search(raw):
+            return 'nem eldontheto, az eles adatbazisra mutathato cel: %s' % raw[:80]
+        return None
+    path = os.path.expanduser(raw)
+    if not os.path.isabs(path):
+        if cwd is None:
+            if _DB_NAME_RE.search(path):
+                return 'relativ, adatbazisnak latszo cel, munkakonyvtar nelkul: %s' % raw[:80]
+            return None
+        path = os.path.join(cwd, path)
+    store = _store_dir()
+    if any(c in path for c in '*?['):
+        # A shell a globot a verdikt UTAN terjeszti ki; mi most terjesztjuk ki,
+        # ugyanazon a fajlrendszeren.
+        import glob
+        cands = glob.glob(path)
+    else:
+        cands = [path]
+    for cand in cands:
+        try:
+            real = os.path.realpath(cand)
+        except OSError:
+            real = os.path.normpath(cand)
+        if _DB_NAME_RE.search(real) and _under(real, store):
+            return 'az eles adatbazis: %s' % real
+    return None
+
+
+def _redirect_targets(seg):
+    """A szegmens kimeneti atiranyitasainak celjai (> >> >| &> N> <>), idezojel-tudatosan.
+    A `>&2` / `2>&1` (leiro-duplikalas) es a `>(...)` (folyamat-helyettesites) kimarad."""
+    state = _quote_map(seg)
+    out, i, n = [], 0, len(seg)
+    while i < n:
+        if state[i] or seg[i] != '>':
+            i += 1
+            continue
+        j = i + 1
+        if j < n and seg[j] in '>|':
+            j += 1
+        dup = j < n and seg[j] == '&'
+        if dup:
+            j += 1
+        while j < n and seg[j] in ' \t':
+            j += 1
+        if j < n and seg[j] == '(' and not dup:
+            i = j
+            continue
+        k, word = j, []
+        while k < n and (state[k] or seg[k] not in _REDIR_STOP):
+            if state[k] or seg[k] not in ('"', "'"):
+                word.append(seg[k])
+            k += 1
+        w = ''.join(word)
+        if not (dup and (w.isdigit() or w == '-')):
+            out.append(w)
+        i = max(k, i + 1)
+    return out
+
+
+def _plain_args(toks, argstart):
+    """A parancs argumentumai az atiranyitasok nelkul (azokat _redirect_targets nezi)."""
+    args, skip = [], False
+    for tok, _sp in toks[argstart:]:
+        if skip:
+            skip = False
+            continue
+        if re.match(r'^(\d*|&)(>>?|>\||<>?)$', tok):     # kulon szoban allo operator
+            skip = True
+            continue
+        if re.match(r'^(\d*|&)(>|<)', tok):              # operatorral egybeirt cel
+            continue
+        args.append(tok)
+    return args
+
+
+def _db_write_args(base, args):
+    """Azok az argumentumok, amelyeket a parancs IR (es nem csak olvas)."""
+    flags = [a for a in args if a.startswith('-') and a != '-']
+    files = [a for a in args if not (a.startswith('-') and a != '-')]
+    if base in ('tee', 'truncate', 'fallocate', 'sponge', 'shred'):
+        return files
+    if base == 'sed':
+        inplace = any(f == '--in-place' or f.startswith('--in-place=')
+                      or re.match(r'^-[a-zA-Z]*i', f) for f in flags)
+        return files if inplace else []
+    if base in _COMPRESSORS:
+        if base in ('zstd', 'lz4'):          # ezek alapbol MEGTARTJAK az eredetit
+            return files if '--rm' in flags else []
+        keeps = any(f in _COMPRESS_KEEP for f in flags) or any(
+            re.match(r'^-[a-zA-Z]*[ckdlt]', f) for f in flags if not f.startswith('--'))
+        return [] if keeps else files
+    if base in _COPIERS:
+        tdir = None
+        for k, a in enumerate(args):
+            if a in ('-t', '--target-directory') and k + 1 < len(args):
+                tdir = args[k + 1]
+            elif a.startswith('--target-directory='):
+                tdir = a.split('=', 1)[1]
+        if tdir is not None:
+            return [os.path.join(tdir, os.path.basename(s)) for s in files if s != tdir]
+        if len(files) < 2:
+            return []
+        dest = files[-1]
+        return [dest] + [os.path.join(dest, os.path.basename(s)) for s in files[:-1]]
+    if base in ('curl', 'wget'):
+        opt = ('-o', '--output') if base == 'curl' else ('-O', '--output-document')
+        out = []
+        for k, a in enumerate(args):
+            if a in opt and k + 1 < len(args):
+                out.append(args[k + 1])
+            elif a.startswith(opt[1] + '='):
+                out.append(a.split('=', 1)[1])
+            elif a.startswith(opt[0]) and len(a) > 2 and not a.startswith('--'):
+                out.append(a[2:])
+        return out
+    return []
+
+
+def _check_db_writes(seg, toks, names, cwd, env=None):
+    """Blokk, ha a szegmens barmelyik iras-celja az eles adatbazis."""
+    for raw in _redirect_targets(seg):
+        why = _db_target(raw, cwd, env)
+        if why:
+            block('Az eles adatbazis felulirasa/csonkitasa atiranyitassal: %s.\n'
+                  '(a teljes szegmens: %s)' % (why, seg[:160]))
+    for name, argstart in names:
+        base = os.path.basename(name)
+        for raw in _db_write_args(base, _plain_args(toks, argstart)):
+            why = _db_target(raw, cwd, env)
+            if why:
+                block('Az eles adatbazis felulirasa/csonkitasa ("%s"): %s.\n'
+                      'Olvasni (cp ROLA, sqlite3, grep) szabad; irni bele csak a '
+                      'dashboard folyamata ir.\n(a teljes szegmens: %s)'
+                      % (base, why, seg[:160]))
+
+
+def check_db_file_tool(path, cwd=None):
+    """Write/Edit/NotebookEdit az eles adatbazisra: ugyanaz a csonkitas, eszkozon at."""
+    why = _db_target(path, cwd)
+    if why:
+        block('Fajl-eszkozzel az eles adatbazisba irni: %s.' % why)
+
+
 def _cd_target(toks, argstart, cwd):
     """A `cd` uj munkakonyvtara, vagy None ha nem kovetheto.
 
@@ -704,6 +951,8 @@ def _check_git(toks, argstart):
 # Ami ma NEM tiltott, az itt sem lesz az. Kifejezetten KIMARAD, noha a 2026-09-20-as
 # probaban atment es kezenfekvo volna felvenni:
 #     open(f,'w')      csonkitas -- a `: > fajl` alak ma is atmegy, tehat nem szabaly
+#                      (KIVETEL 2026-11-01, 5BBA912C: az eles adatbazisra mar a shell-
+#                      alak is tiltott, ezert arra a payload-alak is -- _PAYLOAD_DB_WRITE_RE)
 #     sqlite3 DELETE   DB-tartalom -- a kapu sosem nezett SQL-t
 #     urllib POST      kifele iranyulo forgalom -- az az egress-deny dolga, mas kapu
 #     .ssh ut darabolt osszefuzessel -- obfuszkacio, kulon dontes kell hozza
@@ -835,8 +1084,23 @@ def _stdin_pipe_ranges(text):
     return out
 
 
+# Az eles adatbazis csonkitasa ertelmezobol, LITERAL utvonallal (5BBA912C). Csak az
+# irasi szandeku alakok: a `sqlite3.connect(db)` es az `open(db)` / `open(db,'rb')`
+# olvasas, az atmegy. A futasidoben epitett utat ez nem latja -- ezt ki kell mondani.
+_PAYLOAD_DB_WRITE_RE = re.compile(
+    r'(?:\bopen\s*\(\s*(["\'])([^"\']+)\1\s*,\s*(?:mode\s*=\s*)?["\'][^"\']*[wa+]'
+    r'|\b(?:os\.truncate|truncateSync|writeFileSync|appendFileSync)\s*\(\s*(["\'])([^"\']+)\3'
+    r'|\bPath\s*\(\s*(["\'])([^"\']+)\5\s*\)\s*\.\s*(?:write_text|write_bytes|open\s*\(\s*["\'][^"\']*[wa+]))')
+
+
 def check_payload(payload, _depth=0, cwd=None):
     """A ma is tiltott muveletek az ertelmezo-burkon BELUL."""
+    for m in _PAYLOAD_DB_WRITE_RE.finditer(payload):
+        raw = m.group(2) or m.group(4) or m.group(6)
+        why = _db_target(raw, cwd)
+        if why:
+            block('Ertelmezo-payloadbol az eles adatbazisba irni: %s.\n'
+                  '(a payload reszlete: %s)' % (why, m.group(0)[:160]))
     for rx, equivalent in _PAYLOAD_RE:
         m = rx.search(payload)
         if m:
@@ -857,14 +1121,27 @@ def check_payload(payload, _depth=0, cwd=None):
         check_bash(inner, _depth + 1, cwd)
 
 
+def _noclobber_as_plain(text):
+    """A `>|` (noclobber-feluliro atiranyitas) `> `-re cserelve, azonos hosszon.
+    Enelkul a szegmensekre bontas a '|'-nal csonak latna, es a cel kulon
+    "parancs" lenne -- az atiranyitas pedig elveszne a vizsgalat elol."""
+    state = _quote_map(text)
+    out = list(text)
+    for i in range(len(text) - 1):
+        if not state[i] and text[i] == '>' and text[i + 1] == '|':
+            out[i + 1] = ' '
+    return ''.join(out)
+
+
 def check_bash(cmd, _depth=0, cwd=None):
-    text = scannable(cmd)
+    text = _noclobber_as_plain(scannable(cmd))
     # A munkakonyvtar szegmensrol szegmensre valtozhat (`cd X && rm y`), ezert
     # vegigvisszuk. Ismeretlen (None) cwd eseten a relativ utak nem eldonthetok, es a
     # nem eldonthetot a kapu nem engedi at.
     if cwd is not None:
         cwd = os.path.normpath(os.path.expanduser(cwd))
     entry_cwd, saw_cd = cwd, False
+    env = _assigned_vars(text)
     for seg in segments(text):
         toks = _bare_tokens(seg)
         idx = command_index(toks)
@@ -881,6 +1158,8 @@ def check_bash(cmd, _depth=0, cwd=None):
         for j, (t, _sp) in enumerate(toks):
             if t in _FIND_EXEC and j + 1 < len(toks) and not toks[j + 1][1]:
                 names.append((toks[j + 1][0], j + 2))
+
+        _check_db_writes(seg, toks, names, cwd, env)
 
         for name, argstart in names:
             base = os.path.basename(name)
@@ -944,6 +1223,28 @@ def check_read(path):
         block('.env fajl: hitelesito adatokat tartalmaz.')
 
 
+def _ev_cwd(ev):
+    # A PreToolUse esemeny cwd-je a relativ utak feloldasahoz kell. Ha
+    # hianyzik vagy nem a telepites alatt van, NEM helyettesitjuk a gyokerrel:
+    # akkor a relativ torlesek egyszeruen nem eldonthetok, es blokkolodnak.
+    ev_cwd = ev.get('cwd')
+    if not (isinstance(ev_cwd, str) and ev_cwd.strip()):
+        return None
+    return ev_cwd
+
+
+def run_checks(tool, inp, ev):
+    """A felismeres EGYETLEN helye: a main() es a tesztek is ezt hivjak, hogy a
+    ketto ne csuszhasson szet. Blokknal block() -> exit 2."""
+    if tool == 'Bash':
+        check_bash(str(inp.get('command') or ''), cwd=_ev_cwd(ev))
+    elif tool in ('Read', 'Edit', 'Write', 'NotebookEdit'):
+        path = str(inp.get('file_path') or inp.get('notebook_path') or '')
+        check_read(path)
+        if tool != 'Read':
+            check_db_file_tool(path, _ev_cwd(ev))
+
+
 def main():
     raw = sys.stdin.read()
     try:
@@ -962,16 +1263,7 @@ def main():
     # elhasalt kapu csendben engedelyezove valik. Ez az egyetlen hibamod, amit egy
     # kapunal nem szabad megengedni.
     try:
-        if tool == 'Bash':
-            # A PreToolUse esemeny cwd-je a relativ utak feloldasahoz kell. Ha
-            # hianyzik vagy nem a telepites alatt van, NEM helyettesitjuk a gyokerrel:
-            # akkor a relativ torlesek egyszeruen nem eldonthetok, es blokkolodnak.
-            ev_cwd = ev.get('cwd')
-            if not (isinstance(ev_cwd, str) and ev_cwd.strip()):
-                ev_cwd = None
-            check_bash(str(inp.get('command') or ''), cwd=ev_cwd)
-        elif tool in ('Read', 'Edit', 'Write', 'NotebookEdit'):
-            check_read(str(inp.get('file_path') or ''))
+        run_checks(tool, inp, ev)
     except Exception as exc:
         sys.stderr.write('DESTRUKTIV-KAPU: a kapu maga hibara futott (%s: %s), ezert '
                          'BLOKKOL. Ez a kapu hibaja, nem a tied -- szolj a leandev-nek.\n'
