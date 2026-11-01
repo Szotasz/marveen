@@ -440,3 +440,85 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     expect(sh).not.toMatch(/dashboard-token|TOKEN=/)
   })
 })
+
+// VOICETOKENLEAK1101 PR-B (Dani 65425, Samu 65434): the helper READS the schedule list and never writes a schedule.
+// The self-pace gate reads the command text, and a helper call names no route, so the guard is in the helper, the one
+// place where the path is put together: any method but GET under the schedule route is refused before anything is
+// sent, for every verb. The pin builds EVERY verb with sample arguments; the forged requests prove the guard holds for
+// a verb or a path nobody wrote yet.
+describe('marveen-api.sh: schedules are read only', () => {
+  const API_PY = join(REPO, 'scripts', 'lib', 'marveen_api.py')
+  const driver = file('sched-driver.py', [
+    'import importlib.util, json, os, re, sys',
+    'spec = importlib.util.spec_from_file_location("marveen_api", sys.argv[1])',
+    'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+    'mode = sys.argv[2]',
+    'if mode == "pin":',
+    '    d = sys.argv[3]',
+    '    f = os.path.join(d, "pin-x.txt"); open(f, "w").write("x")',
+    '    j = os.path.join(d, "pin-s.json"); open(j, "w").write("{\\"a\\": 1}")',
+    '    s = {',
+    '        "message-close": ["7", "--result-file", f], "directive-verify": ["1"], "memory-search": ["dani", "q"],',
+    '        "memory-save": ["dani", "warm", "k", f], "memory-list": ["dani", "hot"], "memory-move": ["5", "cold", "dani"],',
+    '        "memory-update": ["5", "dani", f], "daily-log": ["dani", f], "taskstate-save": ["dani", j],',
+    '        "approval-request": ["dani", "memory_maintenance", "60", f], "approval-status": ["ap-1"],',
+    '        "approval-consume": ["ap-1", "memory_maintenance", "dani"], "skill-propose": ["my-skill", f],',
+    '        "kanban-list": [], "schedules-list": [], "kanban-create": ["dani", "normal", f],',
+    '        "kanban-move": ["c-1", "done"], "kanban-claim": ["c-1", "dani"], "kanban-release": ["c-1", "dani"],',
+    '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "agents-list": [],',
+    '    }',
+    '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
+    '    built = [[v] + list(m.build_request(v, s[v])[:2]) for v in verbs if v != "message"]',
+    '    print(json.dumps({"verbs": verbs, "samples": sorted(s), "built": built}))',
+    'else:',
+    '    meth, path = sys.argv[3], sys.argv[4]',
+    '    m.build_request = lambda verb, args: (meth, path, {"x": 1}, {}, {})',
+    '    sys.exit(m.main(["kanban-list"]))',
+  ].join('\n') + '\n')
+  const SCHED = '/api/' + 'schedules'
+  const py = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => new Promise((resolve) => {
+    execFile('python3', ['-I', driver, API_PY, ...args], {
+      env: { PATH: process.env.PATH!, MARVEEN_API_BASE: `http://127.0.0.1:${port(api)}`, MARVEEN_TOKEN_FILE: tokenFile },
+      timeout: 20_000,
+    }, (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, stdout, stderr }))
+  })
+
+  it('schedules-list: a GET of the schedule list with the token header, nothing else', async () => {
+    const r = await run(['schedules-list'])
+    expect(r.code, r.stderr).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect([seen[0].method, seen[0].url, seen[0].body]).toEqual(['GET', SCHED, ''])
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
+    expect((await run(['schedules-list', 'extra'])).code).toBe(2)
+    expect((await run(['schedules-list', '--agent', 'dani'])).code).toBe(2)
+    expect(seen).toHaveLength(1)
+  })
+
+  it('pin: every verb, built with sample arguments, writes nothing under the schedule route', async () => {
+    const r = await py(['pin', dir])
+    expect(r.code, r.stderr).toBe(0)
+    const { verbs, samples, built } = JSON.parse(r.stdout) as { verbs: string[]; samples: string[]; built: [string, string, string][] }
+    // every verb of the usage has a sample here (a new verb fails until it gets one), and none is left over
+    expect([...verbs.filter((v) => v !== 'message')].sort()).toEqual(samples)
+    const writes = built.filter(([, method, path]) => path.split('?')[0]!.startsWith(SCHED) && method !== 'GET')
+    expect(writes).toEqual([])
+    expect(built.filter(([, , path]) => path.startsWith(SCHED))).toEqual([['schedules-list', 'GET', SCHED]])
+  })
+
+  it('a forged non-GET under the schedule route stops before the send, in every spelling; a GET goes', async () => {
+    for (const [method, path] of [
+      ['POST', SCHED], ['PUT', `${SCHED}/x`], ['DELETE', `${SCHED}/x`], ['PATCH', `${SCHED}/x/enable`],
+      ['POST', '/api/x/../' + 'schedules'], ['POST', '/api/%73chedules'], ['post', `${SCHED}?a=1`], ['POST', `${SCHED}/`],
+    ]) {
+      const r = await py(['forged', method!, path!])
+      expect(r.code, `${method} ${path}`).toBe(2)
+      expect(r.stderr, `${method} ${path}`).toMatch(/only reads schedules.*nothing was sent/)
+    }
+    expect(seen).toHaveLength(0)
+    const ok = await py(['forged', 'GET', SCHED])
+    expect(ok.code, ok.stderr).toBe(0)
+    expect(seen.map((s) => [s.method, s.url])).toEqual([['GET', SCHED]])
+    // a non-GET elsewhere is not this guard's business
+    expect((await py(['forged', 'POST', `${SCHED}x`])).code).toBe(0)
+  })
+})

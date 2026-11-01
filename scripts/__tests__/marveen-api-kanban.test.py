@@ -164,11 +164,21 @@ ok(all(r[0] == 2 and not r[3] and tok in r[2] for r, tok in res),
    'P12 a bad status / ttl / priority / agent name: exit 2 with its own token, nothing sent',
    ' | '.join('rc=%d n=%d want=%s got=%s' % (r[0], len(r[3]), tok, r[2][:70].replace('\n', ' ')) for r, tok in res))
 
-# --- P13 INVARIANS: the helper never builds a schedule path ------------------------------------------
+# --- P13 INVARIANS: the helper never WRITES a schedule ------------------------------------------------
+# VOICETOKENLEAK1101 PR-B (Dani 65425, Samu 65434): the helper may READ the schedule list (schedules-list, GET), and
+# never writes one. The self-pace gate cannot see what a helper call sends, so the guard is in the helper: the route
+# appears only as the guard's constant and in the one GET verb, and main() asks the guard before it sends anything.
 src = open(API_PY, encoding='utf-8').read()
 paths = re.findall(r"""f?['"](/api/[^'"]*)['"]""", src)
-ok(paths and not [p for p in paths if 'schedul' in p], 'P13 INVARIANS: no helper path under /api/schedules (self-pace gate)',
-   'paths=%r' % [p for p in paths if 'schedul' in p])
+sched = [p for p in paths if 'schedul' in p]
+get_verb = re.search(r"if verb == 'schedules-list':\n(?:.*\n){0,4}?\s+return 'GET', '/api/schedules', None, headers, \{\}", src)
+guard_def = re.search(r"SCHEDULE_ROUTE = '/api/schedules'", src)
+main_src = src[src.index('def main('):]
+guard_call = main_src.find('schedule_write_refused(method, path)')
+send_at = main_src.find('urllib.request.Request(')
+ok(paths and sched == ['/api/schedules', '/api/schedules'] and get_verb and guard_def and 0 <= guard_call < send_at,
+   'P13 INVARIANS: the schedule route only in the guard constant and the one GET verb; the guard runs before the send',
+   'sched=%r get_verb=%s guard=%s guard_call=%d send=%d' % (sched, bool(get_verb), bool(guard_def), guard_call, send_at))
 
 # --- P14-P16: the recipe sources name the helper, not a curl token header (source text) --------------
 tpl = open(TEMPLATE, encoding='utf-8').read()

@@ -20,6 +20,7 @@ stderr); 2 = usage error or no token, nothing was sent; 3 = the dashboard could 
 """
 import json
 import os
+import posixpath
 import re
 import sys
 import urllib.error
@@ -61,6 +62,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
                 (each --ref-file goes as references/<its file name>, markdown only)
   kanban-list
+  schedules-list
   kanban-create <assignee> <low|normal|high|urgent> <title-file>
   kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
@@ -225,6 +227,20 @@ def positional(args, n, verb):
     return args
 
 
+SCHEDULE_ROUTE = '/api/schedules'
+
+
+def schedule_write_refused(method, path):
+    """VOICETOKENLEAK1101 PR-B (Dani 65425): the helper never writes a schedule. The self-pace gate reads the COMMAND
+    text, and a helper call names no route, so the gate cannot see what a verb sends: this is the one place where the
+    path is put together, so the guard sits here, for every verb, before anything is sent. Any method but GET under
+    the schedule route (after normalising the path) is refused."""
+    route = posixpath.normpath(urllib.parse.unquote(path.split('?', 1)[0]))
+    if (route == SCHEDULE_ROUTE or route.startswith(SCHEDULE_ROUTE + '/')) and method.upper() != 'GET':
+        return f'{method} {route}: the helper only reads schedules (writes are the main agent\'s); nothing was sent.'
+    return None
+
+
 def build_request(verb, args):
     """(method, path, body or None, extra headers, flags) for one verb. Pure: no IO except reading files."""
     args = list(args)
@@ -373,6 +389,11 @@ def build_request(verb, args):
     if verb == 'kanban-list':
         positional(args, 0, verb)
         return 'GET', '/api/kanban', None, headers, {}
+    if verb == 'schedules-list':
+        # VOICETOKENLEAK1101 PR-B: the schedule list, read only (the self-pace gate keeps every schedule WRITE to the main
+        # agent; schedule_write_refused stops any non-GET under the schedule route before it is sent).
+        positional(args, 0, verb)
+        return 'GET', '/api/schedules', None, headers, {}
     if verb == 'agents-list':
         positional(args, 0, verb)
         return 'GET', '/api/agents', None, headers, {}
@@ -454,6 +475,10 @@ def main(argv):
         method, path, body, headers, flags = build_request(verb, rest)
     except UsageError as e:
         print(f'FAIL: {e}\n{USAGE}', file=sys.stderr)
+        return 2
+    refused = schedule_write_refused(method, path)
+    if refused:
+        print(f'FAIL: {refused}', file=sys.stderr)
         return 2
     token = read_token()
     data = json.dumps(body).encode('utf-8') if body is not None else None

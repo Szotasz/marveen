@@ -117,7 +117,7 @@ const BLOCK_TITLES = [
 const helperVerbs = (() => {
   const py = readFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
   const usage = py.slice(py.indexOf('USAGE = """'), py.indexOf('"""', py.indexOf('USAGE = """') + 11))
-  return new Set([...usage.matchAll(/^ {2}([a-z-]+) /gm)].map((m) => m[1]))
+  return new Set([...usage.matchAll(/^ {2}([a-z-]+)(?= |$)/gm)].map((m) => m[1]))
 })()
 
 function helperLines(text: string): string[] {
@@ -167,11 +167,12 @@ describe('a strict agent gets no recipe its dontAsk mode denies', () => {
       expect(text).not.toContain('Authorization: Bearer')
       expect(text.split('\n').filter((l) => l.trimStart().startsWith('curl '))).toEqual([])
     }
-    // memory save, daily log, search, hot list, move, skill proposal, stranger ping
+    // memory save, daily log, search, hot list, move, schedule list (PR-B: a strict agent can list now), skill
+    // proposal, stranger ping
     expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
-      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'skill-propose', 'message'],
+      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'schedules-list', 'skill-propose', 'message'],
     )
-    expect(prompt).toContain('Listázni sem tudsz')
+    expect(prompt).not.toContain('Listázni sem tudsz')
   })
 
   it('every helper line is matched by the profile allow-list entry and names a known verb', async () => {
@@ -277,34 +278,31 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     expect(S.agentUsesApiHelper('strict-x')).toBe(true)
   })
 
-  // VOICETOKENLEAK1101 PR-A2: the creation-time body goes through the helper too; the schedules read is the one
-  // curl left (the self-pace gate allows exactly that form until PR-B), and the dontAsk sentence stays strict-only.
-  it('the creation prompt: every recipe through the helper, the schedules read the one curl (until PR-B)', async () => {
+  // VOICETOKENLEAK1101 PR-A2/PR-B: the creation-time body goes through the helper, the schedules read too (PR-B,
+  // schedules-list); the dontAsk sentence stays strict-only.
+  it('the creation prompt: every recipe through the helper, the schedules read too (PR-B)', async () => {
     stageAgent('plain-b', null)
     const { prompt } = await creation('plain-b')
     expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
-      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'skill-propose', 'message'],
+      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'schedules-list', 'skill-propose', 'message'],
     )
-    expect(prompt.split('$(cat ').length - 1).toBe(1)
+    expect(prompt.split('$(cat ').length - 1).toBe(0)
     expect(prompt).not.toContain('dontAsk')
-    expect(prompt).toContain('Olvasni (listázni) szabad')
+    expect(prompt).toContain('Olvasni (listázni) szabad, a segéddel')
   })
 
-  // Dani 64941/3 for the WHOLE generated CLAUDE.md: the creation prompt the model copies, the file it returns and the
-  // blocks every start writes. The named exception is the schedules read (PR-B); "curl" may stay in prose (the
-  // self-pace rule names the clients it forbids), never as a recipe line.
-  it('the whole generated CLAUDE.md: no token, no curl recipe, except the named schedules read', async () => {
+  // Dani 64941/3, Samu 65434 "kész-jel" for the WHOLE generated CLAUDE.md: the creation prompt the model copies, the
+  // file it returns and the blocks every start writes. No exception any more (PR-B moved the schedules read onto the
+  // helper); "curl" may stay in prose (the self-pace rule names the clients it forbids), never as a recipe line.
+  it('the whole generated CLAUDE.md: no token and no curl recipe at all (PR-B)', async () => {
     stageAgent('plain-w', null)
     const { prompt, out } = await creation('plain-w')
     writeFileSync(join(tmpRoot, 'agents', 'plain-w', 'CLAUDE.md'), out, 'utf-8')
     const text = [prompt, startBlocks('plain-w')].join('\n')
-    const isSchedulesRead = (l: string) => l.includes('/api/schedules')
-    const tokenLines = text.split('\n').filter((l) => /\$\(cat|\.dashboard-token|Authorization/.test(l))
-    expect(tokenLines.filter((l) => !isSchedulesRead(l))).toEqual([])
-    expect(tokenLines.filter(isSchedulesRead)).toHaveLength(1)
-    const curlRecipes = text.split('\n').filter((l) => /^\s*curl\s/.test(l))
-    expect(curlRecipes.filter((l) => !isSchedulesRead(l))).toEqual([])
+    expect(text.split('\n').filter((l) => /\$\(cat|\.dashboard-token|Authorization/.test(l))).toEqual([])
+    expect(text.split('\n').filter((l) => /^\s*curl\s/.test(l))).toEqual([])
     expect(text).toContain('<!-- BEGIN GENERATED: api-helper')
+    expect(text).toContain(`${HELPER_CMD} schedules-list`)
   })
 
   it('ensureStrictApiSection does not touch a non-strict file at all', () => {
@@ -360,6 +358,7 @@ describe('the api-helper block (VOICETOKENLEAK1101 PR-A2): an existing agent bod
       `${HELPER_CMD} memory-move <ID> cold plain-h`,
       `${HELPER_CMD} daily-log plain-h ${join(own, 'api-naplo.txt')}`,
       `${HELPER_CMD} message plain-h agent-a ${join(own, 'api-uzenet.txt')}`,
+      `${HELPER_CMD} schedules-list`,
     ])
     expect(once.startsWith('# plain-h\n\nkézi törzs curl-lel\n')).toBe(true)
   })
