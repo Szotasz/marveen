@@ -172,7 +172,7 @@ function pending(): Record<string, { heavyJobs?: unknown }> {
   return existsSync(PENDING) ? JSON.parse(readFileSync(PENDING, 'utf-8')) : {}
 }
 const restarts = () => h.restartAgentProcess.mock.calls.length
-const alerts = () => h.createAgentMessage.mock.calls.filter((c) => String(c[2]).includes('LEALLITJA'))
+const alerts = () => h.createAgentMessage.mock.calls.filter((c) => String(c[2]).includes('LEÁLLÍTJA'))
 /** The "a restart STOPPED these jobs" reports to the main agent. */
 const stopReports = () => h.createAgentMessage.mock.calls.filter((c) => String(c[3]) === 'context-guard heavy-job stopped report')
 const resumeTexts = () => h.sendSystemDirective.mock.calls.map((c) => String(c[2])).filter((t) => t.includes('Friss kontextussal indultál'))
