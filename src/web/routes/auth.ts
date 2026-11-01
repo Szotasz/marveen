@@ -472,6 +472,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    // A device caller (the Bridge) passes the owner gate too (Dani 65912 (2)): the same check as the kind gate, but it
+    // writes the audit line naming the session's user. The token and session lanes keep their kind gate only.
+    if (auth?.kind === 'device' && !mayActAsOwner(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const id = Number(deviceKeyMatch[1])
     const key = getDeviceKey(id)
     if (!key || !revokeDeviceKey(id)) {
@@ -490,7 +496,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         logger.error({ err, id, installId: key.installId }, 'device key revoked but authorized_keys removal failed')
         sshRemoved = false
       }
-      logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind)
+      logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind === 'device' ? `bridge:${ownerCookieSession(req) ?? '?'}` : auth!.kind)
     }
     logger.info({ id, name: key.name, installId: key.installId ?? undefined, sshRemoved }, 'device key revoked')
     json(res, { ok: true, ...(key.installId ? { ssh_removed: sshRemoved } : {}) })

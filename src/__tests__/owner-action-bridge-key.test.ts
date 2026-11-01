@@ -3,7 +3,8 @@
 // Credential issuance stays on mayIssueCredentials (its own PR). Real resolveAuth, real sessions, real device keys.
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 // Routes that write (operator access) write into a throwaway store, never the checkout's.
@@ -25,7 +26,7 @@ import { tryHandleSecurity } from '../web/routes/security.js'
 import { tryHandleOperatorAccess } from '../web/routes/operator-access.js'
 import { tryHandleOnboarding } from '../web/routes/onboarding.js'
 import { tryHandleClaudePlansLogin } from '../web/routes/claude-plans-login.js'
-import { createDeviceKey, revokeDeviceKey, _clearDeviceKeyCacheForTest } from '../web/auth-device-keys.js'
+import { createDeviceKey, getDeviceKey, revokeDeviceKey, _clearDeviceKeyCacheForTest } from '../web/auth-device-keys.js'
 import { _clearSessionCacheForTest, createSession, revokeSession } from '../web/auth-sessions.js'
 import { logger } from '../logger.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -157,7 +158,8 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
     }
   })
   it('credential issuance takes it too (PR-2); mayIssueCredentials is left only inside mayActAsOwner', () => {
-    for (const [f, n] of [['auth.ts', 4], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 1], ['claude-plans-login.ts', 1]] as const) {
+    // auth.ts: users list/create/delete and key mint, plus the Bridge's second gate on key revoke (Dani 65912)
+    for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 1], ['claude-plans-login.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, f === 'auth.ts' ? 1 : 0])
     }
   })
@@ -225,6 +227,30 @@ describe('on the real routes', () => {
     // a full key that is not a paired Bridge (no install id): the cookie is what lets it in
     expect((await hit(tryHandleClaudePlansLogin, 'GET', '/api/claude-plans/login/status', withCookie)).status).toBe(200)
     expect(refusedByOwnerGate(await hit(tryHandleClaudePlansLogin, 'GET', '/api/claude-plans/login/status', bare))).toBe(true)
+  })
+
+  // Dani 65912 (1) and (2): revoking a key (for a paired Bridge also its SSH line) is the one route where bridgeOwner
+  // was the only gate.
+  it('R3b: revoking a key: the key alone and an operator key with the cookie revoke nothing; key + cookie revokes, and the audit names the owner', async () => {
+    const prevSsh = process.env.MARVEEN_SSH_DIR
+    process.env.MARVEEN_SSH_DIR = mkdtempSync(join(tmpdir(), 'owner-action-ssh-'))
+    try {
+      const key = keyOf()
+      const target = createDeviceKey('Paired', { installId: 'install-r3b' })
+      expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${key}` })).status).toBe(403)
+      expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${keyOf('operator')}`, cookie: cookieHeader() })).status).toBe(403)
+      expect(getDeviceKey(target.id)).not.toBeNull()
+      const spy = vi.spyOn(logger, 'info')
+      const r = await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${key}`, cookie: cookieHeader() })
+      expect(r.status).toBe(200)
+      expect(getDeviceKey(target.id)).toBeNull()
+      expect(spy.mock.calls.some((c) => String(c[1]).includes('owner action on a Bridge key') && (c[0] as any)?.owner === 'owner')).toBe(true)
+      spy.mockRestore()
+      expect(getRecentConfigChanges(5).find((c) => c.key === 'security.bridge_revoke')?.actor).toBe('bridge:owner')
+    } finally {
+      if (prevSsh === undefined) delete process.env.MARVEEN_SSH_DIR
+      else process.env.MARVEEN_SSH_DIR = prevSsh
+    }
   })
 
   it('R4: dashboard users: key + cookie adds and removes one; a logged-out cookie does not', async () => {
