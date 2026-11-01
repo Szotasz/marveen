@@ -243,22 +243,29 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // ---- batch processing ----------------------------------------------------
 
 // Process one getUpdates batch. For each update: normalize, dedup-insert, and
-// (if newly inserted) hand off to Marveen. Returns the highest update_id seen
-// so the caller can advance the offset AFTER the whole batch is durable.
-function processBatch(updates: { update_id: number }[]): number | null {
-  let maxUpdateId: number | null = null
+// (if newly inserted) hand off to Marveen. The returned offset only covers
+// updates that are stored or deliberately skipped (unhandled kinds). If a store
+// fails, the batch stops there: the failed update and everything after it are
+// NOT covered by the offset, so Telegram redelivers them on the next
+// getUpdates. Dedup on update_id makes that redelivery safe.
+export function processBatch(updates: { update_id: number }[]): { offset: number | null; stalled: boolean } {
+  let durable: number | null = null
   for (const raw of updates) {
-    maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
-    if (!ev) continue // unhandled update kind: offset still advances past it
+    if (!ev) {
+      // unhandled update kind: offset still advances past it
+      durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
+      continue
+    }
 
     let ins: InsertResult
     try {
       ins = insertIncomingEvent(SOURCE, ev)
     } catch (err) {
-      logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed')
-      continue
+      logger.error({ err, update_id: raw.update_id }, 'channel-coordinator: insertIncomingEvent failed; stopping the batch so Telegram redelivers it')
+      return { offset: durable == null ? null : Math.min(durable, raw.update_id - 1), stalled: true }
     }
+    durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
     try {
@@ -269,7 +276,7 @@ function processBatch(updates: { update_id: number }[]): number | null {
       logger.error({ err, eventId: ins.eventId }, 'channel-coordinator: handoff failed; event left pending for replay')
     }
   }
-  return maxUpdateId
+  return { offset: durable, stalled: false }
 }
 
 // ---- reconcile (no-message-loss replay) ----------------------------------
@@ -345,6 +352,7 @@ export async function fatalExit(err: TelegramApiError, exit: (code: number) => n
 
 async function runLoop(token: string): Promise<void> {
   let transientAttempt = 0
+  let stallAttempt = 0
   while (!stopping) {
     // No-message-loss replay runs every tick, regardless of state.
     reconcilePending()
@@ -431,9 +439,15 @@ async function runLoop(token: string): Promise<void> {
       continue
     }
 
-    const maxUpdateId = processBatch(updates)
+    const { offset, stalled } = processBatch(updates)
     // Persist offset ONLY after the batch is durable + handed off.
-    if (maxUpdateId != null) setOffset(SOURCE, maxUpdateId)
+    if (offset != null) setOffset(SOURCE, offset)
+    if (stalled) {
+      // The store is failing: back off instead of re-fetching the same updates in a tight loop.
+      await sleep(transientBackoffMs(Math.min(++stallAttempt, 6)))
+    } else {
+      stallAttempt = 0
+    }
   }
 }
 
