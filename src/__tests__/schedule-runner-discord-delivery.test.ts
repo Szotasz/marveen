@@ -54,6 +54,11 @@ describe('discordBoundChannelFromAccess (pure)', () => {
   it('a guild channel (groups key) is the target, even next to user ids', () => {
     expect(discordBoundChannelFromAccess({ allowFrom: [USER_ID], groups: { [GUILD_CHANNEL]: {} } })).toEqual({ chatId: GUILD_CHANNEL })
   })
+  it('two or more guild channels are an ambiguity, never the first key (WRONGRECIP819, Dani 64034)', () => {
+    const second = '444444444444444444'
+    expect(discordBoundChannelFromAccess({ allowFrom: [], groups: { [GUILD_CHANNEL]: {}, [second]: {} } })).toEqual({ chatId: null, ambiguousCandidates: 2 })
+    expect(discordBoundChannelFromAccess({ allowFrom: [USER_ID], groups: { [second]: {}, [GUILD_CHANNEL]: {} } })).toEqual({ chatId: null, ambiguousCandidates: 2 })
+  })
   it('nothing at all is a plain config gap, not flagged', () => {
     expect(discordBoundChannelFromAccess({ allowFrom: [], groups: {} })).toEqual({ chatId: null })
     expect(discordBoundChannelFromAccess(null)).toEqual({ chatId: null })
@@ -84,6 +89,11 @@ describe('resolveBoundChannel on Discord (on-disk access.json)', () => {
   it('an allowed guild channel resolves', () => {
     writeAgentAccess('discord', { allowFrom: [USER_ID], groups: { [GUILD_CHANNEL]: { requireMention: false } } })
     expect(resolveBoundChannel(AGENT)).toEqual({ provider: 'discord', chatId: GUILD_CHANNEL })
+  })
+
+  it('two allowed guild channels on disk: no chat id, the ambiguity reported, no Discord gap flag', () => {
+    writeAgentAccess('discord', { allowFrom: [USER_ID], groups: { [GUILD_CHANNEL]: { requireMention: false }, '555555555555555555': { requireMention: false } } })
+    expect(resolveBoundChannel(AGENT)).toEqual({ provider: 'discord', chatId: null, ambiguousCandidates: 2 })
   })
 
   it('an explicit task pin still wins (the documented workaround keeps working)', () => {

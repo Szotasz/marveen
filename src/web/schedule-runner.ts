@@ -1333,17 +1333,21 @@ export interface BoundChannel {
  *  plugin's own comment says it plainly: "DM channel ID != user ID". So the
  *  allowFrom entries, which are USER ids, are never a target here: handed in as
  *  chat_id they fail with "Unknown Channel" (reported on a Discord install,
- *  2026-10-31). Only an allowed guild channel (a groups key) is a target, the
- *  same groups rule as for the other providers. allowFrom alone -> no target,
+ *  2026-10-31). Only an allowed guild channel (a groups key) is a target, and only
+ *  when there is exactly one (two or more are ambiguous). allowFrom alone -> no target,
  *  flagged so the caller can say so. Resolving a user id to its DM channel needs
  *  the bot token on the plugin's side and is a separate change. */
-export function discordBoundChannelFromAccess(raw: unknown): { chatId: string | null; discordNoChannel?: true } {
+export function discordBoundChannelFromAccess(raw: unknown): { chatId: string | null; discordNoChannel?: true; ambiguousCandidates?: number } {
   if (!raw || typeof raw !== 'object') return { chatId: null }
   const o = raw as Record<string, unknown>
   const groups = o.groups
   if (groups && typeof groups === 'object') {
     const keys = Object.keys(groups as Record<string, unknown>)
-    if (keys.length > 0) return { chatId: keys[0] }
+    // Exactly one allowed channel is the target. Two or more are an ambiguity (WRONGRECIP819, Dani 64034): the key order
+    // is insertion order, a re-pairing can reorder it, and everyone in a guild channel reads what lands there, so the
+    // first key would be a guess that can leak. The ambiguous branch skips and reports it.
+    if (keys.length === 1) return { chatId: keys[0]! }
+    if (keys.length > 1) return { chatId: null, ambiguousCandidates: keys.length }
   }
   const users = Array.isArray(o.allowFrom) ? o.allowFrom.filter((x) => (typeof x === 'string' && x.trim() !== '') || typeof x === 'number') : []
   return users.length > 0 ? { chatId: null, discordNoChannel: true } : { chatId: null }
@@ -2213,7 +2217,7 @@ async function attemptFireTask(
           createAgentMessage(
             'system',
             MAIN_AGENT_ID,
-            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
+            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges cimzett van az agens access.json-jaban (DM-kontakt az allowFrom-ban, vagy Discordon csatorna a groups-ban), es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
           )
         }
         prefix = `[Utemezett feladat: ${task.name}] `
