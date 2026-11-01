@@ -185,4 +185,27 @@ describe('the offer on opening the Bridge (web/app.js offerOwnerLoginOnce)', () 
     expect(w.count()).toBe(0)
     expect(w.state.seen).toBe(false)
   })
+
+  // Dani 65975 (2): after the login the refused write is NOT sent again by the client; the owner presses it again.
+  it('O6: no automatic resend: the offer path issues no request but the status, and a login reloads the page', async () => {
+    const realFetch = globalThis.fetch
+    const seen: string[] = []
+    globalThis.fetch = (async (u: unknown) => { seen.push(String(u)); return { ok: false, json: async () => ({}) } }) as typeof fetch
+    try {
+      const state = { seen: false }
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      const fn = new Function('ownerOffer', 'offerOwnerLoginOnce', `${extractFn('maybeOfferOnOwnerRefusal')}; return maybeOfferOnOwnerRefusal`)(
+        state, async () => {}) as (res: unknown, isApi: boolean) => Promise<void>
+      await fn({ status: 403, url: '/api/settings', clone: () => ({ json: async () => ({ code: 'owner_session_required' }) }) }, true)
+      expect(seen).toEqual([])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    const offer = extractFn('maybeOfferOnOwnerRefusal')
+    expect(offer).not.toMatch(/fetch\(|res\.url|input/)
+    // the overlay's login: success is a reload, nothing re-sent
+    const overlay = extractFn('showLoginOverlay')
+    expect(overlay).toMatch(/if \(r\.ok\) \{ window\.location\.reload\(\); return \}/)
+    expect((overlay.match(/originalFetch\(/g) ?? []).length).toBe(1)
+  })
 })
