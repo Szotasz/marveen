@@ -10625,7 +10625,12 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     const port = parseInt(document.getElementById('sshPortInput').value, 10) || 22
     const desc = document.getElementById('sshDescInput').value.trim()
     const sshKeyId = document.getElementById('sshKeySelectInput')?.value || null
-    if (!name || !host || !user) { showToast('Név, IP és felhasználó megadása kötelező'); return }
+    // Point at the first empty required field, as the new-skill form does.
+    const missing = !name ? ['sshNameInput', 'vault.ssh.form.name_required']
+      : !host ? ['sshHostInput', 'vault.ssh.form.host_required']
+      : !user ? ['sshUserInput', 'vault.ssh.form.user_required']
+      : null
+    if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1])); return }
     const isEdit = !!_sshEditingId
     try {
       const res = await fetch(

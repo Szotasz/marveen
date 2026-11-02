@@ -155,3 +155,28 @@ describe('the Vault page: no untranslated text is left', () => {
     expect(offenders).toEqual([])
   })
 })
+
+describe('the add-server form says which field is missing', () => {
+  const save = between(VAULT_JS, "addBtn?.addEventListener('click', async () => {", 'const isEdit = !!_sshEditingId')
+
+  it('the old catch-all toast is gone', () => {
+    expect(save, 'save handler not found').not.toBe('')
+    expect(save).not.toContain('Név, IP és felhasználó megadása kötelező')
+  })
+
+  it('the first empty required field gets the focus and its own translated toast, before any request', () => {
+    const order = ["!name ? ['sshNameInput', 'vault.ssh.form.name_required']", "!host ? ['sshHostInput', 'vault.ssh.form.host_required']", "!user ? ['sshUserInput', 'vault.ssh.form.user_required']"]
+    let at = -1
+    for (const step of order) {
+      const i = save.indexOf(step)
+      expect(i, step).toBeGreaterThan(at)
+      at = i
+    }
+    expect(save).toContain('if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1])); return }')
+    expect(save).not.toMatch(/\bfetch\(/)
+    for (const key of ['name_required', 'host_required', 'user_required']) {
+      expect(value(HU, `vault.ssh.form.${key}`)).not.toBeNull()
+      expect(value(EN, `vault.ssh.form.${key}`)).not.toBeNull()
+    }
+  })
+})
