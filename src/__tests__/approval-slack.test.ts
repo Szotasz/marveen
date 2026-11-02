@@ -95,7 +95,7 @@ describe('checkPost: only the owner\'s reaction on the unchanged message', () =>
 describe('sweepOnce', () => {
   const many = Array.from({ length: SWEEP_MAX_PER_ROUND + 3 }, (_, i) => ({ ...post, approvalId: `a${i}` }))
 
-  it('asks about at most SWEEP_MAX_PER_ROUND posts per round, oldest first', async () => {
+  it('asks about at most SWEEP_MAX_PER_ROUND posts per round, in the order given', async () => {
     const w: World = { message: msg(), calls: [] }
     const r = await sweepOnce(fake(w), many, () => { throw new Error('no decision expected') })
     expect(r).toEqual({ checked: SWEEP_MAX_PER_ROUND, waitS: 0 })
@@ -106,6 +106,19 @@ describe('sweepOnce', () => {
     const w: World = { message: msg(), calls: [], rateLimitOn: 'conversations.history' }
     expect(await sweepOnce(fake(w), many, () => {})).toEqual({ checked: 0, waitS: 7 })
     expect(w.calls).toEqual(['conversations.history'])
+  })
+
+  it('marks every checked post (the rotation key), a failing one too, but not the one a 429 stopped (Dani 66059)', async () => {
+    const marked: string[] = []
+    await sweepOnce(fake({ message: msg(), calls: [] }), many, () => {}, (p) => marked.push(p.approvalId))
+    expect(marked).toEqual(['a0', 'a1', 'a2', 'a3', 'a4'])
+    const failing: SlackCall = async () => { throw new Error('boom') }
+    const m2: string[] = []
+    expect(await sweepOnce(failing, many.slice(0, 2), () => {}, (p) => m2.push(p.approvalId))).toEqual({ checked: 0, waitS: 0 })
+    expect(m2).toEqual(['a0', 'a1'])
+    const m3: string[] = []
+    await sweepOnce(fake({ message: msg(), calls: [], rateLimitOn: 'conversations.history' }), many, () => {}, (p) => m3.push(p.approvalId))
+    expect(m3).toEqual([])
   })
 
   it('hands each decided post to the caller once', async () => {

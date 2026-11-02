@@ -11,7 +11,7 @@
  *     whose envelope recomputes to its content_hash (the DM then shows that envelope, Dani 65920 (4));
  *   - the text fits one Slack message (the hash must cover all of it).
  */
-import { resolveApproval, recordApprovalSlackPost, pendingApprovalSlackPosts, markApprovalSlackPostDecided, type Approval } from '../db.js'
+import { resolveApproval, recordApprovalSlackPost, pendingApprovalSlackPosts, markApprovalSlackPostDecided, markApprovalSlackPostChecked, type Approval } from '../db.js'
 import { logger } from '../logger.js'
 import { verifiedEnvelope, envelopeText } from '../approval-envelope.js'
 import { postApprovalPrompt, sweepOnce, slackCaller, type SlackCall, type ApprovalSlackPost, type Verdict } from '../approval-slack.js'
@@ -121,6 +121,17 @@ export async function decide(call: SlackCall, post: ApprovalSlackPost, v: Exclud
 
 export const SWEEP_EVERY_MS = 15_000
 
+/** One sweeper round over the DB: the least recently checked pending posts, each checked one stamped, decisions awaited. */
+export async function sweepRound(call: SlackCall, alert: (t: string) => void): Promise<{ checked: number; waitS: number }> {
+  const posts: ApprovalSlackPost[] = pendingApprovalSlackPosts().map((r) => ({
+    approvalId: r.approval_id, channel: r.channel, ts: r.ts, textSha256: r.text_sha256, ownerUserId: r.owner_user_id, botUserId: r.bot_user_id,
+  }))
+  const decisions: Array<Promise<void>> = []
+  const r = await sweepOnce(call, posts, (p, v) => { decisions.push(decide(call, p, v, alert)) }, (p) => markApprovalSlackPostChecked(p.approvalId))
+  await Promise.all(decisions)
+  return r
+}
+
 /** The sweeper: every SWEEP_EVERY_MS, while the switch is on, one bounded round; a 429 pauses it for its Retry-After. */
 export function startApprovalSlackSweeper(deps: { setting: RouteDeps['setting']; token: RouteDeps['token']; alert: (t: string) => void; call?: (token: string) => SlackCall }): NodeJS.Timeout {
   let running = false
@@ -132,13 +143,7 @@ export function startApprovalSlackSweeper(deps: { setting: RouteDeps['setting'];
     running = true
     void (async () => {
       try {
-        const call = (deps.call ?? slackCaller)(token)
-        const posts: ApprovalSlackPost[] = pendingApprovalSlackPosts().map((r) => ({
-          approvalId: r.approval_id, channel: r.channel, ts: r.ts, textSha256: r.text_sha256, ownerUserId: r.owner_user_id, botUserId: r.bot_user_id,
-        }))
-        const decisions: Array<Promise<void>> = []
-        const r = await sweepOnce(call, posts, (p, v) => { decisions.push(decide(call, p, v, deps.alert)) })
-        await Promise.all(decisions)
+        const r = await sweepRound((deps.call ?? slackCaller)(token), deps.alert)
         if (r.waitS > 0) pausedUntil = Date.now() + r.waitS * 1000
       } catch (err) {
         logger.warn({ err }, 'approval Slack sweep failed')

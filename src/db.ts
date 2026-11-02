@@ -1727,9 +1727,12 @@ export function initDatabase(dbPathOverride?: string): void {
       bot_user_id TEXT NOT NULL,
       posted_at INTEGER NOT NULL,
       decided_at INTEGER,
-      decision TEXT
+      decision TEXT,
+      last_checked_ms INTEGER
     )
   `)
+  // Dani 66059: the sweeper rotates by the last check, so old unanswered requests cannot starve a newer one.
+  try { db.exec('ALTER TABLE approval_slack_posts ADD COLUMN last_checked_ms INTEGER') } catch { /* already exists */ }
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -7514,6 +7517,7 @@ export interface ApprovalSlackPostRow {
   posted_at: number
   decided_at: number | null
   decision: string | null
+  last_checked_ms: number | null
 }
 
 export function recordApprovalSlackPost(p: { approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string }): boolean {
@@ -7523,18 +7527,28 @@ export function recordApprovalSlackPost(p: { approvalId: string; channel: string
   `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000)).changes > 0
 }
 
-/** Posts still waiting for the owner: undecided, the request pending and not timed out, oldest first. */
+/**
+ * Posts still waiting for the owner: undecided, the request pending and not timed out. The least recently checked come
+ * first (never checked before any checked one), then the oldest: a sweep takes the head of this list and stamps what it
+ * checked, so every pending post is reached within ceil(pending / SWEEP_MAX_PER_ROUND) rounds, however many older
+ * requests the owner leaves unanswered (Dani 66059: oldest-first starved a newer request until the old ones expired).
+ */
 export function pendingApprovalSlackPosts(limit = 50): ApprovalSlackPostRow[] {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
     SELECT p.* FROM approval_slack_posts p JOIN approvals a ON a.id = p.approval_id
     WHERE p.decided_at IS NULL AND a.status = 'pending' AND (a.timeout_at IS NULL OR a.timeout_at > ?)
-    ORDER BY p.posted_at ASC, p.rowid ASC LIMIT ?
+    ORDER BY COALESCE(p.last_checked_ms, 0) ASC, p.posted_at ASC, p.rowid ASC LIMIT ?
   `).all(now, limit) as ApprovalSlackPostRow[]
 }
 
 export function getApprovalSlackPost(approvalId: string): ApprovalSlackPostRow | undefined {
   return db.prepare('SELECT * FROM approval_slack_posts WHERE approval_id = ?').get(approvalId) as ApprovalSlackPostRow | undefined
+}
+
+/** Stamps the moment the sweeper last asked Slack about this post (the rotation key of pendingApprovalSlackPosts). */
+export function markApprovalSlackPostChecked(approvalId: string, atMs: number = Date.now()): void {
+  db.prepare('UPDATE approval_slack_posts SET last_checked_ms = ? WHERE approval_id = ?').run(atMs, approvalId)
 }
 
 /** Closes the row ONCE: false when it was already decided (a later reaction change does not reopen anything). */

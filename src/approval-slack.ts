@@ -112,19 +112,23 @@ export async function checkPost(call: SlackCall, post: ApprovalSlackPost): Promi
 export const SWEEP_MAX_PER_ROUND = 5
 
 /**
- * One sweep: up to SWEEP_MAX_PER_ROUND posts, oldest first. A rate limit stops the round and returns how long to wait
- * (Retry-After); any other error on one post skips just that post.
+ * One sweep: up to SWEEP_MAX_PER_ROUND posts, in the order given (the DB hands them least recently checked first). A
+ * rate limit stops the round and returns how long to wait (Retry-After); that post is NOT marked, so it heads the next
+ * round. Any other error on one post skips just that post, and it IS marked, so a post that keeps failing cannot hold a
+ * slot of every round.
  */
-export async function sweepOnce(call: SlackCall, posts: ApprovalSlackPost[], decide: (post: ApprovalSlackPost, v: Exclude<Verdict, { kind: 'none' }>) => void):
-Promise<{ checked: number; waitS: number }> {
+export async function sweepOnce(call: SlackCall, posts: ApprovalSlackPost[], decide: (post: ApprovalSlackPost, v: Exclude<Verdict, { kind: 'none' }>) => void,
+  markChecked: (post: ApprovalSlackPost) => void = () => {}): Promise<{ checked: number; waitS: number }> {
   let checked = 0
   for (const post of posts.slice(0, SWEEP_MAX_PER_ROUND)) {
     try {
       const v = await checkPost(call, post)
       checked++
+      markChecked(post)
       if (v.kind !== 'none') decide(post, v)
     } catch (err) {
       if (err instanceof SlackRateLimited) return { checked, waitS: Math.max(1, err.retryAfterS) }
+      markChecked(post)
     }
   }
   return { checked, waitS: 0 }

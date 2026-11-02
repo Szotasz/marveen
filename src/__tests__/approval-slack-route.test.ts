@@ -1,8 +1,9 @@
 // APPROVALSLACK1030 (2): which requests take the Slack-reaction path, and how a decision is recorded (once). The DB is
 // in memory; Slack is a fake.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { initDatabase, createApproval, getApproval, getApprovalSlackPost, pendingApprovalSlackPosts, recordApprovalSlackPost, type Approval } from '../db.js'
-import { reactionRoute, decide, postReactionPrompt, dashboardOnlyLine, type RouteDeps } from '../web/approval-slack-route.js'
+import { reactionRoute, decide, postReactionPrompt, dashboardOnlyLine, sweepRound, type RouteDeps } from '../web/approval-slack-route.js'
+import { sha256 } from '../approval-slack.js'
 import { contentAnchor } from '../approval-envelope.js'
 import type { SlackCall, ApprovalSlackPost } from '../approval-slack.js'
 
@@ -143,5 +144,52 @@ describe('postReactionPrompt + decide: one message, one decision', () => {
     expect(await postReactionPrompt(a, r, call)).toBe(true)
     expect(calls).toEqual(['auth.test', 'chat.postMessage'])
     expect(getApprovalSlackPost(a.id)!.channel).toBe('D0C74N9SAF6')
+  })
+})
+
+// Dani 66059: oldest-first starved a newer request while 5+ older ones stood unanswered (the normal case: the owner
+// ignores what they do not want). The rotation reaches every pending post within ceil(pending / 5) rounds.
+describe('sweepRound: rotation, no starvation behind unanswered older requests', () => {
+  const TEXT = 'kérés szövege'
+  function world(reactedTs: string, seen: string[]): SlackCall {
+    return async (method, body) => {
+      if (method === 'conversations.history') {
+        seen.push(String(body.latest))
+        const reactions = body.latest === reactedTs ? [{ name: 'white_check_mark', users: [OWNER], count: 1 }] : []
+        return { ok: true, messages: [{ ts: body.latest, user: 'U0BOTUSR1', text: TEXT, reactions }] }
+      }
+      if (method === 'users.info') return { ok: true, user: { id: OWNER, is_bot: false, is_app_user: false, deleted: false } }
+      if (method === 'chat.postMessage') return { ok: true, ts: '1700000999.000100' }
+      return { ok: false }
+    }
+  }
+
+  it('8 pending, only the NEWEST reacted: decided within 2 rounds, every post asked about once', async () => {
+    const reqs = Array.from({ length: 8 }, () => request())
+    reqs.forEach((a, i) => recordApprovalSlackPost({
+      approvalId: a.id, channel: 'D0DMCHAN1', ts: `1700000000.00010${i}`, textSha256: sha256(TEXT), ownerUserId: OWNER, botUserId: 'U0BOTUSR1',
+    }))
+    const newest = reqs[7]; const seen: string[] = []
+    const call = world('1700000000.000107', seen)
+    expect((await sweepRound(call, () => {})).checked).toBe(5)
+    expect(getApproval(newest.id)!.status).toBe('pending')
+    expect((await sweepRound(call, () => {})).checked).toBe(5)
+    expect(getApproval(newest.id)!.status).toBe('approved')
+    expect(new Set(seen).size).toBe(8)
+    expect(pendingApprovalSlackPosts()).toHaveLength(7)
+  })
+
+  it('after a full cycle the least recently checked come first again (the rotation keeps going)', async () => {
+    const reqs = Array.from({ length: 7 }, () => request())
+    reqs.forEach((a, i) => recordApprovalSlackPost({
+      approvalId: a.id, channel: 'D0DMCHAN1', ts: `1700000000.00020${i}`, textSha256: sha256(TEXT), ownerUserId: OWNER, botUserId: 'U0BOTUSR1',
+    }))
+    const seen: string[] = []
+    const call = world('none', seen)
+    // a strictly increasing clock: in a fast test two stamps could share a millisecond, a tie the real 15 s cadence never has
+    let t = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => ++t)
+    try { await sweepRound(call, () => {}); await sweepRound(call, () => {}); await sweepRound(call, () => {}) } finally { clock.mockRestore() }
+    // round 1: 0-4; round 2: 5, 6, then the least recently checked of 0-4 (0, 1, 2); round 3: 3, 4, 5, 6, 0
+    expect(seen.slice(10, 12)).toEqual(['1700000000.000203', '1700000000.000204'])
   })
 })
