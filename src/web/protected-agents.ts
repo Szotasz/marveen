@@ -5,7 +5,7 @@ import { logger } from '../logger.js'
 
 // Agents the dashboard API must never stop or delete (card 2fd5bfae).
 //
-// Péter, 2026-08-26: "Sentinel soha ne legyen leállítva." The supervisor's own
+// The requirement is blunt: the supervisor must never be stoppable. Its own
 // off-switch was in the hands of everything it supervises: POST
 // /api/agents/sentinel/stop is the same call any agent can make, and DELETE
 // /api/agents/sentinel had no guard at all.
@@ -14,8 +14,8 @@ import { logger } from '../logger.js'
 // bypasses that stay open, because every agent runs as the same OS user with
 // shell and filesystem access: tmux kill-session, kill -9, tmux kill-server,
 // hand-editing agents-desired.json, overwriting this list, and rm -rf on the
-// agent directory. Péter accepted all six explicitly (decision #3, 2026-08-26:
-// "nem lehetetlenné tesszük, csak nehézzé és nyoma marad"). So the contract of
+// agent directory. All six were accepted explicitly as out of scope: the aim
+// is to make a bypass hard and traceable, not impossible. So the contract of
 // this module is narrow and should stay narrow: close the HTTP path, and leave
 // a trace for everything it cannot close.
 //
@@ -35,7 +35,7 @@ const BLOCK_LOG_FILE = join(STORE_DIR, 'protected-agent-block.log')
 // no valid JSON needed, no knowledge of the format, one rm and the protection
 // is simply gone. With it, switching protection off takes a deliberate edit
 // that leaves its own evidence on disk, and an absent file still protects the
-// one agent Péter named.
+// one agent the built-in default names.
 export const DEFAULT_PROTECTED_AGENTS: readonly string[] = ['sentinel']
 
 // Warn-once state. The reads happen on stop/delete and on the reconciler's
@@ -95,10 +95,10 @@ export function getProtectedAgents(filePath: string = PROTECTED_FILE): Set<strin
     .map((s) => s.trim())
     .filter((s) => s !== '')
 
-  // A list that parses but drops a built-in default is honoured -- Péter owns
-  // this file and may legitimately unprotect an agent. It is still announced,
-  // because the same edit is what an overwrite attack produces, and the whole
-  // point of the decision Péter signed off on is that a bypass leaves a trace.
+  // A list that parses but drops a built-in default is honoured -- the operator
+  // owns this file and may legitimately unprotect an agent. It is still
+  // announced, because the same edit is what an overwrite attack produces, and
+  // the whole point of this feature is that a bypass leaves a trace.
   for (const name of DEFAULT_PROTECTED_AGENTS) {
     if (names.includes(name)) {
       defaultAbsenceWarned.delete(name)

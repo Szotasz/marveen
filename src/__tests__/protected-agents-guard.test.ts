@@ -126,7 +126,7 @@ describe('protected-agent audit trail', () => {
 
   it('describes the caller without claiming it identifies a human', () => {
     expect(describeApiCaller({ kind: 'token' }, '10.0.0.5')).toBe('token@10.0.0.5')
-    expect(describeApiCaller({ kind: 'session', user: 'peter' })).toBe('session:peter')
+    expect(describeApiCaller({ kind: 'session', user: 'owner' })).toBe('session:owner')
     expect(describeApiCaller(undefined)).toBe('unauthenticated')
   })
 })

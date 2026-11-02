@@ -811,7 +811,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // Blanket refusal on the whole PUT, not a per-field filter: a field allowlist
   // is a second thing to get wrong, and every field on these routes feeds the
   // next launch. The knobs stay reachable by editing the agent's files directly,
-  // which is deliberate -- hard and traceable, not impossible (Péter, 2026-08-26).
+  // which is deliberate -- hard and traceable, not impossible.
   const denyProtectedWrite = (name: string, action: string, note: string): boolean => {
     if (!isProtectedAgent(name)) return false
     recordProtectedAgentEvent({
