@@ -10356,6 +10356,8 @@ function openSshKeygenModal(callback) {
   document.getElementById('sshKeygenSpinner').hidden = true
   document.getElementById('sshKeygenResult').hidden = true
   document.getElementById('sshKeygenFooter').hidden = false
+  document.getElementById('sshKeygenSubmitBtn').hidden = false
+  document.getElementById('sshKeygenDoneBtn').hidden = true
   document.getElementById('sshKeygenForm').hidden = false
   document.getElementById('sshKeygenPubkeyBox').value = ''
   _sshKeygenCallback = callback || null
@@ -10368,10 +10370,12 @@ function openSshKeygenModal(callback) {
   const closeBtn = document.getElementById('sshKeygenClose')
   const submitBtn = document.getElementById('sshKeygenSubmitBtn')
   const copyBtn = document.getElementById('sshKeygenCopyBtn')
+  const doneBtn = document.getElementById('sshKeygenDoneBtn')
   if (!overlay) return
 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
   closeBtn.addEventListener('click', () => closeModal(overlay))
+  doneBtn.addEventListener('click', () => closeModal(overlay))
 
   submitBtn.addEventListener('click', async () => {
     const label = document.getElementById('sshKeygenLabelInput').value.trim()
@@ -10401,6 +10405,11 @@ function openSshKeygenModal(callback) {
       document.getElementById('sshKeygenPubkeyBox').value = pubkey
       document.getElementById('sshKeygenSpinner').hidden = true
       document.getElementById('sshKeygenResult').hidden = false
+      // The key is made: the footer offers Close, not a second Generate.
+      submitBtn.hidden = true
+      doneBtn.hidden = false
+      document.getElementById('sshKeygenFooter').hidden = false
+      doneBtn.focus()
 
       await loadSshKeys()
       if (_sshKeygenCallback) _sshKeygenCallback(data.key || data)
@@ -10420,6 +10429,8 @@ function openSshKeygenModal(callback) {
     document.getElementById('sshKeygenSpinner').hidden = true
     document.getElementById('sshKeygenResult').hidden = true
     document.getElementById('sshKeygenFooter').hidden = false
+    submitBtn.hidden = false
+    doneBtn.hidden = true
   }
 })()
 

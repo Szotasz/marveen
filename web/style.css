@@ -5238,6 +5238,8 @@ a.oss-inv-name:hover { text-decoration: underline; }
 }
 .modal-close:hover { color: var(--text); }
 .modal-body { padding: 16px 20px; }
+/* The class's display:flex outranks the browser's [hidden] default; the keygen and scan modals hide their footer. */
+.modal-footer[hidden] { display: none; }
 .modal-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 12px; }
 .modal-footer {
   display: flex;
