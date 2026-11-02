@@ -139,6 +139,9 @@ function mainAgentId() {
       }
     }
     const res = await originalFetch(input, init)
+    // An owner action refused for want of the owner's session: offer the password login (Samu 65968). Not awaited:
+    // the caller gets its answer as before.
+    if (res.status === 403) void maybeOfferOnOwnerRefusal(res, isSameOriginApi)
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
@@ -204,13 +207,22 @@ function mainAgentId() {
         '<div class="mv-auth-err" id="mv-login-err"></div>' +
       '</form>'
     document.body.appendChild(overlay)
+    if (opts && opts.later) {
+      // BRIDGEPWLOGIN1101: the offer on opening the Bridge says what the login is for.
+      const desc = overlay.querySelector('.mv-auth-desc')
+      if (desc) desc.textContent = tr('auth.login.bridge_desc', 'Sign in with your dashboard password to approve, decide and change settings from here.')
+    }
     if (opts && opts.cancellable) {
       const cancel = document.createElement('button')
       cancel.type = 'button'
       cancel.id = 'mv-login-cancel'
       cancel.className = 'btn-secondary btn-compact'
-      cancel.textContent = tr('auth.login.cancel', 'Cancel')
-      cancel.addEventListener('click', () => overlay.remove())
+      cancel.textContent = opts.later ? tr('auth.login.later', 'Later') : tr('auth.login.cancel', 'Cancel')
+      cancel.addEventListener('click', () => {
+        // "Later" quiets the offer for this run of the window (sessionStorage), not for good.
+        if (opts.later) { try { sessionStorage.setItem(LOGIN_LATER_KEY, '1') } catch { /* storage blocked */ } }
+        overlay.remove()
+      })
       overlay.querySelector('#mv-login-form').appendChild(cancel)
     }
     const form = overlay.querySelector('#mv-login-form')
@@ -249,6 +261,36 @@ function mainAgentId() {
   }
 
   window.mvShowLogin = (opts) => showLoginOverlay(opts)
+
+  // BRIDGEPWLOGIN1101 (Samu 64763, plan A; the moment: Samu 65968): the Bridge opens the dashboard with its device key,
+  // which never makes the owner. Most Bridge use needs no owner session, so nothing is offered on load: the offer comes
+  // when an owner action is first refused (403 owner_session_required, maybeOfferOnOwnerRefusal in the fetch wrapper),
+  // once per page, and only when a password login exists and no owner session rides on this window. "Later" quiets it
+  // for this run. The key stays: the overlay's login adds the cookie beside it, and the owner gates take the pair. Only
+  // a full key gets owner_session in the status at all, so an operator key is never offered this. The refusal's own
+  // toast still shows, the fallback when the overlay does not open.
+  const LOGIN_LATER_KEY = 'mv-login-later'
+  const ownerOffer = { seen: false }
+  function maybeOfferOnOwnerRefusal(res, isApi) {
+    if (ownerOffer.seen || !isApi || !res || res.status !== 403) return Promise.resolve()
+    return res.clone().json().then((b) => {
+      if (ownerOffer.seen || !b || b.code !== 'owner_session_required') return
+      ownerOffer.seen = true
+      return offerOwnerLoginOnce()
+    }).catch(() => { /* not JSON, or the offer failed: the caller's toast stands */ })
+  }
+  async function offerOwnerLoginOnce() {
+    try { if (sessionStorage.getItem(LOGIN_LATER_KEY) === '1') return } catch { /* storage blocked: offer it */ }
+    if (!sessionToken) return
+    let s = null
+    try {
+      const r = await originalFetch('/api/auth/status', { headers: { Authorization: 'Bearer ' + sessionToken }, cache: 'no-store' })
+      if (r.ok) s = await r.json()
+    } catch { return }
+    if (!s || s.method !== 'device' || !s.login_available || s.owner_session !== false) return
+    showLoginOverlay({ cancellable: true, later: true })
+  }
+  window.mvOfferOwnerLogin = offerOwnerLoginOnce
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
   // The user pastes the access token (the value after ?token= in the server's
