@@ -16,7 +16,7 @@ import {
   type VaultSshServer,
   type VaultSshKey,
 } from '../../db.js'
-import { generateSshKeyPair } from './vault-ssh-keys.js'
+import { generateSshKeyPair, uniqueSshKeyLabel } from './vault-ssh-keys.js'
 import { setSecret } from '../vault.js'
 import type { RouteContext } from './types.js'
 
@@ -176,7 +176,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
 
       const { randomBytes } = await import('node:crypto')
       const keyId = randomBytes(8).toString('hex')
-      const label = `${server.name} (${keyUser})`
+      const label = uniqueSshKeyLabel(`${server.name} (${keyUser})`)
       const comment = `${keyUser}@${server.host}`
       const { privateKey, publicKey, fingerprint } = await generateSshKeyPair(comment)
 

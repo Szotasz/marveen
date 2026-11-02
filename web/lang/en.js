@@ -1078,6 +1078,8 @@ window._i18n.en = {
   'vault.stat.encryption':       'Encryption',
   'vault.stat.bindings':         'Bindings',
   'vault.stat.storage':          'Local',
+  'vault.ssh.toast.label_taken': 'An SSH key named "{name}" already exists. Give it another label.',
+  'vault.ssh.toast.label_user_required': 'The label and the username are required.',
 
 
   // --- Token Usage ---

@@ -68,6 +68,7 @@ A generikus secret-vault mellett a dashboard egy dedikált **SSH Vault** modult 
 - `GET/POST /api/vault/ssh-servers`, `PUT/DELETE /api/vault/ssh-servers/:id` -- szerver CRUD.
 - `GET/POST /api/vault/ssh-keys` -- kulcs-készlet listázás/generálás (új ed25519 pár).
 - `POST /api/vault/ssh-keys/import` -- meglévő privát kulcs importálása (publikus kulcs + fingerprint automatikus levezetéssel, `ssh-keygen -y`).
+- A címke egy kulcsot nevez meg: generálásnál és importnál egy már létező címke (kis- és nagybetűtől függetlenül) `409`-et kap, `code: "label_taken"`. A szerverhez generáló `POST /api/vault/ssh-servers/:id/generate-key` maga adja a címkét, foglalt címkénél sorszámmal (`… 2`, `… 3`).
 - `GET /api/vault/ssh-keys/:id/public-key` -- publikus kulcs + telepítési (`authorized_keys`) instrukció lekérése.
 - `DELETE /api/vault/ssh-keys/:id` -- kulcs törlése; a hozzárendelt szerverek referenciája is törlődik, és a mögöttes titkosított secret is takarítva (`deleteSecret`), nincs árva bejegyzés.
 
