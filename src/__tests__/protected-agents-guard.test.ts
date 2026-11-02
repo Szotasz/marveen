@@ -211,7 +211,10 @@ describe('guard placement is load-bearing', () => {
     // Same rule as stop/delete: the guard must precede the mutation, and here
     // also the readBody -- there is no reason to parse a payload we refuse.
     for (const [startMarker, endMarker, writeCall] of [
-      ["const contextGuardMatch = path.match", "// GET /api/context-guard", 'writeContextGuardConfig(name'],
+      // mergeContextGuardConfig, not write*: upstream replaced the whole-file
+      // write with a merge (the route now patches fields). The marker has to
+      // name the call that actually persists, or this test passes vacuously.
+      ["const contextGuardMatch = path.match", "// GET /api/context-guard", 'mergeContextGuardConfig(name'],
       ["const remoteCfgMatch = path.match", "if (path === '/api/team/graph'", 'writeAgentRemoteConfig(name'],
       ["if (secGetMatch && method === 'PUT')", '// PUT /api/agents/:name/auto-restart', 'writeAgentSecurityProfile(name'],
       ["if (agentMatch && method === 'PUT')", 'json(res, { ok: true })', 'checkAgentPutFields(name'],
@@ -230,6 +233,15 @@ describe('guard placement is load-bearing', () => {
     const reconcile = sourceBetween(monitorSource, 'async function reconcileDesiredAgents', 'Backward-compatible alias')
     expect(reconcile.indexOf('isProtectedAgent(name)')).toBeGreaterThan(-1)
     expect(reconcile.indexOf('recordProtectedAgentEvent')).toBeGreaterThan(-1)
+    // Placement, not just presence. The detection belongs in the start
+    // callback handed to runReconcileBurst, because that is the one point the
+    // burst reaches only AFTER its own skips (not desired, already running,
+    // managed restart in flight, restart grace, memory gate). Anywhere else
+    // and a managed restart would be reported as an out-of-band stop.
+    const startCallback = sourceBetween(reconcile, 'start: async (name)', 'afterStart:')
+    expect(startCallback.indexOf('isProtectedAgent(name)')).toBeGreaterThan(-1)
+    expect(startCallback.indexOf('recordProtectedAgentEvent')).toBeGreaterThan(-1)
+    expect(startCallback.indexOf('isProtectedAgent(name)')).toBeLessThan(startCallback.indexOf('startAgentProcess(name)'))
   })
 })
 

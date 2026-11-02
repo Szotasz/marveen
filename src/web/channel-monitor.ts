@@ -3341,19 +3341,25 @@ async function reconcileDesiredAgents(): Promise<void> {
       // accepted decision was that they must at least be NAMED rather than
       // restarted in silence, hence the error-level line and the audit
       // record on top of the burst's ordinary reconcile line.
+      // ONE startAgentProcess call, deliberately: the burst's own test asserts
+      // that it appears exactly once here, so that no start can bypass the
+      // skips. The protected-agent handling wraps that single call instead of
+      // branching into a second one.
       start: async (name) => {
-        if (!isProtectedAgent(name)) return startAgentProcess(name)
-        logger.error({ agent: name }, 'Protected agent disappeared from tmux unexpectedly -- restarting (out-of-band stop, not via the API)')
+        const isProtected = isProtectedAgent(name)
+        if (isProtected) logger.error({ agent: name }, 'Protected agent disappeared from tmux unexpectedly -- restarting (out-of-band stop, not via the API)')
         const r = await startAgentProcess(name)
-        const started = r.ok || r.error === 'Agent is already running'
-        recordProtectedAgentEvent({
-          agent: name,
-          action: 'out-of-band-disappearance',
-          outcome: started ? 'restarted' : 'restart-failed',
-          note: started
-            ? 'protected agent disappeared from tmux unexpectedly, restarted'
-            : `protected agent disappeared from tmux unexpectedly, restart FAILED: ${r.error ?? 'unknown error'}`,
-        })
+        if (isProtected) {
+          const started = r.ok || r.error === 'Agent is already running'
+          recordProtectedAgentEvent({
+            agent: name,
+            action: 'out-of-band-disappearance',
+            outcome: started ? 'restarted' : 'restart-failed',
+            note: started
+              ? 'protected agent disappeared from tmux unexpectedly, restarted'
+              : `protected agent disappeared from tmux unexpectedly, restart FAILED: ${r.error ?? 'unknown error'}`,
+          })
+        }
         return r
       },
       afterStart: (name) => { agentLastRestart.set(name, Date.now()) },
