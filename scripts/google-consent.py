@@ -46,8 +46,13 @@ Commands:
   google-consent.py redeem '<pasted http://localhost/?state=...&code=... URL>' [--only NAME] [--dry-run] [--partial]
       Refuses a code that is not bound to a link this helper issued (no state, a
       state no `link` issued, or a link older than 60 minutes: exit 2, no network
-      call, nothing written), and refuses to write through a symlinked token path; the exchange
-      always sends that link's PKCE code_verifier. Then redeems the code, checks the
+      call, nothing written); the exchange always sends that link's PKCE
+      code_verifier. Every path it would write (consumer files, parking file, PKCE
+      file) is checked BEFORE the code is exchanged: a symlink, something that is
+      not a regular file, a parent that is not a directory, or a directory that is
+      not writable is exit 2, nothing
+      redeemed or written. A failed cleanup of the one-shot state after the write
+      is a warning and keeps the exit code. Then redeems the code, checks the
       granted scopes against every consumer, and warns when the response carries
       refresh_token_expires_in (the OAuth app is still in "Testing": the token dies
       in 7 days). Then backs up each consumer file (0600, timestamped, byte copy) and
@@ -66,10 +71,13 @@ Commands:
       token (group letters, no token material), whether an expiry field is present,
       and scope coverage. No network call.
 
-Exit codes: 0 ok, 1 error (also config error), 2 usage or a refused code (no state, or a
-state that belongs to no issued link: nothing is redeemed or written), 3 scope shortfall (separate
-consent: granted scopes not exactly the requested ones), 4 written/checked but the
-response carries refresh_token_expires_in.
+Exit codes: 0 ok, 1 error (also config error, an unusable token endpoint or response, and
+a path that changed after the preflight), 2 usage or a refusal before the exchange (no
+state, a state that belongs to no issued link, a link older than 60 minutes, or a path
+preflight refusal: a consumer, parking or PKCE path that is a symlink, not a regular
+file, under a parent that is not a directory, or in a directory that is not writable; nothing is redeemed or written), 3 scope
+shortfall (separate consent: granted scopes not exactly the requested ones), 4
+written/checked but the response carries refresh_token_expires_in.
 
 Secrets (client secret, access/refresh tokens, PKCE verifier) are never printed.
 Only `redeem` makes a network call (to oauth2.googleapis.com).
@@ -79,6 +87,7 @@ endpoint; any other value is refused.
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -125,7 +134,8 @@ class ConfigError(Exception):
 
 
 class UnsafePath(Exception):
-    """A path this helper would write through is a symlink."""
+    """A path this helper would write through is a symlink (caught at write time, i.e. it
+    changed after the preflight)."""
 
 
 # ---------------------------------------------------------------- small io helpers
@@ -571,6 +581,8 @@ def cmd_link(cfg, args):
     cid, _ = load_client(cfg)
     verifier, challenge, state = new_pkce()
     path = pkce_file(cfg, only)
+    if preflight_paths([path], "No link was issued."):
+        return 2
     d = load_pkce(path)
     d["entries"].append({"state": state, "verifier": verifier,
                          "created": int(time.time()), "scopes": scopes})
@@ -652,7 +664,8 @@ def exchange_code(cfg, code, verifier):
             err("  (a code is single use and expires within minutes; run `link` again and"
                 " approve the NEW link)")
         raise SystemExit(1)
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+        # HTTPException: e.g. IncompleteRead from a truncated response body
         err("ERROR redeeming the code: token endpoint not usable (%s)" % type(e).__name__)
         raise SystemExit(1)
     if not isinstance(resp, dict):
@@ -686,6 +699,8 @@ def normalize(resp, obtained_at):
         "expires_in": int(resp.get("expires_in", 3599)),
         "obtained_at": int(obtained_at),
     }
+    if not isinstance(tok["scope"], str) or not isinstance(tok["token_type"], str):
+        raise ValueError("scope / token_type is not a string")
     tok["expiry_date"] = tok["obtained_at"] * 1000 + tok["expires_in"] * 1000
     if "refresh_token_expires_in" in resp:
         tok["refresh_token_expires_in"] = resp["refresh_token_expires_in"]
@@ -761,11 +776,11 @@ def running_mcp_sessions(cfg):
     return {k: sorted(v) for k, v in out.items()}
 
 
-def _obtain(cfg, code, state, only):
-    """(resp, obtained_at, pending, key) or an int exit code. Reuses a parked response."""
+def _obtain(cfg, code, state, only, targets):
+    """(resp, obtained_at, pending, key) or an int exit code. Reuses a parked response.
+    targets: the consumer files this redeem may write; with the parking and PKCE file they
+    are preflighted BEFORE anything is exchanged, so exit 2 means nothing was redeemed."""
     pend_path, pkce_path = pending_file(cfg, only), pkce_file(cfg, only)
-    pending = load_pending(pend_path)
-    key = code_key(code)
     # A code is redeemed ONLY when it is bound to a link this helper issued: the pasted
     # URL's state must match a stored PKCE entry, and the exchange always sends that
     # entry's code_verifier. A bare code (or a URL with the state stripped) could be a
@@ -776,13 +791,26 @@ def _obtain(cfg, code, state, only):
             " helper issued. Nothing was redeemed. Paste the WHOLE http://localhost/?state=...&code=..."
             " address of the link from `link%s`." % (" --only " + only if only else ""))
         return 2
+    # Every check that can refuse runs BEFORE the code is exchanged (and before the parked
+    # response is touched): a path this redeem would write that is unsafe or not writable
+    # is refused now, not after the single-use code was spent.
+    if preflight_paths(list(targets) + [pend_path, pkce_path], "Nothing was redeemed or written."):
+        return 2
+    pending = load_pending(pend_path)
+    key = code_key(code)
     if key in pending and isinstance(pending[key], dict) and isinstance(pending[key].get("response"), dict):
         if pending[key].get("state") != state:
             err("ERROR: this code was already redeemed for a different link (state mismatch)."
                 " Nothing was written.")
             return 2
+        obtained_at = pending[key].get("obtained_at")
+        if not isinstance(obtained_at, (int, float)) or isinstance(obtained_at, bool):
+            # never stamp a parked response fresh: its access token may be long expired
+            err("ERROR: the parked response has no valid obtained_at (%s). Nothing was redeemed"
+                " or written; run `link` again and approve the NEW link." % pend_path)
+            return 2
         err("This code was already redeemed (--dry-run); reusing the parked response.")
-        return pending[key]["response"], pending[key].get("obtained_at", int(time.time())), pending, key
+        return pending[key]["response"], obtained_at, pending, key
     entries = load_pkce(pkce_path)["entries"]
     entry = next((e for e in entries if e.get("state") == state), None)
     if entry is None:
@@ -832,13 +860,25 @@ def _testing_warning(resp, relink):
 
 
 def _cleanup(cfg, pending, key, state, only):
-    pend_path = pending_file(cfg, only)
-    pending.pop(key, None)
-    if pending:
-        save_pending(pending, pend_path)
-    elif os.path.exists(pend_path):
-        os.unlink(pend_path)
-    drop_pkce_state(state, pkce_file(cfg, only))
+    """Post-write cleanup of the one-shot state. The token files are already written, so a
+    failure here is a warning: the caller keeps its exit code and prints its notices."""
+    pend_path, pkce_path = pending_file(cfg, only), pkce_file(cfg, only)
+    try:
+        pending.pop(key, None)
+        if pending:
+            save_pending(pending, pend_path)
+        elif os.path.exists(pend_path):
+            os.unlink(pend_path)
+    except (OSError, UnsafePath) as e:
+        err("WARNING: the token files are written, but cleaning up the parking file failed"
+            " (%s: %s). The parked response stays in %s (0600) and can be reused with the"
+            " same URL." % (type(e).__name__, e, pend_path))
+    try:
+        drop_pkce_state(state, pkce_path)
+    except (OSError, UnsafePath) as e:
+        err("WARNING: the token files are written, but cleaning up the PKCE file failed"
+            " (%s: %s, %s). The link still expires after %d minutes."
+            % (type(e).__name__, e, pkce_path, LINK_TTL // 60))
 
 
 def _write_one(c, data, text, problem, tok, stamp, dry_run):
@@ -867,24 +907,46 @@ def _no_tokens(resp):
     return False
 
 
-def _token(resp, obtained_at):
+def _token(resp, obtained_at, pend_path):
     """normalize(), or None with a clean error when a field has the wrong type."""
     try:
         return normalize(resp, obtained_at)
     except (TypeError, ValueError, OverflowError):
-        err("ERROR: the token response has a malformed field (expires_in / obtained_at)."
-            " Nothing was written; run `link` again.")
+        err("ERROR: the token response has a malformed field (expires_in / obtained_at /"
+            " scope / token_type). The token files were NOT written; the response stays"
+            " parked in %s (0600). Run `link` again." % pend_path)
         return None
 
 
-def _refuse_symlinked_targets(paths):
-    """Before the first write: a symlinked token path is refused (exit 2), nothing written."""
-    bad = [p for p in paths if os.path.islink(p)]
-    for p in bad:
-        err("ERROR: %s is a symlink; this helper does not write through links. Point the"
-            " consumer's path at the real file." % p)
+def path_problem(path):
+    """Why this helper could not write `path` safely, or None."""
+    if os.path.islink(path):
+        return ("is a symlink; this helper does not write through links (point the path at"
+                " the real file)")
+    if os.path.exists(path) and not os.path.isfile(path):
+        return "is not a regular file"
+    # the nearest existing level is where write_private creates the missing ones
+    d = os.path.dirname(path) or "."
+    while not os.path.lexists(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    if not os.path.isdir(d):
+        return "has a parent that is not a directory (%s)" % d
+    if not os.access(d, os.W_OK | os.X_OK):
+        return "is in a directory that is not writable (%s)" % d
+    return None
+
+
+def preflight_paths(paths, outcome):
+    """True (with messages) when a path this run would write is unsafe or not writable.
+    Runs before anything is exchanged or written, so a refusal means exactly `outcome`."""
+    bad = [(p, why) for p, why in ((p, path_problem(p)) for p in paths) if why]
+    for p, why in bad:
+        err("ERROR: %s %s." % (p, why))
     if bad:
-        err("NOTHING was written.")
+        err(outcome)
         return True
     return False
 
@@ -899,13 +961,13 @@ def cmd_redeem_separate(cfg, args):
     if perr:
         err("ERROR:", perr)
         return 1
-    got = _obtain(cfg, code, state, only)
+    got = _obtain(cfg, code, state, only, [c["path"]])
     if isinstance(got, int):
         return got
     resp, obtained_at, pending, key = got
     if _no_tokens(resp):
         return 1
-    tok = _token(resp, obtained_at)
+    tok = _token(resp, obtained_at, pending_file(cfg, only))
     if tok is None:
         return 1
     granted = set(split_scope(tok["scope"]))
@@ -929,8 +991,6 @@ def cmd_redeem_separate(cfg, args):
         return 3
     testing = _testing_warning(resp, "link --only %s" % only)
 
-    if _refuse_symlinked_targets([c["path"]]):
-        return 2
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     print("")
     print("DRY RUN, nothing is written:" if args.dry_run else "Writing:")
@@ -954,13 +1014,13 @@ def cmd_redeem(cfg, args):
     if perr:
         err("ERROR:", perr)
         return 1
-    got = _obtain(cfg, code, state, None)
+    got = _obtain(cfg, code, state, None, [cfg["consumers"][n]["path"] for n in cfg["union"]])
     if isinstance(got, int):
         return got
     resp, obtained_at, pending, key = got
     if _no_tokens(resp):
         return 1
-    tok = _token(resp, obtained_at)
+    tok = _token(resp, obtained_at, pending_file(cfg))
     if tok is None:
         return 1
     granted = set(split_scope(tok["scope"]))
@@ -992,8 +1052,6 @@ def cmd_redeem(cfg, args):
             " for all of them a new `link` + consent is needed.")
         return 3
 
-    if _refuse_symlinked_targets([cfg["consumers"][n]["path"] for n in cfg["union"] if n not in missing]):
-        return 2
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     print("")
     print("DRY RUN, nothing is written:" if args.dry_run else "Writing:")
@@ -1123,8 +1181,9 @@ def main(argv=None):
         err("CONFIG ERROR: %s" % e)
         return 1
     except UnsafePath as e:
-        err("ERROR: %s. Nothing more was written." % e)
-        return 2
+        # Only reachable when a path changed after the preflight (a race): not a clean refusal.
+        err("ERROR: %s. Nothing more was written; check `status`." % e)
+        return 1
 
 
 if __name__ == "__main__":

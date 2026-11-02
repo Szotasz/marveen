@@ -76,8 +76,9 @@ python3 scripts/google-consent.py link --only youtube
 python3 scripts/google-consent.py redeem --only youtube '<visszamásolt URL>'
 ```
 
-Kilépési kódok: `0` rendben, `1` hiba (konfighiba is), `2` hibás hívás vagy
-elutasított kód (lásd Biztonság), `3`
+Kilépési kódok: `0` rendben, `1` hiba (konfighiba, használhatatlan token-végpont vagy
+-válasz, és az ellenőrzés után megváltozott útvonal is), `2` hibás hívás vagy a beváltás
+előtti elutasítás (lásd Biztonság), `3`
 scope-hiány (külön jóváhagyásnál: nem pontosan a kért scope-ok), `4` megírva vagy
 ellenőrizve, de a token 7 napos "Testing" token.
 
@@ -88,10 +89,16 @@ ellenőrizve, de a token 7 napos "Testing" token.
   osztoznak egy tokenen.
 - **Mindenhol 0600.** A token-fájlok atomikusan íródnak (friss `mkstemp`
   ideiglenes fájl ugyanabban a mappában + átnevezés), 0600 jogosultsággal, a
-  umasktól függetlenül. Ha egy token-útvonal symlink, elutasítja (2-es kód, nincs
-  írás), nem követi és nem cseréli le; a hiányzó mappák
-  minden szintje 0700-zal jön létre. Minden meglévő fájlról előbb bájtra pontos másolat készül:
+  umasktól függetlenül. Ha egy token-útvonal symlink, elutasítja, nem követi és nem
+  cseréli le; a hiányzó mappák minden szintje 0700-zal jön létre. Minden meglévő fájlról előbb bájtra pontos másolat készül:
   `<fájl>.bak-<időbélyeg>` (0600, sosem íródik felül).
+- **Minden útvonal-ellenőrzés a beváltás előtt jön.** Mielőtt a kódot beváltja (vagy egy
+  parkolt választ újra felhasznál), minden útvonalat ellenőriz, amit a futás írna: a
+  fogyasztók fájljait, a parkoló fájlt és a PKCE-fájlt. Symlink, nem szabályos fájl, nem
+  mappa szülő-útvonal vagy nem írható mappa esetén 2-es kód, nincs beváltás és nincs írás, tehát az egyszer
+  használható kód nem vész el; a `link` ugyanígy ellenőrzi a PKCE-fájlját. Ha a
+  token-fájlok már megíródtak, a parkoló vagy a PKCE-fájl sikertelen takarítása csak
+  figyelmeztetés, ami megnevezi a fájlt, és a kilépési kód az írásé marad.
 - **A maradék fájlokban élő token van, és semmi nem takarítja őket.** A parkolt válasz
   (`<state_dir>/.google-consent[-NÉV]-pending.json`) egy teljes, sikeres írásig megmarad, a
   `.bak-<időbélyeg>` másolatok pedig örökre: a parkolt fájlt töröld, ha félbehagyod a

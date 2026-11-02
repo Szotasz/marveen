@@ -75,8 +75,9 @@ python3 scripts/google-consent.py link --only youtube
 python3 scripts/google-consent.py redeem --only youtube '<pasted URL>'
 ```
 
-Exit codes: `0` ok, `1` error (also config error), `2` usage or a refused code (see
-Safety), `3` scope shortfall
+Exit codes: `0` ok, `1` error (also config error, an unusable token endpoint or
+response, and a path that changed after the preflight), `2` usage or a refusal before
+the exchange (see Safety), `3` scope shortfall
 (separate consent: not exactly the requested scopes), `4` written/checked but the
 token is a 7-day "Testing" token.
 
@@ -87,10 +88,17 @@ token is a 7-day "Testing" token.
   letter only.
 - **0600 everywhere.** Token files are written atomically (a fresh `mkstemp` temp
   file in the same directory + rename) with mode 0600 regardless of the umask. A
-  token path that is a symlink is refused (exit 2, nothing written) instead of
-  being followed or replaced; every missing directory level is created
-  0700. Every existing file is first copied byte for byte to
-  `<file>.bak-<timestamp>` (0600, never overwritten).
+  token path that is a symlink is refused instead of being followed or replaced;
+  every missing directory level is created 0700. Every existing file is first copied
+  byte for byte to `<file>.bak-<timestamp>` (0600, never overwritten).
+- **Every path check comes before the exchange.** Before a code is redeemed (and before a
+  parked response is reused), every path the run would write is checked: each
+  consumer file, the parking file and the PKCE file. A symlink, something that is not
+  a regular file, a parent that is not a directory, or a directory that is not writable
+  is exit 2, nothing redeemed or
+  written, so the single-use code is not spent; `link` checks its PKCE file the same
+  way. Once the token files are written, a failed cleanup of the parking or PKCE file
+  is a warning that names the file, and the exit code stays what the write gave.
 - **Leftovers hold live tokens and are never pruned.** The parked response
   (`<state_dir>/.google-consent[-NAME]-pending.json`) stays until a complete write clears it, and
   the `.bak-<timestamp>` copies stay forever: delete the parked file if you abandon a run,
