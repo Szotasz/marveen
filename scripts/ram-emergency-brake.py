@@ -235,11 +235,16 @@ def read_psi_full(path="/proc/pressure/memory"):
 
 
 def _read(path, binary=False):
+    """Content or None. Always read as BYTES; text is decoded with errors="replace":
+    /proc content (a process name cut at 15 bytes, one set through prctl by any
+    user) need not be valid UTF-8, and one such process must never abort the
+    table walk or a kill."""
     try:
-        with open(path, "rb" if binary else "r") as f:
-            return f.read()
+        with open(path, "rb") as f:
+            data = f.read()
     except OSError:
         return None
+    return data if binary else data.decode("utf-8", "replace")
 
 
 def read_proc(proc_root, pid):
@@ -291,7 +296,9 @@ def read_start(proc_root, pid):
         return None
 
 
-def list_processes(proc_root="/proc"):
+def list_processes(proc_root="/proc", skipped=None):
+    """Process records. A record that cannot be parsed is skipped, never fatal for
+    the walk; its pid goes into `skipped` (if given) so the caller can name it."""
     out = []
     try:
         names = os.listdir(proc_root)
@@ -299,7 +306,12 @@ def list_processes(proc_root="/proc"):
         return out
     for n in names:
         if n.isdigit():
-            p = read_proc(proc_root, int(n))
+            try:
+                p = read_proc(proc_root, int(n))
+            except (ValueError, TypeError, IndexError):
+                if skipped is not None:
+                    skipped.append(int(n))
+                continue
             if p:
                 out.append(p)
     return out
@@ -497,8 +509,12 @@ class Target:
                 self.close()
 
     def check(self):
-        """'same', 'gone' or 'reused' (another start time / cgroup / uid, or now never-kill)."""
-        p = read_proc(self.proc_root, self.pid)
+        """'same', 'gone' or 'reused' (another start time / cgroup / uid, now never-kill,
+        or a record that can no longer be parsed: never signalled)."""
+        try:
+            p = read_proc(self.proc_root, self.pid)
+        except (ValueError, TypeError, IndexError):
+            return "reused"
         if p is None or p.get("start") is None:
             return "gone"
         if (p["start"] != self.start or p["cgroup"] != self.cgroup or p["uid"] != self.uid
@@ -1006,12 +1022,19 @@ class Brake:
                 self.no_candidate_logged = True
             return
         self.recent_kills = {p: t for p, t in self.recent_kills.items() if now - t < 60.0}
-        victim = select_victim(list_processes(self.proc_root), self.my_uid, self.protected,
-                               skip_pids=set(self.recent_kills), python_allow=self.python_allow)
+        skipped = []
+        victim = select_victim(list_processes(self.proc_root, skipped), self.my_uid,
+                               self.protected, skip_pids=set(self.recent_kills),
+                               python_allow=self.python_allow)
+        if skipped:  # an unreadable record may be the heavy job itself: never silent
+            self.log({"event": "proc_record_skipped", "pids": skipped[:20], "count": len(skipped)})
         if victim is None:
             if not self.no_candidate_logged:
-                self.log({"event": "no_candidate", "mem_avail_mb": avail})
-                self._record("nem volt leállítható nehéz folyamat")
+                self.log({"event": "no_candidate", "mem_avail_mb": avail,
+                          "skipped_records": len(skipped)})
+                self._record("nem volt leállítható nehéz folyamat"
+                             + (" (%d olvashatatlan folyamat-rekord kihagyva)" % len(skipped)
+                                if skipped else ""))
                 self.no_candidate_logged = True
             self.next_action_at = now + ACTION_COOLDOWN_SEC
             return

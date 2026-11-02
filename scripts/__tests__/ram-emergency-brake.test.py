@@ -709,6 +709,111 @@ def main():
         check("alert still sent (incident with no remedy)", len(alert.sent) == 1 and
               "nem volt" in alert.sent[0], alert.sent)
 
+    # ---------------- a non-UTF-8 /proc record never stops the brake ------------------------
+    # The kernel cuts a process name at 15 bytes and passes high bytes through, so an
+    # accented name cut mid-character (or one set through prctl, by any user) is not
+    # valid UTF-8 in status / stat. One such process must not abort the table walk.
+    bad_name = b"vesz-f\xc3\xa9k-ren\xc5"
+    with tempfile.TemporaryDirectory() as td:
+        root = os.path.join(td, "proc")
+        os.makedirs(root)
+        mkproc(root, 301, "ffmpeg", ["ffmpeg", "-i", "raw.mov", "out.mp4"], 1500)
+        mkproc(root, 501, "x", ["/usr/bin/python3", "x.py"], 900)
+        d = os.path.join(root, "501")
+        with open(os.path.join(d, "status"), "wb") as f:
+            f.write(b"Name:\t" + bad_name + b"\nUid:\t%d\t%d\t%d\t%d\nVmRSS:\t%d kB\n"
+                    % (UID, UID, UID, UID, 900 * 1024))
+        with open(os.path.join(d, "stat"), "wb") as f:
+            f.write(b"501 (" + bad_name + b") S " + b" ".join([b"0"] * 18 + [b"1501"] + [b"0"] * 5)
+                    + b"\n")
+        with open(os.path.join(d, "cgroup"), "wb") as f:
+            f.write(b"0::" + APP.encode() + b"tmux-spawn-\xff.scope\n")
+        try:
+            rec, err = rvf.read_proc(root, 501), None
+        except Exception as e:  # noqa: BLE001 - the point is that nothing escapes
+            rec, err = None, e
+        check("non-UTF-8 status/stat/cgroup: read_proc returns a record (no exception)",
+              err is None and rec is not None and "\ufffd" in rec["name"]
+              and rec["start"] == "1501", (err, rec))
+        alert = FakeAlert()
+        b, mem, psi, killed, clock = make_brake(td, root, alert=alert)
+        write_mem(mem, 300)
+        b.step(); clock.t += 3; b.step()
+        ev = [e["event"] for e in events(b)]
+        check("non-UTF-8 record on the host: the brake still stops the job (pid 301)",
+              killed == [[301]], killed)
+        check("... with no loop/act error logged", "loop_error" not in ev and "act_error" not in ev, ev)
+
+    # a record that still cannot be parsed is skipped, logged and named in the alert
+    with tempfile.TemporaryDirectory() as td:
+        root = os.path.join(td, "proc")
+        os.makedirs(root)
+        never_kill_table(root)
+        mkproc(root, 502, "ffmpeg", ["ffmpeg", "-i", "a"], 1500)
+        real_rp = rvf.read_proc
+
+        def flaky(proc_root, pid):
+            if pid == 502:
+                raise ValueError("simulated unparsable record")
+            return real_rp(proc_root, pid)
+        rvf.read_proc = flaky
+        try:
+            skipped = []
+            procs = rvf.list_processes(root, skipped)
+            check("unparsable record: list_processes skips it and names it, the walk goes on",
+                  skipped == [502] and 101 in [p["pid"] for p in procs], (skipped, len(procs)))
+            alert = FakeAlert()
+            b, mem, psi, killed, clock = make_brake(td, root, alert=alert)
+            write_mem(mem, 300)
+            b.step(); clock.t += 3; b.step()
+            ev = events(b)
+            sk = [e for e in ev if e["event"] == "proc_record_skipped"]
+            nc = [e for e in ev if e["event"] == "no_candidate"]
+            check("skipped record logged (proc_record_skipped, pid named)",
+                  sk and sk[0]["pids"] == [502] and sk[0]["count"] == 1, sk)
+            check("no_candidate carries the skipped count", nc and nc[0].get("skipped_records") == 1, nc)
+            check("the alert says a record was skipped (not just 'nothing to stop')",
+                  len(alert.sent) == 1 and "olvashatatlan" in alert.sent[0], alert.sent)
+            check("nothing killed, no loop error", killed == [] and
+                  "loop_error" not in [e["event"] for e in ev], killed)
+            # the pre-signal re-check: an unparsable record is never signalled
+            sent = []
+            t = rvf.Target(502, "1502", APP + "tmux-spawn-x.scope", proc_root=root, use_pidfd=False,
+                           kill=lambda pid, sig: sent.append((pid, sig)), my_uid=UID)
+            r = rvf.send_checked(t, signal.SIGTERM)
+            check("Target.check on an unparsable record -> 'reused', nothing sent",
+                  r == "reused" and sent == [], (r, sent))
+        finally:
+            rvf.read_proc = real_rp
+
+    # the same on the REAL /proc: a child whose name is cut mid-character
+    if hasattr(os, "pidfd_open"):
+        code = ("import ctypes,time; ctypes.CDLL(None).prctl(15, ctypes.c_char_p(%r), 0, 0, 0); "
+                "time.sleep(30)" % bad_name)
+        c = _sp_mod.Popen([sys.executable, "-c", code])
+        try:
+            time.sleep(0.3)
+            with open("/proc/%d/status" % c.pid, "rb") as f:
+                raw_ok = bad_name in f.read()
+            try:
+                rec, err = rvf.read_proc("/proc", c.pid), None
+            except Exception as e:  # noqa: BLE001
+                rec, err = None, e
+            procs_err = None
+            try:
+                rvf.list_processes("/proc")
+            except Exception as e:  # noqa: BLE001
+                procs_err = e
+            if raw_ok:
+                check("real /proc: a non-UTF-8 process name reads as a record",
+                      err is None and rec is not None and "\ufffd" in rec["name"], (err, rec))
+                check("real /proc: the table walk survives it", procs_err is None, procs_err)
+            else:
+                print("  SKIP real /proc non-UTF-8 name (prctl name not visible here)")
+        finally:
+            c.kill()
+            c.wait()
+
     # ---------------- dry run -------------------------------------------------------------
     with tempfile.TemporaryDirectory() as td:
         root = os.path.join(td, "proc")
