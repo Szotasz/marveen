@@ -169,7 +169,13 @@ ha a kártya MÉG abban a státuszban van. HTTP 409 (a kilépési kód 1, a stde
 és NE dolgozz rajta tovább.
 Kész-re (done) zárásnál add meg, mit ellenőriztél (a `bizonyitek.txt` a MIT MÉRTÉL, MI LETT AZ EREDMÉNY):
 `bash scripts/marveen-api.sh kanban-move KARTYA_ID done --expected-status in_progress --evidence-file bizonyitek.txt`.
-Ügynökként bizonyíték nélkül a kártya `testing`-be kerül, nem `done`-ba.
+Ügynökként bizonyíték nélkül a kártya `testing`-be kerül, nem `done`-ba: ilyenkor a válaszban
+`"ok": false` és `"evidence_required": true` áll (a kilépési kód ettől még 0), a kártya NINCS lezárva.
+Ha a `done` bizonyíték nélkül megtörtént (a mozgatás nem vitt ügynök-nevet, `--actor` nélkül), és a
+munka kezdete óta nincs eredmény-komment a kártyán, a válaszban `evidence_warning` jön: a mozgatás
+sikerült, de pótold a kommentet. Ha a `done` sikerült, és egy `waiting` kártyának ez volt az utolsó
+nyitott blokkolója, az automatikusan `planned`-be kerül: a válasz `unblocked` mezője listázza ezeket
+(rendszer-komment kerül rájuk, és ahol a kiosztási szabályok engedik, a felelősük üzenetet is kap).
 
 Kártya foglalása MIELŐTT dolgozni kezdesz rajta (két ágens ne vegye fel ugyanazt). Ez csak ott
 működik, ahol a kártya-foglalás be van kapcsolva (`KANBAN_CLAIM_LOCK=1`); kikapcsolva a `/claim`
