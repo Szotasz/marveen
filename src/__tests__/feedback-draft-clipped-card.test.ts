@@ -3,8 +3,9 @@
 // a measured `capture-pane -e -p` of a 24x80 sub-agent pane (Claude Code
 // 2.1.312, 2026-11-02); the main session showed the same shape and sat behind an
 // 'input-unreadable' hold for 3.5 hours. These tests pin that the dismisser
-// reads that clipped box, closes the card with Down alone, and that a hold which
-// never ends reaches the owner once.
+// reads that clipped box and closes it with a single "0" (Down leaves this card
+// up, measured 2026-11-02 on agent-enigma), answers the opt-out question with
+// Escape, and that a hold which never ends reaches the owner once.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -44,6 +45,7 @@ const CLIPPED = readFileSync(join(__dirname, 'fixtures/pane/feedback-draft-card-
 const plain = (colored: string) => colored.replace(/\x1b\[[0-9;]*m/g, '')
 const withTyped = (text: string) => CLIPPED.replace(/❯[\u00a0 ]?(\n?)$/, `❯ ${text}$1`)
 const SEP = '─'.repeat(80)
+const OPTOUT_PANE = ['some earlier transcript line', '', 'Turn off Claude-drafted feedback? 0 to turn off · Esc to keep', '', SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
 const CLEAR_PANE = ['some earlier transcript line', '', SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
 
 describe('feedbackDraftDismissPlan on a card that clips the input box', () => {
@@ -53,12 +55,12 @@ describe('feedbackDraftDismissPlan on a card that clips the input box', () => {
     expect(tail[2]).toMatch(/^❯/)
     expect(plain(CLIPPED)).not.toMatch(/bypass permissions/)
   })
-  it('an empty clipped box gets Down alone, on the main session and on a sub-agent', () => {
+  it('an empty clipped box gets a single "0", on the main session and on a sub-agent', () => {
     for (const main of [true, false]) {
-      expect(feedbackDraftDismissPlan(plain(CLIPPED), stripGhostSuggestion(CLIPPED), main)).toEqual({ act: 'keys', keys: ['Down'] })
+      expect(feedbackDraftDismissPlan(plain(CLIPPED), stripGhostSuggestion(CLIPPED), main)).toEqual({ act: 'keys', keys: ['0'] })
     }
   })
-  it('anything typed in a clipped box is left alone, a digit leftover too (rows below are unseen)', () => {
+  it('anything typed in a clipped box is left alone: a "0" that did not fire holds, it never becomes "00"', () => {
     for (const t of ['hello', '0', '000']) {
       const p = withTyped(t)
       expect(feedbackDraftDismissPlan(plain(p), stripGhostSuggestion(p), false)).toEqual({ act: 'hold', reason: 'input-occupied' })
@@ -66,7 +68,7 @@ describe('feedbackDraftDismissPlan on a card that clips the input box', () => {
   })
   it('a dim autosuggest in a clipped box reads as empty', () => {
     const p = withTyped('\x1b[2msuggested earlier prompt\x1b[0m')
-    expect(feedbackDraftDismissPlan(plain(p), stripGhostSuggestion(p), false)).toEqual({ act: 'keys', keys: ['Down'] })
+    expect(feedbackDraftDismissPlan(plain(p), stripGhostSuggestion(p), false)).toEqual({ act: 'keys', keys: ['0'] })
   })
   it('two captures of different frames read as unreadable, not as a box', () => {
     expect(feedbackDraftDismissPlan(plain(CLIPPED), stripGhostSuggestion(CLIPPED) + '\nextra row', true)).toEqual({ act: 'hold', reason: 'input-unreadable' })
@@ -80,10 +82,15 @@ describe('feedbackDraftDismissPlan on a card that clips the input box', () => {
 describe('dismissFeedbackDraftModalIfPresent on the clipped card', () => {
   beforeEach(() => { panes.queue = []; panes.last = ''; sent.length = 0; notify.calls.length = 0 })
 
-  it('the main session gets Down and no digit', async () => {
-    panes.queue = [CLIPPED, CLEAR_PANE]
+  it('the main session gets one "0", then Escape on the opt-out question that comes after the debounce', async () => {
+    panes.queue = [CLIPPED, CLIPPED, CLIPPED, OPTOUT_PANE, CLEAR_PANE]
     await dismissFeedbackDraftModalIfPresent(MAIN_CHANNELS_SESSION)
-    expect(sent).toEqual([['Down']])
+    expect(sent).toEqual([['0'], ['Escape']])
+  })
+  it('no opt-out question: the "0" alone, never a second digit or a blind Escape', async () => {
+    panes.queue = [CLIPPED, CLEAR_PANE]
+    await dismissFeedbackDraftModalIfPresent('agent-sub')
+    expect(sent).toEqual([['0']])
   })
 })
 

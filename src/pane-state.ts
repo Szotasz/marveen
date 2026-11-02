@@ -1395,11 +1395,12 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
 
 export type FeedbackDismissPlan =
   | { act: 'none' }
-  | { act: 'keys'; keys: Array<'C-u' | 'Down'> }
+  | { act: 'keys'; keys: Array<'C-u' | 'Down' | '0'> }
   | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
 
 /**
- * What the dismisser may type at a feedback-draft modal. NEVER A DIGIT. The card
+ * What the dismisser may type at a feedback-draft modal. No digit, with ONE
+ * measured exception (the clipped box, below). The card
  * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
  * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
  * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
@@ -1412,6 +1413,12 @@ export type FeedbackDismissPlan =
  * or all-digit input -- and NEVER on the main session, whose box may hold an
  * operator's reply; there even digits may be a numbered answer, so only an empty
  * prompt gets its Down. Anything else gets no keystroke.
+ * The exception: when the card clips the box (inputBoxClippedBelowCard), Down
+ * does NOT close it -- measured 2026-11-02 on agent-enigma, the card stayed up
+ * unchanged -- while "0" did, followed by the opt-out question. So a clipped,
+ * EMPTY box gets a single "0": an empty input is exactly where one digit makes
+ * the input exactly one digit, and a "0" that did not fire reads as typed text
+ * on the next attempt, which then holds (and escalates) instead of appending.
  * Two captures: `pane`, the plain one the detector reads (the card's own text
  * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
  * ghost-stripped one the input box is read from (otherwise an empty prompt
@@ -1422,11 +1429,11 @@ export function feedbackDraftDismissPlan(pane: string, inputView: string | null,
   if (inputView == null) return { act: 'hold', reason: 'input-unreadable' }
   const box = liveInputBox(inputView)
   if (box == null) {
-    // Rows below the capture are unseen, so the clipped box only ever gets the
-    // keystroke that clears nothing.
+    // Rows below the capture are unseen, so the clipped box is never cleared,
+    // and only an empty one gets its "0".
     const clipped = inputBoxClippedBelowCard(pane, inputView)
     if (clipped == null) return { act: 'hold', reason: 'input-unreadable' }
-    return typedInBox(clipped) === '' ? { act: 'keys', keys: ['Down'] } : { act: 'hold', reason: 'input-occupied' }
+    return typedInBox(clipped) === '' ? { act: 'keys', keys: ['0'] } : { act: 'hold', reason: 'input-occupied' }
   }
   const typed = typedInBox(box)
   if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }

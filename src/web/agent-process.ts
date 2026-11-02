@@ -3384,6 +3384,27 @@ function clearFeedbackHold(session: string, host: string | null): void {
   feedbackHolds.delete(`${host ?? 'local'}:${session}`)
 }
 
+// After a "0" the card fires on a 400 ms debounce, so the opt-out question can
+// come later than the 300 ms the Down path waits. And the card's Escape handler
+// ignores a press inside its settle window (shipped CLI), so the Escape waits
+// a little after the question is seen.
+const FEEDBACK_OPTOUT_POLL_MS = 200
+const FEEDBACK_OPTOUT_WAIT_MS = 3000
+const FEEDBACK_OPTOUT_ESC_SETTLE_MS = 800
+
+async function answerFeedbackOptOutAfterDigit(session: string, host: string | null): Promise<void> {
+  for (let waited = 0; waited < FEEDBACK_OPTOUT_WAIT_MS; waited += FEEDBACK_OPTOUT_POLL_MS) {
+    await delay(FEEDBACK_OPTOUT_POLL_MS)
+    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+    if (detectsFeedbackOptOutPrompt(pane)) {
+      await delay(FEEDBACK_OPTOUT_ESC_SETTLE_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
+      await delay(300)
+      return
+    }
+  }
+}
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
@@ -3402,13 +3423,17 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
       if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
       runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
     }
-    await delay(300)
-    const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-    if (detectsFeedbackOptOutPrompt(after)) {
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
+    if (plan.keys.includes('0')) {
+      await answerFeedbackOptOutAfterDigit(session, host)
+    } else {
       await delay(300)
+      const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+      if (detectsFeedbackOptOutPrompt(after)) {
+        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
+        await delay(300)
+      }
     }
-    logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+    logger.info({ session, keys: plan.keys }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
   }
