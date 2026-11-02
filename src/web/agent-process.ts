@@ -3350,18 +3350,54 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
 // re-rendered the cleared input.
 const FEEDBACK_KEY_GAP_MS = 200
 
+// A hold sends no keystroke, so nothing on our side ever ends it: measured
+// 2026-11-02, the main session's card stayed up 3.5 hours and every scheduled
+// round in that window was skipped, with only an info line per attempt. After
+// this long the owner gets the manual fix, once per episode. Same idea as the
+// MAIN_PARKED_* ladder, but timed rather than counted: the dismisser runs on
+// every injector's refusal branch, so its call rate is not a clock.
+export const FEEDBACK_HOLD_OWNER_AFTER_MS = 10 * 60_000
+const feedbackHolds = new Map<string, { since: number; notified: boolean }>()
+
+// Pure, exported for tests.
+export function decideFeedbackHoldEscalation(sinceMs: number, nowMs: number, notified: boolean): boolean {
+  return !notified && nowMs - sinceMs >= FEEDBACK_HOLD_OWNER_AFTER_MS
+}
+
+function noteFeedbackHold(session: string, host: string | null, reason: string, nowMs: number): void {
+  const key = `${host ?? 'local'}:${session}`
+  const rec = feedbackHolds.get(key) ?? { since: nowMs, notified: false }
+  feedbackHolds.set(key, rec)
+  if (!decideFeedbackHoldEscalation(rec.since, nowMs, rec.notified)) return
+  rec.notified = true
+  const minutes = Math.round((nowMs - rec.since) / 60000)
+  logger.warn({ session, host, reason, minutes }, 'Feedback-draft modal held past the escalation window -- owner notified with the manual fix')
+  notifyChannel(
+    `🚨 A(z) ${session} pane-jén ~${minutes} perce áll a Claude Code visszajelzés-vázlat kártyája (${reason}), ` +
+    `és amíg ott van, az ütemező és az üzenet-kézbesítés nem jut be. A dashboard nem nyúl hozzá, mert nem biztonságos. ` +
+    `KÉZI FELOLDÁS: tmux attach -t ${session}; ha a prompt üres, 0 (bezárja a kártyát), ` +
+    `a "Turn off Claude-drafted feedback?" kérdésre Esc; kilépés: Ctrl-B d.`,
+  ).catch(() => { /* notify is best-effort */ })
+}
+
+function clearFeedbackHold(session: string, host: string | null): void {
+  feedbackHolds.delete(`${host ?? 'local'}:${session}`)
+}
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-    if (!detectsFeedbackDraftModal(pane)) return
+    if (!detectsFeedbackDraftModal(pane)) { clearFeedbackHold(session, host); return }
     // The input box is read from the ghost-stripped view: a dim autosuggest in an
     // empty box must not read as typed text. Detection stays on the plain capture.
     const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
-    if (plan.act === 'none') return
+    if (plan.act === 'none') { clearFeedbackHold(session, host); return }
     if (plan.act === 'hold') {
       logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      noteFeedbackHold(session, host, plan.reason, Date.now())
       return
     }
+    clearFeedbackHold(session, host)
     for (const [i, key] of plan.keys.entries()) {
       if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
       runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })

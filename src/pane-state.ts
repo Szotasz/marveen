@@ -1419,15 +1419,56 @@ export type FeedbackDismissPlan =
  */
 export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
   if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
-  const box = inputView == null ? null : liveInputBox(inputView)
-  if (box == null) return { act: 'hold', reason: 'input-unreadable' }
-  // Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
-  // indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
-  // a typed "2 2" does not.
-  const typed = box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+  if (inputView == null) return { act: 'hold', reason: 'input-unreadable' }
+  const box = liveInputBox(inputView)
+  if (box == null) {
+    // Rows below the capture are unseen, so the clipped box only ever gets the
+    // keystroke that clears nothing.
+    const clipped = inputBoxClippedBelowCard(pane, inputView)
+    if (clipped == null) return { act: 'hold', reason: 'input-unreadable' }
+    return typedInBox(clipped) === '' ? { act: 'keys', keys: ['Down'] } : { act: 'hold', reason: 'input-occupied' }
+  }
+  const typed = typedInBox(box)
   if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
   if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
   return { act: 'hold', reason: 'input-occupied' }
+}
+
+// Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
+// indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
+// a typed "2 2" does not.
+function typedInBox(box: string): string {
+  return box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+}
+
+// The card can make the frame taller than the pane. Measured 2026-11-02 on two
+// 24x80 panes (the main session and a sub-agent, Claude Code 2.1.312): the
+// capture ENDS at the prompt row, the box's bottom rule and the idle footer are
+// cut off, so liveInputBox finds no footer and a single rule and reads null.
+// The main session sat behind that 'input-unreadable' hold for 3.5 hours.
+// Read the box from the last rule below the card's option line to the end of
+// the capture, and only when nothing but the box follows that rule. `pane` and
+// `inputView` are two captures of the same frame (the ghost strip removes
+// characters, never rows); a row-count mismatch means the frame moved between
+// them and reads null.
+function inputBoxClippedBelowCard(pane: string, inputView: string): string | null {
+  const plain = pane.split('\n')
+  const view = inputView.split('\n')
+  if (plain.length !== view.length) return null
+  let optionsAt = -1
+  for (let i = plain.length - 1; i >= 0; i--) {
+    if (FEEDBACK_DRAFT_OPTIONS_RX.test(plain[i])) { optionsAt = i; break }
+  }
+  if (optionsAt < 0) return null
+  let rule = -1
+  for (let i = view.length - 1; i > optionsAt; i--) {
+    if (BOX_SEP_RX.test(view[i])) { rule = i; break }
+  }
+  if (rule < 0) return null
+  const inner = view.slice(rule + 1)
+  const firstNonEmpty = inner.find((row) => row.trim().length > 0)
+  if (firstNonEmpty == null || !firstNonEmpty.startsWith('❯')) return null
+  return inner.join('\n')
 }
 
 export interface DetectPaneStateOptions {
