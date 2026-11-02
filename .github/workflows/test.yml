@@ -107,6 +107,10 @@ jobs:
       # throwaway dirs); the stamp-gate test never reaches the claude stub
       # above because the briefing script takes its binary from CLAUDE_BIN.
       - run: bash scripts/__tests__/keepalive-probe-install.test.sh
+      # The PATH of the periodic helper plists carries the dir tmux was found in.
+      # Both hermetic: throwaway HOME, uname/launchctl stubs, nothing is loaded.
+      - run: bash scripts/__tests__/helper-plist-path.test.sh
+      - run: bash scripts/__tests__/helper-path-edge.test.sh
       - run: bash scripts/__tests__/morning-stamp-gate.test.sh
       - run: bash scripts/__tests__/morning-briefing-api-key-only.test.sh
       - run: bash scripts/__tests__/morning-timer-park.test.sh
