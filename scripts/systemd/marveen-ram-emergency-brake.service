@@ -3,7 +3,7 @@
 # RAM emergency brake (scripts/ram-emergency-brake.py), Linux only, opt-in:
 # polls /proc/meminfo every 3 s; under 600 MB MemAvailable for 2 samples it
 # unloads ollama models, then stops the largest allowlisted heavy job (a
-# heavy-job-*.scope first, then ffmpeg, headless browser, node test runner /
+# heavy-job-*.scope of scripts/heavy-job-gate.sh first, then ffmpeg, headless browser, node test runner /
 # build / render, and python scripts listed in store/ram-emergency-brake.json).
 # Never touches agent sessions, tmux, dashboard, channels, bun, sshd. One owner
 # alert per incident over the Telegram Bot API (scripts/lib/send-telegram.sh);
