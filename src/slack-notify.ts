@@ -122,6 +122,32 @@ export function agentSlackStateDir(agent: string): string {
   return join(PROJECT_ROOT, 'agents', agent, '.claude', 'channels', 'slack')
 }
 
+/**
+ * APPROVALSLACK1030 (Samu 66026, Dani 66016 (b)): before an owner message goes straight to a raw DM id (no
+ * conversations.open: the bot lacks im:write, measured by Marveen 66022), is that channel really the owner's DM with
+ * our bot? Read with im:history: among the last 50 messages, no human other than the owner wrote (our bot aside).
+ * 'foreign': someone else wrote there, do not post. 'unknown': the check could not run (no token, no owner id, an API
+ * error): the caller posts anyway, the id's source being protected (loosens + db-write-gate). Never throws.
+ */
+export async function ownerDmVerdict(channel: string, ownerUserId: string | null, deps: Partial<SlackDeps> = {}): Promise<'ok' | 'foreign' | 'unknown'> {
+  const d: SlackDeps = { ...defaultDeps, ...deps }
+  try {
+    if (!/^D[A-Z0-9]{6,}$/.test(channel) || !ownerUserId) return 'unknown'
+    const token = tokenFrom(mainSlackStateDir(d.readFile), d)
+    if (!token) return 'unknown'
+    const auth = await api(d, token, 'auth.test', {}) as { ok: boolean; user_id?: string }
+    if (!auth.ok || !auth.user_id) return 'unknown'
+    const h = await api(d, token, 'conversations.history', { channel, limit: 50 }) as { ok: boolean; messages?: Array<{ user?: unknown; bot_id?: unknown }> }
+    if (!h.ok || !Array.isArray(h.messages)) return 'unknown'
+    const humans = new Set(h.messages.filter((m) => typeof m.user === 'string' && !m.bot_id).map((m) => m.user as string))
+    humans.delete(auth.user_id)
+    humans.delete(ownerUserId)
+    return humans.size === 0 ? 'ok' : 'foreign'
+  } catch {
+    return 'unknown'
+  }
+}
+
 function tokenFrom(dir: string, deps: SlackDeps): string | null {
   const raw = deps.readFile(join(dir, '.env'))
   if (!raw) return null

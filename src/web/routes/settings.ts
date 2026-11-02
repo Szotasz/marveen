@@ -7,6 +7,7 @@ import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { noticeTargetDrift } from '../../notify.js'
 
 // A change the registry marks as loosening a security control (SettingDefinition.loosens) needs the
 // owner. The shared fleet token is held by every agent, so it cannot be told apart from the agent
@@ -99,6 +100,8 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
 
       logConfigChange(key, oldValue, validation.value!, resolvedActor)
       logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
+      // APPROVALSLACK1030: where the owner's requests go changed -> the OLD target is told (Samu 66026).
+      if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(validation.value), { fallbackOld: String(oldValue) })
 
       // The rotation switch also wires its heartbeat, in both directions: on
       // creates or re-enables it (otherwise the switch is inert, measured
@@ -159,6 +162,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       if (result.removed) {
         logConfigChange(key, oldValue, now.value, actor)
         logger.info({ key, oldValue, newValue: now.value, source: now.source }, 'Setting override removed')
+        if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(now.value), { fallbackOld: String(oldValue) })
         if (key === 'CLAUDE_ROTATION_ENABLED') syncRotationAfterChange()
       }
       json(res, { ok: true, key, removed: result.removed, value: now.value, source: now.source, requiresRestart: def.requiresRestart })
