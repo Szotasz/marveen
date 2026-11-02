@@ -20,21 +20,23 @@ HELPER_PATH_BASE="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 # searched first, then ~/.local/bin (a non-interactive SSH install does not have it
 # on PATH). A tmux in a listed dir, no tmux, a relative hit, or a dir that cannot
 # sit in a PATH value all give the fixed list, byte for byte; the last of those says
-# so on stderr (HELPER-PATH-ELVETVE).
+# so on stderr (HELPER-PATH-ELVETVE); a control character (newline, tab, CR) counts.
 helper_launchd_path() {
   _hlp_tmux="${1:-}"
   if [ -z "$_hlp_tmux" ]; then
     _hlp_tmux="$(PATH="${PATH:+$PATH:}${HOME:-}/.local/bin" command -v tmux 2>/dev/null || true)"
+    # A lookup may answer with a file that is not executable, or a dir (bash 3.2 may; not measured).
+    if [ ! -x "$_hlp_tmux" ] || [ -d "$_hlp_tmux" ]; then
+      _hlp_tmux=""
+    fi
   fi
   case "$_hlp_tmux" in
     /*) ;;
     *) printf '%s\n' "$HELPER_PATH_BASE"; return 0 ;;
   esac
   _hlp_dir="${_hlp_tmux%/*}"
-  _hlp_nl='
-'
   case "$_hlp_dir" in
-    ""|*:*|*"<"*|*">"*|*"&"*|*'"'*|*"'"*|*"$_hlp_nl"*)
+    ""|*:*|*"<"*|*">"*|*"&"*|*'"'*|*"'"*|*[[:cntrl:]]*)
       echo "HELPER-PATH-ELVETVE: the dir of $_hlp_tmux cannot go into a PATH value; the fixed list stays" >&2
       printf '%s\n' "$HELPER_PATH_BASE"
       return 0 ;;
