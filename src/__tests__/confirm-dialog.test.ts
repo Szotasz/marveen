@@ -507,7 +507,8 @@ describe('the Vault deletes use it', () => {
     expect(src, 'handler or its request not found').not.toBe('')
     expect(src).toContain('await confirmDialog({')
     expect(src).toContain(`title: t('${key}_title')`)
-    expect(src).toContain(`message: t('${key}', { name: `)
+    expect(src).toContain(`t('${key}', { name: `)
+    expect(src).toMatch(/\bmessage(: t\(|,)/)
     expect(src).toContain(`okLabel: t('${key}_ok')`)
     expect(src).toContain('danger: true')
     expect(src).not.toMatch(/(^|[^.\w])confirm\(/)
@@ -521,6 +522,20 @@ describe('the Vault deletes use it', () => {
     expect(ask).toBeGreaterThan(-1)
     expect(guard).toBeGreaterThan(ask)
     expect(body.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the SSH key question names the servers that lose the key, and both lists reload after it', () => {
+    const src = handler("tbody.querySelectorAll('.ssh-key-delete-btn').forEach", 'await loadSshServers()')
+    expect(src, 'handler or its server reload not found').not.toBe('')
+    expect(src, 'the server reload must be in this handler').not.toContain('function _refreshKeySelects')
+    expect(src).toContain('_sshServers')
+    expect(src).toContain("if (servers.length) message += '\\n\\n' + t('vault.ssh.confirm.key_delete_servers', { servers: ")
+    expect(src).toContain('if (!res.ok) showToast(')
+    expect(src).toContain('await loadSshKeys()')
+    for (const lang of [HU, EN]) {
+      const line = lang.split('\n').find(l => l.includes("'vault.ssh.confirm.key_delete_servers':")) || ''
+      expect(line).toContain('{servers}')
+    }
   })
 
   it('the hard-coded questions and the "Törlés sikertelen" toast are gone', () => {

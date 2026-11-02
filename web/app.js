@@ -10146,15 +10146,23 @@ function renderSshKeys() {
   tbody.querySelectorAll('.ssh-key-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const key = _sshKeys.find(k => k.id === btn.dataset.id)
+      // Deleting a key unassigns it server-side, so name the servers that lose it.
+      const servers = _sshServers
+        .filter(s => (s.sshKeyId || s.assignedKeyId || s.vaultKeyId) === btn.dataset.id)
+        .map(s => `"${s.name || s.id}"`)
+      let message = t('vault.ssh.confirm.key_delete', { name: (key && key.label) || btn.dataset.id })
+      if (servers.length) message += '\n\n' + t('vault.ssh.confirm.key_delete_servers', { servers: servers.join(', ') })
       const confirmed = await confirmDialog({
         title: t('vault.ssh.confirm.key_delete_title'),
-        message: t('vault.ssh.confirm.key_delete', { name: (key && key.label) || btn.dataset.id }),
+        message,
         okLabel: t('vault.ssh.confirm.key_delete_ok'),
         danger: true,
       })
       if (!confirmed) return
-      await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      const res = await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      if (!res.ok) showToast(t('vault.toast.delete_error'))
       await loadSshKeys()
+      await loadSshServers()
     })
   })
 }
