@@ -222,7 +222,7 @@ describe('update.sh finalizer: a warning is never reported as success (ANETTUPDA
     expect(r.code).toBe(0)
     expect(r.res.status).toBe('warning')
     expect(r.res.message).toContain('settings.json')
-    expect(r.notified).toContain('kezi figyelem')
+    expect(r.notified).toContain('kézi figyelem')
     expect(r.notified).toContain('settings.json')
   })
 
