@@ -33,3 +33,20 @@ describe('the Vault card edit form fits the card', () => {
     expect(markup).not.toContain('margin-bottom')
   })
 })
+
+describe('.input has a base look', () => {
+  it('a .input outside a styled container gets the theme colours, not the browser white box', () => {
+    const at = CSS.indexOf('\n.input {')
+    const base = at < 0 ? '' : CSS.slice(at, CSS.indexOf('}', at))
+    expect(base, 'base .input rule not found').not.toBe('')
+    for (const decl of ['background: var(--bg-input)', 'border: 1px solid var(--border)', 'color: var(--text)', 'font-family: inherit']) {
+      expect(base).toContain(decl)
+    }
+    expect(base, 'no width: the base rule must not move any layout').not.toMatch(/(^|[\s;{])(width|min-width|max-width)\s*:/)
+  })
+
+  it('comes before the .form-group field rule, which stays more specific', () => {
+    expect(CSS.indexOf('\n.input {')).toBeGreaterThan(-1)
+    expect(CSS.indexOf('\n.input {')).toBeLessThan(CSS.indexOf('\n.form-group input,'))
+  })
+})

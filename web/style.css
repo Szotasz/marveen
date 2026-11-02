@@ -2760,6 +2760,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .hint { font-weight: 400; color: var(--text-muted); }
 
+/* Base look for a .input field outside a styled container: without it the field
+   was the browser's unstyled white box (the Vault add forms, the Background
+   tasks and Ideas filters, the idea detail selects). No width, so nothing moves;
+   the container rules (.form-group input, .notes-form .input, ...) are more
+   specific and keep their own look. */
+.input {
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+.input:focus { border-color: var(--accent); }
+
 .form-group input,
 .form-group textarea,
 .form-group select {
