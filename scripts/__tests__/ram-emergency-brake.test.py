@@ -24,6 +24,7 @@ if not sys.platform.startswith("linux"):
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess as _sp_mod
@@ -105,7 +106,26 @@ def never_kill_table(root):
     # a claude binary launched with a weird comm is still caught via argv
     mkproc(root, 110, "MainThread", ["/home/user/.local/bin/claude", "-p", "x"], 3500)
     mkproc(root, 111, "ollama", ["/usr/local/bin/ollama", "runner"], 3000)
-    return [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111]
+    # the heavy-job gate (scripts/heavy-job-gate.py): the gate process itself, and its
+    # memory-cap probe child, which runs INSIDE a heavy-job-probe-*.scope
+    mkproc(root, 112, "python3", ["python3", "/opt/app/scripts/heavy-job-gate.py", "--label", "x",
+                                  "--", "npx", "vitest", "run"], 1800)
+    mkproc(root, 113, "python3", ["/usr/bin/python3", "/opt/app/scripts/heavy-job-gate.py",
+                                  "--probe-memory-max"], 1700,
+           cgroup=APP + "heavy-job-probe-4242-1700000000000000000.scope")
+    return [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113]
+
+
+def gate_scope_prefix():
+    """SCOPE_PREFIX as scripts/heavy-job-gate.py defines it (read from the source, the
+    gate is not imported), or None when the file or the line is missing."""
+    try:
+        with open(os.path.join(ROOT, "scripts", "heavy-job-gate.py")) as f:
+            src = f.read()
+    except OSError:
+        return None
+    m = re.search(r'^SCOPE_PREFIX = "([^"]+)"', src, re.M)
+    return m.group(1) if m else None
 
 
 def not_allowlisted_table(root):
@@ -554,6 +574,8 @@ def main():
                   rvf.never_kill_reason(p) is not None, p)
         check("only never-kill processes -> no victim",
               rvf.select_victim(procs, UID) is None)
+        check("the brake's scope mark is heavy-job-gate.py's SCOPE_PREFIX",
+              gate_scope_prefix() == rvf.SCOPE_MARK, (gate_scope_prefix(), rvf.SCOPE_MARK))
         nal = not_allowlisted_table(root)
         procs = rvf.list_processes(root)
         v = rvf.select_victim(procs, UID)

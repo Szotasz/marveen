@@ -11,7 +11,7 @@ MemAvailable is already low) an INCIDENT starts, and the brake acts in order:
   2. if still critical: SIGTERM, then SIGKILL after TERM_GRACE_SEC, the
      largest-RSS process from a STRICT allowlist of heavy, restartable jobs.
      Anything inside a heavy-job-*.scope (a job admitted by
-     scripts/heavy-job.sh) is preferred, and every process of that job the
+     scripts/heavy-job-gate.sh, see docs/heavy-job-gate.md) is preferred, and every process of that job the
      brake can identify is a target; each one is signalled on its own (the
      job is never stopped through its cgroup). A process the brake cannot
      identify (unreadable /proc entry) is never a target.
@@ -103,7 +103,7 @@ ALERT_MAX_ATTEMPTS = 3
 ALERT_SEND_TIMEOUT_SEC = 60.0  # a send still running after this counts as a failed attempt
 HEARTBEAT_SEC = 3600.0
 
-SCOPE_MARK = "heavy-job-"
+SCOPE_MARK = "heavy-job-"   # SCOPE_PREFIX of scripts/heavy-job-gate.py (job and probe scopes)
 
 # ---- never-kill (wins over everything) --------------------------------------
 NEVER_COMM = {
@@ -120,7 +120,7 @@ NEVER_ARGV_SUBSTR = (
     "marveen-channels",
     "marveen-dashboard",
     "ram-emergency-brake.py",          # this brake
-    "heavy-job.py",                    # the gate process (its job is killable)
+    "heavy-job-gate.py",               # the gate process and its scope probe (the job is killable)
     "/usr/lib/systemd/",
 )
 NEVER_CGROUP_SUBSTR = (
