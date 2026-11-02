@@ -61,7 +61,7 @@ A generikus secret-vault mellett a dashboard egy dedikált **SSH Vault** modult 
 
 - `vault_ssh_servers`: nyilvántartott szerverek (host, user, opcionális `ssh_key_id` hivatkozás).
 - `vault_ssh_keys`: megosztott SSH kulcs-készlet (label, username, publikus kulcs, fingerprint, kulcstípus). Egy kulcs **több szerverhez** is hozzárendelhető (many-servers-to-one-key modell).
-- A privát kulcsok a generikus `vault.ts` titkosított tárolóban élnek (`ssh-key-<id>` prefixű bejegyzésként), de a generikus `/api/vault` listázásból ki vannak szűrve -- kizárólag a Kulcstároló saját endpointján (`/api/vault/ssh-keys`) érhetők el, hogy ne duplikálódjanak a UI-n.
+- A privát kulcsok a generikus `vault.ts` titkosított tárolóban élnek (`ssh-key-<id>` prefixű bejegyzésként), de a generikus `/api/vault` listázásból ki vannak szűrve -- kizárólag az SSH-kulcstároló saját endpointján (`/api/vault/ssh-keys`) érhetők el, hogy ne duplikálódjanak a UI-n.
 
 ### API végpontok
 
@@ -74,4 +74,4 @@ A generikus secret-vault mellett a dashboard egy dedikált **SSH Vault** modult 
 
 ### UI
 
-A dashboard Vault oldalán külön szekció (Kulcstároló) mutatja a kulcs-készletet (lista/másolás/törlés), és a SSH Szerverek szekció (kártya- és táblázat-nézet) a szerverekhez rendelt kulcsot egy legördülőben lehet váltani. Új szerver felvételekor egy önálló, csak-kulcsválasztós info-modal mutatja a telepítési parancsokat -- szerver-kiválasztás nélkül, mivel az új szerver még nincs felvéve.
+A dashboard Vault oldalán külön szekció (SSH-kulcstároló) mutatja a kulcs-készletet (lista/másolás/törlés), és a SSH Szerverek szekció (kártya- és táblázat-nézet) a szerverekhez rendelt kulcsot egy legördülőben lehet váltani. Új szerver felvételekor egy önálló, csak-kulcsválasztós info-modal mutatja a telepítési parancsokat -- szerver-kiválasztás nélkül, mivel az új szerver még nincs felvéve.

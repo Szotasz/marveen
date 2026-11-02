@@ -10119,10 +10119,10 @@ function renderSshKeys() {
       <td class="ssh-table-mono" style="font-size:11px">${k.fingerprint ? escapeHtml(k.fingerprint.slice(0,28)) + '…' : ''}</td>
       <td class="ssh-table-mono">${k.createdAt ? new Date(k.createdAt).toLocaleDateString('hu-HU') : ''}</td>
       <td><div class="ssh-table-actions">
-        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="Publikus kulcs másolása">
+        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="${escapeHtml(t('vault.ssh.keys.copy_title'))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
-        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="Törlés">
+        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="${escapeHtml(t('common.btn.delete'))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
         </button>
       </div></td>
@@ -10168,7 +10168,7 @@ function renderSshKeys() {
 }
 
 function _refreshKeySelects() {
-  const opts = ['<option value="">-- Nincs kulcs --</option>',
+  const opts = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
   ].join('')
   document.querySelectorAll('.ssh-key-select').forEach(sel => {
@@ -10179,7 +10179,7 @@ function _refreshKeySelects() {
 }
 
 function _sshKeyBadge(status) {
-  const labels = { ok: 'OK', missing: 'Hiányzó', expired: 'Lejárt' }
+  const labels = { ok: t('vault.ssh.status.ok'), missing: t('vault.ssh.status.missing'), expired: t('vault.ssh.status.expired') }
   const icons = {
     ok: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
     missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
@@ -10190,17 +10190,17 @@ function _sshKeyBadge(status) {
 
 function _sshKeyAssignSelect(s) {
   const currentKeyId = s.sshKeyId || s.assignedKeyId || s.vaultKeyId || ''
-  const opts = ['<option value="">-- Nincs kulcs --</option>',
+  const opts = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => {
       const sel = (currentKeyId && currentKeyId === k.id) ? ' selected' : ''
       return `<option value="${escapeHtml(k.id)}"${sel}>${escapeHtml(k.label || k.id)}</option>`
     })
   ].join('')
-  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="Kulcs hozzárendelése">${opts}</select>`
+  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('vault.ssh.assign_title'))}">${opts}</select>`
 }
 
 function _sshInfoBtn(s) {
-  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="Telepítési útmutató">i</button>`
+  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="${escapeHtml(t('vault.ssh.install_title'))}">i</button>`
 }
 
 function renderSshServers() {
@@ -10252,10 +10252,10 @@ function renderSshServers() {
         <div style="display:flex;align-items:center;gap:4px;width:100%">
           ${_sshKeyAssignSelect(s)}
           <div class="ssh-card-actions">
-            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.edit'))}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
-            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.delete'))}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
             </button>
           </div>
@@ -10274,10 +10274,10 @@ function renderSshServers() {
       <td>${_sshKeyAssignSelect(s)}</td>
       <td style="color:var(--text-muted)">${escapeHtml(s.desc || '')}</td>
       <td><div class="ssh-table-actions">
-        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.edit'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
-        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.delete'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
         </button>
       </div></td>
@@ -10320,7 +10320,7 @@ function renderSshServers() {
       if (keySel) keySel.value = server.sshKeyId || server.assignedKeyId || server.vaultKeyId || ''
 
       const titleEl = document.getElementById('sshAddPanelTitle')
-      if (titleEl) titleEl.textContent = `Szerver szerkesztése – ${server.name}`
+      if (titleEl) titleEl.textContent = t('vault.ssh.form.edit_title', { name: server.name })
 
       const panel = document.getElementById('sshAddPanel')
       panel.hidden = false
@@ -10391,7 +10391,7 @@ function openSshKeygenModal(callback) {
       })
       const data = await res.json()
       if (!res.ok) {
-        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || 'Generálás sikertelen'))
+        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || t('vault.ssh.keygen.failed')))
         resetKeygenForm()
         if (data.code === 'label_taken') document.getElementById('sshKeygenLabelInput').focus()
         return
@@ -10404,14 +10404,14 @@ function openSshKeygenModal(callback) {
 
       await loadSshKeys()
       if (_sshKeygenCallback) _sshKeygenCallback(data.key || data)
-    } catch { showToast('Hálózati hiba'); resetKeygenForm() }
+    } catch { showToast(t('vault.toast.network_error')); resetKeygenForm() }
   })
 
   copyBtn?.addEventListener('click', () => {
     const val = document.getElementById('sshKeygenPubkeyBox').value
     navigator.clipboard.writeText(val).then(() => {
-      copyBtn.textContent = 'Másolva!'
-      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Másolás' }, 2000)
+      copyBtn.textContent = t('common.copied')
+      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + escapeHtml(t('common.copy')) }, 2000)
     }).catch(() => {})
   })
 
@@ -10458,9 +10458,9 @@ async function _sshInfoLoadKey(keyId, serverUser) {
 
   const cmd2text = pubkey
     ? `echo "${pubkey}" >> ~/.ssh/authorized_keys`
-    : `echo "<publikus kulcs ide>" >> ~/.ssh/authorized_keys`
+    : `echo "${t('vault.ssh.install.pubkey_here')}" >> ~/.ssh/authorized_keys`
   document.getElementById('sshInfoCmd2').textContent = cmd2text
-  document.getElementById('sshInfoPubkey').textContent = pubkey || '(kulcs nem elérhető)'
+  document.getElementById('sshInfoPubkey').textContent = pubkey || t('vault.ssh.install.pubkey_missing')
 
   const overlay = document.getElementById('sshInfoOverlay')
   overlay.querySelectorAll('.ssh-code-copy').forEach(btn => {
@@ -10483,7 +10483,7 @@ function _sshInfoLoadServer(serverId) {
   document.getElementById('sshInfoServerName').textContent = server ? server.name : (serverId || '')
 
   const keySel = document.getElementById('sshInfoKeySelect')
-  keySel.innerHTML = ['<option value="">-- Nincs kulcs --</option>',
+  keySel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
   ].join('')
   const assignedKeyId = (server && (server.sshKeyId || server.assignedKeyId || server.vaultKeyId)) || ''
@@ -10499,11 +10499,11 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     // Key-only mode: hide server selector, reset server context
     serverSection.hidden = true
     _sshInfoServerId = null
-    document.getElementById('sshInfoServerName').textContent = 'Új szerver'
+    document.getElementById('sshInfoServerName').textContent = t('vault.ssh.install.new_server')
 
     // Populate key selector without a pre-selected key
     const keySel = document.getElementById('sshInfoKeySelect')
-    keySel.innerHTML = ['<option value="">-- Válassz kulcsot --</option>',
+    keySel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.choose_key'))}</option>`,
       ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
     ].join('')
     // Pre-select whatever is chosen in the form's key dropdown
@@ -10519,7 +10519,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     // Normal mode: show server selector, pick first server by default
     serverSection.hidden = false
     const serverSel = document.getElementById('sshInfoServerSelect')
-    serverSel.innerHTML = ['<option value="">-- Válassz szervert --</option>',
+    serverSel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.choose_server'))}</option>`,
       ..._sshServers.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.host)})</option>`)
     ].join('')
 
@@ -10586,7 +10586,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
   function resetSshAddForm() {
     _sshEditingId = null
     const titleEl = document.getElementById('sshAddPanelTitle')
-    if (titleEl) titleEl.textContent = 'Szerver hozzáadása'
+    if (titleEl) titleEl.textContent = t('vault.ssh.form.add_title')
     document.getElementById('sshNameInput').value = ''
     document.getElementById('sshHostInput').value = ''
     document.getElementById('sshUserInput').value = ''
@@ -10638,13 +10638,13 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        showToast(err.error || 'Hiba a mentéskor'); return
+        showToast(err.error || t('common.error_save')); return
       }
       resetSshAddForm()
       panel.hidden = true
       await loadSshServers()
-      showToast(isEdit ? 'Szerver frissítve' : 'Szerver hozzáadva')
-    } catch { showToast('Hálózati hiba') }
+      showToast(t(isEdit ? 'vault.ssh.toast.server_updated' : 'vault.ssh.toast.server_added'))
+    } catch { showToast(t('vault.toast.network_error')) }
   })
 
   cardViewBtn?.addEventListener('click', () => {
@@ -10663,7 +10663,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     tableView.hidden = false
   })
 
-  // Kulcstároló "Új kulcs generálása" button
+  // SSH key store "New key" button
   document.getElementById('sshKeyNewBtn')?.addEventListener('click', () => {
     openSshKeygenModal()
   })

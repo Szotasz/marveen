@@ -3,6 +3,7 @@
 // English. These tests pin that its texts go through lang keys, in both languages.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { parseFragment } from 'parse5'
 
 const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
 const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
@@ -74,5 +75,83 @@ describe('the Vault page: the API keys part', () => {
       expect(value(HU, key), `hu ${key}`).not.toBeNull()
       expect(value(EN, key), `en ${key}`).not.toBeNull()
     }
+  })
+})
+
+describe('the Vault page: the SSH part', () => {
+  it('the hard-coded and unaccented texts are gone', () => {
+    for (const gone of ['>Cimke<', 'SSH Szerverek', '-- Nincs kulcs --', 'Kulcs telepítése –', 'kulcspárok – ezeket']) {
+      expect(PAGE, gone).not.toContain(gone)
+    }
+    for (const gone of ['-- Nincs kulcs --', "'Hiányzó'", 'Szerver szerkesztése –', "'Generálás sikertelen'", "'Hálózati hiba'", "'Másolva!'",
+      ' Másolás\'', '<publikus kulcs ide>', '(kulcs nem elérhető)', "'Új szerver'", '-- Válassz', "'Szerver hozzáadása'", "'Hiba a mentéskor'",
+      "'Szerver frissítve'", "'Szerver hozzáadva'", 'title="Törlés"', 'title="Szerkesztés"', 'title="Kulcs hozzárendelése"', 'title="Telepítési útmutató"',
+      'title="Publikus kulcs másolása"']) {
+      expect(VAULT_JS, gone).not.toContain(gone)
+    }
+  })
+
+  it('the key store is named "SSH key store"; inside it the button is just "New key", like "New server" below', () => {
+    expect(PAGE).not.toContain('Kulcstárol')
+    expect(PAGE).not.toContain('Új kulcs generálása')
+    expect(value(HU, 'vault.ssh.keys.title')).toBe('SSH-kulcstároló')
+    expect(value(EN, 'vault.ssh.keys.title')).toBe('SSH key store')
+    expect(value(HU, 'vault.ssh.keys.new_btn')).toBe('Új kulcs')
+    expect(value(EN, 'vault.ssh.keys.new_btn')).toBe('New key')
+    for (const key of ['vault.ssh.keygen.saved_hint', 'vault.ssh.install.key_hint', 'vault.ssh.install.no_key']) {
+      expect(value(HU, key), key).toContain('SSH-kulcstároló')
+      expect(value(EN, key), key).toContain('SSH key store')
+    }
+  })
+
+  it('the three "new" buttons and the key button of the server form have a translated hint', () => {
+    for (const [id, key] of [['vaultPageNewBtn', 'vault.new_key_btn_title'], ['sshKeyNewBtn', 'vault.ssh.keys.new_btn_title'],
+      ['sshNewBtn', 'vault.ssh.servers.new_btn_title'], ['sshKeyNewFromFormBtn', 'vault.ssh.form.new_key_title']]) {
+      const tag = PAGE.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`))?.[0] ?? ''
+      expect(tag, id).toContain(`data-i18n-title="${key}"`)
+      expect(tag, id).toContain(`title="${value(HU, key)}"`)
+      expect(value(HU, key), key).toBeTruthy()
+      expect(value(EN, key), key).toBeTruthy()
+    }
+    // the form's button also picks the new key for this server, so its hint says so
+    expect(value(HU, 'vault.ssh.form.new_key_title')).toContain('ennél a szervernél')
+    expect(value(EN, 'vault.ssh.form.new_key_title')).toContain('for this server')
+  })
+
+  it('the install guide keeps the user in the sentence: the text around it is two keys', () => {
+    expect(PAGE).toContain('<span data-i18n="vault.ssh.install.run_before">')
+    expect(PAGE).toContain('<strong id="sshInfoUser"></strong><span data-i18n="vault.ssh.install.run_after">')
+  })
+
+  it('the copy button of the keygen modal puts its translated label back, escaped', () => {
+    expect(VAULT_JS).toContain("' + escapeHtml(t('common.copy'))")
+  })
+})
+
+describe('the Vault page: no untranslated text is left', () => {
+  // Text that may stand without a lang key, each with its reason.
+  const ALLOWED: Record<string, string> = {
+    'Vault': 'the page title: the page header sets it from vault.page_title',
+    'Titkosított API-kulcsok, tokenek és SSH-kulcsok': 'the page subtitle: the page header sets it from vault.page_subtitle',
+    'AES-256': 'the cipher name, the same in every language',
+    'i': 'the info button glyph',
+  }
+  type Node = { nodeName: string; value?: string; attrs?: { name: string }[]; childNodes?: Node[]; content?: Node }
+
+  it('every text on the page sits in an element with a lang key, in <code>, or on the reasoned list', () => {
+    const offenders: string[] = []
+    const walk = (node: Node, keyed: boolean) => {
+      const own = (node.attrs || []).some(a => a.name === 'data-i18n' || a.name === 'data-i18n-html')
+      const inside = keyed || own || node.nodeName === 'code' || node.nodeName === 'svg'
+      if (node.nodeName === '#text') {
+        const text = (node.value || '').trim()
+        if (/\p{L}/u.test(text) && !keyed && !(text in ALLOWED)) offenders.push(text)
+        return
+      }
+      for (const child of node.childNodes || []) walk(child, inside)
+      if (node.content) walk(node.content, inside)
+    }
+    walk(parseFragment(PAGE) as unknown as Node, false)
+    expect(offenders).toEqual([])
   })
 })
