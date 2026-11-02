@@ -64,7 +64,7 @@ describe('the owner target is protected and its change announced', () => {
 
   it('the settings route announces a change on both paths (set and remove)', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'routes', 'settings.ts'), 'utf-8')
-    expect(src.split("if (key === 'NOTIFY_SLACK_TARGET') void announceSlackTargetChange(").length - 1).toBe(2)
+    expect(src.split("if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(").length - 1).toBe(2)
   })
 
   it('announceSlackTargetChange tells the OLD target; nothing when unchanged or there was none; a failure is reported', async () => {

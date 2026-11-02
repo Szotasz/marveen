@@ -1,8 +1,8 @@
-import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID } from './config.js'
+import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID, STORE_DIR } from './config.js'
 import { normalizeChatId, resolveAlertOwnerChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { markIfTestRun } from './test-run-marker.js'
 import type { sendSlackNotification as SendSlack } from './slack-notify.js'
 
@@ -88,7 +88,10 @@ export async function deliverWithSlack(
 export async function sendOwnerSlackDm(
   text: string,
   send?: typeof SendSlack,
-  opts: { verdict?: (channel: string, owner: string | null) => Promise<'ok' | 'foreign' | 'unknown'> } = {},
+  opts: {
+    verdict?: (channel: string, owner: string | null) => Promise<'ok' | 'foreign' | 'unknown'>
+    drift?: (current: string) => Promise<boolean>
+  } = {},
 ): Promise<{ attempted: boolean; sent: boolean; error?: string }> {
   const setting = await loadSetting()
   const target = await slackTargetFor('owner', setting)
@@ -100,6 +103,9 @@ export async function sendOwnerSlackDm(
     return { attempted: true, sent: false, error: 'slack_module_unavailable' }
   }
   const sendFn = send ?? sn.sendSlackNotification
+  // Dani 66036: a change made AROUND the settings route (a script writing the overrides, an .env edit) is caught here,
+  // before the next owner DM: the OLD target is told first, then the new one is recorded.
+  await (opts.drift ?? noticeTargetDrift)(target)
   // APPROVALSLACK1030 (Samu 66026): the bot has no im:write, so conversations.open (the 'dm' path) fails with
   // missing_scope (measured, Marveen 66022) and this DM never arrived. A raw D id in NOTIFY_SLACK_TARGET (the one
   // scripts/notify.sh already writes to) is posted to directly; first the confidentiality check (Dani 66016 (b)).
@@ -412,5 +418,37 @@ export async function announceSlackTargetChange(oldTarget: string, newTarget: st
   } catch (err) {
     logger.warn({ err }, 'owner Slack target changed: telling the old target threw')
     return { sent: false, reason: 'error' }
+  }
+}
+
+/** The owner Slack target last announced (Dani 66036): a store file behind the db-write-gate. */
+export function announcedTargetPath(storeDir: string = STORE_DIR): string {
+  return `${storeDir}/.owner-slack-target`
+}
+
+/**
+ * Dani 66036: compares the owner Slack target in effect with the one last announced. On a difference the OLD target is
+ * told (announceSlackTargetChange) and the new one recorded, so a change that went around the settings route is seen
+ * at the next owner DM. The first sight (no record, no old value given) only records. Never throws.
+ */
+export async function noticeTargetDrift(
+  current: string,
+  opts: { fallbackOld?: string; read?: () => string | null; write?: (v: string) => void; announce?: (oldT: string, newT: string) => Promise<unknown> } = {},
+): Promise<boolean> {
+  const read = opts.read ?? (() => { try { const f = announcedTargetPath(); return existsSync(f) ? readFileSync(f, 'utf-8') : null } catch { return null } })
+  const write = opts.write ?? ((v: string) => { try { writeFileSync(announcedTargetPath(), v, { mode: 0o600 }) } catch (err) { logger.warn({ err }, 'owner Slack target record could not be written') } })
+  const announce = opts.announce ?? ((o: string, n: string) => announceSlackTargetChange(o, n))
+  try {
+    const stored = read()
+    const now = current.trim()
+    const old = (stored ?? opts.fallbackOld ?? '').trim()
+    if (stored === null && !opts.fallbackOld) { write(now); return false }
+    if (old === now) { if (stored === null || stored.trim() !== now) write(now); return false }
+    await announce(old, now)
+    write(now)
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'owner Slack target drift check failed')
+    return false
   }
 }

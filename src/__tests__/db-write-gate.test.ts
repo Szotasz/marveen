@@ -218,11 +218,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // GROMZOGATECONF1030 (c), Samu 59516: the sub-agents' sender-role gates, only the dashboard writes them.
     'store/agent-sender-role-gates.json',
     // APPROVALSLACK1030, Samu 66026: NOTIFY_SLACK_TARGET there names where the owner's approval requests go.
-    'store/config-overrides.json']
+    'store/config-overrides.json',
+    // Dani 66036: the owner Slack target last announced.
+    'store/.owner-slack-target']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config'])
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config'])
   })
   for (const rel of REL) {
     it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])(`%s on the install's ${rel} is denied`, (tool) => {
