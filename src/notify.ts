@@ -452,3 +452,47 @@ export async function noticeTargetDrift(
     return false
   }
 }
+
+/**
+ * APPROVALSLACK1030 (2), Dani 65925 / Samu 65935: the Slack id whose reaction approves changed. The OLD owner gets a DM
+ * about it, so a change made around the gate (a text brake, not an OS boundary) is still seen by the person it
+ * replaced. The effective ids resolve as the DM target does (the setting, else the single allowFrom entry). Never
+ * throws; the result is logged either way. Exported for tests (send and readAccess are injectable).
+ */
+export async function announceSlackOwnerChange(
+  oldSetting: string,
+  newSetting: string,
+  opts: { send?: typeof SendSlack; readAccess?: () => string | null; now?: Date } = {},
+): Promise<{ sent: boolean; reason?: string }> {
+  try {
+    const sn = await import('./slack-notify.js')
+    const access = opts.readAccess ? opts.readAccess() : (() => {
+      try {
+        const f = `${sn.mainSlackStateDir()}/access.json`
+        return existsSync(f) ? readFileSync(f, 'utf-8') : null
+      } catch { return null }
+    })()
+    const before = sn.resolveOwnerUserId(oldSetting, access)
+    const after = sn.resolveOwnerUserId(newSetting, access)
+    if (!before) return { sent: false, reason: 'no_old_owner' }
+    if (before === after) return { sent: false, reason: 'unchanged' }
+    const { APP_TZ } = await import('./config.js')
+    const when = (opts.now ?? new Date()).toLocaleString('hu-HU', { timeZone: APP_TZ })
+    const text = [
+      `[FIGYELEM] A jóváhagyó Slack-azonosító megváltozott: ${before} -> ${after ?? '(nincs)'} (${when}).`,
+      'Mostantól nem a te Slack-reakciód hagyja jóvá a kéréseket.',
+      'Ha nem te változtattál, a Dashboard -> Beállítások -> SLACK_OWNER_USER_ID alatt állítsd vissza, és szólj.',
+    ].join('\n')
+    const send = opts.send ?? sn.sendSlackNotification
+    const r = await send('dm', text, { ownerUserId: before, raw: true })
+    if (r.ok) {
+      logger.warn({ before, after }, 'approval Slack owner changed: the old owner was told')
+      return { sent: true }
+    }
+    logger.warn({ before, after, error: r.error }, 'approval Slack owner changed: telling the OLD owner FAILED')
+    return { sent: false, reason: r.error ?? 'send_failed' }
+  } catch (err) {
+    logger.warn({ err }, 'approval Slack owner changed: telling the old owner threw')
+    return { sent: false, reason: 'error' }
+  }
+}

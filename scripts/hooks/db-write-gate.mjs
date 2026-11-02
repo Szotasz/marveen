@@ -84,8 +84,8 @@ export const PROTECTED_INSTALL_PATHS = [
   // The sub-agents' sender-role gates (GROMZOGATECONF1030 (c), Samu 59516): only the dashboard writes them, so no
   // agent can widen its own gate for its next restart.
   { rel: 'store/agent-sender-role-gates.json' },
-  // The dashboard's settings overrides (APPROVALSLACK1030, Samu 66026): NOTIFY_SLACK_TARGET there names where the
-  // owner's approval requests go. The sub-agents were already kept out (self-pace-gate, #2153); this covers the main agent.
+  // The dashboard's settings overrides (APPROVALSLACK1030, Samu 66026 / 65935): NOTIFY_SLACK_TARGET there names where
+  // the owner's approval requests go, SLACK_OWNER_USER_ID whose Slack reaction approves. The sub-agents were already kept out (self-pace-gate, #2153); this covers the main agent.
   // The dashboard writes it through its API, which this gate does not see.
   { rel: 'store/config-overrides.json' },
   // The owner Slack target last announced (Dani 66036): the drift check compares against it.
@@ -707,7 +707,7 @@ const LIMIT_MSG =
 
 export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
-  'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, auth_sessions, dashboard_users, ' +
+  'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, auth_sessions, dashboard_users, ' +
   'device_keys, vault_ssh_keys) semmilyen programmal (sqlite3, python, node, heredoc), es NEM irhatod fajl ' +
   'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup), ' +
   'es NEM hasznalhatod a PRAGMA writable_schema-t, sem a sqlite_master/sqlite_schema irasat. ' +
