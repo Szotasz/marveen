@@ -537,6 +537,16 @@ describe('the Vault deletes use it', () => {
     expect(HTML).not.toContain('title="Torles"')
   })
 
+  it('the Vault and Paths sections have no unaccented labels left, and they translate', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    for (const gone of ['titkositott', 'Kulcs nev ', 'placeholder="Ertek"', '>Hozzaad<', ' Utvonalak ']) expect(HTML).not.toContain(gone)
+    for (const key of ['connectors.vault_section', 'connectors.vault_id_ph', 'connectors.vault_value_ph', 'connectors.external_paths']) {
+      expect(HTML).toContain(`"${key}"`)
+      expect(HU).toContain(`'${key}':`)
+      expect(EN).toContain(`'${key}':`)
+    }
+  })
+
   it.each([...new Set(SITES.flatMap(([, , key]) => [key, `${key}_title`, `${key}_ok`]))])('%s is in both languages and names the item', (key) => {
     expect(HU).toContain(`'${key}':`)
     expect(EN).toContain(`'${key}':`)

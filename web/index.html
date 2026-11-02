@@ -980,13 +980,13 @@
         <div class="connector-external-paths">
           <div class="connector-external-header" id="vaultToggle">
             <span class="connector-scope-toggle">▶</span>
-            Vault (titkositott kulcsok) <span class="connector-scope-count" id="vaultCount">0</span>
+            <span data-i18n="connectors.vault_section">Vault (titkosított kulcsok)</span> <span class="connector-scope-count" id="vaultCount">0</span>
           </div>
           <div class="connector-external-body" id="vaultBody" hidden>
             <div id="vaultList"></div>
             <div class="connector-external-add">
-              <input type="text" id="vaultIdInput" class="input" placeholder="Kulcs nev (pl. OPENAI_API_KEY)" style="flex:1">
-              <input type="password" id="vaultValueInput" class="input" placeholder="Ertek" style="flex:1">
+              <input type="text" id="vaultIdInput" class="input" placeholder="Kulcs neve (pl. OPENAI_API_KEY)" data-i18n-placeholder="connectors.vault_id_ph" style="flex:1">
+              <input type="password" id="vaultValueInput" class="input" placeholder="Érték" data-i18n-placeholder="connectors.vault_value_ph" style="flex:1">
               <button class="btn-secondary btn-compact" id="vaultAddBtn" data-i18n="vault.btn.save">Mentés</button>
             </div>
           </div>
@@ -995,13 +995,13 @@
         <div class="connector-external-paths" id="externalPathsSection">
           <div class="connector-external-header" id="externalPathsToggle">
             <span class="connector-scope-toggle">▶</span>
-            Utvonalak <span class="connector-scope-count" id="externalPathCount">0</span>
+            <span data-i18n="connectors.external_paths">Útvonalak</span> <span class="connector-scope-count" id="externalPathCount">0</span>
           </div>
           <div class="connector-external-body" id="externalPathsBody" hidden>
             <div id="externalPathList"></div>
             <div class="connector-external-add">
               <input type="text" id="externalPathInput" class="input" placeholder="/Users/...">
-              <button class="btn-secondary btn-compact" id="externalPathAddBtn">Hozzaad</button>
+              <button class="btn-secondary btn-compact" id="externalPathAddBtn" data-i18n="common.btn.add">Hozzáadás</button>
             </div>
           </div>
         </div>
