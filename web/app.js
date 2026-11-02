@@ -10390,7 +10390,7 @@ function openSshKeygenModal(callback) {
   submitBtn.addEventListener('click', async () => {
     const label = document.getElementById('sshKeygenLabelInput').value.trim()
     const username = document.getElementById('sshKeygenUserInput').value.trim()
-    if (!label || !username) { showToast('Cimke és felhasználónév megadása kötelező'); return }
+    if (!label || !username) { showToast(t('vault.ssh.toast.label_user_required')); return }
 
     document.getElementById('sshKeygenForm').hidden = true
     document.getElementById('sshKeygenSpinner').hidden = false
@@ -10404,7 +10404,12 @@ function openSshKeygenModal(callback) {
         body: JSON.stringify({ label, username }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Generálás sikertelen'); resetKeygenForm(); return }
+      if (!res.ok) {
+        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || 'Generálás sikertelen'))
+        resetKeygenForm()
+        if (data.code === 'label_taken') document.getElementById('sshKeygenLabelInput').focus()
+        return
+      }
 
       const pubkey = data.publicKey || (data.key && data.key.publicKey) || ''
       document.getElementById('sshKeygenPubkeyBox').value = pubkey

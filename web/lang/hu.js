@@ -1413,6 +1413,8 @@ window._i18n.hu = {
   'vault.stat.encryption':       'Titkosítás',
   'vault.stat.bindings':         'Kötés',
   'vault.stat.storage':          'Helyi',
+  'vault.ssh.toast.label_taken': 'Már van ilyen nevű SSH-kulcs: "{name}". Adj neki másik címkét.',
+  'vault.ssh.toast.label_user_required': 'A címke és a felhasználónév megadása kötelező.',
 
 
   // --- Token Usage ---
