@@ -417,12 +417,47 @@ fi
 #   - the stash entry stays in `git stash list` -- it is the operator's only
 #     copy of the conflicted local edits -- and is named in the outcome;
 #   - UPDATE_WARN is set, which turns the final verdict into "warning".
-# A pop that git refused outright (e.g. an untracked file in the way) applies
-# nothing; that is reported the same way, with an empty path list.
+# A pop that git refused because an untracked file of the stash is in the way
+# ("already exists, no checkout") is NOT all-or-nothing (Dani, measured on git
+# 2.50.1): the TRACKED edits come back, the untracked ones do not, and the
+# stash is kept. So the outcome never says "nothing came back"; it lists, per
+# path, what is in the working tree now and what is only in the stash
+# (stash_restore_report).
 STASH_POP_FAILED=0
 STASH_CONFLICT_PATHS=""
 UPDATE_WARN=""
 add_update_warn() { UPDATE_WARN="${UPDATE_WARN:+$UPDATE_WARN }$1"; }
+# Per path of the kept stash (stash@{0}, the one whose pop just failed): is the
+# stashed version in the working tree now, or only in the stash? Tracked paths
+# compare against stash@{0}, untracked ones against its third parent. A path
+# the stash deleted is skipped (nothing to put back).
+STASH_RESTORED=""
+STASH_NOT_RESTORED=""
+stash_restore_report() {
+  local p src
+  STASH_RESTORED=""; STASH_NOT_RESTORED=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    git cat-file -e "stash@{0}:$p" 2>/dev/null || continue
+    if [ -f "$p" ] && git show "stash@{0}:$p" 2>/dev/null | cmp -s - "$p"; then
+      STASH_RESTORED="${STASH_RESTORED:+$STASH_RESTORED, }$p"
+    else
+      STASH_NOT_RESTORED="${STASH_NOT_RESTORED:+$STASH_NOT_RESTORED, }$p"
+    fi
+  done < <(git stash show --name-only 'stash@{0}' 2>/dev/null)
+  if git rev-parse -q --verify 'stash@{0}^3' >/dev/null 2>&1; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      src="stash@{0}^3:$p"
+      if [ -f "$p" ] && git show "$src" 2>/dev/null | cmp -s - "$p"; then
+        STASH_RESTORED="${STASH_RESTORED:+$STASH_RESTORED, }$p"
+      else
+        STASH_NOT_RESTORED="${STASH_NOT_RESTORED:+$STASH_NOT_RESTORED, }$p"
+      fi
+    done < <(git ls-tree -r --name-only 'stash@{0}^3' 2>/dev/null)
+  fi
+  return 0
+}
 pop_auto_stash() {
   if git stash pop; then
     STASHED_AUTO=0
@@ -444,11 +479,13 @@ pop_auto_stash() {
   done <<< "$conflicted"
   git reset -q >/dev/null 2>&1 || true
   STASH_CONFLICT_PATHS="$(printf '%s\n' "$conflicted" | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+  stash_restore_report
   if [ -n "$STASH_CONFLICT_PATHS" ]; then
-    add_update_warn "A helyi valtozasok visszatetele utkozott, ezek a fajlok a frissitett (upstream) valtozatukon maradtak: ${STASH_CONFLICT_PATHS}. A helyi valtozatuk a stash-ben van (git stash list, \"marveen-update-auto-stash\"); megnezni: git diff HEAD 'stash@{0}' -- <fajl>."
+    add_update_warn "A helyi valtozasok visszatetele utkozott, ezek a fajlok a frissitett (upstream) valtozatukon maradtak: ${STASH_CONFLICT_PATHS}."
   else
-    add_update_warn "A helyi valtozasokat nem lehetett visszatenni; a stash-ben maradtak (git stash list, \"marveen-update-auto-stash\")."
+    add_update_warn "A git nem tudta az osszes helyi valtozast visszatenni (pl. egy fajl mar ott volt)."
   fi
+  add_update_warn "Visszakerult: ${STASH_RESTORED:-semmi}. NEM kerult vissza, csak a stash-ben van: ${STASH_NOT_RESTORED:-semmi}. A stash megmaradt (git stash list, \"marveen-update-auto-stash\"); megnezni: git diff HEAD 'stash@{0}' -- <fajl>."
   if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
     echo -e "${RED}WARNING:${NC} Auto-stash pop failed; the stash remains in 'git stash list'."
     [ -n "$STASH_CONFLICT_PATHS" ] && echo -e "          Conflicted paths were put back to the upstream version: ${STASH_CONFLICT_PATHS}"

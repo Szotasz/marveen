@@ -116,6 +116,35 @@ describe('update.sh: a conflicted auto-stash pop (ANETTUPDATESTASH1102)', () => 
     expect(r.stashed).toBe('0')
   })
 
+  it('the conflict report says per path what came back and what is only in the stash', () => {
+    const dir = repo({ conflict: true })
+    const r = runBlock(dir, 'pop_auto_stash')
+    expect(r.warn).toMatch(/Visszakerult: [^.]*other\.txt/)
+    expect(r.warn).toMatch(/NEM kerult vissza, csak a stash-ben van: [^.]*\.claude\/settings\.json/)
+  })
+
+  // Dani (2460 review, git 2.50.1): with an untracked stash file in the way git
+  // refuses the pop ("already exists, no checkout") but STILL restores the
+  // tracked edits. The report must not claim that nothing came back.
+  it('a pop refused by an untracked file in the way reports the tracked edit as restored', () => {
+    const dir = mkdtempSync(join(SANDBOX, 'refused-'))
+    writeFileSync(join(dir, 'keep.txt'), 'base\n')
+    expect(sh(dir, 'git init -q && git add -A && git commit -qm base').code).toBe(0)
+    writeFileSync(join(dir, 'keep.txt'), 'local\n')
+    writeFileSync(join(dir, 'new.txt'), 'local new\n')
+    expect(sh(dir, 'git stash push -q -u -m "marveen-update-auto-stash 20261102-115215"').code).toBe(0)
+    writeFileSync(join(dir, 'new.txt'), 'upstream new\n')
+    expect(sh(dir, 'git add new.txt && git commit -qm upstream').code).toBe(0)
+    const r = runBlock(dir, 'pop_auto_stash; echo "rc=$?"')
+    expect(r.out).toContain('rc=1')
+    expect(readFileSync(join(dir, 'keep.txt'), 'utf-8')).toBe('local\n')
+    expect(readFileSync(join(dir, 'new.txt'), 'utf-8')).toBe('upstream new\n')
+    expect(git(dir, 'stash list')).toContain('marveen-update-auto-stash')
+    expect(r.warn).toMatch(/Visszakerult: [^.]*keep\.txt/)
+    expect(r.warn).toMatch(/NEM kerult vissza, csak a stash-ben van: [^.]*new\.txt/)
+    expect(r.warn).not.toContain('nem lehetett visszatenni')
+  })
+
   it('a clean pop restores everything, drops the stash, and warns about nothing', () => {
     const dir = repo({ conflict: false })
     const r = runBlock(dir, 'pop_auto_stash; echo "rc=$?"')
