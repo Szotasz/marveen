@@ -4770,14 +4770,33 @@ a.oss-inv-name:hover { text-decoration: underline; }
   margin-left: 6px;
 }
 
+/* The inputs take a full row each and the buttons wrap under them, right
+   aligned: in one row an input's intrinsic width pushed Save/Cancel out past
+   the card's right edge. */
 .vault-card-edit-form {
-  padding: 10px 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
   align-items: center;
 }
-.vault-card-edit-form .input { flex: 1; }
+.vault-card-edit-form .input { flex: 1 1 100%; }
+/* .input has no base style, so these fields were the browser's white box. */
+.vault-card-edit-form .input,
+.connector-external-add .input {
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+.vault-card-edit-form .input:focus,
+.connector-external-add .input:focus { border-color: var(--accent); }
 
 /* === SSH Vault Section === */
 .ssh-section {
