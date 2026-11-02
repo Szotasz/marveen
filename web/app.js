@@ -10021,7 +10021,7 @@ async function loadVault() {
     })
     if (!res.ok) {
       const e = await res.json().catch(() => ({}))
-      showToast('Mentés sikertelen: ' + (e.error || res.status))
+      showToast(t('vault.toast.save_failed', { msg: e.error || res.status }))
       return
     }
     idInput.value = ''
@@ -10707,7 +10707,7 @@ function renderVaultGrid(secrets) {
     card.className = 'vault-card'
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
-    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
+    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${escapeHtml(t('vault.binding_count', { n: bindingCount }))}">${escapeHtml(t('vault.binding_count', { n: bindingCount }))}</span>` : ''
     card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn-secondary btn-compact vault-card-edit" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
     list.appendChild(card)
   }
@@ -10900,7 +10900,7 @@ function renderVaultGrid(secrets) {
       }
       if (secrets.length === 0) {
         const opt = document.createElement('option')
-        opt.textContent = '-- Nincs vault kulcs --'
+        opt.textContent = t('vault.bind.no_secret')
         opt.disabled = true
         secretSelect.appendChild(opt)
       }
@@ -10915,7 +10915,7 @@ function renderVaultGrid(secrets) {
       }
       if (mcpConnectors.length === 0) {
         const opt = document.createElement('option')
-        opt.textContent = '-- Nincs MCP szerver --'
+        opt.textContent = t('vault.bind.no_server')
         opt.disabled = true
         serverSelect.appendChild(opt)
       }
@@ -10923,7 +10923,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } catch (err) {
       console.error('Vault bind modal error:', err)
-      showToast('Hiba a hozzarendeles betoltesekor: ' + err.message)
+      showToast(t('vault.bind.load_error', { msg: err.message }))
     }
   })
 
@@ -10932,7 +10932,7 @@ function renderVaultGrid(secrets) {
     const serverName = serverSelect.value
     const envVar = envVarInput.value.trim()
     if (!vaultSecretId || !serverName || !envVar) {
-      statusEl.textContent = 'Minden mezo kitoltese kotelezo'
+      statusEl.textContent = t('vault.bind.all_required')
       statusEl.className = 'vault-bind-status error'
       statusEl.hidden = false
       return
@@ -10948,24 +10948,24 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.ok) {
-        statusEl.textContent = `Hozzarendelve! ${data.synced || 0} fajl frissitve.`
+        statusEl.textContent = t('vault.bind.done', { n: data.synced || 0 })
         statusEl.className = 'vault-bind-status success'
         statusEl.hidden = false
         loadVaultPage()
         loadVault()
         setTimeout(() => { closeModal(overlay) }, 1500)
       } else {
-        statusEl.textContent = data.error || 'Hiba tortent'
+        statusEl.textContent = data.error || t('common.error')
         statusEl.className = 'vault-bind-status error'
         statusEl.hidden = false
       }
     } catch (err) {
-      statusEl.textContent = 'Halozati hiba'
+      statusEl.textContent = t('vault.toast.network_error')
       statusEl.className = 'vault-bind-status error'
       statusEl.hidden = false
     } finally {
       saveBtn.disabled = false
-      saveBtn.textContent = 'Hozzarendeles'
+      saveBtn.textContent = t('vault.btn.bind')
     }
   })
 })()
@@ -10981,7 +10981,7 @@ function renderVaultGrid(secrets) {
 
   scanBtn.addEventListener('click', async () => {
     scanBtn.disabled = true
-    scanBtn.textContent = 'Kereses...'
+    scanBtn.textContent = t('common.searching')
     try {
       const res = await fetch('/api/vault/scan')
       const data = await res.json()
@@ -10990,7 +10990,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } finally {
       scanBtn.disabled = false
-      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Scan &amp; Import'
+      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> ' + escapeHtml(t('vault.btn.scan'))
     }
   })
 
@@ -10999,21 +10999,21 @@ function renderVaultGrid(secrets) {
 
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true
-    syncBtn.textContent = 'Szinkron...'
+    syncBtn.textContent = t('vault.btn.syncing')
     try {
       const res = await fetch('/api/vault/sync', { method: 'POST' })
       const data = await res.json()
       if (data.updated > 0) {
-        showToast(`${data.updated} .mcp.json frissitve`)
+        showToast(t('vault.sync.updated', { n: data.updated }))
       } else {
-        showToast('Nincs szinkronizalando kotes')
+        showToast(t('vault.sync.nothing'))
       }
       if (data.errors?.length) {
-        showToast('Hibak: ' + data.errors.join(', '))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
       }
     } finally {
       syncBtn.disabled = false
-      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Szinkron'
+      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> ' + escapeHtml(t('vault.btn.sync'))
     }
   })
 
@@ -11027,9 +11027,8 @@ function renderVaultGrid(secrets) {
     if (actionable.length === 0) {
       empty.hidden = false
       footer.hidden = true
-      if (findings.length > 0) {
-        empty.textContent = `${findings.length} erzekeny ertek talalva, de mind mar a Vault-ban van.`
-      }
+      // Set both ways: an earlier all-in-the-Vault scan must not leave its count behind.
+      empty.textContent = findings.length > 0 ? t('vault.scan.all_in_vault', { n: findings.length }) : t('vault.scan.empty')
       return
     }
     empty.hidden = true
@@ -11053,7 +11052,7 @@ function renderVaultGrid(secrets) {
         <div class="vault-scan-info">
           <div class="vault-scan-server">${escapeHtml(f.serverName)}</div>
           <div class="vault-scan-env">${escapeHtml(f.envVar)} = <code>${escapeHtml(f.maskedValue)}</code></div>
-          <div class="vault-scan-targets">${f.allTargets.length} fajlban</div>
+          <div class="vault-scan-targets">${escapeHtml(t('vault.scan.in_files', { n: f.allTargets.length }))}</div>
         </div>
         <div class="vault-scan-id">
           <input type="text" class="input vault-scan-vault-id" value="${escapeHtml(f.suggestedVaultId)}" data-key="${escapeHtml(key)}" style="font-size:12px;width:180px">
@@ -11096,10 +11095,10 @@ function renderVaultGrid(secrets) {
       })
     }
 
-    if (imports.length === 0) { showToast('Nincs kivalasztott elem'); return }
+    if (imports.length === 0) { showToast(t('vault.scan.none_selected')); return }
 
     importBtn.disabled = true
-    importBtn.textContent = 'Importalas...'
+    importBtn.textContent = t('common.importing')
 
     try {
       const res = await fetch('/api/vault/import', {
@@ -11109,14 +11108,14 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.imported > 0) {
-        showToast(`${data.imported} kulcs importalva, ${data.bound} kotes letrehozva`)
+        showToast(t('vault.scan.imported', { imported: data.imported, bound: data.bound }))
       }
       if (data.errors?.length) {
-        showToast('Hibak: ' + data.errors.join(', '))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
       }
     } finally {
       importBtn.disabled = false
-      importBtn.textContent = 'Kivalasztottak importalasa'
+      importBtn.textContent = t('vault.scan.import_btn')
     }
     closeModal(overlay)
     loadVaultPage()

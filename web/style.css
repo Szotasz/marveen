@@ -4805,6 +4805,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
   border-top: 1px solid var(--border);
 }
 .ssh-key-store-section { margin-top: 28px; }
+.vault-secrets-header { margin-top: 28px; }
 
 /* Key assign select in card/table */
 .ssh-key-select {

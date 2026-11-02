@@ -175,6 +175,5 @@
  "tuFormatLocalShort::text::String(d.getMonth()+1).padStart(2,'0')": "SAFE-NUM [n=1]: d = new Date(ts * 1000): Date getters return numbers",
  "tuFormatTokens::return::String(n)": "SAFE-NUM [n=8]: isNaN(n) returns '0' first, so only a value that converts to a number reaches String(n)",
  "tuGetColor::style::TU_COLORS[agent] || tuAssignedColors[agent] || '#64748b'": "SAFE-CONST [n=4]: color = tuGetColor(a): TU_COLORS / tuAssignedColors palette (hex or generated hsl()) or \"#64748b\"; agent name is only a lookup key. A key like \"constructor\" would yield native-fun",
- "tuGetModelColor::style::TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length]": "SAFE-CONST [n=1]: fixed TU_MODEL_COLORS palette indexed by a number",
- "wireVaultScan>renderScanResults::text::f.allTargets.length": "SAFE-NUM [n=1]: number/count/date computed locally"
+ "tuGetModelColor::style::TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length]": "SAFE-CONST [n=1]: fixed TU_MODEL_COLORS palette indexed by a number"
 }

@@ -980,7 +980,7 @@
         <div class="connector-external-paths">
           <div class="connector-external-header" id="vaultToggle">
             <span class="connector-scope-toggle">▶</span>
-            <span data-i18n="connectors.vault_section">Vault (titkosított kulcsok)</span> <span class="connector-scope-count" id="vaultCount">0</span>
+            <span data-i18n="connectors.vault_section">Vault (API-kulcsok és tokenek)</span> <span class="connector-scope-count" id="vaultCount">0</span>
           </div>
           <div class="connector-external-body" id="vaultBody" hidden>
             <div id="vaultList"></div>
@@ -1564,18 +1564,18 @@
         <div class="page-header-row">
           <div>
             <h1>Vault</h1>
-            <p class="subtitle">Titkositott kulcsok es API tokenek</p>
+            <p class="subtitle">Titkosított API-kulcsok, tokenek és SSH-kulcsok</p>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="btn-secondary btn-compact" id="vaultBindBtn" title="Vault kulcs hozzarendelese MCP szerverhez">
+            <button class="btn-secondary btn-compact" id="vaultBindBtn" title="API-kulcs hozzárendelése egy MCP szerverhez" data-i18n="vault.btn.bind" data-i18n-title="vault.btn.bind_title">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-              Hozzarendeles
+              Hozzárendelés
             </button>
-            <button class="btn-secondary btn-compact" id="vaultScanBtn" title="MCP konfigok atvizsgalasa erzekeny kulcsokert">
+            <button class="btn-secondary btn-compact" id="vaultScanBtn" title="Érzékeny értékek keresése az MCP konfigurációkban" data-i18n="vault.btn.scan" data-i18n-title="vault.btn.scan_title">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              Scan &amp; Import
+              Keresés és import
             </button>
-            <button class="btn-secondary btn-compact" id="vaultSyncBtn" title="Vault ertekek szinkronizalasa a .mcp.json fajlokba">
+            <button class="btn-secondary btn-compact" id="vaultSyncBtn" title="A Vault értékeinek kiírása a .mcp.json fájlokba" data-i18n="vault.btn.sync" data-i18n-title="vault.btn.sync_title">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
               Szinkron
             </button>
@@ -1583,51 +1583,61 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
-              Új kulcs
+              Új API-kulcs
             </button>
           </div>
         </div>
-        <div class="info-box">
-          <strong>AES-256-GCM</strong> titkositas &middot; A kulcsok kizarolag a helyi gepen tarolodnak, soha nem hagyjak el a rendszert. MCP szerverek telepitesekor a szukseges API kulcsokat itt tarolhatod biztonsagosan.
+        <div class="info-box" data-i18n-html="vault.info_html">
+          <strong>AES-256-GCM</strong> titkosítás &middot; A kulcsok csak a helyi gépen tárolódnak, és soha nem hagyják el a rendszert. MCP szerverek telepítésekor a szükséges API-kulcsokat itt tárolhatod biztonságosan.
         </div>
       </div>
 
       <div class="vault-stats" id="vaultStats">
         <div class="stat-card">
           <div class="stat-value" id="vaultStatTotal">0</div>
-          <div class="stat-label" data-i18n="vault.stat.total">Tarolt kulcs</div>
+          <div class="stat-label" data-i18n="vault.stat.total">API-kulcs</div>
         </div>
         <div class="stat-card">
           <div class="stat-value">AES-256</div>
-          <div class="stat-label" data-i18n="vault.stat.encryption">Titkositas</div>
+          <div class="stat-label" data-i18n="vault.stat.encryption">Titkosítás</div>
         </div>
         <div class="stat-card">
           <div class="stat-value" id="vaultStatBindings">0</div>
-          <div class="stat-label" data-i18n="vault.stat.bindings">Kotes</div>
+          <div class="stat-label" data-i18n="vault.stat.bindings">Kötés</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value">Helyi</div>
-          <div class="stat-label" data-i18n="vault.stat.storage">Tarolas</div>
+          <div class="stat-value" data-i18n="vault.stat.storage_value">Helyi</div>
+          <div class="stat-label" data-i18n="vault.stat.storage">Tárolás</div>
+        </div>
+      </div>
+
+      <div class="ssh-section-header vault-secrets-header">
+        <div>
+          <h2 class="ssh-section-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <span data-i18n="vault.section.title">API-kulcsok és tokenek</span>
+          </h2>
+          <p class="ssh-section-sub" data-i18n="vault.section.sub">Titkos értékek, amelyeket az MCP szerverek környezeti változóként kapnak meg</p>
         </div>
       </div>
 
       <!-- Add new secret panel (hidden by default, toggled by button) -->
       <div class="vault-add-panel" id="vaultAddPanel" hidden>
         <div class="vault-add-panel-header">
-          <h3 data-i18n="vault.panel.title">Uj kulcs hozzaadasa</h3>
+          <h3 data-i18n="vault.panel.title">Új API-kulcs hozzáadása</h3>
           <button class="modal-close" id="vaultAddPanelClose">&times;</button>
         </div>
         <div class="vault-add-fields">
           <div class="vault-field-group">
             <label class="vault-field-label" data-i18n="vault.field.name_label">Kulcs neve</label>
-            <input type="text" id="vaultPageIdInput" class="input" placeholder="pl. OPENAI_API_KEY">
+            <input type="text" id="vaultPageIdInput" class="input" placeholder="pl. OPENAI_API_KEY" data-i18n-placeholder="vault.field.name_ph">
           </div>
           <div class="vault-field-group">
-            <label class="vault-field-label" data-i18n="vault.field.desc_label">Leiras (opcionalis)</label>
-            <input type="text" id="vaultPageLabelInput" class="input" maxlength="200" placeholder="pl. OpenAI production key">
+            <label class="vault-field-label" data-i18n="vault.field.desc_label">Leírás (opcionális)</label>
+            <input type="text" id="vaultPageLabelInput" class="input" maxlength="200" placeholder="pl. OpenAI éles kulcs" data-i18n-placeholder="vault.field.desc_ph">
           </div>
           <div class="vault-field-group">
-            <label class="vault-field-label" data-i18n="vault.field.value_label">Ertek</label>
+            <label class="vault-field-label" data-i18n="vault.field.value_label">Érték</label>
             <input type="password" id="vaultPageValueInput" class="input" placeholder="sk-...">
           </div>
         </div>
@@ -1643,7 +1653,7 @@
         <svg class="vault-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input type="text" id="vaultSearchInput" class="vault-search" placeholder="Kereses a kulcsok kozott..." data-i18n-placeholder="vault.search_placeholder">
+        <input type="text" id="vaultSearchInput" class="vault-search" placeholder="Keresés az API-kulcsok között..." data-i18n-placeholder="vault.search_placeholder">
       </div>
 
       <div class="vault-grid" id="vaultPageList"></div>
@@ -1651,8 +1661,8 @@
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/>
         </svg>
-        <p data-i18n="vault.empty_msg">Meg nincs tarolt kulcs</p>
-        <p class="vault-empty-hint" data-i18n="vault.empty_hint">Adj hozza egyet az "Uj kulcs" gombbal</p>
+        <p data-i18n="vault.empty_msg">Még nincs tárolt API-kulcs</p>
+        <p class="vault-empty-hint" data-i18n="vault.empty_hint">Adj hozzá egyet az „Új API-kulcs” gombbal</p>
       </div>
 
       <!-- === SSH Key Store section === -->
@@ -1929,26 +1939,26 @@
       <div class="modal-overlay" id="vaultBindOverlay">
         <div class="modal" style="max-width:500px">
           <div class="modal-header">
-            <h2>Kulcs hozzarendelese</h2>
+            <h2 data-i18n="vault.bind.title">API-kulcs hozzárendelése</h2>
             <button class="modal-close" id="vaultBindClose">&times;</button>
           </div>
           <div class="modal-body">
             <div class="form-group">
-              <label for="vaultBindSecret">Vault kulcs</label>
+              <label for="vaultBindSecret" data-i18n="vault.bind.secret_label">API-kulcs</label>
               <select id="vaultBindSecret" class="input"></select>
             </div>
             <div class="form-group">
-              <label for="vaultBindServer">MCP szerver</label>
+              <label for="vaultBindServer" data-i18n="vault.bind.server_label">MCP szerver</label>
               <select id="vaultBindServer" class="input"></select>
             </div>
             <div class="form-group">
-              <label for="vaultBindEnvVar" data-i18n="vault.field.env_var">Kornyezeti változó neve</label>
-              <input type="text" id="vaultBindEnvVar" class="input" placeholder="pl. API_KEY">
+              <label for="vaultBindEnvVar" data-i18n="vault.field.env_var">Környezeti változó neve</label>
+              <input type="text" id="vaultBindEnvVar" class="input" placeholder="pl. API_KEY" data-i18n-placeholder="vault.bind.env_ph">
             </div>
             <div id="vaultBindStatus" hidden class="vault-bind-status"></div>
           </div>
           <div class="modal-footer">
-            <button class="btn-primary" id="vaultBindSaveBtn">Hozzarendeles</button>
+            <button class="btn-primary" id="vaultBindSaveBtn" data-i18n="vault.btn.bind">Hozzárendelés</button>
           </div>
         </div>
       </div>
@@ -1957,16 +1967,16 @@
       <div class="modal-overlay" id="vaultScanOverlay">
         <div class="modal" style="max-width:700px">
           <div class="modal-header">
-            <h2>MCP titkok keresese</h2>
+            <h2 data-i18n="vault.scan.title">Titkok keresése az MCP konfigurációkban</h2>
             <button class="modal-close" id="vaultScanClose">&times;</button>
           </div>
           <div class="modal-body">
-            <p class="vault-scan-desc">A rendszer atvizsgalja az osszes .mcp.json fajlt es megkeresi az erzekeny konfiguracios ertekeket (API kulcsok, tokenek, jelszo-szeru ertekek).</p>
+            <p class="vault-scan-desc" data-i18n="vault.scan.desc">A rendszer átvizsgálja az összes .mcp.json fájlt, és megkeresi az érzékeny konfigurációs értékeket (API-kulcsok, tokenek, jelszószerű értékek).</p>
             <div id="vaultScanResults"></div>
-            <div id="vaultScanEmpty" hidden style="text-align:center;color:var(--text-muted);padding:24px">Nem talaltam erzekeny erteket a konfiguraciokban.</div>
+            <div id="vaultScanEmpty" hidden style="text-align:center;color:var(--text-muted);padding:24px" data-i18n="vault.scan.empty">Nem találtam érzékeny értéket a konfigurációkban.</div>
           </div>
           <div class="modal-footer" id="vaultScanFooter" hidden>
-            <button class="btn-primary" id="vaultScanImportBtn">Kivalasztottak importalasa</button>
+            <button class="btn-primary" id="vaultScanImportBtn" data-i18n="vault.scan.import_btn">Kiválasztottak importálása</button>
           </div>
         </div>
       </div>
