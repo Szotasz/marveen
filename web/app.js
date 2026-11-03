@@ -13060,6 +13060,10 @@ function renderTeamGraph(container, data, opts = {}) {
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
+    // The owner-written tagline ("P+R", "JIRA ügyintéző") says what the agent
+    // does; when set it takes the role line, and the role moves to the tooltip.
+    const tagline = (node.tagline || '').trim()
+    if (tagline) div.title = roleLabel
     // Same pulsing dot the agent cards use, instead of the '●' that used to be
     // baked into the translation -- a static glyph read as "stopped" next to a
     // card whose dot was breathing.
@@ -13075,7 +13079,7 @@ function renderTeamGraph(container, data, opts = {}) {
     div.innerHTML = `
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
-      <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
+      <div class="team-node-meta${tagline ? ' team-node-tagline' : ''}">${escapeHtml(tagline || roleLabel)}</div>
       <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
     if (node.id !== mainAgentId) {
@@ -13768,6 +13772,8 @@ document.getElementById('chatRefreshBtn')?.addEventListener('click', () => {
 function renderTeamEditor(agent, allAgents) {
   const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
+  const taglineInput = document.getElementById('editTeamTagline')
+  if (taglineInput) taglineInput.value = agent.tagline || ''
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
   const emptyOpt = document.createElement('option')
@@ -13821,6 +13827,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   const delegates = Array.from(document.querySelectorAll('#editTeamDelegatesList input[type=checkbox]:checked')).map(cb => cb.value)
   const trustFrom = Array.from(document.querySelectorAll('#editTeamTrustFromList input[type=checkbox]:checked')).map(cb => cb.value)
   const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
+  const tagline = (document.getElementById('editTeamTagline')?.value || '').trim()
   const originalText = btn.textContent
   btn.disabled = true
   btn.textContent = t('team.save_saving')
@@ -13834,6 +13841,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         delegatesTo: role === 'leader' ? delegates : [],
         trustFrom,
         autoDelegation: role === 'leader' ? autoDelegation : false,
+        tagline,
       }),
     })
     if (!res.ok) throw new Error()
