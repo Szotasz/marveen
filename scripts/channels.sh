@@ -2283,8 +2283,14 @@ PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + PLUGIN_NEVER_STARTED_BUDGET))
 # Died-after-up budget: once we have seen the plugin alive, a continuous
 # disappearance this long means it crashed and is not self-recovering.
 PLUGIN_DEAD_GRACE=180
+# RELOADDEADGRACE1040: how long to wait inside the dead-grace window before
+# trying one in-place /reload-plugins. Half the grace leaves the other half
+# for the reload to actually take effect (bun poller respawn + reconnect)
+# before we give up and sacrifice the whole session.
+PLUGIN_RELOAD_AFTER=90
 PLUGIN_SEEN_ONCE=false
 PLUGIN_DEAD_SINCE=0
+PLUGIN_RELOAD_ATTEMPTED=false
 # Set to 1 when the watchdog below breaks out ON PURPOSE to be restarted. The
 # exit status has to carry that intent: a watchdog exit is not a normal one, and
 # a unit still carrying the old Restart=on-failure would read exit 0 as "this
@@ -2425,6 +2431,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   if [ "$_plugin_alive" = "true" ]; then
     PLUGIN_SEEN_ONCE=true
     PLUGIN_DEAD_SINCE=0
+    PLUGIN_RELOAD_ATTEMPTED=false
     # The plugin came up, so this host is not in the never-starting state:
     # drop the streak so the next cold start gets the fast 10-minute watchdog
     # again instead of inheriting a 40-minute budget from an old outage.
@@ -2444,6 +2451,26 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
       RESTART_REQUESTED=1
       EXIT_REASON="plugin-died"
       break
+    elif [ "$PLUGIN_RELOAD_ATTEMPTED" != "true" ] && [ "$((NOW - PLUGIN_DEAD_SINCE))" -ge "$PLUGIN_RELOAD_AFTER" ]; then
+      # RELOADDEADGRACE1040: the only thing measured to reliably revive a
+      # dead/absent plugin (RELOADPLUGINSABSENT1032, measured 2026-10-31 on
+      # the never-started path) is /reload-plugins. Until now this
+      # died-after-up path never tried it -- it went straight from "plugin
+      # gone" to "kill the whole session and lose the conversation", even
+      # though $PLUGIN_DEAD_GRACE leaves time for an in-place revival first.
+      # One shot, only into a provably idle pane (MCPDUP806 discipline -- never
+      # type over a live turn or someone else's parked draft; an unverifiable
+      # or busy pane just retries next tick), with the rest of the grace
+      # window left afterwards for the plugin to actually come back before we
+      # give up and restart.
+      _reload_probe="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state)"
+      if [ "$_reload_probe" = "idle" ]; then
+        $TMUX send-keys -t "=$SESSION:" '/reload-plugins' Enter
+        PLUGIN_RELOAD_ATTEMPTED=true
+        echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- sent /reload-plugins, waiting out the rest of the ${PLUGIN_DEAD_GRACE}s grace before restart" >&2
+        respawn_log "died-after-up-reload-attempt: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- sent /reload-plugins"
+      fi
+      unset _reload_probe
     fi
   else
     # Never came up at all (e.g. a Claude Code build that silently disables
