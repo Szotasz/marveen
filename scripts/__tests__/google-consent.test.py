@@ -11,6 +11,7 @@ stderr.
 Run: python3 scripts/__tests__/google-consent.test.py
 """
 import contextlib
+import http.client
 import http.server
 import importlib.util
 import io
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 from unittest import mock
@@ -211,10 +213,10 @@ class Base(unittest.TestCase):
         write(os.environ.get("GOOGLE_CONSENT_CONFIG") or os.path.join(self.root, "consent.json"),
               self.config)
 
-    def run_cli(self, *argv):
+    def run_cli(self, *argv, sessions=None):
         out, errb = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(errb), \
-                mock.patch.object(self.m, "running_mcp_sessions", return_value={}):
+                mock.patch.object(self.m, "running_mcp_sessions", return_value=sessions or {}):
             try:
                 rc = self.m.main(list(argv))
             except SystemExit as e:
@@ -248,13 +250,20 @@ class Base(unittest.TestCase):
     def pending(self, only=None):
         return os.path.join(self.state, ".google-consent%s-pending.json" % ("-" + only if only else ""))
 
+    @staticmethod
+    def file_state(p):
+        """What a path holds, for a before/after comparison: a link's target, a file's bytes, or a
+        marker for anything else (a directory where a token file should be)."""
+        if os.path.islink(p):
+            return "link -> " + os.readlink(p)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                return f.read()
+        return "<not a file>"
+
     def snapshot(self):
-        snap = {}
-        for p in list(self.paths.values()) + [self.pkce(), self.pending()]:
-            if os.path.exists(p):
-                with open(p, "rb") as f:
-                    snap[p] = f.read()
-        return snap
+        return {p: self.file_state(p) for p in list(self.paths.values()) + [self.pkce(), self.pending()]
+                if os.path.lexists(p)}
 
     def backups(self):
         out = []
@@ -630,9 +639,8 @@ class UnboundCodeTests(Base):
     def everything(self):
         snap = self.snapshot()
         for p in (self.pkce("youtube"), self.pending("youtube"), self.yt_path):
-            if os.path.exists(p):
-                with open(p, "rb") as f:
-                    snap[p] = f.read()
+            if os.path.lexists(p):
+                snap[p] = self.file_state(p)
         return snap
 
     def assert_refused(self, *argv):
@@ -762,7 +770,8 @@ class HardeningTests(Base):
         rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
         self.assertEqual(rc, 2, err)
         self.assertIn("is a symlink", err)
-        self.assertIn("NOTHING was written", err)
+        self.assertIn("Nothing was redeemed or written", err)
+        self.assertEqual(self.fake.requests, [], "the code was exchanged before the refusal")
         with open(victim) as f:
             self.assertEqual(f.read(), "VICTIM")
         self.assertTrue(os.path.islink(self.paths["tags"]))
@@ -878,6 +887,289 @@ class HardeningTests(Base):
                 self.assertNotIn("Traceback", err)
                 self.assertEqual({p: b for p, b in self.snapshot().items()
                                   if p in self.paths.values()}, before)
+
+
+class PreflightTests(Base):
+    """Every check that can refuse a redeem runs BEFORE the code is exchanged: exit 2
+    really means nothing was redeemed or written (the single-use code is not spent)."""
+
+    def victim(self, content="VICTIM"):
+        v = os.path.join(self.tmp, "victim-%d.json" % len(os.listdir(self.tmp)))
+        with open(v, "w") as f:
+            f.write(content)
+        return v
+
+    def everything(self):
+        snap = self.snapshot()
+        for p in (self.pkce("youtube"), self.pending("youtube"), self.yt_path):
+            if os.path.lexists(p):
+                snap[p] = self.file_state(p)
+        return snap
+
+    def assert_refused_before_exchange(self, *argv, scopes=ALL):
+        before, baks = self.everything(), sorted(self.backups())
+        self.fake.requests.clear()
+        self.respond(scopes=scopes)
+        rc, _, err = self.run_cli(*argv)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("Nothing was redeemed or written", err)
+        self.assertEqual(self.fake.requests, [], "the code was exchanged before the refusal")
+        self.assertEqual(self.everything(), before, "a file was written")
+        self.assertEqual(sorted(self.backups()), baks, "a backup was made")
+        return err
+
+    def test_symlinked_parking_file_is_refused_before_the_exchange(self):
+        _, q = self.link()
+        v = self.victim("{}")
+        os.symlink(v, self.pending())
+        err = self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]))
+        self.assertIn("symlink", err)
+        with open(v) as f:
+            self.assertEqual(f.read(), "{}")
+        self.assertTrue(os.path.islink(self.pending()))
+
+    def test_symlinked_pkce_file_is_refused_before_the_exchange(self):
+        _, q = self.link()
+        real = self.victim()
+        shutil.move(self.pkce(), real)  # the valid entry now lives behind a link
+        os.symlink(real, self.pkce())
+        with open(real, "rb") as f:
+            real_bytes = f.read()
+        err = self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]))
+        self.assertIn("symlink", err)
+        with open(real, "rb") as f:
+            self.assertEqual(f.read(), real_bytes)
+
+    def test_symlinked_consumer_is_refused_before_the_exchange_even_on_a_shortfall(self):
+        # develop checked the symlink only after the scope check, on the covered consumers
+        os.unlink(self.paths["gmail"])
+        os.symlink(self.victim(), self.paths["gmail"])
+        _, q = self.link()
+        self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]),
+                                            scopes=[s for s in ALL if s not in GMAIL])
+
+    def test_separate_flow_symlinked_target_parking_and_pkce_files(self):
+        _, q = self.link("--only", "youtube")
+        state = q["state"][0]
+        argv = ("redeem", "--only", "youtube", self.pasted(state))
+        os.symlink(self.victim(), self.yt_path)
+        self.assert_refused_before_exchange(*argv, scopes=YT)
+        os.unlink(self.yt_path)
+        os.symlink(self.victim("{}"), self.pending("youtube"))
+        self.assert_refused_before_exchange(*argv, scopes=YT)
+        os.unlink(self.pending("youtube"))
+        real = self.victim()
+        shutil.move(self.pkce("youtube"), real)
+        os.symlink(real, self.pkce("youtube"))
+        self.assert_refused_before_exchange(*argv, scopes=YT)
+
+    def test_consumer_path_that_is_a_directory_is_refused_before_the_exchange(self):
+        os.makedirs(self.paths["reports"])
+        _, q = self.link()
+        err = self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]))
+        self.assertIn("not a regular file", err)
+
+    def test_consumer_under_a_file_is_refused_before_the_exchange(self):
+        blocker = os.path.join(self.home, ".config/google-consent/blocker")
+        with open(blocker, "w") as f:
+            f.write("x")
+        self.config["consumers"]["reports"]["path"] = blocker + "/sub/reports-token.json"
+        self.save_config()
+        _, q = self.link()
+        err = self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]))
+        self.assertIn("not a directory", err)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores directory modes")
+    def test_unwritable_state_dir_is_refused_before_the_exchange(self):
+        _, q = self.link()
+        os.chmod(self.state, 0o500)
+        try:
+            err = self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]))
+        finally:
+            os.chmod(self.state, 0o700)
+        self.assertIn("not writable", err)
+
+    def test_dry_run_is_preflighted_too(self):
+        os.unlink(self.paths["tags"])
+        os.symlink(self.victim(), self.paths["tags"])
+        _, q = self.link()
+        self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]), "--dry-run")
+
+    def test_parked_response_is_preflighted_before_it_is_reused(self):
+        _, q = self.link()
+        self.respond()
+        self.assertEqual(self.run_cli("redeem", self.pasted(q["state"][0]), "--dry-run")[0], 0)
+        os.unlink(self.paths["tags"])
+        os.symlink(self.victim(), self.paths["tags"])
+        self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0]))
+        self.assertTrue(os.path.exists(self.pending()), "the parked response must stay")
+
+    def test_link_preflights_its_pkce_file(self):
+        os.makedirs(self.pkce())
+        rc, out, err = self.run_cli("link")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not a regular file", err)
+        self.assertIn("No link was issued", err)
+        self.assertEqual(out, "")
+
+    def test_parked_entry_without_a_numeric_obtained_at_is_refused(self):
+        for bad in (None, "now", True):
+            with self.subTest(obtained_at=bad):
+                _, q = self.link()
+                code = "4/0Apark-%s" % bad
+                self.respond()
+                self.assertEqual(self.run_cli("redeem", self.pasted(q["state"][0], code=code),
+                                              "--dry-run")[0], 0)
+                p = jload(self.pending())
+                entry = p[self.m.code_key(code)]
+                if bad is None:
+                    entry.pop("obtained_at")
+                else:
+                    entry["obtained_at"] = bad
+                write(self.pending(), p)
+                err = self.assert_refused_before_exchange("redeem", self.pasted(q["state"][0], code=code))
+                self.assertIn("obtained_at", err)
+                os.unlink(self.pending())
+
+    def test_cleanup_failure_after_the_write_keeps_exit_0_and_the_restart_notice(self):
+        _, q = self.link()
+        self.respond()
+        with mock.patch.object(self.m, "drop_pkce_state", side_effect=OSError("disk gone")):
+            rc, out, err = self.run_cli("redeem", self.pasted(q["state"][0]),
+                                        sessions={"/somewhere": ["google-drive-mcp"]})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("cleaning up the PKCE file failed", err)
+        self.assertIn(self.pkce(), err)
+        self.assertIn("IMPORTANT", out)
+        self.assertIn("/somewhere", out)
+        self.assertEqual(jload(self.paths["tags"])["refresh_token"], NEW_RT)
+
+    def test_cleanup_failure_on_a_testing_token_keeps_exit_4(self):
+        _, q = self.link()
+        self.respond(testing=True)
+        with mock.patch.object(self.m, "save_pkce", side_effect=self.m.UnsafePath("x")):
+            rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 4, err)
+        self.assertIn("cleaning up the PKCE file failed", err)
+
+    def test_separate_cleanup_failure_keeps_exit_0(self):
+        _, q = self.link("--only", "youtube")
+        self.respond(scopes=YT, at=YT_AT, rt=YT_RT)
+        with mock.patch.object(self.m, "drop_pkce_state", side_effect=OSError("disk gone")):
+            rc, _, err = self.run_cli("redeem", "--only", "youtube", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("cleaning up the PKCE file failed", err)
+        self.assertEqual(jload(self.yt_path)["refresh_token"], YT_RT)
+
+    def test_parking_cleanup_failure_names_the_file_that_stays(self):
+        _, q1 = self.link()
+        _, q2 = self.link()
+        self.respond()
+        for q, code in ((q1, "4/0Acode-one"), (q2, "4/0Acode-two")):
+            self.assertEqual(self.run_cli("redeem", self.pasted(q["state"][0], code=code),
+                                          "--dry-run")[0], 0)
+        key = self.m.code_key("4/0Acode-one")
+        self.assertIn(key, jload(self.pending()))
+        with mock.patch.object(self.m, "save_pending", side_effect=OSError("disk gone")):
+            rc, _, err = self.run_cli("redeem", self.pasted(q1["state"][0], code="4/0Acode-one"))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("cleaning up the parking file failed", err)
+        self.assertIn(self.pending(), err)
+        self.assertIn("can be reused with the same URL", err)
+        self.assertIn(key, jload(self.pending()))  # the parked response really stays
+
+    def test_unsafe_path_after_a_bypassed_preflight_is_exit_1(self):
+        victim = self.victim()
+        os.unlink(self.paths["tags"])
+        os.symlink(victim, self.paths["tags"])
+        _, q = self.link()
+        self.respond()
+        with mock.patch.object(self.m, "path_problem", return_value=None):
+            rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 1, err)
+        self.assertIn("symlink", err)
+        self.assertNotIn("Traceback", err)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "VICTIM")
+        self.assertTrue(os.path.islink(self.paths["tags"]))
+
+
+class TokenEndpointErrorTests(Base):
+    """An unusable token endpoint or response: exit 1, no secret on stderr, nothing written."""
+
+    def redeem_with_urlopen(self, **patch_kw):
+        _, q = self.link()
+        before = self.snapshot()
+        with mock.patch("urllib.request.urlopen", **patch_kw):
+            rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 1, err)
+        self.assertIn("ERROR redeeming the code", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.snapshot(), before)  # tokens, parking and PKCE untouched
+        self.assertFalse(os.path.exists(self.pending()))
+        self.assertEqual(self.backups(), [])
+        return err
+
+    def body(self, raw=None, read_error=None):
+        b = mock.MagicMock()
+        if read_error is not None:
+            b.read.side_effect = read_error
+        else:
+            b.read.return_value = raw
+        cm = mock.MagicMock()
+        cm.__enter__.return_value = b
+        cm.__exit__.return_value = False
+        return cm
+
+    def test_urlerror_from_the_token_endpoint_is_exit_1(self):
+        self.assertIn("URLError", self.redeem_with_urlopen(side_effect=urllib.error.URLError("down " + SECRET)))
+
+    def test_oserror_from_the_token_endpoint_is_exit_1(self):
+        self.assertIn("OSError", self.redeem_with_urlopen(side_effect=OSError("reset " + SECRET)))
+
+    def test_truncated_response_is_exit_1(self):
+        partial = b'{"access_token": "' + NEW_AT.encode()
+        err = self.redeem_with_urlopen(return_value=self.body(read_error=http.client.IncompleteRead(partial)))
+        self.assertIn("IncompleteRead", err)
+
+    def test_body_that_is_not_a_json_object_is_exit_1(self):
+        for raw in (b"[1, 2]", b'"text"', b"not json"):
+            with self.subTest(raw=raw):
+                self.redeem_with_urlopen(return_value=self.body(raw=raw))
+
+    def test_non_string_scope_or_token_type_is_a_clean_error(self):
+        good = {"access_token": NEW_AT, "refresh_token": NEW_RT, "expires_in": 3599,
+                "scope": " ".join(ALL), "token_type": "Bearer"}
+        for label, body in {"scope list": dict(good, scope=["a"]), "scope number": dict(good, scope=5),
+                            "token_type number": dict(good, token_type=1)}.items():
+            with self.subTest(label):
+                _, q = self.link()
+                before = {p: b for p, b in self.snapshot().items() if p in self.paths.values()}
+                self.respond(body=body)
+                code = "4/0Acode-" + label.replace(" ", "-")
+                rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0], code=code))
+                self.assertEqual(rc, 1, err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual({p: b for p, b in self.snapshot().items()
+                                  if p in self.paths.values()}, before)
+
+    def test_malformed_response_says_only_the_token_files_were_not_written(self):
+        _, q = self.link()
+        self.respond(body={"access_token": NEW_AT, "refresh_token": NEW_RT, "expires_in": "soon",
+                           "scope": " ".join(ALL)})
+        rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 1, err)
+        self.assertIn("token files were NOT written", err)
+        self.assertIn(self.pending(), err)
+        self.assertTrue(os.path.exists(self.pending()), "the message says the response stays parked")
+
+    def test_exit_code_docstring_lists_the_path_preflight_under_exit_2(self):
+        doc = " ".join(self.m.__doc__.split())
+        part = doc.split("Exit codes:", 1)[1].split(" 3 scope shortfall", 1)[0]
+        self.assertIn("2 usage or a refusal before the exchange", part)
+        self.assertIn("path preflight", part)
+        self.assertIn("symlink", part)
+        self.assertIn("older than 60 minutes", part)
 
 
 class SeparateConsentTests(Base):
