@@ -39,6 +39,8 @@ import {
   writeAgentModelProfile,
   writeAgentModel,
   readAgentDisplayName,
+  readAgentTagline,
+  writeAgentTagline,
   writeAgentDisplayName,
   readAgentSecurityProfile,
   writeAgentSecurityProfile,
@@ -508,6 +510,8 @@ function findBotTokenDuplicate(
 export interface AgentSummary {
   name: string
   displayName: string
+  /** Short owner-written role line shown in the team graph; '' when unset. */
+  tagline: string
   description: string
   /** The concrete model id this agent resolves to. Unchanged meaning: for a
    *  config that names a `model`, this is exactly what it always was. */
@@ -671,6 +675,7 @@ function getAgentSummary(name: string): AgentSummary {
   return {
     name,
     displayName: readAgentDisplayName(name),
+    tagline: readAgentTagline(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: modelResolution.model,
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
@@ -1961,6 +1966,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       id: string
       label: string
       role: 'main' | 'leader' | 'member'
+      tagline?: string
       reportsTo: string | null
       delegatesTo: string[]
       running?: boolean
@@ -1980,6 +1986,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         id: agentName,
         label: readAgentDisplayName(agentName),
         role: team.role,
+        tagline: readAgentTagline(agentName),
         reportsTo: team.reportsTo,
         delegatesTo: team.delegatesTo,
         running: isAgentRunning(agentName),
@@ -2002,7 +2009,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (teamMatch && method === 'GET') {
     const name = decodeURIComponent(teamMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    json(res, readAgentTeam(name))
+    json(res, { ...readAgentTeam(name), tagline: readAgentTagline(name) })
     return true
   }
 
@@ -2039,7 +2046,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
     writeAgentTeam(name, next)
-    json(res, { ok: true, team: next, warnings, cycleRejected })
+    // The tagline lives beside the team block (a top-level config key, like
+    // displayName); only touched when the request carries it.
+    if (typeof data.tagline === 'string') writeAgentTagline(name, data.tagline)
+    json(res, { ok: true, team: next, tagline: readAgentTagline(name), warnings, cycleRejected })
     return true
   }
 

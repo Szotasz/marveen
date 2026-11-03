@@ -7413,6 +7413,29 @@ function cronCadence(cron) {
 }
 const CADENCE_ICON = { 0: '⚡', 1: '☀️', 2: '📅', 3: '🗓️', 5: '•' }
 
+// A task the runner skips (#2429). GET /api/schedules carries `registry` per task:
+// 'ok' when the runner fires it, else the reason it does not ('unregistered',
+// 'hash-mismatch', 'no-hash', 'registry-error'). Such a row says "not firing"
+// in place of active/paused, with the reason and the fix in the row itself (a
+// tooltip alone is invisible on touch). An answer without the field (an older
+// server) renders as before.
+const SCHEDULE_REGISTRY_REASONS = ['unregistered', 'hash-mismatch', 'no-hash', 'registry-error']
+
+function scheduleNotFiring(task) {
+  return !!task && typeof task.registry === 'string' && task.registry !== 'ok'
+}
+
+function scheduleStatusBadge(task) {
+  if (scheduleNotFiring(task)) return `<span class="badge badge-not-firing">${t('tasks.status.not_firing')}</span>`
+  return `<span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>`
+}
+
+function scheduleNotFiringNote(task) {
+  if (!scheduleNotFiring(task)) return ''
+  const reason = SCHEDULE_REGISTRY_REASONS.includes(task.registry) ? t('tasks.registry.' + task.registry) : task.registry
+  return `<div class="schedule-not-firing">${escapeHtml(t('tasks.status.not_firing_tip', { reason, name: task.dirName || task.name }))}</div>`
+}
+
 function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
@@ -7426,13 +7449,14 @@ function makeScheduleRow(task) {
         <div class="schedule-title">
           ${escapeHtml(task.description || task.name)}
           ${task.type === 'heartbeat' ? '<span class="badge badge-heartbeat">💓 heartbeat</span>' : ''}
-          <span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
+          ${scheduleStatusBadge(task)}
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
           <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
+        ${scheduleNotFiringNote(task)}
       </div>
       <div class="schedule-actions">
         <button class="btn-icon" data-action="run" title="${t('tasks.btn.run_now')}">
@@ -13060,6 +13084,10 @@ function renderTeamGraph(container, data, opts = {}) {
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
+    // The owner-written tagline ("P+R", "JIRA ügyintéző") says what the agent
+    // does; when set it takes the role line, and the role moves to the tooltip.
+    const tagline = (node.tagline || '').trim()
+    if (tagline) div.title = roleLabel
     // Same pulsing dot the agent cards use, instead of the '●' that used to be
     // baked into the translation -- a static glyph read as "stopped" next to a
     // card whose dot was breathing.
@@ -13075,7 +13103,7 @@ function renderTeamGraph(container, data, opts = {}) {
     div.innerHTML = `
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
-      <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
+      <div class="team-node-meta${tagline ? ' team-node-tagline' : ''}">${escapeHtml(tagline || roleLabel)}</div>
       <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
     if (node.id !== mainAgentId) {
@@ -13768,6 +13796,8 @@ document.getElementById('chatRefreshBtn')?.addEventListener('click', () => {
 function renderTeamEditor(agent, allAgents) {
   const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
+  const taglineInput = document.getElementById('editTeamTagline')
+  if (taglineInput) taglineInput.value = agent.tagline || ''
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
   const emptyOpt = document.createElement('option')
@@ -13821,6 +13851,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   const delegates = Array.from(document.querySelectorAll('#editTeamDelegatesList input[type=checkbox]:checked')).map(cb => cb.value)
   const trustFrom = Array.from(document.querySelectorAll('#editTeamTrustFromList input[type=checkbox]:checked')).map(cb => cb.value)
   const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
+  const tagline = (document.getElementById('editTeamTagline')?.value || '').trim()
   const originalText = btn.textContent
   btn.disabled = true
   btn.textContent = t('team.save_saving')
@@ -13834,6 +13865,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         delegatesTo: role === 'leader' ? delegates : [],
         trustFrom,
         autoDelegation: role === 'leader' ? autoDelegation : false,
+        tagline,
       }),
     })
     if (!res.ok) throw new Error()
@@ -14295,7 +14327,7 @@ async function loadOverview() {
     const taskDiff = d.tasksToday - d.tasksYesterday
     document.getElementById('statTasksSub').textContent = taskDiff === 0 ? t('overview.stat.same_as_yesterday') : (taskDiff > 0 ? '+' + taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim() : taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim())
     document.getElementById('statMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
-    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
+    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${t('overview.stat.sub.categories', { n: d.memories.categories })}`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     renderQuotaStrip(d.quota, d.quotaFable)

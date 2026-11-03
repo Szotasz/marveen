@@ -42,6 +42,7 @@ import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
@@ -2222,6 +2223,17 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   }
   if (extraLaunch.skipped.length > 0) {
     logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')
+  }
+  // GROMZOMXDINSTALL1102 Q5: the staged gromzo-local marketplace registered in the shared
+  // ~/.claude/plugins BEFORE this agent's isolated config is seeded from it (gromzo-marketplace.ts).
+  if (extraLaunch.gromzo === 'on') {
+    const reg = ensureGromzoMarketplace({
+      pluginsDir: join(homedir(), '.claude', 'plugins'),
+      pluginRoot: join(homedir(), 'marveen-local-plugins', 'gromzo'),
+      projectRoot: PROJECT_ROOT,
+    })
+    if (reg === 'registered') logger.info({ name }, 'gromzo: the gromzo-local marketplace registered')
+    else if (reg !== 'present') logger.warn({ name, reg }, 'gromzo: the gromzo-local marketplace is not registered')
   }
   if (extraLaunch.gromzo === 'skipped-no-socket' || extraLaunch.gromzo === 'skipped-bad-name') {
     logger.warn({ name, gromzo: extraLaunch.gromzo }, 'gromzo: configured but not loaded (no usable mxd agent.sock, or a name mxd refuses)')

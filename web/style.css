@@ -495,6 +495,9 @@ nav { display: flex; gap: 4px; }
 }
 .team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
 .team-node-meta { font-size: 12px; color: var(--text-muted); }
+/* Owner-written tagline: it says what the agent does, so it reads stronger
+   than the muted role line it replaces, and wraps instead of widening the node. */
+.team-node-tagline { color: var(--text); text-align: center; overflow-wrap: anywhere; }
 .team-connector {
   width: 2px;
   height: 16px;
@@ -3009,6 +3012,16 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .badge-paused {
   background: rgba(217, 119, 87, 0.12);
   color: var(--accent);
+}
+.badge-not-firing {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.schedule-not-firing {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .badge-heartbeat {
   background: rgba(200, 80, 120, 0.12);

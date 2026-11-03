@@ -64,6 +64,10 @@ if [ -n "$PINNED_TZ" ]; then
     <string>$PINNED_TZ</string>"
 fi
 retire_legacy_helper_label "$PROJECT_DIR" channel-keepalive-probe "$LABEL" "$HOME/Library/LaunchAgents"
+# The PATH the helper runs with: the fixed list, plus the dir tmux was found in
+# when that dir is outside it (a tmux only in ~/.local/bin was invisible here).
+. "$SCRIPT_DIR/lib/helper-path.sh"
+HELPER_PATH="$(helper_launchd_path)"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -89,7 +93,7 @@ cat > "$PLIST" <<PLIST_EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>$HELPER_PATH</string>
     <key>HOME</key>
     <string>$HOME</string>
     <key>USER</key>

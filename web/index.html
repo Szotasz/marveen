@@ -3105,6 +3105,11 @@
         <!-- Tab: Team -->
         <div class="tab-panel" id="tabTeam" hidden>
           <div class="form-group">
+            <label for="editTeamTagline" data-i18n="agents.team.tagline_label">Mivel foglalkozik</label>
+            <input type="text" id="editTeamTagline" maxlength="60" data-i18n-placeholder="agents.team.tagline_placeholder" placeholder="pl. P+R, JIRA ügyintéző">
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px" data-i18n="agents.team.tagline_hint">A csapatfán a név alatt jelenik meg. Üresen hagyva a szerep (vezető/beosztott) látszik.</small>
+          </div>
+          <div class="form-group">
             <label for="editTeamRole" data-i18n="agents.team.role_label">Szerep</label>
             <select id="editTeamRole">
               <option value="member" data-i18n="agents.team.member">Beosztott (member)</option>
