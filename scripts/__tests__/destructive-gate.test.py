@@ -18,6 +18,7 @@ A mereskor ket VALODI hitelesito-fajl-olvasas allt ilyen ertelmezo-torzsben; egy
 
 Futtatas: python3 <ezafajl>   Exit 0 = minden teszt zold.
 """
+import atexit
 import importlib.util
 import json
 import os
@@ -71,6 +72,29 @@ def blocks(cmd):
         return False
     except Blocked:
         return True
+
+
+# A push-engedo esetek a gazda gepenek git-configjatol FUGGETLENUL (Szotasz, PR #1957 review).
+# A kapu a push elott a TENYLEGES core.hooksPath-t kerdezi a gittol, es cwd nelkul azt a repot
+# es azt a felhasznaloi configot latja, amelyikbol a teszt fut: egy gazdan, akinek a configja
+# hooksPath-t ad, minden "sima push szabad" eset elbukott. Ezert a teljes futas ures globalis
+# configgal es rendszer-config nelkul megy (a kapu az env-et az os.environ-bol epiti, tehat ez
+# eleri), es a push-engedo esetek egy eldobhato, kapu nelkuli repoban allnak, nem a gazda
+# repojaban. A hooksPath-fixture-ok (12. szakasz) a sajat repoikat ugyanigy kapjak.
+_ISO = tempfile.mkdtemp(prefix="dgate-iso-")
+_ISO_GLOBAL = os.path.join(_ISO, "gitconfig-empty")
+open(_ISO_GLOBAL, "w").close()
+os.environ["GIT_CONFIG_GLOBAL"] = _ISO_GLOBAL
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+ISO = os.path.join(_ISO, "repo")
+os.makedirs(ISO)
+subprocess.run(["git", "init", "-q", "-b", "main"], cwd=ISO, check=True, capture_output=True)
+atexit.register(shutil.rmtree, _ISO, True)
+
+
+def blocks_iso(cmd):
+    """blocks(), de az eldobhato, kapu nelkuli repoban: a push-engedo esetekhez."""
+    return blocks_cwd(cmd, ISO)
 
 
 def blocks_path(path):
@@ -332,11 +356,11 @@ check("a git sajat -C kapcsolojan is atlat", blocks("git -C /tmp push origin mai
 
 print()
 print("NEGATIV kontroll -- sajat munkaagra valo push, ez a MUNKA resze:")
-check("egyszeru munkaag", not blocks(GPUSH + " origin munkaag"))
-check("upstream beallitasa", not blocks(GPUSH + " -u origin HEAD:munkaag"))
-check("fork-URL-re, tokennel", not blocks(
+check("egyszeru munkaag", not blocks_iso(GPUSH + " origin munkaag"))
+check("upstream beallitasa", not blocks_iso(GPUSH + " -u origin HEAD:munkaag"))
+check("fork-URL-re, tokennel", not blocks_iso(
       GPUSH + " https://user:x@github.com/valaki/repo.git munkaag:munkaag"))
-check("cimke", not blocks(GPUSH + " origin v1.2.3"))
+check("cimke", not blocks_iso(GPUSH + " origin v1.2.3"))
 check("mas git alparancs valtozatlan", not blocks("git commit -m 'fix'"))
 
 
@@ -361,7 +385,7 @@ check("cwd nelkul a relativ ut nem eldontheto",
       _hook_cwd_exit(RM + " -rf build", None) == 2)
 check("abszolut ut a gyoker alatt cwd nelkul is atmegy",
       _hook_cwd_exit(RM + " -rf " + ROOT + "/build", None) == 0)
-check("munkaagra push atengedve", _hook_cwd_exit(GPUSH + " origin munkaag", ROOT) == 0)
+check("munkaagra push atengedve", _hook_cwd_exit(GPUSH + " origin munkaag", ISO) == 0)
 check("main-re push blokkolva", _hook_cwd_exit(GPUSH + " origin main", ROOT) == 2)
 
 
@@ -381,7 +405,7 @@ check("if + eros push blokkolva", blocks("if " + GPUSH + " --force origin main; 
 check("if + rm a gyoker alol atengedve",
       not blocks_cwd("if " + RM + " -rf build; then echo ok; fi", ROOT))
 check("if + munkaagra push atengedve",
-      not blocks_cwd("if " + GPUSH + " origin munkaag; then echo ok; fi", ROOT))
+      not blocks_cwd("if " + GPUSH + " origin munkaag; then echo ok; fi", ISO))
 check("artalmatlan if-feltetel valtozatlanul atmegy",
       not blocks("if systemctl --user is-active foo; then echo A; else echo B; fi"))
 check("teszt-feltetel atmegy", not blocks("if [ -f /tmp/x ]; then echo van; fi"))
@@ -475,7 +499,7 @@ print("A 'git -C <ut> push' alak is push:")
 check("git -C: eroltetett push blokkolva",
       blocks("git -C " + GROOT + " push --force origin main"))
 check("git -C: munkaagra push atengedve",
-      not blocks("git -C " + GROOT + " push origin munkaag"))
+      not blocks("git -C " + ISO + " push origin munkaag"))
 
 
 # --- 11. A HEREDOC-TORZS: PROGRAM VAGY EGY PROGRAM BEMENETE? (79d8b59c) -----
@@ -755,7 +779,7 @@ check("git push --no-veri (egyertelmu rovidites: csak a verify kezdodik igy)",
 # A `--no-ver` ketertelmu (verify / verbose): a git maga elutasitja ("ambiguous option"),
 # push nem tortenik, tehat a kapunak nincs mit tiltania. Merve 2026-10-13.
 check("git push --no-ver ketertelmu: a git maga hibazik, a kapu nem tilt",
-      not blocks(GPUSH + " --no-ver origin munkaag"))
+      not blocks_iso(GPUSH + " --no-ver origin munkaag"))
 check("git push --force-w (a --force-with-lease egyertelmu rovidites)",
       blocks(GPUSH + " --force-w origin munkaag"))
 check("git push --del (a --delete rovidites)", blocks(GPUSH + " --del origin munkaag"))
@@ -763,8 +787,8 @@ check("git push --mir (a --mirror rovidites)", blocks(GPUSH + " --mir origin"))
 check("git push --prune (tavoli agak torlese)", blocks(GPUSH + " --prune origin 'refs/heads/*:refs/heads/*'"))
 check("git push -fu (egybeirt rovid kapcsolo, benne -f)", blocks(GPUSH + " -fu origin munkaag"))
 check("git push -df (egybeirt, benne -d)", blocks(GPUSH + " -df origin munkaag"))
-check("git push -u (a set-upstream szabad)", not blocks(GPUSH + " -u origin munkaag"))
-check("git push -v (verbose szabad)", not blocks(GPUSH + " -v origin munkaag"))
+check("git push -u (a set-upstream szabad)", not blocks_iso(GPUSH + " -u origin munkaag"))
+check("git push -v (verbose szabad)", not blocks_iso(GPUSH + " -v origin munkaag"))
 check("git -c core.hooksPath=... push",
       blocks("git -c core.hooksPath=/dev/null push origin munkaag"))
 check("kisbetus core.hookspath", blocks("git -c core.hookspath=/tmp/x push origin munkaag"))
@@ -825,21 +849,69 @@ check("cd docs && find . -name '*.md' (csak keres)", not blocks_cwd("cd docs && 
 check("cd .git && cat config (olvasas)", not blocks_cwd("cd .git && cat config", PROJ))
 
 print("POZITIV kontroll -- a core.hooksPath TENYLEGES erteke (a push ele):")
+# A kapu akkor blokkol, ha a dispatcher a <common>/hooks-ban TELEPITVE van, es a git egy MASIK
+# konyvtarban keresne a hookokat (Szotasz, PR #1957 review: nem minden hooksPath a kapuk
+# kikapcsolasa). A fixture-repok ezert a dispatcher jelolo sorat kapjak a .git/hooks/pre-push-ba:
+# ugyanazt a sort, amit a harom telepito ir (install-secret-gate-hook.sh PUSH_MARK).
+_MARK = "marveen-pre-push-dispatcher"
 _td = tempfile.mkdtemp(prefix="dgate-hp-", dir=os.path.dirname(ROOT))
 try:
     def _git(args, cwd):
         subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True)
-    clean = os.path.join(_td, "clean"); os.makedirs(clean); _git(["init", "-q", "-b", "main"], clean)
-    check("tiszta repo: a push szabad", not blocks_cwd(GPUSH + " origin munkaag", clean))
-    setrepo = os.path.join(_td, "set"); os.makedirs(setrepo); _git(["init", "-q", "-b", "main"], setrepo)
+
+    def _write_dispatcher(hooks_dir):
+        os.makedirs(hooks_dir, exist_ok=True)
+        with open(os.path.join(hooks_dir, "pre-push"), "w") as fh:
+            fh.write("#!/usr/bin/env bash\n# " + _MARK + " : fixture\nexit 0\n")
+
+    def _repo(name, dispatcher):
+        d = os.path.join(_td, name); os.makedirs(d); _git(["init", "-q", "-b", "main"], d)
+        if dispatcher:
+            _write_dispatcher(os.path.join(d, ".git", "hooks"))
+        return d
+
+    clean = _repo("clean", True)
+    check("telepitett kapuk, hooksPath nelkul: a push szabad", not blocks_cwd(GPUSH + " origin munkaag", clean))
+    setrepo = _repo("set", True)
     _git(["config", "core.hooksPath", "/tmp/nowhere"], setrepo)
-    check("a repo configjaban hooksPath: BLOKK", blocks_cwd(GPUSH + " origin munkaag", setrepo))
+    check("telepitett kapuk, a repo configjaban hooksPath mashova: BLOKK",
+          blocks_cwd(GPUSH + " origin munkaag", setrepo))
     check("git -C <repo> push: BLOKK", blocks_cwd("git -C " + setrepo + " push origin munkaag", clean))
-    inc = os.path.join(_td, "inc"); os.makedirs(inc); _git(["init", "-q", "-b", "main"], inc)
+    sub = os.path.join(setrepo, "src"); os.makedirs(sub)
+    check("ugyanaz alkonyvtarbol (a rev-parse abszolut utat ad): BLOKK",
+          blocks_cwd(GPUSH + " origin munkaag", sub))
+    inc = _repo("inc", True)
     with open(os.path.join(_td, "extra.cfg"), "w") as fh:
         fh.write("[core]\n\thooksPath = /tmp/nowhere\n")
     _git(["config", "include.path", os.path.join(_td, "extra.cfg")], inc)
-    check("include.path-on at huzott hooksPath: BLOKK", blocks_cwd(GPUSH + " origin munkaag", inc))
+    check("include.path-on at huzott hooksPath mashova: BLOKK", blocks_cwd(GPUSH + " origin munkaag", inc))
+    copied = _repo("copied", True)
+    _write_dispatcher(os.path.join(_td, "copied-hooks"))
+    _git(["config", "core.hooksPath", os.path.join(_td, "copied-hooks")], copied)
+    check("masik konyvtarba MASOLT dispatcher: a konyvtar szamit, nem a jelolo sor, BLOKK",
+          blocks_cwd(GPUSH + " origin munkaag", copied))
+    print("NEGATIV kontroll -- hooksPath, ami NEM kapcsolja ki a kapukat (Szotasz, PR #1957):")
+    own = _repo("own", True)
+    _git(["config", "core.hooksPath", os.path.join(own, ".git", "hooks")], own)
+    check("hooksPath a SAJAT .git/hooks-ra (abszolut): a kapuk futnak, szabad",
+          not blocks_cwd(GPUSH + " origin munkaag", own))
+    subown = os.path.join(own, "src"); os.makedirs(subown)
+    check("ugyanaz alkonyvtarbol: szabad", not blocks_cwd(GPUSH + " origin munkaag", subown))
+    ownrel = _repo("ownrel", True)
+    _git(["config", "core.hooksPath", ".git/hooks"], ownrel)
+    check("hooksPath a sajat .git/hooks-ra (relativ): szabad",
+          not blocks_cwd(GPUSH + " origin munkaag", ownrel))
+    husky = _repo("husky", False)
+    os.makedirs(os.path.join(husky, ".husky", "_"))
+    _git(["config", "core.hooksPath", ".husky/_"], husky)
+    check("husky repo, a kapuk sosem voltak telepitve: szabad",
+          not blocks_cwd(GPUSH + " origin munkaag", husky))
+    nogate = _repo("nogate", False)
+    _git(["config", "core.hooksPath", "/tmp/nowhere"], nogate)
+    check("kapuk nelkuli repo, hooksPath barhova: nincs mit kikapcsolni, szabad",
+          not blocks_cwd(GPUSH + " origin munkaag", nogate))
+    check("hooksPath nincs, dispatcher sincs (az eldobhato repo): szabad",
+          not blocks_cwd(GPUSH + " origin munkaag", ISO))
 finally:
     shutil.rmtree(_td, ignore_errors=True)
 print("NEGATIV kontroll -- olvasas es visszaallitas szabad:")
@@ -860,8 +932,8 @@ check("chmod mas helyen", not blocks("chmod +x scripts/my-tool.sh"))
 check("sima git commit", not blocks("git commit -m x"))
 
 print("NEGATIV kontroll -- a sima munkaag-push tovabbra is szabad:")
-check("git push origin munkaag", not blocks(GPUSH + " origin munkaag"))
-check("git push --verify (a hook BEkapcsolasa)", not blocks(GPUSH + " --verify origin munkaag"))
+check("git push origin munkaag", not blocks_iso(GPUSH + " origin munkaag"))
+check("git push --verify (a hook BEkapcsolasa)", not blocks_iso(GPUSH + " --verify origin munkaag"))
 check("git commit --no-verify NEM push (a pre-commit a CI-vel egyutt kapu)",
       not blocks("git commit --no-verify -m x"))
 

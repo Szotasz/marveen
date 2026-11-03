@@ -986,13 +986,40 @@ def _hooks_tamper_git(toks, argstart=0):
           'szemelyes-adat kapu, secret-gate) kikapcsolo beallitas. Nem az ugynok dontese.')
 
 
+# A pre-push dispatcher jelolo sora: scripts/install-secret-gate-hook.sh PUSH_MARK irja a
+# <common-dir>/hooks/pre-push fajlba. Ebbol tudja a kapu, hogy a repo-ban EGYALTALAN telepitve
+# vannak-e a push-kapuk, es hogy a git tenylegesen hasznalt hook-konyvtara az-e, amelyikben.
+_PUSH_DISPATCHER_MARK = 'marveen-pre-push-dispatcher'
+
+
+def _dispatcher_installed(hooks_dir):
+    """True / False: all-e a dispatcher a <hooks_dir>/pre-push-ban; None: a fajl van, de nem olvashato."""
+    try:
+        with open(os.path.join(hooks_dir, 'pre-push'), 'r', errors='replace') as fh:
+            return _PUSH_DISPATCHER_MARK in fh.read()
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return False
+    except OSError:
+        return None
+
+
 def _effective_hooks_path(toks, argstart, pi, cwd, cmd_idx):
     """A core.hooksPath TENYLEGES erteke ahhoz a pushhoz, amit a parancs inditana.
 
     A parancsszoveg-mintazas mindig egy irasmoddal le van maradva (Sam, 2. kor: alternativ
     config-fajl, include.path, cd utani relativ ut). Ez a lepes nem az IRAST nezi, hanem az
-    EREDMENYT: ugyanazzal a `-C` / inline kornyezettel lekerdezi, mit latna a git. Ha barmely
-    config-forras (repo, user, system, include) hooksPath-t ad, a kapuk nem futnanak: blokk.
+    EREDMENYT: ugyanazzal a `-C` / inline kornyezettel lekerdezi, mit latna a git.
+
+    Nem minden hooksPath a kapuk kikapcsolasa (Szotasz, PR #1957 review): egy repo, amelyben
+    a push-kapuk sosem voltak telepitve (husky `.husky/_`), vagy amelynek a hooksPath-ja a
+    sajat `.git/hooks`-ara mutat, ugyanugy futtatja (vagy ugyanugy nem futtatja) a kapukat,
+    mint hooksPath nelkul. Ezert ha van hooksPath, a kapu a gittol kerdezi meg, hol keresne
+    TENYLEGESEN a hookokat (`rev-parse --path-format=absolute --git-path hooks`), es hol a
+    kozos `.git` (`--git-common-dir`), ahova a telepito a dispatchert irja. Blokk CSAK akkor,
+    ha a dispatcher a `<common>/hooks`-ban telepitve van, es a git egy MASIK konyvtarban
+    keresne: akkor a telepitett kapuk nem futnanak. Egy masik konyvtarba masolt dispatcher
+    nem oldja fel: a konyvtarnak kell egyeznie, nem a jelolo sornak. Ha a git valasza nem
+    ertelmezheto (regi git, nem repo, hiba): blokk, mint eddig (fail-closed).
 
     Amit NEM lat: egy fajl, amely CSAK ugyanabban a parancsban jon letre (`printf > /tmp/g &&
     GIT_CONFIG_GLOBAL=/tmp/g git push`). Ezt a kornyezeti-valtozo szabaly fogja (a
@@ -1020,10 +1047,38 @@ def _effective_hooks_path(toks, argstart, pi, cwd, cmd_idx):
         block('git push: a core.hooksPath tenyleges erteket nem sikerult lekerdezni, a kapu ezert '
               'nem tudja, futnanak-e a push-kapuk. Nem engedi at.')
         return
-    if r.returncode == 0 and r.stdout.strip():
-        origin = r.stdout.strip().splitlines()[0].split('\t')[0][:80]
-        block('git push: a core.hooksPath BE VAN ALLITVA (%s), a pre-push kapuk (force-guard, '
-              'szemelyes-adat kapu) ezzel nem futnanak. Nem az ugynok dontese.' % origin)
+    if r.returncode != 0 or not r.stdout.strip():
+        return                          # nincs hooksPath sehonnan: a git a <common>/hooks-ot hasznalja
+    origin = r.stdout.strip().splitlines()[0].split('\t')[0][:80]
+    # Van hooksPath. Hol keresne a git a hookokat, es hol a kozos .git (a telepito celja)?
+    # `--path-format=absolute` kotelezo: nelkule a valasz a cwd-hez kepest relativ (merve git 2.53:
+    # `../.git/hooks` egy alkonyvtarbol), es egy regi git a kapcsolot nem ismeri (rc 128 -> blokk).
+    try:
+        p = subprocess.run(['git'] + globalflags + ['rev-parse', '--path-format=absolute',
+                                                     '--git-path', 'hooks', '--git-common-dir'],
+                           cwd=cwd or None, env=env, capture_output=True, text=True, timeout=8)
+    except (subprocess.TimeoutExpired, OSError):
+        p = None
+    lines = p.stdout.splitlines() if p is not None and p.returncode == 0 else []
+    if len(lines) != 2 or not lines[0].strip() or not lines[1].strip():
+        block('git push: a core.hooksPath BE VAN ALLITVA (%s), es a kapu nem tudta lekerdezni, hol '
+              'keresne a git a hookokat (rev-parse --git-path hooks). Nem engedi at.' % origin)
+        return
+    effective = os.path.realpath(lines[0].strip())
+    installed_dir = os.path.realpath(os.path.join(lines[1].strip(), 'hooks'))
+    installed = _dispatcher_installed(installed_dir)
+    if installed is None:
+        block('git push: a core.hooksPath BE VAN ALLITVA (%s), es a telepitett pre-push (%s) nem '
+              'olvashato, a kapu ezert nem tudja, futnanak-e a push-kapuk. Nem engedi at.'
+              % (origin, installed_dir))
+        return
+    if not installed:
+        return                          # ebben a repo-ban nincsenek push-kapuk: nincs mit kikapcsolni
+    if effective == installed_dir:
+        return                          # a hooksPath oda mutat, ahol a kapuk vannak: futnak
+    block('git push: a core.hooksPath (%s) nem a push-kapuk konyvtarara mutat: a kapuk (force-guard, '
+          'szemelyes-adat kapu) itt vannak telepitve: %s, a git viszont itt keresne: %s, tehat nem '
+          'futnanak. Nem az ugynok dontese.' % (origin, installed_dir, effective))
 
 
 def _check_git(toks, argstart, cwd=None, cmd_idx=None):
