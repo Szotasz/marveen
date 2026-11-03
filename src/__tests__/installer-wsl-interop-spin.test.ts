@@ -181,7 +181,7 @@ describe('install-linux.sh warns about the WSL interop spin before 3.0.1', () =>
     expect(copy).toHaveLength(2)
     for (const l of copy) {
       expect(l).not.toMatch(/[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/)
-      expect(l).not.toMatch(/[–—]/)
+      expect(l).not.toMatch(/[\u2013\u2014]/)
     }
   })
 })
