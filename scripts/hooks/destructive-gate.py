@@ -632,7 +632,227 @@ def _git_push_index(toks, argstart):
     return None
 
 
-def _check_git(toks, argstart):
+# A `git push` HOSSZU kapcsoloi (git 2.46). A git minden EGYERTELMU roviditest elfogad
+# (`--force-w` = `--force-with-lease`), a kapu pedig eddig pontos nevre illesztett: a rovidites
+# athaladt. Egy ketertelmu rovidites (`--no-ver`: verify/verbose) a gitnel hiba, tehat nincs push.
+_PUSH_BOOL_LONG = ['all', 'branches', 'prune', 'mirror', 'delete', 'tags', 'follow-tags',
+                   'atomic', 'dry-run', 'porcelain', 'force', 'force-with-lease',
+                   'force-if-includes', 'thin', 'progress', 'verbose', 'quiet', 'set-upstream',
+                   'signed', 'verify', 'recurse-submodules']
+PUSH_LONG_OPTIONS = set(_PUSH_BOOL_LONG) | {'no-' + o for o in _PUSH_BOOL_LONG} | {
+    'repo', 'receive-pack', 'exec', 'push-option', 'ipv4', 'ipv6'}
+
+
+def _resolve_push_long(flag):
+    """A `--kapcsolo[=ertek]` teljes neve, vagy None, ha ismeretlen/ketertelmu."""
+    name = flag[2:].split('=', 1)[0]
+    if name in PUSH_LONG_OPTIONS:
+        return name
+    cands = [o for o in PUSH_LONG_OPTIONS if o.startswith(name)]
+    return cands[0] if len(cands) == 1 else None
+
+
+# A `.git/hooks` MUTALASA: a push-kapuk fajljai (pre-push, pre-push.d/*, pre-commit.d/*). A
+# dispatcher ma mar hibanak veszi a nem futtathato tagot, de a tag TORLESE/atirasa/lecserelese
+# ugyanazt a kapu-kikapcsolast jelenti, ezert azokat a parancsokat tiltja a kapu, amelyek
+# fajlt irnak, mozgatnak, torolnek vagy jogot valtoztatnak. Olvasas (cat, ls, grep) szabad.
+HOOKS_MUTATORS = {'chmod', 'chown', 'chattr', 'mv', 'rm', 'cp', 'ln', 'install', 'truncate',
+                  'tee', 'sed', 'dd', 'touch', 'rmdir', 'unlink', 'rsync', 'patch', 'perl', 'awk'}
+# A kapuk fajljai, ES minden fajl, amelybe a core.hooksPath-t be lehet irni: a repo configja
+# (`.git/config`, `config.worktree`) es a felhasznaloi gitconfig. A `printf ... >> .git/config`
+# ugyanolyan tartos kikapcsolas, mint a `git config core.hooksPath X`, csak a parancsnev nem
+# `git` (Sam, SULYOS 2).
+_GITCFG = (r'(\.git/(hooks(/|$|[\s\'"])|config($|[\s\'"]|\.worktree))'
+           r'|\.gitconfig($|[\s\'"])|\.config/git/config($|[\s\'"]))')
+_HOOKS_PATH = re.compile(r'(^|[\s/\'"=])' + _GITCFG)
+_HOOKS_REDIRECT = re.compile(r'>{1,2}\s*[^\s;|&<>]*(\.git/(hooks/|config)|\.gitconfig|\.config/git/config)')
+_FIND_ACTIONS = {'-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'}
+
+
+_REDIRECT_TARGET = re.compile(r'>{1,2}\s*([^\s;|&<>]+)')
+
+
+def _is_gate_path(tok, cwd):
+    """Mutat-e ez az argumentum a kapuk fajljaira (.git/hooks, a git config fajlok)?
+
+    A nyers szoveg ES a munkakonyvtarhoz kepest feloldott ut is szamit: a `cd .git && ... >> config`
+    es a `cd .git/hooks/pre-push.d && find . -delete` alakban az ut relativ, a szoveg onmagaban
+    nem tartalmazza a `.git/...` reszt (Sam, 2. kor). Ismeretlen cwd + relativ ut: csak a nyers
+    szoveg illesztese tortenik meg.
+    """
+    if _HOOKS_PATH.search(' ' + tok + ' '):
+        return True
+    if tok.startswith('-') or not tok:
+        return False
+    resolved = _resolve(tok, cwd)
+    return bool(resolved and _HOOKS_PATH.search(' ' + resolved + ' '))
+
+
+def _check_hooks_dir(base, toks, argstart, seg, cwd=None):
+    for target in _REDIRECT_TARGET.findall(seg):
+        if _is_gate_path(target, cwd):
+            block('Atiranyitas a .git/hooks vagy egy git config fajl ala: a push/commit kapuk '
+                  'fajljainak atirasa. Nem az ugynok dontese.')
+    args = [t for t, _sp in toks[argstart:]]
+    touches = any(_is_gate_path(t, cwd) for t in args)
+    if base == 'find' and touches and any(t in _FIND_ACTIONS for t in args):
+        block('find ... -delete/-exec a .git/hooks vagy a git config fajlokon: a push/commit kapuk '
+              'eltavolitasa vagy atirasa. Nem az ugynok dontese.')
+    if base in HOOKS_MUTATORS and touches:
+        block('%s a .git/hooks alatt: a push/commit kapuk (force-guard, szemelyes-adat kapu, '
+              'secret-gate) fajljainak modositasa vagy eltavolitasa. Nem az ugynok dontese.' % base)
+
+
+_READ_CONFIG_FLAGS = {'--get', '--get-all', '--get-regexp', '--unset', '--unset-all', '--list', '-l'}
+
+
+_CONFIG_VALUE_FLAGS = {'--file', '-f', '--blob', '--type', '-t', '--default'}
+_TAMPER_KEYS = ('core.hookspath', 'include.path', 'includeif.')
+
+
+def _hooks_tamper_git(toks, argstart=0):
+    """core.hooksPath BARMELY git-hivasban: a pre-push/pre-commit kapuk kikapcsolasa.
+
+    A korabbi szabaly csak a `git push` szegmensen BELUL lato `-c core.hooksPath=` alakot fogta;
+    a `git config core.hooksPath X` kulon parancs TARTOSAN kikapcsolta a kapukat, utana a sima
+    push mar tiszta volt (Sam, 013b1bb9). Olvasas es a beallitas TOROLESE (visszaallitas) szabad:
+    `git config core.hooksPath` (csak a kulcs), `git config get ...`, `--get`, `--unset`, `--list`.
+    """
+    text = ' '.join(t for t, _sp in toks).lower()
+    # Az `include.path` / `includeIf.*` ugyanazt tudja, mint a core.hooksPath: egy MASIK fajlbol
+    # huzza be, tehat a `git config include.path /tmp/g` tartosan, kozvetve kapcsolja ki a kapukat
+    # (Sam, 2. kor).
+    if not any(k in text for k in _TAMPER_KEYS):
+        return
+    # a git sajat globalis kapcsoloi: `-c core.hooksPath=X` mindig iras (arra az egy hivasra is)
+    i = argstart
+    while i < len(toks):
+        t = toks[i][0]
+        if t == '-c' and i + 1 < len(toks) and any(k in toks[i + 1][0].lower() for k in _TAMPER_KEYS):
+            block('git -c core.hooksPath=...: a pre-push/pre-commit kapukat kikapcsolo alak. '
+                  'Nem az ugynok dontese.')
+        if t in ('-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'):
+            i += 2
+            continue
+        if t.startswith('-'):
+            i += 1
+            continue
+        break
+    if i < len(toks) and toks[i][0] == 'config':
+        pos, skip = [], False
+        for t, _sp in toks[i + 1:]:
+            if skip:
+                skip = False
+                continue
+            if t in _CONFIG_VALUE_FLAGS:
+                skip = True
+                continue
+            if not t.startswith('-'):
+                pos.append(t)
+        if (pos and pos[0] in ('get', 'list')) or len(pos) == 1:
+            return                      # olvasas: csak a kulcs, vagy `get`/`list`
+    if any(t in _READ_CONFIG_FLAGS for t, _sp in toks):
+        return
+    block('git + core.hooksPath / include.path: a pre-push/pre-commit kapukat (force-guard, '
+          'szemelyes-adat kapu, secret-gate) kikapcsolo beallitas. Nem az ugynok dontese.')
+
+
+# A pre-push dispatcher jelolo sora: scripts/install-secret-gate-hook.sh PUSH_MARK irja a
+# <common-dir>/hooks/pre-push fajlba. Ebbol tudja a kapu, hogy a repo-ban EGYALTALAN telepitve
+# vannak-e a push-kapuk, es hogy a git tenylegesen hasznalt hook-konyvtara az-e, amelyikben.
+_PUSH_DISPATCHER_MARK = 'marveen-pre-push-dispatcher'
+
+
+def _dispatcher_installed(hooks_dir):
+    """True / False: all-e a dispatcher a <hooks_dir>/pre-push-ban; None: a fajl van, de nem olvashato."""
+    try:
+        with open(os.path.join(hooks_dir, 'pre-push'), 'r', errors='replace') as fh:
+            return _PUSH_DISPATCHER_MARK in fh.read()
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return False
+    except OSError:
+        return None
+
+
+def _effective_hooks_path(toks, argstart, pi, cwd, cmd_idx):
+    """A core.hooksPath TENYLEGES erteke ahhoz a pushhoz, amit a parancs inditana.
+
+    A parancsszoveg-mintazas mindig egy irasmoddal le van maradva (Sam, 2. kor: alternativ
+    config-fajl, include.path, cd utani relativ ut). Ez a lepes nem az IRAST nezi, hanem az
+    EREDMENYT: ugyanazzal a `-C` / inline kornyezettel lekerdezi, mit latna a git.
+
+    Nem minden hooksPath a kapuk kikapcsolasa (Szotasz, PR #1957 review): egy repo, amelyben
+    a push-kapuk sosem voltak telepitve (husky `.husky/_`), vagy amelynek a hooksPath-ja a
+    sajat `.git/hooks`-ara mutat, ugyanugy futtatja (vagy ugyanugy nem futtatja) a kapukat,
+    mint hooksPath nelkul. Ezert ha van hooksPath, a kapu a gittol kerdezi meg, hol keresne
+    TENYLEGESEN a hookokat (`rev-parse --path-format=absolute --git-path hooks`), es hol a
+    kozos `.git` (`--git-common-dir`), ahova a telepito a dispatchert irja. Blokk CSAK akkor,
+    ha a dispatcher a `<common>/hooks`-ban telepitve van, es a git egy MASIK konyvtarban
+    keresne: akkor a telepitett kapuk nem futnanak. Egy masik konyvtarba masolt dispatcher
+    nem oldja fel: a konyvtarnak kell egyeznie, nem a jelolo sornak. Ha a git valasza nem
+    ertelmezheto (regi git, nem repo, hiba): blokk, mint eddig (fail-closed).
+
+    Amit NEM lat: egy fajl, amely CSAK ugyanabban a parancsban jon letre (`printf > /tmp/g &&
+    GIT_CONFIG_GLOBAL=/tmp/g git push`). Ezt a kornyezeti-valtozo szabaly fogja (a
+    GIT_CONFIG_GLOBAL / _SYSTEM / XDG_CONFIG_HOME / HOME atiranyitas maga tiltott), ez a ketto egyutt zar.
+    """
+    env = dict(os.environ)
+    if cmd_idx is not None:
+        for t, _sp in toks[:cmd_idx]:
+            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', t)
+            if m:
+                env[m.group(1)] = m.group(2)
+    globalflags, i = [], argstart
+    while i < pi:
+        t = toks[i][0]
+        if t in ('-C', '--git-dir', '--work-tree') and i + 1 < pi:
+            globalflags += [t, toks[i + 1][0]]
+            i += 2
+            continue
+        i += 1 if not t in ('-c', '--namespace', '--exec-path') else 2
+    import subprocess
+    try:
+        r = subprocess.run(['git'] + globalflags + ['config', '--show-origin', '--get-all', 'core.hooksPath'],
+                           cwd=cwd or None, env=env, capture_output=True, text=True, timeout=8)
+    except (subprocess.TimeoutExpired, OSError):
+        block('git push: a core.hooksPath tenyleges erteket nem sikerult lekerdezni, a kapu ezert '
+              'nem tudja, futnanak-e a push-kapuk. Nem engedi at.')
+        return
+    if r.returncode != 0 or not r.stdout.strip():
+        return                          # nincs hooksPath sehonnan: a git a <common>/hooks-ot hasznalja
+    origin = r.stdout.strip().splitlines()[0].split('\t')[0][:80]
+    # Van hooksPath. Hol keresne a git a hookokat, es hol a kozos .git (a telepito celja)?
+    # `--path-format=absolute` kotelezo: nelkule a valasz a cwd-hez kepest relativ (merve git 2.53:
+    # `../.git/hooks` egy alkonyvtarbol), es egy regi git a kapcsolot nem ismeri (rc 128 -> blokk).
+    try:
+        p = subprocess.run(['git'] + globalflags + ['rev-parse', '--path-format=absolute',
+                                                     '--git-path', 'hooks', '--git-common-dir'],
+                           cwd=cwd or None, env=env, capture_output=True, text=True, timeout=8)
+    except (subprocess.TimeoutExpired, OSError):
+        p = None
+    lines = p.stdout.splitlines() if p is not None and p.returncode == 0 else []
+    if len(lines) != 2 or not lines[0].strip() or not lines[1].strip():
+        block('git push: a core.hooksPath BE VAN ALLITVA (%s), es a kapu nem tudta lekerdezni, hol '
+              'keresne a git a hookokat (rev-parse --git-path hooks). Nem engedi at.' % origin)
+        return
+    effective = os.path.realpath(lines[0].strip())
+    installed_dir = os.path.realpath(os.path.join(lines[1].strip(), 'hooks'))
+    installed = _dispatcher_installed(installed_dir)
+    if installed is None:
+        block('git push: a core.hooksPath BE VAN ALLITVA (%s), es a telepitett pre-push (%s) nem '
+              'olvashato, a kapu ezert nem tudja, futnanak-e a push-kapuk. Nem engedi at.'
+              % (origin, installed_dir))
+        return
+    if not installed:
+        return                          # ebben a repo-ban nincsenek push-kapuk: nincs mit kikapcsolni
+    if effective == installed_dir:
+        return                          # a hooksPath oda mutat, ahol a kapuk vannak: futnak
+    block('git push: a core.hooksPath (%s) nem a push-kapuk konyvtarara mutat: a kapuk (force-guard, '
+          'szemelyes-adat kapu) itt vannak telepitve: %s, a git viszont itt keresne: %s, tehat nem '
+          'futnanak. Nem az ugynok dontese.' % (origin, installed_dir, effective))
+
+
+def _check_git(toks, argstart, cwd=None, cmd_idx=None):
     """git push: nem tiltott onmagaban (PR #1357), de harom alakja igen.
 
     Amit a kapu MEGTART: a tortenet ujrairasat (--force es tarsai, '+' refspec), a
@@ -641,9 +861,11 @@ def _check_git(toks, argstart):
     Amit ELENGED: a sajat munkaag push-a, ami eddig is a munka resze volt, csak
     jovahagyason keresztul.
     """
+    _hooks_tamper_git(toks, argstart)
     pi = _git_push_index(toks, argstart)
     if pi is None:
         return
+    _effective_hooks_path(toks, argstart, pi, cwd, cmd_idx)
     args, skip = [], 0
     for tok, _sp in toks[pi + 1:]:
         if skip:
@@ -656,14 +878,28 @@ def _check_git(toks, argstart):
     flags = [a for a in args if a.startswith('-')]
     positional = [a for a in args if not a.startswith('-')]
 
+    # A push-ellenorzo kapuk (pre-push.d: force-guard, szemelyes-adat kapu) git hookok;
+    # a hookot kikapcsolo alak egy ugynok kezeben a kapu kikapcsolasa lenne. A szoveg-szintu
+    # tiltas csak az ugynok sajat hivasait fogja; a hook maga (git-szint) minden egyeb alakot lat.
+    # Mindketto kell. (A core.hooksPath-t a _hooks_tamper_git mar elbiralta.)
     for f in flags:
         base = f.split('=', 1)[0]
-        if base in PUSH_FORCE_FLAGS:
+        resolved = _resolve_push_long(f) if f.startswith('--') else None
+        if resolved == 'no-verify':
+            block('git push %s: a pre-push kapukat (force-guard, szemelyes-adat kapu) '
+                  'kihagyo kapcsolo. Nem az ugynok dontese; javitsd a talalatot.' % f[:20])
+        # Egybeirt rovid kapcsolok (`-fu`, `-df`): a kapcsolo-csomag barmelyik betuje szamit.
+        if (not f.startswith('--') and len(base) > 2 and not base.startswith('-o')
+                and ('f' in base[1:] or 'd' in base[1:])):
+            block('git push %s: egybeirt rovid kapcsolo, amelyben -f (eroltetett) vagy -d '
+                  '(torles) van. Sima push szabad, eroltetett/torlo nem.' % base[:12])
+        if resolved in ('force', 'force-with-lease', 'force-if-includes', 'mirror') \
+                or base in PUSH_FORCE_FLAGS:
             block('git push %s: a tavoli tortenet ujrairasa mas munkajat is elviheti. '
                   'Sima push szabad, eroltetett nem.' % base)
-        if base in PUSH_DELETE_FLAGS:
+        if resolved in ('delete', 'prune') or base in PUSH_DELETE_FLAGS:
             block('git push %s: tavoli ag torlese. A torles nem az agens dontese.' % base)
-        if base == '--all':
+        if resolved == 'all' or base == '--all':
             block('git push --all: minden agat kitolja, a vedetteket is. '
                   'Nevezd meg, melyik agra pusholsz.')
 
@@ -686,6 +922,90 @@ def _check_git(toks, argstart):
         if dest.rsplit('/', 1)[-1] in PROTECTED_BRANCHES and not dest.startswith('refs/tags/'):
             block('git push a(z) "%s" agra: vedett ag, ide review-n keresztul megy '
                   'valami. Pusholj sajat munkaagra.' % dest)
+
+
+# A lathatosag-valtas (privat -> publikus) a repo TELJES tortenetet kiteszi, nem egy
+# push-nyi valtoztatast. A push-kapu (szemelyes-adat) csak azt latja, ami egy pushban
+# megy ki; a valtas utan mar az egesz regi tortenet nyilvanos. Ezert a valtas maga
+# nem az ugynok dontese (013b1bb9, the owner's decision 4181). A "privatra" valtas biztonsagos irany,
+# az atmegy. A PUBLIKUS letrehozas ugyanez: uj, mar nyilvanos repo.
+GH_PUBLIC_VALUES = {'public', 'internal'}
+# Kapcsolok, amelyek erteke KULON szoban all: kulonben az ertek (PATCH, a mezo) pozicionalis
+# szonak latszana, es a `gh api <ut>` utat eltolna.
+GH_VALUE_FLAGS = {'-R', '--repo', '--hostname', '-X', '--method', '-f', '-F', '--field',
+                  '--raw-field', '-H', '--header', '--input', '--jq', '-q', '--template',
+                  '-t', '--cache'}
+GH_FIELD_FLAGS = {'-f', '-F', '--field', '--raw-field'}
+_VIS_FIELD = re.compile(r'(^|[&\s])(private\s*=\s*false|visibility\s*=\s*(public|internal))\b', re.I)
+
+
+def _flag_value(args, name):
+    """A kapcsolo erteke (`--x v` vagy `--x=v`), vagy None, ha a kapcsolo nincs jelen."""
+    for k, a in enumerate(args):
+        if a == name:
+            return args[k + 1] if k + 1 < len(args) else ''
+        if a.startswith(name + '='):
+            return a.split('=', 1)[1]
+    return None
+
+
+def _check_gh(toks, argstart):
+    raw = [t for t, _sp in toks[argstart:]]
+    # Az egybeirt rovid kapcsolo (`-XPATCH`, `-Fprivate=false`, `-X=PATCH`) ugyanaz, mint a
+    # kulon szavas: a pflag igy is elfogadja (tipp, gh-val nem futtattam), a kapu pedig ne.
+    args = []
+    for a in raw:
+        m = re.match(r'^(-[XfFHqt])=?(.+)$', a)
+        if m and not a.startswith('--'):
+            args.extend([m.group(1), m.group(2)])
+        else:
+            args.append(a)
+    words, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in GH_VALUE_FLAGS:
+            skip = True
+            continue
+        if a.startswith('-'):
+            continue
+        words.append(a)
+
+    if words[:2] == ['repo', 'edit']:
+        vis = _flag_value(args, '--visibility')
+        if vis is not None:
+            v = vis.strip().lower()
+            if v in GH_PUBLIC_VALUES or not v or any(c in v for c in RM_UNRESOLVABLE):
+                block('gh repo edit --visibility %s: a lathatosag-valtas a repo teljes '
+                      'tortenetet kiteszi. Nem az ugynok dontese.' % (vis[:20] or '(ures)'))
+        return
+    if words[:2] == ['repo', 'create']:
+        if '--public' in args or '--internal' in args:
+            block('gh repo create --public/--internal: uj, azonnal nyilvanos repo. '
+                  'Nem az ugynok dontese; privatkent szabad.')
+        return
+    if words[:1] == ['api'] and len(words) >= 2:
+        path = words[1].lstrip('/')
+        method = _flag_value(args, '-X')
+        if method is None:
+            method = _flag_value(args, '--method')
+        fields = [args[k + 1] for k, a in enumerate(args[:-1]) if a in GH_FIELD_FLAGS]
+        fields += [a.split('=', 1)[1] for a in args
+                   if a.startswith(('--field=', '--raw-field='))]
+        has_input = _flag_value(args, '--input') is not None
+        if method is None:
+            method = 'POST' if (fields or has_input) else 'GET'
+        if method.upper() == 'GET':
+            return
+        if re.match(r'^repos/[^/]+/[^/]+/?$', path):
+            if has_input:
+                block('gh api %s %s --input: a torzset a kapu nem latja, es ez a vegpont '
+                      'a repo lathatosagat is allitja. Mezokkel (-f) add meg.' % (method, path[:40]))
+            for f in fields:
+                if _VIS_FIELD.search(f):
+                    block('gh api %s %s: lathatosag-valtas (publikus/internal). '
+                          'Nem az ugynok dontese.' % (method, path[:40]))
 
 
 # --- Az ERTELMEZO-PAYLOAD belseje (efccadab) ---------------------------------
@@ -882,10 +1202,26 @@ def check_bash(cmd, _depth=0, cwd=None):
             if t in _FIND_EXEC and j + 1 < len(toks) and not toks[j + 1][1]:
                 names.append((toks[j + 1][0], j + 2))
 
+        # A git config HELYET (vagy tartalmat) atiranyito kornyezeti valtozok: az atiranyitott fajl
+        # barmit mondhat, es a tenyleges-ertek lekerdezes nem latja azt a fajlt, amelyet ugyanez a
+        # parancs hoz letre. Sima munkafolyamathoz nem kellenek, ezert maguk tiltottak (Sam, 2. kor).
+        if re.search(r'(^|[\s;&|(])(export\s+)?(GIT_CONFIG_(GLOBAL|SYSTEM|NOSYSTEM|COUNT|PARAMETERS'
+                     r'|KEY_\d+|VALUE_\d+)|GIT_CONFIG|XDG_CONFIG_HOME)=', seg):
+            block('GIT_CONFIG_* / XDG_CONFIG_HOME kornyezeti valtozo: a git config forrasat atiranyito '
+                  'alak, a pre-push/pre-commit kapukat kikapcsolhatja. Nem az ugynok dontese.')
+        if idx is not None and os.path.basename(toks[idx][0]) == 'git' and any(
+                re.match(r'^HOME=', t) for t, _sp in toks[:idx]):
+            block('HOME= atiranyitas a git elott: a felhasznaloi gitconfig helyet cserelne le. '
+                  'Nem az ugynok dontese.')
+
         for name, argstart in names:
             base = os.path.basename(name)
+            _check_hooks_dir(base, toks, argstart, seg, cwd)
             if base == 'git':
-                _check_git(toks, argstart)
+                _check_git(toks, argstart, cwd, idx)
+                continue
+            if base == 'gh':
+                _check_gh(toks, argstart)
                 continue
             if base == 'rm':
                 ok, why = _rm_allowed(toks, argstart, cwd)
@@ -927,6 +1263,11 @@ def check_bash(cmd, _depth=0, cwd=None):
     # ezert ha barhol allt benne `cd`, a munkakonyvtar nem eldontheto -- None.
     for payload in interpreter_payloads(cmd):
         check_payload(payload, _depth, None if saw_cd else entry_cwd)
+
+    # A mutalo parancs csovezetekbol kapja a listat: a hook-ut nem az o argumentuma.
+    if _HOOKS_PATH.search(' ' + text + ' ') and re.search(r'\b(xargs|parallel)\b', text):
+        block('xargs/parallel egy .git/hooks vagy git config utat tartalmazo parancsban: a push/commit '
+              'kapuk eltavolitasa vagy atirasa lehet. Nem az ugynok dontese.')
 
     # Hitelesito fajlok kiolvasasa barmilyen parancson keresztul.
     m = PROTECTED_RE.search(text)
