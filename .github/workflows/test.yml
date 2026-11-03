@@ -69,6 +69,11 @@ jobs:
       # good, so its fail-direction cases are gate instruments (hermetic:
       # stubbed vault/supabase, throwaway dirs).
       - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
+      # BONIKAPUHOOK1102: the billingo-hatralek-orszem issuing gate decides which
+      # billing_errors rows may get an irreversible NAV document; its self-test
+      # only ran by hand while it lived in the scheduled-task store. Hermetic:
+      # temp dir, no network, no database.
+      - run: python3 scripts/__tests__/kiallitasi-kapu.test.py
       # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
       # queue, so an over-report sends someone to rewrite working links. The
       # over-report GROWS with every consolidation round, which is why this
