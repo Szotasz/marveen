@@ -306,7 +306,8 @@ class ResolveConflictsMode(Base):
         code, out = self.r.repair("--resolve-conflicts")
         self.assertEqual(code, 0)
         self.assertEqual(set(out), {"version", "ok", "state", "exitCode", "dryRun", "resolvedConflicts", "results",
-                                    "unmergedLeft", "stash", "treeClean", "dirtyLeft", "backupDir"})
+                                    "unmergedLeft", "stash", "treeClean", "dirtyLeft", "backupDir",
+                                    "conflictsLeft", "markersLeft"})
         self.assertEqual((out["treeClean"], out["dirtyLeft"], out["backupDir"]), (True, [], None))
         self.assertEqual(out["state"], "nothing_to_do")
         self.assertEqual(out["version"], 1)
@@ -470,6 +471,34 @@ class GeriReview(Base):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out = json.loads(p.stdout)
         self.assertTrue(out["backupDir"].startswith(os.path.realpath(os.path.join(os.environ["HOME"], ".marveen-repair", "backup-"))))
+
+
+class UnresolvableConflict(Base):
+    """Samu 67345: an unmerged path not in HEAD survives the reset as a plain file -- name it."""
+
+    def test_modify_delete_conflict_is_named_and_not_ok(self):
+        self.r.write("notes.md", b"base\n")
+        self.r.commit("add notes")
+        self.r.write("notes.md", b"customer\n")
+        self.r.git("stash", "push", "-q", "-m", "marveen-update-auto-stash md")
+        self.r.git("rm", "-q", "notes.md")
+        self.r.commit("upstream deletes notes")
+        self.assertNotEqual(self.r.git("stash", "pop", check=False).returncode, 0)
+        self.assertRegex(self.r.status(), r"(DU|UD) notes.md")
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual((code, out["state"]), (3, "refused:unknown_change"), out)
+        self.assertEqual((out["conflictsLeft"], out["markersLeft"]), (["notes.md"], []))
+        self.assertTrue(out["stash"]["kept"])
+
+    def test_has_markers(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("idr", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.r.write("a.txt", b"x\n<<<<<<< Updated upstream\ny\n=======\nz\n>>>>>>> Stashed changes\n")
+        self.r.write("b.txt", b"a markdown rule\n=======\n")
+        self.assertTrue(mod.has_markers(os.path.join(self.r.dir, "a.txt")))
+        self.assertFalse(mod.has_markers(os.path.join(self.r.dir, "b.txt")))
 
 
 if __name__ == "__main__":

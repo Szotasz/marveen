@@ -60,7 +60,7 @@ the target:  python3 -I - --install-dir "$HOME/marveen" --resolve-conflicts --li
                        resolvedConflicts[{path, action, reason, backup}], results[{path,
                        status, action, reason, pattern, backup?}], unmergedLeft[],
                        stash{before, after, kept, autoStash[]}, treeClean, dirtyLeft[],
-                       backupDir, error?}. exit 0 means UNBLOCKED (nothing unmerged, the
+                       backupDir, conflictsLeft[], markersLeft[], error?}. exit 0 means UNBLOCKED (nothing unmerged, the
                        known paths clean); treeClean/dirtyLeft say whether the WHOLE
                        tracked tree is clean.
 
@@ -69,8 +69,10 @@ States and exit codes:
                                                            dirty: not ours, they take the stash path)
   refused:not_a_repo | refused:operation_in_progress |
   refused:index_locked | refused:backup_inside_tree |
-  refused:no_auto_stash | refused:unknown_change           exit 3 (unknown_change: an unmerged path
-                                                           is still left; otherwise nothing changed)
+  refused:no_auto_stash | refused:unknown_change           exit 3 (unknown_change: an unmerged path is
+                                                           still left, or one could not be resolved:
+                                                           conflictsLeft / markersLeft name it; otherwise
+                                                           nothing changed)
   failed:<step>  (resolve_conflicts | cleanup | stash_check) exit 1 (stash_check: an entry that
                                                            existed before is gone; must never happen)
 The stash is NEVER dropped, popped, cleared or applied; no reset --hard, no clean.
@@ -318,6 +320,16 @@ def backup(cwd, backup_dir, path):
     return dst
 
 
+CONFLICT_MARKER = re.compile(rb"^(<<<<<<<|>>>>>>>) ", re.M)
+
+
+def has_markers(path):
+    if not os.path.isfile(path) or os.path.islink(path):
+        return False
+    with open(path, "rb") as f:
+        return bool(CONFLICT_MARKER.search(f.read()))
+
+
 def resolve_all_conflicts(cwd, dry_run, backup_dir):
     """--resolve-conflicts: every unmerged path -> HEAD, then `git reset -q`.
 
@@ -415,7 +427,13 @@ def run(install_dir, dry_run, resolve_conflicts=False, backup_dir=None):
         "kept": all(c in after_ids for c, _ in stash_before),
         "autoStash": [{"commit": c, "subject": s} for c, s in stash_after if AUTO_STASH_TAG in s],
     }
+    # Samu 67345: an unmerged path that could NOT be resolved (not in HEAD) loses its
+    # unmerged state to the `git reset -q`, so unmergedLeft alone would miss it. Name it,
+    # and say whether its file still carries conflict markers.
+    conflicts_left = [c["path"] for c in conflicts if c["action"] == "leave"]
+    markers_left = [p for p in conflicts_left if has_markers(os.path.join(cwd, p))]
     summary = {"resolvedConflicts": conflicts, "results": results, "unmergedLeft": unmerged_left, "stash": stash,
+               "conflictsLeft": conflicts_left, "markersLeft": markers_left,
                # exit 0 = unblocked (nothing unmerged, the known paths clean). Whether the WHOLE
                # tracked tree is clean is a separate fact (Geri 67344 (2)): treeClean + dirtyLeft.
                "treeClean": (not dirty_left) if dirty_left is not None else None,
@@ -426,7 +444,7 @@ def run(install_dir, dry_run, resolve_conflicts=False, backup_dir=None):
     if any(r["action"] == "restore-failed" for r in results):
         return summary, "failed:cleanup"
     # Still blocked: an unmerged path is left (a customer change in default mode, or not in HEAD).
-    if unmerged_left:
+    if unmerged_left or conflicts_left:
         return summary, "refused:unknown_change"
     acted = [c for c in conflicts if c["action"] in ("resolved-to-head", "resolve")] + \
         [r for r in results if r["action"] in ("restored", "restore")]
