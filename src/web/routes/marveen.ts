@@ -8,7 +8,9 @@ import {
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, readMarveenTeamsConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { readFileOr } from '../agent-config.js'
+import { nicknameFor } from '../team-nicknames.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
@@ -16,6 +18,14 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { readAutoRestartConfig } from '../auto-restart-store.js'
 import { configDirFor } from '../main-transcript-root.js'
 import type { RouteContext } from './types.js'
+import { logger } from '../../logger.js'
+import { reportNonColourSetting } from '../../css-color.js'
+
+// A colour setting as served to the dashboard; one that is not a CSS colour
+// is logged (once per value) -- the dashboard shows its default for it.
+function colourSetting(key: string): unknown {
+  return reportNonColourSetting(key, getEffectiveSettingValue(key), (ctx, msg) => logger.warn(ctx, msg))
+}
 
 function getActiveMarveenModel(): string {
   // configDirFor, not the host default: when the channels session runs on its
@@ -51,6 +61,12 @@ export function buildMarveenIdentityCore(
   }
 }
 
+// CORPAVATAR1024 (owner decision 2026-10-18): the bot's and the owner's portraits stay
+// public (auth-gate exempts these two GETs), but no other website may embed them. The
+// dashboard and the Bridge webview load them by a relative URL, from the dashboard's own
+// origin, which same-origin allows; another site's <img> is refused by the browser.
+const AVATAR_CORP = 'same-origin'
+
 export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -81,6 +97,8 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // this to pin/label the owner's own message thread instead of a hardcoded
       // literal, so a renamed install recognizes its real owner.
       ownerName: currentOwnerName(),
+      // Character nickname (store/team-nicknames.json), same field as on /api/agents.
+      nickname: nicknameFor(currentBotName()),
       description,
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,
@@ -110,9 +128,9 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
         warnH: getEffectiveSettingValue('KANBAN_AGING_WARN_H'),
         cautionH: getEffectiveSettingValue('KANBAN_AGING_CAUTION_H'),
         criticalH: getEffectiveSettingValue('KANBAN_AGING_CRITICAL_H'),
-        warnColor: getEffectiveSettingValue('KANBAN_AGING_WARN_COLOR'),
-        cautionColor: getEffectiveSettingValue('KANBAN_AGING_CAUTION_COLOR'),
-        criticalColor: getEffectiveSettingValue('KANBAN_AGING_CRITICAL_COLOR'),
+        warnColor: colourSetting('KANBAN_AGING_WARN_COLOR'),
+        cautionColor: colourSetting('KANBAN_AGING_CAUTION_COLOR'),
+        criticalColor: colourSetting('KANBAN_AGING_CRITICAL_COLOR'),
       },
       // Resolved through the settings overrides layer (override > .env >
       // registry default) instead of the boot-time config.ts constants, so a
@@ -127,14 +145,14 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
           done: getEffectiveSettingValue('KANBAN_WIP_DONE'),
         },
         warnPct: getEffectiveSettingValue('KANBAN_WIP_WARN_PCT'),
-        okColor: getEffectiveSettingValue('KANBAN_WIP_OK_COLOR'),
-        warnColor: getEffectiveSettingValue('KANBAN_WIP_WARN_COLOR'),
-        fullColor: getEffectiveSettingValue('KANBAN_WIP_FULL_COLOR'),
-        overColor: getEffectiveSettingValue('KANBAN_WIP_OVER_COLOR'),
+        okColor: colourSetting('KANBAN_WIP_OK_COLOR'),
+        warnColor: colourSetting('KANBAN_WIP_WARN_COLOR'),
+        fullColor: colourSetting('KANBAN_WIP_FULL_COLOR'),
+        overColor: colourSetting('KANBAN_WIP_OVER_COLOR'),
       },
       kanbanSwimlanes: {
         defaultGroup: getEffectiveSettingValue('KANBAN_SWIMLANE_DEFAULT_GROUP'),
-        separatorColor: getEffectiveSettingValue('KANBAN_SWIMLANE_SEPARATOR_COLOR') || null,
+        separatorColor: colourSetting('KANBAN_SWIMLANE_SEPARATOR_COLOR') || null,
       },
       kanbanLabels: {
         colors: KANBAN_LABEL_COLORS,
@@ -153,6 +171,13 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   }
 
   if (path === '/api/marveen/restart' && method === 'POST') {
+    // A kezi restart nem vagja el a futo turnt. Beragadt fo-agensnel csak explicit {"force": true} atlepi a kaput.
+    const force = wantsForceRestart(await readBody(req))
+    if (force) logger.warn({ route: '/api/marveen/restart' }, 'manual main restart forced past the pane gate')
+    if (!force) {
+      const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
+      if (!gate.allow) { json(res, { error: 'restart-blocked', reason: gate.reason, hint: MANUAL_RESTART_FORCE_HINT }, 409); return true }
+    }
     const result = hardRestartMarveenChannels()
     if (!result.ok) { json(res, { error: result.error || 'Restart failed' }, 500); return true }
     json(res, { ok: true })
@@ -160,6 +185,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   }
 
   if (path === '/api/marveen/avatar' && method === 'GET') {
+    res.setHeader('Cross-Origin-Resource-Policy', AVATAR_CORP)
     // Avatars are ~1MB each and rarely change: let browsers reuse them for an
     // hour without a round-trip (an avatar swapped in another session shows up
     // after at most 1h, then ETag revalidation; the swapping session itself
@@ -170,6 +196,23 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     }
     const fallback = join(webDir, 'avatars', '01_robot.png')
     if (existsSync(fallback)) { serveFile(req, res, fallback, { cacheSeconds: 3600 }); return true }
+    res.writeHead(404); res.end()
+    return true
+  }
+
+  // The owner's own portrait, for the kanban lanes and the owner strip.
+  // Read-only on purpose: there is no upload route, the picture is put in place
+  // on disk (store/owner-avatar.{png,jpg,jpeg,webp}), the same way an agent
+  // avatar is. No gallery fallback either: a generic robot standing in for the
+  // owner would be worse than the initial the board already draws, and the
+  // frontend falls back to that initial on a 404. no-cache (revalidate) rather
+  // than a max-age, because nothing busts the URL when the file is replaced.
+  if (path === '/api/marveen/owner-avatar' && method === 'GET') {
+    res.setHeader('Cross-Origin-Resource-Policy', AVATAR_CORP)
+    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
+      const p = join(PROJECT_ROOT, 'store', `owner-avatar${ext}`)
+      if (existsSync(p)) { serveFile(req, res, p); return true }
+    }
     res.writeHead(404); res.end()
     return true
   }

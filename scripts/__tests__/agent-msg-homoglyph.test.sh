@@ -39,6 +39,10 @@ printf 'test-token\n' > "$SANDBOX/token"
 cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "${CURL_CALLS:-/dev/null}"
+# VOICETOKENLEAK1101 round 3: the JSON body comes on stdin (--data-binary @-), not on the argv: record it too.
+for a in "$@"; do
+  if [ "$a" = "@-" ]; then cat >> "${CURL_CALLS:-/dev/null}"; printf '\n' >> "${CURL_CALLS:-/dev/null}"; break; fi
+done
 printf '{"id":4242}\n200'
 STUB
 chmod +x "$BIN/curl"

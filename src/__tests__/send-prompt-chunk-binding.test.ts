@@ -8,14 +8,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 //
 // Harness as in janitor-under-send-lane.test.ts: runTmux/capturePane are local
 // to agent-process and go through node:child_process execFileSync, so that is
-// mocked with argument inspection. The pane is an idle, empty prompt box, so
-// the submit follow-up loop finishes on its first sample.
+// mocked with argument inspection. The pane echoes what was typed, like a live
+// TUI (the pre-Enter echo wait looks for the typed tail), and an Enter submits
+// it, leaving an idle, empty prompt box, so the submit follow-up loop finishes
+// on its first sample.
 
 const h = vi.hoisted(() => {
   const SEP = '─'.repeat(80)
   const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
-  const IDLE = ['', SEP, '❯ ', SEP, FOOTER].join('\n')
-  return { IDLE, calls: [] as string[][] }
+  const pane = (typed: string) => ['', SEP, '❯ ' + typed, SEP, FOOTER].join('\n')
+  return { pane, typed: '', calls: [] as string[][] }
 })
 
 vi.mock('node:child_process', async (orig) => ({
@@ -23,7 +25,11 @@ vi.mock('node:child_process', async (orig) => ({
   execFileSync: vi.fn((_file: string, args?: string[]) => {
     if (Array.isArray(args)) {
       h.calls.push(args)
-      if (args.includes('capture-pane')) return h.IDLE
+      if (args.includes('capture-pane')) return h.pane(h.typed)
+      if (args.includes('send-keys')) {
+        if (args.includes('-l')) h.typed += args[args.indexOf('-l') + 1]
+        else if (args[args.length - 1] === 'Enter') h.typed = ''
+      }
     }
     return ''
   }),
@@ -41,6 +47,7 @@ function literalChunks(): string[] {
 
 beforeEach(() => {
   h.calls.length = 0
+  h.typed = ''
   __resetSessionSendLocks()
 })
 

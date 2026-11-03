@@ -57,6 +57,20 @@ else
 fi
 # end of the install-lang loader (MARVEENLANG1763)
 
+# #1874: the managed-settings.json writes below are machine-wide (org-policy layer)
+# and need root. Say what is written and why, ONCE, before the first of them asks
+# for a password. The text lives in install-lang.sh; the function stays here, so a
+# standalone run that fetched an older install-lang.sh still has it (an unknown
+# _t key just prints nothing).
+managed_settings_notice() {
+  if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
+    return 0
+  fi
+  MANAGED_NOTICE_SHOWN=1
+  echo -e "  ${ORANGE}i${NC} $(_t managed.notice_what)"
+  echo -e "    $(_t managed.notice_sudo)"
+}
+
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
   if ! command -v claude &>/dev/null; then
@@ -707,6 +721,7 @@ fi
 # notifications on a team/enterprise org unless managed-settings has
 # channelsEnabled:true (harmless / no-op on a personal org). Idempotent.
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
   bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
 fi
@@ -1421,6 +1436,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
     -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+    -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
     "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
   ok "CLAUDE.md generalva"
 else
@@ -1453,15 +1469,23 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     ok "Utemezett feladat scaffoldolva: $task_name"
   done
 fi
@@ -1491,15 +1515,23 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     SCHED_NEW=$((SCHED_NEW + 1))
   done
   if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
@@ -1512,6 +1544,17 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       ok "kanban-audit state inicializalva"
     fi
   fi
+fi
+
+# Scheduled-task registry: the schedule runner fires a task only if its
+# files hash-match the dashboard's registry. Register the tasks seeded above
+# (dist is already built at this point). On a FRESH install this is redundant
+# with the dashboard's one-time upgrade backfill; on a reinstall over an
+# existing box it is what keeps a newly seeded default firing.
+if [ -n "$(echo "${INSTALL_SCHED_REGISTER:-}" | tr -d ' ')" ] && [ -f "$INSTALL_DIR/dist/web/schedule-registry-cli.js" ] && command -v node >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  node "$INSTALL_DIR/dist/web/schedule-registry-cli.js" register --source installer $INSTALL_SCHED_REGISTER >/dev/null 2>&1 \
+    || echo "  WARN: scheduled-task registry registration failed; run: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status"
 fi
 
 # Seed bumblebee threat-intel catalogs into ~/.claude/tools/
@@ -1620,15 +1663,14 @@ else
   fi
 fi
 
-# Enable plugin at project scope so --channels can boot-time activate it
+# INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
+# call rewrote the TRACKED .claude/settings.json (the whole file reformatted, ~500
+# lines, plus a wrong "<provider>@marveen-marketplace" key for Telegram/Discord),
+# so every fresh install left a dirty tree and every later update had to stash.
+# channels.sh enables the primary plugin for the main session through its
+# launch-time --settings file (store/.main-extra-plugins.settings.json), which
+# outranks the project scope and is gitignored.
 cd "$INSTALL_DIR"
-if claude plugin enable "$PLUGIN_SHORT@marveen-marketplace" --scope project 2>/dev/null || \
-   claude plugin enable "$PLUGIN_ID" --scope project 2>/dev/null; then
-  ok "${CHANNEL_PROVIDER} plugin project-scope-ban engedelyezve"
-else
-  warn "Plugin project-scope enable sikertelen. Futtasd kezzel:"
-  echo -e "  ${DIM}cd $INSTALL_DIR && claude plugin enable ${PLUGIN_ID} --scope project${NC}"
-fi
 
 # skill-factory telepitese (self-learning meta-skill)
 SKILLS_DIR="$HOME/.claude/skills"
@@ -1656,6 +1698,17 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
+    done
+    # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
+    # verbatim and with their mode bits; its SKILL.md points into them.
+    # Only the files git TRACKS: a whole-dir copy also carried untracked and
+    # ignored files, and fleet-helper's own scripts/.gitignore names exactly
+    # those as secrets/personal data (mail_rules.json, .dashboard-token).
+    # Outside a git checkout nothing below the top level is copied.
+    git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
+      case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
+      mkdir -p "$target/$(dirname "$rel")"
+      cp -p "$skill_dir$rel" "$target/$rel"
     done
     SEED_NEW=$((SEED_NEW + 1))
   done
@@ -1716,12 +1769,12 @@ fi
 if command -v ollama &>/dev/null || curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
 # A telepito letrehoz egy ollama.service systemd egységet és elindítja.
 # Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
-if ! curl -s "${OLLAMA_API}/api/version" &>/dev/null; then
+if ! curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
   echo -e "$(_t linux.ollama_starting)"
   sudo systemctl enable --now ollama 2>/dev/null || true
   # Megvarjuk amig az API valaszol (max 15 mp)
   for i in $(seq 1 15); do
-    curl -s "${OLLAMA_API}/api/version" &>/dev/null && break
+    curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null && break
     sleep 1
   done
 fi
@@ -1743,7 +1796,7 @@ ollama_pull() {
     warn "ollama API nem valaszol (${OLLAMA_API}) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
     return 0
   fi
-  if curl -s "${OLLAMA_API}/api/tags" | grep -q "\"$model\""; then
+  if curl -s --max-time 5 "${OLLAMA_API}/api/tags" | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
@@ -2027,7 +2080,9 @@ EOF
 # itself as a prompt injection (observed 2026-09-13, and it stamped the day as
 # delivered on the way out). The scheduled task runs inside the live channel
 # session, which has the allowlist. The unit files stay on disk so an operator
-# who wants the timer path can `systemctl --user enable --now <id>-morning.timer`.
+# who wants the timer path can `systemctl --user enable --now <id>-morning.timer`,
+# but only with ANTHROPIC_API_KEY in the install .env: morning-briefing.sh refuses
+# to run its headless `claude -p` on the subscription login (MORNTIMER2197, #2197).
 #
 # NO Requires=/Wants= on the service here: a [Unit] dependency on the
 # triggered service makes EVERY activation of the timer unit (each systemd
@@ -2259,6 +2314,24 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     fi
   done
   [ "$SVCFAIL" -eq 0 ] && ok "Mindket szolgaltatas fut"
+  # TIMERSTART1011: `enable` alone does not start a timer. Both timers fire on
+  # OnBootSec=90s, which on a host that has been up for a while has already
+  # passed, so without a start they stay inactive until the next reboot. The
+  # keepalive probe then never refreshes, and the channel monitor reads the
+  # stale keep-alive as a wedged session and respawns the main agent (measured
+  # on a fresh Linux install: three hard restarts in 80 minutes). One start per
+  # timer, after the services, so a timer that failed to install can take down
+  # neither the services nor the other timer, and a failed start never stops the
+  # installer; not part of SVCFAIL, since the bridge itself runs, but named with
+  # the fix.
+  for tmr in "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer"; do
+    systemctl --user start "$tmr" 2>/dev/null || true
+    if systemctl --user is-active --quiet "$tmr" 2>/dev/null; then
+      ok "$tmr fut"
+    else
+      warn "$tmr nem fut -- inditsd: systemctl --user start $tmr"
+    fi
+  done
 else
   warn "systemd --user nem elerheto (WSL / konteneren / VPS user-session nelkul) -- kozvetlen inditas."
   mkdir -p "$INSTALL_DIR/store"
@@ -2315,6 +2388,52 @@ if [ "$IS_WSL" = "true" ]; then
   fi
   unset _wslcfg _winprofile _cmd
 fi
+
+# ISSUE2472WSLSPIN1103 begin
+# WSL before 3.0.1 has an interop bug: the threads of wslhost.exe can spin
+# forever, and over hours or days the host's CPU is eaten (microsoft/WSL#41173,
+# fixed by #41319, first shipped in 3.0.1). The fix is a Windows-side update,
+# so only detect and explain. `wsl.exe --version` prints UTF-16LE (see the note
+# at the top of install-windows.ps1): drop the NUL bytes before parsing. Best
+# effort only: no wsl.exe, a hang (timeout), an empty or unreadable answer all
+# stay silent, and nothing here may stop the install (set -e + ERR trap).
+if [ "$IS_WSL" = "true" ]; then
+  # 0 when $1 < $2, compared numerically component by component (2.10 > 2.9).
+  _wsl_ver_lt() {
+    local _a _b _i _x _y
+    IFS=. read -r -a _a <<< "$1" || true
+    IFS=. read -r -a _b <<< "$2" || true
+    for _i in 0 1 2 3; do
+      _x=$((10#${_a[$_i]:-0})); _y=$((10#${_b[$_i]:-0}))
+      if [ "$_x" -lt "$_y" ]; then return 0; fi
+      if [ "$_x" -gt "$_y" ]; then return 1; fi
+    done
+    return 1
+  }
+  _wslexe="$(command -v wsl.exe 2>/dev/null || true)"
+  if [ -z "$_wslexe" ] && [ -x /mnt/c/Windows/System32/wsl.exe ]; then
+    _wslexe=/mnt/c/Windows/System32/wsl.exe
+  fi
+  _wslver=""
+  if [ -n "$_wslexe" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      _wslout="$(timeout 10 "$_wslexe" --version 2>/dev/null | LC_ALL=C tr -d '\000\r' || true)"
+    else
+      _wslout="$("$_wslexe" --version 2>/dev/null | LC_ALL=C tr -d '\000\r' || true)"
+    fi
+    # The first line is "WSL version: 2.7.10.0" (localized label, so match the
+    # leading "WSL" and its separator, not "WSLg"); a BOM may precede it.
+    _wslver="$(printf '%s\n' "$_wslout" | LC_ALL=C sed -n 's/^[^A-Za-z0-9]*WSL[^A-Za-z0-9][^0-9]*\([0-9][0-9]*\(\.[0-9][0-9]*\)\{1,3\}\).*/\1/p' | head -n 1 || true)"
+  fi
+  if [ -n "$_wslver" ] && _wsl_ver_lt "$_wslver" 3.0.1; then
+    echo ""
+    echo -e "  ${ORANGE}WSL ${_wslver}: ebben a regi WSL-verzioban ismert hiba van, amitol orak-napok alatt a wslhost.exe leterheli a gepet (a 3.0.1-es verziotol javitva).${NC}"
+    echo -e "  ${DIM}Javitas Windows PowerShellben: wsl --update, utana: wsl --shutdown${NC}"
+  fi
+  unset _wslexe _wslout _wslver
+  unset -f _wsl_ver_lt
+fi
+# ISSUE2472WSLSPIN1103 end
 
 # Ellenorzes
 sleep 3

@@ -1,0 +1,99 @@
+{
+ "_comment": "The SAME ledger file must get the SAME verdict from both readers: scripts/recipient-ledger.mjs inspectLedger (sub-agent gate) and scripts/hooks/recipient_ledger.py load_ledger (main agent's gate and the senders' own check). `b64` is the exact file content (null = the file does not exist); `ok` false means unusable (every sender refuses, every gate denies); `recipients` is the sorted key list when ok. Run through BOTH readers by scripts/__tests__/email-extract-parity.test.py. Before this file the JS reader accepted the non-UTF-8 cases.",
+ "cases": [
+  {
+   "name": "valid ledger",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjp7ImFAZXhhbXBsZS5jb20iOnsic291cmNlIjoib3duZXIiLCJub3RlIjoidCJ9fX0=",
+   "ok": true,
+   "recipients": [
+    "a@example.com"
+   ]
+  },
+  {
+   "name": "valid, non-ASCII note (UTF-8)",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjp7ImFAZXhhbXBsZS5jb20iOnsibm90ZSI6IsOhcnbDrXp0xbFyxZEifX19",
+   "ok": true,
+   "recipients": [
+    "a@example.com"
+   ]
+  },
+  {
+   "name": "valid, empty recipients map",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjp7fX0=",
+   "ok": true,
+   "recipients": []
+  },
+  {
+   "name": "missing file",
+   "b64": null,
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "empty file",
+   "b64": "",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "corrupt JSON",
+   "b64": "e25vdCBqc29u",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "non-UTF-8 (latin-1 bytes in a note)",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjp7ImFAZXhhbXBsZS5jb20iOnsibm90ZSI6IuFydu16In19fQ==",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "non-UTF-8 byte inside the address key",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjp7ImHhQGV4YW1wbGUuY29tIjp7fX19",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "UTF-8 BOM before the JSON",
+   "b64": "77u/eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjp7ImFAZXhhbXBsZS5jb20iOnsic291cmNlIjoib3duZXIiLCJub3RlIjoidCJ9fX0=",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "recipients is an array",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjpbImFAZXhhbXBsZS5jb20iXX0=",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "recipients is null",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjpudWxsfQ==",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "recipients is a string",
+   "b64": "eyJ2ZXJzaW9uIjoxLCJyZWNpcGllbnRzIjoiYUBleGFtcGxlLmNvbSJ9",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "no recipients key",
+   "b64": "eyJ2ZXJzaW9uIjoxfQ==",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "top-level array",
+   "b64": "W3sicmVjaXBpZW50cyI6eyJhQGV4YW1wbGUuY29tIjp7fX19XQ==",
+   "ok": false,
+   "recipients": []
+  },
+  {
+   "name": "NaN is not JSON",
+   "b64": "eyJ2ZXJzaW9uIjpOYU4sInJlY2lwaWVudHMiOnsiYUBleGFtcGxlLmNvbSI6e319fQ==",
+   "ok": false,
+   "recipients": []
+  }
+ ]
+}

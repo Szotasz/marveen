@@ -41,6 +41,12 @@ function fakeCtx(pathAndQuery: string, method = 'GET') {
 }
 
 const NONSENSE = 'XYZZY-NINCS-ILYEN-KIFEJEZES-2026'
+// A naturally phrased question: the strict AND pass fails on "miert"/"akadt",
+// and the relaxed pass rescues it through the CONTENT words "kanban kartya".
+// Until the stopword fix the forgiving cases below used NONSENSE instead,
+// which was rescued only by the filler words "nincs" and "ilyen" -- the very
+// behaviour that fix removes. The forgiveness itself is unchanged.
+const NATURAL = 'miert akadt el a kanban kartya'
 
 function seed() {
   saveAgentMemory('agent-a', 'A dashboard nincs fent, ilyen esetben a naplo ures', 'warm', 'dashboard, naplo')
@@ -63,7 +69,15 @@ describe('a search that matches nothing returns nothing', () => {
   })
 
   it('the default stays forgiving, so a naturally phrased question still finds its memory', () => {
-    expect(searchAgentMemories('agent-a', NONSENSE, 50).length).toBeGreaterThan(0)
+    const r = searchAgentMemories('agent-a', NATURAL, 50)
+    expect(r.length).toBe(1)
+    expect(r[0].content).toContain('kanban')
+  })
+
+  // Filler words are not content. The relaxed pass used
+  // to return the dashboard row here purely on "nincs"/"ilyen".
+  it('the default does not let filler words rescue a nonsense query', () => {
+    expect(searchAgentMemories('agent-a', NONSENSE, 50)).toEqual([])
   })
 
   it('a single-word nonsense query returns no rows either way -- there is nothing to relax', () => {
@@ -80,13 +94,13 @@ describe('a search that matches nothing returns nothing', () => {
   // The forgiving behaviour is not deleted, it is asked for. Without this the
   // fix would trade a false positive for a lost feature.
   it('the strict search is available without taking the forgiving one away', () => {
-    expect(searchAgentMemories('agent-a', NONSENSE, 50, undefined, true).length).toBeGreaterThan(0)
-    expect(searchAgentMemories('agent-a', NONSENSE, 50, undefined, false)).toEqual([])
+    expect(searchAgentMemories('agent-a', NATURAL, 50, undefined, true).length).toBeGreaterThan(0)
+    expect(searchAgentMemories('agent-a', NATURAL, 50, undefined, false)).toEqual([])
   })
 
   it('the caller can tell which of the two ran', () => {
     const trace: { relaxed: boolean } = { relaxed: false }
-    searchAgentMemories('agent-a', NONSENSE, 50, trace, true)
+    searchAgentMemories('agent-a', NATURAL, 50, trace, true)
     expect(trace.relaxed).toBe(true)
     const strictTrace: { relaxed: boolean } = { relaxed: false }
     searchAgentMemories('agent-a', 'kanban', 50, strictTrace, true)
@@ -134,7 +148,7 @@ describe('the endpoint answers nothing when nothing matched', () => {
   })
 
   it('without strict=1 the rescued rows still come back, but labelled', async () => {
-    const { ctx, out } = fakeCtx(`/api/memories?agent=agent-a&q=${encodeURIComponent(NONSENSE)}`)
+    const { ctx, out } = fakeCtx(`/api/memories?agent=agent-a&q=${encodeURIComponent(NATURAL)}`)
     await tryHandleMemories(ctx)
     expect(out.body.length).toBeGreaterThan(0)
     expect(out.headers['x-memory-search']).toContain('relaxed=true')
@@ -148,7 +162,7 @@ describe('the endpoint answers nothing when nothing matched', () => {
     expect(out.headers['x-memory-search']).toContain('strict=false')
     expect(out.headers['x-memory-search']).toContain('hits=1')
 
-    const rescued = fakeCtx(`/api/memories?agent=agent-a&q=${encodeURIComponent(NONSENSE)}`)
+    const rescued = fakeCtx(`/api/memories?agent=agent-a&q=${encodeURIComponent(NATURAL)}`)
     await tryHandleMemories(rescued.ctx)
     expect(rescued.out.headers['x-memory-search']).toContain('strict=false')
     expect(rescued.out.headers['x-memory-search']).toContain('relaxed=true')

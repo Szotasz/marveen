@@ -35,6 +35,17 @@
 # 3, 4, 5 and 7 are the positive controls: the guard must not switch the npm path
 # off for hosts that really are npm installs.
 #
+# DAILYRACE1024 (the daily update raced the launch): the block only DECIDES the
+# daily check; channels.sh starts it with claude_daily_check_start once the main
+# session is up. run_block therefore runs the block and then the starter, as
+# channels.sh does. Pinned as well:
+#   15. npm host, the block alone          -> NO npm call before the launch, the check is due
+#   16. the starter runs at most once      -> a second call starts nothing
+#   17. in channels.sh the starter is called once, after START_TS and after every
+#       launch (`new-session -d`), behind a has-session guard, and the daily
+#       `claude_install` is reachable only through it
+# Negative control for 15-17: CHANNELS_BIN=<pre-fix channels.sh>.
+#
 # Version fixtures include 2.1.9, 2.1.30 and 2.1.265 so that a lexical sort, or
 # picking the first instead of the last, selects a wrong version (sort -V pin).
 #
@@ -59,9 +70,55 @@ if [ -z "$BLOCK" ]; then
   exit 1
 fi
 
-# run_case <setup-fn>  -> sets NPM_CALLS, LINK_TARGET, ERR in the caller
+# The block runs on a PATH of the stub dir, the fake HOME's launcher dir and the
+# system bin dirs. A REAL claude in /usr/bin or /bin (an npm-global install
+# links it there: /usr/bin/claude -> ../lib/node_modules/@anthropic-ai/claude-code/cli.js)
+# makes every "claude is missing" case see a claude, take the daily-check
+# branch, and go red for the host, not for channels.sh. So the system dirs are
+# mirrored as symlinks with `claude` left out: every other tool is the real one.
+SYSBIN="$(mktemp -d)"
+trap 'rm -rf "$SYSBIN"' EXIT
+for d in /usr/bin /bin; do
+  for f in "$d"/*; do
+    n="${f##*/}"
+    [ "$n" = claude ] && continue
+    [ -e "$SYSBIN/$n" ] || ln -s "$f" "$SYSBIN/$n"
+  done
+done
+if PATH="$SYSBIN" command -v claude >/dev/null 2>&1; then
+  echo "FAIL: the sandbox PATH still resolves a claude ($(PATH="$SYSBIN" command -v claude))"
+  exit 1
+fi
+BASH_BIN="$(command -v bash)"
+
+# run_block <root> <system-path>: one start of the install/update block on that host
+# (<system-path> is $SYSBIN, or the no-npm mirror below; never /usr/bin:/bin, see above)
+run_block() {
+  HOME="$1/home" \
+  PATH="$1/stub:$1/home/.local/bin:$2" \
+  INSTALL_DIR="$1/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
+  "$BASH_BIN" -c "$BLOCK
+claude_daily_check_start
+wait" 2>&1 >/dev/null
+}
+
+# run_block_only <root> <system-path> <tail>: the block, then <tail>, nothing else.
+run_block_only() {
+  HOME="$1/home" \
+  PATH="$1/stub:$1/home/.local/bin:$2" \
+  INSTALL_DIR="$1/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
+  "$BASH_BIN" -c "$BLOCK
+$3
+wait" 2>/dev/null
+}
+
+# run_case <setup-fn> [<between-fn>]  -> sets NPM_CALLS, LINK_TARGET, ERR, FAILLOG, WARNS in the caller
+# With a <between-fn> the block runs TWICE on the same host (a second start), the fn changing the host in
+# between. A setup that touches <root>/no-npm gets a system PATH without npm (every /usr/bin and /bin
+# entry linked, except npm/npx and claude), so the case does not depend on whether the test host has npm
+# or a claude in the system dirs.
 run_case() {
-  local setup="$1" root
+  local setup="$1" between="${2:-}" root sysp="$SYSBIN" f n
   root="$(mktemp -d)"
   mkdir -p "$root/home" "$root/stub" "$root/install/store"
   mkdir -p "$root/npmroot"
@@ -75,17 +132,27 @@ exit 0
 EOF
   chmod +x "$root/stub/npm"
   "$setup" "$root"
-  ERR="$(
-    HOME="$root/home" \
-    PATH="$root/stub:$root/home/.local/bin:/usr/bin:/bin" \
-    INSTALL_DIR="$root/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
-    bash -c "$BLOCK
-wait" 2>&1 >/dev/null
-  )"
+  if [ -e "$root/no-npm" ]; then
+    sysp="$root/sysbin"
+    mkdir -p "$sysp"
+    for f in /usr/bin/* /bin/*; do
+      n="${f##*/}"
+      case "$n" in npm|npx|claude) continue ;; esac
+      [ -e "$sysp/$n" ] || ln -s "$f" "$sysp/$n"
+    done
+  fi
+  ERR="$(run_block "$root" "$sysp")"
+  if [ -n "$between" ]; then
+    "$between" "$root"
+    ERR="$ERR$(run_block "$root" "$sysp")"
+  fi
   NPM_CALLS="$( { wc -l < "$root/npm.log"; } 2>/dev/null | tr -d ' ')"
   NPM_CALLS="${NPM_CALLS:-0}"
   LINK_TARGET="$(readlink "$root/home/.local/bin/claude" 2>/dev/null || true)"
   LINK_TARGET="${LINK_TARGET#$root/home/}"
+  FAILLOG="$(cat "$root/install/store/channels-failures.log" 2>/dev/null || true)"
+  WARNS="$(grep -c 'WARN the native claude launcher wins' "$root/install/store/channels-failures.log" 2>/dev/null)"
+  WARNS="${WARNS:-0}"
   rm -rf "$root"
 }
 
@@ -125,6 +192,44 @@ setup_race_aftermath() {
 setup_old_stamp_native() {
   make_version "$1" 2.1.9
   make_version "$1" 2.1.265
+  : > "$1/install/store/.claude-update-stamp"
+  touch -t 202606090110 "$1/install/store/.claude-update-stamp"
+}
+# 9 (#1901 review, NATIVEBEHIND1011): an intact launcher to an OLDER native build,
+# the npm copy live and newer (stamp newer than the build). The native build wins
+# (no npm call); the failures log names both versions.
+setup_native_behind_npm() {
+  make_version "$1" 2.1.100
+  touch -t 202606090110 "$1/home/.local/share/claude/versions/2.1.100"
+  mkdir -p "$1/home/.local/bin" "$1/npmroot/@anthropic-ai/claude-code"
+  ln -s "$1/home/.local/share/claude/versions/2.1.100" "$1/home/.local/bin/claude"
+  printf '{\n  "name": "@anthropic-ai/claude-code",\n  "version": "2.1.296"\n}\n' \
+    > "$1/npmroot/@anthropic-ai/claude-code/package.json"
+  : > "$1/install/store/.claude-update-stamp"
+}
+# 11-13 (#1901 re-review): the warning is written once per native build and npm copy -- a second start of
+# the same host adds nothing; a new npm copy or a new native build names it again.
+between_nothing() { :; }
+between_new_npm_copy() {
+  printf '{\n  "name": "@anthropic-ai/claude-code",\n  "version": "2.1.297"\n}\n' \
+    > "$1/npmroot/@anthropic-ai/claude-code/package.json"
+}
+between_new_native_build() {
+  make_version "$1" 2.1.101
+  touch -t 202606090110 "$1/home/.local/share/claude/versions/2.1.101"
+  ln -sfn "$1/home/.local/share/claude/versions/2.1.101" "$1/home/.local/bin/claude"
+}
+# 14 (#1901 re-review): the same host without npm on the PATH -- the npm half of the advice is moot.
+setup_native_behind_no_npm() {
+  setup_native_behind_npm "$1"
+  rm -f "$1/stub/npm"
+  : > "$1/no-npm"
+}
+# 10: the same launcher, but the stamp is OLDER than the build -> no warning.
+setup_native_ahead_of_stamp() {
+  make_version "$1" 2.1.265
+  mkdir -p "$1/home/.local/bin"
+  ln -s "$1/home/.local/share/claude/versions/2.1.265" "$1/home/.local/bin/claude"
   : > "$1/install/store/.claude-update-stamp"
   touch -t 202606090110 "$1/install/store/.claude-update-stamp"
 }
@@ -188,6 +293,105 @@ if [ "$LINK_TARGET" = ".local/share/claude/versions/2.1.265" ]; then
 else
   fail "stamp older than the newest native build: relinked to the NEWEST version" \
     ".local/share/claude/versions/2.1.265" "${LINK_TARGET:-<no link>}"
+fi
+
+run_case setup_native_behind_npm
+if [ "$NPM_CALLS" = "0" ]; then pass "native launcher behind a newer npm copy: the native build runs (no npm call)"
+else fail "native launcher behind a newer npm copy: the native build runs (no npm call)" "0 npm calls" "$NPM_CALLS"; fi
+case "$FAILLOG" in
+  *"WARN the native claude launcher wins and runs build 2.1.100"*"npm copy: 2.1.296"*)
+    pass "native launcher behind a newer npm copy: channels-failures.log names both versions" ;;
+  *) fail "native launcher behind a newer npm copy: channels-failures.log names both versions" \
+       "WARN ... build 2.1.100 ... npm copy: 2.1.296" "${FAILLOG:-<empty>}" ;;
+esac
+
+run_case setup_native_ahead_of_stamp
+if [ -z "$FAILLOG" ]; then pass "native build newer than the npm stamp: no warning"
+else fail "native build newer than the npm stamp: no warning" "<empty log>" "$FAILLOG"; fi
+
+run_case setup_native_present
+if [ -z "$FAILLOG" ]; then pass "native host without an npm stamp: no warning"
+else fail "native host without an npm stamp: no warning" "<empty log>" "$FAILLOG"; fi
+
+run_case setup_native_behind_npm between_nothing
+if [ "$WARNS" = "1" ]; then pass "native launcher behind npm, second start of the same host: the warning is NOT repeated"
+else fail "native launcher behind npm, second start of the same host: the warning is NOT repeated" "1 WARN line" "$WARNS"; fi
+
+run_case setup_native_behind_npm between_new_npm_copy
+case "$WARNS:$FAILLOG" in
+  2:*"npm copy: 2.1.296"*"npm copy: 2.1.297"*)
+    pass "native launcher behind npm, a NEW npm copy: warned again, naming the new copy" ;;
+  *) fail "native launcher behind npm, a NEW npm copy: warned again, naming the new copy" \
+       "2 WARN lines, 2.1.296 then 2.1.297" "$WARNS: ${FAILLOG:-<empty>}" ;;
+esac
+
+run_case setup_native_behind_npm between_new_native_build
+case "$WARNS:$FAILLOG" in
+  2:*"runs build 2.1.100"*"runs build 2.1.101"*)
+    pass "native launcher behind npm, a NEW native build: warned again, naming the new build" ;;
+  *) fail "native launcher behind npm, a NEW native build: warned again, naming the new build" \
+       "2 WARN lines, 2.1.100 then 2.1.101" "$WARNS: ${FAILLOG:-<empty>}" ;;
+esac
+
+run_case setup_native_behind_no_npm
+case "$FAILLOG" in
+  *"remove ~/.local/bin/claude"*)
+    fail "native launcher behind npm, npm not on the PATH: only 'claude install stable' is advised" \
+      "no 'remove ~/.local/bin/claude' advice" "$FAILLOG" ;;
+  *"runs build 2.1.100"*"npm copy: unknown (npm not found)"*'Fix: `claude install stable` to bring the native build forward.'*)
+    pass "native launcher behind npm, npm not on the PATH: 'npm copy: unknown (npm not found)', only 'claude install stable' is advised" ;;
+  *) fail "native launcher behind npm, npm not on the PATH: only 'claude install stable' is advised" \
+       "npm copy: unknown (npm not found) + claude install stable" "${FAILLOG:-<empty>}" ;;
+esac
+
+echo "channels.sh daily update after the launch (DAILYRACE1024)"
+
+root="$(mktemp -d)"
+mkdir -p "$root/home" "$root/stub" "$root/install/store" "$root/npmroot"
+cat > "$root/stub/npm" <<EOF
+#!/bin/sh
+if [ "\$1" = "root" ]; then echo "$root/npmroot"; exit 0; fi
+echo "npm \$*" >> "$root/npm.log"
+exit 0
+EOF
+chmod +x "$root/stub/npm"
+setup_npm_host "$root"
+OUT="$(run_block_only "$root" "$SYSBIN" 'echo "due=$DAILY_CLAUDE_CHECK"')"
+NPM_CALLS="$( { wc -l < "$root/npm.log"; } 2>/dev/null | tr -d ' ')"
+if [ "${NPM_CALLS:-0}" = "0" ]; then pass "npm host: the block alone calls no npm before the launch"
+else fail "npm host: the block alone calls no npm before the launch" "0 npm calls" "$NPM_CALLS"; fi
+if [ "$OUT" = "due=1" ]; then pass "npm host: the daily check is due after the block"
+else fail "npm host: the daily check is due after the block" "due=1" "${OUT:-<nothing>}"; fi
+rm -f "$root/npm.log"
+run_block_only "$root" "$SYSBIN" 'claude_daily_check_start; wait; claude_daily_check_start' >/dev/null
+NPM_CALLS="$( { wc -l < "$root/npm.log"; } 2>/dev/null | tr -d ' ')"
+if [ "${NPM_CALLS:-0}" = "1" ]; then pass "the starter runs the daily check once, a second call starts nothing"
+else fail "the starter runs the daily check once, a second call starts nothing" "1 npm call" "${NPM_CALLS:-0}"; fi
+rm -rf "$root"
+
+# 17: source order in channels.sh (line numbers of the top-level statements).
+START_LINE="$(grep -n '^START_TS=' "$SRC" | head -1 | cut -d: -f1)"
+LAST_LAUNCH="$(grep -n 'new-session -d' "$SRC" | tail -1 | cut -d: -f1)"
+CALLS="$(grep -n '^[[:space:]]*claude_daily_check_start[[:space:]]*$' "$SRC" | cut -d: -f1)"
+N_CALLS="$(printf '%s\n' "$CALLS" | grep -c .)"
+GUARD_LINE="$(grep -n '^if \$TMUX has-session -t "=\$SESSION:" 2>/dev/null; then$' "$SRC" | cut -d: -f1 | while read -r l; do [ -n "$CALLS" ] && [ "$l" -eq $((CALLS - 1)) ] && echo "$l"; done)"
+DAILY_SITES="$(grep -n 'claude_install "daily check"' "$SRC" | cut -d: -f1)"
+FN_LINE="$(grep -n '^claude_daily_check_start() {' "$SRC" | cut -d: -f1)"
+if [ "$N_CALLS" = "1" ] && [ -n "$START_LINE" ] && [ -n "$LAST_LAUNCH" ] \
+   && [ "$CALLS" -gt "$START_LINE" ] && [ "$CALLS" -gt "$LAST_LAUNCH" ]; then
+  pass "channels.sh: the starter is called once, after START_TS and after every launch"
+else
+  fail "channels.sh: the starter is called once, after START_TS and after every launch" \
+    "1 call after line $START_LINE and $LAST_LAUNCH" "${N_CALLS} call(s) at: ${CALLS:-<none>}"
+fi
+if [ -n "$GUARD_LINE" ]; then pass "channels.sh: the starter sits behind a has-session guard"
+else fail "channels.sh: the starter sits behind a has-session guard" "if \$TMUX has-session ... on the line above" "<no guard>"; fi
+if [ "$(printf '%s\n' "$DAILY_SITES" | grep -c .)" = "1" ] && [ -n "$FN_LINE" ] \
+   && [ "$DAILY_SITES" -gt "$FN_LINE" ] && [ "$DAILY_SITES" -le $((FN_LINE + 4)) ]; then
+  pass "channels.sh: the daily claude_install is reachable only through the starter"
+else
+  fail "channels.sh: the daily claude_install is reachable only through the starter" \
+    "one site, inside claude_daily_check_start" "site(s): ${DAILY_SITES:-<none>}, starter at ${FN_LINE:-<none>}"
 fi
 
 echo "channels.sh native-install guard: $PASS passed, $FAIL failed"

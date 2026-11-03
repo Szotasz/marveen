@@ -1,0 +1,33 @@
+# NOTE: replace /path/to/marveen (install dir), /home/USER (home) and TZ with your values.
+# A systemd --USER unit (~/.config/systemd/user/, systemctl --user), started by uptime-monitor.timer; not a system unit.
+# Manual install (not part of install-linux.sh / update.sh), see docs/uptime-monitor.md: store/uptime-targets.json
+# must exist first (example: scripts/uptime-targets.example.json). Linux/systemd only.
+[Unit]
+Description=Marveen uptime monitor (website + embedded service), independent of the dashboard scheduler
+Wants=network-online.target
+After=network-online.target
+# OnFailure: the monitor's OWN failure (exit 1) and exit 4 report (an alert/notice that did not go out, or the send
+# path -- token, chat_id, helper, outgoing-copy gate -- already incomplete at the start of the run); an outage (3) and
+# a not-measurable round (2) are not failures. On a renamed install (SERVICE_ID) the notify unit is <slug>-notify@,
+# adjust it.
+OnFailure=marveen-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /path/to/marveen/scripts/uptime-monitor.py
+SuccessExitStatus=2 3
+# I4 (the script's docstring): for N targets (2N+1) requests x UPTIME_TIMEOUT (20 s) + wait_seconds + (N+1) sends x
+# 60 s <= 410 s; the script computes this when it loads the config, and exits 1 if it does not fit. Two targets with a
+# 90 s wait: 370 s. The urllib timeout applies per socket operation, not per request, does not bound DNS resolution
+# (getaddrinfo), and one measurement follows at most 10 redirects, each with its own timeout: so the computation is an
+# approximation; an overrun is stopped by this TimeoutStartSec (OnFailure). If the stop comes after a send but before
+# the state write, the next run may repeat the alert.
+TimeoutStartSec=420
+# The script finds the channel .env and access.json itself through scripts/lib/owner_chat.py (the install's main
+# channel dir, else the legacy ~/.claude/channels/telegram); an inherited TELEGRAM_STATE_DIR is ignored on purpose.
+# TELEGRAM_ENV is the only override for the token file, MARVEEN_ALERT_CHAT_ID the only override for the chat.
+Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+StandardOutput=journal
+StandardError=journal

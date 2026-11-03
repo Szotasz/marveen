@@ -196,6 +196,125 @@ if [ "$RC" = 2 ]; then pass "the checker exits 2 (could not run)"; else fail "th
 if [ "$(printf '%s' "$RES" | jq -r '.orphans // "nincs"')" = "nincs" ]; then pass "and it reports NO orphan number rather than 0"; else fail "no orphan number on a failed scan" "$RES"; fi
 echo ""
 
+# ---------------------------------------------------------------------------
+# (i) A `[[name]]` WIKILINK IN SCOPE MAKES A PAGE REACHABLE. The memory
+#     convention names `[[name]]` as the way pages link; counting only
+#     `](x.md)` reported such a page as an orphan, and the gate woke on the
+#     convention itself.
+# ---------------------------------------------------------------------------
+echo "(i) A page reached by a [[wikilink]] in SCOPE is not an orphan"
+clean_index
+echo "csak wikilinkkel" > "$MEM/wiki-lap.md"
+echo "Rokona: [[wiki-lap]] es [[masik|felirattal]]." >> "$MEM/hub.md"
+echo "felirattal elert" > "$MEM/masik.md"
+S="$TMP/i.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .orphans)" = 0 ]; then pass "wiki-lap.md and masik.md are reachable"; else fail "wikilink-reached pages are not orphans" "$(jqv "$S" .orphan_list)"; fi
+if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (j) A wikilink that only stands in CODE does not make a page reachable --
+#     the same filtering as for `](x.md)` in (e).
+# ---------------------------------------------------------------------------
+echo "(j) A [[wikilink]] inside inline code or a fence leaves the page an orphan"
+clean_index
+echo "arva" > "$MEM/kodban.md"
+echo "arva" > "$MEM/fencben.md"
+{
+  echo 'A minta: `[[kodban]]` -- csak proza.'
+  echo '```'
+  echo '[[fencben]]'
+  echo '```'
+} >> "$MEM/hub.md"
+S="$TMP/j.json"; rm -f "$S"
+run_gate "$S" >/dev/null
+if [ "$(jqv "$S" .orphans)" = 2 ] && [ "$(jqv "$S" '.orphan_list | sort | join(",")')" = "fencben.md,kodban.md" ]; then
+  pass "both code-only wikilink pages stay orphans"
+else
+  fail "code-only wikilinks do not make a page reachable" "$(jqv "$S" .orphan_list)"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (k) THE STEM AND THE `name:` DIFFER: an accented filename whose frontmatter
+#     `name:` is unaccented. Either key reaches it.
+# ---------------------------------------------------------------------------
+echo "(k) A wikilink resolves by the frontmatter name: as well as by the file stem"
+clean_index
+printf -- '---\nname: ekezetes-nev-a\ndescription: x\n---\ntartalom\n' > "$MEM/ekezetes-nev-á.md"
+echo "Lasd [[ekezetes-nev-a]]." >> "$MEM/hub.md"
+S="$TMP/k.json"; rm -f "$S"
+run_gate "$S" >/dev/null
+if [ "$(jqv "$S" .orphans)" = 0 ]; then pass "the accented-stem page is reached by its name:"; else fail "name: resolves the wikilink" "$(jqv "$S" .orphan_list)"; fi
+# Positive control: without the wikilink the same page IS an orphan, so the
+# zero above is the resolution and not a page the scan never saw.
+clean_index
+printf -- '---\nname: ekezetes-nev-a\ndescription: x\n---\ntartalom\n' > "$MEM/ekezetes-nev-á.md"
+S="$TMP/k2.json"; rm -f "$S"
+run_gate "$S" >/dev/null
+if [ "$(jqv "$S" .orphans)" = 1 ]; then pass "control: without the wikilink it is an orphan"; else fail "control orphan" "$(cat "$S")"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (l) A wikilink with no page is ALLOWED by the convention ("worth writing
+#     later"): it is neither a missing link nor anything else that wakes.
+# ---------------------------------------------------------------------------
+echo "(l) A [[wikilink]] with no page is not a missing link"
+clean_index
+echo "Kesobb: [[meg-nincs-megirva]]." >> "$MEM/hub.md"
+S="$TMP/l.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .missing_links)" = 0 ]; then pass "missing_links stays 0"; else fail "missing_links stays 0" "$(jqv "$S" .missing_links)"; fi
+if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (m) A WIKILINK OUTSIDE SCOPE DOES NOT REACH. SCOPE is the index plus its
+#     hubs; a `[[name]]` written on a second-level page is the stated one-hop
+#     limit, so its target stays an orphan and the gate wakes.
+# ---------------------------------------------------------------------------
+echo "(m) A [[wikilink]] on a page outside SCOPE leaves its target an orphan"
+clean_index
+echo "Tovabb: [[deep]]." >> "$MEM/lap.md"
+echo "csak masodik szintrol elert" > "$MEM/deep.md"
+S="$TMP/m.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .orphans)" = 1 ] && [ "$(jqv "$S" '.orphan_list[0]')" = "deep.md" ]; then
+  pass "deep.md (wikilinked from lap.md only) is an orphan"
+else
+  fail "a wikilink outside SCOPE does not reach" "$(jqv "$S" .orphan_list)"
+fi
+if [ -z "$OUT" ]; then pass "and the gate wakes (no SKIP)"; else fail "the gate wakes" "$OUT"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (n) AN NFD FILENAME IS REACHED BY AN NFC WIKILINK. A decomposed filename is
+#     kept as written on disk, so without normalization the stem would not
+#     equal the (composed) name in the link. The fixture is checked to really
+#     BE decomposed on disk -- otherwise the case would prove nothing.
+# ---------------------------------------------------------------------------
+echo "(n) A page with an NFD filename is reached by an NFC [[wikilink]]"
+clean_index
+NFD_ON_DISK="$(python3 - "$MEM" <<'PY2'
+import os, sys, unicodedata
+mem = sys.argv[1]
+name = unicodedata.normalize("NFD", "ékezet") + ".md"
+with open(os.path.join(mem, name), "w", encoding="utf-8") as fh:
+    fh.write("tartalom\n")
+with open(os.path.join(mem, "hub.md"), "a", encoding="utf-8") as fh:
+    fh.write("Lasd " + "[[" + unicodedata.normalize("NFC", "ékezet") + "]].\n")
+listed = [n for n in os.listdir(mem) if n.endswith(".md") and n.startswith("e")]
+print("yes" if any(n == name and n != unicodedata.normalize("NFC", n) for n in listed) else "no")
+PY2
+)"
+if [ "$NFD_ON_DISK" = yes ]; then pass "the fixture filename is NFD on disk (the case is not vacuous)"; else fail "the fixture filename is NFD on disk" "$NFD_ON_DISK"; fi
+S="$TMP/n.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .orphans)" = 0 ]; then pass "the NFD page is reachable"; else fail "the NFD page is reachable" "$(jqv "$S" .orphan_list)"; fi
+if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
+echo ""
+
 echo "======================================="
 echo "PASS: $PASS   FAIL: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

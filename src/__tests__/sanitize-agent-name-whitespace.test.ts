@@ -56,4 +56,12 @@ describe('POST /api/agents refuses the main agent id', () => {
     expect(scaffold).toBeGreaterThan(guard)
     expect(src.lastIndexOf("path === '/api/agents' && method === 'POST'", guard)).toBeGreaterThan(-1)
   })
+
+  it('refuses a reserved id (FLEETRESERVEDNAME1021, VOICECHANNELID1022) with 409 before scaffoldAgentDir', () => {
+    const guard = src.indexOf("if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409)")
+    const scaffold = src.indexOf('scaffoldAgentDir(name)')
+    expect(guard).toBeGreaterThan(-1)
+    expect(scaffold).toBeGreaterThan(guard)
+    expect(src.lastIndexOf("path === '/api/agents' && method === 'POST'", guard)).toBeGreaterThan(-1)
+  })
 })

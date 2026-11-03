@@ -45,11 +45,13 @@ else
   URL="http://localhost:3420/api/messages?agent=${AGENT}&limit=${PAGE}"; WANT="$LIMIT"
 fi
 
+. "$(dirname "$0")/lib/curl-tok.sh"
+
 # The HTTP status is checked, not assumed: an error body would otherwise read as an empty inbox.
 # curl's own failure (no dashboard: exit 7) must reach the FAIL line as HTTP 000, not end the
 # script in silence under set -e (71263d15 K6.14).
 OUT="$(mktemp)"; trap 'rm -f "$OUT"' EXIT
-CODE="$(curl -s -o "$OUT" -w '%{http_code}' -H "Authorization: Bearer $(cat "$TOKEN_FILE")" "$URL" || true)"
+CODE="$(curl_tok "$(cat "$TOKEN_FILE")" -s -o "$OUT" -w '%{http_code}' "$URL" || true)"
 if [[ "$CODE" != "200" ]]; then
   echo "FAIL: GET ${URL#http://localhost:3420} -> HTTP ${CODE}" >&2
   head -c 400 "$OUT" >&2; echo >&2

@@ -95,6 +95,8 @@ run_case() {
   cp "$REPO/scripts/morning-briefing.sh" "$dir/scripts/"
   cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$dir/scripts/lib/"
   printf 'ALLOWED_CHAT_ID=%s\n' "$chat_id" > "$dir/.env"
+  # MORNTIMER2197: the script runs on an API key only.
+  printf 'ANTHROPIC_API_KEY=sk-ant-test\n' >> "$dir/.env"
   [ "$tok" = "-" ] || printf 'TELEGRAM_BOT_TOKEN=%s\n' "$tok" >> "$dir/.env"
   if [ "$with_access" = "1" ]; then
     mkdir -p "$dir/.claude/channels/telegram"
@@ -181,7 +183,7 @@ run_case_argv() {
   mkdir -p "$dir/scripts/lib" "$dir/store" "$dir/bin"
   cp "$REPO/scripts/morning-briefing.sh" "$dir/scripts/"
   cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$dir/scripts/lib/"
-  printf 'ALLOWED_CHAT_ID=%s\n' "$chat_id" > "$dir/.env"
+  printf 'ALLOWED_CHAT_ID=%s\nANTHROPIC_API_KEY=sk-ant-test\n' "$chat_id" > "$dir/.env"
   if [ "$with_access" = "1" ]; then
     mkdir -p "$dir/.claude/channels/telegram"
     printf 'TELEGRAM_BOT_TOKEN=x\n' > "$dir/.claude/channels/telegram/.env"

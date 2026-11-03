@@ -11,13 +11,15 @@
 //
 // The vault entries here are REAL ciphertexts produced by vault.ts with a known
 // key, so "opens the vault" is measured by an actual decrypt, not assumed.
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'vault-export-keyres-'))
+// The store holds a (random, test-only) master key file; it must not outlive the run.
+afterAll(() => { rmSync(tmpRoot, { recursive: true, force: true }) })
 mkdirSync(join(tmpRoot, 'store'), { recursive: true })
 
 vi.mock('../config.js', () => ({

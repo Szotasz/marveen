@@ -1,11 +1,28 @@
-import { readBody, json } from '../http-helpers.js'
+import { readBody, readBodyOrRefuse, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
-import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
+import { clearOverride, getEffectiveSettingSource, getEffectiveSettingValue, getSettingFallback, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { noticeTargetDrift } from '../../notify.js'
+import { announceSlackOwnerChange } from '../../notify.js'
+
+// A change the registry marks as loosening a security control (SettingDefinition.loosens) needs the
+// owner. The shared fleet token is held by every agent, so it cannot be told apart from the agent
+// the control constrains. Who counts as the owner is the predicate that guards issuing credentials
+// (mayIssueCredentials, #2163): the owner's session, also when the browser sends the stored token
+// alongside it; the bare token only before the first dashboard login exists.
+function ownerCredential(ctx: RouteContext): boolean {
+  return mayActAsOwner(ctx.auth, ctx.req)
+}
+const LOOSEN_FORBIDDEN = {
+  ...OWNER_SESSION_REQUIRED,
+  error: 'This change loosens a security control: it needs the dashboard login (an owner session), not the shared token. ' +
+    'The token alone can do it only before the first login exists.',
+}
 
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -18,6 +35,13 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       key: def.key,
       type: def.type,
       value: getEffectiveSettingValue(def.key),
+      // Which layer answered: 'override' (saved here, config-overrides.json),
+      // 'env' or 'default'. The page offers "reset to default" on 'override'.
+      source: getEffectiveSettingSource(def.key).source,
+      // What the value becomes if the override is removed, and from which
+      // layer -- so the page can show "now -> after" before a reset.
+      resetValue: getSettingFallback(def.key).value,
+      resetSource: getSettingFallback(def.key).source,
       default: def.default,
       description: def.description,
       module: def.module,
@@ -61,6 +85,11 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
+      if (def.loosens?.(String(getEffectiveSettingValue(key)), String(validation.value)) && !ownerCredential(ctx)) {
+        json(res, LOOSEN_FORBIDDEN, 403)
+        return true
+      }
+
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
       setStoreWriteActor(resolvedActor)
       const oldValue = getEffectiveSettingValue(key)
@@ -72,19 +101,16 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
 
       logConfigChange(key, oldValue, validation.value!, resolvedActor)
       logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
+      // APPROVALSLACK1030: where the owner's requests go changed -> the OLD target is told (Samu 66026).
+      if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(validation.value), { fallbackOld: String(oldValue) })
+      // APPROVALSLACK1030 (2): the approving Slack id changed -> the OLD one is told (Dani 65925).
+      if (key === 'SLACK_OWNER_USER_ID') void announceSlackOwnerChange(String(oldValue), String(validation.value))
 
       // The rotation switch also wires its heartbeat, in both directions: on
       // creates or re-enables it (otherwise the switch is inert, measured
       // 2026-09-26), off disables it (otherwise a leftover task keeps ticking,
       // PR #1602 review). See syncRotationHeartbeatTask.
-      if (key === 'CLAUDE_ROTATION_ENABLED') {
-        try {
-          const synced = syncRotationHeartbeatTask()
-          if (synced !== 'unchanged' && synced !== 'rotation-off') logger.info({ task: 'claude-plan-rotate-check', result: synced }, 'Claude rotation heartbeat task synced')
-        } catch (err) {
-          logger.warn({ err }, 'Claude rotation heartbeat task sync failed')
-        }
-      }
+      if (key === 'CLAUDE_ROTATION_ENABLED') syncRotationAfterChange()
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')
@@ -93,5 +119,72 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // DELETE /api/settings/<KEY>: remove the saved override, so the value falls
+  // back to .env or the registry default. Idempotent: no override -> ok, with
+  // removed:false. The response names the layer that answers now, because
+  // "reset" does not always mean "the registry default": a key that is also in
+  // .env lands on the .env value, and the page has to say so.
+  const resetMatch = /^\/api\/settings\/([A-Z][A-Z0-9_]*)$/.exec(path)
+  if (resetMatch && method === 'DELETE') {
+    try {
+      const key = resetMatch[1]
+      const def = SETTINGS_REGISTRY.find((s) => s.key === key)
+      if (!def) {
+        json(res, { error: `Unknown setting key: ${key}` }, 404)
+        return true
+      }
+      if (def.secret) {
+        json(res, { error: 'Secret settings cannot be changed via this endpoint' }, 403)
+        return true
+      }
+
+      let actor = 'dashboard'
+      // A body cut off mid-way is refused (nothing reset), not read as "no body".
+      const raw = await readBodyOrRefuse(req, res)
+      if (!raw) return true
+      try {
+        const body = raw.toString()
+        const parsed = body ? JSON.parse(body) : null
+        if (parsed && typeof parsed.actor === 'string' && parsed.actor) actor = parsed.actor
+      } catch {
+        // A DELETE usually has no body; an unparsable one just keeps the default actor.
+      }
+
+      if (def.loosens?.(String(getEffectiveSettingValue(key)), String(getSettingFallback(key).value)) && !ownerCredential(ctx)) {
+        json(res, LOOSEN_FORBIDDEN, 403)
+        return true
+      }
+      setStoreWriteActor(actor)
+      const oldValue = getEffectiveSettingValue(key)
+      const result = clearOverride(key)
+      if (!result.ok) {
+        json(res, { error: result.error }, 409)
+        return true
+      }
+      const now = getEffectiveSettingSource(key)
+      if (result.removed) {
+        logConfigChange(key, oldValue, now.value, actor)
+        logger.info({ key, oldValue, newValue: now.value, source: now.source }, 'Setting override removed')
+        if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(now.value), { fallbackOld: String(oldValue) })
+        if (key === 'SLACK_OWNER_USER_ID') void announceSlackOwnerChange(String(oldValue), String(now.value))
+        if (key === 'CLAUDE_ROTATION_ENABLED') syncRotationAfterChange()
+      }
+      json(res, { ok: true, key, removed: result.removed, value: now.value, source: now.source, requiresRestart: def.requiresRestart })
+    } catch (err) {
+      logger.error({ err }, 'Failed to reset setting')
+      json(res, { error: 'Failed to reset setting' }, 500)
+    }
+    return true
+  }
+
   return false
+}
+
+function syncRotationAfterChange(): void {
+  try {
+    const synced = syncRotationHeartbeatTask()
+    if (synced !== 'unchanged' && synced !== 'rotation-off') logger.info({ task: 'claude-plan-rotate-check', result: synced }, 'Claude rotation heartbeat task synced')
+  } catch (err) {
+    logger.warn({ err }, 'Claude rotation heartbeat task sync failed')
+  }
 }

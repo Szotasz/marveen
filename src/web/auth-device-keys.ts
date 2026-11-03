@@ -178,6 +178,22 @@ export function findDeviceKeyByInstallId(installId: string): DeviceKeyInfo | nul
   return row ? rowToInfo(row) : null
 }
 
+/** A device key's display name: 1-64 letters, digits, space, `.`, `_`, `-`. */
+export const DEVICE_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
+
+/** Mint the per-device key of a Bridge-paired device, bound to its
+ *  marveen-remote:<uuid> install id, and revoke any key a previous pairing of
+ *  the same device left behind (replace-by-id, so a device never accumulates
+ *  keys). The ONE implementation behind every pairing path -- the dashboard
+ *  route and the server-side CLIs the remote installer calls -- so a device
+ *  paired either way is listed and revocable alike (BRIDGEINSTKEY1020). */
+export function mintBridgeDeviceKey(name: string, installId: string): { minted: MintedDeviceKey; replaced: boolean } {
+  const prior = findDeviceKeyByInstallId(installId)
+  if (prior) revokeDeviceKey(prior.id)
+  const minted = createDeviceKey(name, { installId })
+  return { minted, replaced: prior !== null }
+}
+
 // Revocation is immediate: the row and any cached entry go together, so the
 // very next request with the key falls through the gate.
 export function revokeDeviceKey(id: number): boolean {

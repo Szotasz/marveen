@@ -2,13 +2,19 @@
 // PR1402CHANNELREAP / PANEDEAD919). The guard was shipped without a test; this
 // is the measurement that verified it, kept.
 //
+// macOS (PR1829MACRED1015): the stand-in poller is a node job, never /bin/sleep.
+// On macOS `ps axeww` does not show the environment of an Apple-signed binary
+// (/bin/sleep, /bin/bash, even a copy outside /bin), so such a stand-in never
+// carries the plugin markers the reaper requires and is never a candidate.
+// Measured on macOS 26.5. Real pollers are bun/node, whose environment ps shows.
+//
 // The bug (2026-09-19, card 08a02137): `export TELEGRAM_STATE_DIR=... && exec
 // claude` puts the state dir into the pane's OWN claude environment, so the
 // bot.pid / env-scan candidates can include the live pane leader itself. The
 // pre-respawn reap then killed the main session's claude, the pane collapsed,
 // and `tmux respawn-pane -k` failed with "can't find pane".
 //
-// Three directions, all on real processes (a detached `sleep` carrying the
+// Three directions, all on real processes (a detached node job carrying the
 // state-dir env var) against a fake tmux passed through opts.tmuxPath:
 //   A. the candidate IS a live pane leader  -> spared (skippedLivePane), alive
 //   B. the tmux query fails                  -> nothing reaped (fail-safe), alive
@@ -30,12 +36,16 @@ const fakeTmux = join(tmp, 'fake-tmux')
 const kids: number[] = []
 
 // A long-lived process that matches BOTH candidate sources: bot.pid (written
-// below) and the env-var scan (TELEGRAM_STATE_DIR in its environment).
+// below) and the env-var scan (TELEGRAM_STATE_DIR in its environment). Both
+// sources count only plugin processes (cf075d41), so it carries the plugin
+// marker too, as a real poller does.
+const pluginRoot = join(tmp, 'plugins', 'cache', 'official', 'telegram', '0.0.1')
 function victim(): number {
-  const p = spawn('/bin/sleep', ['300'], {
+  // node, not /bin/sleep: see the macOS note in the header.
+  const p = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, TELEGRAM_STATE_DIR: chanDir },
+    env: { ...process.env, TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot },
   })
   p.unref()
   kids.push(p.pid!)

@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
 import { CHANNEL_INBOUND_PREAMBLE } from '../prompt-safety.js'
-import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
+// VOICECHANNELID1022: the id is null only when the voice lane is off (even the
+// default names another sender); on this suite's install it is on.
+const VOICE_CHANNEL_AGENT_ID = VOICE_ID_OR_NULL as string
 
 // HANGPREAMBLE1013: a voice-channel message is classified channel-inbound (the
 // owner is speaking, a reply is expected), but it was delivered with the

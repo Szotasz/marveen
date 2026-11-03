@@ -43,7 +43,9 @@ function fakePatch(id: string, body: unknown): { ctx: RouteContext; out: { statu
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method: 'PATCH', url } as RouteContext, out }
+  // Approving takes an owner credential (kanban 80d0e3c6, approvals-approve-owner-only.test.ts):
+  // this harness calls as the owner's dashboard session.
+  return { ctx: { req, res, path, method: 'PATCH', url, auth: { kind: 'session', user: 'owner' } } as RouteContext, out }
 }
 
 describe('approvals notification target', () => {

@@ -44,7 +44,8 @@ function fakeCtx(method: string, path: string, body?: string): { ctx: RouteConte
       ;(req as unknown as EventEmitter).emit('end')
     })
   }
-  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`), fedPeer: null }, res: state }
+  // The dashboard token with no login yet: the lane that may still issue peer tokens (DEVKEYFOLLOW1022).
+  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`), fedPeer: null, auth: { kind: 'token' } }, res: state }
 }
 
 async function call(method: string, path: string, body?: unknown): Promise<{ statusCode: number; json: Record<string, unknown> }> {

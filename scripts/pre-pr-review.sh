@@ -5,72 +5,202 @@
 #
 # Usage: ./scripts/pre-pr-review.sh [base-ref]
 #   base-ref defaults to upstream/main
+#
+# What leaves this machine is the diff, so the diff is checked first:
+#   - no secret in argv or URL: every credential travels in a 0600 header
+#     file (`curl -H @file`), every body in a 0600 file (`--data-binary @file`).
+#     `ps` and proxy logs see paths, never values.
+#   - the diff is scanned BEFORE any network call (vault included), by
+#     scripts/pre-pr-review-scan.ts (the gate's secret shapes, hex runs,
+#     high-entropy tokens, credential paths) and scripts/secret-gate.ts. A hit,
+#     or a scanner that cannot run, aborts the run; findings name file:line,
+#     never the matched text. There is no override: a review is optional, a
+#     leaked key is not reversible.
+#   - a diff above MAX_DIFF_BYTES is refused, not truncated: a cut diff would
+#     be reviewed as if it were the whole change.
+#   - every request has a connect and a total timeout; a non-2xx answer is
+#     reported by status code only, because the body can echo the prompt.
 
 set -euo pipefail
 
 BASE="${1:-upstream/main}"
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
+MAX_DIFF_BYTES=204800
+CURL_LIMITS=(--connect-timeout 10 --max-time 120)
 
 if [ ! -f "$TOKEN_FILE" ]; then
   echo "[pre-pr-review] Dashboard token not found, skipping cross-review." >&2
   exit 0
 fi
 
-DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"
+# Everything below that holds a credential, the diff or a request body lives
+# in this directory: 0700, files 0600, removed on any exit.
+umask 077
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pre-pr-review.XXXXXX")"
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Dashboard port: env WEB_PORT, else the install .env, else 3420.
-WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
+# `|| true`: with pipefail a missing .env would otherwise end the run silently.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "' || true)}"
 WEB_PORT="${WEB_PORT:-3420}"
 API="http://localhost:${WEB_PORT}/api/vault"
 
-get_secret() {
-  local id="$1"
-  local val
-  val="$(curl -sf -H "Authorization: Bearer $DASHBOARD_TOKEN" "$API/$id" 2>/dev/null)" || true
-  echo "$val" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null || true
-}
-
-DIFF="$(git diff "$BASE"...HEAD)"
-if [ -z "$DIFF" ]; then
+# Pinned output format: user config (color.ui=always, diff.external,
+# textconv, noprefix, relative) must not change what is scanned and sent.
+git diff --no-color --no-ext-diff --no-textconv --no-relative \
+  --src-prefix=a/ --dst-prefix=b/ "$BASE"...HEAD > "$WORK/diff"
+if [ ! -s "$WORK/diff" ]; then
   echo "[pre-pr-review] No diff found against $BASE, nothing to review."
   exit 0
 fi
 
-PROMPT="You are a senior software engineer reviewing a pull request. Review the following git diff for correctness, security, and code quality. Be concise and specific. List any real issues found.\n\nDiff:\n\`\`\`\n$DIFF\n\`\`\`"
+DIFF_BYTES="$(wc -c < "$WORK/diff" | tr -d ' ')"
+if [ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]; then
+  echo "[pre-pr-review] Diff against $BASE is $DIFF_BYTES bytes, above the $MAX_DIFF_BYTES byte limit." >&2
+  echo "[pre-pr-review] Refusing to send a truncated diff; nothing was sent. Review a smaller range." >&2
+  exit 1
+fi
+
+# --- secret filter: runs before ANY request, the vault included ---
+# Both passes run on tsx from THIS install (never a bare `npx`, which may
+# download it). If either cannot run, nothing is sent: an unscanned diff is
+# not a clean diff.
+#   1. scripts/pre-pr-review-scan.ts: every line of the diff text that would
+#      leave (headers and `@@` lines included), with the gate's own secret
+#      shapes plus hex-run, entropy and credential-path rules.
+#   2. scripts/secret-gate.ts --range: what CI runs on a PR, on the head tree.
+# Findings name file:line and the detector, never the matched text.
+TSX="$INSTALL_DIR/node_modules/.bin/tsx"
+if [ ! -x "$TSX" ] || [ ! -f "$INSTALL_DIR/scripts/pre-pr-review-scan.ts" ] \
+    || [ ! -f "$INSTALL_DIR/scripts/secret-gate.ts" ]; then
+  echo "[pre-pr-review] Secret scan not runnable here (no local tsx; run npm ci); nothing was sent." >&2
+  exit 1
+fi
+if ! "$TSX" "$INSTALL_DIR/scripts/pre-pr-review-scan.ts" "$WORK/diff" > "$WORK/scan.out" 2>&1; then
+  echo "[pre-pr-review] Possible secret in the diff against $BASE; nothing was sent:" >&2
+  sed 's/^/  /' "$WORK/scan.out" >&2
+  echo "[pre-pr-review] The matched text is not printed. Remove the value (or the file) and rerun." >&2
+  exit 1
+fi
+if ! "$TSX" "$INSTALL_DIR/scripts/secret-gate.ts" --range "$BASE...HEAD" > "$WORK/gate.out" 2>&1; then
+  echo "[pre-pr-review] scripts/secret-gate.ts did not clear $BASE...HEAD; nothing was sent:" >&2
+  sed 's/^/  /' "$WORK/gate.out" >&2
+  exit 1
+fi
+
+# write_header <out-file> <header-name> <prefix> <secret-file>
+# Turns a raw secret file (dashboard token) into one header line in a 0600
+# file. The value never passes through argv or a shell variable.
+write_header() {
+  python3 -I - "$@" <<'PY'
+import os, sys
+out, name, prefix, src = sys.argv[1:5]
+val = open(src, encoding='utf-8').read().strip()
+if not val or '\r' in val or '\n' in val:
+    sys.exit(1)
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, 'w') as fh:
+    fh.write(f'{name}: {prefix}{val}\nContent-Type: application/json\n')
+PY
+}
+
+# vault_header <secret-id> <out-file> <header-name> <prefix>
+# Fetches a vault entry straight into a 0600 file and turns it into a header
+# file. Returns non-zero when the entry is missing, empty or unreadable.
+vault_header() {
+  local id="$1" out="$2" name="$3" prefix="$4" code
+  code="$(curl -s "${CURL_LIMITS[@]}" -H @"$WORK/dashboard.hdr" \
+    -o "$WORK/vault.json" -w '%{http_code}' "$API/$id" 2>/dev/null)" || code=000
+  if [ "$code" != 200 ]; then
+    rm -f "$WORK/vault.json"
+    return 1
+  fi
+  python3 -I - "$WORK/vault.json" "$out" "$name" "$prefix" <<'PY' || { rm -f "$WORK/vault.json"; return 1; }
+import json, os, sys
+src, out, name, prefix = sys.argv[1:5]
+try:
+    val = str(json.load(open(src, encoding='utf-8')).get('value', '') or '').strip()
+except Exception:
+    sys.exit(1)
+if not val or '\r' in val or '\n' in val:
+    sys.exit(1)
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, 'w') as fh:
+    fh.write(f'{name}: {prefix}{val}\nContent-Type: application/json\n')
+PY
+  rm -f "$WORK/vault.json"
+}
+
+# Request bodies: built by python from the diff file, written to 0600 files.
+python3 -I - "$WORK/diff" "$WORK/openai.json" "$WORK/gemini.json" <<'PY'
+import json, os, sys
+diff_path, openai_out, gemini_out = sys.argv[1:4]
+diff = open(diff_path, encoding='utf-8', errors='replace').read()
+prompt = ('You are a senior software engineer reviewing a pull request. Review the following git diff '
+          'for correctness, security, and code quality. Be concise and specific. List any real issues found.'
+          f'\n\nDiff:\n```\n{diff}\n```')
+for path, body in ((openai_out, {'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 1000}),
+                   (gemini_out, {'contents': [{'parts': [{'text': prompt}]}]})):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as fh:
+        json.dump(body, fh)
+PY
+
+# review <label> <url> <header-file> <body-file> <python-extract-expr>
+# Prints the review text; on failure prints the status only and returns 1.
+review() {
+  local label="$1" url="$2" hdr="$3" body="$4" expr="$5" code rc=0
+  code="$(curl -s "${CURL_LIMITS[@]}" -H @"$hdr" --data-binary @"$body" \
+    -o "$WORK/resp.json" -w '%{http_code}' "$url" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "[pre-pr-review] $label request failed (curl exit $rc: network error or timeout)." >&2
+    return 1
+  fi
+  case "$code" in
+    2??) ;;
+    *) echo "[pre-pr-review] $label request failed: HTTP $code (response body not shown)." >&2
+       return 1 ;;
+  esac
+  # Control characters (ESC, CR, C1) are stripped: the reply is untrusted text
+  # and must not drive the terminal. Newline and tab stay.
+  if ! python3 -I -c "import json,re,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); print(re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', str($expr)))" \
+      "$WORK/resp.json" 2>/dev/null; then
+    echo "[pre-pr-review] $label answered HTTP $code with an unexpected shape (response body not shown)." >&2
+    return 1
+  fi
+}
+
+if ! write_header "$WORK/dashboard.hdr" Authorization 'Bearer ' "$TOKEN_FILE"; then
+  echo "[pre-pr-review] Dashboard token is empty or malformed, skipping cross-review." >&2
+  exit 0
+fi
+
+FAILED=0
 
 # --- ChatGPT ---
-OPENAI_KEY="$(get_secret OPENAI_API_KEY)"
-if [ -n "$OPENAI_KEY" ]; then
+if vault_header OPENAI_API_KEY "$WORK/openai.hdr" Authorization 'Bearer '; then
   echo ""
   echo "=== ChatGPT Review ==="
-  PAYLOAD="$(python3 -c "
-import json, sys
-prompt = sys.stdin.read()
-print(json.dumps({'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 1000}))
-" <<< "$PROMPT")"
-  curl -sf https://api.openai.com/v1/chat/completions \
-    -H "Authorization: Bearer $OPENAI_KEY" \
-    -H "Content-Type: application/json" \
-    -d "$PAYLOAD" \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'])"
+  review ChatGPT https://api.openai.com/v1/chat/completions \
+    "$WORK/openai.hdr" "$WORK/openai.json" "d['choices'][0]['message']['content']" || FAILED=1
+  rm -f "$WORK/openai.hdr"
 else
   echo "[pre-pr-review] OPENAI_API_KEY not set in vault — ChatGPT review skipped."
 fi
 
 # --- Gemini ---
-GEMINI_KEY="$(get_secret GEMINI_API_KEY)"
-if [ -n "$GEMINI_KEY" ]; then
+if vault_header GEMINI_API_KEY "$WORK/gemini.hdr" x-goog-api-key ''; then
   echo ""
   echo "=== Gemini Review ==="
-  PAYLOAD="$(python3 -c "
-import json, sys
-prompt = sys.stdin.read()
-print(json.dumps({'contents': [{'parts': [{'text': prompt}]}]}))
-" <<< "$PROMPT")"
-  curl -sf "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_KEY" \
-    -H "Content-Type: application/json" \
-    -d "$PAYLOAD" \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['candidates'][0]['content']['parts'][0]['text'])"
+  review Gemini https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent \
+    "$WORK/gemini.hdr" "$WORK/gemini.json" "d['candidates'][0]['content']['parts'][0]['text']" || FAILED=1
+  rm -f "$WORK/gemini.hdr"
 else
   echo "[pre-pr-review] GEMINI_API_KEY not set in vault — Gemini review skipped."
 fi
+
+exit "$FAILED"

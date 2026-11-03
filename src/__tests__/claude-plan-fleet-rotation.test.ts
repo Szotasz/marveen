@@ -50,7 +50,7 @@ function deps(over: Partial<FleetRotationDeps> = {}): FleetRotationDeps & { writ
 }
 
 describe('agentUsesFleetToken (mirrors the launcher)', () => {
-  const base = { name: 'dev', mainAgentId: 'main', model: 'claude-opus-5', authMode: 'shared', configuredConfigDir: null, remote: false }
+  const base = { name: 'dev', mainAgentId: 'main', model: 'claude-opus-5', authMode: 'shared', configuredConfigDir: null, remote: false, ownTokenFile: false }
   it('a plain Claude sub-agent on shared auth uses the fleet token', () => {
     expect(agentUsesFleetToken(base)).toBe(true)
   })
@@ -61,6 +61,7 @@ describe('agentUsesFleetToken (mirrors the launcher)', () => {
     ['an agent with its own config dir / plan', { configuredConfigDir: '/opt/claude-x' }],
     ['a non-Claude model', { model: 'deepseek-v4-pro' }],
     ['a remote agent', { remote: true }],
+    ['an agent with its own setup-token file (#2227)', { ownTokenFile: true }],
   ])('does not for %s', (_label, over) => {
     expect(agentUsesFleetToken({ ...base, ...over })).toBe(false)
   })

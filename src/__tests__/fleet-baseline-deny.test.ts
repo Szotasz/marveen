@@ -136,8 +136,8 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
   it('keeps the egress rules and the profile\'s own rules alongside the baseline', () => {
     writeAgentSettingsFromProfile(NAME, loadProfileTemplate('developer-senior'))
     const deny = readDeny()
-    expect(deny).toContain('Bash(wget *)')
-    expect(deny).toContain('Bash(*/wget *)')
+    expect(deny).toContain('Bash(nc *)')
+    expect(deny).toContain('Bash(*/nc *)')
     expect(deny).toContain('ScheduleWakeup')
   })
 })

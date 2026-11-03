@@ -29,6 +29,8 @@ const {
   OVERRIDES_PATH,
   getEffectiveSettingValue,
   setOverride,
+  clearOverride,
+  getEffectiveSettingSource,
   getOverrides,
   reloadOverridesForTest,
 } = await import('../settings-store.js')
@@ -93,5 +95,50 @@ describe('settings-store', () => {
     const overrides = getOverrides()
     expect(overrides.KANBAN_WIP_WARN_PCT).toBe(60)
     expect(overrides.KANBAN_WIP_OK_COLOR).toBe('#abcdef')
+  })
+})
+
+describe('clearOverride: the way back from a saved value', () => {
+  beforeEach(() => {
+    mkdirSync(STORE, { recursive: true })
+    if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
+    reloadOverridesForTest()
+  })
+
+  it('removes the key, and the value falls back to the registry default', () => {
+    expect(setOverride('KANBAN_WIP_WARN_PCT', 55).ok).toBe(true)
+    expect(getEffectiveSettingSource('KANBAN_WIP_WARN_PCT')).toEqual({ value: 55, source: 'override' })
+
+    expect(clearOverride('KANBAN_WIP_WARN_PCT')).toEqual({ ok: true, removed: true })
+    expect(getEffectiveSettingSource('KANBAN_WIP_WARN_PCT').source).toBe('default')
+    expect('KANBAN_WIP_WARN_PCT' in getOverrides()).toBe(false)
+    expect('KANBAN_WIP_WARN_PCT' in JSON.parse(readFileSync(OVERRIDES_PATH, 'utf-8'))).toBe(false)
+  })
+
+  it('leaves every other override in the file alone', () => {
+    setOverride('KANBAN_WIP_WARN_PCT', 55)
+    setOverride('KANBAN_SWIMLANE_DEFAULT_GROUP', 'priority')
+    clearOverride('KANBAN_WIP_WARN_PCT')
+    expect(JSON.parse(readFileSync(OVERRIDES_PATH, 'utf-8'))).toEqual({ KANBAN_SWIMLANE_DEFAULT_GROUP: 'priority' })
+  })
+
+  it('is idempotent: nothing to remove is ok, and writes nothing', () => {
+    expect(clearOverride('KANBAN_WIP_WARN_PCT')).toEqual({ ok: true, removed: false })
+    expect(existsSync(OVERRIDES_PATH)).toBe(false)
+  })
+
+  it('rejects an unknown key', () => {
+    const r = clearOverride('NO_SUCH_KEY')
+    expect(r.ok).toBe(false)
+    expect(r.removed).toBe(false)
+  })
+
+  it('refuses to rewrite an unreadable overrides file instead of emptying it', async () => {
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(OVERRIDES_PATH, '{ "KANBAN_WIP_WARN_PCT": 55, broken')
+    const r = clearOverride('KANBAN_WIP_WARN_PCT')
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('invalid-json')
+    expect(readFileSync(OVERRIDES_PATH, 'utf-8')).toBe('{ "KANBAN_WIP_WARN_PCT": 55, broken')
   })
 })

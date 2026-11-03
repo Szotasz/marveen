@@ -78,7 +78,7 @@ elofordulasa utan a quoting az eszkoz dolga (parameterkotes); (2) a fejlec-idot 
 RENDSZERORA adja (ugyanaz az ertek, mint a created_at), gepelt orat a kapu megtagad --
 2026-09-05-en 17 kommentbol 11-ben tert el a gepelt ora a valodi created_at-tol.
 """
-import argparse, json, os, re, sqlite3, sys, time, unicodedata, urllib.request
+import argparse, json, os, re, sqlite3, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 
 # GYOKER-FELOLDAS: env ELOSZOR, __file__ CSAK tartaleknak, beegetett /Users/... SEHOL.
 # (Boni ket meresebol, msg 20272.) A sorrend nem izles kerdese:
@@ -169,8 +169,44 @@ def _token_kapu(dry_run, elozmeny=None, farok=None):
 # tortenetben). Merve ugyanabban az ablakban: 251 komment megy gazda-felelosu kartyara. Ha a kapu
 # rajuk is allna, 251 esetben olyat kovetelne, amit teljesiteni sem lehet -- a gazdahoz Telegramon
 # kell szolni, nem uzenetsoron.
-FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli',
-         'marveen'}
+# KARTYAFLEET1030: a kezi lista elavult (abel, bence, nora, orsi, vera hianyzott; Bence 2026-10-30
+# nem tudott kartyat nyitni). A FLEET mostantol a FUTO FLOTTABOL is jon, ugyanazzal a szaballyal,
+# mint a dashboard listAgentNames-e (src/web/agent-config.ts): agents/<nev> valodi konyvtar, nem
+# agents/-on beluli symlink, nem a fo agens neve, es nincs benne a .hidden-from-dashboard jel.
+# A regi kezi lista ALSO KORLAT marad (pl. hidli nem agents/-konyvtar), tehat a halmaz nem szukul.
+_FLEET_KEZI = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli',
+               'marveen'}
+_REJTETT_JEL = '.hidden-from-dashboard'
+_NEV_RX = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
+
+
+def flotta_az_agents_konyvtarbol(root, fo_agens='marveen'):
+    """A futo flotta nevei a <root>/agents alol, a dashboard listAgentNames szabalyaval."""
+    base = os.path.join(root, 'agents')
+    try:
+        base_real = os.path.realpath(base)
+        nevek = os.listdir(base)
+    except OSError:
+        return set()
+    out = set()
+    for n in nevek:
+        if n == fo_agens or not _NEV_RX.match(n):
+            continue
+        p = os.path.join(base, n)
+        try:
+            if os.path.islink(p):
+                cel = os.path.realpath(p)
+                if cel == base_real or cel.startswith(base_real + os.sep):
+                    continue  # ugyanaz az agens masodik neven (ROSTERALIAS1026)
+            if not os.path.isdir(p) or os.path.exists(os.path.join(p, _REJTETT_JEL)):
+                continue
+        except OSError:
+            continue
+        out.add(n)
+    return out
+
+
+FLEET = _FLEET_KEZI | flotta_az_agents_konyvtarbol(ROOT, os.environ.get('MAIN_AGENT_ID') or 'marveen')
 COORDINATOR = 'marveen'
 GAZDA = 'szabolcs'
 
@@ -814,6 +850,12 @@ def komment_mod(a):
               + (f' | mar ezen az erteken all: {valtozatlan}' if valtozatlan else ''))
         if valtozik:
             _elozmeny_figyelmeztetes(db, a, now, dry=True)
+        if valtozik.get('status') == 'done' and _blokkol_valamit(db, a.id):
+            # A DRY-RUN IS KIMONDJA a done utani szerver-hivast (PR2027SCRIPTNOTIFY1018), es a
+            # token-hianyat is: eles futasban az a mozgatas UTAN derulne ki.
+            print('  done utan: feloldas-ertesites a szerveren (' + KANBAN_API + '/<id>/notify-unblocked)'
+                  + ('' if _token_vagy_none() is not None else
+                     ' -- FIGYELEM: nincs token, eles futasban a mozgatas utan ez nem menne ki'))
         return
 
     cur = _komment_insert(db, a.id, a.author, tartalom, now, a.automated)
@@ -882,13 +924,22 @@ def komment_mod(a):
     _elozmeny_figyelmeztetes(db, a, now)
 
     sets = ', '.join(f'{k}=?' for k in valtozik)
+    ertekek = list(valtozik.values())
+    # DONE-EVIDENCE (#566): a /move-on egy agens csak bizonyitekkal zarhat done-ra. Ezen az uton
+    # a komment KOTELEZO, tehat a komment maga a bizonyitek: ugyanabba az UPDATE-be irjuk a
+    # done_evidence oszlopba, hogy a tabla "ellenorizve" jelzese innen is latsszon. Egy regi DB-n
+    # (nincs oszlop) kimarad, a mozgatas valtozatlan.
+    if valtozik.get('status') == 'done' and any(
+            r[1] == 'done_evidence' for r in db.execute('PRAGMA table_info(kanban_cards)')):
+        sets += ', done_evidence=?'
+        ertekek.append(text.strip())
     # A MOZGATO a tablan: ugyanaz a kisbetus agens-nev, amit a szerver /move-ja actor-kent kap
     # (a dispatch-recept "actor":"<agens>"-et kuld), es amit ez a szkript feladokent hasznal.
     actor = (a.from_agent or a.author).strip().lower()
     # dispatched_at az UPDATE-ben, mint a /move SQL-jeben (KARTYADISPATCH1010).
     nullaz = _dispatch_nullaz(valtozik.get('status', elotte['status']))
     cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=?' + (', dispatched_at=NULL' if nullaz else '')
-                     + ' WHERE id=?', (*valtozik.values(), now, a.id))
+                     + ' WHERE id=?', (*ertekek, now, a.id))
     if cur.rowcount != 1:
         db.rollback()
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')
@@ -971,6 +1022,76 @@ def komment_mod(a):
                 + f'), kerte: {a.author}. Fuggetlenul visszaolvasva.\n' + reszletes
                 + '\n' + zarosor, now, automated=True)
     db.commit()
+    if valtozik.get('status') == 'done':
+        _feloldas_ertesites(db, a.id, actor, now)
+
+
+# A FELOLDAS-ERTESITES A SZKRIPT DONE-UTJAN (PR2027SCRIPTNOTIFY1018). A szerver /move-ja es PUT-ja
+# done-nal szol a kovetkezo agensnek, akinek a kartyaja erre vart (#2027). Ez a szkript viszont
+# KOZVETLENUL a DB-be mozgat, tehat azt a horgot sosem erinti -- merve a flotta tablajan: 127
+# done-atmenetbol 127 innen jott. A szabalyok (ki szabadult fel, kinek szolunk, ki nem fut) NEM
+# masolodnak ide: a szerver vegpontja futtatja ugyanazt a fuggvenyt, mint a /move. Itt csak annyi
+# dol el, hogy ERDEMES-E hivni: ha a kartya semmit nem blokkol, nincs kinek szolni.
+KANBAN_API = os.environ.get('KARTYA_KANBAN_API') or (API.rsplit('/messages', 1)[0] + '/kanban')
+
+
+def _token_vagy_none():
+    tok = os.environ.get('KARTYA_TOKEN')
+    if tok is not None:
+        return tok
+    tokpath = os.path.join(ROOT, 'store', '.dashboard-token')
+    return open(tokpath).read().strip() if os.path.exists(tokpath) else None
+
+
+def _blokkol_valamit(db, card_id):
+    try:
+        return db.execute('SELECT 1 FROM kanban_card_blockers WHERE blocker_id=? LIMIT 1', (card_id,)).fetchone() is not None
+    except sqlite3.OperationalError:
+        return False  # regi DB blokkolo-tabla nelkul: nincs mit feloldani
+
+
+def _feloldas_ertesites(db, card_id, actor, now):
+    if not _blokkol_valamit(db, card_id):
+        return
+    url = KANBAN_API + '/' + urllib.parse.quote(card_id, safe='') + '/notify-unblocked'
+    # A MOZGATAS MAR KESZ ES VISSZAOLVASVA. Ha innen valami nem megy at, az ujrafuttatas NEM segit
+    # (a mozgatas "nincs teendo"-val all meg), ezert a kimenet a pontos potlo hivast adja.
+    potlas = ('A MOZGATAS KESZ (visszaolvasva), csak a feloldas-ertesites nem ment ki. NE futtasd ujra a'
+              ' mozgatast; potold ezzel:\n  curl -s -X POST ' + url
+              + ' -H "Authorization: Bearer $(cat store/.dashboard-token)" -H "Content-Type: application/json"'
+              + " --data-binary '" + json.dumps({'actor': actor}) + "'")
+    tok = _token_vagy_none()
+    if tok is None:
+        sys.exit('NINCS TOKEN a feloldas-ertesiteshez. ' + potlas)
+    req = urllib.request.Request(url, data=json.dumps({'actor': actor}).encode(),
+                                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok},
+                                 method='POST')
+    try:
+        r = json.load(urllib.request.urlopen(req))
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            # Kozben valaki mas tovabbmozgatta: a kartya mar nem done, nincs kit ertesiteni.
+            print('FELOLDAS-ERTESITES: nem ment, a kartya kozben mar nem done (409).')
+            return
+        sys.exit(f'A FELOLDAS-ERTESITES HIBAT KAPOTT ({e.code}). ' + potlas)
+    except Exception as e:
+        sys.exit(f'A FELOLDAS-ERTESITES NEM ERTE EL A SZERVERT ({e}). ' + potlas)
+    felszabadult = r.get('freed') or []
+    mar = r.get('already_notified') or []
+    # VISSZAOLVASAS: a szerver minden felszabadult kartyara rendszer-kommentet ir. Ha a valasz
+    # olyan kartyat nevez meg, amelyen nincs ilyen komment a mozgatas ota, az nem ert celba.
+    for fid in felszabadult:
+        sor = db.execute("SELECT 1 FROM kanban_comments WHERE card_id=? AND author='system'"
+                         " AND content LIKE '%Folytathat%' AND created_at>=?", (fid, now)).fetchone()
+        if not sor:
+            sys.exit(f'HIBA: a szerver szerint a(z) {fid} felszabadult, de a rendszer-kommentje NEM'
+                     f' OLVASHATO VISSZA. ' + potlas)
+    if felszabadult or mar:
+        print('FELOLDAS-ERTESITES OK (visszaolvasva): felszabadult: ' + (', '.join(felszabadult) or '-')
+              + ('; mar korabban ertesitve: ' + ', '.join(mar) if mar else ''))
+    else:
+        print('FELOLDAS-ERTESITES: a kartya blokkol, de egyik varakozo sem szabadult fel (mas is blokkolja,'
+              ' vagy mar lezart/archivalt).')
 
 # A mezomozgatas-nyom GEPI ZAROSORA. Ket helyen hasznaljuk: iraskor a nyom vegere kerul,
 # olvasaskor EBBOL jon a mozgato neve. A sor-eleji ^ es a sor-vegi $ egyutt kell: enelkul a

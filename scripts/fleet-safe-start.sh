@@ -47,8 +47,10 @@ log() { echo "[fleet-safe-start] $*"; }
 [[ -f "$TOKEN_FILE" ]] || { log "no dashboard token at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
 
+. "$(dirname "$0")/lib/curl-tok.sh"
+
 # Fetch agents (name + running) from the dashboard.
-agents_json="$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$DASH/api/agents" 2>/dev/null)"
+agents_json="$(curl_tok "$TOKEN" -s --max-time 10 "$DASH/api/agents" 2>/dev/null)"
 [[ -z "$agents_json" ]] && { log "could not reach $DASH/api/agents"; exit 1; }
 
 # Emit "name running" lines. running is true/false.
@@ -82,7 +84,7 @@ start_one() {
   fi
   local body='{}'; (( FRESH )) && body='{"fresh":true}'
   local ok
-  ok="$(curl -s --max-time 30 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  ok="$(curl_tok "$TOKEN" -s --max-time 30 -X POST -H "Content-Type: application/json" \
         -d "$body" "$DASH/api/agents/$name/start" 2>/dev/null)"
   if printf '%s' "$ok" | grep -q '"ok":true'; then
     log "started: $name"; return 0

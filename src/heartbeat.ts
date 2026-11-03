@@ -601,8 +601,10 @@ async function executeHeartbeat(): Promise<void> {
       CLAUDE_CONFIG_DIR: HEARTBEAT_CONFIG_DIR,
     })
     if (text) {
-      await notifyOwner(text)
-      logger.info('Heartbeat ertesites elkuldve')
+      // notifyOwner resolves false when the digest was skipped or lost; the
+      // line used to say "sent" either way.
+      if (await notifyOwner(text)) logger.info('Heartbeat ertesites elkuldve')
+      else logger.warn('Heartbeat ertesites NEM ment ki (kihagyva vagy sikertelen kuldes)')
     }
   } catch (err) {
     logger.error({ err }, 'Heartbeat agent hiba')

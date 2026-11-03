@@ -36,7 +36,7 @@ import {
   RemoteEnrollError,
 } from '../remote-enroll-core.js'
 import { enrollAuthorizedKey, removeEnrolledKey, type EnrollResult } from '../remote-enroll-fs.js'
-import { createDeviceKey, findDeviceKeyByInstallId, revokeDeviceKey } from './auth-device-keys.js'
+import { mintBridgeDeviceKey } from './auth-device-keys.js'
 
 export { RemoteEnrollError }
 
@@ -190,9 +190,7 @@ export async function bridgeEnroll(
 
   // Replace-by-id on the device-key side too: a re-paired device must not
   // keep its previous (possibly lost) key alive.
-  const prior = findDeviceKeyByInstallId(parsed.installId)
-  if (prior) revokeDeviceKey(prior.id)
-  const minted = createDeviceKey(input.name, { installId: parsed.installId })
+  const { minted, replaced } = mintBridgeDeviceKey(input.name, parsed.installId)
 
   const host = input.host ?? primaryIPv4() ?? hostname()
   const bundle = encodeBundle(
@@ -213,7 +211,7 @@ export async function bridgeEnroll(
     warnings: enrollResult.warnings,
     installId: parsed.installId,
     deviceKeyId: minted.id,
-    replacedDeviceKey: prior !== null,
+    replacedDeviceKey: replaced,
     host,
     hostKeySource: resolved.source,
     bundle,

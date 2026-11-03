@@ -105,13 +105,25 @@ fi
 
 # --- Step 3: Python packages ---
 _step "[3/5] Python packages (faster-whisper + piper-tts)"
+# PyAV 19 dropped the metadata_errors kwarg of av.open(), which faster-whisper
+# 1.2.1 passes on every transcribe: the import check still succeeds, and STT
+# then dies with "open() got an unexpected keyword argument 'metadata_errors'".
+AV_PIN="av<19"
 if "$DEST/venv/bin/python" -c "import faster_whisper, piper" 2>/dev/null; then
   _skip "packages already installed"
 else
-  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts
+  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts "$AV_PIN"
   _pass "faster-whisper + piper-tts installed"
 fi
 "$DEST/venv/bin/python" -c "import faster_whisper, piper" || _fail "package import check failed"
+# Enforced on the skip path too, so an existing venv that already pulled av 19
+# gets repaired by a re-run.
+if ! "$DEST/venv/bin/python" -c "import av, sys; sys.exit(int(av.__version__.split('.')[0]) >= 19)" 2>/dev/null; then
+  "$DEST/venv/bin/pip" install --quiet "$AV_PIN"
+fi
+"$DEST/venv/bin/python" -c "import av, sys; sys.exit(int(av.__version__.split('.')[0]) >= 19)" \
+  || _fail "PyAV >= 19 is incompatible with faster-whisper (av.open metadata_errors)"
+_pass "PyAV pinned below 19"
 
 # --- Step 4: Hungarian voice models ---
 _step "[4/5] Hungarian TTS voice models"

@@ -34,8 +34,10 @@ def main():
     #    Ha valaki visszaallitja `default=None`-ra, ez a sor bukik.
     check('a --cc defaultja az OWNER_CC config-ertek, nem None',
           re.search(r'ap\.add_argument\(\s*"--cc"\s*,\s*default=OWNER_CC', src) is not None)
-    check('az OWNER_CC a configbol jon (lib._env), nem literal',
-          re.search(r'OWNER_CC\s*=\s*lib\._env\(\s*"SUPPORT_OWNER_CC"\s*\)', src) is not None)
+    # A .env-bol, NEM a kornyezetbol: egy `SUPPORT_OWNER_CC=... python3 ...` elotag
+    # kulonben olyan cimzettet adna, akit egyik kapu sem lat.
+    check('az OWNER_CC a configbol jon (lib.env_file_value, csak a .env), nem literal',
+          re.search(r'OWNER_CC\s*=\s*lib\.env_file_value\(\s*"SUPPORT_OWNER_CC"\s*\)', src) is not None)
     # TERMEK-KAPU: a Marveen minden vevo gepere kimegy, tehat a repoban NEM allhat
     # egyetlen telepites gazdajanak a cime sem. Ezt a template-identity-hygiene teszt
     # is meri; itt azert ismetlem, mert EZ A FAJL az, ahol az elso valtozat elbukott.

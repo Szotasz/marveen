@@ -102,7 +102,21 @@ const FOOTER_TRUNCATED_RX = /(?:[A-Za-z][\w-]* ){1,3}on · [^\n]*·[^\n]*…\s*$
 // mode word, `on`, then only `· N shell(s)` and an optional `· N monitor(s)`
 // to the end of the line, and ONLY on the last non-empty line, so the same
 // words quoted in a log line in the scrollback never count.
-const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?: · \d+ monitors?)?\s*$/
+// COMMATAIL1022: newer builds join the counts with a comma, "· 1 shell, 1 monitor".
+// The comma takes exactly one space, and a bare tail with any other count stays
+// 'unknown'. The line must also START like the live footer, blanks and the mode
+// glyph (⏵⏵, ⏵, ⏸): detectPaneState returns 'idle' on this footer even without an
+// input box above it, so a log line or a sentence in the footer slot that ends in
+// the same words must not match.
+// MONITORTAIL1025 (measured 2026-10-25 on two builder panes): the count can be a MONITOR alone or first --
+// `⏵⏵ bypass permissions on · 1 monitor`, shell-less and hint-less, with an empty prompt above, while a Monitor
+// waits on a long run. That read 'unknown': the router held the bus for hours and the not-ready path raised a
+// [session-stuck] every 10 minutes on a live session. The tail is now one or more `N shell(s)` / `N monitor(s)`
+// counters in any order, joined as before (` · ` or a comma and one space); any other kind still stays 'unknown'.
+const FOOTER_COUNT = String.raw`\d+ (?:shells?|monitors?)`
+const FOOTER_SHELL_TAIL_RX = new RegExp(
+  String.raw`^\s*[\u23F5\u23F8]{1,2} (?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · ${FOOTER_COUNT}(?:(?: ·|,) ${FOOTER_COUNT})*\s*$`,
+)
 
 /**
  * Index of the idle footer line, or -1. The full footer may sit anywhere the
@@ -122,6 +136,39 @@ function idleFooterIndex(lines: string[]): number {
 
 function hasIdleFooter(lines: string[]): boolean {
   return idleFooterIndex(lines) >= 0
+}
+
+/**
+ * IDLEFLUSHVETO812: background work an idle-LOOKING pane is still waiting on.
+ * The footer counts BashTool background shells (`N shell(s)`) and running
+ * Monitors (`N monitor(s)`); a background-agent block with a live clock is
+ * sub-agents at work. All three classify the pane as idle (they must, or the
+ * router would never deliver to it), and the transcript stays quiet while they
+ * run, so the idle-flush tier cannot tell such a session from a finished one.
+ * A flush restarts the session and kills that work. The counts are read ONLY
+ * on the live idle footer line (idleFooterIndex), never from scrollback.
+ * null = no recognised idle footer (nothing to say either way).
+ */
+export function detectBackgroundWork(pane: string | null): { shells: number; monitors: number; agents: number } | null {
+  if (!pane) return null
+  const bg = splitBackgroundAgentBlock(pane.split('\n'))
+  const lines = bg ? bg.above : pane.split('\n')
+  const agents = detectBackgroundAgents(pane)?.running ?? 0
+  const idx = idleFooterIndex(lines)
+  if (idx < 0) return null
+  const footer = stripAllAnsi(lines[idx])
+  const count = (rx: RegExp) => Number(rx.exec(footer)?.[1] ?? 0)
+  return {
+    shells: count(/(?:·|,) (\d+) shells?\b/),
+    monitors: count(/(?:·|,) (\d+) monitors?\b/),
+    agents,
+  }
+}
+
+/** True when the idle-looking pane still runs a background shell, a Monitor or a sub-agent. */
+export function hasBackgroundWork(pane: string | null): boolean {
+  const w = detectBackgroundWork(pane)
+  return w !== null && (w.shells > 0 || w.monitors > 0 || w.agents > 0)
 }
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
@@ -202,6 +249,21 @@ const BUSY_INDICATORS: RegExp[] = [
   // above is the authoritative fallback.
   new RegExp(
     String.raw`\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*${TURN_ELAPSED}\s*·\s*↓`,
+  ),
+  // Hook phase (HOOKPHASEBUSY1027). While Claude Code runs the hooks of a
+  // PreToolUse / PostToolUse / Stop / UserPromptSubmit event, the spinner line
+  // opens its parenthesis with `running <Event> hooks…` and a hook counter, so
+  // the elapsed time is no longer the first thing inside it and neither pattern
+  // above matches. Measured on live panes: "· Osmosing… (running PreToolUse
+  // hooks… 0/6 · 4m 49s · ↓ 23.5k tokens)", and "(running UserPromptSubmit
+  // hooks… 8/10 · 0s)" with no token counter at all. Such a pane read idle and
+  // ready for a prompt in the middle of a live turn. The match is anchored to
+  // the start of a line (`<glyph> <label>… (`) so prose or a quoted frame in
+  // the reply text, which never starts a line that way, stays idle; the
+  // trailing `· ` / `)` keeps the elapsed time a whole token.
+  new RegExp(
+    String.raw`^\s*\S \S+… \(running [A-Za-z]+ hooks(?:…|\.\.\.)\s*\d+/\d+\s*·\s*${TURN_ELAPSED}(?=\s*[·)])`,
+    'm',
   ),
 ]
 
@@ -284,7 +346,8 @@ const PASTE_REGION_FALLBACK_LINES = 8
 // destructive Ctrl-C + resend on a perfectly healthy session. Scoping to
 // the box (same discipline as BUSY_ESC_TO_INTERRUPT_RX / the footer checks)
 // confines the match to where a genuine parked stub actually lives.
-function pastePlaceholderRegion(pane: string): string {
+// typedTailEchoed() reads the same region, for the same reason.
+function pastePlaceholderRegion(pane: string): { where: PastePlaceholderWhere; text: string } {
   const lines = pane.split('\n')
   let bottomSep = -1
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -295,9 +358,21 @@ function pastePlaceholderRegion(pane: string): string {
     for (let i = bottomSep - 1; i >= 0; i--) {
       if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
     }
-    if (topSep >= 0) return lines.slice(topSep + 1, bottomSep).join('\n')
+    if (topSep >= 0) return { where: 'box', text: lines.slice(topSep + 1, bottomSep).join('\n') }
   }
-  return lines.slice(-PASTE_REGION_FALLBACK_LINES).join('\n')
+  return { where: 'tail', text: lines.slice(-PASTE_REGION_FALLBACK_LINES).join('\n') }
+}
+
+// Card 71263d15 (a3): WHERE the stub was found. 'box' is a placeholder confirmed in the live input
+// box (between the two separators); 'tail' is the fallback match on the last lines when the box
+// separators are not on screen, and nothing there proves the input box holds it. The difference
+// matters to the Ctrl-C that clears a placeholder: on an EMPTY box that key quits the TUI.
+export type PastePlaceholderWhere = 'box' | 'tail'
+
+export function pastePlaceholderLocation(pane: string | null): PastePlaceholderWhere | null {
+  if (!pane) return null
+  const region = pastePlaceholderRegion(pane)
+  return PENDING_PASTE_RX.test(region.text) ? region.where : null
 }
 
 // A placeholder pane is identified by the `[Pasted text #N]` stub IN THE LIVE
@@ -312,8 +387,7 @@ function pastePlaceholderRegion(pane: string): string {
 // dependency-free so callers (detectPaneState, shouldRetrySubmit, the recovery
 // decision) share ONE definition instead of re-inlining the regex.
 export function detectsPastePlaceholder(pane: string): boolean {
-  if (!pane) return false
-  return PENDING_PASTE_RX.test(pastePlaceholderRegion(pane))
+  return pastePlaceholderLocation(pane) != null
 }
 
 // Input-box separator lines are made of U+2500 BOX DRAWINGS LIGHT
@@ -479,6 +553,71 @@ export function stripSessionTitleBanner(coloredPane: string): string {
   return lines.slice(0, end).join('\n')
 }
 
+// Background (sub-)agents render as a block BELOW the idle footer: blank row,
+// `  ⏺ main`, then one `  ◯ <type>  <label> <elapsed> · ↓ <n> tokens` row per
+// agent (measured 2026-10-16, Claude Code 2.1.301). The footer is no longer the
+// last line, which broke two probes that count from the bottom:
+//   - the clipped footer (FOOTER_TRUNCATED_RX) is only accepted on the LAST
+//     non-empty line, so a main thread starting a turn with an agent running
+//     read 'unknown' (the dashboard's orange "ismeretlen");
+//   - the rows pushed the spinner and `esc to interrupt` out of the bottom live
+//     windows, so a main thread mid-turn with five agents read 'idle'.
+// The block starts at an indented `⏺ main` header whose nearest non-blank line
+// above is the footer; everything from the header down is cut before the pane
+// is classified, whatever the rows look like, so a row shape we have not seen
+// cannot push a running turn back out of the live windows. COUNTING is stricter:
+// detectBackgroundAgents reports only when every row is a measured `◯` row, and
+// says nothing (null) otherwise.
+const BG_AGENT_MAIN_RX = /^\s+⏺ main\s*$/
+const BG_AGENT_ROW_RX = /^\s+◯ \S/
+// The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
+// first `·` segment; or the no-mode `? for shortcuts` footer.
+const FOOTER_LEAD_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))?(?: · |\s*$)|\? for shortcuts/
+// The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
+// the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
+// elapsed is a clock (`18m 5s`); an idle one shows a word (`waiting`, `idle`)
+// instead. In its first second the token part is not drawn yet. `N queued` is
+// the number of messages sent TO that agent that it has not picked up yet.
+const BG_AGENT_RUNNING_RX = new RegExp(String.raw`\s${TURN_ELAPSED}(?: · [↑↓] \d[\d.]*[kKmMbB]? tokens)?(?: · \d+ queued)?\s*$`)
+const BG_AGENT_QUEUED_RX = / · (\d+) queued\s*$/
+
+function splitBackgroundAgentBlock(lines: string[]): { above: string[]; rows: string[] } | null {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  let header = end - 1
+  while (header >= 0 && !BG_AGENT_MAIN_RX.test(lines[header])) header--
+  if (header < 1) return null
+  let k = header - 1
+  while (k >= 0 && lines[k].trim() === '') k--
+  if (k < 0 || !FOOTER_LEAD_RX.test(lines[k])) return null
+  return { above: lines.slice(0, header), rows: lines.slice(header + 1, end) }
+}
+
+/**
+ * The background-agent block under the footer, or null when the pane shows
+ * none in the recognised shape. `running` counts the rows that carry the live
+ * elapsed clock; `total` counts every row; `queued` sums the `N queued` parts
+ * (messages waiting for an agent to pick them up).
+ */
+export function detectBackgroundAgents(pane: string): { total: number; running: number; queued: number } | null {
+  if (!pane) return null
+  const block = splitBackgroundAgentBlock(pane.split('\n'))
+  if (!block || block.rows.length === 0 || !block.rows.every(r => BG_AGENT_ROW_RX.test(r))) return null
+  return {
+    total: block.rows.length,
+    running: block.rows.filter(r => BG_AGENT_RUNNING_RX.test(r)).length,
+    queued: block.rows.reduce((sum, r) => sum + Number(BG_AGENT_QUEUED_RX.exec(r)?.[1] ?? 0), 0),
+  }
+}
+
+// The subagent hint (`· /tasks to see subagents`) lengthens the busy footer so
+// that `esc to interrupt` is clipped to a prefix plus `…`, e.g. `· e…`
+// (measured 2026-10-16). Only a prefix of that exact phrase as the LAST
+// segment of the footer line counts. The bare `· e…` has to count, because that
+// is the measured clip; no idle footer segment starts with `e` (`↓ to manage`,
+// `← for agents`, `ctrl+t`, `N shells`, `N monitors`).
+const BUSY_ESC_CLIPPED_RX = /· e(?:s(?:c(?: (?:t(?:o(?: (?:i[a-z]*)?)?)?)?)?)?)?…\s*$/
+
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
 // be modified", the session is wedged: every subsequent prompt re-sends
@@ -607,6 +746,16 @@ export function detectsBlockingMenu(pane: string): boolean {
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (hasIdleFooter(lines)) return false
+  // A held cross-session message is a QUESTION for a person, not a stray
+  // modal: Escape there is not a neutral "back" -- it may decline the message
+  // and tell the sender so (the dialog's Deny: "drop it and tell the sender it
+  // was declined"). Never treat it as a menu to pop; the sub-agent sweep
+  // (stuck-tool-call-watcher.ts) alerts the owner instead (#1596 review).
+  // It is still a dialog for anything that TYPES: a caller that uses this
+  // function to refuse text + Enter must check detectsHeldPeerMessage too
+  // (urgentEmitRefusal, paneRefusesIdentityCommand), since that Enter would
+  // confirm the highlighted "Deliver this message to Claude".
+  if (detectsHeldPeerMessage(pane)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
@@ -634,18 +783,29 @@ export function detectsBlockingMenu(pane: string): boolean {
 //
 // Returns null when either piece is missing: an alert with a half-parsed
 // question is worse than an alert that just says "open the pane".
-const PERMISSION_RULE_LINE_RX = /^\s*─{8,}\s*$/
+const PERMISSION_RULE_LINE_RX = /^─{8,}\s*$/
 // The question line the summary anchors on. detectsPermissionDialog (added on
 // develop by PR #1190) decides WHETHER a prompt is up; this module only has to
 // find the question again to quote it.
 const PERMISSION_SUMMARY_QUESTION_RX = /\bDo you want to (?:proceed|create|make|run)\b/i
 const PERMISSION_QUOTE_PREFIX_RX = /^\s*│\s?/
 const PERMISSION_REASON_MAX = 220
+// The cards whose subject line is a PATH: "Edit file", "Create file" (both
+// measured), any other "<Verb> file", and the same with the sub-agent suffix
+// ("Edit file · from the general-purpose agent"). On every other card -- a Bash
+// card above all -- the subject is what would RUN, and a command line can carry
+// a literal token (`curl -H "Authorization: Bearer ..."`).
+const PERMISSION_FILE_CARD_TITLE_RX = /^[A-Z][a-z]+ file(?: · from the \S+(?: \S+){0,3} agent)?$/
+
+/** Is this card header one whose subject line is a path, not a command? */
+export function isPermissionFileCardTitle(title: string | null | undefined): boolean {
+  return title != null && PERMISSION_FILE_CARD_TITLE_RX.test(title.trim())
+}
 
 export interface PermissionPromptSummary {
   /** The tool card's header, e.g. "Bash command · from the general-purpose agent". */
   title: string
-  /** First line of the reason Claude gives for needing consent. */
+  /** The reason Claude gives for needing consent, rejoined into one line. */
   reason: string
 }
 
@@ -654,46 +814,69 @@ export interface PermissionPromptSummary {
  *
  * Pure + dependency-free. Only meaningful on a pane where
  * detectsPermissionDialog() is true; returns null when the expected parts are
- * not both present.
+ * not both present -- and on a card that is not a file card, when no quoted
+ * block can be told apart from the command echo (see below).
  */
 export function permissionPromptSummary(pane: string): PermissionPromptSummary | null {
   if (!pane) return null
   const lines = pane.split('\n')
-  const questionIdx = lines.findIndex((l) => PERMISSION_SUMMARY_QUESTION_RX.test(l))
+  let questionIdx = -1
+  for (let i = lines.length - 1; i >= 0; i--) if (PERMISSION_SUMMARY_QUESTION_RX.test(lines[i])) { questionIdx = i; break }
   if (questionIdx < 0) return null
 
   // Title: first non-empty line after the horizontal rule that opens the card.
   let title = ''
+  let titleIdx = -1
   const ruleIdx = lines.slice(0, questionIdx).map((l) => PERMISSION_RULE_LINE_RX.test(l)).lastIndexOf(true)
   if (ruleIdx >= 0) {
-    for (const l of lines.slice(ruleIdx + 1, questionIdx)) {
-      const t = l.trim()
-      if (t) { title = t; break }
+    for (let i = ruleIdx + 1; i < questionIdx; i++) {
+      const t = lines[i].trim()
+      if (t) { title = t; titleIdx = i; break }
     }
+  }
+  if (!title) return null
+  const titleCol = lines[titleIdx].search(/\S/)
+
+  // The card's quoted blocks, top to bottom: runs of consecutive │ lines
+  // between the card's rule and the question, each rejoined into one line (the
+  // pane hard-wraps at the card width, so the first line alone can be as
+  // useless as "grep on", measured on the bash-grep fixture). Only the CARD: a
+  // │ line in the transcript above the rule -- a tree listing, a box another
+  // tool drew -- is not part of this prompt, and was read as its reason.
+  const blocks: { col: number; text: string; start: number; first: string }[] = []
+  for (let i = ruleIdx + 1; i < questionIdx; i++) {
+    if (!PERMISSION_QUOTE_PREFIX_RX.test(lines[i])) continue
+    const start = i
+    const parts: string[] = []
+    for (; i < questionIdx && PERMISSION_QUOTE_PREFIX_RX.test(lines[i]); i++) parts.push(lines[i].replace(PERMISSION_QUOTE_PREFIX_RX, '').trim())
+    blocks.push({ col: lines[start].indexOf('│'), text: parts.join(' ').replace(/\s+/g, ' ').trim(), start, first: parts[0] })
   }
 
-  // Reason: the LAST quoted block before the question, rejoined into one
-  // line. Two reasons for the shape:
-  //   - last block, not first: the command echo is quoted too, and the last
-  //     block is the one that says why consent is needed rather than what
-  //     would run.
-  //   - rejoined, not first-line: the pane hard-wraps at the card width, so
-  //     the first line alone can be as useless as "grep on" (measured on the
-  //     bash-grep fixture). Rejoining recovers the sentence; the cap keeps a
-  //     long reason from flooding the alert.
-  let reason = ''
-  let end = -1
-  for (let i = questionIdx - 1; i >= 0; i--) {
-    const quoted = PERMISSION_QUOTE_PREFIX_RX.test(lines[i])
-    if (quoted && end < 0) end = i
-    else if (!quoted && end >= 0) {
-      const block = lines.slice(i + 1, end + 1).map((l) => l.replace(PERMISSION_QUOTE_PREFIX_RX, '').trim())
-      reason = block.join(' ').replace(/\s+/g, ' ').trim()
-      break
-    }
-  }
+  // Reason: the LAST quoted block -- the command echo is quoted too, and comes
+  // first; the last block is the one that says why consent is needed. But on a
+  // card WITHOUT a reason block the last quoted block IS the command echo
+  // (review of #1907: the bash-grep capture with its reason block cut and a
+  // token in the command put the token into the sent alert). So on any card
+  // but a file card the last block is the reason only when the card has a
+  // block above it, and it sits LEFT of that block: on both live captures the
+  // command echo is indented under the header ("   │ cd ...") and the reason
+  // is not (" │ grep on ..."). Two blocks at one indent are a shape neither
+  // capture shows -- one command drawn in two runs would look like that -- so
+  // neither counts as a reason. The reason also sits in the card's MARGIN (the
+  // title's column): every line of the card body -- the echo, a path, a diff,
+  // and the command itself where it is drawn unquoted, │ boxes included -- is
+  // indented under the title. On a file card without a reason block, only the
+  // first line of the block right under the header is quoted: the path, which
+  // the alerts quote anyway. A quoted diff below it is file content.
+  const last = blocks[blocks.length - 1]
+  const above = blocks[blocks.length - 2]
+  const isReason = last != null && above != null && last.col < above.col && last.col <= titleCol
+  let reason: string
+  if (isReason) reason = last.text
+  else if (isPermissionFileCardTitle(title) && blocks[0] && lines.slice(titleIdx + 1, blocks[0].start).every((l) => !l.trim())) reason = blocks[0].first
+  else return null
   if (reason.length > PERMISSION_REASON_MAX) reason = reason.slice(0, PERMISSION_REASON_MAX - 1).trimEnd() + '…'
-  if (!title || !reason) return null
+  if (!reason) return null
   return { title, reason }
 }
 
@@ -800,12 +983,40 @@ export function detectQuotaWall(pane: string): QuotaWall | null {
 // The tmux-visible selection marker Claude Code draws on the active option.
 const CURSOR_GLYPH = '\u276f'
 
-export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust'
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust' | 'dev-channels'
+
+// The development-channels warning. A worksourceChannel
+// agent is launched with `--dangerously-load-development-channels
+// server:worksource` (agent-process.ts), and Claude Code parks EVERY such
+// launch on this panel before the prompt renders -- measured in the shipped
+// 2.1.280 binary: DevChannelsDialog is mounted whenever dev channels were
+// passed, channels are enabled and the session is first-party; nothing
+// persists an acknowledgement, so it returns on every start and restart:
+//
+//   WARNING: Loading development channels
+//   --dangerously-load-development-channels is for local channel development
+//   only. ...
+//   Please use --channels to run a list of approved channels.
+//   Channels: server:worksource
+//   ❯ 1. I am using this for local development
+//     2. Exit
+//   Enter to confirm · Esc to cancel
+//
+// Both refusals QUIT the TUI in that binary: "Exit" calls exit(1) and the
+// panel's own Escape handler calls exit(0). So the generic blocking-menu
+// Escape is the wrong answer here, exactly as on the trust dialog.
+//
+// Both the heading and the option are required: the option is the functional
+// element (see TRUSTGATE901), the heading keeps a pane that merely quotes the
+// option line from being read as the panel.
+const DEV_CHANNELS_TITLE_RX = /Loading development channels/
+const DEV_CHANNELS_OPTION_RX = /I am using this for local development/
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'dev-channels', rx: new RegExp(`^(?=[\\s\\S]*${DEV_CHANNELS_TITLE_RX.source})(?=[\\s\\S]*${DEV_CHANNELS_OPTION_RX.source})`) },
   // MCP server-approval dialog (2026-09-03, PR #1099 review). A worksource
   // agent gets its queue as a project-scope MCP server, and on the first start
   // after that server appears Claude Code parks the TUI on:
@@ -911,6 +1122,25 @@ export function mcpTrustAcceptKeys(pane: string): string[] | null {
   for (let i = 0; i < Math.abs(delta); i++) keys.push(delta > 0 ? 'Down' : 'Up')
   keys.push('Enter')
   return keys
+}
+
+// Keys that confirm the development-channels warning, or null -- meaning PARK,
+// send nothing. Stricter than firstRunAcceptKeys on purpose: this returns a
+// key ONLY when the highlighted row IS "I am using this for local development"
+// and it is the one such row. It never navigates, so a reworded or reordered
+// panel whose cursor sits anywhere else (on "Exit", or on something new) gets
+// no keystroke at all: Enter there would confirm whatever is highlighted, and
+// Escape quits the TUI. Fleet rule: never a bare Enter into a dialog we have
+// not positively identified.
+export function devChannelsAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  if (!DEV_CHANNELS_TITLE_RX.test(pane)) return null
+  const lines = pane.split('\n')
+  const cursorLines = lines.filter(l => l.includes(CURSOR_GLYPH))
+  if (cursorLines.length !== 1) return null
+  const isTarget = (l: string) => DEV_CHANNELS_OPTION_RX.test(l) && !/\bexit\b/i.test(l)
+  if (lines.filter(isTarget).length !== 1) return null
+  return isTarget(cursorLines[0]) ? ['Enter'] : null
 }
 
 export function firstRunAcceptKeys(pane: string): string[] | null {
@@ -1035,6 +1265,38 @@ export function detectsPermissionDialog(pane: string): boolean {
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
 
+// PEERHOLD925 (card c3f8f062): a cross-session (peer) message that the
+// receiving session holds for its user's approval renders its OWN dialog, not
+// the tool-permission card: no "Do you want to proceed?", no "Tab to amend".
+// Measured on 2026-09-23 on this install: kigyo's session sat on one for hours
+// with no alert -- detectsPermissionDialog does not match it, and the router's
+// session-stuck path only fires when inter-agent messages are QUEUED for the
+// session, which a cross-session send never is.
+//
+// The anchor is the dialog's rendered TITLE, "Held message from another
+// session" (#1596 review: `title:"Held message from another session"` in the
+// Claude Code 2.1.282 binary; still there in 2.1.296). The dialog's other
+// strings are deliberately not anchors: "Another Claude session sent a message"
+// also opens the model-facing wrapper of a DELIVERED peer message, and "A
+// message from another session needs your approval" is the notification text of
+// that state, not necessarily on screen. Same guards as detectsPermissionDialog:
+// a busy pane is never a dialog, and a visible idle footer means the prompt is
+// live and the title is merely quoted.
+const HELD_PEER_MESSAGE_RX = /Held message from another session/
+
+export function detectsHeldPeerMessage(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return HELD_PEER_MESSAGE_RX.test(pane)
+}
+
 export function detectsModelConsentDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
@@ -1131,6 +1393,43 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
   return FEEDBACK_OPTOUT_RX.test(liveRegion)
 }
 
+export type FeedbackDismissPlan =
+  | { act: 'none' }
+  | { act: 'keys'; keys: Array<'C-u' | 'Down'> }
+  | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
+
+/**
+ * What the dismisser may type at a feedback-draft modal. NEVER A DIGIT. The card
+ * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
+ * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
+ * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
+ * that did not fire stays in the input, the next attempt makes it two digits, and a
+ * longer input never fires again, so every later attempt only appends (an agent
+ * sat not-ready behind a growing `❯ 0000`). And "2" sends the draft. The measured
+ * manual recipe is C-u, then Down: Down moves focus to the footer, which stops the
+ * band above the prompt from rendering.
+ * C-u clears only what is provably a digit-typing dismisser's leftover -- an empty
+ * or all-digit input -- and NEVER on the main session, whose box may hold an
+ * operator's reply; there even digits may be a numbered answer, so only an empty
+ * prompt gets its Down. Anything else gets no keystroke.
+ * Two captures: `pane`, the plain one the detector reads (the card's own text
+ * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
+ * ghost-stripped one the input box is read from (otherwise an empty prompt
+ * showing an autosuggest reads as occupied and the card stays up).
+ */
+export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
+  if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
+  const box = inputView == null ? null : liveInputBox(inputView)
+  if (box == null) return { act: 'hold', reason: 'input-unreadable' }
+  // Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
+  // indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
+  // a typed "2 2" does not.
+  const typed = box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+  if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
+  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
+  return { act: 'hold', reason: 'input-occupied' }
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
@@ -1183,6 +1482,11 @@ export function detectPaneState(
 ): PaneState {
   if (!pane || !pane.trim()) return 'unknown'
 
+  // Classify the pane as it would look without the background-agent block, so
+  // the footer is the bottom line again for every probe below.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  if (bgBlock) pane = bgBlock.above.join('\n')
+
   const paneLines = pane.split('\n')
 
   // Spinner / token-counter busy signals, scoped to the live bottom region.
@@ -1206,6 +1510,8 @@ export function detectPaneState(
   // an idle session as busy.
   const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
+  const lastLine = footerRegion.slice(footerRegion.lastIndexOf('\n') + 1)
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && FOOTER_TRUNCATED_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent
@@ -1718,7 +2024,7 @@ export function parkedPasteSignature(pane: string): string | null {
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (!detectsPastePlaceholder(pane)) return null
-  const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
+  const sig = pastePlaceholderRegion(pane).text.replace(/\s+/g, ' ').trim()
   return sig.length > 0 ? sig : null
 }
 
@@ -1969,6 +2275,44 @@ export function overfullParkedInputTail(pane: string): string | null {
 export function submitLanded(prevSig: string, paneAfter: string | null): boolean {
   if (paneAfter == null) return false
   return stuckInputSignature(paneAfter) !== prevSig
+}
+
+// How many trailing characters of a typed prompt (whitespace removed) must be
+// visible before the submitting Enter goes out. Long enough to be specific to
+// this prompt, short enough to fit on the bottom rows of an overfull box.
+export const TYPED_ECHO_TAIL_CHARS = 24
+
+// Has the TUI ECHOED the end of what we just typed? True when the last
+// TYPED_ECHO_TAIL_CHARS non-whitespace characters of `typed` are visible IN THE
+// LIVE INPUT BOX (whitespace removed on both sides, so terminal wrap and the row
+// indent do not matter), or when a `[Pasted text #N]` placeholder sits there
+// (the TUI ingested the burst as a paste, which is also "read"). False on a null
+// capture.
+//
+// Both checks read the SAME region, pastePlaceholderRegion(): between the two
+// bottom-most box separators, or the last few lines when the box is taller than
+// the pane (overfull: the top separator scrolled off, the tail is at the
+// bottom). The whole pane would not do: a submitted prompt stays visible in the
+// transcript above the box, and many prompts end the same way every time (the
+// by-reference scheduled-task block, the batch trailer, a recurring task's own
+// text), so an earlier copy of the tail would pass for the echo of this one
+// while the box still shows only the head.
+//
+// Why: the pre-Enter settle wait reads two identical captures as "settled". A
+// TUI that has stopped reading its input looks exactly like that, so the Enter
+// and the retry Enters went out while most of the prompt was still unread in
+// the PTY. Measured on a sub-agent still on keyboard delivery: the two long
+// deliveries that did land were split at a chunk boundary (offset 800) into a
+// <pasted_content> block and reached the transcript 18.5 s and 24.9 s AFTER the
+// router had finished the send (median for the other 110 deliveries: 0 s);
+// three others never landed. The end of the text on screen is the one signal a
+// frozen TUI cannot fake.
+export function typedTailEchoed(pane: string | null, typed: string): boolean {
+  if (pane == null) return false
+  const tail = typed.replace(/\s+/g, '').slice(-TYPED_ECHO_TAIL_CHARS)
+  if (tail.length === 0) return true
+  const region = pastePlaceholderRegion(pane).text
+  return region.replace(/\s+/g, '').includes(tail) || PENDING_PASTE_RX.test(region)
 }
 
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"

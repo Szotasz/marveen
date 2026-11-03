@@ -49,6 +49,11 @@ export const CLOCK_SLACK_MS = 5_000
 // Same budget as delivery-integrity's tail read: a prompt is at most tens of
 // KB, and the window only has to reach back one grace period.
 export const TAIL_BYTES = 4 * 1024 * 1024
+// A busy agent writes MBs of transcript within one grace period (measured
+// 2026-10-15: designer, 6.1 and 4.4 MiB between the prompt row and the +60s
+// mark; both prompts fell out of a fixed 4 MiB tail and raised false alerts).
+// The tail therefore grows until it reaches back past the send, capped here.
+export const TAIL_PASSES = [TAIL_BYTES, TAIL_BYTES * 8, TAIL_BYTES * 16]
 
 const BLOCKED_PREFIX = 'UserPromptSubmit operation blocked by hook'
 
@@ -130,6 +135,34 @@ async function readTail(path: string, maxBytes: number): Promise<string> {
   }
 }
 
+const TS_RX = /"timestamp":"([^"]+)"/
+
+/** PURE. True when the first timestamped line of `text` is older than `floorMs`. */
+export function reachesBefore(text: string, floorMs: number): boolean {
+  for (const line of text.split('\n', 50)) {
+    const m = TS_RX.exec(line)
+    if (!m) continue
+    const ts = Date.parse(m[1])
+    if (Number.isFinite(ts)) return ts < floorMs
+  }
+  return false
+}
+
+/**
+ * The tail of `path` reaching back past `floorMs`: the smallest of TAIL_PASSES
+ * (or the whole file) whose first line is older than the send.
+ */
+async function readTailSince(path: string, floorMs: number, passes: readonly number[]): Promise<string> {
+  let text = ''
+  for (const bytes of passes) {
+    text = await readTail(path, bytes)
+    if (reachesBefore(text, floorMs)) return text
+    const size = (await stat(path)).size
+    if (size <= bytes) return text // whole file read
+  }
+  return text
+}
+
 /**
  * Evidence for each id from the transcripts in `dir`, or null when the
  * directory cannot be read or holds no transcript at all (= unknown).
@@ -139,7 +172,7 @@ export async function readTurnEvidence(
   dir: string,
   msgIds: readonly number[],
   sinceMs: number,
-  maxBytes: number = TAIL_BYTES,
+  passes: readonly number[] = TAIL_PASSES,
 ): Promise<Map<number, TurnEvidence> | null> {
   let files: string[]
   try {
@@ -156,7 +189,7 @@ export async function readTurnEvidence(
     try {
       if ((await stat(path)).mtimeMs < sinceMs - CLOCK_SLACK_MS) continue
       candidates++
-      for (const l of (await readTail(path, maxBytes)).split('\n')) lines.push(l)
+      for (const l of (await readTailSince(path, sinceMs - CLOCK_SLACK_MS, passes)).split('\n')) lines.push(l)
     } catch {
       unreadable++
     }

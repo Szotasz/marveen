@@ -40,6 +40,7 @@ export const AGENT_STATUS_THRESHOLDS = {
 export type AgentActivityState =
   | 'working'
   | 'idle'
+  | 'dead'
   | 'stalled'
   | 'stopped'
   | 'unreachable'
@@ -57,7 +58,7 @@ export interface AgentStatusSignals {
   isMain: boolean
   running: boolean
   /** Run/pane state as the existing activity route already labels it. */
-  paneState: 'working' | 'idle' | 'stopped' | 'unknown' | 'error' | 'unreachable'
+  paneState: 'working' | 'idle' | 'dead' | 'stopped' | 'unknown' | 'error' | 'unreachable'
   /**
    * The permission mode string exactly as detectPermissionMode reports it,
    * passed through UNINTERPRETED.
@@ -188,6 +189,9 @@ export function deriveAgentStatus(s: AgentStatusSignals): AgentStatusRow {
   let state: AgentActivityState
   if (!s.running) state = 'stopped'
   else if (s.paneState === 'unreachable') state = 'unreachable'
+  // The tmux session exists but no Claude CLI runs in it (the pane fell back to
+  // a shell prompt): not waiting, dead. Passed through, never 'unknown'.
+  else if (s.paneState === 'dead') state = 'dead'
   else if (
     // STALLED requires tool telemetry. See the degraded-mode note above.
     !degraded &&

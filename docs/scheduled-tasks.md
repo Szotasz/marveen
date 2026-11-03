@@ -1,17 +1,17 @@
 # Ütemezett feladatok (scheduled tasks)
 
-> Cron-alapú, fájlrendszer-vezérelt automatizációk -- minden feladat egy mappa, a runner 60 másodpercenként nézi és kézbesíti az ágens tmux session-jébe.
+> Cron-alapú, fájlrendszer-vezérelt automatizációk -- minden feladat egy mappa, a runner 15 másodpercenként nézi és kézbesíti az ágens tmux session-jébe.
 
 ---
 
 ## Hogyan működik
 
-A schedule runner a dashboard folyamatának részeként fut. 60 másodpercenként végignézi a `~/.claude/scheduled-tasks/` mappában lévő összes feladatot, és amelyiknek a cron kifejezése illeszkedik az aktuális percre, azt kézbesíti a megadott ágens tmux session-jébe mint szöveges promptot.
+A schedule runner a dashboard folyamatának részeként fut. 15 másodpercenként végignézi a `~/.claude/scheduled-tasks/` mappában lévő összes feladatot, és amelyiknek a cron kifejezése illeszkedik az aktuális percre, azt kézbesíti a megadott ágens tmux session-jébe mint szöveges promptot.
 
 Kézbesítés után az ágens normál Claude Code session-ként dolgozza fel -- ugyanúgy, mintha te gépelted volna be a promptot.
 
 ```
-60s tick → cron illeszkedés? → session él? → prompt kézbesítés
+15s tick → cron illeszkedés? → session él? → prompt kézbesítés
                                     ↓ nem
                               auto-start + retry queue
 ```
@@ -53,6 +53,62 @@ vagy pénzt érintő riasztásoké. A kézbesítés
 mindkét esetben megtörténik -- a hivatkozásos út miatt a méret már nem
 kézbesítési kockázat, csak jelzés, hogy a SKILL.md tanulságai (`Buktatók`
 szekció) érdemes lenne `references/` alá mozgatni.
+
+---
+
+## Agents on the worksource channel
+
+An agent can opt into the worksource channel (`worksourceChannel: true` in its
+`agent-config.json`). For such an agent the scheduler delivers the prompt
+differently:
+
+- **Queued, not typed.** The prompt goes into the agent's worksource queue
+  directory as an item, and the channel reader hands it to the agent as a real
+  turn. Nothing is typed into its tmux pane.
+- **Same prompt text.** The queued content is byte for byte the prompt the
+  typed path would send, including the preamble, the delivery instruction and
+  the task block.
+- **Item meta.** The item carries `from: scheduler`, `message_id` (the item id),
+  `task` and `category: scheduled-task`.
+
+**Item id rule.** The id is `sched-<slug>-<hash8>-<stamp>`, so the same
+occurrence never lands twice. The slug is the task name with every character
+outside `A-Za-z0-9._-` replaced by `-`, cut to 60 characters; `<hash8>` is the
+first 8 hex digits of the full name's SHA-256, so two names with the same slug
+still get different ids. For a cron occurrence the stamp is the UTC minute
+of the scheduled occurrence, date included (one item per scheduled minute). A
+pending-retry fire stamps the retry row's `first_attempt` -- the time of the
+first busy hit, not the scheduled minute, and one row per task and agent -- so
+every retry of that row maps to the same item; it dedupes in practice because
+the row exists only when the cron path did not queue the item, and it is a
+dedupe key, not an occurrence key. A manual "Run now" gets its own id with its
+own timestamp.
+
+**The sender-role gate keeps the typed path.** An agent with a sender-role gate
+(`store/agent-sender-role-gates.json`) still gets its scheduled prompts typed into its pane, even
+with `worksourceChannel: true`. A queued item reaches the agent inside a
+`<channel source="worksource" ...>` envelope, which the gate's hook treats as
+a non-owner sender and answers by denying the configured risky tools; a typed
+prompt carries no envelope and is treated as the owner. The item's
+`from: scheduler` meta is not an owner credential -- anything that can write
+the queue directory can set it -- so it is deliberately not used to lift the
+gate.
+
+**What does not apply.** The typing-specific machinery is skipped: the idle
+wait before typing, the post-send resubmit chain, the delivery-integrity check
+and the lost re-injection. The queue's reader owns the delivery from here: the
+agent acknowledges each item with `work_complete`, and the reader re-offers any
+item left unacknowledged past its timeout or across a restart.
+
+**What still applies.** Every gate before the send runs unchanged (restart in
+flight, missing session and auto-start, readiness and busy checks, forceSend
+rules, usage limit, MCP pre-check). The busy-timeout alert also still applies:
+if the agent stays busy long past the threshold, the watchdog alerts as usual.
+
+**No extra rights.** The reader treats a `from: scheduler` item exactly like
+any other routed item: same verbatim delivery, same provenance stamp, same
+acknowledgment contract. Being sent by the scheduler grants the content
+nothing.
 
 ---
 
@@ -170,7 +226,7 @@ Ez a két flag a foglalt session kezelését szabályozza:
 
 ## Busy-session kezelés és retry queue
 
-Ha a célpont session elfoglalt és `skipIfBusy` nincs beállítva, a feladat bekerül a `pending_task_retries` táblába (SQLite, a dashboardon is látható). A runner minden 60s ticken újrapróbálja. Ha 1 órán túl is pending marad, Telegram alertet küld.
+Ha a célpont session elfoglalt és `skipIfBusy` nincs beállítva, a feladat bekerül a `pending_task_retries` táblába (SQLite, a dashboardon is látható). A runner minden 15s ticken újrapróbálja. Ha 1 órán túl is pending marad, Telegram alertet küld.
 
 Ha a session egyáltalán nem fut:
 1. A runner megpróbálja auto-startolni az ágenst
@@ -188,6 +244,88 @@ Ha egy ütemezett feladatnak kellene futnia, de a célpont session nem létezik 
 ## Biztonsági korlátok
 
 A prompt injektálás előtt egy "untrusted" preamble kerül eléje, hogy az esetleg felhasználói adatból érkező tartalom ne hajtson végre kód-injekciót az ágens context-jében. A maximális prompt hossz 50 000 karakter (~12K token) -- ennél nagyobb kérelmet a backend elutasít 413-mal.
+
+### Forrás-oldali védelem: csak regisztrált feladat fut
+
+A runner egy feladatot CSAK akkor indít (cron, catch-up, pending retry, "Run now"), ha a fájljainak sha256-ja
+egyezik a szerver saját nyilvántartásával (`scheduled_task_registry` tábla a `store/claudeclaw.db`-ben, NEM a
+`~/.claude/scheduled-tasks/` alatt). A hash a `SKILL.md` + `task-config.json` bájtjaiból készül, plusz a
+feladatkönyvtár MINDEN további fájljából, rekurzívan (relatív úttal címkézve, hossz-keretezve; symlinknél a cél
+bájtjaiból, hurok nélkül; fifo/socket csak a nevével), plusz a
+`preCheck` szkriptből, ha van: relatív útnál a feladatkönyvtárhoz képest, abszolút útnál bárhol (egy `/tmp` alatti
+vagy ügynök-könyvtárbeli szkriptet sem az útja tesz megbízhatóvá). Kivétel a telepítés saját repó-szkriptje: ami az
+útja szerint ÉS a symlinkek feloldása után is a `<telepítés>/scripts/` alatt van (akár `{{PROJECT_ROOT}}/` alakban, akár a
+seeder által abszolútra írva), az a kóddal együtt frissül, ezért nincs a hashben; a runner futtatás előtt ezt újra ellenőrzi. A kulcs a könyvtárnév,
+nem a frontmatter `name`. A hash-elt `preCheck`-et a runner a beolvasáskor ellenőrzött bájtokból futtatja
+(`bash -c <szkript> <út>`: a `$0` az út, a `BASH_SOURCE` üres), így a beolvasás után kicserélt szkript nem fut le, a
+feladat abban a körben kimarad.
+
+Ki regisztrál:
+- `POST /api/schedules`, `PUT /api/schedules/<name>`, `POST /api/schedules/<name>/toggle`: az írás után PONTOSAN a
+  most kiírt bájtokat (ha közben más is írt a könyvtárba, a hash eltér, és nincs regisztráció: 500); a `POST` ezen
+  felül csak akkor regisztrál, ha az új könyvtárban a `SKILL.md`-n és a `task-config.json`-on kívül nincs más fájl;
+- a dashboard saját default-seedere (`ensureDefaultScheduledTasks`);
+- a flotta-import, szintén csak az általa kiírt bájtokat: ha a célkönyvtárban maradt más fájl (régi `SKILL.md`,
+  egy `preCheck` szkript, bármilyen más fájl), a feladat regisztrálatlan marad, átnézésre;
+- a telepítők és az `update.sh` az általuk ÚJONNAN létrehozott (teljes egészében szállított) feladatkönyvtárakra (a CLI-n át);
+- az `update.sh` seed-frissítése (ami fájlonként frissít, a helyben módosított fájlt megtartja) egy frissített
+  feladatot CSAK akkor regisztrál újra, ha (a) a frissítés ELŐTT `ok` volt (`verify`), vagy (b) a frissítés után
+  a könyvtár MINDEN fájlja (a `references/` alattiak is) a mostani szállított tartalommal egyezik. A
+  `references/` fájl frissítése és a hiányzó pótlása (SEEDREFDIR1018) ugyanebben a keretben történik: az
+  ellenőrzés az első írás ELŐTT, az újraregisztráció az utolsó UTÁN, mert a hash a teljes könyvtárra
+  vonatkozik. Minden más esetben regisztrálatlan marad
+  (a runner kihagyja), és az `update.sh` kiírja, hogy kézi átnézés kell (a futás végén egy összesítő sorban
+  is). Ha a CLI nem futtatható (az első, registry-s buildre frissítés még a régi dist-en fut), az ítélet
+  ISMERETLEN: ilyenkor a dashboard egyszeri backfillje fogja regisztrálni (és a runner futtatni), ezért ezt a
+  feladatot MOST kell átnézni. A regisztráció az adott feladat frissítése után azonnal megtörténik, nem a
+  futás végén;
+- a `scripts/migrate-main-agent-id.sh` az `agent` mező átírása után CSAK azt a feladatot regisztrálja újra,
+  amelyik az átírás ELŐTT `ok` volt; a többit (regisztrálatlan vagy eltérő hash) kiírja átnézésre;
+- a szerver saját átírásai (`src/web/schedule-registry-rewrite.ts`): az egyszeri
+  (`once`) feladat első sikeres futás utáni kikapcsolása (`server:once-disable`) és a Claude-plan rotációs
+  heartbeat be-/kikapcsolása CSAK akkor regisztrál újra, ha a feladat az átírás ELŐTT `ok` volt; a szerver által
+  a kódjából most LÉTREHOZOTT rotációs feladat (`server:rotation-heartbeat`) seedként regisztrálódik;
+- a `DELETE /api/schedules/<name>` törli a bejegyzést.
+
+Ha a fájl az API megkerülésével jött létre vagy változott (kézi szerkesztés, `cp`, ügynök Write-ja), a runner
+NEM indítja, és ha az eltérés a következő tickben (15 mp) is fennáll, egyszer figyelmeztet a logban és egy `[scheduler]`
+üzenetben a fő-ágensnek (csak a feladat nevével, a tartalma nélkül); a feladatot nem törli, nem kapcsolja ki, és a
+függő újrapróbáját is megtartja, amíg a feladat a lemezen van és engedélyezett. A `PUT` és a `toggle` ilyen feladatra 409-et ad,
+hogy ne "mossa tisztára" az idegen tartalmat.
+
+Feloldás, ha a változás jogos: mentsd a dashboardon/API-n át, vagy nézd át a fájlokat és regisztráld:
+
+```bash
+node dist/web/schedule-registry-cli.js status              # minden feladat: ok / unregistered / hash-mismatch
+node dist/web/schedule-registry-cli.js verify <nev> ...    # kilépési kód 0 csak ha mind ok
+node dist/web/schedule-registry-cli.js register <nev> ...  # a MOSTANI fájlok elfogadása
+node dist/web/schedule-registry-cli.js register --all      # minden feladat elfogadása (előbb: status)
+node dist/web/schedule-registry-cli.js unregister <nev>
+```
+
+Frissítés (egyszeri backfill): az első dashboard-indítás, amelyik már tartalmazza ezt a védelmet, a
+runner indulásakor regisztrál MINDEN akkor a lemezen lévő feladatot (egyszer; a jelölő a
+`scheduled_task_registry_state` táblában `upgrade-backfill-v1`), és a logba WARN szinten kiírja a neveket.
+Ez ugyanaz a bizalom, amit a runner a frissítés előtt is megadott; utána már csak a fenti utak regisztrálnak.
+Ha a backfill előtt gyanús feladat került a könyvtárba, a frissítés előtt nézd át (`ls ~/.claude/scheduled-tasks`).
+
+A backfill jelölője a DB-ben van: egy újra létrehozott (törölt, üresről induló) `store/claudeclaw.db` mellett az első
+indulás ISMÉT mindent elfogad, ami a lemezen van. DB-csere vagy -visszaállítás előtt nézd át a feladatkönyvtárat.
+
+Korlátok:
+- a hash a feladat SAJÁT könyvtárát fedi (és a `preCheck` szkriptet, bárhová mutat, a repó `scripts/` kivételével).
+  Ha egy `command` vagy egy prompt egy MÁSIK feladat könyvtárába, vagy a repó `scripts/`-én kívül bárhová mutat,
+  azt a tartalmat a nyilvántartás nem látta, és a védelem nem fedi;
+- mivel a könyvtár minden fájlja a hash része, egy kézzel odatett fájl (akár egy szerkesztő mentési másolata,
+  `.bak`, `.swp`) is megállítja a feladatot, amíg át nem nézed és újra nem regisztrálod;
+- 500 bejegyzés vagy 16 MiB tartalom fölötti feladatkönyvtárnak nincs hash-e: nem regisztrálható és nem fut
+  (a log egyszer kiírja);
+- a nyilvántartás ugyanannak a felhasználónak írható DB-ben van, tehát a védelem a CSAK-fájl alapú
+  telepítést zárja ki; egy feladat becsempészéséhez mostantól célzott DB-írás vagy CLI-hívás kell
+  (a CLI-t egy ügynök Bash-ból is meghívhatja: ezt a kliens-oldali hook-kapu zárhatja);
+- a bizalom-ellenőrzés és a szerver saját írása közti pillanatban (PUT, toggle, once-kikapcsolás), valamint a
+  seeder és az `update.sh` írása és regisztrációja között egy PÁRHUZAMOSAN író, azonos felhasználójú folyamat
+  tartalma is elfogadódhat; a hatókör a fájl-alapú elhelyezés, nem a versenyző helyi folyamat.
 
 ---
 

@@ -106,6 +106,8 @@ export function resolveMasterKeyForExport(): string | null {
   )
 }
 
+let noMigrationNoticeLogged = false
+
 function getMasterKey(): Buffer {
   const entryCount = vaultEntryCount()
 
@@ -122,6 +124,20 @@ function getMasterKey(): Buffer {
           'store/.vault-key does not decrypt vault.json -- refusing to use or migrate it. ' +
           'Restore the correct master key (check store/.vault-key.migrated and backups).'
         )
+      }
+      // A read-only consumer must not touch the Keychain. The scripts Claude Code runs for the headersHelper and for
+      // secret resolution print to STDOUT (JSON / ENV=value lines) and often run without a GUI session (a
+      // LaunchDaemon), where `security` runs into its timeout on EVERY call and the failure line would corrupt that
+      // stdout. They set this switch and use the file key as is; the migration belongs to the dashboard process.
+      // The key check above has already run, so a wrong key still fails closed.
+      if (process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION === '1') {
+        // Once per process, at WARN: if this variable ever reaches the DASHBOARD process by mistake, the migration would
+        // silently never happen -- a stricter operator LOG_LEVEL (warn) must not hide that. It names the variable, never a key value.
+        if (!noMigrationNoticeLogged) {
+          noMigrationNoticeLogged = true
+          logger.warn('MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION=1: the Keychain migration of the vault master key is skipped in this process')
+        }
+        return fileKeyBuf
       }
       try {
         keychainStore(fileKey)
@@ -234,6 +250,30 @@ export function setSecret(id: string, label: string, value: string): void {
     store.entries.push(entry)
   }
   writeVault(store)
+}
+
+// The rule for a secret's description: an empty one falls back to the id, and a NEW or CHANGED
+// label is at most this many characters (after trimming). POST and PATCH /api/vault both
+// enforce it, but POST lets an unchanged stored label through, because other writers (import,
+// generated labels) and older data can already be longer and the edit form re-sends the label
+// when it rotates a value.
+export const VAULT_LABEL_MAX_LENGTH = 200
+
+export function normalizeVaultLabel(id: string, label: string): string {
+  return label.trim() || id
+}
+
+// Changes only the label (and updatedAt). The ciphertext is carried over byte
+// for byte: nothing is decrypted or re-encrypted, so the master key is not even
+// touched. Returns false when the id does not exist.
+export function updateSecretLabel(id: string, label: string): boolean {
+  const store = readVault()
+  const entry = store.entries.find(e => e.id === id)
+  if (!entry) return false
+  entry.label = label
+  entry.updatedAt = new Date().toISOString()
+  writeVault(store)
+  return true
 }
 
 export function getSecret(id: string): string | null {

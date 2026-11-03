@@ -22,7 +22,7 @@
  *   <root>/done/<id>.json      acknowledged, with the agent's result attached
  */
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -48,6 +48,13 @@ export function worksourceRootFor(agent: string): string {
 export function worksourceItemId(messageId: number | string): string {
   return `msg-${String(messageId).replace(/[^A-Za-z0-9._-]/g, '')}`
 }
+
+/**
+ * An item's stage in the queue: which of the three directories below holds it.
+ * The reader moves an item pending -> active -> done as it hands the work over
+ * and takes the acknowledgment back.
+ */
+export type WorksourceItemStage = 'pending' | 'active' | 'done'
 
 /**
  * True when this id is already queued, in flight, or finished.
@@ -100,4 +107,61 @@ export function enqueueWorksourceItem(
   meta?: Record<string, unknown>,
 ): boolean {
   return enqueueWorksourceItemAt(worksourceRootFor(agent), id, content, meta)
+}
+
+/**
+ * Which of the three directories an item is in right now -- its stage in the
+ * reader's hand-over protocol: pending/ queued but never handed to the agent,
+ * active/ handed over and awaiting the acknowledgment, done/ acknowledged.
+ *
+ * A PROBE, not a mutation: the scheduler's watchdog asks this to tell "never
+ * picked up" (pending) from "handed over or finished" (active/done) when a
+ * queued prompt sits unconsumed, so it must never write to the queue while
+ * deciding. The directories are tried in the item's life order, so an id
+ * present in more than one reports the earliest stage. Pure reads, never
+ * throws: an unreadable queue directory is null (no signal), the same as an
+ * unknown id -- a probe that threw would take the caller's sweep down with it.
+ */
+export function worksourceItemStageAt(root: string, id: string): WorksourceItemStage | null {
+  try {
+    for (const stage of ['pending', 'active', 'done'] as const) {
+      if (existsSync(join(root, stage, `${id}.json`))) return stage
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/** Agent-keyed wrapper over worksourceItemStageAt. */
+export function worksourceItemStage(agent: string, id: string): WorksourceItemStage | null {
+  return worksourceItemStageAt(worksourceRootFor(agent), id)
+}
+
+/**
+ * The id of the item the reader hands over next: the lexically smallest file
+ * ending in '.json' in pending/. The reader's deliverOne (server.mjs) picks
+ * exactly that item on every poll, so the head MOVING between two sweeps (it
+ * is now in active/ or done/) is proof the queue is being consumed -- even
+ * though items behind the head, ours among them, have not moved at all. That
+ * is what tells a healthy reader working through a backlog from a dead one.
+ *
+ * Like worksourceItemStageAt, a PROBE, not a mutation: pure reads, never
+ * throws. null when pending/ is empty, missing or unreadable -- the same
+ * no-signal answer as an unknown id there, because a probe that threw would
+ * take the caller's sweep down with it.
+ */
+export function worksourcePendingHeadAt(root: string): string | null {
+  try {
+    const names = readdirSync(join(root, 'pending')).filter(n => n.endsWith('.json')).sort()
+    const first = names[0]
+    return first != null ? first.slice(0, -'.json'.length) : null
+  } catch {
+    return null
+  }
+}
+
+/** Agent-keyed wrapper over worksourcePendingHeadAt. */
+export function worksourcePendingHead(agent: string): string | null {
+  return worksourcePendingHeadAt(worksourceRootFor(agent))
 }

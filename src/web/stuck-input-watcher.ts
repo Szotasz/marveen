@@ -5,6 +5,7 @@ import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
+import { createAgentMessage } from '../db.js'
 import {
   stuckInputSignature,
   parkedPasteSignature,
@@ -14,6 +15,26 @@ import {
   type StuckInputState,
   type StuckInputThresholds,
 } from '../pane-state.js'
+import { whileNotFrozen } from './fleet-freeze.js'
+
+/**
+ * The owner alert for an input recovery gave up on. A sub-agent restarts through its own route. The MAIN
+ * agent's manual restart is gated (manual-restart-gate.ts): a parked input reads as a non-idle pane, so a
+ * plain POST answers 409 there. The alert names the paths that work: the dashboard button, which asks
+ * before it forces, or an explicit force.
+ */
+export function parkedGiveUpAlertText(label: string, isMain: boolean): string {
+  const head = `⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki.`
+  if (isMain) {
+    return `${head} Valószínűleg kézi restart kell: a dashboardon a restart gomb (foglalt panelnél rákérdez, és megerősítés után kényszerítve indít), vagy POST /api/marveen/restart {"force": true}. A kényszerített restart megszakítja a futó kört.`
+  }
+  return `${head} Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`
+}
+
+/** The main-agent notice for a sub-agent whose parked input the recovery gave up on. */
+export function parkedGiveUpOrchestratorText(label: string, session: string): string {
+  return `[stuck-input] Agent '${label}' (tmux ${session}) still has parked input after the auto-recovery (Enter + clear/re-inject) at a non-busy pane. Check the pane: if the parked text is ours, press Enter; if the session is wedged, restart it (POST /api/agents/${label}/restart). Escalate to the owner only if it cannot be fixed.`
+}
 
 // RIASZTASZAJ819: the owner alert for a parked-past-max-attempts sub-agent
 // fired three times in one afternoon at an agent that was WORKING the whole
@@ -252,7 +273,16 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       })) {
         alertedSpells.add(session)
         logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting for manual restart')
-        sendAlert(`⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki. Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`)
+        if (session === MAIN_CHANNELS_SESSION) {
+          sendAlert(parkedGiveUpAlertText(label, true))
+        } else {
+          // A parked sub-agent goes to the main agent, not the owner's channel:
+          // the main agent can read the pane and press Enter or restart, which
+          // is everything the owner could do (and owners asked not to be paged
+          // for it). The main session itself still alerts the owner -- nobody
+          // else can act on it.
+          createAgentMessage('system', MAIN_AGENT_ID, parkedGiveUpOrchestratorText(label, session))
+        }
       } else if (paneState === 'busy' && prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) {
         // Once per spell, at the crossing tick: say WHY no alert went out, so
         // a real wedge investigation finds the suppression instead of a hole.
@@ -313,6 +343,6 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     }
   }
 
-  setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
-  return setInterval(() => { void sweep() }, INTERVAL_MS)
+  setTimeout(whileNotFrozen('stuck-input', () => { void sweep() }), INITIAL_DELAY_MS)
+  return setInterval(whileNotFrozen('stuck-input', () => { void sweep() }), INTERVAL_MS)
 }

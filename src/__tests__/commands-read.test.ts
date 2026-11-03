@@ -155,7 +155,7 @@ describe('/board (read only)', () => {
     const cards = listKanbanCards()
     const seq = (id: string) => cards.find(c => c.id === id)!.seq
     const text = boardText(cards, 'András')
-    expect(text).toContain(`${seq('p0000001')}) Emanuel Swedenborg munkái · Marveen\n    └ 2 alfeladat`)
+    expect(text).toContain(`${seq('p0000001')}) Emanuel Swedenborg munkái · Marveen\n    └ 2 részfeladat`)
     expect(text).toContain(`${seq('k0000001')}) Könyvtárstruktúra és YAML front matter k… ↑${seq('p0000001')}`)
   })
 
@@ -196,7 +196,7 @@ describe('/board (read only)', () => {
     expect(child).toContain('marveen: első komment')
     expect(child).toMatch(/azonosító: c0ffee01$/)
     const parent = cardDetailText(findCard('p0ffee01')!, cards, 'András')
-    expect(parent).toContain(`Alfeladatok (1 nyitott, 1 kész):\n${seq('c0ffee01')}) Kártya · testing`)
+    expect(parent).toContain(`Részfeladatok (1 nyitott, 1 kész):\n${seq('c0ffee01')}) Kártya · testing`)
     expect(findCard('nincsilyen')).toBeUndefined()
   })
 })

@@ -1,0 +1,14 @@
+{
+  "name": "marveen-telegram-reaction",
+  "description": "The opt-in telegram-reaction plugin of the Marveen engine, as a local marketplace (add this folder, install the plugin, enable it for the main agent through CHANNEL_PLUGINS_EXTRA -- docs/telegram-reaction.md).",
+  "owner": {
+    "name": "Marveen"
+  },
+  "plugins": [
+    {
+      "name": "telegram-reaction",
+      "source": "./",
+      "description": "Telegram turn progress as a reaction on the user's message (👀 -> 🤔 -> ✍️ -> 👨‍💻 -> cleared) instead of the placeholder message."
+    }
+  ]
+}

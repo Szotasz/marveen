@@ -7,20 +7,36 @@ import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
 import { markIfTestRun } from './test-run-marker.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { sendTeamsMessage, type TeamsCreds } from './teams-send.js'
 
 export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
+
+/**
+ * What a successful send can tell about itself: the HTTP status of the answer
+ * and the id the service gave the new message, when it gives one. Never the
+ * chat or the text -- the channel log (notify.ts) records exactly this.
+ */
+export interface SendReceipt {
+  status: number
+  messageId?: string
+}
 
 export interface ChannelProvider {
   readonly type: ChannelProviderType
   readonly pluginId: string
   readonly pluginPaneId: string
+  /** The MCP server name the installed plugin registers, as `/mcp reconnect <name>` takes it. Omitted when it is
+   *  the same as pluginPaneId. */
+  readonly mcpServerName?: string
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
   /** threadId: a Telegram topic (TELEGRAM_TOPICS_ENABLED); providers without topics ignore it. */
-  sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<void>
+  sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<SendReceipt | void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
   validateToken(token: string): Promise<TokenValidation>
+  /** For providers whose credentials are more than one token (Teams): check them all for real. */
+  validateCredentials?(env: Record<string, string>): Promise<TokenValidation>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
 }
@@ -43,7 +59,8 @@ export interface TokenValidation {
 // error, so a socket that never answers would pin the stamp forever and
 // silence that alert for good. A timeout turns the hang into an error the
 // callers already classify as transient (no HTTP status) and retry next tick.
-function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<void> {
+// Resolves with the Bot API's `result` (undefined when the body is not JSON).
+function telegramHttpPostResult(token: string, method: string, body: string, contentType: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const req = https.request(
       `https://api.telegram.org/bot${token}/${method}`,
@@ -64,12 +81,13 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
         res.on('data', (chunk: Buffer) => { chunks.push(chunk) })
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks).toString('utf-8')
+          let result: unknown
           if (res.statusCode !== 200) {
             reject(new Error(`Telegram API ${res.statusCode}: ${responseBody.slice(0, 200)}`))
             return
           }
           try {
-            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string }
+            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string; result?: unknown }
             if (parsed.ok === false) {
               // Carry the body's error_code in the "Telegram API <code>" shape so
               // classifySendError sorts it transient/permanent like an HTTP status;
@@ -78,11 +96,12 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
               reject(new Error(`Telegram API${code}: ok:false ${String(parsed.description ?? '').slice(0, 200)}`))
               return
             }
+            result = parsed.result
           } catch {
             // A malformed body on HTTP 200 is not a send failure; the message
             // may well be delivered. Same tolerance as sendTelegramMessage.
           }
-          resolve()
+          resolve(result)
         })
         res.on('error', reject)
       }
@@ -93,6 +112,23 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
     req.write(body)
     req.end()
   })
+}
+
+// sendMessage's receipt: the message id when the Bot API returned a numeric one.
+async function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<SendReceipt> {
+  const result = await telegramHttpPostResult(token, method, body, contentType)
+  const messageId = (result as { message_id?: unknown } | undefined)?.message_id
+  return { status: 200, messageId: typeof messageId === 'number' ? String(messageId) : undefined }
+}
+
+/** Opens a topic in a chat (a private chat needs topics switched on in BotFather); returns its message_thread_id. */
+export async function createTelegramForumTopic(token: string, chatId: string, name: string): Promise<number> {
+  const result = await telegramHttpPostResult(token, 'createForumTopic', JSON.stringify({ chat_id: chatId, name }), 'application/json')
+  const threadId = (result as { message_thread_id?: unknown } | undefined)?.message_thread_id
+  if (typeof threadId !== 'number' || !Number.isInteger(threadId) || threadId <= 0) {
+    throw new Error('Telegram API: createForumTopic returned no message_thread_id')
+  }
+  return threadId
 }
 
 const telegramProvider: ChannelProvider = {
@@ -108,7 +144,7 @@ const telegramProvider: ChannelProvider = {
     if (parseMode) payload.parse_mode = parseMode
     if (threadId) payload.message_thread_id = Number(threadId)
     const body = JSON.stringify(payload)
-    await telegramHttpPost(token, 'sendMessage', body, 'application/json')
+    return telegramHttpPost(token, 'sendMessage', body, 'application/json')
   },
 
   async sendPhoto(token, chatId, photoPath, caption) {
@@ -225,6 +261,7 @@ const slackProvider: ChannelProvider = {
   type: 'slack',
   pluginId: 'slack-channel@marveen-marketplace',
   pluginPaneId: 'plugin:slack-channel:marveen-marketplace',
+  mcpServerName: 'plugin:slack-channel:slack',
   envKeys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
   stateDir: 'slack',
   chatIdFormat: 'Slack channel/DM ID (e.g. C01234ABCDE)',
@@ -455,27 +492,109 @@ const googlechatProvider: ChannelProvider = {
 //
 // Teams (Azure Bot Service) has no single bot token: the channel plugin
 // authenticates with an app id + client secret + tenant id (TEAMS_BOT_*) and
-// receives Activities over an inbound webhook (JWT-validated). So the
-// token-based dashboard helpers below are minimal -- actual delivery happens
-// through the plugin's MCP tools, not these direct-send methods (same shape as
-// the Google Chat stub). "Configured" is detected via TEAMS_BOT_APP_ID in the
-// agent's channel .env (see readChannelToken), standing in for the token.
+// receives Activities over an inbound webhook (JWT-validated). The agent's own
+// replies go through the plugin's MCP tools; the DASHBOARD alerts (notify.ts,
+// schedule-runner.ts) send directly over the Bot Framework REST API
+// (teams-send.ts), using the same three credentials from the same .env the
+// plugin reads. "Configured" is detected via TEAMS_BOT_APP_ID in the agent's
+// channel .env (see readChannelToken), standing in for the token.
 
 const TEAMS_MAX_MESSAGE_LENGTH = 28000
+
+export const TEAMS_SECRET_EXPIRY_KEY = 'TEAMS_BOT_SECRET_EXPIRES'
+export const TEAMS_SECRET_WARN_DAYS = [30, 7, 1] as const
+export type TeamsSecretExpiry =
+  | { state: 'missing' }
+  | { state: 'invalid'; value: string }
+  | { state: 'ok' | 'soon' | 'expired'; date: string; daysLeft: number }
+
+export function teamsSecretExpiry(raw: string | undefined, now: number = Date.now()): TeamsSecretExpiry {
+  const value = (raw ?? '').trim()
+  if (!value) return { state: 'missing' }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (m) {
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+    const expiresAt = Date.UTC(y, mo - 1, d)
+    const back = new Date(expiresAt)
+    if (back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d) {
+      const daysLeft = Math.ceil((expiresAt - now) / 86_400_000) + 0
+      return { state: daysLeft <= 0 ? 'expired' : daysLeft <= 30 ? 'soon' : 'ok', date: value, daysLeft }
+    }
+  }
+  // Only a value that looks like a mistyped date is echoed into the log and the
+  // Test answer; anything else (a secret pasted into the wrong key) is not.
+  return { state: 'invalid', value: /^[0-9./ -]{1,20}$/.test(value) ? value : `(${value.length} characters, not shown)` }
+}
+
+export const TEAMS_CREDENTIAL_TIMEOUT_MS = 10_000
+
+export async function checkTeamsCredentials(
+  env: Record<string, string>,
+  deps: { fetch?: typeof fetch; timeoutMs?: number } = {},
+): Promise<TokenValidation> {
+  const appId = env.TEAMS_BOT_APP_ID
+  const secret = env.TEAMS_BOT_APP_PASSWORD
+  const tenant = env.TEAMS_BOT_TENANT_ID
+  if (!appId || !secret || !tenant) {
+    return { ok: false, error: 'Teams credentials incomplete: TEAMS_BOT_APP_ID, TEAMS_BOT_APP_PASSWORD and TEAMS_BOT_TENANT_ID are all needed' }
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(tenant)) {
+    return { ok: false, error: 'Teams tenant id has an unexpected form' }
+  }
+  let res: Response
+  try {
+    res = await (deps.fetch ?? fetch)(`https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: appId,
+        client_secret: secret,
+        scope: 'https://api.botframework.com/.default',
+      }).toString(),
+      redirect: 'error',
+      signal: AbortSignal.timeout(deps.timeoutMs ?? TEAMS_CREDENTIAL_TIMEOUT_MS),
+    })
+  } catch {
+    return { ok: false, error: 'Teams credentials could not be checked (network error or timeout)' }
+  }
+  // A refusal of these credentials is a 400/401 with Entra's JSON error body.
+  // Throttling, an Entra outage or an answer that cannot be read says nothing
+  // about the secret, so it is "could not be checked", not a refusal.
+  let body: any
+  try {
+    body = await res.json()
+  } catch {
+    body = undefined
+  }
+  if (res.status === 200 && typeof body?.access_token === 'string' && body.access_token) {
+    return { ok: true, botName: 'Microsoft Teams' }
+  }
+  if ((res.status !== 400 && res.status !== 401) || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: `Teams credentials could not be checked (unexpected Entra answer, HTTP ${res.status})` }
+  }
+  const code = typeof body.error === 'string' && /^[a-z_]{1,64}$/.test(body.error) ? body.error : 'unknown_error'
+  const first = Array.isArray(body.error_codes) ? body.error_codes[0] : undefined
+  const aad = typeof first === 'number' && Number.isInteger(first) ? first : undefined
+  return { ok: false, error: `Teams credentials refused by Entra: ${code}${aad !== undefined ? ` (AADSTS${aad})` : ''}` }
+}
 
 const teamsProvider: ChannelProvider = {
   type: 'teams',
   pluginId: 'teams@marveen-marketplace',
   pluginPaneId: 'plugin:teams:marveen-marketplace',
+  mcpServerName: 'plugin:teams:teams',
   envKeys: ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID'],
   stateDir: 'teams',
   chatIdFormat: 'Teams conversation id (managed by the plugin per pairing)',
 
-  async sendMessage() {
-    // Direct dashboard send is not supported for Teams; the agent delivers via
-    // the plugin's reply tool inside its own session (Bot Framework outbound
-    // needs the per-conversation serviceUrl + a client_credentials token).
-    throw new Error('teams: direct dashboard send not supported (delivery via plugin MCP tools)')
+  async sendMessage(token, chatId, text) {
+    // Direct dashboard send over the Bot Framework REST API: a
+    // client-credentials token plus the conversation's recorded serviceUrl
+    // (teams-send.ts). The `token` parameter is the app id stand-in from
+    // readChannelToken -- the real credentials come from the channel .env,
+    // the same file the plugin itself runs with.
+    return sendTeamsMessage(readTeamsCreds(token), channelStateDir('teams'), chatId, text)
   },
 
   async sendPhoto() {
@@ -487,6 +606,8 @@ const teamsProvider: ChannelProvider = {
     // secret + tenant, JWT). Report ok so channel-config flows don't false-negative.
     return { ok: true, botName: 'Microsoft Teams' }
   },
+
+  validateCredentials: (env) => checkTeamsCredentials(env),
 
   formatMessage: (text) => text,
   splitMessage: (text) => splitMessage(text, TEAMS_MAX_MESSAGE_LENGTH),
@@ -763,4 +884,50 @@ export function readChannelToken(provider: ChannelProviderType, envFilePath: str
   // configured channel for hasChannel/agentHasChannel.
   const match = content.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
   return match ? match[1].trim() : null
+}
+
+export function readChannelEnv(envFilePath: string, keys: readonly string[]): Record<string, string> {
+  let content: string
+  try {
+    content = readFileSync(envFilePath, 'utf-8')
+  } catch {
+    return {}
+  }
+  const out: Record<string, string> = {}
+  for (const key of keys) {
+    const match = content.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
+    if (match) out[key] = match[1].trim()
+  }
+  return out
+}
+
+// The Teams send needs all three TEAMS_BOT_* keys from ONE file, never mixed:
+// a secret from a newer .env paired with an app id from a stale one would
+// produce an Entra refusal that looks like a config error elsewhere. The FIRST
+// file that has a TEAMS_BOT_APP_ID line wins; `files` is injectable so the
+// lookup can be tested against temp files. TEAMS_SERVICE_URL is read from that
+// same winning file, so an operator override written next to the bot keys also
+// reaches a dashboard that never loads the .env into process.env. When no file
+// qualifies, the app-id stand-in from the caller becomes the appId with empty
+// secret/tenant, which sendTeamsMessage reports as the incomplete-credentials
+// config error.
+export function readTeamsCreds(fallbackAppId: string, files?: string[]): TeamsCreds {
+  const candidates = files ?? [join(INSTALL_ROOT, '.env'), join(channelStateDir('teams'), '.env')]
+  for (const path of candidates) {
+    const env = readChannelEnv(path, ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID', 'TEAMS_SERVICE_URL'])
+    if (env['TEAMS_BOT_APP_ID']) {
+      const creds: TeamsCreds = {
+        appId: env['TEAMS_BOT_APP_ID'],
+        secret: env['TEAMS_BOT_APP_PASSWORD'] ?? '',
+        tenant: env['TEAMS_BOT_TENANT_ID'] ?? '',
+      }
+      // Only a non-empty value from the winning file: an empty line must not
+      // shadow the environment, and a later file's value is never mixed in.
+      if (typeof env['TEAMS_SERVICE_URL'] === 'string' && env['TEAMS_SERVICE_URL'] !== '') {
+        creds.serviceUrl = env['TEAMS_SERVICE_URL']
+      }
+      return creds
+    }
+  }
+  return { appId: fallbackAppId, secret: '', tenant: '' }
 }

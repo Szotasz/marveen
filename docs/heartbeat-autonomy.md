@@ -28,7 +28,7 @@ Egy dashboard-felületen, kategóriánként húzod feljebb-lejjebb a szintet —
 
 1. **Ütemezett feladatok (heartbeat-ek):** cron-szerű ütemezésű promptok (pl. memória-mentés, kanban-audit, déli/reggeli összefoglaló). Minden futás egy rövid, fókuszált ellenőrzés.
 2. **Autonómia-config:** egy `store/autonomy-config.json` tárolja kategóriánként a szintet (`level: 1|2|3`), a zárolt (`locked`) flag-et és a `maxLevel`-t.
-3. **Dashboard UI + API:** `GET/POST /api/autonomy` olvassa/írja a configot; a felület kategória-soronként szint-választót ad, a zárolt sorok szürkén, lakattal. A backend server-side tiltja a zárolt kategóriák szint-emelését.
+3. **Dashboard UI + API:** `GET/POST /api/autonomy` olvassa/írja a configot; a felület kategória-soronként szint-választót ad, a zárolt sorok szürkén, lakattal. A backend server-side tiltja a zárolt kategóriák szint-emelését. Szintet EMELNI a dashboard-bejelentkezéssel lehet, amint a gépen van dashboard-felhasználó: a közös tokent minden ügynök ismeri, ezért tokennel az emelés 403-at kap (`owner_session_required`). A csökkentés és ugyanannak a szintnek a beállítása tokennel is megy. Friss telepítésen, amíg nincs felhasználó, a token emelhet (az első beállítás útja).
 4. **Heartbeat-bekötés:** minden ütemezett feladat a futás elején beolvassa a rá vonatkozó kategória szintjét, és aszerint viselkedik.
 
 ### Szint-logika (példa: kanban-audit)
@@ -41,7 +41,9 @@ level 2  → nem cselekszik magától; üzenetben javasolja, és vár a jóváha
 level 1  → csak listázza/jelzi, semmit nem tesz
 ```
 
-Hiányzó config vagy kulcs esetén a default a 3. szint (a korábbi viselkedés).
+Hiányzó, olvashatatlan config vagy hiányzó kulcs esetén a default az 1. szint (csak jelez): ugyanaz, amit a `seed-config` minden kategóriára szállít. Így egy törölt vagy sérült config nem a legmegengedőbb szintre billenti a feladatot. (A levélkapu, `scripts/hooks/email-approval-gate.py`, ugyanerre a 2. szintet adja: ott a kimenő levél jóváhagyással még elmehet.)
+
+A legtöbb szintet az ágens promptja olvassa. Kettőt a szerver vagy egy hook is kikényszerít: az `email_send`-et a levélkapu (`scripts/hooks/email-approval-gate.py`), a `data_delete`-et a memória-törlés végpontja (`DELETE /api/memories/:id`, 3-as szint alatt csak jóváhagyott, egyszer felhasználható azonosítóval; lásd `docs/security-hardening.md`).
 
 ### Config-séma
 

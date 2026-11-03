@@ -20,6 +20,7 @@ import { readClaudePlansState } from './claude-plans-state.js'
 import {
   SCHEDULED_TASKS_DIR, readScheduledTask, readRemovedDefaultTasks, writeScheduledTask,
 } from './scheduled-tasks-io.js'
+import { registerServerCreatedTask, rewriteRegisteredTask } from './schedule-registry-rewrite.js'
 
 export const ROTATION_HEARTBEAT_TASK = 'claude-plan-rotate-check'
 export const ROTATION_HEARTBEAT_SCHEDULE = '*/10 * * * *'
@@ -109,6 +110,8 @@ export function ensureRotationHeartbeatTask(opts: { respectRemoval?: boolean } =
     // already on the way, same trade-off as the other frequent heartbeats.
     skipIfBusy: true,
   })
+  // The runner fires only registered tasks; this one is server-authored (no dir existed).
+  registerServerCreatedTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-heartbeat')
   return 'created'
 }
 
@@ -133,11 +136,11 @@ export function syncRotationHeartbeatTask(): SyncRotationHeartbeatResult {
   if (on) {
     if (!task) return ensureRotationHeartbeatTask()
     if (task.enabled) return 'unchanged'
-    writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: true })
+    rewriteRegisteredTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-heartbeat', () => { writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: true }); return true })
     return 'enabled'
   }
   if (!task || !task.enabled) return 'unchanged'
-  writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: false })
+  rewriteRegisteredTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-heartbeat', () => { writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: false }); return true })
   return 'disabled'
 }
 

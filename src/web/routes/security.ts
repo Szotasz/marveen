@@ -18,11 +18,12 @@ import { notifySecurityEvent } from '../../notify.js'
 import { bridgeEnroll, sshDirOverride, RemoteEnrollError } from '../bridge-enroll.js'
 import { isSshDirGuardError } from '../../ssh-dir.js'
 import { checkEnrollHost } from '../../remote-enroll-core.js'
+import { DEVICE_NAME_RE } from '../auth-device-keys.js'
 import { isIP } from 'node:net'
+import { bridgeOwner, mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 8 * 1024
-const NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const ENROLL_KINDS = ['token', 'session'] as const
 
 function str(v: unknown): string {
@@ -34,8 +35,14 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
 
   if (path !== '/api/security/bridge-enroll' || method !== 'POST') return false
 
-  if (auth === undefined || !ENROLL_KINDS.includes(auth.kind as (typeof ENROLL_KINDS)[number])) {
+  if (auth === undefined || (!ENROLL_KINDS.includes(auth.kind as (typeof ENROLL_KINDS)[number]) && !bridgeOwner(auth, req))) {
     json(res, { error: 'Forbidden for this credential type', code: 'forbidden_credential' }, 403)
+    return true
+  }
+  // DEVKEYMINT1022: pairing issues a full device key and an SSH line, so after the
+  // first login exists it takes the owner's session (routes/auth.ts).
+  if (!mayActAsOwner(auth, req)) {
+    json(res, OWNER_SESSION_REQUIRED, 403)
     return true
   }
 
@@ -58,7 +65,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     }, 400)
     return true
   }
-  if (!NAME_RE.test(name)) {
+  if (!DEVICE_NAME_RE.test(name)) {
     json(res, {
       error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)',
       code: 'invalid_name',

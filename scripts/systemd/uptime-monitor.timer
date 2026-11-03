@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Marveen uptime monitor every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+RandomizedDelaySec=30
+AccuracySec=10s
+# no Persistent: catching up a missed round gives no new information
+Unit=uptime-monitor.service
+
+[Install]
+WantedBy=timers.target

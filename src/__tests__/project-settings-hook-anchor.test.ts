@@ -24,9 +24,16 @@ type Hooks = Record<string, HookEntry[]>
 const settings = JSON.parse(readFileSync(SETTINGS_PATH, 'utf-8')) as { hooks?: Hooks }
 const hooks: Hooks = settings.hooks ?? {}
 
-// The full expected registration: event -> script basenames (order-free).
-// A change here is a REVIEWED decision about what runs in the main session,
-// never a side effect.
+// The full expected registration: event -> one entry per matcher group
+// (order-free, duplicates count): the script basename, followed by
+// ` @ <matcher>` when the group has a matcher. A change here is a REVIEWED
+// decision about what runs in the main session, never a side effect.
+//
+// Group granularity matters because several scripts are registered under more
+// than one matcher (outgoing-copy-gate.py and email-approval-gate.py: one group
+// per mail surface and channel). A script-name set stays green when one of
+// those groups is deleted or its matcher narrowed, and when a non-gate hook's
+// matcher changes; this list does not.
 //
 // Both channel providers' progress hooks are listed unconditionally. That is
 // deliberate: each one is provider-scoped internally and no-ops on the other
@@ -40,29 +47,61 @@ const EXPECTED: Record<string, string[]> = {
     'provenance-gate.py', 'staleness-guard.py', 'memory-lookup-nudge.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py', 'slack_progress.py',
     'marveen-commands.py',
+    // #946 (taskstate stub writer), a reviewed decision: every exit path is
+    // sys.exit(0), the only cross-module import is guarded, there is no network
+    // call or subprocess, and the write is atomic (os.replace). It cannot block
+    // a prompt.
+    'taskstate-stub.py',
   ],
   PostToolUse: [
-    'ledger-outbound.py', 'tool-log-capture.py',
-    'telegram_progress_reply_clear.py', 'slack_progress_reply_clear.py',
-    'skill-usage-capture.py', 'memory-frontmatter-bash-gate.py',
+    'ledger-outbound.py @ mcp__plugin_[^_]+_[^_]+__reply', 'tool-log-capture.py',
+    'telegram_progress_reply_clear.py @ telegram.*reply', 'slack_progress_reply_clear.py @ slack.*reply',
+    'skill-usage-capture.py @ Skill|Read', 'memory-frontmatter-bash-gate.py @ Bash',
     // The persona guard watches the main agent's own CLAUDE.md/SOUL.md and
     // every agents/*/ pair, and it must fire on EVERY tool call: the first
     // version filtered on the Write/Edit file_path and a python3 heredoc
     // walked straight past it. PostToolUse is the event that cannot be
     // dodged by choosing a different tool.
     'persona-change-notify.py',
+    // MARVEENGAPS1020 (c): WebSearch and WebFetch results reach the main agent
+    // framed as untrusted content (an allowlisted host's text is still external).
+    'browser-content-notice.py @ WebSearch|WebFetch',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
   // KAPUEGYUT918: a failed Bash call can still have written a memory file.
-  PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py'],
+  PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
   PreToolUse: [
-    'outgoing-copy-gate.py', 'email-approval-gate.py',
-    'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
-    'memory-frontmatter-bash-gate.py',
+    'fleet-freeze-gate.sh @ *', // KILLSWITCH1022: every tool call denied while the fleet is frozen
+    'outgoing-copy-gate.py @ Bash',
+    'outgoing-copy-gate.py @ .*send_email.*',
+    'outgoing-copy-gate.py @ .*manage_email.*',
+    'outgoing-copy-gate.py @ .*[Gg]mail.*__.*',
+    'outgoing-copy-gate.py @ .*draft_email.*',
+    'outgoing-copy-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*',
+    'outgoing-copy-gate.py @ mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message',
+    'outgoing-copy-gate.py @ mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__edit_message',
+    'email-approval-gate.py @ Bash',
+    'email-approval-gate.py @ .*send_email.*',
+    'email-approval-gate.py @ .*manage_email.*',
+    'email-approval-gate.py @ .*[Gg]mail.*__.*',
+    'email-approval-gate.py @ .*draft_email.*',
+    'email-approval-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*',
+    'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
+    'memory-frontmatter-bash-gate.py @ Bash',
+    // APPROVALDBGATE1030: security tables, the database file, the install's gate wiring
+    'db-write-gate.mjs @ Bash|Write|Edit|MultiEdit|NotebookEdit',
+    // Refuses a Bash command whose own text the shell would re-scan (a backtick
+    // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
+    // any internal error, so it cannot wedge a session.
+    'shell-rescan-guard.py @ Bash',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
-  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
+  StopFailure: ['ledger-turn-failure.py'],
+  SessionStart: [
+    'ledger-replay.py @ startup|resume|clear', 'taskstate-replay.py @ compact|resume|clear',
+    'clear-replay.py @ clear', 'marveen-commands.py',
+  ],
   SessionEnd: ['clear-capture.py'],
 }
 
@@ -70,19 +109,48 @@ function commands(event: string): string[] {
   return (hooks[event] ?? []).flatMap((e) => e.hooks ?? []).map((h) => h.command ?? '')
 }
 
+const scriptOf = (command: string) => command.match(/scripts\/hooks\/([^/\s'"]+?\.(?:py|sh|mjs))/)?.[1] ?? ''
+
 function scriptNames(event: string): Set<string> {
-  return new Set(
-    commands(event)
-      .map((c) => c.match(/scripts\/hooks\/([^/\s'"]+?\.(?:py|sh|mjs))/)?.[1] ?? '')
-      .filter(Boolean),
-  )
+  return new Set(commands(event).map(scriptOf).filter(Boolean))
 }
+
+// One descriptor per handler, in the EXPECTED form: '<script>' or '<script> @ <matcher>'.
+function groupDescriptors(event: string): string[] {
+  return (hooks[event] ?? []).flatMap((e) => (e.hooks ?? []).map((h) => {
+    const script = scriptOf(h.command ?? '') || `<no script: ${h.command ?? ''}>`
+    return e.matcher === undefined ? script : `${script} @ ${e.matcher}`
+  }))
+}
+
+// The keys this file uses today. A new key (a stray `id` or `description`, a
+// handler option nobody reviewed) has to be added here on purpose.
+const GROUP_KEYS = new Set(['matcher', 'hooks'])
+const HANDLER_KEYS = new Set(['type', 'command', 'timeout'])
 
 describe('tracked .claude/settings.json hook anchor (#1305)', () => {
   it('registers exactly the expected script set per event', () => {
     expect(Object.keys(hooks).sort()).toEqual(Object.keys(EXPECTED).sort())
     for (const [event, expected] of Object.entries(EXPECTED)) {
-      expect([...scriptNames(event)].sort(), `event ${event}`).toEqual([...new Set(expected)].sort())
+      const names = expected.map((d) => d.split(' @ ')[0])
+      expect([...scriptNames(event)].sort(), `event ${event}`).toEqual([...new Set(names)].sort())
+    }
+  })
+
+  it('registers exactly the expected matcher groups per event (each group, each matcher)', () => {
+    for (const [event, expected] of Object.entries(EXPECTED)) {
+      expect(groupDescriptors(event).sort(), `event ${event}`).toEqual([...expected].sort())
+    }
+  })
+
+  it('uses only the reviewed hook keys (matcher group: matcher, hooks; handler: type, command, timeout)', () => {
+    for (const [event, entries] of Object.entries(hooks)) {
+      entries.forEach((e, i) => {
+        for (const k of Object.keys(e)) expect(GROUP_KEYS.has(k), `${event}[${i}] group key ${k}`).toBe(true)
+        for (const h of e.hooks ?? []) {
+          for (const k of Object.keys(h)) expect(HANDLER_KEYS.has(k), `${event}[${i}] handler key ${k}`).toBe(true)
+        }
+      })
     }
   })
 

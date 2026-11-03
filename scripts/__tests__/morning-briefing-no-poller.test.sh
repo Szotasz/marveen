@@ -32,7 +32,7 @@ DIR="$TMP/inst"
 mkdir -p "$DIR/scripts/lib" "$DIR/store" "$DIR/bin" "$DIR/.claude/channels/telegram"
 cp "$REPO/scripts/morning-briefing.sh" "$DIR/scripts/"
 cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$DIR/scripts/lib/"
-printf 'ALLOWED_CHAT_ID=1234\nTELEGRAM_BOT_TOKEN=tok-from-dotenv\nSLACK_BOT_TOKEN=slack-tok-from-dotenv\n' > "$DIR/.env"
+printf 'ALLOWED_CHAT_ID=1234\nANTHROPIC_API_KEY=sk-ant-test\nTELEGRAM_BOT_TOKEN=tok-from-dotenv\nSLACK_BOT_TOKEN=slack-tok-from-dotenv\n' > "$DIR/.env"
 printf 'TELEGRAM_BOT_TOKEN=tok-from-statedir\n' > "$DIR/.claude/channels/telegram/.env"
 
 # The stub records what a real claude would get, then refuses (no sentinel), so

@@ -23,7 +23,7 @@ Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of 
 - **Mission Control**: Web dashboard (http://localhost:3420) a csapat kezeléséhez
 - **Inter-agent kommunikáció**: Az ágensek delegálhatnak egymásnak feladatokat
 - **Ütemezések**: Cron-alapú feladatok automatikus futtatása
-- **Kanban**: Feladattábla AI auto-bontással; Jira-szerű nézetek — swimlane (csoportosítás felelős vagy prioritás szerint), oszloponkénti WIP-limit, beakadt-kártya jelzés (card-aging), alfeladat-beágyazás és kártya-szerkesztő
+- **Kanban**: Feladattábla AI auto-bontással; Jira-szerű nézetek: swimlane (csoportosítás felelős vagy prioritás szerint), oszloponkénti WIP-limit, beakadt-kártya jelzés (card-aging), részfeladat-beágyazás és kártya-szerkesztő
 - **Heartbeat**: Csendes háttér-monitorozás, csak fontosnál szól (naptár, email, kanban)
 - **Memória**: Hot/Warm/Cold tier rendszer, hibrid kereséssel (FTS5 + vektor) és gráf nézettel
 - **MCP Connectorok**: Gmail, Calendar, Drive, Notion, Slack és más szolgáltatások
@@ -248,6 +248,10 @@ ssh macmini "/opt/homebrew/bin/tmux kill-session -t monitor" && \
 ```
 
 A script automatikusan felderíti a futó `agent-*` és `marveen-channels` session-öket. A monitor session törlése nem érinti az ágens session-öket -- csak a linked-window referenciákat szünteti meg.
+
+### Ügynökönkénti költségkeret
+
+A CostOps-konfigurációban (`costops-config.json`) ügynökönként havi keret adható (`budgets`, `scope: "agent"`), az árakat a `token_prices` adja; ár nélküli modellt a rendszer nem becsül, árazatlannak jelöl. A `warning` és a `hard` szint havonta egyszer riaszt. A `hard` szint is csak riaszt: nem állítja le és nem lassítja az ügynököt. Ha egy hónapban árazatlan tokenek is vannak, arról külön, havonta egy riasztás megy, mert azok nincsenek benne a keret százalékában.
 
 ### Remote access key enrollment
 

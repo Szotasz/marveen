@@ -23,6 +23,19 @@ export function channelsPlistPath(serviceId: string): string {
   return join(homedir(), 'Library', 'LaunchAgents', `${channelsLaunchdLabel(serviceId)}.plist`)
 }
 
+// The command an operator runs to restart the channels unit by hand, for THIS
+// install (#1878 item 6): the "restart failed" messages used to hardcode
+// `systemctl --user restart marveen-channels`, wrong on a renamed install and
+// with no macOS form. macOS: the launchd job in the GUI login's domain (run from
+// a terminal of that login); Linux: the user unit.
+export function channelsRestartCommand(platform: string = process.platform, serviceId: string = SERVICE_ID): string {
+  if (platform === 'darwin') {
+    const label = channelsLaunchdLabel(serviceId)
+    return `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/${label}.plist 2>/dev/null; launchctl kickstart -k gui/$(id -u)/${label}`
+  }
+  return `systemctl --user restart ${serviceId}-channels`
+}
+
 // The main agent (Marveen) runs in a long-lived `${id}-channels` tmux
 // session managed by launchd, not the `agent-${name}` template that
 // sub-agents use. Anything that needs to address it has to use this name

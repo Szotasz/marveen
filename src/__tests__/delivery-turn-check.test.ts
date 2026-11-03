@@ -141,6 +141,25 @@ describe('classifyTranscriptLines', () => {
   })
 })
 
+describe('readTurnEvidence: a busy agent writes more than one tail before the check runs', () => {
+  const filler = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      JSON.stringify({ type: 'assistant', timestamp: iso(SENT + 1000 + i), message: { content: [{ type: 'text', text: 'x'.repeat(900) }] } }))
+  const passes = [4096, 32768, 262144]
+
+  it('prompt row buried under more than the first pass of later rows -> still seen', async () => {
+    writeTranscript('big.jsonl', [unrelated(SENT - 60_000), userPrompt(201), ...filler(60)])
+    const ev = await readTurnEvidence(dir, [201], SENT, passes)
+    expect(ev?.get(201)).toBe('seen')
+  })
+
+  it('a message that really never arrived stays absent, the growth is capped', async () => {
+    writeTranscript('big.jsonl', [unrelated(SENT - 60_000), ...filler(600)])
+    const ev = await readTurnEvidence(dir, [202], SENT, passes)
+    expect(ev?.get(202)).toBe('absent')
+  })
+})
+
 describe('runDeliveryTurnCheck (behaviour, real files)', () => {
   it('evidence present -> silence', async () => {
     writeTranscript('a.jsonl', [unrelated(), userPrompt(101)])

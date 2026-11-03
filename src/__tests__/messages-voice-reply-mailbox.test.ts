@@ -3,7 +3,10 @@ import { EventEmitter } from 'node:events'
 import { initDatabase, getAgentMessage, getPendingMessages, getAgentConversation } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { tryHandleMessages, VOICE_MAILBOX_RESULT } from '../web/routes/messages.js'
-import { VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
+// VOICECHANNELID1022: the id is null only when the voice lane is off (even the
+// default names another sender); on this suite's install it is on.
+const VOICE_CHANNEL_AGENT_ID = VOICE_ID_OR_NULL as string
 import type { RouteContext } from '../web/routes/types.js'
 
 // VOICEREPLY1005: the answer to a voice-channel message goes back to the voice

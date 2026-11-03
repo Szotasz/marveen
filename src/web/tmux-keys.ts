@@ -49,7 +49,26 @@ export function literalKeyArgs(session: string, text: string): string[] | null {
   if (!text) return null
   // `-l` sends the keys literally (no key-name interpretation), so text like
   // "Enter" or "C-c" typed by the user is inserted as characters, not actions.
-  return ['send-keys', '-t', exactTmuxTarget(session), '-l', '--', text]
+  return ['send-keys', '-t', exactTmuxTarget(session), '-l', '--', protectTrailingSemicolon(text)]
+}
+
+/**
+ * TMUXSEMI1001: tmux's command parser treats an argument that ENDS in `;` as a
+ * command separator and drops that `;`, even under `send-keys -l` -- measured
+ * 2026-10-01: `send-keys -l 'abc;'` then `'def'` typed `abcdef`, and a chunked
+ * scheduled prompt reached an agent with `...+4:]print(...)` instead of
+ * `...+4:];print(...)`, a SyntaxError in the very verification command the
+ * prompt asked it to run. `\;` is tmux's escape for a literal `;` and survives
+ * (`'abc\;'` typed `abc;`). The rule is uniform: tmux consumes exactly ONE
+ * backslash in front of a trailing `;` (measured on tmux 3.6a: n backslashes
+ * before the trailing `;` type as n-1, and none drops the `;`), so one is always
+ * added, also when the text already ends in `\;` -- `find . -exec rm {} \;`
+ * otherwise arrives without its backslash. A `;` that is not the last character
+ * is not touched.
+ */
+export function protectTrailingSemicolon(text: string): string {
+  if (!text.endsWith(';')) return text
+  return text.slice(0, -1) + '\\;'
 }
 
 /**

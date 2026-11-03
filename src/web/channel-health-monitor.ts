@@ -10,6 +10,7 @@ import {
 } from './channel-mcp-reconnect.js'
 import { getProvider } from '../channel-provider.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // The MCP reconnect (attemptChannelMcpReconnect) is deliberately synchronous --
 // it drives the interactive /mcp tmux menu with execFileSync('/bin/sleep', ...)
@@ -160,6 +161,6 @@ export function startChannelHealthMonitor(): NodeJS.Timeout {
 
   // Offset from channel-monitor's 30s initial delay to avoid
   // overlapping tmux interactions on the same tick.
-  setTimeout(check, 45_000)
-  return setInterval(check, 60_000)
+  setTimeout(whileNotFrozen('channel-health', check), 45_000)
+  return setInterval(whileNotFrozen('channel-health', check), 60_000)
 }

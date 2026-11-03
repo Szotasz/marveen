@@ -18,6 +18,19 @@ export function sanitizeAgentName(raw: string): string {
     .slice(0, 50)
 }
 
+// Ids the message layer already owns, so a main agent must never take one
+// (FLEETRESERVEDNAME1021). 'system' is the in-process directive sender and is
+// 403'd on every POST lane; 'telegram-coordinator' is 403'd too; 'heartbeat'
+// and 'channel-coordinator' are hidden as chat threads. A main agent with one
+// of these ids could not send, or would speak as something it is not.
+// Literals, not imports: the shell migration script keeps the same list, and a
+// test pins both to the source constants. This is only the FIXED part: the
+// voice channel id is configurable (VOICECHANNELID1022), so the full list,
+// RESERVED_AGENT_IDS, is built in config.ts. Kept here so this module stays a
+// leaf with no load-time .env read.
+export const FIXED_RESERVED_AGENT_IDS: readonly string[] =
+  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator']
+
 // Same rules as sanitizeAgentName -- used for skill names to prevent path traversal.
 export function sanitizeSkillName(raw: string): string {
   return sanitizeAgentName(raw)
@@ -43,4 +56,13 @@ export function safeJoin(base: string, ...parts: string[]): string {
 
 export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
+// A path as ONE shell word for a recipe line: as it is when it holds only letters, combining marks (a
+// decomposed accent), digits (any script) and characters the shell leaves alone (a tilde inside a path
+// is not expanded, but a leading one is, so that stays quoted). Then the line stays byte for byte
+// what it was, and a profile allow-list prefix still matches. Single-quoted otherwise: a space in
+// PROJECT_ROOT split the helper path in two.
+export function shellWord(s: string): string {
+  return /^(?!~)[\p{L}\p{M}\p{N}_@%+=:,./~-]+$/u.test(s) ? s : shellEscape(s)
 }

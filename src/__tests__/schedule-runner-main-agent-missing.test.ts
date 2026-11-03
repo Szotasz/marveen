@@ -35,7 +35,7 @@ describe('schedule-runner treats a transiently-down main session as "starting", 
   })
 
   it('branches on isMainAgent before ever calling startAgentProcess', () => {
-    const startIdx = SRC.indexOf('startAgentProcess(agentName)', guardIdx)
+    const startIdx = SRC.indexOf('startAgentProcess(agentName, { ownsResume: true })', guardIdx)
     const mainBranchIdx = SRC.indexOf('if (isMainAgent)', guardIdx)
     expect(mainBranchIdx).toBeGreaterThan(guardIdx)
     expect(mainBranchIdx).toBeLessThan(startIdx)
@@ -43,7 +43,7 @@ describe('schedule-runner treats a transiently-down main session as "starting", 
 
   it('the main-agent branch returns "starting", never "missing"', () => {
     const mainBranchIdx = SRC.indexOf('if (isMainAgent)', guardIdx)
-    const startIdx = SRC.indexOf('startAgentProcess(agentName)', guardIdx)
+    const startIdx = SRC.indexOf('startAgentProcess(agentName, { ownsResume: true })', guardIdx)
     // Slice up to the (verified-later, non-main) startAgentProcess call
     // rather than the first '}' -- the logger.info(...) call's own object
     // literal closes with a '}' before the branch's actual closing brace.
@@ -63,7 +63,7 @@ describe('schedule-runner treats a transiently-down main session as "starting", 
   it('a non-main agent with a genuinely missing directory still returns "missing"', () => {
     // The fix must not touch the pre-existing behaviour for real sub-agents:
     // a startAgentProcess failure for them still permanently drops the retry.
-    const startIdx = SRC.indexOf('startAgentProcess(agentName)', guardIdx)
+    const startIdx = SRC.indexOf('startAgentProcess(agentName, { ownsResume: true })', guardIdx)
     const afterStart = SRC.slice(startIdx, startIdx + 700)
     expect(afterStart).toMatch(/return 'missing'/)
   })

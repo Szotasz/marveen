@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { resolveTranscriptLocation } from '../web/routes/agents.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { projectsDirFor } from '../web/active-model.js'
+import { configDirFor } from '../web/main-transcript-root.js'
 
 // GH #816: the dashboard showed the main agent's model as the DEFAULT_MODEL
 // fallback rather than the model the process was on, and the display read as a
@@ -75,5 +76,28 @@ describe('resolveTranscriptLocation: isolated config root', () => {
     expect(withIsolation).toBe(join('/iso', 'projects', '-w'))
     expect(without).toBe(join('/home/u', '.claude', 'projects', '-w'))
     mkdirSync(join(tmp, 'unused'), { recursive: true })
+  })
+})
+
+describe('resolveTranscriptLocation: auto-provisioned sub-agent config root', () => {
+  // The launcher auto-provisions agents/<name>/.claude-config when no
+  // claudeConfigDir field is set, and the session writes its transcript there.
+  // resolveTranscriptLocation used resolveAgentConfigDir(), which answers only a
+  // CONFIGURED root, so for such an agent it returned undefined and the listing
+  // read the host default root: contextTokens null on the agents page while the
+  // context-guard (configDirFor) read the live transcript. Measured 2026-10-26.
+  const name = `autoprov-cfg-${process.pid}`
+  const agentRoot = join(PROJECT_ROOT, 'agents', name)
+  const isolated = join(agentRoot, '.claude-config')
+
+  beforeAll(() => { mkdirSync(join(isolated, 'projects'), { recursive: true }) })
+  afterAll(() => { rmSync(agentRoot, { recursive: true, force: true }) })
+
+  it('points a sub-agent with no configured root at its auto-provisioned .claude-config', () => {
+    expect(resolveTranscriptLocation(name).configDir).toBe(isolated)
+  })
+
+  it('agrees with configDirFor, the root the context-guard reads', () => {
+    expect(resolveTranscriptLocation(name).configDir).toBe(configDirFor(name))
   })
 })

@@ -1,0 +1,119 @@
+{
+ "_comment": "MAILGATEHEREDOCFP1027: shared cases of the prose-literal masker (scripts/hooks/outgoing-copy-gate.py :: _mask_prose_literals, scripts/email-send-gate.mjs :: maskProseLiterals). Both twins must return `expected` byte for byte: a string literal whose text holds ASCII whitespace and every comment become spaces (line breaks kept), a literal without whitespace and the interpolations of a template literal or an f-string stay, an unterminated literal stays raw to where the scan stopped.",
+ "cases": [
+  {
+   "name": "py: prose literal blanked, identifier literal kept",
+   "lang": "py",
+   "input": "import json\nopen('/tmp/m.json', 'w').write(json.dumps({'content': 'the gate knows smtplib and Graph'}))\n",
+   "expected": "import json\nopen('/tmp/m.json', 'w').write(json.dumps({'content': '                                '}))\n"
+  },
+  {
+   "name": "py: comment blanked",
+   "lang": "py",
+   "input": "# migrated off smtplib last year\nprint(1)\n",
+   "expected": "                                \nprint(1)\n"
+  },
+  {
+   "name": "py: real import stays",
+   "lang": "py",
+   "input": "import smtplib\nsmtplib.SMTP('mail.example.invalid', 587)\n",
+   "expected": "import smtplib\nsmtplib.SMTP('mail.example.invalid', 587)\n"
+  },
+  {
+   "name": "py: docstring blanked, code after it kept",
+   "lang": "py",
+   "input": "\"\"\"Sends nothing.\nimport smtplib is only text here.\"\"\"\nx = 1\n",
+   "expected": "\"\"\"              \n                                 \"\"\"\nx = 1\n"
+  },
+  {
+   "name": "py: f-string text blanked, interpolation kept",
+   "lang": "py",
+   "input": "print(f\"queued {smtplib.SMTP('h')} for later\")\n",
+   "expected": "print(f\"       {smtplib.SMTP('h')}          \")\n"
+  },
+  {
+   "name": "py: escaped quote inside a literal",
+   "lang": "py",
+   "input": "s = 'it\\'s smtplib text'\nt = 'ok'\n",
+   "expected": "s = '                  '\nt = 'ok'\n"
+  },
+  {
+   "name": "py: prefixed raw and bytes literals",
+   "lang": "py",
+   "input": "a = r'C:\\\\no space'\nb = b'two words'\nc = rb'x'\n",
+   "expected": "a = r'            '\nb = b'         '\nc = rb'x'\n"
+  },
+  {
+   "name": "py: unterminated literal stays raw to the line end",
+   "lang": "py",
+   "input": "s = 'smtplib never closed\nimport json\n",
+   "expected": "s = 'smtplib never closed\nimport json\n"
+  },
+  {
+   "name": "py: URL literal kept (no whitespace)",
+   "lang": "py",
+   "input": "requests.post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', json=b)\n",
+   "expected": "requests.post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', json=b)\n"
+  },
+  {
+   "name": "py: hash inside a literal is no comment",
+   "lang": "py",
+   "input": "u = 'a#b'\nv = 'c # d'\n",
+   "expected": "u = 'a#b'\nv = '     '\n"
+  },
+  {
+   "name": "py: triple single quotes",
+   "lang": "py",
+   "input": "t = '''one\ntwo smtplib'''\nu = 1\n",
+   "expected": "t = '''   \n           '''\nu = 1\n"
+  },
+  {
+   "name": "js: template text blanked, interpolation kept",
+   "lang": "js",
+   "input": "const s = `sent ${await mg.messages.create(d, m)} now`\n",
+   "expected": "const s = `     ${await mg.messages.create(d, m)}    `\n"
+  },
+  {
+   "name": "js: line and block comments blanked",
+   "lang": "js",
+   "input": "// nodemailer later\n/* sendMail( is\n prose */\nconsole.log(1)\n",
+   "expected": "                   \n               \n         \nconsole.log(1)\n"
+  },
+  {
+   "name": "js: URL with // inside a literal is no comment",
+   "lang": "js",
+   "input": "await fetch('https://api.resend.com/emails', { method: 'POST' })\n",
+   "expected": "await fetch('https://api.resend.com/emails', { method: 'POST' })\n"
+  },
+  {
+   "name": "js: JSON body literal blanked",
+   "lang": "js",
+   "input": "const body = JSON.stringify({ content: 'client.emails.send( in a sentence' })\n",
+   "expected": "const body = JSON.stringify({ content: '                                 ' })\n"
+  },
+  {
+   "name": "js: unterminated literal keeps the URL raw",
+   "lang": "js",
+   "input": "const u = \"https://graph.microsoft.com/v1.0/me/sendMail\\\"; await fetch(u)\n",
+   "expected": "const u = \"https://graph.microsoft.com/v1.0/me/sendMail\\\"; await fetch(u)\n"
+  },
+  {
+   "name": "js: hash is code in js",
+   "lang": "js",
+   "input": "class A { #x = 'no space' }\n",
+   "expected": "class A { #x = '        ' }\n"
+  },
+  {
+   "name": "none: unknown language is untouched",
+   "lang": null,
+   "input": "anything 'with prose' # here\n",
+   "expected": "anything 'with prose' # here\n"
+  },
+  {
+   "name": "py: non-ASCII prose and astral characters",
+   "lang": "py",
+   "input": "s = 'árvíztűrő tükörfúrógép 🚀 smtplib'\n",
+   "expected": "s = '                                '\n"
+  }
+ ]
+}

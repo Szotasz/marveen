@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
-import { execSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
@@ -13,15 +14,45 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
-import { shellEscape } from '../sanitize.js'
-import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
-import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
-import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
+import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
+import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
+import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
+
+const execFileAsync = promisify(execFile)
+
+// `claude mcp add` / `claude mcp remove` as an argv (no shell) and off the event
+// loop: the synchronous shell form froze the whole dashboard for as long as the
+// CLI took (timeouts of 15-30 s). stdin is closed at once, as the sync call did.
+async function execClaudeMcp(args: string[], timeout: number): Promise<void> {
+  // The shell form threw on a non-string value (its quoting helper calls .replace on
+  // it); execFile would stringify it and run the CLI. Keep the refusal.
+  if (args.some((a) => typeof a !== 'string')) throw new TypeError('claude mcp: every argument must be a string')
+  const pending = execFileAsync('claude', args, { timeout, encoding: 'utf-8' })
+  pending.child.stdin?.end()
+  await pending
+}
+
+// The CLI operations still run one at a time, as the synchronous form did: each
+// one rewrites the same CLI config file, and two overlapping requests (a double
+// click on "install", an uninstall racing an add of the same name) must not
+// interleave. A multi-call operation (the uninstall's user-then-project
+// fallback) holds the slot for all of its calls.
+let claudeMcpQueue: Promise<unknown> = Promise.resolve()
+
+function serializeClaudeMcp<T>(op: () => Promise<T>): Promise<T> {
+  const run = claudeMcpQueue.then(op)
+  claudeMcpQueue = run.catch(() => {})
+  return run
+}
+
+function runClaudeMcp(args: string[], timeout: number): Promise<void> {
+  return serializeClaudeMcp(() => execClaudeMcp(args, timeout))
+}
 
 // The catalog is the union of the committed mcp-catalog.json (the MCPs the
 // central devs ship) and an optional, gitignored mcp-catalog.local.json where
@@ -291,8 +322,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/connectors/github-repos' && method === 'POST') {
     const body = await readBody(req)
-    const { url, env } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string> }
+    const { url, env, runScripts } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string>, runScripts?: unknown }
     if (!url?.trim()) { json(res, { error: 'URL is required' }, 400); return true }
+    const runScriptsFlag = parseRunScriptsFlag(runScripts)
+    if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
 
     const envVarMapping: Record<string, string> = {}
     if (env) {
@@ -303,9 +336,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const result = await installGitHubRepo(url.trim(), Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined)
+    const result = await installGitHubRepo(
+      url.trim(),
+      Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined,
+      undefined,
+      { runScripts: runScriptsFlag.value === true },
+    )
     if (result.error) { json(res, { error: result.error }, 400); return true }
-    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars })
+    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars, installWarning: result.installWarning, scriptsSkipped: result.scriptsSkipped })
     return true
   }
 
@@ -320,9 +358,17 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (githubRepoMatch && method === 'PATCH') {
     const name = decodeURIComponent(githubRepoMatch[1])
-    const result = updateGitHubRepo(name)
+    // The body is optional (older clients send none); only `runScripts` is read.
+    const raw = (await readBody(req)).toString().trim()
+    let parsedBody: { runScripts?: unknown } = {}
+    if (raw) {
+      try { parsedBody = JSON.parse(raw) ?? {} } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    }
+    const runScriptsFlag = parseRunScriptsFlag(parsedBody.runScripts)
+    if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
+    const result = updateGitHubRepo(name, runScriptsFlag.value === undefined ? {} : { runScripts: runScriptsFlag.value })
     if (result.error) { json(res, { error: result.error }, 400); return true }
-    json(res, { ok: true })
+    json(res, { ok: true, scriptsSkipped: result.scriptsSkipped })
     return true
   }
 
@@ -413,7 +459,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const nameChanged = sanitizedName !== rawName
 
     try {
-      const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
+      const scope = data.scope === 'project' ? 'project' : 'user'
 
       const catalogEntry: any = {
         id: sanitizedName,
@@ -426,7 +472,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       if ((data.type === 'http' || data.type === 'sse') && data.url) {
         const transport = data.type === 'sse' ? 'sse' : 'http'
-        execSync(`claude mcp add --transport ${transport} ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        await runClaudeMcp(['mcp', 'add', '--transport', transport, '-s', scope, sanitizedName, data.url], 15000)
         catalogEntry.type = 'remote'
         catalogEntry.url = data.url
         catalogEntry.transport = transport
@@ -436,8 +482,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const userSecrets = Object.fromEntries(
           Object.entries(data.env || {}).filter(([, v]) => v !== ''),
         ) as Record<string, string>
-        const argsStr = data.args ? data.args.split(/\s+/).filter(Boolean).map(a => shellEscape(a)).join(' ') : ''
-        execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        const argList = data.args ? data.args.split(/\s+/).filter(Boolean) : []
+        await runClaudeMcp(['mcp', 'add', '-s', scope, sanitizedName, '--', data.command, ...argList], 15000)
         catalogEntry.type = 'local'
         catalogEntry.command = data.command
         catalogEntry.args = data.args ? data.args.split(/\s+/).filter(Boolean) : []
@@ -469,7 +515,6 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (connectorDetailMatch && method === 'DELETE' && !path.includes('/assign')) {
     const name = decodeURIComponent(connectorDetailMatch[1])
-    let removed = 0
     const mcpFiles = [
       join(PROJECT_ROOT, '.mcp.json'),
       join(homedir(), '.claude.json'),
@@ -490,16 +535,27 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     for (const extPath of getExternalProjectPaths()) {
       mcpFiles.push(join(extPath, '.mcp.json'))
     }
-    for (const mcpPath of mcpFiles) {
-      try {
-        const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
-        if (parsed.mcpServers && parsed.mcpServers[name]) {
-          delete parsed.mcpServers[name]
-          atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2))
-          removed++
-        }
-      } catch { /* skip unreadable files */ }
-    }
+    // Must not interleave with a running `claude mcp add/remove` child that
+    // rewrites the same ~/.claude.json, so hold the CLI slot for the whole loop.
+    const removed = await serializeClaudeMcp(async () => {
+      let count = 0
+      for (const mcpPath of mcpFiles) {
+        try {
+          const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
+          // Own keys only: "toString" or "__proto__" is truthy on every object,
+          // so a plain lookup counted a removal and rewrote the file for nothing.
+          const servers = parsed.mcpServers
+          if (servers && typeof servers === 'object' && Object.hasOwn(servers, name)) {
+            delete servers[name]
+            // Keep the file's own mode: ~/.claude.json is 0600, and a mode-less
+            // write renames a umask-default (0644) file over it (VAULTMODE818).
+            atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2), { mode: statSync(mcpPath).mode & 0o777 })
+            count++
+          }
+        } catch { /* skip unreadable files */ }
+      }
+      return count
+    })
     if (removed > 0) {
       purgeFromMcpListCache(name)
       json(res, { ok: true, removed })
@@ -661,13 +717,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const defaultEnv = Object.fromEntries(
           Object.entries(item.env || {}).filter(([k, v]) => v !== '' && !(k in userSecrets)),
         ) as Record<string, string>
-        const envFlags = Object.entries(defaultEnv)
-          .map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v as string)}`)
-          .join(' ')
-
-        const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
-        const cmd = `claude mcp add --scope user ${shellEscape(cliName)} ${envFlags} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
-        execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
+        const envArgs = Object.entries(defaultEnv).flatMap(([k, v]) => ['-e', `${k}=${v as string}`])
+        await runClaudeMcp(['mcp', 'add', '--scope', 'user', cliName, ...envArgs, '--', item.command, ...(item.args || [])], 30000)
         if (Object.keys(userSecrets).length) {
           vaultAndBindEnvSecrets(cliName, join(homedir(), '.claude.json'), userSecrets)
         }
@@ -677,7 +728,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         // Respect the catalog item's transport (http/sse) instead of forcing sse,
         // so one-click remote installs can use streamable-http (e.g. n8n).
         const transport = item.transport === 'http' ? 'http' : 'sse'
-        execSync(`claude mcp add --transport ${transport} --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
+        await runClaudeMcp(['mcp', 'add', '--transport', transport, '--scope', 'user', cliName, url], 30000)
       }
 
       let message = 'Telepítve'
@@ -702,13 +753,15 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       if (!item) { json(res, { error: 'Item not found in catalog' }, 404); return true }
 
       const cliName = item.id
-      try {
-        execSync(`claude mcp remove ${shellEscape(cliName)} -s user 2>&1`, { timeout: 15000 })
-      } catch {
+      await serializeClaudeMcp(async () => {
         try {
-          execSync(`claude mcp remove ${shellEscape(cliName)} -s project 2>&1`, { timeout: 15000 })
-        } catch { /* ignore if not found anywhere */ }
-      }
+          await execClaudeMcp(['mcp', 'remove', cliName, '-s', 'user'], 15000)
+        } catch {
+          try {
+            await execClaudeMcp(['mcp', 'remove', cliName, '-s', 'project'], 15000)
+          } catch { /* ignore if not found anywhere */ }
+        }
+      })
 
       json(res, { ok: true, message: 'Eltávolítva' })
     } catch (err: any) {
@@ -730,9 +783,54 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
-    setSecret(id.trim(), label || id.trim(), value)
+    if (label !== undefined && label !== null && typeof label !== 'string') { json(res, { error: 'label must be a string' }, 400); return true }
+    // An unchanged stored label passes whatever its length (value rotation re-sends it); a new
+    // secret or a changed label is capped. listSecrets() never decrypts anything.
+    if (typeof label === 'string' && label.trim().length > VAULT_LABEL_MAX_LENGTH
+        && label.trim() !== listSecrets().find(s => s.id === id.trim())?.label) {
+      json(res, { error: `label must be at most ${VAULT_LABEL_MAX_LENGTH} characters` }, 400)
+      return true
+    }
+    setSecret(id.trim(), normalizeVaultLabel(id.trim(), label ?? ''), value)
     const syncResult = syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
+    return true
+  }
+
+  // D1 (1): the resolver scripts (scripts/vault-resolve.mjs, scripts/vault-headers-helper.mjs) read secrets
+  // here instead of decrypting in the agent's own process, so every read leaves a row (who claimed what)
+  // and VAULT_ACL_MODE=enforce can hold an agent to its allowlist. Not isolation: the master-key file is
+  // readable by the same OS user, and a caller that claims no agent is an owner lane.
+  if (path === '/api/vault/resolve' && method === 'POST') {
+    let body: { ids?: unknown }
+    try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    const ids = Array.isArray(body?.ids) ? body.ids : null
+    if (!ids || ids.length === 0 || ids.length > 100 || !ids.every((i) => typeof i === 'string' && i.trim() && i.length <= 200)) {
+      json(res, { error: 'ids must be 1..100 non-empty strings of at most 200 characters' }, 400)
+      return true
+    }
+    const acl = readVaultAcl()
+    const values: Record<string, string> = Object.create(null)
+    const missing: string[] = []
+    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' }> = []
+    for (const raw of ids as string[]) {
+      const id = raw.trim()
+      if (isSshPrivateKeyId(id)) {
+        logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'ssh-key' })
+        continue
+      }
+      if (vaultReadRefused(id, ctx.auth, acl)) {
+        logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'acl' })
+        continue
+      }
+      const val = getSecret(id)
+      logVaultRead(id, ctx.auth, val !== null, acl, { channel: 'resolve' })
+      if (val === null) missing.push(id)
+      else values[id] = val
+    }
+    json(res, { values, missing, refused, mode: vaultAclMode() })
     return true
   }
 
@@ -742,7 +840,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   // /api/vault/ssh-servers matches THIS generic secret-store route first
   // (id="ssh-servers"), finds no such secret, and returns 404 before
   // tryHandleVaultSsh ever runs (2026-07-01, frontend/backend Vault epic).
-  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys'].includes(vaultMatch[1])
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys', 'resolve'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     // VAULTSZELES826: SSH private keys are NEVER served by this generic value route.
@@ -754,17 +852,47 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // feature, the dashboard's reveal/edit buttons, scripts, skills, agent commands: 0).
     // The audit row is kept so an attempt stays visible, and the key is not even decrypted.
     if (isSshPrivateKeyId(id)) {
-      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id))
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
+    const acl = readVaultAcl()
+    if (vaultReadRefused(id, ctx.auth, acl)) {
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'value', refused: true })
+      json(res, { error: 'Not allowed for this agent by the vault allowlist (VAULT_ACL_MODE=enforce)' }, 403)
       return true
     }
     const val = getSecret(id)
     // VAULTSZELES826 F0: one audit row per value read (id, kind, principal,
     // allowlist verdict) BEFORE the value leaves the server. Audit only: the
     // verdict never blocks here. The value is not passed to the logger.
-    logVaultRead(id, ctx.auth, val !== null)
+    logVaultRead(id, ctx.auth, val !== null, acl)
     if (val === null) { json(res, { error: 'Not found' }, 404); return true }
     json(res, { id, value: val })
+    return true
+  }
+
+  // Label-only update: never decrypts or re-sends the value, and there is nothing to sync
+  // (syncSecret propagates the VALUE into bound MCP configs; the label is not part of them).
+  if (vaultMatch && !isVaultSubroute && method === 'PATCH') {
+    const id = decodeURIComponent(vaultMatch[1])
+    // ssh-key-* entries are managed exclusively by the SSH key pool.
+    if (isSshPrivateKeyId(id)) {
+      json(res, { error: 'SSH private keys are managed by the SSH key pool' }, 403)
+      return true
+    }
+    let body: { label?: unknown } | null
+    try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    if (!body || typeof body !== 'object' || typeof body.label !== 'string') {
+      json(res, { error: 'label must be a string' }, 400)
+      return true
+    }
+    if (body.label.trim().length > VAULT_LABEL_MAX_LENGTH) {
+      json(res, { error: `label must be at most ${VAULT_LABEL_MAX_LENGTH} characters` }, 400)
+      return true
+    }
+    if (!updateSecretLabel(id, normalizeVaultLabel(id, body.label))) { json(res, { error: 'Not found' }, 404); return true }
+    json(res, { ok: true })
     return true
   }
 

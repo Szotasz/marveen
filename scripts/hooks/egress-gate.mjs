@@ -179,6 +179,7 @@ const QUARANTINE_DENY_HOSTS = new Set([
   '[::]',
   '[::1]',
   'metadata.google.internal',
+  'metadata',
   'instance-data',
 ])
 
@@ -199,6 +200,23 @@ function isPrivateIPv4(host) {
   return false
 }
 
+// The eight hextets of an all-hex IPv6 literal ("::" expanded), or null for anything else
+// (a dotted tail, a zone, a malformed literal): the callers then keep their other checks.
+// Safe only because the one caller chain (isQuarantineDenied -> isPrivateIPv6) passes the WHATWG
+// parser's canonical host, which writes an embedded IPv4 in hex and rejects zones. A new caller
+// that passes a raw host would leave the dotted and zoned spellings of these ranges open.
+function hextets(h) {
+  const halves = h.split('::')
+  if (halves.length > 2) return null
+  const part = (s) => (s === '' ? [] : s.split(':'))
+  const [head, tail] = [part(halves[0]), halves.length === 2 ? part(halves[1]) : []]
+  const missing = 8 - head.length - tail.length
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...tail]
+  if (!groups.every((x) => /^[0-9a-f]{1,4}$/.test(x))) return null
+  return groups.map((x) => parseInt(x, 16))
+}
+
 // IPv6 loopback / unique-local / link-local, with or without brackets.
 function isPrivateIPv6(host) {
   const h = host.replace(/^\[|\]$/g, '').toLowerCase()
@@ -206,9 +224,28 @@ function isPrivateIPv6(host) {
   if (h === '::1' || h === '::') return true
   if (h.startsWith('fc') || h.startsWith('fd')) return true // unique-local
   if (h.startsWith('fe80')) return true // link-local
+  // EGRESSIPV6NEXT1025: the ranges a prefix string check misses, read from the hextets.
+  const g = hextets(h)
+  if (g) {
+    if ((g[0] & 0xffc0) === 0xfe80) return true // link-local is fe80::/10, not only fe80:
+    if ((g[0] & 0xffc0) === 0xfec0) return true // site-local fec0::/10 (deprecated, still routed inside sites)
+    if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true // local-use NAT64 64:ff9b:1::/48 (RFC 8215)
+    // 6to4 (2002::/16) carries an IPv4 address in hextets 1 and 2; a relay delivers to it.
+    if (g[0] === 0x2002) return isPrivateIPv4([g[1] >> 8, g[1] & 255, g[2] >> 8, g[2] & 255].join('.'))
+  }
   // IPv4-mapped (::ffff:10.0.0.1) -- reuse the v4 rules on the tail.
   const tail = h.split(':').pop() ?? ''
   if (tail.includes('.')) return isPrivateIPv4(tail)
+  // be27524d: the URL parser writes an embedded IPv4 in hex ([::ffff:127.0.0.1] -> [::ffff:7f00:1]),
+  // so the dotted-tail check above never sees it; decode the two hex groups back to IPv4. The same
+  // decoding covers every prefix that carries an IPv4 address in its last 32 bits: IPv4-mapped
+  // (::ffff:0:0/96), IPv4-translated (::ffff:0:0:0/96), IPv4-compatible (::/96) and the NAT64
+  // well-known prefix (64:ff9b::/96), which a NAT64 gateway translates to the embedded address.
+  const mapped = /^(?:::ffff:|::ffff:0:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h)
+  if (mapped) {
+    const [hi, lo] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)]
+    return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255].join('.'))
+  }
   return false
 }
 
@@ -224,10 +261,17 @@ export function isQuarantineDenied(url) {
     return true // unparseable -> deny
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
-  const host = parsed.hostname.toLowerCase()
+  // be27524d: trailing dots do not change the name for the resolver ("localhost." and
+  // "localhost.." are localhost), so the lists below see the name without them.
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, '')
   if (!host) return true
   if (QUARANTINE_DENY_HOSTS.has(host)) return true
   if (QUARANTINE_DENY_SUFFIXES.some((s) => host.endsWith(s))) return true
+  // be27524d: a dotless name is never a public site. The resolver turns it into an
+  // internal one: a machine's own name is a loopback address via /etc/hosts, any other bare machine
+  // name resolves through the tailnet search domain, and "metadata" is the cloud metadata short
+  // name. IPv6 literals ("[::1]", public ones too) carry no dot but have their own rule below.
+  if (!host.includes('.') && !host.includes(':')) return true
   if (isPrivateIPv4(host)) return true
   if (isPrivateIPv6(host)) return true
   return false

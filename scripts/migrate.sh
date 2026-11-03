@@ -21,13 +21,17 @@ API="http://localhost:${WEB_PORT:-3420}/api"
 TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
 AUTH_HEADER="X-No-Auth: 1"
 [ -r "$TOKEN_FILE" ] && AUTH_HEADER="Authorization: Bearer $(cat "$TOKEN_FILE")"
+# VOICETOKENLEAK1101 round 3: AUTH_HEADER carries the token, so it is never exported (a caller's exported
+# AUTH_HEADER keeps the export attribute through the assignment above) and reaches curl only from a process
+# substitution (-H @<(printf ...): printf is a builtin, nothing on any argv, nothing on disk).
+export -n AUTH_HEADER
 
 # POST one memory; a check mark only on a 2xx, otherwise the HTTP code is named.
 # Never fatal under set -e: one refused file must not stop the rest.
 post_memory() {
   local payload="$1" ok_label="$2" code
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/memories" \
-    -H "Content-Type: application/json" -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" -H @<(printf '%s\n' "$AUTH_HEADER") \
     --data-binary "$payload" 2>/dev/null)" || true
   case "$code" in
     2??) echo -e "  ${GREEN}✓${NC}$ok_label" ;;
@@ -239,7 +243,7 @@ echo -e "  ${BOLD}$CHUNK_COUNT${NC}$(_t migrate.chunks_prefix)"
 
 if [ "$CHUNK_COUNT" -gt 0 ]; then
   curl -s -w '\n%{http_code}' -X POST "$API/memories/import" \
-    -H "Content-Type: application/json" -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" -H @<(printf '%s\n' "$AUTH_HEADER") \
     -d "{\"agent_id\": \"$AGENT_ID\", \"chunks\": $(cat /tmp/marveen-migrate-chunks.json)}" | python3 -c "
 import json, sys
 raw = sys.stdin.read().rsplit('\\n', 1)

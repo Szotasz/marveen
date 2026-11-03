@@ -22,7 +22,8 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     // The return union must carry 'starting' so the caller can tell an
     // auto-start apart from a genuine busy session.
     const sig = SRC.slice(SRC.indexOf('function attemptFireTask'))
-    expect(sig.slice(0, 200)).toMatch(/'starting'/)
+    // The window is the whole signature, so a new parameter cannot push the union out.
+    expect(sig.slice(0, sig.indexOf('{'))).toMatch(/'starting'/)
   })
 
   it('the missing-session branch auto-starts the agent instead of skipping', () => {
@@ -35,7 +36,7 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     // schedule-runner-main-agent-missing.test.ts) now sits ahead of this code
     // in the same block.
     const missingBlock = SRC.slice(guardIdx, guardIdx + 2800)
-    expect(missingBlock).toMatch(/startAgentProcess\(agentName\)/)
+    expect(missingBlock).toMatch(/startAgentProcess\(agentName, \{ ownsResume: true \}\)/)
     expect(missingBlock).toMatch(/return 'starting'/)
   })
 

@@ -14,8 +14,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def env_file_value(key: str, default: str = "") -> str:
+    """The project .env value of `key`, else default -- NEVER os.environ."""
+    envf = ROOT / ".env"
+    if envf.exists():
+        for line in envf.read_text().splitlines():
+            line = line.strip()
+            if line.startswith(key + "="):
+                return line[len(key) + 1:].strip().strip('"').strip("'")
+    return default
+
+
 def _env(key: str, default: str = "") -> str:
-    """env var, else the project .env, else default. No operator data in code."""
+    """env var, else the project .env, else default. No operator data in code.
+
+    NOT for a setting that decides a RECIPIENT: an environment variable can be
+    set by any shell spelling in front of the send, and no mail gate sees it.
+    Recipient settings use env_file_value()."""
     v = os.environ.get(key)
     if v:
         return v

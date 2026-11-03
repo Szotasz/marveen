@@ -25,6 +25,7 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 - **Statuses:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Priorities:** `low`, `normal`, `high`, `urgent`
+- **`test_steps`:** the tester's numbered, short steps. A field of its own rather than a paragraph of `description`, because the two answer different questions: the description is what the task IS, this is how to check it is done. `POST`/`PUT` write it like any other field, the dashboard shows it as its own block on the card detail, and marks it while the card is in `testing`.
 
 ### Automatic breakdown
 
@@ -41,6 +42,30 @@ Scheduled task (at 8/12/16/20) relying on a state file (`last_audit_at`):
 
 Every project task runs on a card: the orchestrator records it as a card, delegates to the responsible agent (`assignee`), who updates status and comments back. Meta-tasks (like the audit itself) don't get cards.
 
+### Skipping the wake-up (`KANBAN_DISPATCH_SKIP_AGENTS`)
+
+Moving a card to `in_progress` wakes its assignee by default. If an agent should not be woken that way (for example because it hands work out itself, or because something else delivers its tasks), add its name to `KANBAN_DISPATCH_SKIP_AGENTS` (comma-separated; `.env` or the Settings page, no restart needed). The list is empty by default, and while it is empty, nothing changes. Names are matched the way the assignee is (case does not matter). On the Settings page, only names made of letters, digits, `_`, `.`, and `-` can be saved; if the main agent's display name looks different, enter the main agent's id instead. A value written straight into `.env` is not checked: a malformed entry (for example a name with a space inside) is read as one name that matches no agent, so the agent meant to be skipped is still woken. The value is read at the moment of the move. The list is not retroactive: it has no effect on a card that was already woken, and after the list is emptied, a skipped card that is still `in_progress` wakes its assignee once on the next move. A skip does not mark the card as woken, so after a later handover the move wakes the new assignee once. A listed agent whose session is down raises no "not delivered" alert. The list does not affect the unblock notice (`[Kanban feloldva #…]`). A misspelled but well-formed name is accepted and has no effect.
+
+### Claim lock, unblock, done evidence
+
+Moving a card to `in_progress` does not stop two agents from picking up the same card (both can see it free). For installs that want that guarantee there is an atomic claim. It is opt-in and off by default: enable it with `KANBAN_CLAIM_LOCK=1` (`.env` or the Settings page, no restart needed). While it is off, `/claim` and `/release` answer 404 with `reason: "claim_lock_disabled"`, no `claim_warning` is added, and nothing requires an agent to claim before it works. While it is on, the dispatch an assignee gets when its card moves to `in_progress` includes the claim call as the step before the work starts.
+
+```
+POST /api/kanban/:id/claim    {"agent":"NAME","ttl_seconds":7200}  -- 200 claimed/renewed, 409 held by another (the body names holder and expiry)
+POST /api/kanban/:id/release  {"agent":"NAME"}                     -- 200 released (released: true|false), 409 if someone else holds it; {"force":true} is the operator override
+```
+
+- The claim is a single conditional UPDATE (compare-and-set): of any number of concurrent requests exactly one wins.
+- TTL: 2 hours by default (`ttl_seconds` between 60 and 86400). An expired claim can be taken over by anyone, and the takeover leaves a system comment on the card. The same agent claiming again renews.
+- By any path (API, drag, raw SQL) the claim is released (trigger) on `done`, on archiving, on entering `waiting` or `testing`, and when the `assignee` changes to someone other than the holder (handoff). Moves within `in_progress` and renewals keep it.
+- Cards in `GET /api/kanban` carry `claimed_by`, `claimed_at`, `claim_expires_at`. A PUT never writes them.
+
+Dependency unblock: when a card becomes `done` through /move or PUT, every `waiting` card for which it was the last open blocker (`/api/kanban/:id/blockers`) moves back to `planned` with an automatic comment. The response's `unblocked` field lists them.
+
+Done evidence (soft gate): if a card becomes `done` through /move or PUT with no non-`system` comment since its latest move to `in_progress` (since its creation if it never went there), the response carries `evidence_warning`. The move still succeeds. With the claim lock on, moving a card claimed by another agent to `in_progress` adds `claim_warning`.
+
+The unblock (`waiting` -> `planned`, the `unblocked` field) and the done-evidence warning live ONLY in these two HTTP routes (`POST /api/kanban/:id/move` and `PUT /api/kanban/:id`), not in `moveKanbanCard` and not in a trigger. There is a third entry point, `POST /api/kanban/:id/notify-unblocked`, which the card script (`scripts/kartya-es-ertesites.py`) calls after it closes a card directly in SQLite. It runs the same unblock notice as the two routes: a system comment on each freed card and, where the dispatch rules allow, a message (`resolveKanbanDispatch` in `src/kanban-dispatch.ts` decides the recipients). It does not move a `waiting` card to `planned`, and it adds no `evidence_warning`. For a card that is not `done` it answers 409. A writer that closes a card without calling any of the three (a later internal caller, or a script that writes SQLite directly) sends no unblock notice, unblocks no dependent card and gets no `evidence_warning`. A writer that calls only `notify-unblocked` gets the notice, but not the move back to `planned` or the `evidence_warning`: for the move it has to close the card through `/move` or PUT, or move its waiting dependent cards to `planned` itself, and the `evidence_warning` comes only from those two routes. (Releasing the claim is different: a trigger does that, by any path.)
+
 ### Access
 
 Direct SQLite, or the dashboard kanban interface. Card status is automatically included in every agent's context.
@@ -53,6 +78,8 @@ Two append-only tables record what changed on a card, and who changed it (the `a
 - `kanban_card_field_events`: one row per real change of `due_date`, `assignee` or `priority` through `PUT /api/kanban/:id` (`field`, `old_value`, `new_value`, as text; `null` when the field was or became empty). A value sent back unchanged writes no row. Read it with `GET /api/kanban/:id/field-events`.
 
 The `actor` of both writes (`PUT /api/kanban/:id` and `POST /api/kanban/:id/move`) is a string or `null`; any other type is refused with 400 before anything is written, and the write and its rows are one transaction. An empty or blank actor counts as none: then a dashboard session's user is recorded, and a token caller's row stays anonymous (`null`).
+
+`POST /api/kanban/:id/move` also takes an optional `expected_status` (compare-and-set). When it is given, the move happens only if the card's current status equals it, checked and written in one statement; otherwise nothing changes and the answer is 409 `{error: "status_conflict", current_status, expected_status}`. An unknown `expected_status` value is a 400, a missing card is still a 404, and without the field the move is unconditional, as before.
 
 The two are kept apart on purpose: every reader of `kanban_card_events` (the stuck-card detector and the status-age queries among them) takes a row there as a status transition. A fleet transfer carries `kanban_card_events`, but not `kanban_card_field_events`.
 

@@ -45,8 +45,17 @@ export function inboundIsAudio(kind: string | null | undefined, fileId: string |
   return AUDIO_KINDS.has(String(kind ?? '').trim().toLowerCase())
 }
 
+// Shell-quote a path as one single-quoted word.
+function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`
+}
+
 // Build a ready-to-run TTS directive block injected after the STT transcript.
-// Returns null if the dashboard token cannot be read.
+// Returns null if the dashboard token file is missing, unreadable or empty.
+//
+// VOICETOKENLEAK1101: the directive is prompt text, so it lands in the agent's
+// pane and in its transcript. It must carry only a REFERENCE to the token file,
+// read by the shell when the command runs, never the token value itself.
 export function buildTtsDirective(opts: {
   chatId: string
   stateDir: string
@@ -55,7 +64,9 @@ export function buildTtsDirective(opts: {
   try {
     const tokenPath = join(STORE_DIR, '.dashboard-token')
     if (!existsSync(tokenPath)) return null
-    const token = readFileSync(tokenPath, 'utf-8').trim()
+    // Checked, not embedded: an empty or unreadable token file still means "no directive".
+    if (!readFileSync(tokenPath, 'utf-8').trim()) return null
+    const tokenRef = `$(cat ${shellSingleQuote(tokenPath)})`
     const { chatId, stateDir, voiceModel } = opts
     // Escape stateDir for embedding in a jq string argument
     const escapedStateDir = stateDir.replace(/'/g, "'\\''")
@@ -64,7 +75,7 @@ export function buildTtsDirective(opts: {
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d @-\n` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${tokenRef}" -d @-\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )

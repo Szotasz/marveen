@@ -1,6 +1,6 @@
 {
   "name": "marveen",
-  "version": "1.43.0",
+  "version": "1.46.1",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -9,7 +9,9 @@
     "dev": "tsx src/index.ts",
     "setup": "tsx scripts/setup.ts",
     "status": "tsx scripts/status.ts",
+    "hook-failures": "tsx scripts/hook-failures.ts",
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
+    "bridge-device-key": "tsx scripts/bridge-device-key.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -32,6 +34,7 @@
     "@playwright/test": "^1.61.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.0",
+    "parse5": "8.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"

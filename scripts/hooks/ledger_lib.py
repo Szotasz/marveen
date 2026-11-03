@@ -13,6 +13,7 @@ chat. Pure stdlib (sqlite3) -- no node startup, no jq.
 """
 import os
 import sqlite3
+import calendar
 import time
 
 # Canonical schema. MUST stay identical to the db.ts initDatabase() migration
@@ -70,6 +71,24 @@ def db_path():
 def _install_dir():
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.dirname(os.path.dirname(here))
+
+
+def _install_dirs():
+    """The install dir as this file was reached AND with symlinks resolved
+    (#1878 item 11). When the install is reached through a symlink, the hook
+    command names one form and Claude Code may report cwd / transcript_path in
+    the other; comparing against a single form missed every rule and fell back
+    to the main agent. The PAYLOAD path is deliberately NOT resolved: on a fleet
+    host agents/<id>/.claude-config/projects is itself a symlink into
+    ~/.claude/projects, so resolving it would replace the authoritative
+    config-owner rule with the cwd-segment rule (wrong for a session started
+    outside its agent dir)."""
+    out = []
+    for d in (_install_dir(), os.path.realpath(_install_dir())):
+        d = d.rstrip("/")
+        if d not in out:
+            out.append(d)
+    return out
 
 
 def main_agent_id():
@@ -148,15 +167,16 @@ def _agent_id_from_config_path(path):
     if not path or not isinstance(path, str):
         return None
     path = os.path.abspath(path.strip())
-    install = _install_dir().rstrip("/")
-    agents_root = os.path.join(install, "agents")
+    installs = _install_dirs()
     # 1. The CONFIG OWNER is authoritative: a transcript under
     #    <install>/agents/<id>/... is that agent's isolated config dir, no
     #    matter where the session's cwd wandered.
-    if path.startswith(agents_root + os.sep):
-        rel = path[len(agents_root) + 1:]
-        head = rel.split(os.sep)[0]
-        return head or None
+    for install in installs:
+        agents_root = os.path.join(install, "agents")
+        if path.startswith(agents_root + os.sep):
+            rel = path[len(agents_root) + 1:]
+            head = rel.split(os.sep)[0]
+            return head or None
     # 2. Non-isolated config roots (~/.claude and friends) key the project dir
     #    by the session's STARTING cwd, flattened: /a/b -> "-a-b". Every fleet
     #    agent's tmux session runs this way (measured 2026-08-28: the live
@@ -164,11 +184,13 @@ def _agent_id_from_config_path(path):
     #    ~/.claude/projects/-Users-marvin-ClaudeClaw-agents-samu/), so the
     #    agent id is IN the path -- mapping the whole family to the main agent
     #    would be the original bug mirrored. Parse the segment instead.
-    seg_agent = _agent_id_from_project_segment(path, install)
-    if seg_agent is not None:
-        return seg_agent
-    if path == install or path.startswith(install + os.sep):
-        return main_agent_id()
+    for install in installs:
+        seg_agent = _agent_id_from_project_segment(path, install)
+        if seg_agent is not None:
+            return seg_agent
+    for install in installs:
+        if path == install or path.startswith(install + os.sep):
+            return main_agent_id()
     home_claude = os.path.join(os.path.expanduser("~"), ".claude")
     if path == home_claude or path.startswith(home_claude + os.sep):
         return main_agent_id()
@@ -219,12 +241,13 @@ def agent_id_from_cwd(cwd):
       anywhere else in the tree    -> MAIN_AGENT_ID   (the main channels agent)
     """
     cwd = (cwd or "").rstrip("/")
-    install = _install_dir().rstrip("/")
-    agents_root = os.path.join(install, "agents")
-    if cwd.startswith(agents_root + os.sep):
-        rel = cwd[len(agents_root) + 1:]
-        return rel.split(os.sep)[0] or main_agent_id()
-    if cwd == install or cwd.startswith(install + os.sep):
+    installs = _install_dirs()
+    for install in installs:
+        agents_root = os.path.join(install, "agents")
+        if cwd.startswith(agents_root + os.sep):
+            rel = cwd[len(agents_root) + 1:]
+            return rel.split(os.sep)[0] or main_agent_id()
+    if any(cwd == install or cwd.startswith(install + os.sep) for install in installs):
         # Anywhere else INSIDE the install tree is still the main agent. Without
         # this, a session whose cwd happens to be a subdirectory (a scratch dir,
         # a build folder, ...) logs its messages under an agent id invented from
@@ -330,6 +353,31 @@ def recent(agent_id, limit=RECENT_LIMIT):
         con.close()
 
 
+# How much earlier than its ledger write an inbound may count as having
+# arrived. It covers the processing lag between a message arriving and the model
+# logging it (59 s in the 2026-09-11 case), and nothing more.
+MAX_PROCESSING_LAG = 15 * 60
+
+
+def _arrival_epoch(ts, logged_at):
+    """Unix epoch of an inbound's channel timestamp ("2026-09-11T08:40:21.000Z",
+    always UTC), clamped into [logged_at - MAX_PROCESSING_LAG, logged_at].
+    Falls back to the ledger write time when ts is missing or does not parse.
+
+    Both bounds matter. A ts skewed into the FUTURE is cut at logged_at (a
+    message cannot arrive after it was logged), which is the old behaviour. A ts
+    skewed into the PAST would otherwise widen the answered-window by the whole
+    skew: an outbound sent a month before the inbound was logged would count as
+    answering it. The lower bound limits that widening to the processing lag."""
+    logged_at = int(logged_at)
+    try:
+        base = str(ts).strip().rstrip("Z").split(".")[0]
+        parsed = calendar.timegm(time.strptime(base, "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return logged_at
+    return max(min(parsed, logged_at), logged_at - MAX_PROCESSING_LAG)
+
+
 def source_for(agent_id, chat_id):
     """The channel envelope source ("plugin:<provider>:<server>") most recently
     recorded for this agent+chat, or None if unknown (PROVIDERVAK908).
@@ -371,11 +419,22 @@ def open_question_with_age(agent_id):
         if not row:
             return None
         chat_id, message_id, text, ts, created_at, rid, att_kind, att_file_id = row
+        # An inbound row is written when the model PROCESSES the message, not when
+        # it arrives, so a reply sent in between lands in the ledger BEFORE the
+        # message it answered. Measured 2026-09-11: "hahó" arrived 08:40:21Z, the
+        # reply went out 08:41:19Z, the inbound row was written 08:41:20Z -- and
+        # the reply guard blocked on a message that had already been answered.
+        # So a reply also counts when it was SENT after the inbound ARRIVED (ts).
+        # Trade-off: a new question landing while an unrelated reply is being
+        # written reads as answered; the model still has it in context, and a
+        # missed nudge is cheaper than a duplicate message to the owner.
+        arrived = _arrival_epoch(ts, created_at)
         later_out = con.execute(
             "SELECT 1 FROM conversation_log"
             " WHERE agent_id=? AND direction='out'"
-            "   AND (created_at > ? OR (created_at = ? AND id > ?)) LIMIT 1",
-            (str(agent_id), created_at, created_at, rid),
+            "   AND (created_at > ? OR (created_at = ? AND id > ?) OR created_at > ?)"
+            " LIMIT 1",
+            (str(agent_id), created_at, created_at, rid, arrived),
         ).fetchone()
         if later_out:
             return None  # the last inbound has already been answered

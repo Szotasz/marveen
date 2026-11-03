@@ -33,6 +33,40 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('Session limit reached ∙ resets at 2am')).toBe(true)
   })
 
+  it('matches the exhausted-extra-usage reply, in the verbatim wordings measured live', () => {
+    // 2798 scheduled turns answered with these between 2026-09-20T02:19Z and
+    // 2026-09-21T03:59Z; the detector was silent on every one of them.
+    expect(detectsUsageLimit("You're out of extra usage · resets 6am (Europe/Budapest)")).toBe(true)
+    expect(detectsUsageLimit("You're out of extra usage · resets Sep 21, 6am (Europe/Budapest)")).toBe(true)
+    // As the pane renders it: the API-error glyph, then prompt box + footer below.
+    const pane = [
+      '> SCHEDULED TASK NOTICE -- the next <scheduled-task source="scheduled-task:morning-digest">',
+      "  ⎿  You're out of extra usage · resets 6am (Europe/Budapest)",
+      '',
+      '────────────────────────────────────────',
+      '> ',
+      '────────────────────────────────────────',
+      '  ? for shortcuts',
+    ].join('\n')
+    expect(detectsUsageLimit(pane)).toBe(true)
+    // Without the reset tail, and with a typographic apostrophe.
+    expect(detectsUsageLimit('  ⎿  You’re out of extra usage')).toBe(true)
+  })
+
+  it('does NOT match a sentence that merely mentions running out of extra usage', () => {
+    expect(detectsUsageLimit('The heartbeat got "You\'re out of extra usage" 2800 times overnight.')).toBe(false)
+    expect(detectsUsageLimit("● You're out of extra usage, so the scheduler kept injecting prompts.")).toBe(false)
+    expect(detectsUsageLimit('Check whether we are out of extra usage before the next run.')).toBe(false)
+    expect(detectsUsageLimit('Extra usage is enabled on this plan.')).toBe(false)
+  })
+
+  it('does NOT match a mid-line quote that carries the full banner shape (the line-start anchor)', () => {
+    // Without the ^ anchor this line matches: the quoted tail is exactly the
+    // banner, "· resets ..." included, and it runs to the end of the line.
+    expect(detectsUsageLimit("● The heartbeat's answer was: You're out of extra usage · resets 6am")).toBe(false)
+    expect(detectsUsageLimit("  ⎿  Reply: You're out of extra usage")).toBe(false)
+  })
+
   it('does NOT match a transient API 429 / generic rate limit', () => {
     expect(detectsUsageLimit('  ⎿  API Error: 429 rate_limit_error: too many requests')).toBe(false)
     expect(detectsUsageLimit('  ⎿  API Error: 429 overloaded_error: server busy, retrying')).toBe(false)

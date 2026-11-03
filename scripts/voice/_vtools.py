@@ -23,6 +23,7 @@ Subcommands:
 The bot token is read from the caller's OWN state dir at call time, never
 hardcoded -- so each agent speaks/listens on its own bot.
 """
+import math
 import os
 import re
 import sys
@@ -359,6 +360,48 @@ def apply_pronunciation(text, path=None, state_dir=None):
     return text
 
 
+# Optional Piper prosody knobs, read from the host environment. length-scale > 1
+# slows the phonemes, which can keep word endings from being swallowed;
+# sentence-silence is the pause in seconds after each sentence; the two noise
+# scales set the generator and phoneme-width variation. Unset passes no flag at
+# all, so Piper keeps the prosody it uses without them; an invalid value is
+# skipped with a warning rather than failing the reply. A value starting with "-"
+# is refused because older argparse versions read spellings such as "-0e0" as an
+# option, not a number.
+_PIPER_PROSODY_ENV = (
+    ("VOICE_LENGTH_SCALE", "--length-scale"),
+    ("VOICE_SENTENCE_SILENCE", "--sentence-silence"),
+    ("VOICE_NOISE_SCALE", "--noise-scale"),
+    ("VOICE_NOISE_W_SCALE", "--noise-w-scale"),
+)
+
+
+def _piper_prosody_args(environ=None):
+    """Piper CLI args (flag, value, ...) for the prosody variables that are set and valid."""
+    if environ is None:
+        environ = os.environ
+    args = []
+    for name, flag in _PIPER_PROSODY_ENV:
+        raw = environ.get(name)
+        if raw is None or not raw.strip():
+            continue
+        value = raw.strip()
+        try:
+            num = float(value)
+            ok = (not value.startswith("-")) and math.isfinite(num) and (num > 0 if name == "VOICE_LENGTH_SCALE" else num >= 0)
+        except ValueError:
+            ok = False
+        if not ok:
+            try:
+                sys.stderr.write("voice: ignoring %s=%r (expected a %s number)\n" % (
+                    name, raw, "positive" if name == "VOICE_LENGTH_SCALE" else "non-negative"))
+            except Exception:
+                pass
+            continue
+        args += [flag, value]
+    return args
+
+
 def speak(voice_onnx, state_dir, chat_id, text):
     token = _token(state_dir)
     fd_wav, wav = tempfile.mkstemp(suffix=".wav")
@@ -366,7 +409,7 @@ def speak(voice_onnx, state_dir, chat_id, text):
     fd_ogg, ogg = tempfile.mkstemp(suffix=".ogg")
     os.close(fd_ogg)
     try:
-        subprocess.run([VENV_PY, "-m", "piper", "-m", voice_onnx, "-f", wav],
+        subprocess.run([VENV_PY, "-m", "piper", "-m", voice_onnx, "-f", wav, *_piper_prosody_args()],
                        input=apply_pronunciation(text, state_dir=state_dir).encode(), check=True)
         # Optional voice style: deeper + slower (e.g. a melancholic android tone).
         # asetrate lowers pitch AND slows playback; aresample restores the container

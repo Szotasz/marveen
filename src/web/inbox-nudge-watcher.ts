@@ -51,6 +51,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, clearFeedbackModalAndRecheck } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
 export const INBOX_NUDGE_INTERVAL_MS = 20_000
@@ -114,6 +115,13 @@ export const INITIAL_NUDGE_STATE: NudgeState = Object.freeze({
 export type NudgePreflight =
   | { proceed: false; state: NudgeState; staleAlert?: boolean; budgetLog?: boolean }
   | { proceed: true; state: NudgeState }
+
+/** Card ad771121: the age of the OLDEST waiting row. The pending list is in delivery order (high
+ *  first), so its head is the row the drain claims first but not necessarily the oldest; a fresh high
+ *  row must not make an inbox with old rows look young. 0 for an empty list. */
+export function oldestPendingAgeMs(rows: ReadonlyArray<{ created_at: number }>, now: number): number {
+  return rows.length > 0 ? now - Math.min(...rows.map((m) => m.created_at)) * 1000 : 0
+}
 
 /** Pure cheap-checks stage: everything decidable from the DB row + clock,
  *  BEFORE any tmux IO. Returns the next state; the shell only touches tmux
@@ -199,8 +207,11 @@ async function tick(): Promise<void> {
     const now = Date.now()
     const pending = getPendingMessages(MAIN_AGENT_ID)
     const oldest = pending[0]
+    // Card ad771121: the list is in delivery order (high first), so its head is the row the drain
+    // claims first but not necessarily the oldest; the age is still the oldest waiting row's, so a
+    // fresh high row cannot make the inbox look young.
     const pre = decideNudgePreflight(
-      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },
+      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldestPendingAgeMs(pending, now) },
       state,
     )
     state = pre.state
@@ -281,6 +292,6 @@ async function tick(): Promise<void> {
 }
 
 export function startInboxNudgeWatcher(): NodeJS.Timeout {
-  setTimeout(() => { void tick() }, INBOX_NUDGE_INITIAL_DELAY_MS).unref()
-  return setInterval(() => { void tick() }, INBOX_NUDGE_INTERVAL_MS)
+  setTimeout(whileNotFrozen('inbox-nudge', () => { void tick() }), INBOX_NUDGE_INITIAL_DELAY_MS).unref()
+  return setInterval(whileNotFrozen('inbox-nudge', () => { void tick() }), INBOX_NUDGE_INTERVAL_MS)
 }

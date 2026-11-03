@@ -9,7 +9,7 @@ const settings: Record<string, string> = {}
 vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: (k: string) => settings[k] ?? '' }))
 
 const {
-  resolveSlackTarget, parseChannelMap, resolveOwnerUserId, splitForSlack, sendSlackNotification,
+  resolveSlackTarget, parseChannelMap, resolveOwnerUserId, splitForSlack, sendSlackNotification, slackEscape,
 } = await import('../slack-notify.js')
 const { deliverWithSlack } = await import('../notify.js')
 
@@ -116,6 +116,22 @@ describe('sendSlackNotification', () => {
     expect(w.calls[0].body.users).toBe(OWNER)
   })
 
+  // APPROVALSLACK1030, Dani 55614 F1: an approval request's text is the requesting agent's. raw shows it as written:
+  // a [label](url) or a <url|label> must not become a link whose label lies about its address (a phished login).
+  it('raw: the text arrives escaped, word for word, with no link made of it', async () => {
+    const w = world({ mainToken: 'xoxb-main' })
+    const text = 'Levél a könyvelőnek. Részletek: [Jóváhagyások](https://evil.example/login) és <https://evil.example/x|http://localhost:3420/#approvals> & *x*'
+    expect(await sendSlackNotification('dm', text, { raw: true, deps: w.deps })).toMatchObject({ ok: true })
+    const sent = w.calls.find((c) => c.method === 'chat.postMessage')!.body.text as string
+    expect(sent).toBe('Levél a könyvelőnek. Részletek: [Jóváhagyások](https://evil.example/login) és &lt;https://evil.example/x|http://localhost:3420/#approvals&gt; &amp; *x*')
+    expect(sent).not.toContain('<')
+    // Without raw the old mrkdwn path stays (other notifications are the fleet's own text).
+    const plain = world({ mainToken: 'xoxb-main' })
+    await sendSlackNotification('dm', '[a](https://example.com)', { deps: plain.deps })
+    expect(plain.calls.find((c) => c.method === 'chat.postMessage')!.body.text).toBe('<https://example.com|a>')
+    expect(slackEscape('a&b<c>d')).toBe('a&amp;b&lt;c&gt;d')
+  })
+
   it('an unresolved target or a missing token fails without a guess', async () => {
     const w = world({ mainToken: 'xoxb-main' })
     expect(await sendSlackNotification('ismeretlen', 'x', { deps: w.deps })).toMatchObject({ ok: false, error: 'unresolved_target:ismeretlen' })
@@ -181,7 +197,7 @@ describe('wiring', () => {
   const NOTIFY = readFileSync(join(ROOT, 'src', 'notify.ts'), 'utf-8')
   const SH = readFileSync(join(ROOT, 'scripts', 'notify.sh'), 'utf-8')
   it('notifyOwner and notifyChannel both go through deliverWithSlack (one funnel, no double Slack)', () => {
-    expect(NOTIFY).toContain("return deliverWithSlack('owner', text, () => telegramOwner(text))")
+    expect(NOTIFY).toContain("return deliverWithSlack('owner', text, () => telegramOwner(text, meta))")
     expect(NOTIFY).toContain("return deliverWithSlack('alert', text, () => {")
     // The alert path must NOT call notifyOwner (that would post to Slack twice).
     const alert = NOTIFY.slice(NOTIFY.indexOf('export async function notifyChannel'), NOTIFY.indexOf('export async function notifyOwner'))

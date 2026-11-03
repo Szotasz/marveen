@@ -64,10 +64,20 @@ const EXEMPT: Record<string, string> = {
     'shared library imported by hooks to record a swallowed failure in store/hook-errors.log (SILENTOLLAMA926); not itself a hook',
   'clearstate_lib.py':
     'shared library imported by clear-capture.py / clear-replay.py; not itself a hook',
+  'shell_rescan_lib.py':
+    'shared library: the detector imported by shell-rescan-guard.py; not itself a hook',
   'memory_frontmatter_lib.py':
     'shared library: the one memory-frontmatter check, imported by memory-frontmatter-gate.py (Write/Edit) and memory-frontmatter-bash-gate.py (Bash, KAPUEGYUT918); not itself a hook',
+  'hook_switches.py':
+    'shared library (HOOKDRIFT926): MARVEEN_DISABLED_HOOKS + stdin size cap, imported by tool-log-capture.py and read by scripts/hook-metadata.py; not itself a hook',
   'email_extract.py':
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
+  'recipient_ledger.py':
+    'shared library: the Python twin of scripts/recipient-ledger.mjs, imported by email-approval-gate.py and sender_check.py when the recipient ledger is on for the main agent; not itself a hook',
+  'sender_check.py':
+    'sender-side check, run by scripts/support-mail/send.py (import) and scripts/graph-mail.ts (CLI) before they deliver; not a PreToolUse hook',
+  'credential_lib.py':
+    'shared library: the credential detector and state, imported by credential-gate.py and scripts/credential-gate-cli.py (CREDGATE1003); not itself a hook',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
@@ -76,8 +86,6 @@ const EXEMPT: Record<string, string> = {
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
   'channel-process-gate.py':
     'scheduled/CLI gate (--only / --notify / --json), not a settings hook: it compares the channels a session DECLARES against the plugin processes actually alive under it, which is a periodic check rather than a per-tool-call one',
-  'browser-content-notice.py':
-    'OPT-IN by construction (BROWSERNOTICE920): it envelopes browser-MCP / WebSearch payloads as untrusted content, and an install without a browser MCP server gains nothing from it. Wiring it here would fire it on every fleet member, most of which have no browser. Operators add it to their own PostToolUse hooks -- the procedure is in docs/security-hardening.md.',
   'mio-orszem-precheck.sh':
     'scheduler preCheck for the HOST-LOCAL marveen-io-kozosseg-orszem task (ORSICTX912): the mio community sentinel is this install\'s own and deliberately NOT seeded (a repo seed would ship it to every customer install), so its registration lives in the host ~/.claude/scheduled-tasks task-config -- outside this corpus by design. Wiring is gated on the ORSICTX912 activation order (host restart -> verify -> merge -> build+restart); the hermetic fail-direction tests are scripts/__tests__/mio-orszem-precheck.test.py.',
 }
@@ -126,6 +134,8 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'main-agent inbox PULL (#506): sub-agents are fed by the message router\'s tmux-push path, and draining them here too would double-deliver (docstring: "Main-agent ONLY")',
   'ledger-capture.py':
     'conversation-continuity ledger: docs/conversation-continuity.md wires the ledger trio in the PROJECT settings for the main channels session ("NOT user scope"); the sub-agent path is the clear-capture/clear-replay pair, which IS in the template',
+  'ledger-turn-failure.py':
+    'StopFailure half of the same ledger: like telegram-reply-guard.py it decides from ledger_lib.open_question_with_age, i.e. the conversation_log the main-only ledger trio writes; seeded alone it would find no open inbound and record nothing, a silent no-op',
   'ledger-outbound.py':
     'conversation-continuity ledger: same design as ledger-capture.py (docs/conversation-continuity.md, project settings only)',
   'ledger-replay.py':

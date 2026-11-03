@@ -11,6 +11,7 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
   detectsPastePlaceholder,
+  pastePlaceholderLocation,
   detectPaneState,
   parkedInputText,
   parkedInputRowCount,
@@ -25,20 +26,29 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
+  feedbackDraftDismissPlan,
   firstRunAcceptKeys,
   stuckInputSignature,
   mcpTrustAcceptKeys,
+  devChannelsAcceptKeys,
+  detectsBlockingMenu,
+  typedTailEchoed,
+  detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
+import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
+import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readFileOr, readJsonObjectForWrite } from './agent-config.js'
-import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
+import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { worksourceRootFor } from './worksource-queue.js'
+import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -51,6 +61,8 @@ import {
   buildSshExec,
   buildRemoteLaunchCommand,
   buildContinueProbeCommand,
+  buildRemoteTranscriptMtimeCommand,
+  parseRemoteTranscriptMtime,
   classifyRunState,
   classifyRunStateFromExit,
   sessionInList,
@@ -61,7 +73,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
+import { CONTINUE_OPT_OUT_REASON, decideContinueFlag, readContinueOptOut, verifyContinueLaunch } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -84,12 +96,13 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 }
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { readEnvFile } from '../env.js'
+import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
+import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
-import { recordInjectedPrompt } from './injected-prompt-registry.js'
+import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -172,12 +185,18 @@ export function ownChannelProviderForScope(
  */
 export function syncTeamsDisplayName(envPath: string, displayName: string | null | undefined): boolean {
   if (!displayName) return false
+  // One line only (ENVTEAMSNAME1028): the name comes from agent-config.json, and a
+  // line break in it would add a line of its own to this .env.
+  if (!isSingleLineEnvValue(displayName)) {
+    logger.warn({ envPath }, 'teams name sync: display name is not a single line, not written')
+    return false
+  }
   const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
   const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
   if (current === displayName) return false
   const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
   const next = current !== undefined
-    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, () => line) // a function: "$&" or "$`" in the name stays literal
     : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
   writeFileSync(envPath, next, { mode: 0o600 })
   return true
@@ -408,7 +427,7 @@ function maybeAlertSharedConfigCollision(name: string): void {
     'isolated-config: fleet OAuth token missing with multiple RUNNING same-provider channel sub-agents -- shared ~/.claude plugin-slot collision, bots may go deaf',
   )
   void notifyChannel(
-    `⚠️ Flotta-figyelmeztetes: hianyzik a fleet OAuth token (store/.claude-oauth-token), es ${count} AZONOS csatorna-providerü sub-agent fut egyszerre. Izolacio nelkul mind a kozos ~/.claude-ot hasznalja, igy a plugin-slot utkozhet es bot nemulhat el. Javitas: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fajlba, majd inditsd ujra az agenseket.`,
+    `⚠️ Flotta-figyelmeztetés: hiányzik a fleet OAuth token (store/.claude-oauth-token), és ${count} AZONOS csatorna-providerű sub-agent fut egyszerre. Izoláció nélkül mind a közös ~/.claude-ot használja, így a plugin-slot ütközhet, és egy bot elnémulhat. Javítás: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fájlba, majd indítsd újra az ágenseket.`,
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
@@ -729,6 +748,36 @@ export function resolveMainAgentConfigDir(): string | null {
     return null
   }
   return dir
+}
+
+// True when an explicit MAIN_AGENT_CONFIG_DIR shows no login of its own, so
+// treating it as "the operator logged in here" would start the bot as "Not
+// logged in". REPORTED 2026-10-23 (Linux, v1.44): MAIN_AGENT_CONFIG_DIR pointed
+// at the install user's own ~/.claude, which held no .credentials.json; the
+// launcher unset the fleet token for the explicit dir and the main agent sat
+// at "Not logged in" for about 10 hours. On Linux and Windows a /login writes
+// <dir>/.credentials.json. Other auth set up in the dir counts as its own login
+// too, so such a dir keeps its explicit handling: a non-empty primaryApiKey in
+// <dir>/.claude.json, a non-empty apiKeyHelper in <dir>/settings.json, or a
+// non-empty key / provider switch in that settings.json's env block. On macOS the
+// login lives in the Keychain, so a file check proves nothing there and this
+// always answers false (no change).
+export function explicitConfigDirLacksOwnLogin(dir: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'darwin') return false
+  if (existsSync(join(dir, '.credentials.json'))) return false
+  const read = (file: string): Record<string, unknown> => {
+    try {
+      const v: unknown = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+      return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+    } catch { return {} }
+  }
+  const set = (v: unknown): boolean => typeof v === 'string' && v.trim() !== ''
+  const settings = read('settings.json')
+  const env = settings.env && typeof settings.env === 'object' ? settings.env as Record<string, unknown> : {}
+  const ownAuth = set(read('.claude.json').primaryApiKey) || set(settings.apiKeyHelper)
+    || ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']
+      .some((k) => set(env[k]))
+  return !ownAuth
 }
 
 // The main agent's CLAUDE_CONFIG_DIR when the rotation side-car
@@ -1305,6 +1354,57 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
   }
 }
 
+// #1904: the git toplevel that contains `dir`, or null when there is none
+// (not a repo, git missing, timeout, any error): the caller then stamps what it
+// stamped before. Runs git directly (no shell), bounded, with the inherited
+// GIT_DIR / GIT_WORK_TREE dropped so a hook-time env cannot point it at another
+// repo. `run` is the seam for tests.
+export function gitToplevelFor(
+  dir: string,
+  run: (dir: string) => string = (d) => {
+    const env = { ...process.env }
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    return execFileSync('git', ['-C', d, 'rev-parse', '--show-toplevel'], {
+      timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], env,
+    })
+  },
+): string | null {
+  try {
+    const out = run(dir).trim()
+    return out ? out : null
+  } catch {
+    return null
+  }
+}
+
+// #1904 (review of #1911): the key to stamp beside an agent dir, or null. It is
+// the install root, resolved, and only when the install root IS a git toplevel
+// (a git-checkout install). A tarball install, even one under a home that is a
+// git repo, gets null: git would answer with the home, which is not ours. git
+// prints the toplevel resolved (symlinks followed, measured), so it is compared
+// with realpath(PROJECT_ROOT); a GIT_WORK_TREE or GIT_DIR that leaked through
+// answers another path and simply does not match. Looked up ONCE per process
+// and root: the lookup is a synchronous git call, and per agent start it held
+// the dashboard's event loop for tens of ms, up to the 3 s timeout on a hung git.
+const installRootTrustCache = new Map<string, string | null>()
+export function installRootTrustKey(
+  root: string = PROJECT_ROOT,
+  lookup: (dir: string) => string | null = gitToplevelFor,
+): string | null {
+  const cached = installRootTrustCache.get(root)
+  if (cached !== undefined) return cached
+  let key: string | null = null
+  try {
+    const real = realpathSync(root)
+    key = lookup(root) === real ? real : null
+  } catch {
+    key = null
+  }
+  installRootTrustCache.set(root, key)
+  return key
+}
+
 // Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
 // the config root the session will boot from. Claude Code keys the "Do you
 // trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
@@ -1320,7 +1420,22 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
 // symlinked homes) since Claude Code keys trust by the resolved path. Write is
 // atomic and only performed on actual change, so a live Claude Code process
 // racing us never sees a torn file and an already-stamped launch is a no-op.
-export function stampProjectTrustForDir(dotClaudePath: string, projectDir: string): boolean {
+//
+// #1904: on a git-checkout install it also stamps the INSTALL ROOT. Claude Code
+// decides whether to honour a project's .claude/settings.json permissions.allow
+// by the trust of the git root, not of the cwd: with only agents/<name> stamped
+// it prints "Ignoring N permissions.allow entries ... this workspace has not
+// been trusted", so a strict-profile (dontAsk) agent lost its whole allow-list
+// and could only read. Only the install root is ever added (installRootTrustKey),
+// never the git root of the agent dir itself: that can lie outside the install
+// (a tarball install under a dotfiles-repo home, an agents/<name> symlinked into
+// another repository), and stamping it would accept a foreign directory's
+// settings hooks and .mcp.json without the trust question (review of #1911).
+export function stampProjectTrustForDir(
+  dotClaudePath: string,
+  projectDir: string,
+  toplevel: string | null = installRootTrustKey(),
+): boolean {
   try {
     let data: Record<string, unknown> = {}
     if (existsSync(dotClaudePath)) {
@@ -1328,6 +1443,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     }
     const dirs = new Set<string>([projectDir])
     try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    if (toplevel) dirs.add(toplevel)
     const projects: Record<string, unknown> =
       (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
         ? data.projects as Record<string, unknown>
@@ -1353,7 +1469,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     if (!changed) return false
     data.projects = projects
     atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
-    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    logger.info({ dotClaudePath, projectDir, toplevel }, 'project-trust: stamped folder-trust consent for agent dir')
     return true
   } catch (err) {
     // Unparseable/unwritable file: leave it to Claude Code (same policy as
@@ -1768,9 +1884,51 @@ function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: {
   execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
+let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
+
+/**
+ * Run `fn` with a per-call memo for READ-ONLY tmux queries: inside it, identical `list-sessions`
+ * invocations run once, and paneCurrentCommand() answers every session of one tmux server from a
+ * single `list-panes -a`. `fn` must be synchronous. Nested calls reuse the outer batch.
+ */
+export function withTmuxBatch<T>(fn: () => T): T {
+  if (tmuxBatch !== null) return assertSync(fn())
+  tmuxBatch = new Map()
+  try {
+    return assertSync(fn())
+  } finally {
+    tmuxBatch = null
+  }
+}
+
+function assertSync<T>(r: T): T {
+  if (r !== null && (typeof r === 'object' || typeof r === 'function') && typeof (r as any).then === 'function') {
+    // The refused promise is dropped here; a later rejection must not become an unhandled one.
+    ;(r as any).then(undefined, () => {})
+    throw new TypeError('withTmuxBatch: fn must be synchronous')
+  }
+  return r
+}
+
 function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
+  if (tmuxBatch !== null && tmuxArgs[0] === 'list-sessions') {
+    const key = JSON.stringify([inv.file, inv.args])
+    const hit = tmuxBatch.get(key)
+    if (hit) {
+      if ('err' in hit) throw hit.err
+      return hit.out as string
+    }
+    try {
+      const out = execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+      tmuxBatch.set(key, { out })
+      return out
+    } catch (err) {
+      tmuxBatch.set(key, { err })
+      throw err
+    }
+  }
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -1884,7 +2042,7 @@ function startRemoteAgentProcess(
   // absolute path (validated), so the `/`->`-` encoding matches Claude Code's
   // own leading-'-' scheme. A probe failure defaults to a fresh launch (safe).
   let hasPriorSession = false
-  if (!opts.fresh) {
+  if (!opts.fresh && !readContinueOptOut(readFileOr(join(agentDir(name), 'agent-config.json'), '{}'))) {
     try {
       const probe = buildSshExec(host, buildContinueProbeCommand(workdir))
       execFileSync(probe.file, probe.args, { timeout: 8000, stdio: 'ignore' })
@@ -1892,6 +2050,8 @@ function startRemoteAgentProcess(
     } catch {
       hasPriorSession = false
     }
+  } else if (!opts.fresh) {
+    logger.info({ name, host }, 'remote agent opted out of --continue (agent-config.json "continue": false), launching fresh')
   }
 
   const model = readAgentModel(name)
@@ -1903,6 +2063,11 @@ function startRemoteAgentProcess(
     // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
     // resolves immediately; startRemoteAgentProcess stays synchronous (out of scope).
     void scheduleIdentitySetup(session, readAgentDisplayName(name), host)
+    // Messages the router gave up on while this session was down (it was absent
+    // for the whole retry window) go back in the queue here too: the router
+    // abandons remote agents' messages the same way, through the host.
+    // The sender and the main agent get a [ÚJRAKÉZBESÍTVE] notice for each revived row.
+    requeueAbandonedAndNotify(name, host)
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
@@ -1910,28 +2075,45 @@ function startRemoteAgentProcess(
   }
 }
 
+/** What a caller can tell the start about itself. */
+export interface StartOpts {
+  fresh?: boolean
+  /** The caller delivers its OWN first prompt to the new session (the context
+   *  guard's resume), so the recovery brief stays out: two prompts for one
+   *  restart was measured in 10 cases. */
+  ownsResume?: boolean
+}
+
 /**
  * Does a start that just happened deserve a recovery brief?
  *
- * Only a FRESH start: a --continue resume still has the conversation, so the
- * agent already knows what it was doing, and a brief there would repeat it.
- * And only a start that actually succeeded -- briefing a session that never
- * came up would type into whatever is on that tmux target next.
+ * Every successful start does, fresh or --continue, unless its caller owns the
+ * first prompt. The first version briefed fresh starts only; the measurement
+ * that followed (7 days, 41 restarts through the reconcile auto-start and the
+ * API restart, both non-fresh) found the agent idle after 32 of them, because a
+ * --continue session still remembers the conversation but nobody hands it a
+ * new turn. The brief itself keeps its own rule -- no facts, no message -- so
+ * an agent that was genuinely idle still hears nothing.
  *
- * Card 3a64403b covered the channel-monitor door. The measurement that
- * followed found three more (context-guard restart, auto-restart in fresh
- * mode, and the dashboard's own restart button), which is why the decision
- * now lives here, at the one place all of them pass through, rather than at
- * each caller.
+ * Two exceptions: a start that failed (briefing a session that never came up
+ * would type into whatever is on that tmux target next), and a caller that owns
+ * the first prompt itself (opts.ownsResume): the context guard (its resume),
+ * the scheduler's auto-start (the scheduled prompt), and every restart that
+ * owes a [RESTART-WAKE] (restartAgentProcess sets it: the API --continue
+ * restart by default, the plan switches, the model fallback).
+ *
+ * The decision lives here, at the one place every door passes through (card
+ * 3a64403b found four of them; the reconcile and API doors made it six),
+ * rather than at each caller.
  */
 export function shouldBriefAfterStart(
-  opts: { fresh?: boolean },
+  opts: StartOpts,
   result: { ok: boolean },
 ): boolean {
-  return opts.fresh === true && result.ok
+  return result.ok && opts.ownsResume !== true
 }
 
-export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -1967,6 +2149,26 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     return { ok: false, error: `oauthTokenFile: ${ownOauth.reason}${ownOauth.detail ? ` (${ownOauth.detail})` : ''}` }
   }
   const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
+
+  // BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude Code's
+  // sandbox, configured by a --settings file this start writes (see bash-sandbox.ts). Fail closed: a
+  // listed agent that cannot get its file, or runs on a remote host the file cannot follow, is not
+  // started -- starting it unsandboxed would turn the switch into a label.
+  let bashSandboxFlag = ''
+  try {
+    const sandboxFile = syncBashSandboxSettings(name)
+    if (sandboxFile) {
+      if (remote.host && remote.workdir) {
+        logger.error({ name }, 'bash-sandbox: agent NOT started (listed in BASH_SANDBOX_AGENTS, but remote agents cannot be sandboxed)')
+        return { ok: false, error: 'bash-sandbox: a remote agent cannot be sandboxed; take it off BASH_SANDBOX_AGENTS' }
+      }
+      bashSandboxFlag = ` --settings ${shSingleQuote(sandboxFile)}`
+      logger.info({ name, path: sandboxFile }, 'bash-sandbox: agent starts with its Bash sandbox settings')
+    }
+  } catch (err) {
+    logger.error({ err, name }, 'bash-sandbox: agent NOT started (fail-closed, its sandbox settings could not be written)')
+    return { ok: false, error: `bash-sandbox: ${err instanceof Error ? err.message : String(err)}` }
+  }
 
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
@@ -2008,11 +2210,35 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
   // extra whose OWN state dir holds a token takes part; a configured but
   // tokenless one is skipped loudly rather than loading a plugin that could
   // fall back to another bot's token.
-  const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir)
+  // GROMZOAGENTS1028: the Gromzo channel rides the same launch fields (plugin
+  // id, --channels arg, env exports), never `providers`: it has no token or
+  // state dir for the reaper, the state fence or the token probes to act on.
+  const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,
+    readAgentGromzo(name)
+      ? { slug: name, sockUsable: mxdAgentSockUsable() }
+      : undefined)
+  // GROMZOGATECONF1030 (c): the agent's own agent-config.json is no gate source any more (the agent can write it).
+  if (agentConfigCarriesSenderRoleGate(name)) {
+    logger.warn({ name }, 'senderRoleGate in agent-config.json is ignored: the gate is read from store/agent-sender-role-gates.json only')
+  }
   if (extraLaunch.skipped.length > 0) {
     logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')
   }
-  const hasExtraChannels = extraLaunch.providers.length > 0
+  // GROMZOMXDINSTALL1102 Q5: the staged gromzo-local marketplace registered in the shared
+  // ~/.claude/plugins BEFORE this agent's isolated config is seeded from it (gromzo-marketplace.ts).
+  if (extraLaunch.gromzo === 'on') {
+    const reg = ensureGromzoMarketplace({
+      pluginsDir: join(homedir(), '.claude', 'plugins'),
+      pluginRoot: join(homedir(), 'marveen-local-plugins', 'gromzo'),
+      projectRoot: PROJECT_ROOT,
+    })
+    if (reg === 'registered') logger.info({ name }, 'gromzo: the gromzo-local marketplace registered')
+    else if (reg !== 'present') logger.warn({ name, reg }, 'gromzo: the gromzo-local marketplace is not registered')
+  }
+  if (extraLaunch.gromzo === 'skipped-no-socket' || extraLaunch.gromzo === 'skipped-bad-name') {
+    logger.warn({ name, gromzo: extraLaunch.gromzo }, 'gromzo: configured but not loaded (no usable mxd agent.sock, or a name mxd refuses)')
+  }
+  const hasExtraChannels = extraLaunch.providers.length > 0 || extraLaunch.gromzo === 'on'
   const hasAnyChannel = hasChannel || hasExtraChannels
 
   // Teams name-sync (companion to make-teams-manifest.sh): keep
@@ -2159,10 +2385,22 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // without hardcoding agent names.
     const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
+    // AGENT_TOKENS (agent-tokens.ts): on -> provision the agent's own dashboard
+    // token (0600, idempotent) and point its CLAUDE.md at it; off -> point it
+    // back at the shared token. BEFORE the generated sections are re-rendered,
+    // so the hand-kept body and the generated blocks converge on one path.
+    // Best-effort: a failure leaves the agent on the shared token (the old
+    // behaviour), never without one.
+    try {
+      syncAgentTokenOnStart(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'per-agent dashboard token sync failed (agent keeps the shared token)')
+    }
     ensureFleetRosterSection(name)
     ensureProjectRootInClaudeMd(name)
     ensureAutonomySection(name)
     ensureSkillsPathTrapSection(name)
+    ensureSkillSectionCurrent(name)
     ensureSystemDirectiveAuthSection(name)
     ensureAgentIdHeaderSection(name)
     // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
@@ -2179,6 +2417,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     ensureEvidenceSection(name)
     ensureMcpListChannelSection(name)
     ensureMessageCloseSection(name)
+    // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
+    ensureStrictApiSection(name)
+    // VOICETOKENLEAK1101 PR-A2: every other agent on the helper gets the same recipes, overriding its body curl.
+    ensureApiHelperSection(name)
+    ensureBackgroundCheckpointSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot
@@ -2407,6 +2650,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       )
     }
     let claudeConfigDir = planResolution.configDir
+    // Operator-configured, before any auto-isolation below (BYOSUBUNSET1018).
+    const configuredConfigDir = claudeConfigDir !== null
     let oauthTokenEnv = ''
     // authMode 'own_team' (OWNTEAMVAK914): the operator explicitly opted this
     // agent OUT of the fleet credential -- it authenticates from its OWN
@@ -2560,6 +2805,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       )
     }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
+    // VOICETOKENLEAK1101 PR-A0: scripts/marveen-api.sh reads the agent's OWN token when it has one (AGENT_TOKENS).
+    const helperTokenEnvPiece = helperTokenEnv(name, shSingleQuote)
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
     // immediately with an obscure "No deferred tool marker found" error
@@ -2596,9 +2843,14 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
       provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
       useMcpJsonForChannel, installedCli, extraProviders: extraLaunch.providers,
+      continueOptOut: readContinueOptOut(readFileOr(join(dir, 'agent-config.json'), '{}')),
     })
     if (hasAnyChannel && hasPriorSession && !opts.fresh) {
       logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
+    }
+    // The channel log above covers channel agents; a channel-less agent that opted out says so here.
+    if (!hasAnyChannel && continueDecision.reason === CONTINUE_OPT_OUT_REASON) {
+      logger.info({ name, reason: continueDecision.reason }, 'agent resume decision')
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
@@ -2620,8 +2872,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
     // reach the custom endpoint -> 401, even after the explicit export was removed.
     // An active `unset` at launch strips the inherited value before exec.
-    // Claude-OAuth agents (needsFleetOauth=true) must keep the token intact.
-    const byoUnsetEnv = !needsFleetOauth ? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''
+    // Fleet Claude-OAuth agents keep the token intact. An agent with its own
+    // credential (own_team, a configured config dir, its own token file) also
+    // drops an inherited ANTHROPIC_API_KEY, which outranks every OAuth path
+    // (BYOSUBUNSET1018, inherited-auth-unset.ts).
+    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null })
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
@@ -2714,7 +2969,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -2822,7 +3077,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
             try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           }
         }
-        if (/Listening for channel messages/.test(pane)) return
+        // 2.1.296 renamed the banner to "Listening for messages from <x>".
+        if (/Listening for (?:channel )?messages from/.test(pane)) return
         setTimeout(checkEperm, 1000)
       }
       setTimeout(checkEperm, 1500)
@@ -2861,15 +3117,30 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       schedulePluginUnlockAfterRespawn(session, provider.type)
     }
 
-    // A fresh session has no memory of what the agent was doing. Every fresh
-    // door passes here -- the channel monitor's watchdog, the context guard,
-    // auto-restart in fresh mode, and the dashboard button -- so the brief is
-    // scheduled once, at the door, instead of at each caller (card 3a64403b).
+    // A fresh session has no memory of what the agent was doing, and a
+    // --continue one gets no new turn on its own. Every door passes here (the
+    // channel monitor's watchdog and reconcile starts, auto-restart, the
+    // dashboard's start / restart / config-change restarts, the reauth healer,
+    // the heartbeat boot start), so the brief is scheduled once, at the door,
+    // instead of at each caller (card 3a64403b); callers that bring their own
+    // first prompt opt out with ownsResume (see shouldBriefAfterStart).
     if (shouldBriefAfterStart(opts, { ok: true })) {
-      scheduleRecoveryBrief(name, session, (target, text) =>
-        sendPromptToSession(target, text, null, { lockMode: 'deliver' }),
-      )
+      // The gate and the send are a pair: the brief goes in only while the pane
+      // is idle, and the send ABORTS if it turned busy in between, so it is never
+      // typed into a running turn (resume-delivery.ts).
+      scheduleRecoveryBrief(name, session, {
+        isReady: (target) => isSessionReadyForPrompt(target),
+        send: (target, text) =>
+          sendPromptToSession(target, text, null, { lockMode: 'deliver', onBusyTimeout: 'abort' }),
+      })
     }
+
+    // Messages the router gave up on while this session was down (it was absent
+    // for the whole retry window) go back in the queue. The requeue runs at both
+    // success returns: this local one and startRemoteAgentProcess's. They are
+    // delivered with their real age.
+    // The sender and the main agent get a [ÚJRAKÉZBESÍTVE] notice for each revived row.
+    requeueAbandonedAndNotify(name)
 
     return { ok: true }
   } catch (err) {
@@ -2879,6 +3150,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 }
 
 export async function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
+  // A brief still waiting for the old incarnation's pane must not fire into a later one.
+  cancelRecoveryBrief(name)
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
@@ -2927,7 +3200,7 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
 
 export async function restartAgentProcess(
   name: string,
-  opts: { fresh?: boolean; wake?: RestartWakeRequest } = {},
+  opts: StartOpts & { wake?: RestartWakeRequest } = {},
 ): Promise<{ ok: boolean; pid?: number; error?: string }> {
   // Hold the restart slot across BOTH halves. stopAgentProcess waits ~2s for
   // tmux to tear the session down, and for that window isAgentRunning() already
@@ -2949,7 +3222,18 @@ export async function restartAgentProcess(
       const stopResult = await stopAgentProcess(name)
       if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
     }
-    const started = await startAgentProcess(name, opts)
+    // One restart, one first prompt: a --continue restart that owes a
+    // [RESTART-WAKE] already gets its turn restarted by the wake, so the start's
+    // own recovery brief is skipped (ownsResume) -- otherwise both land ~25 s
+    // after the restart, two instructions for one interruption. Without a wake
+    // (the auto-restart, reconcile, watchdog doors) the brief stays the one
+    // prompt. Accepted trade-off: if the wake is then not delivered (busy pane,
+    // held send lock, tmux error), no brief follows either. A busy pane was
+    // woken by someone else already; the other cases are logged by
+    // restart-wake.ts, and the wake asks the agent to check its kanban, which
+    // carries the same in-progress facts the brief would have listed.
+    const willWake = !opts.fresh && !!opts.wake
+    const started = await startAgentProcess(name, willWake ? { ...opts, ownsResume: true } : opts)
     // Losing the start race must NEVER read as success: the session that is up
     // is somebody else's, launched with somebody else's options, and a caller
     // that treats this as done (the context guard does) goes on to inject a
@@ -2962,7 +3246,7 @@ export async function restartAgentProcess(
     }
     // RESTARTWAKE927: only a caller that asked for it, only a --continue
     // restart, only one that really started this session (see restart-wake.ts).
-    if (started.ok && !opts.fresh && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)
+    if (started.ok && willWake && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)
     return started
   } finally {
     endRestart(name)
@@ -3025,10 +3309,11 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal takes TWO steps, measured on that same pane: "0" closes the draft,
-// then Claude Code immediately offers "Turn off Claude-drafted feedback? 0 to
-// turn off · Esc to keep". A second "0" there would silently disable feedback
-// drafting for that agent, so the follow-up is answered with Esc (keep) -- and
+// Dismissal: the card is closed with C-u then Down, never a digit (see
+// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
+// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
+// keep". A "0" there would silently disable feedback drafting for that agent,
+// so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
 // The not-ready-path companion to the pre-flight dismissal above, and the
@@ -3073,11 +3358,26 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
+// Between C-u and Down: in one tmux call Down would reach the TUI before it
+// re-rendered the cleared input.
+const FEEDBACK_KEY_GAP_MS = 200
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
+    // The input box is read from the ghost-stripped view: a dim autosuggest in an
+    // empty box must not read as typed text. Detection stays on the plain capture.
+    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
+    if (plan.act === 'none') return
+    if (plan.act === 'hold') {
+      logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      return
+    }
+    for (const [i, key] of plan.keys.entries()) {
+      if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
+    }
     await delay(300)
     const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (detectsFeedbackOptOutPrompt(after)) {
@@ -3116,7 +3416,8 @@ export async function dismissModelConsentDialogIfPresent(session: string, host: 
 }
 
 // Walk a session out of the Claude Code FIRST-RUN dialog chain (folder-trust,
-// bypass-permissions acceptance, theme picker, welcome screen), answering each
+// bypass-permissions acceptance, MCP server approval, the development-channels
+// warning, theme picker, welcome screen), answering each
 // dialog exactly the way scripts/channels.sh's startup guard does for the main
 // session: trust -> "1" Enter (Yes, proceed), bypass -> "2" Enter (Yes, I
 // accept), theme/welcome -> Enter (accept default / continue). The login
@@ -3197,6 +3498,22 @@ export async function answerFirstRunGates(
           runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
           await delay(150)
         }
+      } else if (gate === 'dev-channels') {
+        // The development-channels warning every worksourceChannel launch
+        // parks on. Enter ONLY when the highlighted
+        // row is "I am using this for local development" -- both other exits
+        // from this panel ("Exit", Escape) quit the TUI, and a cursor anywhere
+        // else means a layout we do not model. See devChannelsAcceptKeys.
+        const keys = pane != null ? devChannelsAcceptKeys(pane) : null
+        if (keys == null) {
+          logger.warn({ session, gate },
+            'development-channels dialog: the highlighted option is not "I am using this for local development" -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
+          await delay(150)
+        }
       } else {
         // theme / welcome: Enter accepts the highlighted default and moves on.
         runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
@@ -3230,6 +3547,82 @@ export function identitySlashCommands(displayName: string): string[] {
 const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
+// Post-spawn startup-gate watch. Every start door --
+// startAgentProcess (the dashboard button, the context guard's fresh restart
+// via restartAgentProcess, auto-restart, reconcile) and the remote start --
+// reaches the new session through scheduleIdentitySetup, so this is where a
+// startup dialog is answered for all of them at once.
+//
+// Measured on a live install: until this existed, NOTHING answered the
+// development-channels warning a worksourceChannel launch parks on. What got
+// every earlier start past it was an accident: the `/rename <name>` below,
+// typed ~13s after spawn, ends in Enter, and that Enter confirmed whatever the
+// dialog had highlighted. 28 of the 29 sub-agent starts in one day's
+// store/dashboard.log were followed by "Set session /rename"; the one that
+// was not -- a context-guard restart whose dashboard process was restarted
+// by its service manager 5.7s later, taking the timer with it -- sat on the
+// dialog for ~10 minutes until a human pressed Enter.
+//
+// So the dialog is answered deliberately, through the same helper the channel
+// monitor uses (answerFirstRunGates), and the /rename refuses to type into a
+// pane that shows a dialog at all.
+//
+// A bounded poll, not a single probe: the dialog chain can render after the
+// MODAL_DISMISS_DELAY_MS mark on a loaded host, and a one-shot check that
+// arrives a second early would find nothing and leave the dialog to the
+// monitor's slower sweep. The watch ends as soon as the pane is a real Claude
+// Code surface (idle/busy/typing/error), i.e. no dialog is in front of it.
+export const STARTUP_GATE_WATCH_MS = 30_000
+const STARTUP_GATE_POLL_MS = 1000
+
+export type StartupGateOutcome = 'ready' | 'cleared' | 'login' | 'blocked' | 'timeout'
+
+export async function settleStartupGates(
+  session: string,
+  host: string | null = null,
+  watchMs: number = STARTUP_GATE_WATCH_MS,
+): Promise<StartupGateOutcome> {
+  const deadline = Date.now() + watchMs
+  let answered = false
+  for (;;) {
+    const pane = capturePane(session, host)
+    if (pane != null) {
+      if (detectsFirstRunGate(pane) != null) {
+        // Keystrokes into the pane go through the per-pane send lane
+        // (PANEWRITERS910), fail-closed: a busy lane just means we look again
+        // on the next poll.
+        const releaseLane = tryAcquireSessionSendLane(session, host)
+        if (releaseLane) {
+          let res: Awaited<ReturnType<typeof answerFirstRunGates>>
+          try {
+            res = await answerFirstRunGates(session, host)
+          } finally {
+            releaseLane()
+          }
+          if (res === 'login' || res === 'blocked') return res
+          if (res === 'cleared') answered = true
+        }
+      } else if (detectPaneState(pane) !== 'unknown') {
+        return answered ? 'cleared' : 'ready'
+      }
+    }
+    if (Date.now() >= deadline) return 'timeout'
+    await delay(STARTUP_GATE_POLL_MS)
+  }
+}
+
+// The identity /rename is text followed by Enter. Typed into a dialog, the
+// text is dropped and the Enter CONFIRMS the highlighted option -- which is
+// how it used to answer the development-channels warning by accident (see
+// above). Never into a first-run gate, a blocking menu or a held peer
+// message: detectsBlockingMenu leaves the held-peer dialog out (so the menu
+// pass never Escapes it), and on that dialog the Enter would confirm the
+// highlighted "Deliver this message to Claude" on the user's behalf.
+export function paneRefusesIdentityCommand(pane: string | null): boolean {
+  if (pane == null) return true
+  return detectsFirstRunGate(pane) != null || detectsBlockingMenu(pane) || detectsHeldPeerMessage(pane)
+}
+
 // How many times the identity send retries when the pane's send lane is held
 // by a live delivery, and how long it waits between tries. Unlike the modal
 // dismissals (skip-on-busy is harmless -- a modal that is really up keeps the
@@ -3261,6 +3654,22 @@ const IDENTITY_LANE_MAX_ATTEMPTS = 5
 export async function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): Promise<void> {
   setTimeout(() => {
     void (async () => {
+      // Startup dialogs first: nothing below may reach the
+      // pane while a dialog is in front of the prompt.
+      try {
+        const gates = await settleStartupGates(session, host)
+        if (gates === 'cleared') {
+          logger.info({ session }, 'Post-spawn: answered the startup dialog(s), prompt is up')
+        } else if (gates === 'timeout') {
+          logger.warn({ session, watchMs: STARTUP_GATE_WATCH_MS },
+            'Post-spawn: no Claude Code prompt within the startup watch; continuing (the /rename still refuses to type into a dialog)')
+        } else if (gates !== 'ready') {
+          logger.warn({ session, outcome: gates },
+            'Post-spawn: session is still behind a startup dialog -- NOT answered here (no safe key); the channel monitor sweep re-checks it')
+        }
+      } catch (err) {
+        logger.warn({ err, session }, 'Post-spawn startup-dialog watch failed')
+      }
       // Modal dismissals: fail-closed acquire, same as sendPromptToSession's
       // pre-emit dismissals. Skipping on a busy lane is safe here -- a delivery
       // holding the lane runs its OWN dismissals before emitting.
@@ -3294,8 +3703,28 @@ export async function scheduleIdentitySetup(session: string, displayName: string
               await delay(IDENTITY_LANE_RETRY_MS)
               continue
             }
+            // Looked at INSIDE the lane, right before typing, so no other
+            // writer's keystrokes can change the pane between the look and
+            // the keys.
+            if (paneRefusesIdentityCommand(capturePane(session, host))) {
+              releaseIdentityLane()
+              logger.info(
+                { session, displayName, attempt, max: IDENTITY_LANE_MAX_ATTEMPTS },
+                'Identity /rename deferred -- a dialog is in front of the prompt; never typing text+Enter into it',
+              )
+              await delay(IDENTITY_LANE_RETRY_MS)
+              continue
+            }
             try {
               for (const cmd of identitySlashCommands(displayName)) {
+                // RENAMEPARK1014: record the command before typing it. When the
+                // TUI swallows this Enter the line parks, and without a record
+                // the stuck-input watcher cannot tell our `/rename` from a human
+                // draft, so it holds (GH #717). Measured: agent-leanpublisher sat
+                // ~15.5h behind a parked `/rename Lean Publisher` (2026-10-14).
+                // With the record the parked scrape matches and the watcher
+                // submits it with a single Enter (reinject-recorded / enter).
+                recordInjectedPrompt(session, cmd)
                 runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter'], { timeout: 5000 })
                 await delay(1000)
               }
@@ -3312,7 +3741,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
           // loudly because a skip nobody logs is not a skip.
           logger.warn(
             { session, displayName, max: IDENTITY_LANE_MAX_ATTEMPTS },
-            'Identity /rename abandoned -- pane send lane stayed busy; session keeps its default name',
+            'Identity /rename abandoned -- pane send lane stayed busy or a dialog stayed up; session keeps its default name',
           )
         })()
       }, IDENTITY_SEND_DELAY_MS)
@@ -3337,6 +3766,8 @@ const SUBMIT_RETRY_MAX_ATTEMPTS = 4
 // with the parked text (still stuck). Empirically 300ms is past the
 // frame-render gap detectPaneState already guards against.
 const SUBMIT_RETRY_POLL_MS = 300
+// Upper bound of the pre-Enter settle wait (waitForPaneSettle).
+const PANE_SETTLE_MAX_MS = 5000
 
 // Pre-flight wait-until-idle gate (root-cause fix for the busy-stuck class).
 // Before streaming chunks we poll the pane and wait for it to return to the
@@ -3438,6 +3869,25 @@ const PLACEHOLDER_DISCARD_MAX = 3
 // Settle window after a Ctrl-C so the next capture reflects the cleared box.
 const PLACEHOLDER_DISCARD_SETTLE_MS = 450
 
+// Card 71263d15 (a2): the pane's process as tmux reports it ("<pane_pid> <pane_current_command>"),
+// or null when the pane cannot be read (a pane whose process exited is gone: no remain-on-exit).
+function paneProcessOf(session: string, host: string | null): string | null {
+  try {
+    return captureTmux(host, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{pane_pid} #{pane_current_command}'], { timeout: 5000 }).trim() || null
+  } catch {
+    return null
+  }
+}
+
+// The last lines of a capture for a failure log line: the input box and what sat above it,
+// capped so one log entry stays small.
+const PANE_TAIL_LOG_LINES = 14
+const PANE_TAIL_LOG_CHARS = 1500
+function paneTail(pane: string | null): string | null {
+  if (pane == null) return null
+  return pane.split('\n').slice(-PANE_TAIL_LOG_LINES).join('\n').slice(-PANE_TAIL_LOG_CHARS)
+}
+
 // Discard a `[Pasted text #N]` placeholder (or the verbatim text it expands
 // into) from the input box with Ctrl-C, then confirm the box no longer holds
 // the placeholder. Ctrl-U is deliberately NOT used: it is proven NOT to clear
@@ -3445,27 +3895,65 @@ const PLACEHOLDER_DISCARD_SETTLE_MS = 450
 // row the cursor sits on. Ctrl-C is the only key that reliably empties the box.
 //
 // SAFETY: Ctrl-C on an EMPTY Claude Code box quits the TUI, and on a BUSY pane
-// it interrupts the live turn. This helper must therefore only ever be called
-// when a placeholder is CONFIRMED present (box non-empty, not busy) -- which
-// detectsPastePlaceholder guarantees at the call site. We re-check before each
-// press and stop the instant the placeholder is gone, so we never press Ctrl-C
-// into an already-empty box. Returns true if the placeholder was cleared.
-async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<boolean> {
-  for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
-    const pane = capturePane(session, host)
-    // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
-    // would quit the TUI.
-    if (pane != null && !detectsPastePlaceholder(pane)) return true
-    try {
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'C-c'], { timeout: 5000 })
-    } catch (err) {
-      logger.warn({ err, session }, 'discardPlaceholderBuffer: Ctrl-C send failed')
-      return false
+// it interrupts the live turn. A key is therefore pressed only on a placeholder
+// CONFIRMED in the input box (pastePlaceholderLocation 'box'), re-checked before
+// each press, and the presses stop the instant the placeholder is gone.
+// Card 71263d15 (a3): a stub that only the 8-line fallback tail finds (the box
+// separators are not on screen) is not confirmed, and an unreadable pane is not
+// either; both used to get the Ctrl-C anyway. Measured on the router log
+// (2026-09-23 -> 2026-10-11): every pane that died after a clear had taken all
+// three presses alive. Outcomes: 'cleared'; 'failed' (pressed, or unreadable,
+// and the placeholder is not proven gone: the caller re-sends as before);
+// 'refused' (nothing pressed, the stub is not in the box: the caller stops).
+// (a2): each press logs where the stub was, and the pane process is logged
+// before the first press and after the last one; when it changed or vanished,
+// the last screen the clear saw goes with it.
+type PlaceholderDiscard = { outcome: 'cleared' | 'failed' | 'refused'; lastPane: string | null }
+
+async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<PlaceholderDiscard> {
+  const before = paneProcessOf(session, host)
+  let lastPane: string | null = null
+  let presses = 0
+  try {
+    for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
+      const pane = capturePane(session, host)
+      if (pane == null) {
+        logger.warn({ session, presses }, 'discardPlaceholderBuffer: pane capture failed; stopping (presses so far in the field)')
+        return { outcome: 'failed', lastPane }
+      }
+      lastPane = pane
+      const where = pastePlaceholderLocation(pane)
+      // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
+      // would quit the TUI.
+      if (where == null) return { outcome: 'cleared', lastPane }
+      if (where === 'tail') {
+        logger.warn({ session, presses, where }, 'discardPlaceholderBuffer: placeholder only in the fallback tail, not in the input box; stopping (presses so far in the field)')
+        // After a press the box was already touched, so the payload must go again ('failed').
+        return { outcome: presses === 0 ? 'refused' : 'failed', lastPane }
+      }
+      logger.info({ session, press: presses + 1, where, paneProcess: before }, 'discardPlaceholderBuffer: Ctrl-C on a placeholder in the input box')
+      try {
+        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'C-c'], { timeout: 5000 })
+      } catch (err) {
+        logger.warn({ err, session }, 'discardPlaceholderBuffer: Ctrl-C send failed')
+        return { outcome: 'failed', lastPane }
+      }
+      presses++
+      await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
     }
-    await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
+    const finalPane = capturePane(session, host)
+    if (finalPane != null) lastPane = finalPane
+    return { outcome: finalPane != null && pastePlaceholderLocation(finalPane) == null ? 'cleared' : 'failed', lastPane }
+  } finally {
+    if (presses > 0) {
+      const after = paneProcessOf(session, host)
+      if (after === before) {
+        logger.info({ session, presses, paneProcessBefore: before, paneProcessAfter: after }, 'discardPlaceholderBuffer: pane process after Ctrl-C')
+      } else {
+        logger.warn({ session, presses, paneProcessBefore: before, paneProcessAfter: after, lastScreen: paneTail(lastPane) }, 'discardPlaceholderBuffer: pane process after Ctrl-C')
+      }
+    }
   }
-  const finalPane = capturePane(session, host)
-  return finalPane != null && !detectsPastePlaceholder(finalPane)
 }
 
 // Cap on how many extra characters a single chunk boundary may absorb while
@@ -3548,14 +4036,19 @@ export interface SendPromptOpts {
   onBusySend?: () => void
   onEmitStart?: () => void
 }
-/** Card 71263d15 (C): returns a reason to send nothing (see emitToPane), or null to go ahead. */
+/**
+ * Card 71263d15 (C): returns a reason to press no (further) key, or null to go ahead. Asked
+ * before the first keystroke (a refusal there is 'aborted-guard': nothing typed) and again
+ * before every submitting Enter (#2143: 'aborted-guard-typed', the text is in the pane but
+ * not submitted), plus before each follow-up key of the retry loop.
+ */
 export type SendEmitGuard = (pane: string | null) => string | null
 
 // Two signatures so only a caller that passes an emitGuard has to handle 'aborted-guard'. The
 // plain one is LAST on purpose: Parameters<>/ReturnType<> (system-directive.ts) read the last one.
 export function sendPromptToSession(
   session: string, text: string, host: string | null, opts: SendPromptOpts & { emitGuard: SendEmitGuard },
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'>
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard' | 'aborted-guard-typed'>
 export function sendPromptToSession(
   session: string, text: string, host?: string | null, opts?: SendPromptOpts,
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked'>
@@ -3564,7 +4057,7 @@ export async function sendPromptToSession(
   text: string,
   host: string | null = null,
   opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } & { emitGuard?: SendEmitGuard } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'> {
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard' | 'aborted-guard-typed'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -3660,7 +4153,19 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const emitToPane = async (): Promise<'sent'> => {
+  // #2143: the caller's emitGuard. Run before the first keystroke (guardedEmit, on a fresh
+  // capture), before every submitting Enter (sendChunks, fresh capture) and before every
+  // follow-up key (the retry loop, on the capture it just took); null = go ahead.
+  // The capture is taken only when a guard is set, so an unguarded send makes no extra tmux call.
+  const emitGuardRefusal = (pane?: string | null): string | null => {
+    if (!opts.emitGuard) return null
+    try {
+      return opts.emitGuard(pane === undefined ? capturePane(session, host) : pane)
+    } catch (err) {
+      return `emit guard threw: ${String(err).slice(0, 120)}`
+    }
+  }
+  const emitToPane = async (): Promise<'sent' | 'aborted-guard-typed'> => {
   // PROMPTCSONK923: tell the caller the moment the first keystroke of THIS
   // prompt is about to be emitted (we hold the lane from here). The scheduler
   // judges delivery from transcript prompts recorded after this instant.
@@ -3692,18 +4197,40 @@ export async function sendPromptToSession(
   // a delivery that parks mid-stream is recoverable too.
   recordInjectedPrompt(session, oneLine)
   const CHUNK = 80
+  // #2144: what is left of PRE_ENTER_WAIT_BUDGET_MS, the ONE budget for every echo and settle
+  // wait of this call (the first send and every clear-and-resend). Only waited time counts, so it
+  // starts after the first send's typing and does not depend on the prompt's length. Before, each
+  // resend of a frozen pane waited the full bounds again, and one holder kept the send lane past
+  // DEFAULT_DELIVER_WAIT_BUDGET_MS. Typing time is NOT bounded here (it predates #2135).
+  let waitBudgetLeftMs = PRE_ENTER_WAIT_BUDGET_MS
+  const budgetedWait = async <T>(capMs: number, wait: (maxMs: number) => Promise<T>): Promise<T> => {
+    const started = Date.now()
+    try {
+      return await wait(Math.min(capMs, waitBudgetLeftMs))
+    } finally {
+      waitBudgetLeftMs = Math.max(0, waitBudgetLeftMs - (Date.now() - started))
+    }
+  }
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the
   // clear-and-resend recovery path below can replay the EXACT same byte
   // stream after a Ctrl-C, rather than duplicating the boundary logic
   // (see computeTmuxChunk for the two chunk-boundary dodges it applies).
-  const sendChunks = async (): Promise<void> => {
+  const sendChunks = async (): Promise<'sent' | 'aborted-guard-typed'> => {
     let i = 0
     while (i < oneLine.length) {
       const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
       runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '-l', chunk], { timeout: 5000 })
       i = end
       if (i < oneLine.length) await delay(30)
+    }
+    // The settle wait below cannot tell a TUI that finished drawing from one
+    // that stopped READING its input (both give identical captures), so first
+    // wait until the end of the prompt is actually on screen. Bounded; on
+    // timeout the Enter goes out as before, and the log says so. Both waits
+    // draw on the call's wait budget; the first send gets its full bounds.
+    if (oneLine.length > CHUNK && !(await budgetedWait(TYPED_ECHO_MAX_MS, (maxMs) => waitForTypedEcho(() => capturePane(session, host), oneLine, { maxMs })))) {
+      logger.warn({ session, chars: oneLine.length, waitBudgetLeftMs }, 'sendPromptToSession: the end of the typed prompt never appeared in the pane; sending Enter anyway (TUI not reading input?)')
     }
     // A multi-chunk prompt gets its Enter only once the TUI has stopped
     // redrawing. Sent straight after the last chunk, the Enter races the
@@ -3713,10 +4240,24 @@ export async function sendPromptToSession(
     // The parked copy was invisible to the retry loop below (the box was
     // taller than the pane, see overfullParkedInputTail), so nothing
     // re-pressed it. Single-chunk prompts keep the immediate Enter.
-    if (oneLine.length > CHUNK) await waitForPaneSettle(() => capturePane(session, host))
+    if (oneLine.length > CHUNK) await budgetedWait(PANE_SETTLE_MAX_MS, (maxMs) => waitForPaneSettle(() => capturePane(session, host), { maxMs }))
+    // #2143: the guard's last look before the submitting Enter. The echo and settle waits above
+    // can take tens of seconds, and a pane that turned into a permission prompt meanwhile would
+    // take this Enter as its answer. On refusal press nothing more (no Enter, no Escape): the
+    // typed text stays unsubmitted, the caller keeps its row, and the outcome says keys went in.
+    // Only the router passes a guard, and it types the row again later, so the record is dropped:
+    // that disables the stuck-input watcher's 'reinject-recorded' path (channel-monitor.ts,
+    // recordedMatch) for this leftover. Its other parked-input paths are not affected.
+    const refusal = emitGuardRefusal()
+    if (refusal) {
+      forgetInjectedPrompt(session, oneLine)
+      logger.warn({ session, reason: refusal }, 'sendPromptToSession: emit guard refused the pane before the submitting Enter; typed text left unsubmitted, no further keys')
+      return 'aborted-guard-typed'
+    }
     runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
+    return 'sent'
   }
-  await sendChunks()
+  if ((await sendChunks()) === 'aborted-guard-typed') return 'aborted-guard-typed'
 
   // Post-send retry loop. The payload hint is the first chunk of oneLine
   // (truncated to a safe length) so the verbatim-stuck path has something
@@ -3742,35 +4283,50 @@ export async function sendPromptToSession(
     const pane = capturePane(session, host)
     // Card 71263d15 (C): a guarded send presses no follow-up key into a pane that has
     // turned into a prompt since the text went in (a retry Enter would answer it).
-    if (opts.emitGuard) {
-      let reason: string | null = null
-      try { reason = opts.emitGuard(pane) } catch { reason = 'emit guard threw' }
-      if (reason) {
-        logger.warn({ session, attempt, reason }, 'sendPromptToSession: emit guard refused the pane after the send; no follow-up keys')
-        break
-      }
+    const reason = emitGuardRefusal(pane)
+    if (reason) {
+      logger.warn({ session, attempt, reason }, 'sendPromptToSession: emit guard refused the pane after the send; no follow-up keys')
+      break
     }
-    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
+    // #2144: once the wait budget is spent, the attempts count as used up, so a still-parked
+    // prompt ends exactly as at the retry limit: decideSubmitFollowup's 'give-up' below.
+    const budgetSpent = waitBudgetLeftMs <= 0
+    const action = decideSubmitFollowup(pane, payloadHint, attempt, budgetSpent ? attempt : SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
+      if (budgetSpent && attempt < SUBMIT_RETRY_MAX_ATTEMPTS) logger.warn({ session, attempt, waitBudgetMs: PRE_ENTER_WAIT_BUDGET_MS }, 'sendPromptToSession: pre-Enter wait budget spent; no further follow-ups')
       logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
       break
     }
     if (action === 'clear-and-resend') {
-      // Placeholder confirmed in the pane (box non-empty, not busy), so the
-      // Ctrl-C in discardPlaceholderBuffer is safe. Clear it, then replay the
-      // chunk stream. The loop re-samples on the next iteration and will keep
-      // recovering (or give up at the budget) if the resend itself parks.
+      // A placeholder is detected in the pane. discardPlaceholderBuffer presses
+      // Ctrl-C only when it is confirmed in the input box; then the chunk
+      // stream is replayed. The loop re-samples on the next iteration and will
+      // keep recovering (or give up at the budget) if the resend itself parks.
       logger.info({ session, attempt }, 'sendPromptToSession: paste placeholder detected; clearing and re-sending')
-      if (!(await discardPlaceholderBuffer(session, host))) {
-        logger.warn({ session, attempt }, 'sendPromptToSession: failed to clear paste placeholder before resend')
-      }
-      try {
-        await sendChunks()
-      } catch (err) {
-        logger.warn({ err, session, attempt }, 'Clear-and-resend chunk replay failed')
+      const discard = await discardPlaceholderBuffer(session, host)
+      if (discard.outcome === 'refused') {
+        // Card 71263d15 (a3): nothing was pressed, so nothing is re-sent either: typing the
+        // payload again into a box nobody confirmed would duplicate it. Stop like 'give-up'.
+        logger.warn({ session, attempt }, 'sendPromptToSession: paste placeholder seen outside the input box; not cleared, not re-sent')
         break
       }
+      if (discard.outcome === 'failed') {
+        logger.warn({ session, attempt }, 'sendPromptToSession: failed to clear paste placeholder before resend')
+      }
+      let resent: 'sent' | 'aborted-guard-typed'
+      try {
+        resent = await sendChunks()
+      } catch (err) {
+        // Card 71263d15 (a1): the pane can be gone by now ("can't find pane" in all three
+        // measured replay failures, 2026-10-06..10-08). Returning 'sent' made the router log
+        // the row delivered and lose it; the throw takes the caller's existing error branch
+        // instead (the router keeps the row pending, retries, and fails it loudly at the limit).
+        logger.warn({ err, session, attempt, lastScreen: paneTail(discard.lastPane) }, 'Clear-and-resend chunk replay failed')
+        throw err
+      }
+      // #2143: the box was cleared and the resend was typed but not submitted.
+      if (resent === 'aborted-guard-typed') return 'aborted-guard-typed'
       continue
     }
     // action === 'retry-enter'
@@ -3784,7 +4340,7 @@ export async function sendPromptToSession(
     return 'sent'
   }
 
-  const guardedEmit = async (): Promise<'sent' | 'aborted-guard'> => {
+  const guardedEmit = async (): Promise<'sent' | 'aborted-guard' | 'aborted-guard-typed'> => {
     // Card 71263d15 (C): the caller's last look at the pane, taken INSIDE the lane right
     // before the first keystroke. The router's STOP path passes one: a STOP skips the idle
     // wait, so between its pane check and this point a running turn can open a permission
@@ -3792,17 +4348,10 @@ export async function sendPromptToSession(
     // Code 2.1.294: the pending command ran and the text was lost). A non-null answer sends
     // NOTHING -- no text, no Escape (an Escape would deny the pending call) -- and returns
     // 'aborted-guard' so the caller keeps its row.
-    if (opts.emitGuard) {
-      let reason: string | null = null
-      try {
-        reason = opts.emitGuard(capturePane(session, host))
-      } catch (err) {
-        reason = `emit guard threw: ${String(err).slice(0, 120)}`
-      }
-      if (reason) {
-        logger.warn({ session, reason }, 'sendPromptToSession: emit guard refused the pane; no keystrokes sent')
-        return 'aborted-guard'
-      }
+    const reason = emitGuardRefusal()
+    if (reason) {
+      logger.warn({ session, reason }, 'sendPromptToSession: emit guard refused the pane; no keystrokes sent')
+      return 'aborted-guard'
     }
     return emitToPane()
   }
@@ -3816,7 +4365,7 @@ export async function sendPromptToSession(
   }
 
   const lockResult = await withSessionSendLock(session, host, lockMode, guardedEmit)
-  if (lockResult.ran && lockResult.value === 'aborted-guard') return 'aborted-guard'
+  if (lockResult.ran && (lockResult.value === 'aborted-guard' || lockResult.value === 'aborted-guard-typed')) return lockResult.value
   if (!lockResult.ran) {
     // recover mode + lane busy: a delivery is mid-flight into this pane. Do NOT
     // race it (we would clear or submit the wrong buffer). Skip this round and
@@ -3866,7 +4415,7 @@ export async function waitForPaneSettle(
   opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
 ): Promise<boolean> {
   const pollMs = opts.pollMs ?? 250
-  const maxMs = opts.maxMs ?? 5000
+  const maxMs = opts.maxMs ?? PANE_SETTLE_MAX_MS
   const sleep = opts.sleep ?? delay
   const now = opts.now ?? Date.now
   const deadline = now() + maxMs
@@ -3880,6 +4429,34 @@ export async function waitForPaneSettle(
   return false
 }
 
+// Upper bound for waitForTypedEcho. The measured stalls (a sub-agent whose
+// TUI stopped reading input mid-prompt) lasted 18.5 s and 24.9 s; past this
+// the Enter goes out as it did before.
+export const TYPED_ECHO_MAX_MS = 30_000
+// #2144: the budget for ALL echo and settle waits of one sendPromptToSession call, the first
+// send and every clear-and-resend together. The first send's full bounds fit in it.
+export const PRE_ENTER_WAIT_BUDGET_MS = TYPED_ECHO_MAX_MS + PANE_SETTLE_MAX_MS
+
+// Resolve true as soon as typedTailEchoed() sees the end of `typed` in a
+// capture, false after `maxMs` without it. Capture, sleep and clock are
+// injectable, like waitForPaneSettle, so the loop is tested without tmux.
+export async function waitForTypedEcho(
+  capture: () => string | null,
+  typed: string,
+  opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<boolean> {
+  const pollMs = opts.pollMs ?? 250
+  const maxMs = opts.maxMs ?? TYPED_ECHO_MAX_MS
+  const sleep = opts.sleep ?? delay
+  const now = opts.now ?? Date.now
+  const deadline = now() + maxMs
+  for (;;) {
+    if (typedTailEchoed(capture(), typed)) return true
+    if (now() >= deadline) return false
+    await sleep(pollMs)
+  }
+}
+
 export function capturePane(session: string, host: string | null = null): string | null {
   try {
     // Capture WITH colour, strip a trailing /rename session-title banner, then
@@ -3889,6 +4466,95 @@ export function capturePane(session: string, host: string | null = null): string
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
     return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * REMOTESAWTURN1022: newest transcript write of a remote agent, as a local-clock
+ * epoch ms, read over the existing ssh path. The local clock is taken before the
+ * ssh call (see parseRemoteTranscriptMtime for why that keeps the estimate
+ * conservative). One bounded call; any failure (host unreachable, timeout, no
+ * transcript, garbage output) returns null and never throws, so the caller treats it
+ * as "no evidence", never as a turn.
+ */
+export function readRemoteTranscriptMtime(
+  host: string,
+  workdir: string,
+  deps: {
+    exec?: (file: string, args: string[], timeoutMs: number) => string
+    now?: () => number
+  } = {},
+): number | null {
+  const now = deps.now ?? Date.now
+  const exec = deps.exec ?? ((file: string, args: string[], timeoutMs: number): string =>
+    execFileSync(file, args, { timeout: timeoutMs, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }))
+  try {
+    const localBeforeMs = now()
+    const inv = buildSshExec(host, buildRemoteTranscriptMtimeCommand(workdir))
+    return parseRemoteTranscriptMtime(exec(inv.file, inv.args, 3000), localBeforeMs)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Foreground command of a session's first pane (`claude.exe` on a healthy agent,
+ * the shell name once the CLI has exited). Feeds classifyPaneLiveness so the
+ * dashboard can tell a dead session from an idle one -- `tmux list-sessions`
+ * cannot, it lists the leftover shell exactly like a live agent.
+ *
+ * Returns null on any failure: an unreadable pane must degrade to "unknown",
+ * never to a false death sentence.
+ */
+export function paneCurrentCommand(session: string, host: string | null = null): string | null {
+  // Only a target that exactTmuxTarget turns into `=<session>:` is batched (a bare session name, or
+  // that exact form): a target that names a window or pane asks about that window, which the
+  // session-wide list cannot answer the same way. `=<session>` without the colon is a window target
+  // too -- tmux resolves it to a window of that name in the current session if one exists.
+  const bare = session.replace(/^=/, '').replace(/:$/, '')
+  if (host === null && tmuxBatch !== null && !bare.includes(':') && exactTmuxTarget(session) === `=${bare}:`) {
+    const probeArgs = ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}']
+    const { runAsUser } = resolveTarget(null, probeArgs)
+    const target: TmuxTarget = { host: null, runAsUser: runAsUser ?? null }
+    const allArgs = ['list-panes', '-a', '-F', '#{session_name}\t#{window_active}\t#{pane_current_command}']
+    const inv = tmuxInvocationFor(allArgs, target)
+    const key = 'panes:' + JSON.stringify([inv.file, inv.args])
+    let entry = tmuxBatch.get(key)
+    if (!entry) {
+      try {
+        entry = { out: captureTmux(target, allArgs) }
+      } catch (e) {
+        entry = { err: e }
+      }
+      tmuxBatch.set(key, entry)
+    }
+    if ('err' in entry) return null
+    for (const line of (entry.out ?? '').split('\n')) {
+      const [name, active, ...rest] = line.split('\t')
+      const command = rest.join('\t').trim()
+      if (name === bare && active === '1' && command.length > 0) return command
+    }
+    return null
+  }
+  try {
+    const out = captureTmux(host, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}'])
+    const first = out.split('\n').map(line => line.trim()).find(line => line.length > 0)
+    return first ?? null
+  } catch {
+    return null
+  }
+}
+
+// capturePane plus the last `historyLines` of scrollback. For readers that need
+// something the dialog has pushed off the screen -- a permission card's header
+// sits above its diff (permission-prompt-alert.ts). NOT for state detection:
+// the detectors are written for the visible pane, and scrollback would feed
+// them footers and spinners that are no longer live.
+export function capturePaneWithHistory(session: string, historyLines = 500, host: string | null = null): string | null {
+  try {
+    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p', '-S', `-${historyLines}`])))
   } catch {
     return null
   }
@@ -4325,9 +4991,9 @@ async function clearStaleParkedInputInLane(
     if (stage === 'owner') {
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
-        `🚨 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce all egy parkolt sor, ` +
-        `es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ` +
-        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d.` +
+        `🚨 A fő ágens (${session}) input-mezőjében ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce áll egy parkolt sor, ` +
+        `és emiatt a csatorna nem dolgoz fel bejövő üzenetet. KÉZI FELOLDÁS (pár másodperc): ` +
+        `tmux attach -t ${session}, majd Ctrl-C és utána Ctrl-U (a sor törlése), végül kilépés: Ctrl-B d.` +
         // No conversation content in an alert that goes to a non-owner chat.
         (alertIsRedirected() ? '' : ` A parkolt sor eleje: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
@@ -4354,9 +5020,9 @@ async function clearStaleParkedInputInLane(
         return false
       }
       notifyChannel(
-        `🧹 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce allt egy parkolt sor, ` +
-        `es emiatt minden utemezett feladat varakozott. A sort KIMENTETTUK es a mezot kitisztitottuk, ` +
-        `hogy a csatorna ujra dolgozzon. A szoveg itt van: ${rescuedPath}`,
+        `🧹 A fő ágens (${session}) input-mezőjében ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce állt egy parkolt sor, ` +
+        `és emiatt minden ütemezett feladat várakozott. A sort KIMENTETTÜK, és a mezőt kitisztítottuk, ` +
+        `hogy a csatorna újra dolgozzon. A szöveg itt van: ${rescuedPath}`,
       ).catch(() => { /* notify is best-effort */ })
       logger.warn(
         { session, parked: parked.slice(0, 60), fails, rescuedPath },
@@ -4401,9 +5067,9 @@ async function clearStaleParkedInputInLane(
     if (!escalated && fails >= SUBAGENT_PARKED_ESCALATE_AFTER) {
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
-        `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
-        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell.` +
-        (alertIsRedirected() ? '' : ` Reszlet: "${preview}"`),
+        `⚠️ Egy sub-agent (${session}) input-mezőjébe beragadt egy parkolt sor, ` +
+        `az auto-tisztítás ${fails}x sikertelen, lehet, hogy kézi beavatkozás kell.` +
+        (alertIsRedirected() ? '' : ` Részlet: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')

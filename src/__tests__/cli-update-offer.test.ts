@@ -7,6 +7,8 @@ import {
   decideCliOffer, readAvxSafePin, detectInstallMethod, probeClaudeLaunches, fetchLatestVersion,
   resetLatestVersionCache, buildCliUpdateStatus, startCliUpdate, setCliUpdateDepsForTests,
   RUNNING_SESSIONS_NOTE, REGISTRY_LATEST_URL, readCliUpdateResult,
+  notWritableMessage, accessState, npmGlobalDirsNotWritable, cliUpdateRunning,
+  readNpmGlobalPrefix,
 } from '../web/cli-update.js'
 import { tryHandleUpdates } from '../web/routes/updates.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -142,7 +144,7 @@ const waitDone = async (until: () => boolean) => { for (let i = 0; i < 200 && !u
 describe('startCliUpdate (background job, one at a time, verified by the real probe, rule 4 note)', () => {
   it('npm path: install ok + probe ok -> done, carries the running-sessions note, measured version after', async () => {
     const { spawnImpl, calls } = fakeSpawn(0)
-    const started = startCliUpdate('2.1.280', 'npm', { spawnImpl, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 900 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude' })
+    const started = startCliUpdate('2.1.280', 'npm', { spawnImpl, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 900 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude', dirsNotWritable: async () => false })
     expect(started).toEqual({ ok: true })
     await waitDone(() => readCliUpdateResult()?.status !== 'running')
     expect(calls[0]).toEqual({ cmd: 'npm', args: ['install', '-g', '@anthropic-ai/claude-code@2.1.280'] })
@@ -150,14 +152,14 @@ describe('startCliUpdate (background job, one at a time, verified by the real pr
   })
   it('install ok but the new claude does not launch -> failed, says so', async () => {
     const { spawnImpl } = fakeSpawn(0)
-    startCliUpdate('2.1.280', 'npm', { spawnImpl, probe: async () => ({ ok: false, exitCode: null, signal: 'TIMEOUT', durationMs: 25000 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude' })
+    startCliUpdate('2.1.280', 'npm', { spawnImpl, probe: async () => ({ ok: false, exitCode: null, signal: 'TIMEOUT', durationMs: 25000 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude', dirsNotWritable: async () => false })
     await waitDone(() => readCliUpdateResult()?.status !== 'running')
     expect(readCliUpdateResult()).toMatchObject({ status: 'failed' })
     expect(readCliUpdateResult()?.message).toContain('does not launch')
   })
   it('EACCES from npm -> failed with the sudo manual command; official path uses install.sh with the version', async () => {
     const { spawnImpl } = fakeSpawn(1, 'npm ERR! code EACCES')
-    startCliUpdate('2.1.280', 'npm', { spawnImpl, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 1 }), measure: async () => ({ version: null }), resolveBin: () => '/x/claude' })
+    startCliUpdate('2.1.280', 'npm', { spawnImpl, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 1 }), measure: async () => ({ version: null }), resolveBin: () => '/x/claude', dirsNotWritable: async () => false })
     await waitDone(() => readCliUpdateResult()?.status !== 'running')
     expect(readCliUpdateResult()?.message).toContain('sudo npm install -g @anthropic-ai/claude-code@2.1.280')
     const off = fakeSpawn(0)
@@ -170,9 +172,142 @@ describe('startCliUpdate (background job, one at a time, verified by the real pr
     expect(startCliUpdate('latest', 'npm')).toMatchObject({ ok: false })
     expect(startCliUpdate('2.1.280', 'unknown')).toMatchObject({ ok: false })
     const slow = ((cmd: string, args: string[]) => { const c = new FakeChild(); setTimeout(() => c.emit('exit', 0), 300); return c }) as unknown as typeof import('node:child_process').spawn
-    expect(startCliUpdate('2.1.280', 'npm', { spawnImpl: slow, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 1 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude' })).toEqual({ ok: true })
+    expect(startCliUpdate('2.1.280', 'npm', { spawnImpl: slow, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 1 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude', dirsNotWritable: async () => false })).toEqual({ ok: true })
     expect(startCliUpdate('2.1.280', 'npm', { spawnImpl: slow })).toMatchObject({ ok: false, error: expect.stringContaining('already running') })
     await waitDone(() => readCliUpdateResult()?.status !== 'running')
+  })
+})
+
+describe('rule 5: the global npm dirs are measured before an npm install', () => {
+  const ok = { probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 1 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude' }
+  const finished = () => readCliUpdateResult()?.status !== 'running'
+  it('a dir that is not writable: the manual command at once, nothing spawned', async () => {
+    const { spawnImpl, calls } = fakeSpawn(0)
+    expect(startCliUpdate('2.1.280', 'npm', { spawnImpl, ...ok, dirsNotWritable: async () => true })).toEqual({ ok: true })
+    await waitDone(finished)
+    expect(calls.length).toBe(0)
+    const r = readCliUpdateResult()
+    expect(r?.status).toBe('failed')
+    expect(r?.message).toBe('the global install dir is not writable; run by hand: sudo npm install -g @anthropic-ai/claude-code@2.1.280')
+    expect(r?.message).toBe(notWritableMessage('2.1.280', 'npm'))
+    expect(cliUpdateRunning()).toBe(false)
+  })
+  it('writable, unmeasured or a throwing measurement: the install runs exactly as before', async () => {
+    for (const dirsNotWritable of [async () => false, async () => null, async (): Promise<boolean | null> => { throw new Error('boom') }]) {
+      const { spawnImpl, calls } = fakeSpawn(0)
+      startCliUpdate('2.1.280', 'npm', { spawnImpl, ...ok, dirsNotWritable })
+      await waitDone(finished)
+      expect(calls[0]).toEqual({ cmd: 'npm', args: ['install', '-g', '@anthropic-ai/claude-code@2.1.280'] })
+      expect(calls.length).toBe(1)
+      expect(readCliUpdateResult()?.status).toBe('done')
+    }
+  })
+  it('the official method never measures and spawns at once', async () => {
+    let measured = 0
+    const { spawnImpl, calls } = fakeSpawn(0)
+    startCliUpdate('2.1.112', 'official', { spawnImpl, ...ok, measure: async () => ({ version: '2.1.112' }), dirsNotWritable: async () => { measured++; return true } })
+    expect(calls.length).toBe(1)
+    await waitDone(finished)
+    expect(measured).toBe(0)
+    expect(readCliUpdateResult()?.status).toBe('done')
+  })
+  it('a second run is refused while the measurement is still pending', async () => {
+    let release!: (v: boolean | null) => void
+    const pending = new Promise<boolean | null>((r) => { release = r })
+    const { spawnImpl, calls } = fakeSpawn(0)
+    expect(startCliUpdate('2.1.280', 'npm', { spawnImpl, ...ok, dirsNotWritable: () => pending })).toEqual({ ok: true })
+    expect(startCliUpdate('2.1.280', 'npm', { spawnImpl, ...ok, dirsNotWritable: async () => false })).toEqual({ ok: false, error: expect.stringContaining('already running') })
+    expect(calls.length).toBe(0)
+    release(false)
+    await waitDone(() => calls.length === 1 && finished())
+    expect(calls.length).toBe(1)
+    expect(readCliUpdateResult()?.status).toBe('done')
+  })
+  it('a spawn that throws on the npm path ends as a failed result file', async () => {
+    const throwing = (() => { throw new Error('ENOENT npm') }) as unknown as typeof import('node:child_process').spawn
+    expect(startCliUpdate('2.1.280', 'npm', { spawnImpl: throwing, ...ok, dirsNotWritable: async () => false })).toEqual({ ok: true })
+    await waitDone(() => !cliUpdateRunning())
+    const r = readCliUpdateResult()
+    expect(r?.status).toBe('failed')
+    expect(r?.message).toContain('could not start npm')
+    expect(cliUpdateRunning()).toBe(false)
+  })
+  it('npmGlobalDirsNotWritable: which dirs it asks and what it answers', async () => {
+    const run = async (scope: 'writable' | 'not-writable' | 'missing', bin: 'writable' | 'not-writable' | 'missing') => {
+      const asked: string[] = []
+      const scopeDir = join('/p', 'lib', 'node_modules', '@anthropic-ai')
+      const map: Record<string, typeof scope> = { [scopeDir]: scope, [join('/p', 'bin')]: bin }
+      const result = await npmGlobalDirsNotWritable({ npmPrefix: async () => '/p', access: (p) => { asked.push(p); return map[p] } })
+      expect(asked).toEqual([scopeDir, join('/p', 'bin')])
+      return result
+    }
+    expect(await run('writable', 'writable')).toBe(false)
+    expect(await run('not-writable', 'writable')).toBe(true)
+    expect(await run('writable', 'not-writable')).toBe(true)
+    expect(await run('missing', 'writable')).toBeNull()
+    expect(await run('writable', 'missing')).toBeNull()
+    expect(await run('missing', 'not-writable')).toBe(true)
+    let called = 0
+    expect(await npmGlobalDirsNotWritable({ npmPrefix: async () => null, access: () => { called++; return 'writable' } })).toBeNull()
+    expect(called).toBe(0)
+  })
+  it('accessState on real paths', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'access-state-'))
+    try {
+      expect(accessState(dir)).toBe('writable')
+      expect(accessState(join(dir, 'nope'))).toBe('missing')
+      const f = join(dir, 'f')
+      writeFileSync(f, 'x')
+      expect(accessState(join(f, 'x'))).toBe('missing')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+    if (typeof process.getuid === 'function' && process.getuid() !== 0) {
+      const ro = mkdtempSync(join(tmpdir(), 'access-state-ro-'))
+      try {
+        chmodSync(ro, 0o555)
+        expect(accessState(ro)).toBe('not-writable')
+      } finally {
+        chmodSync(ro, 0o755)
+        rmSync(ro, { recursive: true, force: true })
+      }
+    }
+  })
+  const withStubNpm = async (script: string, fn: (dir: string) => Promise<void>): Promise<void> => {
+    const dir = mkdtempSync(join(tmpdir(), 'stub-npm-'))
+    const savedPath = process.env.PATH
+    try {
+      writeFileSync(join(dir, 'npm'), script)
+      chmodSync(join(dir, 'npm'), 0o755)
+      process.env.PATH = dir + ':' + savedPath
+      await fn(dir)
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH
+      else process.env.PATH = savedPath
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  it('npm prefix -g that ignores SIGTERM is SIGKILLed at the timeout and reads as unmeasured', async () => {
+    // The stub marks that it ignores SIGTERM before it sleeps: a SIGTERM that landed before the trap would end it
+    // early and pass the test without SIGKILL, so the marker must exist.
+    await withStubNpm('#!/bin/sh\ntrap \'\' TERM\ntouch "$(dirname "$0")/ready"\nexec sleep 10\n', async (dir) => {
+      const t0 = Date.now()
+      const p = await readNpmGlobalPrefix(1000)
+      const elapsed = Date.now() - t0
+      expect(existsSync(join(dir, 'ready'))).toBe(true)
+      expect(p).toBeNull()
+      expect(elapsed).toBeGreaterThanOrEqual(900)
+      expect(elapsed).toBeLessThan(5000)
+    })
+  }, 15_000)
+  it('a prefix that is not an absolute path reads as unmeasured: null, so the install runs the old way', async () => {
+    await withStubNpm('#!/bin/sh\necho /stub/abs/prefix\n', async () => {
+      expect(await readNpmGlobalPrefix(5000)).toBe('/stub/abs/prefix')
+    })
+    await withStubNpm('#!/bin/sh\necho relative/prefix\n', async () => {
+      expect(await readNpmGlobalPrefix(5000)).toBeNull()
+      expect(await npmGlobalDirsNotWritable({ npmPrefix: () => readNpmGlobalPrefix(5000), access: () => 'not-writable' })).toBeNull()
+    })
   })
 })
 

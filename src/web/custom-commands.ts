@@ -229,7 +229,7 @@ export function taskStepText(name: string, r: { ok: boolean; result?: string; er
   const parts = (r.result ?? '').split(', ').filter(Boolean).map(p => {
     const [agent, how] = p.split(': ')
     if (how === 'fired') return `${agent}: elindult`
-    if (how === 'busy' || how === 'starting' || how === 'first-run') return `${agent}: foglalt, sorba állt, amint szabad, lefut`
+    if (how === 'busy' || how === 'starting' || how === 'first-run' || how === 'respawning') return `${agent}: foglalt, sorba állt, amint szabad, lefut`
     return `${agent}: ${how ?? p}`
   })
   return { ok: true, text: `${name} ${parts.join('; ')}. Az eredményt a feladat maga küldi.` }

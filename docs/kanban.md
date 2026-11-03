@@ -25,6 +25,7 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 - **Státuszok:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Prioritások:** `low`, `normal`, `high`, `urgent`
+- **`test_steps`:** a tesztelő számozott, rövid lépései. Külön mező, nem a `description` egy bekezdése, mert a kettő más kérdésre válaszol: a leírás az, hogy MI a feladat, ez pedig az, hogy hogyan ellenőrizhető. A `POST`/`PUT` ugyanúgy írja, mint a többi mezőt, a dashboard a kártya-részletekben külön blokkban mutatja, és `testing` státuszban kiemeli.
 
 ### Automatikus bontás
 
@@ -41,6 +42,30 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 Minden projekt-feladat kártyán fut: az orchestrator kártyaként rögzíti, onnan delegálja a felelős ügynöknek (`assignee`), aki ott státuszol és kommentál vissza. A meta-feladatok (pl. maga az audit) nem kerülnek kártyára.
 
+### Ébresztés kihagyása (`KANBAN_DISPATCH_SKIP_AGENTS`)
+
+Az `in_progress`-re húzás alapból felébreszti a kártya felelősét. Ha ezt egy ügynöknél nem szeretnéd (például azért, mert maga osztja tovább a munkát, vagy mert a feladatát más kézbesíti), vedd fel a nevét a `KANBAN_DISPATCH_SKIP_AGENTS` listába (vesszővel elválasztva, `.env` vagy a Beállítások oldal, újraindítás nem kell). A lista alapból üres, és üresen semmi nem változik. A névegyeztetés ugyanúgy megy, mint a felelősnél (kis- és nagybetű mindegy). A Beállítások oldalon csak betűkből, számokból, `_`, `.` és `-` jelekből álló név menthető; ha a fő ügynök megjelenített neve ettől eltér, írd be helyette a fő ügynök azonosítóját. A közvetlenül a `.env`-be írt értéket a rendszer nem ellenőrzi: egy szabálytalan elem (például a belsejében szóközt tartalmazó név) egyetlen névnek számít, amely egyik ügynökkel sem egyezik, ezért a kihagyni szánt ügynök továbbra is felébred. A rendszer a mozgatás pillanatában olvassa be az értéket. A lista nem visszamenőleges: a már felébresztett kártyára nincs hatása, és a lista ürítése után egy kihagyott, még `in_progress` kártya a következő mozgatáskor egyszer felébreszti a felelősét. A kihagyás nem jelöli a kártyát felébresztettnek, ezért egy későbbi átadás után az új felelőst a mozgatás egyszer felébreszti. A kihagyott ügynök leállt sessionje nem ad "nem kézbesült" riasztást. A feloldási értesítést (`[Kanban feloldva #…]`) a lista nem érinti. Egy elírt, de szabályos nevet a rendszer elfogad, a név pedig hatástalan marad.
+
+### Foglalás (claim), feloldás, lezárási bizonyíték
+
+Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik. Bekapcsolva az `in_progress`-re húzott kártya kiosztó üzenete a munka előtti lépésként tartalmazza a foglaló hívást.
+
+```
+POST /api/kanban/:id/claim    {"agent":"NEV","ttl_seconds":7200}  -- 200 foglalva/megújítva, 409 más foglalja (a válasz megnevezi, ki és meddig)
+POST /api/kanban/:id/release  {"agent":"NEV"}                     -- 200 elengedve (released: true|false), 409 ha más tartja; {"force":true} operátori felülírás
+```
+
+- A foglalás egyetlen feltételes UPDATE (compare-and-set), így párhuzamos kérésekből pontosan egy nyer.
+- Lejárat: alapból 2 óra (`ttl_seconds`: 60 és 86400 között). A lejárt foglalást bárki átveheti; az átvételről rendszer-komment kerül a kártyára. Ugyanaz az ügynök újra foglalva megújítja.
+- Bármely úton (API, drag, nyers SQL) elengedi a foglalást (trigger): a `done`, az archiválás, a `waiting`-be vagy `testing`-be lépés, és ha az `assignee` a foglalótól eltérő névre változik (átadás). Az `in_progress`-en belüli mozgás és a megújítás megtartja.
+- A `GET /api/kanban` kártyáin látszik: `claimed_by`, `claimed_at`, `claim_expires_at`. Ezeket PUT nem írja.
+
+Függőség-alapú feloldás: ha egy kártya a move/PUT útján `done` lesz, minden `waiting` kártya, amelynek ez volt az utolsó nyitott blokkolója (`/api/kanban/:id/blockers`), visszakerül `planned`-be, automatikus kommenttel. A válasz `unblocked` mezője listázza őket.
+
+Lezárási bizonyíték (puha kapu): ha a kártya a move/PUT útján úgy lesz `done`, hogy az utolsó `in_progress` óta nincs rajta nem-`system` komment (ha sosem volt `in_progress`, a létrehozása óta), a válasz `evidence_warning` mezőt kap. A mozgatás ettől még sikeres. Bekapcsolt foglalásnál, ha egy másik ügynök által foglalt kártyát húznak `in_progress`-re, a válasz `claim_warning` mezőt kap.
+
+A feloldás (`waiting` -> `planned`, a válasz `unblocked` mezője) és a lezárási bizonyíték CSAK ebben a két HTTP-útvonalban él (`POST /api/kanban/:id/move` és `PUT /api/kanban/:id`), nem a `moveKanbanCard`-ban és nem triggerben. Van egy harmadik belépési pont, a `POST /api/kanban/:id/notify-unblocked`, amelyet a kártya-szkript (`scripts/kartya-es-ertesites.py`) hív meg, miután közvetlenül az SQLite-ban lezárt egy kártyát. Ugyanazt a feloldási értesítést futtatja, mint a két útvonal: rendszer-kommentet minden felszabadult kártyára, és ahol a kiosztási szabályok engedik, üzenetet (a címzettekről a `src/kanban-dispatch.ts` `resolveKanbanDispatch` függvénye dönt). Nem teszi át a `waiting` kártyát `planned`-be, és `evidence_warning` sem keletkezik rajta. Nem `done` kártyára 409 a válasz. Ami úgy zár le egy kártyát, hogy a három közül egyiket sem hívja (egy későbbi belső hívó, vagy egy szkript, ami közvetlenül az SQLite-ot írja), az nem küld feloldási értesítést, nem old fel függő kártyát, és `evidence_warning` sem keletkezik. Ami csak a `notify-unblocked`-ot hívja, az megkapja az értesítést, de a `planned`-be való visszakerülést és az `evidence_warning`-ot nem: a visszakerüléshez a kártyát a `/move` vagy a PUT útján kell lezárnia, vagy magának kell `planned`-be tennie a várakozó függő kártyáit, az `evidence_warning` pedig csak ezen a két útvonalon keletkezik. (A foglalás elengedése ettől eltér: azt trigger végzi, bármelyik úton.)
+
 ### Hozzáférés
 
 Közvetlen SQLite, vagy a dashboard kanban-felülete. A kártya-állapot minden ügynök kontextusába automatikusan bekerül.
@@ -53,6 +78,8 @@ Két, csak hozzáírt tábla rögzíti, mi változott egy kártyán, és ki vál
 - `kanban_card_field_events`: a `due_date`, az `assignee` vagy a `priority` valódi változásánként egy sor a `PUT /api/kanban/:id` útján (`field`, `old_value`, `new_value`, szövegként; `null`, ha a mező üres volt vagy üres lett). A változatlanul visszaküldött érték nem ír sort. Olvasása: `GET /api/kanban/:id/field-events`.
 
 Mindkét írás (`PUT /api/kanban/:id` és `POST /api/kanban/:id/move`) `actor`-a szöveg vagy `null`; más típust 400-zal utasít el, mielőtt bármit írna, és az írás a soraival egy tranzakció. Az üres vagy csak szóközből álló actor hiányzónak számít: ilyenkor a dashboard-munkamenet felhasználója kerül a sorba, a tokenes hívóé névtelen (`null`) marad.
+
+A `POST /api/kanban/:id/move` opcionálisan `expected_status`-t is elfogad (compare-and-set). Ha meg van adva, a mozgatás csak akkor történik meg, ha a kártya aktuális státusza ezzel egyezik, az ellenőrzés és az írás egyetlen utasítás; különben semmi nem változik, és a válasz 409 `{error: "status_conflict", current_status, expected_status}`. Ismeretlen `expected_status` érték 400, hiányzó kártya továbbra is 404, a mező nélkül pedig a mozgatás feltétel nélküli, mint eddig.
 
 A kettő szándékosan külön tábla: a `kanban_card_events` minden olvasója (köztük a beakadt kártyák jelzése és a státusz-kor lekérdezései) az ottani sort státusz-átmenetnek veszi. A flotta-átvitel a `kanban_card_events`-et átviszi, a `kanban_card_field_events`-et nem.
 
@@ -90,9 +117,9 @@ Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanWip` kulcs) → `window._
 A webes dashboard (`http://localhost:3420`) kártyaszerkesztőjének főbb viselkedései:
 
 - **Komment-szerző default:** az új komment szerzőjeként az elsődleges humán felelős jelenik meg előre kiválasztva (az `owner` típusú assignee), nem a bot.
-- **Alfeladat hozzáadás:** szülő-kártyánál (nem alfeladatnál) „Új alfeladat" form jelenik meg. Az új alfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet alfeladatot hozzáadni.
-- **Alfeladat törlés:** alfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
-- **Szülő-feladat szerkesztése:** alfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
+- **Részfeladat hozzáadás:** szülő-kártyánál (nem részfeladatnál) „Új részfeladat" form jelenik meg. Az új részfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet részfeladatot hozzáadni.
+- **Részfeladat törlés:** részfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
+- **Szülő-feladat szerkesztése:** részfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
 
 ### Beakadt kártyák vizuális jelzése
 

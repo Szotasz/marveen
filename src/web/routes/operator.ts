@@ -210,6 +210,41 @@ function agentFromPath(ctx: RouteContext, raw: string): string | null {
   return name
 }
 
+/**
+ * OPERRESTART409_1018: what an operator is told when the owner route's manual-restart gate refuses the main
+ * agent's restart (manual-restart-gate.ts). The operator route never forwards a body, so an operator cannot
+ * force; the owner route's hint (send {"force": true}) offers a step the operator cannot take. Not forcing is
+ * the intended default: an operator does not cut the owner's running turn.
+ */
+export const OPERATOR_MAIN_RESTART_BLOCKED =
+  'A fő ügynök éppen dolgozik (vagy az állapota nem olvasható), ezért az újraindítás nem indult el. ' +
+  'Próbáld újra később; a futó kört csak a gazda szakíthatja meg, a saját dashboardján.'
+
+/**
+ * Forwards the main agent's restart and rewrites a gate refusal for the operator. Every other answer goes
+ * through as the owner route wrote it.
+ */
+async function forwardMainRestart(ctx: RouteContext, path: string, handler: (c: RouteContext) => Promise<boolean>): Promise<void> {
+  let status = 200
+  let headers: http.OutgoingHttpHeaders = {}
+  let chunk = ''
+  const capture = {
+    writeHead(s: number, h?: http.OutgoingHttpHeaders) { status = s; headers = h ?? {}; return capture },
+    setHeader(k: string, v: string) { headers[k] = v; return capture },
+    end(c?: string | Buffer) { if (c != null) chunk = c.toString() },
+  } as unknown as http.ServerResponse
+  const handled = await handler({ ...ctx, req: emptyBodyRequest(ctx.req), res: capture, path })
+  if (!handled) { json(ctx.res, { error: 'Not available' }, 500); return }
+  let body: { error?: unknown; reason?: unknown } | null = null
+  try { body = JSON.parse(chunk) as { error?: unknown; reason?: unknown } } catch { body = null }
+  if (status === 409 && body?.error === 'restart-blocked') {
+    json(ctx.res, { error: 'restart-blocked', reason: body.reason, message: OPERATOR_MAIN_RESTART_BLOCKED }, 409)
+    return
+  }
+  ctx.res.writeHead(status, headers)
+  ctx.res.end(chunk)
+}
+
 async function forward(ctx: RouteContext, path: string, handler: (c: RouteContext) => Promise<boolean>, opts: { keepBody?: boolean } = {}): Promise<void> {
   const req = opts.keepBody ? ctx.req : emptyBodyRequest(ctx.req)
   const handled = await handler({ ...ctx, req, path })
@@ -336,7 +371,8 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
       return true
     }
     audit(ctx, `agent-${action}`, name)
-    await forward(ctx, `/api/agents/${encodeURIComponent(name)}/${action}`, c => tryHandleAgents(c, webDir))
+    if (isMainChannelsAgent(name)) await forwardMainRestart(ctx, `/api/agents/${encodeURIComponent(name)}/restart`, c => tryHandleAgents(c, webDir))
+    else await forward(ctx, `/api/agents/${encodeURIComponent(name)}/${action}`, c => tryHandleAgents(c, webDir))
     return true
   }
 

@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { clearCommandsForTest, listCommands } from '../web/commands.js'
 import { registerBuiltinCommands } from '../web/builtin-commands.js'
 import Database from 'better-sqlite3'
@@ -33,6 +34,7 @@ let base = ''
 let install = ''
 let stateDir = ''
 let ledgerDb = ''
+let ledgerDir = ''
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -67,7 +69,7 @@ beforeAll(async () => {
       res.end(JSON.stringify({ ok: true, result: (req.url ?? '').endsWith('/sendMessage') ? { message_id: 555 } : {} }))
     })
   })
-  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  await new Promise<void>((r, reject) => { server.on('error', reject); server.listen(0, '127.0.0.1', r) })
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
   install = mkdtempSync(join(tmpdir(), 'mcmd-install-'))
@@ -84,15 +86,16 @@ beforeAll(async () => {
   // checkout's own scripts/hooks/ dir (not from MARVEEN_INSTALL_DIR), so
   // without this override every hook spawn here would write real rows into
   // the checkout's live store (gitignored, but still cross-run shared state).
-  ledgerDb = join(mkdtempSync(join(tmpdir(), 'mcmd-ledger-')), 'claudeclaw.db')
+  ledgerDir = mkdtempSync(join(tmpdir(), 'mcmd-ledger-'))
+  ledgerDb = join(ledgerDir, 'claudeclaw.db')
 })
 
 afterAll(() => {
-  server.closeAllConnections()
-  server.close()
-  rmSync(install, { recursive: true, force: true })
-  rmSync(stateDir, { recursive: true, force: true })
-  rmSync(join(ledgerDb, '..'), { recursive: true, force: true })
+  server?.closeAllConnections()
+  server?.close()
+  // Each variable is '' if beforeAll failed early; join('', '..') === '..' used
+  // to delete the parent of the cwd here, so only non-empty temp dirs are removed.
+  for (const d of [install, stateDir, ledgerDir]) if (d) safeRmTmp(d)
 })
 
 beforeEach(() => {
@@ -236,10 +239,78 @@ describe('marveen-commands.py', () => {
       const r = await runHook(channel('/usage'))
       expect(r.code).toBe(2)
       const s = sends()
-      expect(s[0].text).toBe('Kvóta: nem mérhető (boom).\n\nToken-könyvelés: 789')
+      expect(s[0].text).toBe('Kvóta: nem mérhető (boom).\n\nCodex: nem mérhető (a lekérdezés nem adott Codex-adatot).\n\nToken-könyvelés: 789')
     } finally {
       writeFileSync(usageScript, original)
     }
+  })
+
+  // Codex block (card 1c079eae): usage-collect.py also reads the Codex quota,
+  // but from the last Codex rollout file, not a live call. So the reply
+  // states the reading's time, gives no percentage for a window whose reset
+  // time has passed, and names the reason when the Codex reading is missing.
+  async function usageWith(snapshot: unknown, replies = ['Token-könyvelés: 1']): Promise<string> {
+    const usageScript = join(install, 'scripts', 'usage-collect.py')
+    const original = readFileSync(usageScript, 'utf-8')
+    // The snapshot's JSON text as a Python string literal (JSON string escapes are valid Python).
+    writeFileSync(usageScript, `print(${JSON.stringify(JSON.stringify(snapshot))})\n`)
+    try {
+      dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies } })
+      const r = await runHook(channel('/usage'))
+      expect(r.code).toBe(2)
+      const s = sends()
+      expect(s).toHaveLength(1)
+      return s[0].text as string
+    } finally {
+      writeFileSync(usageScript, original)
+    }
+  }
+  const CLAUDE_OK = { ok: true, windows: { five_hour: { used_percent: 30, resets_at: 0 } } }
+  const FUTURE = 4102444800 // 2100-01-01, never expires during the test
+
+  it('/usage: fresh Codex reading follows the Claude block, with the reading time', async () => {
+    const taken = new Date(Date.now() - 90 * 60 * 1000).toISOString() // 90 minutes ago
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: true, source: 'authoritative', plan_type: 'plus', snapshot_at: taken,
+        windows: { five_hour: { used_percent: 20, resets_at: FUTURE }, weekly: { used_percent: 2.4, resets_at: FUTURE } } },
+    })
+    expect(text).toMatch(/^Claude keret-állapot:\n- 5 órás: 70% van hátra \(30% elhasználva\), megújul: [^\n]+\n\nCodex \(ChatGPT Plus\) keret-állapot \(adat: \d{4}-\d\d-\d\d \d\d:\d\d, 1 órája, a legutóbbi Codex-futásból, nem élő lekérdezés\):\n- 5 órás: 80% van hátra \(20% elhasználva\), megújul: 2100-01-01 \d\d:\d\d\n- heti: 98% van hátra \(2% elhasználva\), megújul: 2100-01-01 \d\d:\d\d\n\nToken-könyvelés: 1$/)
+  })
+
+  it('/usage: an expired Codex window shows no percentage, only when it expired', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: true, source: 'authoritative', plan_type: 'plus', snapshot_at: '2026-10-14T18:58:10.669Z',
+        windows: { five_hour: { used_percent: 2, resets_at: 1792020915 }, weekly: { used_percent: 2, resets_at: FUTURE } } },
+    })
+    expect(text).toMatch(/\n- 5 órás: nincs friss adat \(az ablak lejárt 2026-10-1[45] \d\d:\d\d-kor\)\n/)
+    expect(text).not.toMatch(/5 órás: 98%/)
+    expect(text).toMatch(/\n- heti: 98% van hátra \(2% elhasználva\)/)
+    expect(text).toMatch(/adat: 2026-10-14 \d\d:\d\d, \d+ (órája|napja)/)
+  })
+
+  it('/usage: Codex ok:false is one short reason line, the Claude block is unchanged', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: false, source: 'authoritative', error: 'no ~/.codex/sessions rollout files found' },
+    })
+    expect(text).toMatch(/^Claude keret-állapot:\n- 5 órás: 70% van hátra \(30% elhasználva\), megújul: [^\n]+\n\nCodex: nem mérhető \(no ~\/\.codex\/sessions rollout files found\)\.\n\nToken-könyvelés: 1$/)
+  })
+
+  it('/usage: Codex never ran on this host (reason no_sessions) gets its own Hungarian line, not "nem mérhető"', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: false, source: 'authoritative', reason: 'no_sessions', error: 'no ~/.codex/sessions rollout files found' },
+    })
+    expect(text).toMatch(/\n\nCodex: ezen a gépen még nem futott, nincs mért adat\.\n\nToken-könyvelés: 1$/)
+    expect(text).not.toMatch(/nem mérhető/)
+    expect(text).not.toMatch(/rollout files found/)
+  })
+
+  it('/usage: a snapshot without the codex key says so instead of dropping the block', async () => {
+    const text = await usageWith({ claude: CLAUDE_OK })
+    expect(text).toMatch(/\n\nCodex: nem mérhető \(a lekérdezés nem adott Codex-adatot\)\.\n\nToken-könyvelés: 1$/)
   })
 
   it('handled:false (a non-registry /word): exit 0, empty stdout, nothing sent', async () => {

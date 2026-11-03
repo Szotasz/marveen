@@ -67,6 +67,7 @@ vi.mock('../web/voice-directive.js', () => ({
 
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: (name: string) => (name.startsWith('remote') ? 'build-host' : null),
+  readAgentPullDelivery: () => false,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   isKnownAgent: () => true,
   agentDir: (name: string) => agentDirOf(name),

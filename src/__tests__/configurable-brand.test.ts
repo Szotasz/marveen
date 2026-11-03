@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { homedir } from 'node:os'
 import { resolveBrandName, resolveServiceId, brandSlug } from '../config.js'
 import {
   substituteTemplatePlaceholders,
@@ -101,7 +102,14 @@ describe('launchd / channels label derivation for a non-marveen identity', () =>
     expect(channelsLaunchdLabel(serviceId)).toBe('com.acmeai.channels')
     expect(channelsPlistPath(serviceId)).toMatch(/\/com\.acmeai\.channels\.plist$/)
     assertNoMarveen(channelsLaunchdLabel(serviceId), 'channelsLaunchdLabel')
-    assertNoMarveen(channelsPlistPath(serviceId), 'channelsPlistPath')
+    // The plist path sits under the operator's HOME, which is not derived from
+    // the brand: on a host whose user is named "marveen" (HOME=/home/marveen)
+    // the whole-path check went red with no brand leak at all. Pin the HOME
+    // prefix, then check only the part the code derives.
+    const plist = channelsPlistPath(serviceId)
+    const home = homedir()
+    expect(plist.startsWith(home), `channelsPlistPath is not under HOME: ${plist}`).toBe(true)
+    assertNoMarveen(plist.slice(home.length), 'channelsPlistPath (below HOME)')
   })
 
   it('keeps the default label as com.marveen.channels (zero change for existing installs)', () => {

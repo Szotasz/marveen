@@ -49,8 +49,9 @@ def write_rules(path, data):
         json.dump(data, fh)
 
 
-def run_hook(payload, rules_file=None, cwd=None):
+def run_hook(payload, rules_file=None, cwd=None, extra_env=None):
     env = dict(os.environ)
+    env.update(extra_env or {})
     if rules_file is not None:
         env["OUTGOING_COPY_GATE_RULES"] = rules_file
     else:
@@ -354,6 +355,28 @@ def main():
         check("tiszta gombfeliratok atmennek (exit 0)", code, 0)
         code, out, err = run_hook(gombos([]), rules_file=active)
         check("ures gomblista (a billentyuzet levetele) atmegy (exit 0)", code, 0)
+        # DCBTN1023: a Discord reply tool gombjai objektumok ({label, style}); a
+        # felirat ott is kimeno szoveg, az objektum sajat szavai (label, style) nem.
+        def dc_gombos(buttons):
+            return {"tool_name": "mcp__plugin_discord_discord__reply",
+                    "tool_input": {"chat_id": "1", "text": CLEAN_HU_OK, "buttons": buttons}}
+        code, out, err = run_hook(dc_gombos([{"label": "Igen", "style": "success"}, {"label": "Nem — később", "style": "danger"}]),
+                                  rules_file=active)
+        check("Discord: gondolatjel a gomb label-jeben blokkol (exit 2)", code, 2)
+        code, out, err = run_hook(dc_gombos([{"label": "Igen", "style": "success"}, {"label": "Nem", "style": "danger"}]),
+                                  rules_file=active)
+        check("Discord: tiszta gomb-objektumok atmennek (exit 0)", code, 0)
+        # Ami a kapuhoz jut: CSAK a feliratok, az objektum szavai (label, style,
+        # success) nem -- azok ASCII-zajkent huznak le az ekezet-aranyon.
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys,json\n"
+             "spec=importlib.util.spec_from_file_location('g',sys.argv[1]); g=importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n"
+             "print(json.dumps(g.collect_channel_body(json.loads(sys.argv[2]), False)))",
+             HOOK, json.dumps({"text": "Mehet?", "buttons": [{"label": "Igen", "style": "success"}, {"label": "Nem"}, {"style": "danger"}, "Talán"]})],
+            capture_output=True, text=True, timeout=20)
+        check("Discord: a kapu a gomb-objektumbol csak a feliratot olvassa",
+              json.loads(probe.stdout or "null"), "Mehet?\nIgen\nNem\n{'style': 'danger'}\nTalán")
 
         # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
         # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,
@@ -380,6 +403,181 @@ def main():
             code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": {"q": "x — y"}},
                                       rules_file=active)
             check(f"connector {tool} is a read: passes untouched (exit 0)", code, 0)
+
+        # --- tool names are classified by SUFFIX ----------------------------
+        # vendor/gmail-mcp-fork prepends its tool prefix verbatim, so
+        # mcp__gmail__v2_reply_all / ...work-send_message must be audited
+        # exactly like the bare name. EMAIL_TOOL_RE's `gmail__(reply|...)$`
+        # missed every prefixed connector name, and reply_all on a server whose
+        # segment is not exactly "gmail" too, so their text went out unaudited.
+        dash = CLEAN_HU_OK + " — mégis."
+        for pre in ("", "v2_", "v2", "work-", "shared_inbox_", "v-2_"):
+            for base in ("send_email", "reply_all", "send_message", "reply", "forward",
+                         "draft_email", "create_draft", "update_draft"):
+                name = f"mcp__gmail__{pre}{base}"
+                code, out, err = run_hook({"tool_name": name, "tool_input": {
+                    "to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": dash}},
+                    rules_file=active)
+                check(f"prefix {pre!r}: {base} with em dash is audited and blocks (exit 2)", code, 2)
+                code, out, err = run_hook({"tool_name": name, "tool_input": {
+                    "to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": CLEAN_HU_OK}},
+                    rules_file=active)
+                check(f"prefix {pre!r}: {base} clean passes (exit 0)", code, 0)
+            code, out, err = run_hook({"tool_name": f"mcp__google-workspace__{pre}manage_email",
+                                       "tool_input": {"operation": "send", "to": "a@b.hu", "body": dash}},
+                                      rules_file=active)
+            check(f"prefix {pre!r}: manage_email send with em dash blocks (exit 2)", code, 2)
+            # send_draft carries only a draftId: nothing of ours to audit, and
+            # whether it may be SENT is the approval gate's level decision; the
+            # copy gate must not turn the empty payload into a hard deny.
+            code, out, err = run_hook({"tool_name": f"mcp__gmail__{pre}send_draft",
+                                       "tool_input": {"draftId": "r-1"}}, rules_file=active)
+            check(f"prefix {pre!r}: send_draft (draftId only) is not a copy-audit target (exit 0)", code, 0)
+            for base in ("search_emails", "read_email", "delete_draft", "list_drafts", "get_thread"):
+                code, out, err = run_hook({"tool_name": f"mcp__gmail__{pre}{base}",
+                                           "tool_input": {"query": "x — y", "body": dash}},
+                                          rules_file=active)
+                check(f"prefix {pre!r}: {base} is a read: passes untouched (exit 0)", code, 0)
+        for name in ("mcp__server-gmail-autoauth-mcp__reply_all", "mcp__workmail__v2_reply_all",
+                     "mcp__google_workspace__send_gmail_message", "mcp__google_workspace__draft_gmail_message"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"messageId": "m1", "body": dash}},
+                                      rules_file=active)
+            check(f"{name} (no 'gmail__' before the base) is audited and blocks (exit 2)", code, 2)
+        for name in ("mcp__gmail__v2_forwarding_settings", "mcp__gmail__v2_send_drafts_list",
+                     "mcp__workmail__v2_forward", "mcp__plugin_discord_discord__v2_reply",
+                     "mcp__google-workspace__manage_emails_bulk"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"operation": "send", "body": dash}},
+                                      rules_file=active)
+            check(f"look-alike {name} is not an outbound mail tool (exit 0)", code, 0)
+        # A non-dict tool_input on a PREFIXED send is still fail-closed (the
+        # non-dict net used the old regexes too).
+        code, out, err = run_hook({"tool_name": "mcp__gmail__v2_reply_all", "tool_input": 42},
+                                  rules_file=active)
+        check("prefixed reply_all with a non-dict tool_input blocks (exit 2)", code, 2)
+
+    # --- harder-mail (HARDERMAILGATES1019): the draft AND the send tools are audited ---
+    with tempfile.TemporaryDirectory() as tmp:
+        active = rules_path(tmp, "hm.json")
+        write_rules(active, {"bad_name_patterns": [r"\bTeszt[- ]?Elek\b"], "correction": "x"})
+        dash = CLEAN_HU_OK + " \u2014 gondolatjel"
+        # The names come from the shared fixture (PR #2075 review), so a classifier
+        # swap that drops one fails here; the name set itself is pinned too.
+        with open(os.path.join(HERE, "fixtures", "harder-mail-tool-names.json"), encoding="utf-8") as fh:
+            hm_names = json.load(fh)
+        check("harder-mail fixture: the three letter tools", hm_names["names"],
+              ["mcp__harder-mail__send_mail", "mcp__harder-mail__send_mail_auto",
+               "mcp__harder-mail__create_draft"])
+        for tool in hm_names["names"]:
+            want = 2 if hm_names["cases"][tool]["copy_gate_em_dash"] == "deny" else 0
+            reply = {"tool_name": tool, "tool_input": {"account": "ceges", "reply_to_uid": 7,
+                                                       "reply_folder": "INBOX", "body": dash}}
+            code, out, err = run_hook(reply, rules_file=active)
+            check(f"{tool}: em dash in a reply body -> blocked (exit 2)", code, want)
+            payload = {"tool_name": tool, "tool_input": {"account": "ceges", "to": ["a@b.hu"],
+                                                         "subject": "Targy", "body": dash}}
+            code, out, err = run_hook(payload, rules_file=active)
+            check(f"{tool}: em dash in body -> blocked (exit 2)", code, want)
+            payload["tool_input"]["body"] = CLEAN_HU_OK
+            code, out, err = run_hook(payload, rules_file=active)
+            check(f"{tool}: clean body -> proceeds (exit 0)", code, 0)
+            payload["tool_input"]["subject"] = "Targy \u2014 gondolatjel"
+            code, out, err = run_hook(payload, rules_file=active)
+            check(f"{tool}: em dash in SUBJECT -> blocked (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__harder-mail__search_mail",
+                                   "tool_input": {"account": "ceges", "query": "x \u2014 y"}},
+                                  rules_file=active)
+        check("harder-mail search_mail is a read: passes untouched (exit 0)", code, 0)
+
+    # --- harder-mail body_format (HARDERMAILGATES1019, design 6.3a): the RENDERED text is audited ---
+    with tempfile.TemporaryDirectory() as tmp:
+        active = rules_path(tmp, "hm2.json")
+        write_rules(active, {"bad_name_patterns": [r"\bTeszt[- ]?Elek\b"], "correction": "x"})
+        # A stand-in for the server venv's python: `-m harder_mail_mcp.render --format X`
+        # -> {"text": ...} with tags stripped and entities decoded, like the real CLI.
+        stub = os.path.join(tmp, "fake-python")
+        with open(stub, "w", encoding="utf-8") as fh:
+            fh.write("#!" + sys.executable + "\n"
+                     "import html, json, re, sys\n"
+                     "assert sys.argv[1:5] == ['-I', '-m', 'harder_mail_mcp.render', '--format'], sys.argv\n"
+                     "body = sys.stdin.read()\n"
+                     "if '<script' in body:\n"
+                     "    sys.stderr.write('A levéltörzs HTML-je nem engedett szerkezetet tartalmaz: <script>')\n"
+                     "    sys.exit(1)\n"
+                     "print(json.dumps({'text': html.unescape(re.sub(r'<[^>]+>|[*_]', '', body)), 'html': ''}))\n")
+        os.chmod(stub, 0o755)
+        env_ok = {"HARDER_MAIL_PYTHON": stub}
+
+        def hm(fmt, body, env=env_ok, tool="mcp__harder-mail__create_draft"):
+            payload = {"tool_name": tool, "tool_input": {"account": "ceges", "to": ["a@b.hu"],
+                                                         "subject": "Árajánlat", "body": body,
+                                                         "body_format": fmt}}
+            return run_hook(payload, rules_file=active, extra_env=env)
+
+        hidden = "<p>Szia! K&ouml;sz&ouml;n&ouml;m sz&eacute;pen, holnap k&uuml;ld&ouml;m &aacute;t a sz&aacute;ml&aacute;t &mdash; &uuml;dv.</p>"
+        code, out, err = hm("html", hidden)
+        check("harder-mail html: an em dash hidden as &mdash; -> blocked (exit 2)", code, 2)
+        code, out, err = hm("markdown", "**Szia!** Köszönöm szépen, holnap küldöm át a számlát \u2014 üdv.")
+        check("harder-mail markdown: em dash in the rendered text -> blocked (exit 2)", code, 2)
+        # The discriminating cases: markup splits a word, so the RAW audit sees "k" + "uldom"
+        # and passes (measured: rc 0 without the render path); the rendered text says "kuldom".
+        split_html = "<p>Köszönöm szépen a megkeresést, holnap k<b>uldom</b> a számlát és a részleteket is.</p>"
+        split_md = "Köszönöm szépen a megkeresést, holnap **k**uldom a számlát és a részleteket is."
+        code, out, err = hm("html", split_html)
+        check_true("harder-mail html: accent error hidden by a tag -> blocked on the rendered text",
+                   code == 2 and "kuldom" in err, f"exit={code} err={err[:200]!r}")
+        code, out, err = hm("markdown", split_md)
+        check_true("harder-mail markdown: accent error hidden by ** -> blocked on the rendered text",
+                   code == 2 and "kuldom" in err, f"exit={code} err={err[:200]!r}")
+        code, out, err = hm("html", "<p>" + CLEAN_HU_OK + "</p>")
+        check("harder-mail html: clean rendered text -> proceeds (exit 0)", code, 0)
+        code, out, err = hm("html", "<p>" + CLEAN_HU_OK + "</p>", tool="mcp__harder-mail__send_mail")
+        check("harder-mail html send: clean rendered text -> proceeds (exit 0)", code, 0)
+        code, out, err = hm("html", "<script>x</script>")
+        check_true("harder-mail html: render rejects -> blocked with the render's reason",
+                   code == 2 and "<script>" in err, f"exit={code} err={err[:200]!r}")
+        code, out, err = hm("html", "<p>" + CLEAN_HU_OK + "</p>", env={"HARDER_MAIL_PYTHON": os.path.join(tmp, "nincs")})
+        check_true("harder-mail html: render unavailable -> fail-closed (exit 2), raw markup not audited",
+                   code == 2 and "render" in err, f"exit={code} err={err[:200]!r}")
+        # Module-path hijack (security review): a harder_mail_mcp/render.py planted in the
+        # agent's cwd must not answer for the real one. The system python has no real
+        # package, so with -I and a fixed cwd the render is unavailable -> fail-closed;
+        # without them the planted module would say "clean" and the letter would pass.
+        plant = os.path.join(tmp, "plant", "harder_mail_mcp")
+        os.makedirs(plant)
+        open(os.path.join(plant, "__init__.py"), "w").close()
+        with open(os.path.join(plant, "render.py"), "w", encoding="utf-8") as fh:
+            fh.write("import json\nprint(json.dumps({'text': 'Szia!', 'html': ''}))\n")
+        payload = {"tool_name": "mcp__harder-mail__send_mail",
+                   "tool_input": {"account": "ceges", "to": ["a@b.hu"], "subject": "x",
+                                  "body": "<p>a \u2014 b</p>", "body_format": "html"}}
+        code, out, err = run_hook(payload, rules_file=active, cwd=os.path.dirname(plant),
+                                  extra_env={"HARDER_MAIL_PYTHON": sys.executable})
+        check("harder-mail render: a module planted in cwd is not used (fail-closed, exit 2)", code, 2)
+        code, out, err = hm("html", "<p>" + CLEAN_HU_OK + "</p>", env={"HARDER_MAIL_PYTHON": "python3"})
+        check_true("harder-mail render: a non-absolute interpreter path is refused",
+                   code == 2 and "abszolut" in err, f"exit={code} err={err[:200]!r}")
+        # The floor (security review): a stand-in render that answers "clean" cannot
+        # hide what a local tag strip of the raw body shows.
+        liar = os.path.join(tmp, "liar-python")
+        with open(liar, "w", encoding="utf-8") as fh:
+            fh.write("#!" + sys.executable + "\n"
+                     "import json, sys\nsys.stdin.read()\n"
+                     "print(json.dumps({'text': 'Szia! Köszönöm szépen.', 'html': ''}))\n")
+        os.chmod(liar, 0o755)
+        code, out, err = hm("html", "<p>" + CLEAN_HU_OK + " &mdash; x</p>", env={"HARDER_MAIL_PYTHON": liar})
+        check("harder-mail render floor: a render that hides an &mdash; -> still blocked (exit 2)", code, 2)
+        code, out, err = hm("html", split_html, env={"HARDER_MAIL_PYTHON": liar})
+        check_true("harder-mail render floor: a render that hides k<b>uldom</b> -> still blocked",
+                   code == 2 and "kuldom" in err, f"exit={code} err={err[:200]!r}")
+        code, out, err = hm("rtf", CLEAN_HU_OK)
+        check("harder-mail: unknown body_format -> fail-closed (exit 2)", code, 2)
+        code, out, err = hm("plain", CLEAN_HU_OK, env={"HARDER_MAIL_PYTHON": os.path.join(tmp, "nincs")})
+        check("harder-mail plain: no render needed (exit 0)", code, 0)
+        # The render is the harder-mail server's: another server's body_format is
+        # audited raw as before, and never fails closed for a missing harder-mail render.
+        code, out, err = hm("html", "<p>" + CLEAN_HU_OK + "</p>", env={"HARDER_MAIL_PYTHON": os.path.join(tmp, "nincs")},
+                            tool="mcp__google_workspace__draft_gmail_message")
+        check("another server's body_format=html: audited raw, no harder-mail render (exit 0)", code, 0)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

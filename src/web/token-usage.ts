@@ -11,8 +11,36 @@ import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { toolInputPreview } from './tool-input-preview.js'
+import { resolveMainAgentRotatedConfigDir } from './agent-process.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+
+function realOrSelf(p: string): string {
+  try { return realpathSync(p) } catch { return p }
+}
+
+// Every config root the main agent may have written a transcript under: the
+// probe's candidate list (shared ~/.claude, .channels-config, an operator-set
+// MAIN_AGENT_CONFIG_DIR) plus the one launcher resolution that list does not
+// carry -- a rotated plan dir. scripts/main-agent-isolated-config.mjs launches
+// the main agent there (explicit > rotated > isolated), and from that moment
+// its transcripts land in <plan.configDir>/projects, which no candidate above
+// names. The launcher's own resolver is called rather than re-reading the plan
+// files here: it carries the gates (isolation on, 2+ plans, an active entry)
+// that decide whether the launcher uses the dir at all.
+// A union, not a precedence pick: the roots the agent has LEFT still hold real
+// history, and the candidates that are not in use simply have no directory.
+//
+// `pooled` marks the rotated plan dir. A plan comes from a pool that sub-agents
+// can be assigned too (activePlanByAgent), so its projects/ is NOT the main
+// agent's alone: it is name-attributed, like the shared root, never booked whole.
+function mainAgentTranscriptRoots(): Array<{ root: string; pooled: boolean }> {
+  const roots = mainConfigRoots().map((root) => ({ root, pooled: false }))
+  let rotated: string | null = null
+  try { rotated = resolveMainAgentRotatedConfigDir() } catch { rotated = null }
+  if (rotated && !roots.some((r) => r.root === rotated)) roots.push({ root: rotated, pooled: true })
+  return roots
+}
 
 // The main agent's transcripts live under the directory Claude Code derives
 // from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
@@ -42,9 +70,14 @@ interface AgentTranscriptSource {
 // fixture. Production callers pass nothing.
 export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
-  if (!existsSync(PROJECTS_DIR)) return sources
   const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
-  for (const entry of readdirSync(PROJECTS_DIR)) {
+  // A missing shared root skips THIS loop only. It used to return from the
+  // whole function, so an install whose agents all run on isolated config dirs
+  // -- the main agent included, which then never creates ~/.claude/projects --
+  // reported nothing at all, never reaching the isolated loops below.
+  let sharedEntries: string[] = []
+  try { sharedEntries = readdirSync(PROJECTS_DIR) } catch { /* no shared root on this install */ }
+  for (const entry of sharedEntries) {
     const full = join(PROJECTS_DIR, entry)
     let stat
     try { stat = statSync(full) } catch { continue }
@@ -149,19 +182,41 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
   // the shared root resolves to the same path and is skipped), and the UNIQUE
   // INDEX plus the ON CONFLICT ... DO UPDATE upsert at the insert site absorbs
   // any overlap the cursor table misses (backfill-only, see the note above).
-  const seenMainDirs = new Set<string>()
-  for (const s of sources) {
-    if (s.agent !== MAIN_AGENT_ID) continue
-    try { seenMainDirs.add(realpathSync(s.projectDir)) } catch { seenMainDirs.add(s.projectDir) }
-  }
-  for (const root of mainConfigRoots()) {
-    const candidate = join(root, 'projects', mainDirName)
-    if (!existsSync(candidate)) continue
-    let real: string
-    try { real = realpathSync(candidate) } catch { real = candidate }
-    if (seenMainDirs.has(real)) continue
-    seenMainDirs.add(real)
-    sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
+  //
+  // The list of roots also follows the launcher onto a rotated plan dir
+  // (mainAgentTranscriptRoots), and a root that is the main agent's OWN --
+  // i.e. whose projects/ is not the shared one and not a pooled plan dir -- is
+  // booked to it WHOLE, every project dir in it, by the same owner rule the
+  // sub-agent loop applies (this picks up e.g. .channels-config/projects/-tmp, a
+  // session the main agent ran from /tmp). The shared root and a pooled plan
+  // dir stay name-attributed: there the encoded dir name is the
+  // only thing that says whose work a directory is.
+  //
+  // The realpath set covers EVERY source already booked, to any agent, so a
+  // directory reached through two roots (a symlinked MAIN_AGENT_CONFIG_DIR, a
+  // .channels-config/projects that points back at the shared root) is parsed
+  // once. The upsert would hide a second parse in the row counts -- identical
+  // rows collapse -- but not in the work, and not in the per-file cursors.
+  const claimed = new Set<string>(sources.map((s) => realOrSelf(s.projectDir)))
+  for (const { root, pooled } of mainAgentTranscriptRoots()) {
+    const projects = join(root, 'projects')
+    if (!existsSync(projects)) continue
+    let entries: string[]
+    if (pooled || resolvesToSharedProjectsRoot(projects)) {
+      entries = [mainDirName]
+    } else {
+      try { entries = readdirSync(projects) } catch { continue }
+    }
+    for (const entry of entries) {
+      const candidate = join(projects, entry)
+      let stat
+      try { stat = statSync(candidate) } catch { continue }
+      if (!stat.isDirectory()) continue
+      const real = realOrSelf(candidate)
+      if (claimed.has(real)) continue
+      claimed.add(real)
+      sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
+    }
   }
 
   return sources
@@ -695,5 +750,154 @@ export function correlateWithKanban(): void {
         WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
       `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
     }
+  }
+}
+
+// === Tokens per card (card 0f21864e, #568) ===
+//
+// What a card cost: the assignee agent's token rows while the card was
+// in_progress. The windows come from kanban_card_events (to_status
+// 'in_progress' opens one, the next move out of it closes it; an open window
+// runs until `now`), not from updated_at, which any comment or subcard write
+// bumps.
+//
+// The honest limit: an agent that has two cards in_progress at once spends ONE
+// stream of tokens, and nothing in the transcript says which card a call was
+// for. The total is therefore an upper bound, and `overlappingCards` says how
+// many other cards of the same agent were in_progress during the windows. No
+// split is invented.
+
+export interface CardWindow { from: number; to: number }
+
+export interface CardStatusEvent { from_status: string | null; to_status: string; created_at: number }
+
+/** in_progress windows from a card's status events (oldest first). Pure. */
+export function inProgressWindows(events: CardStatusEvent[], now: number): CardWindow[] {
+  const windows: CardWindow[] = []
+  let openedAt: number | null = null
+  for (const ev of events) {
+    if (ev.to_status === 'in_progress') {
+      if (openedAt === null) openedAt = ev.created_at
+    } else if (openedAt !== null) {
+      windows.push({ from: openedAt, to: ev.created_at })
+      openedAt = null
+    }
+  }
+  if (openedAt !== null) windows.push({ from: openedAt, to: now })
+  return windows
+}
+
+export interface CardTokenModelRow {
+  model: string | null
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
+export interface CardTokenUsage {
+  /** The token_usage agent the assignee resolved to, or null (human, unassigned). */
+  agent: string | null
+  windows: CardWindow[]
+  totalCalls: number
+  /** input + output + cache read + cache creation. */
+  totalTokens: number
+  outputTokens: number
+  /** input + cache creation: what was newly read in, as opposed to re-read from cache. */
+  freshInputTokens: number
+  cacheReadTokens: number
+  perModel: CardTokenModelRow[]
+  /** Other cards of the same agent that were in_progress at some point of the windows. */
+  overlappingCards: number
+  /** Latest collected token row of this agent: rows after it are not in the sum yet. */
+  dataUntil: number | null
+}
+
+/** Map a card assignee onto the token_usage agent name (lowercase id). */
+export function tokenAgentForAssignee(
+  assignee: string | null | undefined,
+  opts: { botName: string; mainAgentId: string },
+): string | null {
+  const a = (assignee ?? '').trim().toLowerCase()
+  if (!a) return null
+  if (a === opts.botName.toLowerCase()) return opts.mainAgentId.toLowerCase()
+  return a
+}
+
+export function getCardTokenUsage(
+  cardId: string,
+  opts: { botName: string; mainAgentId: string; now?: number },
+): CardTokenUsage | null {
+  const db = getDb()
+  const card = db.prepare('SELECT id, assignee FROM kanban_cards WHERE id = ?').get(cardId) as
+    { id: string; assignee: string | null } | undefined
+  if (!card) return null
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const agent = tokenAgentForAssignee(card.assignee, opts)
+  const eventsStmt = db.prepare(
+    'SELECT from_status, to_status, created_at FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC',
+  )
+  const windows = inProgressWindows(eventsStmt.all(cardId) as CardStatusEvent[], now)
+  const empty: CardTokenUsage = {
+    agent, windows, totalCalls: 0, totalTokens: 0, outputTokens: 0, freshInputTokens: 0, cacheReadTokens: 0, perModel: [], overlappingCards: 0, dataUntil: null,
+  }
+  if (!agent) return empty
+  const until = db.prepare('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?').get(agent) as { ts: number | null }
+  empty.dataUntil = until.ts ?? null
+  if (windows.length === 0) return empty
+
+  const byModel = new Map<string, CardTokenModelRow>()
+  const sumStmt = db.prepare(`
+    SELECT model, COUNT(*) AS calls,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+      COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreationTokens
+    FROM token_usage
+    WHERE agent = ? AND timestamp >= ? AND timestamp < ?
+    GROUP BY model
+  `)
+  for (const w of windows) {
+    for (const r of sumStmt.all(agent, w.from, w.to) as CardTokenModelRow[]) {
+      const key = r.model ?? ''
+      const acc = byModel.get(key)
+      if (!acc) { byModel.set(key, { ...r }); continue }
+      acc.calls += r.calls
+      acc.inputTokens += r.inputTokens
+      acc.outputTokens += r.outputTokens
+      acc.cacheReadTokens += r.cacheReadTokens
+      acc.cacheCreationTokens += r.cacheCreationTokens
+    }
+  }
+  // A model row with no tokens at all (the transcript's '<synthetic>' entries) is noise here.
+  const perModel = [...byModel.values()]
+    .filter((r) => r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheCreationTokens > 0)
+    .sort((a, b) => b.outputTokens - a.outputTokens)
+  const totalCalls = perModel.reduce((s, r) => s + r.calls, 0)
+  const outputTokens = perModel.reduce((s, r) => s + r.outputTokens, 0)
+  const freshInputTokens = perModel.reduce((s, r) => s + r.inputTokens + r.cacheCreationTokens, 0)
+  const cacheReadTokens = perModel.reduce((s, r) => s + r.cacheReadTokens, 0)
+  const totalTokens = perModel.reduce(
+    (s, r) => s + r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheCreationTokens, 0)
+
+  // Overlap: the agent's other cards and their own in_progress windows.
+  const names = [agent]
+  if (agent === opts.mainAgentId.toLowerCase()) names.push(opts.botName.toLowerCase())
+  const others = db.prepare(`
+    SELECT DISTINCT e.card_id AS id FROM kanban_card_events e
+    JOIN kanban_cards c ON c.id = e.card_id
+    WHERE e.card_id <> ? AND lower(c.assignee) IN (${names.map(() => '?').join(',')})
+      AND (e.to_status = 'in_progress' OR e.from_status = 'in_progress')
+  `).all(cardId, ...names) as { id: string }[]
+  let overlappingCards = 0
+  for (const o of others) {
+    const ow = inProgressWindows(eventsStmt.all(o.id) as CardStatusEvent[], now)
+    if (ow.some((x) => windows.some((w) => x.from < w.to && w.from < x.to))) overlappingCards++
+  }
+
+  return {
+    agent, windows, totalCalls, totalTokens, outputTokens, freshInputTokens, cacheReadTokens, perModel,
+    overlappingCards, dataUntil: empty.dataUntil,
   }
 }

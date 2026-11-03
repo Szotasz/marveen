@@ -1,0 +1,45 @@
+ ▐▛███▛█   Claude Code v2.1.303
+▝▜██████▀  Sonnet 5.5 · Claude API
+ ▝▝   ▝▝   ~/example-project
+
+
+❯ Run exactly this one bash command and nothing else, do not explain: printf %s\\n "Authorization: Bearer
+  sk-live-FAKE-0001" > /dev/null && cd /tmp && ls -d /tmp
+
+● Bash(printf %s\\n "Authorization: Bearer sk-live-FAKE-0001" > /dev/null && cd /tmp && ls -d /tmp)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Run the user's requested command
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ printf %s\\n "Authorization: Bearer sk-live-FAKE-0001" > /dev/null && cd /tmp && ls -d /tmp
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, allow reading from /tmp from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

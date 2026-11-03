@@ -1,4 +1,5 @@
 import { tmuxStderr } from './tmux-stderr.js'
+import { protectTrailingSemicolon } from './tmux-keys.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -34,6 +35,7 @@ import {
   type GateInputs,
 } from '../context-restart-gate.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { frozenSkip } from './fleet-freeze.js'
 
 // Fleet context-restart gate: proactively send /clear to an agent session
 // before the context grows unwieldy, while holding the send lane and only
@@ -719,7 +721,7 @@ export function diagnoseAgent(name: string, nowMs: number) {
  */
 export async function sendSlashCommand(session: string, command: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', async () => {
-    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), '-l', protectTrailingSemicolon(command)], { timeout: 5000 })
     execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
   })
 }
@@ -964,6 +966,11 @@ function scheduleSweep(name: string, delayMs: number): void {
     if (!currentRoster().includes(name)) {
       sweepTimers.delete(name)
       logger.info({ agent: name }, 'context-restart-gate: agent gone from roster, sweep retired')
+      return
+    }
+    // KILLSWITCH1022: a frozen fleet is not restarted; keep the timer alive.
+    if (frozenSkip('context-restart-gate')) {
+      scheduleSweep(name, DISABLED_RECHECK_MS)
       return
     }
     if (name === MAIN_AGENT_ID) await runMainSweepHook()

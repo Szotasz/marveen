@@ -11,7 +11,7 @@
   <!-- QR generator for the mobile-login button (renders a scannable QR of the
        ?token= bootstrap URL on the already-authenticated desktop -- the token
        never travels through chat). MIT, dependency-free, same CDN as xterm. -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js" integrity="sha384-e9EFD6BGC90bkW9aDV5xbbBfzwN7G8YImHao2lfLVKV/hPB0E0go+H3I64h7oHtA" crossorigin="anonymous"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <link rel="icon" href="/api/marveen/avatar">
@@ -76,6 +76,14 @@
       <a href="#" class="sb-link" data-page="kanban">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>
         <span class="sb-label">Kanban</span>
+      </a>
+      <a href="#" class="sb-link" data-page="notes">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+        <span class="sb-label">Jegyzetek</span>
+      </a>
+      <a href="#" class="sb-link" data-page="projects">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+        <span class="sb-label" data-i18n="nav.projects">Projektek</span>
       </a>
       <a href="#" class="sb-link" data-page="approvals">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
@@ -206,6 +214,9 @@
       </div>
     </nav>
     <div class="sidebar-docs">
+      <!-- KILLSWITCH1022: the fleet's red button. Anyone signed in may pull it;
+           lifting it takes the owner's login (the banner below). -->
+      <button type="button" class="fleet-freeze-btn" id="fleetFreezeBtn" data-i18n="fleet_freeze.button">Piros gomb: flotta megállítása</button>
       <a href="#" class="sb-link" data-page="docs">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
         <span class="sb-label">Dokumentáció</span>
@@ -237,6 +248,14 @@
          receiving unreleased code until switched back. Dev machines are on
          develop on purpose, so the dismissal persists per browser+branch.
          Populated by updateBranchDriftUI() from /api/updates. -->
+    <!-- KILLSWITCH1022: shown while the fleet is frozen; not dismissible. -->
+    <div id="fleetFreezeBanner" class="auth-setup-banner fleet-freeze-banner" role="alert" hidden>
+      <span id="fleetFreezeBannerText"></span>
+      <span class="auth-setup-banner-actions">
+        <button class="btn-primary btn-compact" id="fleetUnfreezeBtn" data-i18n="fleet_freeze.unfreeze">Feloldás</button>
+      </span>
+    </div>
+
     <div id="branchDriftBanner" class="auth-setup-banner branch-drift-banner" hidden>
       <span id="branchDriftBannerText"></span>
       <span class="auth-setup-banner-actions">
@@ -310,6 +329,10 @@
         <span id="kanbanTotals" style="margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap;"></span>
         <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
+
+      <!-- The owner's own queue: what is waiting on the person, not on an agent.
+           Rendered by renderKanbanOwnerStrip(); hidden when there is nothing. -->
+      <div id="kanbanOwnerStrip" class="kanban-owner-strip" hidden></div>
 
       <!-- Board-specific filter row (hidden when gantt active) -->
       <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -405,6 +428,58 @@
       <div class="kanban-board kanban-swimlane-board" id="kanbanSwimlaneBoard" hidden></div>
       <!-- Gantt / timeline view container -->
       <div id="kanbanGanttView" style="display:none;"></div>
+    </div>
+
+    <!-- === Team Notes Page === -->
+    <div class="page" id="notesPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="notes.page_title">Jegyzetek</h1>
+            <p class="subtitle" data-i18n="notes.page_subtitle">A csapat apró teendői, a kanbanon kívül. Reggel és este mindenki átnézi, a kész vagy elavult sort törli.</p>
+          </div>
+        </div>
+      </div>
+
+      <form class="notes-form" id="notesForm" autocomplete="off">
+        <select class="input" id="notesAssignee" aria-label="Kinek" data-i18n-aria-label="notes.col.assignee"></select>
+        <input class="input notes-form-content" type="text" id="notesContent" maxlength="2000" placeholder="Mit kell megnézni / megcsinálni?" data-i18n-placeholder="notes.form.content_ph">
+        <input class="input" type="date" id="notesDue" aria-label="Határidő" data-i18n-aria-label="notes.col.due">
+        <button class="btn-primary btn-compact" type="submit" id="notesAddBtn" data-i18n="notes.form.add">Hozzáadás</button>
+      </form>
+
+      <div class="ssh-table-wrap notes-table-wrap">
+        <table class="ssh-table notes-table">
+          <thead>
+            <tr>
+              <th data-i18n="notes.col.assignee">Kinek</th>
+              <th data-i18n="notes.col.content">Mit</th>
+              <th data-i18n="notes.col.created">Felírva</th>
+              <th data-i18n="notes.col.due">Határidő</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="notesTbody"></tbody>
+        </table>
+      </div>
+
+      <details class="notes-deleted" id="notesDeleted">
+        <summary data-i18n="notes.deleted.title">Az elmúlt 7 napban törölve</summary>
+        <div class="ssh-table-wrap notes-table-wrap">
+          <table class="ssh-table notes-table">
+            <thead>
+              <tr>
+                <th data-i18n="notes.col.assignee">Kinek</th>
+                <th data-i18n="notes.col.content">Mit</th>
+                <th data-i18n="notes.deleted.col_when">Törölve</th>
+                <th data-i18n="notes.deleted.col_by">Ki törölte</th>
+                <th data-i18n="notes.deleted.col_reason">Miért</th>
+              </tr>
+            </thead>
+            <tbody id="notesDeletedTbody"></tbody>
+          </table>
+        </div>
+      </details>
     </div>
 
     <!-- === Archived Cards Page === -->
@@ -587,6 +662,7 @@
           Új skillt a jobb felső "Új skill" gombbal tudsz létrehozni vagy importálni.
         </div>
       </div>
+      <div class="skills-pending" id="skillsPending" hidden></div>
       <div class="skills-stats" id="skillsStats"></div>
       <div class="skills-toolbar">
         <div class="skills-search-wrap">
@@ -867,15 +943,37 @@
         <div class="connector-external-paths">
           <div class="connector-external-header" id="githubReposToggle">
             <span class="connector-scope-toggle">▶</span>
-            GitHub repok <span class="connector-scope-count" id="githubRepoCount">0</span>
+            <span data-i18n="connectors.github_repos">GitHub-repók</span> <span class="connector-scope-count" id="githubRepoCount">0</span>
           </div>
           <div class="connector-external-body" id="githubReposBody" hidden>
             <div id="githubRepoList"></div>
             <div class="connector-external-add">
               <input type="text" id="githubRepoInput" class="input" placeholder="https://github.com/user/repo">
-              <button class="btn-secondary btn-compact" id="githubRepoAddBtn">Telepites</button>
+              <button class="btn-secondary btn-compact" id="githubRepoAddBtn" data-i18n="connectors.catalog.install_btn">Telepítés</button>
             </div>
+            <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="githubRepoRunScripts"> <span data-i18n="connectors.run_scripts_label">npm install scriptek futtatása (a repó kódja lefut ezen a gépen)</span></label>
             <div id="githubRepoStatus" class="github-repo-status" hidden></div>
+          </div>
+        </div>
+
+        <!-- Adopted open-source inventory: code the scan finds in the agents' own
+             folders. The GitHub repos count above counts dashboard-installed
+             repos, so on its own it can read 0 while the agents use more. -->
+        <div class="connector-external-paths" id="ossInventorySection">
+          <div class="connector-external-header" id="ossInventoryToggle">
+            <span class="connector-scope-toggle">▶</span>
+            <span data-i18n="oss.title">Átvett nyílt forrású projektek</span> <span class="connector-scope-count" id="ossInventoryCount">…</span>
+          </div>
+          <div class="connector-external-body" id="ossInventoryBody" hidden>
+            <div class="oss-inv-note" data-i18n="oss.note">A bejárás által az ágensek saját mappáiban talált kód: skill-forrás, git-klón, MCP, npm, pip. A fenti „GitHub-repók” szám a dashboardon át telepített repókat számolja, ezeket nem.</div>
+            <div class="oss-inv-toolbar">
+              <span class="oss-inv-meta" id="ossInventoryMeta"></span>
+              <label class="oss-inv-check"><input type="checkbox" id="ossInventoryTransitive"> <span data-i18n="oss.show_transitive">Közvetett függőségek is (pip és npm)</span></label>
+              <button class="btn-secondary btn-compact" id="ossInventoryRefresh" data-i18n="common.refresh">Frissítés</button>
+            </div>
+            <div class="github-repo-status error" id="ossInventoryError" hidden></div>
+            <div class="oss-inv-sub" id="ossInventoryOwnClones" hidden></div>
+            <div id="ossInventoryList"></div>
           </div>
         </div>
 
@@ -1159,6 +1257,20 @@
       </div>
     </div>
 
+<!-- === Projects Page === -->
+    <div class="page" id="projectsPage" hidden>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+        <h2 style="margin:0" data-i18n="projects.title">Projektek</h2>
+        <span style="font-size:12px;color:var(--text-muted)" data-i18n="projects.subtitle">Ember-nyelvű áttekintés a Kanban-táblán élő projektekről</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:16px;">
+        <button class="view-btn active" id="projectsFilterDone" style="width:auto;padding:0 12px;" data-i18n="projects.filter.done">Elkészült</button>
+        <button class="view-btn active" id="projectsFilterInProgress" style="width:auto;padding:0 12px;" data-i18n="projects.filter.in_progress">Folyamatban</button>
+      </div>
+      <div id="projectsEmpty" class="schedule-empty" hidden data-i18n="projects.empty">Egyetlen kanban-kártyához sincs még projekt hozzárendelve.</div>
+      <div class="projects-grid" id="projectsGrid"></div>
+    </div>
+
 <!-- === Approvals Page === -->
     <div class="page" id="approvalsPage" hidden>
       <div class="page-header">
@@ -1240,6 +1352,42 @@
 
       <nav class="tab-nav" id="settingsTabNav" style="margin-bottom:0"></nav>
       <div id="settingsTabPanels"></div>
+
+      <!-- GROMZOOWNERQR1030: the Gromzo app's owner QR code, collapsed at the bottom of
+           Settings (the owner asked for a less prominent place for now). The first time it is the
+           registration code, afterwards the login code for a new phone. The code is
+           drawn client-side into #gromzoQr only, shown for at most 2 minutes, then
+           wiped. Rendered by setupGromzoCard() in app.js. -->
+      <details class="card gromzo-card" id="gromzoCard" style="margin-top:16px">
+        <summary class="gromzo-summary" data-i18n="gromzo.card.title">Gromzo (mobilapp)</summary>
+        <p class="modal-desc" data-i18n="gromzo.card.desc">Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.</p>
+        <p class="gromzo-status" id="gromzoStatus"></p>
+        <div class="gromzo-owner-info" id="gromzoOwnerInfo" role="status" hidden>
+          <p class="gromzo-owner-info-text" data-i18n="gromzo.owner_login.info">Az ügynökök kapcsolásához és a telefon hozzáadásához be kell lépned a dashboard-jelszavaddal: a tulajdonost csak a jelszó azonosítja, a Bridge vagy a hozzáférési kulcs nem. A belépés ebben az ablakban megmarad, amíg ki nem jelentkezel, vagy le nem jár.</p>
+          <button class="btn-primary btn-compact" id="gromzoLoginBtn" data-i18n="gromzo.btn.login">Belépés jelszóval</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary btn-compact" id="gromzoAddPhoneBtn" data-i18n="gromzo.btn.add_phone">Telefon hozzáadása</button>
+        </div>
+        <p class="mobile-login-warn" id="gromzoError" hidden></p>
+        <div class="gromzo-owner-logout">
+          <button class="btn-secondary btn-compact" id="gromzoLogoutBtn" hidden data-i18n="gromzo.btn.logout">Tulajdonosi kijelentkezés</button>
+        </div>
+        <div class="gromzo-qr-area" id="gromzoQrArea" hidden>
+          <div id="gromzoQr" class="mobile-login-qr"></div>
+          <p class="modal-desc" id="gromzoQrHint"></p>
+          <p class="gromzo-countdown" id="gromzoCountdown"></p>
+          <p class="mobile-login-warn" data-i18n="gromzo.qr.warn">A kód belépést ad a fiókodba. Csak a saját telefonoddal olvasd be, ne fotózd le és ne oszd meg.</p>
+          <button class="btn-secondary btn-compact" id="gromzoQrClose" data-i18n="gromzo.btn.hide">Kód elrejtése</button>
+        </div>
+        <div class="gromzo-agents" id="gromzoAgents">
+          <h4 class="gromzo-agents-title" data-i18n="gromzo.agents.title">Ügynökök a Gromzóban</h4>
+          <p class="modal-desc" data-i18n="gromzo.agents.desc">Itt választod ki, melyik ügynököd érhető el a Gromzo appban. Bekapcsolás előtt a telefonodon, a Gromzo appban kell jóváhagynod.</p>
+          <p class="gromzo-agents-limit" data-i18n="gromzo.agents.limit">Óránként legfeljebb 3 változtatás. Minden változtatás után a chat-szolgáltatás néhány másodpercre újraindul.</p>
+          <ul class="gromzo-agent-list" id="gromzoAgentList"></ul>
+          <p class="mobile-login-warn" id="gromzoAgentsError" hidden></p>
+        </div>
+      </details>
       <!-- Sticky save bar -- shown only when there are unsaved changes -->
       <div id="settingsSaveBar" style="display:none;position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:12px 24px;display:none;align-items:center;justify-content:space-between;gap:12px;z-index:10">
         <span id="settingsDirtyCount" style="font-size:13px;color:var(--text-muted)"></span>
@@ -1476,7 +1624,7 @@
           </div>
           <div class="vault-field-group">
             <label class="vault-field-label" data-i18n="vault.field.desc_label">Leiras (opcionalis)</label>
-            <input type="text" id="vaultPageLabelInput" class="input" placeholder="pl. OpenAI production key">
+            <input type="text" id="vaultPageLabelInput" class="input" maxlength="200" placeholder="pl. OpenAI production key">
           </div>
           <div class="vault-field-group">
             <label class="vault-field-label" data-i18n="vault.field.value_label">Ertek</label>
@@ -2083,6 +2231,10 @@
           <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..." data-i18n-placeholder="kanban.modal.desc_ph"></textarea>
         </div>
+        <div class="form-group">
+          <label for="cardTestSteps" data-i18n="kanban.test_steps.title">Tesztelési lépések <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
+          <textarea id="cardTestSteps" rows="3" placeholder="1. ...&#10;2. ..." data-i18n-placeholder="kanban.test_steps.ph"></textarea>
+        </div>
         <div class="form-row">
           <div class="form-group form-half">
             <label for="cardAssignee" data-i18n="common.assignee">Felelős</label>
@@ -2100,9 +2252,15 @@
         </div>
         <div class="form-row">
           <div class="form-group form-half">
+            <label for="cardStart" data-i18n="kanban.modal.start_label">Kezdés <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
+            <input type="date" id="cardStart">
+          </div>
+          <div class="form-group form-half">
             <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="date" id="cardDue">
           </div>
+        </div>
+        <div class="form-row">
           <div class="form-group form-half">
             <label for="cardProject" data-i18n="common.project">Projekt <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" autocomplete="off">
@@ -2133,6 +2291,19 @@
           <select id="parentSelect" style="flex:1; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
         </div>
         <div class="card-detail-desc" id="cardDetailDesc"></div>
+        <!-- Card 8fe51afd: the testing steps are a block of their own, not a
+             line in the description, so the tester can find them without
+             reading the thread. Hidden while the card has none. -->
+        <div class="card-detail-test-steps" id="cardDetailTestSteps" hidden>
+          <h4 data-i18n="kanban.test_steps.title">Tesztelési lépések</h4>
+          <pre class="card-detail-test-steps-body" id="cardDetailTestStepsBody"></pre>
+        </div>
+        <!-- Card ee8638e0 (#566): what the closing agent said it checked.
+             Hidden while the card has no evidence. -->
+        <div class="card-detail-test-steps card-detail-evidence" id="cardDetailEvidence" hidden>
+          <h4 data-i18n="kanban.evidence.title">Indoklás</h4>
+          <pre class="card-detail-test-steps-body" id="cardDetailEvidenceBody"></pre>
+        </div>
         <div class="card-detail-labels">
           <h4 data-i18n="kanban.modal.labels_title">Címkék</h4>
           <div class="label-pill-list" id="cardLabelList"></div>
@@ -2147,6 +2318,12 @@
             <div class="label-color-swatches" id="cardLabelNewColors"></div>
             <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
+        </div>
+        <!-- Card 0f21864e (#568): the assignee's tokens while the card was
+             in_progress. Hidden until there is a window to show. -->
+        <div class="card-detail-tokens" id="cardDetailTokens" hidden>
+          <h4 data-i18n="kanban.tokens.title">Token</h4>
+          <div class="card-detail-tokens-body" id="cardDetailTokensBody"></div>
         </div>
         <div class="card-detail-blockers">
           <h4 data-i18n="kanban.modal.blockers_title">Blokkolja</h4>
@@ -2179,11 +2356,11 @@
         </div>
 
         <div id="cardChildrenSection" style="display:none; margin-top:12px">
-          <h4 data-i18n="kanban.modal.subtasks_title">Subtask-ok</h4>
+          <h4 data-i18n="kanban.modal.subtasks_title">Részfeladatok</h4>
           <div id="cardChildrenList" class="comments-list"></div>
           <div id="cardAddSubtaskSection" style="display:none; margin-top:8px">
             <div class="form-row" style="gap:8px; align-items:center">
-              <input type="text" id="newSubtaskTitle" placeholder="Új alfeladat neve..." data-i18n-placeholder="kanban.detail.subtask_placeholder" style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <input type="text" id="newSubtaskTitle" placeholder="Új részfeladat neve..." data-i18n-placeholder="kanban.detail.subtask_placeholder" style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
               <button class="btn-primary btn-compact" id="addSubtaskBtn" data-i18n="common.btn.add">Hozzáadás</button>
             </div>
           </div>
@@ -2238,7 +2415,7 @@
           <textarea id="breakdownSuccessCriteria" class="input" rows="2" placeholder="Mikor tekinthető sikeresnek a feladat?" data-i18n-placeholder="kanban.breakdown.success_placeholder" style="width:100%;resize:vertical;font-size:13px"></textarea>
         </div>
         <div class="detail-actions" style="gap:8px; margin-top:16px">
-          <button class="btn-primary" id="breakdownAcceptBtn" data-i18n="kanban.breakdown.accept_btn">Subtask-ok létrehozása</button>
+          <button class="btn-primary" id="breakdownAcceptBtn" data-i18n="kanban.breakdown.accept_btn">Részfeladatok létrehozása</button>
           <button class="btn-secondary" id="breakdownRejectBtn" data-i18n="common.btn.cancel">Mégse</button>
         </div>
       </div>
@@ -2927,6 +3104,11 @@
 
         <!-- Tab: Team -->
         <div class="tab-panel" id="tabTeam" hidden>
+          <div class="form-group">
+            <label for="editTeamTagline" data-i18n="agents.team.tagline_label">Mivel foglalkozik</label>
+            <input type="text" id="editTeamTagline" maxlength="60" data-i18n-placeholder="agents.team.tagline_placeholder" placeholder="pl. P+R, JIRA ügyintéző">
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px" data-i18n="agents.team.tagline_hint">A csapatfán a név alatt jelenik meg. Üresen hagyva a szerep (vezető/beosztott) látszik.</small>
+          </div>
           <div class="form-group">
             <label for="editTeamRole" data-i18n="agents.team.role_label">Szerep</label>
             <select id="editTeamRole">

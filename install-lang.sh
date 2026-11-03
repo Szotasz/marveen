@@ -141,6 +141,11 @@ _t() {
     hu:macos.managed_create) echo "  Managed settings létrehozása szükséges (sudo)." ;;
     en:macos.managed_created) echo "  managed-settings.json created" ;;
     hu:macos.managed_created) echo "  managed-settings.json létrehozva" ;;
+    # #1874: said BEFORE the first root step that reads or writes managed-settings.json
+    en:managed.notice_what) echo "Next, the channel switch goes into the machine-wide Claude Code settings (managed-settings.json). Without it, incoming messages stall on a company (Team/Enterprise) Claude account." ;;
+    hu:managed.notice_what) echo "Most a gépszintű Claude Code-beállításba (managed-settings.json) kerül a csatorna-engedély. Enélkül céges (Team/Enterprise) Claude-fióknál elakadnak a bejövő üzenetek." ;;
+    en:managed.notice_sudo) echo "It is a system file, so the next step may ask for this computer's password (sudo)." ;;
+    hu:managed.notice_sudo) echo "Ez rendszerfájl, ezért a következő lépés kérheti a gép jelszavát (sudo)." ;;
     # ── Agent ID / build ──────────────────────────────────────────────
     en:macos.agent_id_info) echo "  Internal agent ID: " ;;
     hu:macos.agent_id_info) echo "  Ügynök belső azonosító: " ;;
@@ -191,6 +196,10 @@ _t() {
     hu:macos.nomic_downloading) echo "  nomic-embed-text modell letöltése (~274 MB)..." ;;
     en:macos.ollama_done) echo "  Ollama + nomic-embed-text ready" ;;
     hu:macos.ollama_done) echo "  Ollama + nomic-embed-text kész" ;;
+    en:macos.ollama_skipped) echo "Ollama / nomic-embed-text could not be set up -- semantic memory search is skipped, keyword search still works." ;;
+    hu:macos.ollama_skipped) echo "Ollama / nomic-embed-text nem állítható be -- a szemantikus memória-keresés kimarad, a kulcsszavas működik." ;;
+    en:macos.ollama_skipped_hint) echo "Later, by hand: install Ollama from https://ollama.com/download, then: ollama pull nomic-embed-text" ;;
+    hu:macos.ollama_skipped_hint) echo "Később kézzel: Ollama innen: https://ollama.com/download, utána: ollama pull nomic-embed-text" ;;
     # ── Whisper / ffmpeg ──────────────────────────────────────────────
     en:macos.whisper_installing) echo "  Installing Whisper (speech-to-text)..." ;;
     hu:macos.whisper_installing) echo "  Whisper telepítés (beszéd -> szöveg leirat)..." ;;
@@ -206,6 +215,10 @@ _t() {
     hu:macos.ffmpeg_installing) echo "  ffmpeg telepítés..." ;;
     en:macos.ffmpeg_done) echo "  ffmpeg ready" ;;
     hu:macos.ffmpeg_done) echo "  ffmpeg kész" ;;
+    en:macos.ffmpeg_skipped) echo "ffmpeg could not be installed (no Homebrew?) -- audio/video processing is skipped." ;;
+    hu:macos.ffmpeg_skipped) echo "ffmpeg nem telepíthető (nincs Homebrew?) -- a hang/videó feldolgozás kimarad." ;;
+    en:macos.ffmpeg_skipped_hint) echo "Later, by hand: brew install ffmpeg   (or with MacPorts: sudo port install ffmpeg)" ;;
+    hu:macos.ffmpeg_skipped_hint) echo "Később kézzel: brew install ffmpeg   (vagy MacPortsszal: sudo port install ffmpeg)" ;;
     # ── LaunchAgent / services ────────────────────────────────────────
     en:macos.launchagents_created) echo "  LaunchAgents created" ;;
     hu:macos.launchagents_created) echo "  LaunchAgent-ek létrehozva" ;;

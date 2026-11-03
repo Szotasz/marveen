@@ -259,7 +259,9 @@ fi
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
+  # VOICETOKENLEAK1101 round 3: the header comes from a process substitution (printf is a builtin: no child's argv,
+  # nothing on disk), never as -H "Authorization: Bearer <token>" on curl's argv, which ps shows to the same user.
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H @<(printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)") "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
   if [ "$HTTP" = "200" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else
@@ -311,6 +313,20 @@ if [ -f "store/channels-failures.log" ]; then
   fi
 else
   ok "No failure log"
+fi
+
+# --- Spotlight (macOS) ---
+# Report only (SPOTLIGHT1022): a warn here never fails the run. See scripts/lib/spotlight-check.sh.
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo -e "\n${BOLD}Spotlight (macOS)${RESET}"
+  . "$INSTALL_DIR/scripts/lib/spotlight-check.sh"
+  spotlight_check | while IFS='|' read -r level msg; do
+    case "$level" in
+      ok)   ok "$msg" ;;
+      warn) warn "$msg" ;;
+      *)    echo "  - $msg" ;;
+    esac
+  done
 fi
 
 # --- Summary ---

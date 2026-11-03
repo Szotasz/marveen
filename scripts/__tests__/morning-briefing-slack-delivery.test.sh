@@ -66,7 +66,7 @@ run_case() {
   mkdir -p "$DIR/scripts/lib" "$DIR/store" "$DIR/bin" "$DIR/dist"
   cp "$REPO/scripts/morning-briefing.sh" "$REPO/scripts/slack-notify.mjs" "$DIR/scripts/"
   cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$DIR/scripts/lib/"
-  : > "$DIR/.env"
+  printf 'ANTHROPIC_API_KEY=sk-ant-test\n' > "$DIR/.env"
   [ "$chat" = "-" ] || printf 'ALLOWED_CHAT_ID=%s\n' "$chat" >> "$DIR/.env"
   [ "$tok" = "-" ] || printf 'TELEGRAM_BOT_TOKEN=%s\n' "$tok" >> "$DIR/.env"
   printf '{"type":"module"}\n' > "$DIR/dist/package.json"

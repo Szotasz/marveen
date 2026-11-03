@@ -27,6 +27,7 @@ import {
   readSummarySource,
   summarySourceHash,
 } from './capabilities.js'
+import { whileNotFrozen } from '../fleet-freeze.js'
 
 export const CAPABILITY_RUNNER_INITIAL_DELAY_MS = 65_000 // free slot (5/10/20/25/30/35/40/45/50/55/90 taken)
 export const CAPABILITY_RUNNER_INTERVAL_MS = 5 * 60_000
@@ -78,8 +79,8 @@ function tick(): void {
 }
 
 export function startCapabilitySummaryRunner(): NodeJS.Timeout {
-  setTimeout(tick, CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
-  return setInterval(tick, CAPABILITY_RUNNER_INTERVAL_MS)
+  setTimeout(whileNotFrozen('capability-runner', tick), CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
+  return setInterval(whileNotFrozen('capability-runner', tick), CAPABILITY_RUNNER_INTERVAL_MS)
 }
 
 /** Test seam. */

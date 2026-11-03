@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-probe-test-'))
 
-vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
+vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5', APP_TZ: 'Europe/Budapest' }))
 vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: () => '' }))
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => ({ ok: true }) }))
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: async () => ({ ok: true }) }))

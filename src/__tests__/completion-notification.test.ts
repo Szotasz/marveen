@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { EventEmitter } from 'node:events'
 import {
   initDatabase, createAgentMessage,
-  markMessageDone, markMessageFailed, getAgentMessage, listAgentMessages,
+  markMessageDone, markMessageFailed, markMessageDelivered, getAgentMessage, listAgentMessages,
   getPendingMessages,
   COMPLETION_REPORT_PREFIX,
 } from '../db.js'
@@ -219,5 +219,70 @@ describe('PUT /api/messages/:id -- notify flag', () => {
     const r = await putStatus(msg.id, { status: 'done', notify: null, result: 'ok' })
     expect(r.statusCode).toBe(200)
     expect(ackCount() - before).toBe(1)
+  })
+})
+
+// A close is applied once. The second PUT on a done/failed row used to overwrite the
+// stored result and send a second completion report in the recipient's name, whoever
+// sent it. Now it is 409 and changes nothing; the router's own transitions are not
+// part of this (they use markMessageDone/markMessageFailed directly).
+describe('PUT /api/messages/:id -- a closed message is not closed again', () => {
+  it('first close unchanged; a second close is 409, keeps the result, sends no second report', async () => {
+    const msg = createAgentMessage(MAIN_AGENT_ID, 'dex', 'Delegated task')
+    const before = ackCount()
+    const first = await putStatus(msg.id, { status: 'done', result: 'FIRST' })
+    expect(first.statusCode).toBe(200)
+    expect(first.json).toEqual({ ok: true })
+    expect(ackCount() - before).toBe(1)
+    const closedAt = getAgentMessage(msg.id)!.completed_at
+
+    const second = await putStatus(msg.id, { status: 'done', result: 'SECOND' })
+    expect(second.statusCode).toBe(409)
+    expect(second.json).toMatchObject({ error: 'Message already closed', status: 'done' })
+    const row = getAgentMessage(msg.id)!
+    expect(row.result).toBe('FIRST')
+    expect(row.completed_at).toBe(closedAt)
+    expect(ackCount() - before).toBe(1)
+  })
+
+  it('done -> failed is refused too, and so is a close with notify:false', async () => {
+    const msg = createAgentMessage(MAIN_AGENT_ID, 'dex', 'Delegated task')
+    await putStatus(msg.id, { status: 'done', result: 'ok', notify: false })
+    const before = ackCount()
+    const total = listAgentMessages(500).length
+    expect((await putStatus(msg.id, { status: 'failed', result: 'late failure' })).statusCode).toBe(409)
+    expect((await putStatus(msg.id, { status: 'done', notify: false })).statusCode).toBe(409)
+    const row = getAgentMessage(msg.id)!
+    expect(row.status).toBe('done')
+    expect(row.result).toBe('ok')
+    expect(ackCount() - before).toBe(0)
+    expect(listAgentMessages(500).length).toBe(total)
+  })
+
+  it('a row the router already failed is not re-closed through the route', async () => {
+    const msg = createAgentMessage(MAIN_AGENT_ID, 'dex', 'Delegated task')
+    markMessageFailed(msg.id, 'Failed to inject into tmux session after 3 attempts')
+    const before = ackCount()
+    const r = await putStatus(msg.id, { status: 'done', result: 'handled anyway' })
+    expect(r.statusCode).toBe(409)
+    expect(r.json).toMatchObject({ status: 'failed' })
+    expect(getAgentMessage(msg.id)!.result).toBe('Failed to inject into tmux session after 3 attempts')
+    expect(ackCount() - before).toBe(0)
+  })
+
+  it('a delivered (not yet closed) message still closes normally', async () => {
+    const msg = createAgentMessage(MAIN_AGENT_ID, 'dex', 'Delegated task')
+    markMessageDelivered(msg.id)
+    expect(getAgentMessage(msg.id)!.status).toBe('delivered')
+    const r = await putStatus(msg.id, { status: 'failed', result: 'could not do it' })
+    expect(r.statusCode).toBe(200)
+    expect(getAgentMessage(msg.id)!.status).toBe('failed')
+  })
+
+  it('an unknown id and an invalid status keep their 404', async () => {
+    expect((await putStatus(99999999, { status: 'done' })).statusCode).toBe(404)
+    const msg = createAgentMessage(MAIN_AGENT_ID, 'dex', 'Delegated task')
+    expect((await putStatus(msg.id, { status: 'archived' })).statusCode).toBe(404)
+    expect(getAgentMessage(msg.id)!.status).toBe('pending')
   })
 })

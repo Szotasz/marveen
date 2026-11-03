@@ -52,14 +52,14 @@ describe('patch-telegram-plugin.py --topics', () => {
     expect(readFileSync(server, 'utf-8')).not.toContain('tgtopics')
     const s = JSON.parse(readFileSync(state, 'utf-8'))
     expect(s.topics).toBe('off')
-    expect(s.files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched' })
+    expect(s.files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' })
   })
 
   it('on: every step applied once, the file still parses, a second run is a byte-identical no-op', () => {
     const state = join(cache, 'state.json')
     const r = run(['--state', state, '--topics', 'on'])
     expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, kbd, topics\)/)
+    expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, quote, silent, kbd, invis, topics\)/)
     const once = readFileSync(server, 'utf-8')
     expect(syntaxErrors(once)).toEqual([])
     expect(JSON.parse(readFileSync(state, 'utf-8'))).toMatchObject({ topics: 'on', files: [{ patches: { topics: 'patched' } }] })
@@ -78,7 +78,7 @@ describe('patch-telegram-plugin.py --topics', () => {
     const r = run(['--state', state, '--topics', 'off'])
     expect(r.stderr).toMatch(/patched .*\(topics removed\)/)
     expect(readFileSync(server, 'utf-8')).toBe(neverSwitched)
-    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', topics: 'removed' })
+    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', topics: 'removed' })
   })
 
   it.each(['yes', 'true', '1', 'On', ''])('--topics %j: refused with exit 2, the plugin file and the state left alone', (value) => {
@@ -168,6 +168,7 @@ function load(source: string): Plugin {
   const record = (name: string) => async (...a: unknown[]) => { calls.push([name, ...a]); return { message_id: nextId++ } }
   const bot = {
     command: () => {},
+    on: () => {},
     start: async () => {},
     api: {
       sendChatAction: record('sendChatAction'),
@@ -191,14 +192,13 @@ function load(source: string): Plugin {
     bot, Server, ListToolsRequestSchema: ListTools, CallToolRequestSchema: CallTool, InputFile, extname,
     dmCommandGate: () => null,
     gate: () => ({ action: 'deliver', access: {} }),
-    PERMISSION_REPLY_RE: /^\b$/,
     chunk: (t: string) => t.split('|'),
     assertAllowedChat: () => {},
     assertSendable: () => {},
     statSync: () => ({ size: 1 }),
     MAX_ATTACHMENT_BYTES: 50 * 1024 * 1024,
     MAX_CHUNK_LIMIT: 4096,
-    loadAccess: () => ({}),
+    loadAccess: () => ({ allowFrom: ['42'] }),
     PHOTO_EXTS: new Set(['.png', '.jpg']),
     writeFileSync: () => {}, renameSync: () => {}, join, STATE_DIR: '/nonexistent',
   }
@@ -308,7 +308,7 @@ describe('the patched plugin, run', () => {
     const { calls } = await replyTrace(on, { text: 'a|b', message_thread_id: '12', buttons: ['Igen', 'Nem'] })
     expect(calls).toEqual([
       ['sendMessage', '42', 'a', { message_thread_id: 12 }],
-      ['sendMessage', '42', 'b', { message_thread_id: 12, reply_markup: { keyboard: [[{ text: 'Igen' }], [{ text: 'Nem' }]], one_time_keyboard: true, resize_keyboard: true } }],
+      ['sendMessage', '42', 'b', { message_thread_id: 12, reply_markup: { inline_keyboard: [[{ text: 'Igen', callback_data: 'kbd:0' }], [{ text: 'Nem', callback_data: 'kbd:1' }]] } }],
     ])
   })
 

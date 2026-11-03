@@ -97,3 +97,23 @@ describe('updateEnvFile keeps the .env mode', () => {
     expect(modeOf(testEnvPath)).toBe(0o600)
   })
 })
+
+// FLEETIMPORTENVKEY1021: updateEnvFile writes KEY=value unquoted, one per line,
+// so a value with a line break would add a line of its own choosing. The writer
+// refuses it (and a key that is not a plain env name), and leaves the file as it was.
+describe('updateEnvFile refuses what would add a line of its own', () => {
+  for (const [label, updates] of [
+    ['LF in a value', { BOT_NAME: 'Atlas\nSUDO_AGENTS=dani' }],
+    ['CR in a value', { BOT_NAME: 'Atlas\rSUDO_AGENTS=dani' }],
+    ['NUL in a value', { BOT_NAME: 'Atlas\u0000' }],
+    ['a key with a line break', { 'BOT_NAME\nSUDO_AGENTS': 'dani' }],
+    ['a key with =', { 'A=B': 'x' }],
+  ] as const) {
+    it(label, async () => {
+      writeFileSync(testEnvPath, 'SECRET=abc\nBOT_NAME=Old\n')
+      const { updateEnvFile } = await import('../env.js')
+      expect(() => updateEnvFile(updates as Record<string, string>)).toThrow(/\.env/)
+      expect(readFileSync(testEnvPath, 'utf-8')).toBe('SECRET=abc\nBOT_NAME=Old\n')
+    })
+  }
+})

@@ -71,8 +71,10 @@ describe('channel-monitor wiring', () => {
     expect(src).not.toMatch(/rmSync\(RESPAWN_STAMP_FILE/)
   })
 
-  it('both hard-restart success paths record our own stamp', () => {
+  it('every hard-restart success path records our own stamp', () => {
     const fn = src.slice(src.indexOf('export function hardRestartMarveenChannels'), src.indexOf('\n}\n', src.indexOf('export function hardRestartMarveenChannels')))
-    expect(fn.match(/noteOwnHardRestartStamp\(marveenLastHardRestart\)/g)?.length).toBe(2)
+    // The launchd reload (pid changed), the launchd reload whose fresh supervisor is still
+    // rebuilding the session (CHANNELSDUP1023), and the respawn-pane fallback.
+    expect(fn.match(/noteOwnHardRestartStamp\(marveenLastHardRestart\)/g)?.length).toBe(3)
   })
 })

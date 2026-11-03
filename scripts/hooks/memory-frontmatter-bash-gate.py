@@ -52,7 +52,14 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from memory_frontmatter_lib import tartalom_hiba  # noqa: E402
+# HOOKDEPLOAD1008: guarded, like every other failure of this hook. Unguarded, a
+# broken memory_frontmatter_lib.py failed at module load, before main(), with
+# exit 1 -- the code this hook promises never to return.
+try:
+    from memory_frontmatter_lib import tartalom_hiba  # noqa: E402
+    _LIB_ERR = None
+except Exception as _lib_exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything
+    _LIB_ERR = _lib_exc
 
 HOOK = 'memory-frontmatter-bash-gate'
 STATE_DIR = os.environ.get('MEMFM_BASH_STATE_DIR') or os.path.join(tempfile.gettempdir(), 'claudeclaw-memfm-bash-gate')
@@ -223,6 +230,11 @@ def main():
     if not isinstance(payload, dict) or payload.get('tool_name') != 'Bash':
         sys.exit(0)
     ev = payload.get('hook_event_name')
+    if _LIB_ERR is not None:
+        msg = f'a kapu fuggosege (scripts/hooks/memory_frontmatter_lib.py) nem toltheto be ({ev}), atengedve'
+        _log(msg, _LIB_ERR)
+        sys.stderr.write(f'{HOOK}: {msg}: {_LIB_ERR!r}\n')
+        sys.exit(0)
     try:
         if ev == 'PreToolUse':
             code = pre(payload)

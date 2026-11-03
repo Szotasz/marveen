@@ -175,9 +175,16 @@ describe('wiring: the wake is asked for by the decided callers only (b\')', () =
     const ap = src('web/agent-process.ts')
     const body = ap.slice(ap.indexOf('export async function restartAgentProcess('), ap.indexOf('// Claude Code occasionally pops a'))
     expect(body).toContain('if (opts.fresh) cancelRestartWake(name)')
-    expect(body).toContain('if (started.ok && !opts.fresh && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)')
-    expect(body).toContain('startAgentProcess(name, opts)')
+    // The wake is owed exactly when the restart is --continue and asked for
+    // one, and then the start is told it does not own the first prompt.
+    expect(body).toContain('const willWake = !opts.fresh && !!opts.wake')
+    expect(body).toContain('if (started.ok && willWake && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)')
     expect(body.match(/scheduleRestartWake\(/g)).toHaveLength(1)
+  })
+  it('one restart, one first prompt: a restart that owes a wake starts with ownsResume, so no recovery brief stacks on it', () => {
+    const ap = src('web/agent-process.ts')
+    const body = ap.slice(ap.indexOf('export async function restartAgentProcess('), ap.indexOf('// Claude Code occasionally pops a'))
+    expect(body).toContain('startAgentProcess(name, willWake ? { ...opts, ownsResume: true } : opts)')
   })
   it('ON: the /restart route, the plan switch, the fleet plan switch, the model-fallback demotion', () => {
     expect(src('web/routes/agents.ts')).toContain('restartAgentProcess(name, restartOptsFromBody(restartBody))')
@@ -190,7 +197,7 @@ describe('wiring: the wake is asked for by the decided callers only (b\')', () =
     expect(auto).toContain("restartAgentProcess(name, { fresh: cfg.mode === 'fresh' })")
     expect(auto).not.toMatch(/wake:/)
     const guard = src('web/context-guard-runner.ts')
-    expect(guard).toContain('restartAgentProcess(name, { fresh: true })')
+    expect(guard).toContain('restartAgentProcess(name, { fresh: true, ownsResume: true })')
     expect(guard).not.toMatch(/restartAgentProcess\([^)]*wake/)
   })
 })

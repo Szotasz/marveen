@@ -42,6 +42,15 @@ Az ügynökök programatikusan kiolvashatják a titkot (pl. egy press-CLI auth b
 
 ---
 
+### Secret routes
+
+- `GET/POST /api/vault` -- list secrets / create or replace one (`id`, `label`, `value`; re-syncs bound MCP configs).
+- `GET /api/vault/:id` -- read a value (audited).
+- `PATCH /api/vault/:id` with `{ "label": "..." }` -- change only the description. The value is never decrypted or re-sent and nothing is synced. An empty label falls back to the id; at most 200 characters; 404 for an unknown id; 403 for `ssh-key-*` entries.
+- `DELETE /api/vault/:id` -- delete a secret and its bindings.
+
+---
+
 ## 🔑 SSH Vault (szerver- és kulcskezelés)
 
 > Központi SSH szerver- és kulcsnyilvántartás a flottának -- külön a generikus titkosított titkoktól.

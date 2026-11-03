@@ -89,7 +89,10 @@ def main():
     for m in CHANNEL_RX.finditer(prompt):
         matched += 1
         source, attrs, text = m.group(1), m.group(2), m.group(3)
-        chat_id = _attr(attrs, "chat_id")
+        # TEAMSCONV1020: the Teams plugin names its chat conversation_id, not
+        # chat_id; without the fallback every Teams inbound was skipped
+        # (measured 2026-10-20: matched=1 skipped=1, zero Teams rows).
+        chat_id = _attr(attrs, "chat_id") or _attr(attrs, "conversation_id")
         message_id = _attr(attrs, "message_id")
         ts = _attr(attrs, "ts")
         # Voice / video_note that arrived WITHOUT a transcript keeps its

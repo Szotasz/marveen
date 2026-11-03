@@ -95,6 +95,7 @@ export function classifySendError(errMessage: string): 'transient' | 'permanent'
   if (errMessage.includes('Telegram API')) return classifyTelegramError(errMessage)
   if (errMessage.includes('Slack API')) return classifySlackError(errMessage)
   if (errMessage.includes('Discord API')) return classifyDiscordError(errMessage)
+  if (errMessage.includes('Teams API')) return classifyTeamsError(errMessage)
   return 'transient' // no recognized provider prefix -> network-level failure
 }
 
@@ -116,6 +117,17 @@ function classifyTelegramError(errMessage: string): 'transient' | 'permanent' {
  *  bot token (4xx) fell through as "transient" and respun every 60s. */
 function classifyDiscordError(errMessage: string): 'transient' | 'permanent' {
   const match = /Discord API (\d{3})\b/.exec(errMessage)
+  return match ? classifyHttpStatus(Number(match[1])) : 'transient'
+}
+
+/** Teams (teams-send.ts sendTeamsMessage): "Teams API config: ..." is a
+ *  missing/wrong piece of config (no conversation ref, incomplete or refused
+ *  credentials) that will fail identically every tick -> permanent.
+ *  "Teams API <status>: ..." follows the shared HTTP-status policy; anything
+ *  else (network error / timeout) retries. */
+function classifyTeamsError(errMessage: string): 'transient' | 'permanent' {
+  if (errMessage.includes('Teams API config:')) return 'permanent'
+  const match = /Teams API (\d{3})\b/.exec(errMessage)
   return match ? classifyHttpStatus(Number(match[1])) : 'transient'
 }
 

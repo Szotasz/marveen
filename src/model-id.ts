@@ -20,11 +20,12 @@
  * DELIBERATE DEVIATION from the Cybersec-proposed `/^[A-Za-z0-9._:/-]{1,128}$/` (card b7fa5281): the
  * real install default is `claude-opus-4-8[1m]` (the 1M-context suffix), and the fallback chain ships
  * it too, so the bracket-less allowlist would 400 the fleet's own default model. `[` and `]` are ADDED
- * here. They are shell glob metacharacters, but they cannot form a command boundary or a command
+ * here, and so is `+` (seen in real OpenRouter/local-provider ids, e.g. `qwen2.5+`). They are shell
+ * glob/arithmetic metacharacters, but none of them can form a command boundary or a command
  * substitution -- and the launch site quotes AND escapes the value (defence #2), so globbing is off.
  * The dangerous characters (`'` `;` `$` backtick space `|` `&` `(` `)` newline) all remain excluded.
  */
-export const MODEL_ID_RE = /^[A-Za-z0-9._:/[\]-]{1,128}$/
+export const MODEL_ID_RE = /^[A-Za-z0-9._:/[\]+-]{1,128}$/
 
 /** True iff `model` is a syntactically valid model id (see {@link MODEL_ID_RE}). */
 export function isValidModelId(model: unknown): model is string {
@@ -35,7 +36,7 @@ export function isValidModelId(model: unknown): model is string {
 export class InvalidModelIdError extends Error {
   constructor(model: unknown) {
     super(
-      `Érvénytelen modell-azonosító. Csak betű, szám és a . _ : / - [ ] karakterek engedélyezettek, ` +
+      `Érvénytelen modell-azonosító. Csak betű, szám és a . _ : / - [ ] + karakterek engedélyezettek, ` +
         `1-128 hosszban (kapott: ${typeof model === 'string' ? JSON.stringify(model.slice(0, 60)) : typeof model}).`,
     )
     this.name = 'InvalidModelIdError'

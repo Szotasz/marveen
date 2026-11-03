@@ -24,7 +24,10 @@ import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import { lockOwnerRefusal, tryHandleDesktopLock } from '../web/routes/desktop-lock.js'
 import { classifyAgentMessage, isChannelInboundSender } from '../web/agent-message-wrap.js'
-import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
+// VOICECHANNELID1022: the id is null only when the voice lane is off (even the
+// default names another sender); on this suite's install it is on.
+const VOICE_CHANNEL_AGENT_ID = VOICE_ID_OR_NULL as string
 import { DESKTOP_LOCK_PATH } from '../web/desktop-lock.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -44,7 +47,8 @@ describe('a channel identity may not be a desktop-lock owner', () => {
   it('refuses the spellings the classifier still resolves to that id', () => {
     // A guard reading the raw string would let exactly these through, and
     // delivery-time classification sanitizes before matching.
-    for (const forged of ['@hanna', 'hanna.', ' hanna ', 'hanna!', '@telegram-coordinator']) {
+    const voice = VOICE_CHANNEL_AGENT_ID
+    for (const forged of [`@${voice}`, `${voice}.`, ` ${voice} `, `${voice}!`, '@telegram-coordinator']) {
       expect(lockOwnerRefusal(forged), `spelling ${JSON.stringify(forged)}`).not.toBeNull()
     }
   })

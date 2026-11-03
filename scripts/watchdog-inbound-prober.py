@@ -5,20 +5,26 @@ Sends __wd_ping <ISO> to the main bot (ALLOWED_CHAT_ID from .env) every
 PROBE_INTERVAL_MS milliseconds. The watchdog reads the main session transcript
 to verify the ping was ingested; if not, it triggers a respawn.
 
-SAFE without the prober account being allowlisted (/telegram:access):
-if the session file is missing or auth fails, logs a warning and exits 0.
+Exits 0 (no-op) when it cannot run: the session file is missing, credentials
+or the owner chat cannot be loaded, the telethon session is not authorised, or
+the connection fails.
 
 MANUAL GATE REQUIRED before first activation:
   the operator must run `/telegram:access` in the main channels session to allowlist
-  prober account <prober-account-id> (<prober-phone>). Until then this script is a
-  no-op (it detects the missing/unauthorised state and exits cleanly).
+  prober account <prober-account-id> (<prober-phone>). This script cannot see the
+  allowlist: until then its sends still succeed and it still writes the
+  probe-last-sent marker, but the channel plugin drops the pings. The dashboard
+  does not respawn on unanswered probes until a ping has been seen arriving at
+  least once (see decideProbeTick in src/web/inbound-probe.ts).
 
 ARMING PRECONDITION (HBTAILVAK914, measured 2026-09-14): the deafness verdict
-this prober feeds reads only the last 256KB of the main transcript, which was
-blind ~82% of the time on the MAIN root -- an armed prober would produce false
-"deaf" respawns on that reader. The event-based last-ingestion state file (card
-HBTAILVAK914) must be merged BEFORE the session file is created. The login
-script (watchdog-userbot-login.py) enforces this with an explicit confirmation.
+this prober feeds used to read only the last 256KB of the main transcript, which
+was blind ~82% of the time on the MAIN root -- an armed prober would have
+produced false "deaf" respawns. The deafness check now reads each transcript
+back to the pending probe (bounded; see backscanStart in
+src/web/inbound-probe.ts), so that blindness no longer applies to it. The login
+script (watchdog-userbot-login.py) still asks for an explicit confirmation
+before creating the session file.
 
 NEVER logs the session string. NEVER passes it via argv.
 """
@@ -77,10 +83,8 @@ async def main() -> None:
         print(
             "MANUAL GATE: store/.watchdog-userbot.session missing. "
             "Allowlist prober account <prober-account-id> via /telegram:access in the main channels session. "
-            "ARMING PRECONDITION (HBTAILVAK914): before creating the session, the event-based "
-            "last-ingestion state-file fix must be merged -- the current 256KB tail reader is "
-            "blind ~82% of the time on the MAIN root and an armed prober would respawn healthy "
-            "sessions. Exiting as safe no-op.",
+            "ARMING PRECONDITION (HBTAILVAK914): the login script asks for an explicit "
+            "confirmation before creating the session. Exiting as safe no-op.",
             file=sys.stderr,
         )
         sys.exit(0)

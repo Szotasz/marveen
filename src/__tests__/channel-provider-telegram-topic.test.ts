@@ -28,7 +28,7 @@ describe('telegram sendMessage body', () => {
   })
   afterEach(() => httpsRequest.mockReset())
 
-  async function body(send: () => Promise<void>): Promise<unknown> {
+  async function body(send: () => Promise<unknown>): Promise<unknown> {
     const pending = send()
     const cb = httpsRequest.mock.calls[0][2] as (res: EventEmitter & { statusCode: number; resume: () => void }) => void
     const res = Object.assign(new EventEmitter(), { statusCode: 200, resume: () => {} })

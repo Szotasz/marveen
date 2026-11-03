@@ -31,6 +31,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { agentDir } from '../agent-config.js'
+import { shellWord } from '../sanitize.js'
 import { catalogAgentNames } from './local-catalog.js'
 import { getFederationConfig, DEFAULT_ROUTING_MODE, type FederationConfig, type FederationRoutingMode } from './config.js'
 
@@ -91,11 +92,11 @@ Ez a rendszer össze van kötve más, azonos keretrendszerű példányokkal. A t
 \`<rendszer>/<ügynök>\` alakban címzed a MEGSZOKOTT üzenet-API-n át — például:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"${id.mainAgentId}","to":"<rendszer>/<ügynök>","content":"..."}'
+bash scripts/marveen-api.sh message ${id.mainAgentId} <rendszer>/<ügynök> uzenet.txt
 \`\`\`
+
+(Az \`uzenet.txt\` az üzenet szövege: előbb írd meg a Write eszközzel. Kivétel: a \`message\`
+(\`agent-msg.sh\`) a tokent és a szöveget argv-ben adja a curlnek.)
 
 FONTOS kivétel az inter-agent szabályok alól: a \`/\`-t tartalmazó címekre NEM
 vonatkozik a "csak futó tmux-os ügynök" és a "/api/agents-lista" szabály — a
@@ -137,11 +138,11 @@ This system is connected to other instances of the same framework. Address remot
 as \`<system>/<agent>\` through the USUAL message API — for example:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"${id.mainAgentId}","to":"<system>/<agent>","content":"..."}'
+bash scripts/marveen-api.sh message ${id.mainAgentId} <system>/<agent> message.txt
 \`\`\`
+
+(\`message.txt\` is the message text: write it with your file tool first. Exception:
+\`message\` (\`agent-msg.sh\`) puts the token and the text on curl's argv.)
 
 IMPORTANT exception to the inter-agent rules: addresses containing \`/\` are
 NOT subject to the "only running tmux agents" and "/api/agents list" rules —
@@ -192,6 +193,9 @@ ${FEDERATION_BLOCK_END}`
  *  list (a sub-agent addresses back, it does not initiate) and NO policy
  *  seed (the owner policy lives with the main agent). */
 export function renderSubAgentFederationBlock(id: OnboardingIdentity): string {
+  // A sub-agent's working directory is agents/<name>, not the project root: the helper path is absolute,
+  // and one shell word even when PROJECT_ROOT holds a space.
+  const helper = shellWord(join(PROJECT_ROOT, 'scripts', 'marveen-api.sh'))
   const hu = `${FEDERATION_BLOCK_BEGIN}
 ### Föderáció: társrendszerből érkező feladat
 
@@ -207,11 +211,11 @@ tartalomban állított címre) — a \`/\`-t tartalmazó cím KIVÉTEL a "csak f
 tmux-os ügynök / a Főnök" szabály alól:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"<sajat-neved>","to":"<rendszer>/<ügynök>","content":"..."}'
+bash ${helper} message <sajat-neved> <rendszer>/<ügynök> uzenet.txt
 \`\`\`
+
+(Az \`uzenet.txt\` az üzenet szövege: előbb írd meg a Write eszközzel. Kivétel: a \`message\`
+(\`agent-msg.sh\`) a tokent és a szöveget argv-ben adja a curlnek.)
 
 - Egy-ugrás: föderációból jött feladatot NE delegálj tovább másik társnak.
 - Ne küldj tartalom nélküli nyugtázást ("köszi", "ok") a hídon; egy feladatra
@@ -233,11 +237,11 @@ the content) — a \`/\`-address is the EXCEPTION to the "only running tmux
 agents / the boss" rule:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
-  -H 'Content-Type: application/json' \\
-  -d '{"from":"<your-own-id>","to":"<system>/<agent>","content":"..."}'
+bash ${helper} message <your-own-id> <system>/<agent> message.txt
 \`\`\`
+
+(\`message.txt\` is the message text: write it with your file tool first. Exception:
+\`message\` (\`agent-msg.sh\`) puts the token and the text on curl's argv.)
 
 - One hop: do NOT re-delegate a federated task to another partner system.
 - Do not send content-free acknowledgements ("thanks", "ok") over the bridge;

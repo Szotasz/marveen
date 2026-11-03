@@ -70,8 +70,12 @@ def _agent_id(cwd):
             return parts[i + 1]
     # Fallback: if cwd is the project root itself (main agent session),
     # use MAIN_AGENT_ID so voice config and state_dir resolve correctly.
-    project_root = os.path.normpath(_project_root())
-    if os.path.normpath(cwd) == project_root:
+    # Both forms of the root (#1878 item 12): reached through a symlink, this
+    # file names one and the session's cwd may be the other, and a single-form
+    # compare skipped the directive for the main agent.
+    root = _project_root()
+    roots = {os.path.normpath(root), os.path.normpath(os.path.realpath(root))}
+    if os.path.normpath(cwd) in roots:
         return _main_agent_id()
     return None
 

@@ -259,7 +259,9 @@ describe('isolated-config launcher wiring', () => {
   it('launch command actively unsets CLAUDE_CODE_OAUTH_TOKEN for BYO agents (inherited tmux-server env)', () => {
     // byoUnsetEnv must be defined and wired into the cmd string so the inherited
     // token is removed before exec for non-Claude-OAuth agents.
-    expect(SRC).toMatch(/const byoUnsetEnv = !needsFleetOauth \? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''/)
+    // The decision now lives in inheritedAuthUnset (BYOSUBUNSET1018), executed
+    // per case in inherited-auth-unset.test.ts; a BYO agent still gets the unset.
+    expect(SRC).toMatch(/const byoUnsetEnv = inheritedAuthUnset\(\{ needsFleetOauth,/)
     expect(SRC).toMatch(/\$\{byoUnsetEnv\}/)
   })
 })

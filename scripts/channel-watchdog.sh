@@ -61,6 +61,40 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# PORTSTAT912: mtime in epoch seconds, portable across BSD (macOS) and GNU
+# (Linux) stat. `stat -c %Y` is GNU-only: on macOS it exits 1 with "illegal
+# option -- c", the old `|| echo 0` fallback turned that into mtime=0, and a
+# BRAND NEW keepalive file then measured as infinitely old. STALE was therefore
+# true on every single tick, so installing this watchdog on a Mac would not have
+# protected the main agent -- it would have respawned its channels pane every
+# 5 minutes up to MAX_CONSECUTIVE. The same zero also defeats the respawn-grace
+# gate below, which is the brake meant to stop exactly that storm, so the two
+# failures compound instead of cancelling.
+#
+# Both guards are needed, not just the exit code: under GNU stat `-f` is a
+# valid but DIFFERENT option (file-system status), so a wrong-platform call can
+# print something that is not an mtime. A value is only accepted if the command
+# succeeded AND the output is all digits; 0 is returned only when neither form
+# yielded one, which keeps the historical "unknown means act" behaviour.
+file_mtime() {
+  local _f="$1" _m=""
+  _m=$(stat -f %m "$_f" 2>/dev/null) || _m=""
+  case "$_m" in (''|*[!0-9]*) _m="";; esac
+  if [ -z "$_m" ]; then
+    _m=$(stat -c %Y "$_f" 2>/dev/null) || _m=""
+    case "$_m" in (''|*[!0-9]*) _m="";; esac
+  fi
+  printf '%s\n' "${_m:-0}"
+}
+
+# Debug entry point for the regression test: print one file's resolved mtime and
+# exit before any session lookup, .env read or tmux call, so the helper can be
+# measured on a host where the watchdog itself cannot run.
+if [ "${1:-}" = "--file-mtime" ]; then
+  file_mtime "${2:-}"
+  exit 0
+fi
+
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
@@ -71,6 +105,17 @@ SESSION="${MAIN_AGENT_ID}-channels"
 # respawn the same CLAUDE_CONFIG_DIR the main agent is actually running under.
 CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+# INSTALLDIRTYTREE1103: the primary plugin id, mapped EXACTLY as channels.sh's
+# resolve_plugin_ids() does. It used to be "<provider>@claude-plugins-official"
+# for every provider, which is not the Slack/WhatsApp/Teams id; it also goes into
+# the --settings file below, now the only place the primary gets enabled.
+case "$CHANNEL_PROVIDER" in
+  slack)    PRIMARY_PLUGIN_ID="slack-channel@marveen-marketplace" ;;
+  whatsapp) PRIMARY_PLUGIN_ID="whatsapp@marveen-marketplace" ;;
+  teams)    PRIMARY_PLUGIN_ID="teams@marveen-marketplace" ;;
+  discord)  PRIMARY_PLUGIN_ID="discord@claude-plugins-official" ;;
+  *)        PRIMARY_PLUGIN_ID="telegram@claude-plugins-official" ;;
+esac
 # Extra co-listen plugins, derived EXACTLY as channels.sh does (see the
 # EXTRA_CHANNELS block there). Without this a watchdog respawn silently drops
 # every secondary provider: the session comes back on the primary channel only,
@@ -89,7 +134,7 @@ unset _p
 # back with the extras disabled by the project scope.
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
 # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
-EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PRIMARY_PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
@@ -118,7 +163,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  ka_mtime=$(stat -c %Y "$KEEPALIVE_FILE" 2>/dev/null || echo 0)
+  ka_mtime=$(file_mtime "$KEEPALIVE_FILE")
   age=$(( now - ka_mtime ))
   [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
 fi
@@ -155,7 +200,7 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  last=$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)
+  last=$(file_mtime "$RESPAWN_STAMP")
   if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0
@@ -255,7 +300,8 @@ STATE_DIR_ENV=""
 # session -- a respawn must not hand it a different python3 (#1626 review).
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+# NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

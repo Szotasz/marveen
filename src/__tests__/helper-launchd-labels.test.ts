@@ -172,7 +172,9 @@ describe("update.sh asks the installer for the label (real functions, stub insta
     return UPDATE.slice(start, UPDATE.indexOf('\n}\n', start) + 3)
   }
 
-  it('keepalive: an existing com.foo plist is the "already installed" signal, a com.marveen one is not', () => {
+  // ISSUE1891 (#1891): the signal is the com.foo JOB being loaded (`launchctl list`),
+  // not a plist on disk -- a plist whose job never ran must be retried.
+  it('keepalive: a loaded com.foo job is the "already installed" signal, a com.marveen one is not', () => {
     const d = tmp()
     try {
       const inst = join(d, 'install')
@@ -183,16 +185,26 @@ describe("update.sh asks the installer for the label (real functions, stub insta
       writeFileSync(installer, `#!/bin/bash\nif [ "$1" = "--print-label" ]; then echo com.foo.channel-keepalive-probe; exit 0; fi\necho "INSTALLED $*" >> "${d}/inst.log"\n`)
       chmodSync(installer, 0o755)
       const script = `INSTALL_DIR="${inst}"\n${fn('install_keepalive_probe_launchd')}\ninstall_keepalive_probe_launchd`
-      const env = { HOME: join(d, 'home'), PATH: `${stubBin(d, true)}:${process.env.PATH}` }
-      // only the legacy shared plist exists: this install has no job of its own -> install
+      const bin = stubBin(d, true)
+      // `launchctl list <label>` succeeds only for a label marked loaded
+      writeFileSync(join(bin, 'launchctl'), `#!/bin/bash\necho "launchctl $*" >> "${d}/launchctl.log"\nif [ "$1" = list ]; then [ -e "${d}/loaded-$2" ]; exit $?; fi\nexit 0\n`)
+      chmodSync(join(bin, 'launchctl'), 0o755)
+      const env = { HOME: join(d, 'home'), PATH: `${bin}:${process.env.PATH}` }
+      // only the legacy shared job is loaded (and its plist exists): this install has no job of its own -> install
       writeFileSync(join(agents, 'com.marveen.channel-keepalive-probe.plist'), 'x')
+      writeFileSync(join(d, 'loaded-com.marveen.channel-keepalive-probe'), '')
       let r = bash(['-c', script], env)
       expect(r.code).toBe(0)
       expect(existsSync(join(d, 'inst.log'))).toBe(true)
       expect(r.out).toContain('com.foo.channel-keepalive-probe')
-      // its own plist exists -> idempotent, nothing runs
+      // its own plist alone is NOT enough any more: the job is not loaded -> retried
       rmSync(join(d, 'inst.log'))
       writeFileSync(join(agents, 'com.foo.channel-keepalive-probe.plist'), 'x')
+      r = bash(['-c', script], env)
+      expect(existsSync(join(d, 'inst.log'))).toBe(true)
+      // its own job loaded -> idempotent, nothing runs
+      rmSync(join(d, 'inst.log'))
+      writeFileSync(join(d, 'loaded-com.foo.channel-keepalive-probe'), '')
       r = bash(['-c', script], env)
       expect(existsSync(join(d, 'inst.log'))).toBe(false)
       expect(r.out).toBe('')
@@ -245,7 +257,10 @@ describe('the binding', () => {
   })
   it("the keepalive alert names this install's job", () => {
     const mon = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
-    expect(mon).toContain('com.${SERVICE_ID}.channel-keepalive-probe launchd jobot')
+    // #1891 (b): the alert takes the job and its fix from keepaliveProducerRemedy,
+    // which builds the label from the SERVICE_ID the call site passes.
+    expect(mon).toContain('const label = `com.${serviceId}.channel-keepalive-probe`')
+    expect(mon).toContain('keepaliveProducerRemedy(process.platform, SERVICE_ID,')
     expect(mon).not.toContain('com.marveen.channel-keepalive-probe')
   })
 })

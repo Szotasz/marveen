@@ -37,6 +37,20 @@ INSTALL_STEP="init"
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# #1874: the managed-settings.json writes below are machine-wide (org-policy layer)
+# and need root. Say what is written and why, ONCE, before the first of them asks
+# for a password. The text lives in install-lang.sh; the function stays here, so a
+# standalone run that fetched an older install-lang.sh still has it (an unknown
+# _t key just prints nothing).
+managed_settings_notice() {
+  if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
+    return 0
+  fi
+  MANAGED_NOTICE_SHOWN=1
+  echo -e "  ${ORANGE}i${NC} $(_t managed.notice_what)"
+  echo -e "    $(_t managed.notice_sudo)"
+}
+
 # Error-translation layer (NPMPERM1 kor): minden stderr egy log-fajlba is
 # megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
 # forditani az upstream hibat (explain_install_error, install-lang.sh).
@@ -510,6 +524,7 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   # MERGE when the file already exists -- never create it here.
   MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
   if [ -f "$MANAGED_FILE" ]; then
+    managed_settings_notice
     HAS_DISCORD=$(sudo python3 -c "
 import json, sys
 try:
@@ -582,6 +597,7 @@ else
   DISCORD_ENTRY='{"plugin":"discord","marketplace":"claude-plugins-official"}'
   REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY,$DISCORD_ENTRY]}"
 
+  managed_settings_notice
   if [ -f "$MANAGED_FILE" ]; then
     # Gate on ALL required plugins being present (not just slack) -- otherwise an
     # install that already has slack/telegram but not teams skips the merge and
@@ -687,6 +703,7 @@ fi
 # no-op on a personal org). Idempotent + preserves existing managed keys.
 CHANNELS_GATE_STATE="manual"
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
   # ORGGATESILENT806: the gate script must never fail the install (exit 0 on
   # every path -- a personal org is a legitimate no-op), but its OUTCOME must
@@ -1014,6 +1031,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+      -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} $(_t macos.claude_md_generated)"
 else
@@ -1048,15 +1066,23 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     echo -e "  ${GREEN}✓${NC} Utemezett feladat scaffoldolva: $task_name"
   done
 fi
@@ -1143,15 +1169,14 @@ else
   fi
 fi
 
-# Enable plugin at project scope so --channels can boot-time activate it
+# INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
+# call rewrote the TRACKED .claude/settings.json (the whole file reformatted, ~500
+# lines, plus a wrong "<provider>@marveen-marketplace" key for Telegram/Discord),
+# so every fresh install left a dirty tree and every later update had to stash.
+# channels.sh enables the primary plugin for the main session through its
+# launch-time --settings file (store/.main-extra-plugins.settings.json), which
+# outranks the project scope and is gitignored.
 cd "$INSTALL_DIR"
-if claude plugin enable "$PLUGIN_SHORT@marveen-marketplace" --scope project 2>/dev/null || \
-   claude plugin enable "$PLUGIN_ID" --scope project 2>/dev/null; then
-  ok "${CHANNEL_PROVIDER} plugin project-scope-ban engedelyezve"
-else
-  warn "Plugin project-scope enable sikertelen. Futtasd kezzel:"
-  echo -e "  ${DIM}cd $INSTALL_DIR && claude plugin enable ${PLUGIN_ID} --scope project${NC}"
-fi
 
 # Install skill-factory (self-learning meta-skill)
 SKILLS_DIR="$HOME/.claude/skills"
@@ -1180,6 +1205,17 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
     done
+    # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
+    # verbatim and with their mode bits; its SKILL.md points into them.
+    # Only the files git TRACKS: a whole-dir copy also carried untracked and
+    # ignored files, and fleet-helper's own scripts/.gitignore names exactly
+    # those as secrets/personal data (mail_rules.json, .dashboard-token).
+    # Outside a git checkout nothing below the top level is copied.
+    git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
+      case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
+      mkdir -p "$target/$(dirname "$rel")"
+      cp -p "$skill_dir$rel" "$target/$rel"
+    done
     SEED_NEW=$((SEED_NEW + 1))
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
@@ -1204,15 +1240,23 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     SCHED_NEW=$((SCHED_NEW + 1))
   done
   if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
@@ -1237,6 +1281,17 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   fi
 fi
 
+# Scheduled-task registry: the schedule runner fires a task only if its
+# files hash-match the dashboard's registry. Register the tasks seeded above
+# (dist is already built at this point). On a FRESH install this is redundant
+# with the dashboard's one-time upgrade backfill; on a reinstall over an
+# existing box it is what keeps a newly seeded default firing.
+if [ -n "$(echo "${INSTALL_SCHED_REGISTER:-}" | tr -d ' ')" ] && [ -f "$INSTALL_DIR/dist/web/schedule-registry-cli.js" ] && command -v node >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  node "$INSTALL_DIR/dist/web/schedule-registry-cli.js" register --source installer $INSTALL_SCHED_REGISTER >/dev/null 2>&1 \
+    || echo "  WARN: scheduled-task registry registration failed; run: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status"
+fi
+
 # Seed config: copy default config files into store/ (idempotent: never overwrite)
 SEED_CONFIG_DIR="$INSTALL_DIR/seed-config"
 if [ -d "$SEED_CONFIG_DIR" ]; then
@@ -1251,29 +1306,61 @@ if [ -d "$SEED_CONFIG_DIR" ]; then
   done
 fi
 
-# Ollama + nomic-embed-text (szemantikus kereséshez)
+# Ollama + nomic-embed-text (szemantikus kereséshez) -- OPTIONAL.
+#
+# On a Mac without Homebrew (prerequisites met via MacPorts, so the
+# prerequisites step never installs brew) `brew install ollama` fails and the
+# `curl ... | sh` fallback ran. That script installed Ollama.app and the
+# /usr/local/bin/ollama symlink, yet exited non-zero, and the ERR trap blamed
+# the closing `fi`: "Unexpected error at line 1318". Same cure as the Whisper
+# block below: do the work in a function called from an `|| rc=$?` list, and
+# judge success by `command -v ollama` afterwards, not by the installer's rc.
 echo ""
 echo -e "$(_t macos.ollama_check)"
-if command -v ollama &>/dev/null; then
-  echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
+
+install_ollama() {
+  if command -v ollama &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
+  else
+    echo -e "  ${ORANGE}$(_t macos.ollama_installing)${NC}"
+    if command -v brew &>/dev/null; then
+      brew install ollama || true
+    fi
+    if ! command -v ollama &>/dev/null; then
+      curl -fsSL https://ollama.com/install.sh | sh || true
+    fi
+    command -v ollama &>/dev/null || return 1
+    echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
+  fi
+
+  # Start Ollama if not running
+  if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+    echo -e "$(_t macos.ollama_starting)"
+    ollama serve &>/dev/null &
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      curl -s http://localhost:11434/api/version &>/dev/null && break
+      sleep 1
+    done
+  fi
+
+  # Pull nomic-embed-text model
+  if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+    echo -e "$(_t macos.nomic_downloading)"
+    ollama pull nomic-embed-text || return 1
+  fi
+  return 0
+}
+
+OLLAMA_RC=0
+install_ollama || OLLAMA_RC=$?
+
+if [ "$OLLAMA_RC" -eq 0 ]; then
+  echo -e "$(_t macos.ollama_done)"
 else
-  echo -e "  ${ORANGE}$(_t macos.ollama_installing)${NC}"
-  brew install ollama 2>/dev/null || curl -fsSL https://ollama.com/install.sh | sh
+  warn "$(_t macos.ollama_skipped)"
+  echo -e "    ${DIM}$(_t macos.ollama_skipped_hint)${NC}"
 fi
-
-# Start Ollama if not running
-if ! curl -s http://localhost:11434/api/version &>/dev/null; then
-  echo -e "$(_t macos.ollama_starting)"
-  ollama serve &>/dev/null &
-  sleep 3
-fi
-
-# Pull nomic-embed-text model
-if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
-  echo -e "$(_t macos.nomic_downloading)"
-  ollama pull nomic-embed-text
-fi
-echo -e "$(_t macos.ollama_done)"
 
 # Whisper (speech-to-text for video transcription) -- OPTIONAL.
 #
@@ -1347,12 +1434,21 @@ if [ "$WHISPER_RC" -ne 0 ]; then
   echo -e "    ${DIM}$(_t macos.whisper_skipped_hint)${NC}"
 fi
 
-# ffmpeg (audio/video processing)
+# ffmpeg (audio/video processing). Without Homebrew an unguarded
+# `brew install ffmpeg` was the next fatal stop after the Ollama block, so a
+# missing brew (or a failed install) now warns instead of aborting.
 if ! command -v ffmpeg &>/dev/null; then
   echo -e "$(_t macos.ffmpeg_installing)"
-  brew install ffmpeg
+  if command -v brew &>/dev/null; then
+    brew install ffmpeg || true
+  fi
 fi
-echo -e "$(_t macos.ffmpeg_done)"
+if command -v ffmpeg &>/dev/null; then
+  echo -e "$(_t macos.ffmpeg_done)"
+else
+  warn "$(_t macos.ffmpeg_skipped)"
+  echo -e "    ${DIM}$(_t macos.ffmpeg_skipped_hint)${NC}"
+fi
 
 INSTALL_STEP="bumblebee"
 # Go + bumblebee (supply-chain scanner)
@@ -1571,6 +1667,21 @@ else
   print_services_remedy
 fi
 
+# ISSUE1891 (#1891): the three helper jobs below are verified by their own
+# installers now (registered in gui/<uid> AND run once). One that is not running
+# is collected here, warned about with its remedy, and repeated in the closing
+# summary -- before #1891 each helper printed "Loaded" after a bare
+# `launchctl load` and this file threw the output away, so on a Mac without a
+# GUI login nothing ever said that the keep-alive probe was not running. The
+# install's exit status is unchanged by a helper (the bot itself answers).
+HELPERS_DOWN=""
+note_helper_down() {
+  HELPERS_DOWN="${HELPERS_DOWN}${HELPERS_DOWN:+ }$1"
+  _nh_label="$("$INSTALL_DIR/scripts/$1.sh" --print-label 2>/dev/null | head -1)"
+  echo -e "    ${DIM}Javitas (a GUI-bejelentkezes egy terminaljabol):${NC}"
+  print_periodic_unit_remedy "$HOME/Library/LaunchAgents/${_nh_label}.plist" "$_nh_label"
+}
+
 # Idle-path keepalive probe (launchd twin of the Linux systemd timer). Without
 # it the ONLY producer of store/.channel-keepalive freshness is organic inbound
 # traffic, so a quiet night looks exactly like a wedged session: the file ages
@@ -1588,7 +1699,8 @@ if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
   if "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" --load >/dev/null 2>&1; then
     ok "Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen)"
   else
-    warn "A keepalive-szonda telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-keepalive-probe.sh --load"
+    warn "A keepalive-szonda NEM FUT (telepites vagy elso futas nem igazolt) -- nelkule a figyelo 45 perc csend utan ujrainditja az ep fo sessiont"
+    note_helper_down install-channel-keepalive-probe
   fi
 fi
 
@@ -1603,7 +1715,8 @@ if [ -x "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" ]; then
   if "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" --load >/dev/null 2>&1; then
     ok "Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, beavatkozni a STUCK_MODAL_MODE=act kapcsoloval fog)"
   else
-    warn "A beragadt-ablak or telepitese nem sikerult -- inditsd kezzel: scripts/install-stuck-modal-guard.sh --load"
+    warn "A beragadt-ablak or NEM FUT (telepites vagy elso futas nem igazolt)"
+    note_helper_down install-stuck-modal-guard
   fi
 fi
 
@@ -1620,7 +1733,8 @@ if [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ]; then
   if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
     ok "Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton KIVUL)"
   else
-    warn "Az inbox-figyelo telepitese nem sikerult -- inditsd kezzel: scripts/install-main-inbox-observer.sh --load"
+    warn "Az inbox-figyelo NEM FUT (telepites vagy elso futas nem igazolt)"
+    note_helper_down install-main-inbox-observer
   fi
 fi
 
@@ -1796,6 +1910,22 @@ if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
   fi
   echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
   echo ""
+fi
+
+# ISSUE1891 (#1891): a helper job that is not running is repeated at the end as
+# well, with its remedy, for whoever reads only the end of the run.
+if [ -n "${HELPERS_DOWN:-}" ]; then
+  echo ""
+  echo -e "  ${ORANGE}! SEGED-JOBOK, AMELYEK NEM FUTNAK:${NC}"
+  for _h in $HELPERS_DOWN; do
+    _hl="$("$INSTALL_DIR/scripts/$_h.sh" --print-label 2>/dev/null | head -1)"
+    echo -e "    ${DIM}  - ${_hl}: nem fut${NC}"
+  done
+  echo -e "    A launchd ezeket csak egy GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol:"
+  for _h in $HELPERS_DOWN; do
+    _hl="$("$INSTALL_DIR/scripts/$_h.sh" --print-label 2>/dev/null | head -1)"
+    print_periodic_unit_remedy "$HOME/Library/LaunchAgents/${_hl}.plist" "$_hl"
+  done
 fi
 
 # #1871: the services' state is repeated LAST too, with the same remedy, and a

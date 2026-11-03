@@ -125,3 +125,36 @@ describe('notifyChannel: owner-chat fallback (NOTIFYOWNERFALLBACK924)', () => {
     expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('nincs token'))
   })
 })
+
+// NOTIFYPERCALL930 -- the owner chat is resolved on EVERY alert, never frozen
+// at boot or at the first send. A frozen value was the original report: the
+// dashboard boots before the owner pairs (or the pairing changes later), and
+// every alert until the next restart goes to the boot-time answer -- silence,
+// or the old chat. Both cases change access.json BETWEEN two notifyChannel
+// calls in one process, and pin that the second alert follows the change.
+describe('notifyChannel: the owner chat is resolved per call, not frozen (NOTIFYPERCALL930)', () => {
+  const OTHER = '2233445566'
+
+  it('a pairing that changes between two alerts moves the second alert to the new chat', async () => {
+    cfg.chatId = '0'
+    cfg.accessBody = { allowFrom: [REAL] }
+    await notifyChannel('first')
+    cfg.accessBody = { allowFrom: [OTHER] }
+    await notifyChannel('second')
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockSend).toHaveBeenNthCalledWith(1, 'bot-token', REAL, 'first', 'HTML')
+    expect(mockSend).toHaveBeenNthCalledWith(2, 'bot-token', OTHER, 'second', 'HTML')
+  })
+
+  it('an alert skipped before the owner paired is sent once the pairing appears, without a restart', async () => {
+    cfg.chatId = '0'
+    cfg.accessBody = null
+    await notifyChannel('before pairing')
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('nincs tulajdonos-chat'))
+    cfg.accessBody = { allowFrom: [REAL] }
+    await notifyChannel('after pairing')
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    expect(mockSend).toHaveBeenCalledWith('bot-token', REAL, 'after pairing', 'HTML')
+  })
+})

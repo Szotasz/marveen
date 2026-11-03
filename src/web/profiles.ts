@@ -45,6 +45,18 @@ export interface ProfileTemplate {
   // a live agent stays a deliberate, separate act.
   destructiveGate?: boolean
   thinChiefHandoff?: boolean
+  // CREDGATE1003: the credential gate (scripts/hooks/credential-gate.py) on the
+  // agent's letter tools. Same posture as destructiveGate: absent == off, no
+  // shipped template sets it, and switching it off is not a teardown.
+  credentialGate?: boolean
+  // D3(b): the second-reviewer gate (scripts/hooks/second-reviewer-gate.py): a model reviews a
+  // high-risk tool call and allows it, denies it, or asks the owner. Absent == off, like
+  // destructiveGate: every reviewed call costs a model call, which is the operator's choice.
+  secondReviewer?: boolean
+  // Gets the scripts/yt-ingest allow lines (YT_INGEST_ALLOW) -- but only while
+  // the install-wide YT_DLP_INGEST_ONLY switch is on, so with the switch off
+  // this flag changes nothing in the written settings.
+  ytIngest?: boolean
 }
 
 /** Absent or non-true == off. Keeps the default in ONE place. */
@@ -52,8 +64,20 @@ export function profileWantsDestructiveGate(p: ProfileTemplate | null | undefine
   return p?.destructiveGate === true
 }
 
+export function profileWantsCredentialGate(p: ProfileTemplate | null | undefined): boolean {
+  return p?.credentialGate === true
+}
+
+export function profileWantsSecondReviewer(p: ProfileTemplate | null | undefined): boolean {
+  return p?.secondReviewer === true
+}
+
 export function profileWantsThinChiefHandoff(p: ProfileTemplate | null | undefined): boolean {
   return p?.thinChiefHandoff === true
+}
+
+export function profileWantsYtIngest(p: ProfileTemplate | null | undefined): boolean {
+  return p?.ytIngest === true
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')

@@ -16,8 +16,10 @@ import { listAllAgentNames, readAgentModel, readAgentAuthMode, readAgentRemoteHo
 import { FLEET_OAUTH_TOKEN_PATH, isAgentRunning, restartAgentProcess } from './agent-process.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { getSecret } from './vault.js'
+import { agentTokenFileState } from './reauth-healer.js'
 
-function usesFleetToken(name: string): boolean {
+// Exported for the wiring test only.
+export function usesFleetToken(name: string): boolean {
   return agentUsesFleetToken({
     name,
     mainAgentId: MAIN_AGENT_ID,
@@ -25,6 +27,10 @@ function usesFleetToken(name: string): boolean {
     authMode: readAgentAuthMode(name),
     configuredConfigDir: resolveAgentConfigDir(name).configDir,
     remote: readAgentRemoteHost(name) !== null,
+    // #2227: the same reading the reauth healer uses (#2015). 'invalid' counts
+    // as own too: such an agent refuses to start rather than use the fleet
+    // token, so a fleet restart could only leave it stopped.
+    ownTokenFile: agentTokenFileState(name) !== 'unset',
   })
 }
 

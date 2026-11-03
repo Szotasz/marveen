@@ -12,13 +12,23 @@
 //
 // Enumerating them here would rot the same way, so the list is discovered from
 // disk: a new scripts/__tests__/*.test.sh is in CI the moment it is written.
-// The four suites with their own dedicated wrapper run twice; that is the cheap
+// The suites with their own dedicated wrapper run twice; that is the cheap
 // direction of the trade, because deleting a wrapper must not silently retire a
 // suite.
+//
+// Except where the second run is not cheap: the email approval gate suite
+// (EMAILKAPU901 PR2: the three level branches, one-shot + window approvals,
+// the four-field anchor, every fail-closed branch) spawns the real hook once
+// per case, and the spawn is the production entry point, so it stays. Its
+// dedicated wrapper ran the identical command a second time, under a tighter
+// budget, and in a full run the two copies ran concurrently in two workers,
+// each loading the host for the other. That wrapper is gone; this runner is the
+// suite's one CI entry, with the 300 s budget below.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { SKIP_REASON, hasSkipReason, suiteOutcome } from './setup/suite-outcome.js'
 
 const ROOT = join(__dirname, '..', '..')
 const DIR = join(ROOT, 'scripts', '__tests__')
@@ -33,17 +43,46 @@ describe('scripts/__tests__ suites', () => {
     expect(SUITES.length).toBeGreaterThan(20)
   })
 
-  it.each(SUITES)('%s passes', (name) => {
+  // The email gate suite must stay reachable from here (it has no other CI
+  // entry now) and must not be re-run by a second wrapper.
+  it('runs the email approval gate suite here, and no other test file re-runs it', () => {
+    expect(SUITES).toContain('email-approval-gate.test.py')
+    const SRC_TESTS = join(ROOT, 'src', '__tests__')
+    const rerunners = readdirSync(SRC_TESTS)
+      .filter((f) => f.endsWith('.ts') && f !== 'script-tests-runner.test.ts')
+      .filter((f) => readFileSync(join(SRC_TESTS, f), 'utf-8').includes("'email-approval-gate.test.py'"))
+    expect(rerunners).toEqual([])
+  })
+
+  // it.for, not it.each: the case function gets the test context, and ctx.skip() makes the
+  // outcome a SKIPPED test that the reporter counts and shows. An early `return` from an `it`
+  // is counted as a pass, which is the silent skip this branch exists to prevent. The title is the
+  // bare file name (no "passes"), so the line reads correctly whether the suite passed or skipped.
+  it.for(SUITES)('%s', { timeout: 310_000 }, (name, ctx) => {
     const runner = name.endsWith('.py') ? 'python3' : 'bash'
     const res = spawnSync(runner, [join(DIR, name)], {
       encoding: 'utf-8',
       timeout: 300_000,
       cwd: ROOT,
     })
+    if (suiteOutcome(res.status) === 'skip') {
+      // A suite whose positive control cannot be met on this platform has
+      // measured NOTHING here. Failing it is a false alarm (see wait-for on
+      // macOS); passing it silently is worse, because a skip would then be
+      // indistinguishable from a green run. So it is a counted skip, and the
+      // reason is required to be there -- a bare 77 with no explanation is a
+      // failure. The streams are joined with a newline so that the marker on
+      // stderr starts a line even when stdout did not end with one.
+      const why = `${res.stdout ?? ''}\n${res.stderr ?? ''}`
+      expect(hasSkipReason(why), `${name} exited 77 without a "SKIP (control unmet)" line:\n${why}`).toBe(true)
+      const line = why.split('\n').find((l) => SKIP_REASON.test(l)) ?? 'control unmet'
+      ctx.skip(`${name}: ${line}`)
+      return
+    }
     if (res.status !== 0) {
       console.error(`--- ${name} stdout ---\n${res.stdout ?? ''}`)
       console.error(`--- ${name} stderr ---\n${res.stderr ?? ''}`)
     }
     expect(res.status).toBe(0)
-  }, 310_000)
+  })
 })

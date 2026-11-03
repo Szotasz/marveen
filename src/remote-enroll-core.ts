@@ -179,6 +179,11 @@ export interface ParsedKey {
 // stable identity used to revoke or replace a single device's access.
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+/** True for a marveen-remote install id (UUID v4), the shape validatePublicKeyLine accepts. */
+export function isInstallId(value: string): boolean {
+  return UUID_V4.test(value)
+}
+
 /**
  * Verify a string is canonical standard base64: it decodes and re-encodes to
  * exactly the same text. Buffer.from is lenient (it silently drops invalid

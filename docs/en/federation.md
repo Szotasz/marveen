@@ -103,16 +103,18 @@ If only one side sets permissive trust, cooperation becomes **asymmetric**: one 
 | GET | `/api/federation/manifest` | any peer inbound token OR dashboard | system name, version, agent list, sub-agent skills |
 | POST | `/api/federation/inbox` | any peer inbound token OR dashboard | inbound message (the token identifies the caller) |
 | GET | `/api/federation/peers` | dashboard only | config view (NO tokens, presence flags) |
-| PUT | `/api/federation/peers` | dashboard only | full-document write (scriptable primitive) |
-| POST | `/api/federation/peers` | dashboard only | add peer — the inbound token is minted server-side, returned once |
-| PATCH / DELETE | `/api/federation/peers/:id` | dashboard only | edit / remove peer (removal closes its pending messages, purges dedup+backoff+poller cache) |
-| GET | `/api/federation/peers/:id/inbound-token` | dashboard only | token reveal (logged) |
-| POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard only | token rotation (logged) |
-| POST | `/api/federation/enabled` | dashboard only | master switch (lossless) |
+| PUT | `/api/federation/peers` | dashboard; owner session once a login exists | full-document write (scriptable primitive) |
+| POST | `/api/federation/peers` | dashboard; owner session once a login exists | add peer: the inbound token is minted server-side, returned once |
+| PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; owner session once a login exists. DELETE: dashboard | edit / remove peer (removal closes its pending messages, purges dedup+backoff+poller cache) |
+| GET | `/api/federation/peers/:id/inbound-token` | dashboard; owner session once a login exists | token reveal (logged) |
+| POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; owner session once a login exists | token rotation (logged) |
+| POST | `/api/federation/enabled` | on: dashboard; owner session once a login exists. off: dashboard | master switch (lossless) |
 | POST | `/api/federation/routing-mode` | dashboard only | delegation mode (`strong` / `catalog-first` / `advisory`) |
 | GET / POST | `/api/federation/status` / `/api/federation/refresh` | dashboard only | poller cache / manual refresh |
 | POST | `/api/federation/apply` | dashboard only | apply settings to the agent (targeted main-agent restart) |
 | POST | `/api/federation/remove` | dashboard only | full removal |
+
+A peer's inbound token admits a remote system, so issuing one (add peer, full-document PUT, rotation), revealing one, editing a peer (a new baseUrl would carry our outbound token there) and switching federation on (it admits the peers and starts sending our outbound tokens); switching it off stays open take the owner's session once a dashboard login exists; the access token keeps them for the first-run setup only (403 `owner_session_required`). On the machine itself `store/federation.json` stays editable.
 
 Peer tokens are scoped to the manifest+inbox pair only — every other API answers 401. The dashboard token never crosses to a peer.
 
@@ -137,7 +139,11 @@ Peers are editable while federation is disabled — pairing naturally precedes o
 
 ### Known limitations
 
-- **No done/failed feedback:** the sender sees up to `delivered` (the peer accepted); processing results do not flow back (later phase: ack + `remote_ref`).
+- **Completion receipt over the bridge (opt-in):** the receipt hands the close's result to ANOTHER system, so closing a task never sends it by itself. The closer asks for it in the `PUT /api/messages/<id>` body: `"federated_receipt": true`. It must be a real JSON boolean, like `notify`: the string `"true"` or `"false"` gets a 400 and the close is not applied; `null` and an absent field mean `false`. When asked for, with a non-empty `result`, an `[Eredmény] msg_id:<the sender's own id> status:<s>` message goes back over the bridge (the inbound `ref` is kept in the `remote_ref` column). For every federated close the PUT answer's `federatedReceipt` field says what happened: `queued`, or the skip reason. The sender's own row still stays `delivered`.
+  - Nothing is sent: `not-requested` (no `federated_receipt: true`), `notify-false` (`notify:false` wins over the opt-in), `empty-result`, `completion-report` (a receipt is never answered with a receipt), `federation-disabled`, `unknown-peer`.
+  - WITHHELD, not redacted (a half-redacted answer reads as a whole one): `private-data` (owner name, chat id, our own tokens, internal system names); `private-key` (a private key block); `secret-token` (keys prefixed `sk-`, `ghp_`, `github_pat_`, `xox?-`, `glpat-`, `AKIA` etc., a `Bearer` token, a JWT, a run of 32+ hex digits, a long mixed-case base64 run); `home-path` (`/home/<user>`, `/Users/<user>`, `/root`, `~/`, `C:\Users\<user>`); `email-address`; `phone-number` (international with `+` or `00`, Hungarian domestic `06`, `(NNN) NNN-NNNN`). The reason names the category, never the matched text. Answer with a separate, reviewed message then.
+  - The scrub is deterministic (regular expressions, no model) and deliberately errs towards withholding: a full 40-digit commit hash withholds the receipt too (a short hash passes).
+  - A result longer than the bridge limit is cut on a code-point boundary (never inside an emoji or a multi-byte character), and the cut says so.
 - **Dedup until restart:** the receiver's duplicate filter is in-memory.
 - **No rate limit** on the inbox (beyond size caps and backoff).
 - **De-pairing is asymmetric:** after peer removal / token rotation the OTHER side's owner must act too; until then their agent only learns from `failed` statuses.

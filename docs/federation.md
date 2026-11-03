@@ -103,16 +103,18 @@ Ha csak az egyik oldal állít be megengedő bizalmat, az együttműködés **as
 | GET | `/api/federation/manifest` | bármely társ bejövő tokenje VAGY dashboard | rendszernév, verzió, ügynöklista, al-ügynök skillek |
 | POST | `/api/federation/inbox` | bármely társ bejövő tokenje VAGY dashboard | bejövő üzenet (a token azonosítja a hívót) |
 | GET | `/api/federation/peers` | csak dashboard | konfiguráció-nézet (tokenek NÉLKÜL, jelenlét-flagek) |
-| PUT | `/api/federation/peers` | csak dashboard | teljes konfig írása (szkriptelhető primitíva) |
-| POST | `/api/federation/peers` | csak dashboard | társ felvétele — a bejövő tokent a szerver generálja és egyszer visszaadja |
-| PATCH / DELETE | `/api/federation/peers/:id` | csak dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
-| GET | `/api/federation/peers/:id/inbound-token` | csak dashboard | token-felfedés (naplózott) |
-| POST | `/api/federation/peers/:id/rotate-inbound-token` | csak dashboard | token-csere (naplózott) |
-| POST | `/api/federation/enabled` | csak dashboard | fő kapcsoló (veszteségmentes) |
+| PUT | `/api/federation/peers` | dashboard; ha már van login, gazda-session | teljes konfig írása (szkriptelhető primitíva) |
+| POST | `/api/federation/peers` | dashboard; ha már van login, gazda-session | társ felvétele: a bejövő tokent a szerver generálja és egyszer visszaadja |
+| PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; ha már van login, gazda-session. DELETE: dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
+| GET | `/api/federation/peers/:id/inbound-token` | dashboard; ha már van login, gazda-session | token-felfedés (naplózott) |
+| POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; ha már van login, gazda-session | token-csere (naplózott) |
+| POST | `/api/federation/enabled` | bekapcsolás: dashboard; ha már van login, gazda-session. Kikapcsolás: dashboard | fő kapcsoló (veszteségmentes) |
 | POST | `/api/federation/routing-mode` | csak dashboard | delegálási mód (`strong` / `catalog-first` / `advisory`) |
 | GET / POST | `/api/federation/status` / `/api/federation/refresh` | csak dashboard | poller-cache / kézi frissítés |
 | POST | `/api/federation/apply` | csak dashboard | beállítások életbe léptetése (fő-ügynök célzott újraindítása) |
 | POST | `/api/federation/remove` | csak dashboard | teljes eltávolítás |
+
+A társ bejövő tokenje egy távoli rendszert enged be, ezért a kiadása (társ felvétele, teljes konfig PUT, csere), a felfedése, a társ szerkesztése (az új baseUrl-re a kimenő tokenünk menne) és a föderáció bekapcsolása (beengedi a társakat, és elindítja a kimenő tokenek küldését); a kikapcsolás nyitva marad a gazda sessionjét kéri, amint van dashboard-login; a hozzáférési token csak az első telepítéskor (még nincs login) teheti meg (403 `owner_session_required`). A gépen magán a `store/federation.json` továbbra is szerkeszthető.
 
 A társ-tokenek hatóköre kizárólag a manifest+inbox pár — minden más API-ra 401-et kapnak. A dashboard-token soha nem kerül át a társhoz.
 
@@ -137,7 +139,11 @@ Társak kikapcsolt föderáció mellett is szerkeszthetők — a párosítás te
 
 ### Ismert korlátok
 
-- **Nincs done/failed visszacsatolás:** a küldő a `delivered`-ig lát (a társ befogadta); a feldolgozás eredménye nem folyik vissza (későbbi fázis: ack + `remote_ref`).
+- **Eredmény-nyugta a hídon (csak kérésre):** a nyugta a lezárás eredményét egy MÁSIK rendszernek adja át, ezért a lezárás magától soha nem küldi. A lezáró kéri, a `PUT /api/messages/<id>` törzsében: `"federated_receipt": true`. Ez valódi JSON boolean kell legyen, mint a `notify`: a `"true"` vagy `"false"` string 400-at kap, és ilyenkor a lezárás sem történik meg; a `null` és a hiányzó mező ugyanaz, mint a `false`. Kérésre, nem üres `result` mellett egy `[Eredmény] msg_id:<a küldő saját azonosítója> status:<s>` üzenet megy vissza a hídon (a beérkező `ref` a `remote_ref` oszlopban áll). A PUT válasz `federatedReceipt` mezője minden föderált lezárásnál megmondja, mi történt: `queued` (elment), vagy a kihagyás oka. A küldő saját sora ettől még `delivered` marad.
+  - Nem megy semmi: `not-requested` (nincs `federated_receipt: true`), `notify-false` (a `notify:false` erősebb a kérésnél), `empty-result`, `completion-report` (nyugtára nem megy nyugta), `federation-disabled`, `unknown-peer`.
+  - VISSZATARTVA, nem kitakarva (a félig kitakart válasz egésznek látszana): `private-data` (tulaj neve, chat id, a saját tokenjeink, belső rendszernév); `private-key` (privát kulcs blokk); `secret-token` (`sk-`, `ghp_`, `github_pat_`, `xox?-`, `glpat-`, `AKIA` stb. előtagú kulcs, `Bearer` token, JWT, 32 vagy több jegyű hex sor, hosszú vegyes base64 sor); `home-path` (`/home/<név>`, `/Users/<név>`, `/root`, `~/`, `C:\Users\<név>`); `email-address`; `phone-number` (`+` vagy `00` előtagú nemzetközi, `06`-os belföldi, `(NNN) NNN-NNNN`). Az ok csak a kategóriát nevezi meg, a talált szöveget soha. Ilyenkor külön, átnézett üzenetben válaszolj.
+  - A szűrés determinisztikus (reguláris kifejezések, nincs modell), és szándékosan inkább téved a visszatartás felé: egy teljes, 40 jegyű commit-hash is visszatartja a nyugtát (a rövid hash átmegy).
+  - A híd korlátjánál hosszabb eredmény kódpont-határon vágódik (soha nem egy emoji vagy több bájtos karakter közepén), és a vágás jelzi magát.
 - **Dedup restartig:** a fogadó duplikátum-szűrése memóriabeli.
 - **Nincs rate-limit** az inboxon (méret- és backoff-védelmen túl).
 - **A szétkapcsolás aszimmetrikus:** társ-törlés/token-csere után a MÁSIK oldal tulajának is lépnie kell; addig a társ ügynöke a halott címre küldött üzenetekről csak a `failed` státuszból értesül.

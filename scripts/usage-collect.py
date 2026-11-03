@@ -95,9 +95,63 @@ LATEST_PATH = os.path.join(STORE_DIR, "usage-latest.json")
 STATE_PATH = os.path.join(STORE_DIR, "usage-alert-state.json")
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
 
-# Display timezone for reset stamps. Defaults to the project's Europe/Budapest;
-# override with MARVEEN_TZ for an install whose owner lives elsewhere.
-LOCAL_TZ = ZoneInfo(os.environ.get("MARVEEN_TZ", "Europe/Budapest"))
+# Display timezone for reset stamps: MARVEEN_TZ when set, else the install zone
+# (SCHEDULER_TZ, config-overrides.json over .env, the same rule as APP_TZ in
+# src/config.ts), else the host zone. ISSUE1895 / #1895: it used to default to
+# Europe/Budapest whatever the install's zone was.
+def _install_zone():
+    explicit = (os.environ.get("MARVEEN_TZ") or "").strip()
+    if explicit:
+        return explicit
+    value = ""
+    try:
+        with open(os.path.join(STORE_DIR, "config-overrides.json"), encoding="utf-8") as f:
+            ov = json.load(f)
+        if isinstance(ov, dict) and ov.get("SCHEDULER_TZ"):
+            value = str(ov["SCHEDULER_TZ"]).strip()
+    except Exception:
+        pass
+    if not value:
+        try:
+            with open(ENV_PATH, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("SCHEDULER_TZ="):
+                        value = line.split("=", 1)[1].strip()
+                        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                            value = value[1:-1]
+        except Exception:
+            pass
+    return value
+
+
+def _host_zone_name():
+    # The host's zone by NAME (a ZoneInfo keeps the DST rules); a fixed offset
+    # from datetime.now().astimezone() would render a reset time on the other
+    # side of a DST switch one hour off.
+    tz = (os.environ.get("TZ") or "").lstrip(":").strip()
+    if tz and "/" in tz:
+        return tz
+    try:
+        target = os.path.realpath("/etc/localtime")
+        if "/zoneinfo/" in target:
+            return target.split("/zoneinfo/", 1)[1]
+    except Exception:
+        pass
+    return ""
+
+
+def _local_tz():
+    for zone in (_install_zone(), _host_zone_name()):
+        if zone:
+            try:
+                return ZoneInfo(zone)
+            except Exception:
+                pass  # a misspelled zone: the next candidate, like config.ts does
+    return datetime.now().astimezone().tzinfo
+
+
+LOCAL_TZ = _local_tz()
 
 TOKEN_FIELDS = (
     "input_tokens",
@@ -264,7 +318,14 @@ def collect_codex():
     try:
         files = glob.glob(os.path.expanduser("~/.codex/sessions/*/*/*/rollout-*.jsonl"))
         if not files:
-            raise FileNotFoundError("no ~/.codex/sessions rollout files found")
+            # Not a measurement failure: Codex has simply never run on this
+            # host, which is the normal case on most installs. A separate,
+            # stable field says so (reason="no_sessions"), so consumers do not
+            # have to match the English error text.
+            result["ok"] = False
+            result["reason"] = "no_sessions"
+            result["error"] = "no ~/.codex/sessions rollout files found"
+            return result
         newest = max(files, key=os.path.getmtime)
 
         rate_limits = None

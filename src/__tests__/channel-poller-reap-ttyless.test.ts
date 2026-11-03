@@ -84,11 +84,16 @@ describe('every env-scan call site uses the tty-inclusive form', () => {
   const codeLines = (path: string, comment: string) =>
     readFileSync(path, 'utf-8').split('\n').filter((l) => !l.trim().startsWith(comment))
 
-  it('channel-poller-reap.ts has no literal ps env scan outside PS_ENV_SCAN_CMD', () => {
+  it('channel-poller-reap.ts scans through envScan only, and its listing keeps the tty-less processes (REAPERENOBUFS1101)', () => {
     const lines = codeLines(join(here, '../web/channel-poller-reap.ts'), '//')
     expect(lines.filter((l) => /\/bin\/ps eww/.test(l))).toEqual([])
-    const scans = lines.filter((l) => l.includes('execSync(PS_ENV_SCAN_CMD'))
-    expect(scans.length).toBe(2)
+    // The whole-host env dump is gone from the reaper: it outgrew the buffer (ENOBUFS) and blocked the loop.
+    expect(lines.filter((l) => l.includes('execSync(PS_ENV_SCAN_CMD'))).toEqual([])
+    const code = lines.join('\n')
+    // `ax`: every process, the tty-less ones included (PSEWWMACOSBLIND1007); then the environment of the runtime ones only.
+    expect(code).toContain("deps.ps(['-axo', 'pid=,comm='])")
+    expect(code).toContain("deps.ps(['eww', '-o', 'pid,command', '-p', pids.join(',')])")
+    expect(lines.filter((l) => l.includes('envScanOrEmpty(')).length).toBe(3) // its definition, psEwwSnapshot, the foreign-main reap
   })
 
   it('channels.sh second reap pass (CLAUDE_PLUGIN_ROOT) scans with ps axeww', () => {

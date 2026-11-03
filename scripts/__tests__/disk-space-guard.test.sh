@@ -126,6 +126,30 @@ touch_aged "$SCR/health_real.bin"
 LINK="$TMPDIR_BASE/f-link"; ln -s "$SCR" "$LINK"
 run_guard 92 "$LINK" "$ST" >/dev/null 2>&1
 [ -e "$SCR/health_real.bin" ] && pass "W3: symlinked SCRATCH_DIR is NOT reaped" || fail "W3: reaped via symlinked SCRATCH_DIR"
+# #1878 item 5: the case above cannot fail on its own. `find -P` does not descend
+# a symlinked start point, so nothing is reaped even WITHOUT the [ -L ] guard
+# (measured: deleting the guard left it green). Here `find` is a wrapper that
+# DOES enter a symlinked start point (as `find -H`/`-L`, or a trailing slash,
+# would), so only the guard itself stands between the link and the reap.
+REAL_FIND="$(command -v find)"
+mkdir -p "$TMPDIR_BASE/followbin"
+cat > "$TMPDIR_BASE/followbin/find" <<EOF
+#!/bin/bash
+a="\$1"; shift
+if [ -L "\$a" ] && [ -d "\$a" ]; then a="\$a/"; fi
+exec "$REAL_FIND" "\$a" "\$@"
+EOF
+chmod +x "$TMPDIR_BASE/followbin/find"
+read -r SCR ST <<<"$(fresh_case f2)"
+touch_aged "$SCR/health_real.bin"
+LINK2="$TMPDIR_BASE/f2-link"; ln -s "$SCR" "$LINK2"
+PATH="$TMPDIR_BASE/followbin:$PATH" run_guard 92 "$LINK2" "$ST" >/dev/null 2>&1
+[ -e "$SCR/health_real.bin" ] && pass "W3: symlinked SCRATCH_DIR is refused by the guard, even with a find that follows it" || fail "W3: a following find reaped through a symlinked SCRATCH_DIR"
+# Control: the same following find on the REAL dir does reap (the wrapper works).
+read -r SCR3 ST3 <<<"$(fresh_case f3)"
+touch_aged "$SCR3/health_real.bin"
+PATH="$TMPDIR_BASE/followbin:$PATH" run_guard 92 "$SCR3" "$ST3" >/dev/null 2>&1
+[ ! -e "$SCR3/health_real.bin" ] && pass "W3 control: the following find reaps a real scratch dir" || fail "W3 control: the following find did not reap a real scratch dir"
 
 # ---------------------------------------------------------------------------
 # (g) W2 reap-age validation -> invalid env falls back to a conservative default

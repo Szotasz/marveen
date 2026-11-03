@@ -17,6 +17,10 @@ Registration (user-level ~/.claude/settings.json, post-install step):
   This means the hook can be registered before merge without causing errors
   on other branches where the file does not yet exist.
 """
+# Python 3.9 (macOS system python3) cannot evaluate PEP 604 unions at def time;
+# lazy annotations keep the hook importable there (card 513c886e).
+from __future__ import annotations
+
 import sys
 import os
 import re

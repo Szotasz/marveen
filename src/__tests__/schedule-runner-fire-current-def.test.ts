@@ -31,6 +31,17 @@ let duringFirstFire: () => void = () => {}
 // Shared across vi.resetModules(): each runOneTick re-imports the runner, and a
 // factory-local vi.fn would be a new spy every time.
 const mockLoggerInfo = vi.fn()
+// Scheduled-task registry: the runner fires only registry-matched tasks and the API routes register what
+// they write. The registry gate is covered by schedule-source-registry.test.ts; here it is a passthrough.
+vi.mock('../web/schedule-registry.js', () => ({
+  filterRegisteredTasks: <T,>(tasks: T[]) => tasks,
+  backfillScheduledTaskRegistryOnce: () => ({ ran: false, registered: [] }),
+  verifyScheduledTask: () => ({ ok: true }),
+  describeVerdict: () => '',
+  registerScheduledTask: () => 'test-hash',
+  unregisterScheduledTask: () => true,
+}))
+
 vi.mock('../logger.js', () => ({
   logger: { info: (...a: unknown[]) => mockLoggerInfo(...a), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
