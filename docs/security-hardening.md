@@ -106,8 +106,16 @@ Every way of making git skip a hook is a way of making this gate off, so the
   method behind (an alternative config file, `include.path`, a `cd` followed by a relative path
   each got past the first two versions), so before a `git push` the gate asks git itself what
   it would see: `git config --show-origin --get-all core.hooksPath`, with the same `-C` and
-  inline environment the push would run with. Any value from any source (repo, user, system, an
-  included file) blocks the push. `git config include.path` / `includeIf.*` writes are denied
+  inline environment the push would run with. A value from any source (repo, user, system, an
+  included file) is then judged by its **effect**, not by its presence: the gate asks git where
+  it would actually look for hooks (`git rev-parse --path-format=absolute --git-path hooks
+  --git-common-dir`) and blocks only when the dispatcher is installed in `<common>/hooks` and
+  that is not the directory git would use. A repository that never had the gates (a husky
+  `.husky/_` hooks path, say) and a checkout whose `core.hooksPath` points at its own
+  `.git/hooks` both pass; a dispatcher *copied* to another directory does not, because the
+  directory has to match, not the marker line. An answer the gate cannot read (an old git
+  without `--path-format`, no repository, an unreadable `pre-push`) blocks, as before.
+  `git config include.path` / `includeIf.*` writes are denied
   for the same reason, and so are the variables that move git's config around:
   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_*`, `XDG_CONFIG_HOME` and a `HOME=`
   placed in front of `git`. (The effective-value query cannot see a file that the *same*
