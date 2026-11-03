@@ -36,10 +36,12 @@ const defaultExec: ExecFn = (file, args, opts) =>
     })
   })
 
-export async function runInstallDriftRepair(projectRoot: string, exec: ExecFn = defaultExec): Promise<DriftRepairOutcome> {
+/** backupDir: where overwritten files are copied first; default ~/.marveen-repair/backup-<UTC ts>. */
+export async function runInstallDriftRepair(projectRoot: string, exec: ExecFn = defaultExec, backupDir?: string): Promise<DriftRepairOutcome> {
   const script = join(projectRoot, 'scripts', 'install-drift-repair.py')
+  const args = [script, '--install-dir', projectRoot, '--json', ...(backupDir ? ['--backup-dir', backupDir] : [])]
   try {
-    const { code, stdout } = await exec('python3', [script, '--install-dir', projectRoot, '--json'], { cwd: projectRoot, timeout: 30_000 })
+    const { code, stdout } = await exec('python3', args, { cwd: projectRoot, timeout: 30_000 })
     const line = stdout.trim().split('\n').pop() ?? ''
     const parsed = JSON.parse(line) as { results?: DriftRepairResult[]; error?: string }
     return { ran: true, exitCode: code, results: parsed.results ?? [], ...(parsed.error ? { error: parsed.error } : {}) }

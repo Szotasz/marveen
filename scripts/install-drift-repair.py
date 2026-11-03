@@ -32,7 +32,7 @@ Unmerged paths (a conflicted `git stash pop`) are handled: the side that is not
 HEAD's version is checked against the merge base with the same rules, and on a
 match the path is checked out from HEAD. The stash entry is never dropped.
 
-Usage: install-drift-repair.py --install-dir DIR [--resolve-conflicts] [--dry-run] [--json | --lines]
+Usage: install-drift-repair.py --install-dir DIR [--resolve-conflicts] [--dry-run] [--backup-dir DIR] [--json | --lines]
 
 It never needs its own location: the Bridge runs it from stdin, with no file on
 the target:  python3 -I - --install-dir "$HOME/marveen" --resolve-conflicts --lines < it
@@ -53,14 +53,22 @@ the target:  python3 -I - --install-dir "$HOME/marveen" --resolve-conflicts --li
                          REPAIR_RESULT <state>             exactly one, always last
                        <path> is repo-relative; every byte outside [A-Za-z0-9._/-] is
                        %XX-encoded. Under --dry-run the same lines say what WOULD happen.
+  --backup-dir DIR     every file is copied here BEFORE it is overwritten (conflict
+                       markers included); must be outside the tree. Default
+                       ~/.marveen-repair/backup-<UTC timestamp>. A dry run writes none.
   --json               one JSON object (version 1): {version, ok, state, exitCode, dryRun,
-                       resolvedConflicts[], results[], unmergedLeft[], stash{before, after,
-                       kept, autoStash[]}, error?}
+                       resolvedConflicts[{path, action, reason, backup}], results[{path,
+                       status, action, reason, pattern, backup?}], unmergedLeft[],
+                       stash{before, after, kept, autoStash[]}, treeClean, dirtyLeft[],
+                       backupDir, error?}. exit 0 means UNBLOCKED (nothing unmerged, the
+                       known paths clean); treeClean/dirtyLeft say whether the WHOLE
+                       tracked tree is clean.
 
 States and exit codes:
   ok | nothing_to_do                                       exit 0 (REPAIR_LEFT paths may remain
                                                            dirty: not ours, they take the stash path)
   refused:not_a_repo | refused:operation_in_progress |
+  refused:index_locked | refused:backup_inside_tree |
   refused:no_auto_stash | refused:unknown_change           exit 3 (unknown_change: an unmerged path
                                                            is still left; otherwise nothing changed)
   failed:<step>  (resolve_conflicts | cleanup | stash_check) exit 1 (stash_check: an entry that
@@ -74,6 +82,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 SETTINGS = ".claude/settings.json"
 INSTALL_SCRIPTS = ("install-macos.sh", "install-linux.sh")
@@ -295,7 +304,21 @@ def unmerged_paths(cwd):
     return sorted({p.decode("utf-8", "replace") for p in out.split(b"\0") if p})
 
 
-def resolve_all_conflicts(cwd, dry_run):
+def backup(cwd, backup_dir, path):
+    """Copy the work-tree file (conflict markers and all) to backup_dir/<path> before
+    it is overwritten. The stash keeps the PRE-pop local side; this keeps what the
+    tree held at repair time (Geri 67344 (3)). Returns the backup path or None."""
+    src = os.path.join(cwd, path)
+    if not os.path.isfile(src) or os.path.islink(src):
+        return None
+    dst = os.path.join(backup_dir, path)
+    os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
+    with open(src, "rb") as f, open(dst, "wb") as g:
+        g.write(f.read())
+    return dst
+
+
+def resolve_all_conflicts(cwd, dry_run, backup_dir):
     """--resolve-conflicts: every unmerged path -> HEAD, then `git reset -q`.
 
     Safe only because a conflicted `git stash pop` KEEPS the stash entry: the
@@ -313,16 +336,23 @@ def resolve_all_conflicts(cwd, dry_run):
         if blob(cwd, "HEAD:" + path) is None:
             out.append({"path": path, "action": "leave", "reason": "unmerged and not in HEAD"})
             continue
+        saved = None
         if not dry_run:
+            saved = backup(cwd, backup_dir, path)
             git(cwd, "checkout", "HEAD", "--", path)
         out.append({"path": path, "action": "resolve" if dry_run else "resolved-to-head",
-                    "reason": "unmerged; the local side stays in the auto-stash"})
+                    "reason": "unmerged; the local side stays in the auto-stash", "backup": saved})
     if not dry_run:
         git(cwd, "reset", "-q")
     return out
 
 
-def run(install_dir, dry_run, resolve_conflicts=False):
+def default_backup_dir():
+    return os.path.join(os.path.expanduser("~"), ".marveen-repair",
+                        "backup-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+
+
+def run(install_dir, dry_run, resolve_conflicts=False, backup_dir=None):
     """Returns (summary, state). state: ok | nothing_to_do | refused:<why> | failed:<step>."""
     cwd = os.path.realpath(install_dir)
     try:
@@ -334,10 +364,17 @@ def run(install_dir, dry_run, resolve_conflicts=False):
     busy = operation_in_progress(cwd)
     if busy:
         raise Refused("operation_in_progress", "a git operation is in progress (%s); not touching anything" % busy)
+    lock = git(cwd, "rev-parse", "--git-path", "index.lock").stdout.decode().strip()
+    if os.path.exists(lock if os.path.isabs(lock) else os.path.join(cwd, lock)):
+        # A running update.sh or git holds the index: a checkout would fail midway (Geri 67344).
+        raise Refused("index_locked", "index.lock present; another git process is running, not touching anything")
     stash_before = stash_entries(cwd)
     step = "resolve_conflicts"
     try:
-        conflicts = resolve_all_conflicts(cwd, dry_run) if resolve_conflicts else []
+        backup_dir = os.path.realpath(backup_dir or default_backup_dir())
+        if backup_dir == cwd or backup_dir.startswith(cwd + os.sep):
+            raise Refused("backup_inside_tree", "the backup dir must be outside the work tree: %s" % backup_dir)
+        conflicts = resolve_all_conflicts(cwd, dry_run, backup_dir) if resolve_conflicts else []
         step = "cleanup"
         pending = {c["path"] for c in conflicts if c["action"] == "resolve"}
         results = []
@@ -351,6 +388,9 @@ def run(install_dir, dry_run, resolve_conflicts=False):
             if ok:
                 restore.append(path)
         if restore and not dry_run:
+            for r in results:
+                if r["action"] == "restore":
+                    r["backup"] = backup(cwd, backup_dir, r["path"])
             git(cwd, "checkout", "HEAD", "--", *restore)
             left = status_codes(cwd)
             for r in results:
@@ -362,6 +402,10 @@ def run(install_dir, dry_run, resolve_conflicts=False):
             unmerged_left = [u for u in unmerged_paths(cwd) if u not in pending and u not in restore]
         else:
             unmerged_left = unmerged_paths(cwd)
+        dirty_left = sorted(
+            e[3:].decode("utf-8", "replace") for e in
+            git(cwd, "status", "--porcelain=v1", "-z", "--untracked-files=no").stdout.split(b"\0") if len(e) > 3
+        ) if not dry_run else None
     except GitError as e:
         raise Failed(step, str(e))
     after_ids = {c for c, _ in stash_after}
@@ -371,7 +415,12 @@ def run(install_dir, dry_run, resolve_conflicts=False):
         "kept": all(c in after_ids for c, _ in stash_before),
         "autoStash": [{"commit": c, "subject": s} for c, s in stash_after if AUTO_STASH_TAG in s],
     }
-    summary = {"resolvedConflicts": conflicts, "results": results, "unmergedLeft": unmerged_left, "stash": stash}
+    summary = {"resolvedConflicts": conflicts, "results": results, "unmergedLeft": unmerged_left, "stash": stash,
+               # exit 0 = unblocked (nothing unmerged, the known paths clean). Whether the WHOLE
+               # tracked tree is clean is a separate fact (Geri 67344 (2)): treeClean + dirtyLeft.
+               "treeClean": (not dirty_left) if dirty_left is not None else None,
+               "dirtyLeft": dirty_left,
+               "backupDir": backup_dir if any(x.get("backup") for x in conflicts + results) else None}
     if not stash["kept"]:
         return summary, "failed:stash_check"
     if any(r["action"] == "restore-failed" for r in results):
@@ -434,13 +483,15 @@ def main(argv=None):
     ap.add_argument("--resolve-conflicts", action="store_true",
                     help="first check out EVERY unmerged path from HEAD and `git reset -q` "
                          "(only with a marveen-update-auto-stash entry present; it is never dropped)")
+    ap.add_argument("--backup-dir", help="where every overwritten file is copied first (outside the tree; "
+                                        "default ~/.marveen-repair/backup-<UTC timestamp>)")
     fmt = ap.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_true", help="one JSON object on stdout (version 1)")
     fmt.add_argument("--lines", action="store_true", help="the REPAIR_* line protocol on stdout (the Bridge)")
     a = ap.parse_args(argv)
     summary, error = None, None
     try:
-        summary, state = run(a.install_dir, a.dry_run, a.resolve_conflicts)
+        summary, state = run(a.install_dir, a.dry_run, a.resolve_conflicts, a.backup_dir)
     except Refused as e:
         state, error = "refused:" + e.state, str(e)
     except Failed as e:

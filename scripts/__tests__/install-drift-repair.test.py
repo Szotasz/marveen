@@ -17,6 +17,10 @@ import sys
 import tempfile
 import unittest
 
+# A run without --backup-dir would write ~/.marveen-repair: point HOME at a temp dir for
+# the whole test process, so no test can touch the real one.
+os.environ["HOME"] = tempfile.mkdtemp(prefix="driftrepair-home-")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPT = os.path.join(ROOT, "scripts", "install-drift-repair.py")
 SHIPPED_SETTINGS = open(os.path.join(ROOT, ".claude", "settings.json"), "rb").read()
@@ -39,6 +43,7 @@ def cli_enable(raw, key, value=True):
 class Repo:
     def __init__(self):
         self.dir = tempfile.mkdtemp(prefix="driftrepair-")
+        self.backups = tempfile.mkdtemp(prefix="driftrepair-bak-")
         self.git("init", "-q")
         self.write(".claude/settings.json", SHIPPED_SETTINGS)
         self.write("install-macos.sh", INSTALLER, mode=0o755)
@@ -71,7 +76,8 @@ class Repo:
         return self.git("status", "--porcelain", "--untracked-files=no").stdout.decode()
 
     def repair(self, *extra):
-        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.dir, "--json"] + list(extra),
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.dir, "--backup-dir", self.backups,
+                            "--json"] + list(extra),
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return p.returncode, json.loads(p.stdout.decode())
 
@@ -80,6 +86,7 @@ class Repo:
 
     def close(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+        shutil.rmtree(self.backups, ignore_errors=True)
 
 
 class Base(unittest.TestCase):
@@ -299,7 +306,8 @@ class ResolveConflictsMode(Base):
         code, out = self.r.repair("--resolve-conflicts")
         self.assertEqual(code, 0)
         self.assertEqual(set(out), {"version", "ok", "state", "exitCode", "dryRun", "resolvedConflicts", "results",
-                                    "unmergedLeft", "stash"})
+                                    "unmergedLeft", "stash", "treeClean", "dirtyLeft", "backupDir"})
+        self.assertEqual((out["treeClean"], out["dirtyLeft"], out["backupDir"]), (True, [], None))
         self.assertEqual(out["state"], "nothing_to_do")
         self.assertEqual(out["version"], 1)
         self.assertEqual(set(out["stash"]), {"before", "after", "kept", "autoStash"})
@@ -314,12 +322,12 @@ class ResolveConflictsMode(Base):
         self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
         real = mod.resolve_all_conflicts
 
-        def dropping(cwd, dry_run):
-            out = real(cwd, dry_run)
+        def dropping(cwd, dry_run, backup_dir):
+            out = real(cwd, dry_run, backup_dir)
             mod.git(cwd, "stash", "drop", "-q")
             return out
         mod.resolve_all_conflicts = dropping
-        summary, state = mod.run(self.r.dir, False, True)
+        summary, state = mod.run(self.r.dir, False, True, self.r.backups)
         self.assertEqual(state, "failed:stash_check")
         self.assertEqual(mod.exit_code(state), 1)
         self.assertFalse(summary["stash"]["kept"])
@@ -337,10 +345,12 @@ class LineProtocol(Base):
     def lines(self, *extra, stdin=False):
         if stdin:
             with open(SCRIPT, "rb") as f:
-                p = subprocess.run([sys.executable, "-I", "-", "--install-dir", self.r.dir, "--lines"] + list(extra),
+                p = subprocess.run([sys.executable, "-I", "-", "--install-dir", self.r.dir, "--backup-dir", self.r.backups,
+                                    "--lines"] + list(extra),
                                    stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tempfile.gettempdir())
         else:
-            p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir, "--lines"] + list(extra),
+            p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir, "--backup-dir", self.r.backups,
+                                "--lines"] + list(extra),
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out = p.stdout.decode().splitlines()
         for line in out:  # the allowlist: nothing else on stdout
@@ -407,6 +417,59 @@ class LineProtocol(Base):
         self.r.git("stash", "store", "-m", "not ours", c)
         code, out = self.lines("--resolve-conflicts")
         self.assertEqual((code, out), (3, ["REPAIR_RESULT refused:no_auto_stash"]))
+
+
+class GeriReview(Base):
+    """Geri 67344: index.lock, whole-tree status, backups of every overwritten file."""
+
+    make_conflict = ConflictedStashPop.make_conflict
+
+    def test_index_lock_refuses_and_changes_nothing(self):
+        self.r.write("package-lock.json", LOCK_NPM)
+        open(os.path.join(self.r.dir, ".git", "index.lock"), "w").close()
+        code, out = self.r.repair()
+        self.assertEqual((code, out["state"]), (3, "refused:index_locked"))
+        self.assertEqual(self.r.read("package-lock.json"), LOCK_NPM)
+
+    def test_whole_tree_status_next_to_exit_0(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))  # README.md also dirty
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual((code, out["state"]), (0, "ok"))
+        self.assertEqual((out["treeClean"], out["dirtyLeft"]), (False, ["README.md"]))
+
+    def test_every_overwritten_file_is_backed_up_first_markers_included(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        self.r.write("package-lock.json", LOCK_NPM)
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual(code, 0, out)
+        conflict = out["resolvedConflicts"][0]
+        with open(conflict["backup"], "rb") as f:
+            self.assertIn(b"<<<<<<< ", f.read())
+        self.assertTrue(conflict["backup"].startswith(os.path.realpath(self.r.backups) + os.sep))
+        lock = [r for r in out["results"] if r["path"] == "package-lock.json"][0]
+        with open(lock["backup"], "rb") as f:
+            self.assertEqual(f.read(), LOCK_NPM)
+        self.assertEqual(out["backupDir"], os.path.realpath(self.r.backups))
+
+    def test_dry_run_writes_no_backup(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        self.r.repair("--resolve-conflicts", "--dry-run")
+        self.assertEqual(os.listdir(self.r.backups), [])
+
+    def test_a_backup_dir_inside_the_tree_is_refused(self):
+        self.r.write("package-lock.json", LOCK_NPM)
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir,
+                            "--backup-dir", os.path.join(self.r.dir, "bak"), "--json"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["state"]), (3, "refused:backup_inside_tree"))
+        self.assertEqual(self.r.read("package-lock.json"), LOCK_NPM)
+
+    def test_default_backup_dir_is_under_home_marveen_repair(self):
+        self.r.write("package-lock.json", LOCK_NPM)
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir, "--json"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = json.loads(p.stdout)
+        self.assertTrue(out["backupDir"].startswith(os.path.realpath(os.path.join(os.environ["HOME"], ".marveen-repair", "backup-"))))
 
 
 if __name__ == "__main__":
