@@ -432,6 +432,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'MEMORY_SEARCH_DEFAULT_MODE',
+    type: 'string',
+    default: 'fts',
+    description: 'A memóriakeresés (GET /api/memories?q=) alapmódja, ha a hívó nem ad meg ?mode= paramétert: fts (alapértelmezés, kulcsszavas) vagy hybrid (kulcsszó + vektor, RRF-fúzió). A hybrid működő embedding-háttérrel (OLLAMA_URL, EMBED_MODEL) jelentés szerint is megtalálja az emléket; embedding nélkül magától a kulcsszavas ágra esik vissza. A strict=1 mindig csak kulcsszavas. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OSS_INVENTORY_NOTES_DIRS',
     type: 'string',
     default: OSS_INVENTORY_DEFAULT_NOTES_DIRS,
