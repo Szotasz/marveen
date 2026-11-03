@@ -2182,6 +2182,13 @@ PLUGIN_DEAD_GRACE=180
 # for the reload to actually take effect (bun poller respawn + reconnect)
 # before we give up and sacrifice the whole session.
 PLUGIN_RELOAD_AFTER=90
+# RESTARTCOALESCE1103: how much slack to give store/.channel-last-respawn
+# (channel-monitor.ts writeRespawnStamp(), epoch seconds) when deciding
+# whether it explains the plugin going missing, versus a genuine unexplained
+# crash. One poll tick (see the 5s `sleep` in the watchdog loop below) would
+# be enough in theory, but a generous buffer costs nothing -- the stamp is
+# only ever this fresh right after an actual restart, never by accident.
+RESPAWN_COALESCE_WINDOW=30
 PLUGIN_SEEN_ONCE=false
 PLUGIN_DEAD_SINCE=0
 PLUGIN_RELOAD_ATTEMPTED=false
@@ -2339,6 +2346,27 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
     if [ "$PLUGIN_DEAD_SINCE" -eq 0 ]; then
       PLUGIN_DEAD_SINCE=$NOW
       echo "WARN: $CHANNEL_PROVIDER plugin (bot.pid) disappeared -- ${PLUGIN_DEAD_GRACE}s grace before restart" >&2
+    fi
+    # RESTARTCOALESCE1103: before counting this disappearance towards a
+    # systemd-level restart, check whether it is already explained. A
+    # channel-monitor.ts hard restart (e.g. a context-guard handoff restart,
+    # which tears down the MCP server with SIGINT/SIGTERM just like a crash
+    # would -- confirmed 2026-11-03 against
+    # ~/.cache/claude-cli-nodejs/.../mcp-logs-plugin-telegram-telegram/*.jsonl
+    # and store/dashboard.log "context-guard: acting" entries) writes
+    # store/.channel-last-respawn at the moment it respawns the pane. If that
+    # stamp is at or after our own death-timer start (within
+    # $RESPAWN_COALESCE_WINDOW slack for poll-loop granularity), the
+    # disappearance is that restart's own doing: it already has a fresh
+    # claude process and its own plugin-unlock probe scheduled, so exiting
+    # here too would only sacrifice the conversation a second time for
+    # nothing. Reset and keep watching instead of counting towards exit.
+    _respawn_stamp="$(cat "$INSTALL_DIR/store/.channel-last-respawn" 2>/dev/null | tr -d '[:space:]')"
+    case "$_respawn_stamp" in (*[!0-9]*|'') _respawn_stamp=0 ;; esac
+    if [ "$_respawn_stamp" -gt 0 ] && [ "$_respawn_stamp" -ge "$((PLUGIN_DEAD_SINCE - RESPAWN_COALESCE_WINDOW))" ]; then
+      respawn_log "died-after-up-suppressed: $CHANNEL_PROVIDER plugin gone, but store/.channel-last-respawn ($_respawn_stamp) explains it (within ${RESPAWN_COALESCE_WINDOW}s of death-timer start $PLUGIN_DEAD_SINCE) -- already handled by an in-process hard restart, not restarting again"
+      PLUGIN_DEAD_SINCE=0
+      PLUGIN_RELOAD_ATTEMPTED=false
     elif [ "$((NOW - PLUGIN_DEAD_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
       respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
@@ -2366,6 +2394,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
       fi
       unset _reload_probe
     fi
+    unset _respawn_stamp
   else
     # Never came up at all (e.g. a Claude Code build that silently disables
     # --channels). Give it the full cold-start budget, then restart.
