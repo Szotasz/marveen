@@ -186,6 +186,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 |-------|-------|-----------|----------|-------------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
+| `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -306,6 +307,20 @@ kiegészítést, a plugin fájlja bájtra a kiegészítés előtti.
 a kiegészítés horgonyai nem illeszkednek, a kiegészítés egészében kimarad (egy hangos
 sor a `store/channels-failures.log`-ban, és a `/status` is jelzi); a válaszok ilyenkor a
 témán kívülre mennek, a csatorna maga működik tovább.
+
+#### `TELEGRAM_REPLY_BUTTONS`: válasz-gombok a Telegramon
+
+**Mire szolgál.** Bekapcsolva (alapértelmezés) az ügynök egy kérdés alá egy koppintással
+választható gombokat tehet: ez a reply tool `buttons` mezője. Kikapcsolva egy ügynök sem
+küld gombot. A nem üres `buttons` listát a csatorna eldobja, az üzenet gombok nélkül megy
+ki, és a tool válasza figyelmezteti az ügynököt, hogy a választást sima szövegben kérje.
+Az üres lista (`buttons: []`) ekkor is leveszi a korábban fent ragadt billentyűzetet. Egy
+kapcsolás előtt kiküldött gombra koppintás egyszer még válaszol.
+
+**Kikapcsolás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REPLY_BUTTONS`*, vagy
+`.env`-ben `TELEGRAM_REPLY_BUTTONS=0`. A csatorna következő indításakor a script átírja a
+plugin forrását. Az ügynökök viszont addig a régi kóddal futnak, amíg a saját plugin-folyamatuk
+újra nem indul: a session újraindítása hozza el náluk.
 
 **API végpontok:**
 

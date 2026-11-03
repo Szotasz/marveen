@@ -1472,3 +1472,117 @@ describe.skipIf(sh === '')('channels.sh wiring (review #1529, point 1)', () => {
     expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_cfg_dir" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
   })
 })
+
+// TELEGRAM_REPLY_BUTTONS off (owner request 2026-11-03: no answer buttons to anyone, from any agent). The same kbd
+// patch with three lines different: a non-empty list sends NO reply_markup and the result warns the agent; an empty
+// list still removes a keyboard left under the input field; switching is the usual in-place rebuild.
+describe('kbd: TELEGRAM_REPLY_BUTTONS off', () => {
+  const NOTE = /-- buttons disabled on this install \(TELEGRAM_REPLY_BUTTONS off\): the message went out WITHOUT buttons/
+
+  it('a non-empty list: the message goes out with NO reply_markup on any chunk, the result warns; not a tool error', async () => {
+    expect(run(['--buttons', 'off']).status).toBe(0)
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const res = await h.call({ chat_id: '42', text: 'Első rész|A: elfogadod, B: már megoldva?', buttons: ['A. Elfogadom', 'B. Már megoldva'] })
+    expect(res.isError).toBeUndefined()
+    expect(res.content[0].text).toMatch(/^sent 2 parts \(ids: 1, 2\) /)
+    expect(res.content[0].text).toMatch(NOTE)
+    expect(h.sent).toHaveLength(2)
+    expect(h.sent.map(s => 'reply_markup' in s.opts)).toEqual([false, false])
+    // a label that the ON side refuses is not refused here either: nothing of it is sent
+    const odd = await h.call({ chat_id: '-1001234567890', text: 'Kérdés', buttons: ['/model opus'] })
+    expect(odd.isError).toBeUndefined()
+    expect(odd.content[0].text).toMatch(NOTE)
+    expect('reply_markup' in h.sent[2].opts).toBe(false)
+  })
+
+  it('an empty list still removes a keyboard shown earlier; no buttons: no reply_markup and no warning', async () => {
+    run(['--buttons', 'off'])
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const empty = await h.call({ chat_id: '42', text: 'Köszönöm, rögzítettem.', buttons: [] })
+    expect(h.sent[0].opts.reply_markup).toEqual({ remove_keyboard: true })
+    expect(empty.content[0].text).toBe('sent (id: 1)')
+    const plain = await h.call({ chat_id: '42', text: 'Sima válasz' })
+    expect('reply_markup' in h.sent[1].opts).toBe(false)
+    expect(plain.content[0].text).toBe('sent (id: 2)')
+  })
+
+  it('a buttons value that is not a list is a tool error before anything is sent', async () => {
+    run(['--buttons', 'off'])
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const res = await h.call({ chat_id: '42', text: 'Kérdés', buttons: 'A' })
+    expect(res.isError).toBe(true)
+    expect(res.content[0].text).toMatch(/^reply failed: buttons: a list/)
+    expect(h.sent).toHaveLength(0)
+  })
+
+  it('the schema says the buttons are disabled; every inserted line carries the marker; the file still parses', () => {
+    run(['--buttons', 'off'])
+    const text = readFileSync(server, 'utf-8')
+    expect(text).toContain("description: 'Answer buttons are DISABLED on this install")
+    expect(text).not.toContain('Optional one-tap answer buttons')
+    for (const l of kbdLines(text)) expect(l.endsWith(' ' + KBD_MARKER)).toBe(true)
+    expect(kbdLines(text)).toHaveLength(35) // the ON side's 34, plus the result warning
+    expect(syntaxErrors(text)).toEqual([])
+  })
+
+  it('switching: on -> off -> on gives the fresh ON file byte for byte, off twice is `already`, the state says which side', () => {
+    const state = join(cache, 'state.json')
+    run(['--state', state])
+    const on = readFileSync(server, 'utf-8')
+    run(['--buttons', 'off', '--state', state])
+    const off = readFileSync(server, 'utf-8')
+    expect(off).not.toBe(on)
+    expect(readState(state).files[0].patches.kbd).toBe('patched')
+    expect((readState(state) as unknown as { buttons: string }).buttons).toBe('off')
+    run(['--buttons', 'off', '--state', state])
+    expect(readFileSync(server, 'utf-8')).toBe(off)
+    expect(readState(state).files[0].patches.kbd).toBe('already')
+    run(['--buttons', 'on', '--state', state])
+    expect(readFileSync(server, 'utf-8')).toBe(on)
+    expect((readState(state) as unknown as { buttons: string }).buttons).toBe('on')
+  })
+
+  it('taking it back = deleting the marked lines: byte-identical to the file patched without kbd; topics on works with it', () => {
+    run(['--buttons', 'off'])
+    const off = readFileSync(server, 'utf-8')
+    const withoutKbd = off.split('\n').filter(l => !l.includes(KBD)).join('\n')
+    expect(withoutKbd).toBe(patchedWithoutKbd(readFileSync(FIXTURE, 'utf-8')))
+    run(['--buttons', 'off', '--topics', 'on'])
+    expect(syntaxErrors(readFileSync(server, 'utf-8'))).toEqual([])
+  })
+
+  it('a --buttons value other than on or off: exit 2, nothing patched', () => {
+    const r = run(['--buttons', 'no'])
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/--buttons takes on or off, got 'no'; nothing patched/)
+    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(FIXTURE, 'utf-8'))
+  })
+
+  it('without --buttons the install setting decides: config-overrides.json, then .env, else on', () => {
+    const py = [
+      'import importlib.util, json, os, sys, tempfile',
+      'spec = importlib.util.spec_from_file_location("patcher", sys.argv[1])',
+      'p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)',
+      'out = []',
+      'for overrides, env in json.load(sys.stdin):',
+      '    with tempfile.TemporaryDirectory() as install:',
+      '        os.mkdir(os.path.join(install, "store"))',
+      '        if overrides is not None:',
+      '            with open(os.path.join(install, "store", "config-overrides.json"), "w") as f: json.dump(overrides, f)',
+      '        if env is not None:',
+      '            with open(os.path.join(install, ".env"), "w") as f: f.write(env)',
+      '        out.append(p.buttons_setting(install))',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const rows: Array<[unknown, string | null, boolean]> = [
+      [null, null, true],
+      [{ TELEGRAM_REPLY_BUTTONS: '0' }, null, false],
+      [{ TELEGRAM_REPLY_BUTTONS: false }, 'TELEGRAM_REPLY_BUTTONS=1\n', false],
+      [null, 'TELEGRAM_REPLY_BUTTONS=0\n', false],
+      [{ TELEGRAM_TOPICS_ENABLED: '1' }, 'TELEGRAM_REPLY_BUTTONS=1\n', true],
+    ]
+    const r = spawnSync('python3', ['-c', py, SCRIPT], { input: JSON.stringify(rows.map(([o, e]) => [o, e])), encoding: 'utf-8', timeout: 30_000 })
+    expect(r.stderr).toBe('')
+    expect(JSON.parse(r.stdout)).toEqual(rows.map(([, , want]) => want))
+  })
+})

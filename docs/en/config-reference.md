@@ -183,6 +183,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 |-----|------|---------|----------|---------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
+| `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (on) | all | yes (channel start) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
 
@@ -302,6 +303,20 @@ the plugin file is byte for byte what it was before the patch.
 anchors of the patch do not match, the whole patch is left out (one loud line in
 `store/channels-failures.log`, and `/status` says so); answers then land outside the
 topic, and the channel itself keeps working.
+
+#### `TELEGRAM_REPLY_BUTTONS`: answer buttons on Telegram
+
+**What it is for.** On (the default), an agent may put one-tap answer buttons under a
+question: the reply tool's `buttons` field. Off, no agent sends buttons. A non-empty
+`buttons` list is dropped by the channel, the message goes out without buttons, and the
+tool result warns the agent to ask in plain text. An empty list (`buttons: []`) still
+takes off a keyboard left earlier under the input field. A button sent before the switch
+still answers once when tapped.
+
+**Turning it off.** Dashboard: *Settings → Channels → `TELEGRAM_REPLY_BUTTONS`*, or
+`TELEGRAM_REPLY_BUTTONS=0` in `.env`. The next channel start rewrites the plugin source.
+Running agents keep the old code until their own plugin process restarts: restarting the
+session brings it to them.
 
 **API endpoints:**
 

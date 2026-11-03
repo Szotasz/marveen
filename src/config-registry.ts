@@ -993,6 +993,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'TELEGRAM_REPLY_BUTTONS',
+    type: 'boolean',
+    default: '1',
+    description: 'Válasz-gombok a Telegramon: bekapcsolva az ügynök egy kérdés alá egy koppintással választható gombokat tehet (a reply tool buttons mezője). Kikapcsolva egy ügynök sem küld gombot: a nem üres buttons listát a csatorna eldobja, az üzenet gombok nélkül megy ki, és az ügynök a válaszban figyelmeztetést kap, hogy a választást sima szövegben kérje. Az üres lista ekkor is leveszi a korábban fent ragadt billentyűzetet. A kapcsolót a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: bekapcsolva. A módosítás a csatorna következő indításakor lép életbe; a már futó ügynökök a saját újraindításukig a régi viselkedéssel futnak.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'PERMISSION_ALERT_MARKS',
     type: 'string',
     default: '15m,30m,1h,2h,8h,24h',
