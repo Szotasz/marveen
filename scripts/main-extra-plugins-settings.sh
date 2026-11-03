@@ -17,9 +17,13 @@
 # store/main-agent-config.json sets `senderRoleGate` (MIOAPPTEAMSRV1025): one
 # session serves the owner and a team chat, and only this session reads the flag.
 #
-# Prints ` --settings "<file>"` (leading space) or nothing when there are no
-# extras and no gate, so the launch line is byte-identical for an install
-# without them. Same file and content as src/web/main-extra-plugins-settings.ts
+# INSTALLDIRTYTREE1103: the launchers pass the PRIMARY plugin id first, so the
+# file always enables the main channel as well. The tracked project
+# settings.json is never written at launch any more (that write reformatted the
+# whole file and left every customer tree dirty).
+#
+# Prints ` --settings "<file>"` (leading space) or nothing when no plugin id and
+# no gate were given. Same file and content as src/web/main-extra-plugins-settings.ts
 # writes (the test compares the two files).
 main_extra_settings_flag() {
   local install_dir="$1"; shift

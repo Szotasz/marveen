@@ -1,6 +1,8 @@
 /**
- * The main agent's co-listen plugins are enabled through a launch-time
- * --settings file, never through a settings layer the sub-agents also read.
+ * The main agent's channel plugins (the primary and the co-listen extras) are
+ * enabled through a launch-time --settings file, never through a settings layer
+ * the sub-agents also read, and never by writing the TRACKED project
+ * settings.json (INSTALLDIRTYTREE1103: that write left every install dirty).
  * Twin of scripts/main-extra-plugins-settings.sh (same file, same content);
  * see its header for the measurement (SLACKDMVESZT1006).
  *
