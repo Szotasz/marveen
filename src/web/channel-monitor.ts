@@ -1114,7 +1114,9 @@ export function buildMainSessionRespawnCmd(opts: {
    * SLACKDMVESZT1006: the --settings file that ENABLES the extras for this
    * session only (writeMainExtraPluginsSettings). Without it a recovery
    * respawn lists the extras on --channels while the project scope keeps them
-   * disabled, and the extra bot comes up deaf. null/absent = no flag.
+   * disabled, and the extra bot comes up deaf. INSTALLDIRTYTREE1103: it carries
+   * the PRIMARY plugin too -- the tracked project settings.json is no longer
+   * written at launch, and it ships slack-channel false. null/absent = no flag.
    */
   extraSettingsPath?: string | null
 }): string {
@@ -1253,7 +1255,7 @@ export function respawnMainSessionFresh(): void {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
-      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
+      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       // The main session always starts a new conversation -- this is the whole
@@ -1358,7 +1360,7 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: true,
@@ -1665,7 +1667,7 @@ function respawnMarveenSessionFresh(): boolean {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: false,
