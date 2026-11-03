@@ -136,7 +136,12 @@ def main():
         sys.exit(0)
     agent_id = ledger_lib.agent_id_from_payload(payload)
     tool_input = payload.get("tool_input") or {}
+    # TEAMSCONV1020: the Teams reply tool takes conversation_id instead of
+    # chat_id; without it every Teams reply fell through to the owner's
+    # Telegram chat and was filed under the wrong conversation.
     chat_id = tool_input.get("chat_id")
+    if chat_id is None:
+        chat_id = tool_input.get("conversation_id")
     chat_id = "" if chat_id is None else str(chat_id).strip()
     if chat_id in ("", "0"):
         chat_id = _owner_chat()

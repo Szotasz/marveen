@@ -678,6 +678,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (t) TEAMS -- conversation_id instead of chat_id (TEAMSCONV1020)
+# ---------------------------------------------------------------------------
+echo ""
+echo "(t) Teams conversation_id"
+
+DB_T="$TMPDIR_BASE/t.db"
+TEAMS_CONV="a:1TestConv-Xyz_09"
+python3 - "$TEAMS_CONV" <<'PYEOF' | run_hook ledger-capture.py "$DB_T"
+import json, sys
+block = (f'<channel source="plugin:teams:teams" aad_object_id="x" conversation_id="{sys.argv[1]}" '
+         f'tenant_id="t" from_name="Owner" message_id="1792513838963" ts="2026-10-20T16:30:38.989Z">\nszia teams\n</channel>')
+print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": block}))
+PYEOF
+assert_eq "teams inbound: captured under conversation_id" "$TEAMS_CONV" \
+    "$(db_scalar "$DB_T" "SELECT chat_id FROM conversation_log WHERE direction='in'")"
+assert_eq "teams inbound: source recorded" "plugin:teams:teams" \
+    "$(db_scalar "$DB_T" "SELECT source FROM conversation_log WHERE direction='in'")"
+
+python3 - "$TEAMS_CONV" <<'PYEOF' | run_hook ledger-outbound.py "$DB_T"
+import json, sys
+print(json.dumps({"tool_name": "mcp__plugin_teams_teams__reply",
+                  "tool_input": {"conversation_id": sys.argv[1], "text": "szia vissza"},
+                  "tool_response": [{"type": "text", "text": "sent (conv=" + sys.argv[1] + ")"}]}))
+PYEOF
+assert_eq "teams outbound: filed under conversation_id, not the owner chat" "$TEAMS_CONV" \
+    "$(db_scalar "$DB_T" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
+assert_eq "teams outbound: exactly 1 out row" "1" \
+    "$(db_scalar "$DB_T" "SELECT COUNT(*) FROM conversation_log WHERE direction='out'")"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
