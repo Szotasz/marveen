@@ -12,8 +12,16 @@ definition, we cannot report that over Telegram.
 What it measures (process facts only, no network):
   1. every running `claude ... --channels plugin:<name>@<marketplace> ...`
      -> the set of channels that session DECLARES
-  2. its child `bun run --cwd .../<marketplace>/<name>/<version> ... start`
-     processes -> the set of channels that are actually ALIVE
+  2. its child worker processes -> the set of channels that are actually ALIVE.
+     A worker is named by the plugin path in its argv, whatever starts it
+     (CHANPROCGATEFP1026: the first version knew only `bun run --cwd`, so a
+     node-started plugin, or one from a directory marketplace, never counted
+     and the gate cried "missing" for a running worker):
+       .../plugins/cache/<marketplace>/<plugin>/<version>[/...]  (any runtime)
+       <directory-marketplace path>/<plugin>[/...]               (known_marketplaces.json)
+     Only a runtime's argv is read (bun, node, deno, tsx, python), and in it
+     only the --cwd value and the executed script, so a shell, a grep, or an
+     argument that merely NAMES a plugin path never makes it alive.
   3. MISSING = declared - alive, per session
 
 Exit codes:
@@ -59,7 +67,102 @@ STATE = os.path.join(INSTALL_ROOT, "store", ".channel-process-gate-state.json")
 CH_DIR = os.path.join(os.path.expanduser("~"), ".claude", "channels")
 
 DECL_RE = re.compile(r"plugin:([A-Za-z0-9_.-]+)@([A-Za-z0-9_.-]+)")
-CWD_RE = re.compile(r"--cwd\s+(\S+)")
+CACHE_RE = re.compile(r"/plugins/cache/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/[^/\s]+")
+# The interpreters a plugin worker runs under. A child that is anything else (a
+# shell, grep, ps) is never a worker, even when its argv names a plugin path.
+RUNTIMES = {"bun", "node", "deno", "tsx", "python", "python3"}
+
+# The registries that name a directory marketplace's path: the main agent's own
+# config dir and the shared one (the provisioner copies the shared file over the
+# isolated one on every start, so normally both say the same).
+MARKETPLACE_FILES = [
+    os.path.join(INSTALL_ROOT, ".channels-config", "plugins", "known_marketplaces.json"),
+    os.path.join(os.path.expanduser("~"), ".claude", "plugins", "known_marketplaces.json"),
+]
+
+
+def directory_marketplaces(files):
+    """-> {marketplace: [path, ...]} for every `directory` source in the given
+    registries. Every root counts (Dani 50006): if the two registries disagree,
+    the older one must not turn a running worker into a false alarm."""
+    out = {}
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        for name, m in (data.items() if isinstance(data, dict) else []):
+            src = m.get("source") if isinstance(m, dict) else None
+            if isinstance(src, dict) and src.get("source") == "directory" and isinstance(src.get("path"), str):
+                root = src["path"].rstrip("/")
+                if root and root not in out.setdefault(name, []):
+                    out[name].append(root)
+    return out
+
+
+# CHANGATEFP1101 (2026-11-01 15:35, a false alarm to the owner): a full test suite's fake `claude --channels
+# plugin:telegram@<fixture-name>` processes (the channel-poller-reap tests) were read as live sessions with a dead
+# worker. A declared channel counts only from a marketplace this install knows: every marketplace the registries name
+# (any source), plus Claude Code's built-in official one. With no readable registry nothing is dropped, so a real
+# dead worker is never hidden by an unreadable file.
+BUILTIN_MARKETS = {"claude-plugins-official"}
+
+
+def known_marketplaces(files):
+    """-> the marketplace names the given registries list (any source type); empty when none is readable."""
+    out = set()
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            out.update(k for k in data.keys() if isinstance(k, str))
+    return out
+
+
+def worker_paths(argv):
+    """The paths a runtime child actually runs from: the --cwd value and the
+    script it executes (the first argument that is not an option). Any other
+    argument may merely NAME a plugin path (Dani 50006: an MCP server with an
+    allowed-dir under it), so it is not read."""
+    out = []
+    for i, tok in enumerate(argv[1:], start=1):
+        if tok == "--cwd" and i + 1 < len(argv):
+            out.append(argv[i + 1])
+        elif tok.startswith("--cwd="):
+            out.append(tok[len("--cwd="):])
+    for i, tok in enumerate(argv[1:], start=1):
+        if tok.startswith("-"):
+            continue
+        if argv[i - 1] == "--cwd":
+            continue
+        out.append(tok)
+        break
+    return [p for p in out if p.startswith("/")]
+
+
+def plugin_of(args, dir_markets):
+    """The `<marketplace>/<plugin>` a worker's argv runs, or None.
+
+    Only a runtime's argv counts (RUNTIMES, by the basename of argv[0]), and in
+    it only the paths it runs from (worker_paths)."""
+    argv = args.split()
+    if not argv or os.path.basename(argv[0]) not in RUNTIMES:
+        return None
+    for tok in worker_paths(argv):
+        m = CACHE_RE.search(tok)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        for market, roots in dir_markets.items():
+            for root in roots:
+                if tok.startswith(root + "/"):
+                    rest = tok[len(root) + 1:].split("/")
+                    if rest and rest[0]:
+                        return f"{market}/{rest[0]}"
+    return None
 
 
 def read_ps(ps_file):
@@ -110,8 +213,14 @@ def session_name(pid, procs, tmux_map):
     return f"pid:{pid}"
 
 
-def measure(procs, tmux_map):
-    """-> list of {session, pid, declared:[], alive:[], missing:[]}"""
+def measure(procs, tmux_map, dir_markets=None, known=None):
+    """-> list of {session, pid, declared:[], alive:[], missing:[]}
+
+    Only a `claude --channels` inside one of OUR tmux panes counts (its pid chain reaches a pane), and in it only the
+    channels of a known marketplace (CHANGATEFP1101): a process outside every pane (a test suite's fake claude) is not
+    a session of ours."""
+    dir_markets = dir_markets or {}
+    markets = (set(known) | BUILTIN_MARKETS) if known else None
     out = []
     for pid, p in sorted(procs.items()):
         args = p["args"]
@@ -119,21 +228,23 @@ def measure(procs, tmux_map):
             continue
         if not re.search(r"(^|/)claude(\s|$)", args.split()[0] + " "):
             continue
+        session = session_name(pid, procs, tmux_map)
+        if session.startswith("pid:"):
+            continue
         declared = {f"{m.group(2)}/{m.group(1)}" for m in DECL_RE.finditer(args)}
+        if markets is not None:
+            declared = {d for d in declared if d.split("/", 1)[0] in markets}
         if not declared:
             continue
         alive = set()
         for cpid, c in procs.items():
             if c["ppid"] != pid:
                 continue
-            m = CWD_RE.search(c["args"])
-            if not m or "plugins/cache" not in m.group(1):
-                continue
-            seg = m.group(1).rstrip("/").split("/")
-            if len(seg) >= 3:
-                alive.add(f"{seg[-3]}/{seg[-2]}")  # <marketplace>/<plugin>
+            name = plugin_of(c["args"], dir_markets)
+            if name:
+                alive.add(name)
         out.append({
-            "session": session_name(pid, procs, tmux_map),
+            "session": session,
             "pid": pid,
             "declared": sorted(declared),
             "alive": sorted(alive),
@@ -206,6 +317,8 @@ def main():
                     help="actually send through scripts/notify.sh on a transition")
     ap.add_argument("--state", help="override state file path")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--marketplaces-file", action="append",
+                    help="known_marketplaces.json to read instead of the installed ones (tests)")
     a = ap.parse_args()
     global STATE
     if a.state:
@@ -222,7 +335,8 @@ def main():
         print("MERESI HIBA: ures ps-kimenet", file=sys.stderr)
         return 2
 
-    rows = measure(procs, parse_tmux(tmux_text))
+    registries = a.marketplaces_file or MARKETPLACE_FILES
+    rows = measure(procs, parse_tmux(tmux_text), directory_marketplaces(registries), known_marketplaces(registries))
     if a.only:
         rows = [r for r in rows if r["session"] == a.only]
         if not rows:
@@ -279,6 +393,10 @@ def main():
             print(f"ERTESITES {'elkuldve' if ok else 'NEM ment ki'} ({key}: "
                   f"{'hianyzik' if r['missing'] else 'helyreallt'})", file=sys.stderr)
         st[key] = entry
+    # A "pid:<n>" key came from a process outside every tmux pane, which is never measured any more (CHANGATEFP1101);
+    # it would stay in the state for good.
+    for key in [k for k in st if k.startswith("pid:")]:
+        del st[key]
     save_state(st)
     if send_failed:
         return 3

@@ -37,6 +37,54 @@ DEST="$BKDIR/${TS}-${LABEL}"
 
 mkdir -p "$DEST" || { echo "backup FAILED: cannot create $DEST" >&2; exit 1; }
 
+# Consistent snapshot through Python's sqlite3 online-backup API -- the same
+# guarantee as `sqlite3 .backup`, for hosts without the sqlite3 CLI.
+# mode=rw: a plain connect() would CREATE a missing source file.
+# signal.alarm is the call's only overall deadline: Connection.backup() retries
+# SQLITE_BUSY/LOCKED with no limit of its own (timeout= bounds ONE busy wait), so
+# a source that stays locked would hang the run before the raw-copy fallback.
+# SIGALRM's default action ends python3 and the caller falls back. The helper
+# unblocks SIGALRM and resets it to its default action, because an ignore or
+# block inherited from the caller would otherwise switch the deadline off. It
+# ignores the signal first only as a defence: that drops a pending SIGALRM before
+# the unblock (a forked python3 starts with none, so none is expected).
+# Malformed deadline value: 120 s. Out-of-range values are clamped to 1..86400 s:
+# at least 1 s, because alarm(0) would cancel the deadline instead of setting it,
+# and at most a day, because signal.alarm raises OverflowError on huge values.
+# The alarm is cancelled after a successful copy, so only a negligible window
+# remains in which it can fire during interpreter exit and throw away a good
+# snapshot.
+# A python3 killed mid-copy can leave a HOT -journal next to the partial file, and
+# the next open of the raw copy would roll that journal back onto it (every
+# table gone), so a failed call clears the destination's sidecars.
+_py_sqlite_backup() {
+  python3 - "$1" "$2" <<'PY' && return 0
+import os, pathlib, signal, sqlite3, sys
+signal.signal(signal.SIGALRM, signal.SIG_IGN)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+signal.signal(signal.SIGALRM, signal.SIG_DFL)
+try:
+    deadline = min(max(1, int(os.environ.get("PRE_MODIFY_BACKUP_PY_DEADLINE_S", "120"))), 86400)
+except (ValueError, OverflowError):
+    deadline = 120
+signal.alarm(deadline)
+src_path, dst_path = sys.argv[1], sys.argv[2]
+try:
+    src = sqlite3.connect(pathlib.Path(src_path).resolve().as_uri() + "?mode=rw", uri=True, timeout=30)
+    dst = sqlite3.connect(dst_path)
+    with dst:
+        src.backup(dst)
+    dst.close()
+    src.close()
+    signal.alarm(0)
+except (sqlite3.Error, OSError) as e:
+    sys.stderr.write("python3 sqlite3 backup failed: %s\n" % e)
+    sys.exit(1)
+PY
+  rm -f "$2-journal" "$2-wal" "$2-shm"
+  return 1
+}
+
 # Consistent SQLite snapshot (NOT a raw cp -- the live dashboard may be mid-write).
 #
 # The sqlite3 CLI is NOT a dependency of install-linux.sh (ffmpeg, git, tmux,
@@ -46,7 +94,9 @@ mkdir -p "$DEST" || { echo "backup FAILED: cannot create $DEST" >&2; exit 1; }
 # "backup ok" + exit 0 with NO database in the snapshot. The same path hid a
 # sqlite3 that was present but failed (locked db, full disk), so the fallback
 # below covers BOTH through one branch -- what decides is the file that landed
-# in $DEST, never whether a command could be found.
+# in $DEST, never whether a command could be found. Python's online-backup API
+# is the second consistent path (python3 is an install dependency); the raw
+# copy is the last resort.
 DB_MODE="no database in this install"
 if [ -f "$STORE/claudeclaw.db" ]; then
   if command -v sqlite3 >/dev/null 2>&1 \
@@ -54,6 +104,14 @@ if [ -f "$STORE/claudeclaw.db" ]; then
      && [ -s "$DEST/claudeclaw.db" ]; then
     DB_MODE="sqlite3 .backup"
     echo "  db: consistent snapshot ok"
+  # A failed sqlite3 .backup may leave a partial file and its sidecars, so the
+  # python3 path starts from a clean destination.
+  elif command -v python3 >/dev/null 2>&1 \
+       && { rm -f "$DEST/claudeclaw.db" "$DEST/claudeclaw.db-journal" "$DEST/claudeclaw.db-wal" "$DEST/claudeclaw.db-shm" \
+            && _py_sqlite_backup "$STORE/claudeclaw.db" "$DEST/claudeclaw.db"; } 2>/dev/null \
+       && [ -s "$DEST/claudeclaw.db" ]; then
+    DB_MODE="python3 sqlite3 backup"
+    echo "  db: consistent snapshot ok (python3 sqlite3 backup)"
   else
     # Degraded fallback, the same one scripts/backup.sh uses without sqlite3:
     # copy the file trio as-is. A raw copy CAN be torn mid-write, so this is a
@@ -61,7 +119,8 @@ if [ -f "$STORE/claudeclaw.db" ]; then
     # writes and SQLite replays it on open; the -shm is only an index and is
     # rebuilt. Copying the db without its -wal would silently lose everything
     # written since the last checkpoint.
-    rm -f "$DEST/claudeclaw.db" 2>/dev/null
+    # Stale sidecars from a failed attempt must not sit next to the raw copy.
+    rm -f "$DEST/claudeclaw.db" "$DEST/claudeclaw.db-journal" "$DEST/claudeclaw.db-wal" "$DEST/claudeclaw.db-shm" 2>/dev/null
     cp -p "$STORE/claudeclaw.db" "$DEST/claudeclaw.db" 2>/dev/null
     for _sfx in -wal -shm; do
       if [ -f "$STORE/claudeclaw.db$_sfx" ]; then
@@ -70,7 +129,7 @@ if [ -f "$STORE/claudeclaw.db" ]; then
     done
     if [ -s "$DEST/claudeclaw.db" ]; then
       DB_MODE="raw db+wal+shm copy -- NOT a consistent snapshot"
-      echo "  db: WARNING no sqlite3 snapshot -- copied db+wal+shm as-is (may be mid-write)"
+      echo "  db: WARNING no consistent snapshot (neither sqlite3 .backup nor python3) -- copied db+wal+shm as-is (may be mid-write)"
     else
       DB_MODE="NOT CAPTURED"
       echo "  db: ERROR the database could NOT be captured" >&2

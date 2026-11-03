@@ -5,7 +5,7 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
-import { importArchiveToPending, nameConflict, queueGeneratedSkill } from '../skill-quarantine.js'
+import { importArchiveToPending, liveOrPending, nameConflict, queueGeneratedSkill } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
@@ -85,7 +85,9 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       if (!r.ok) { json(res, { error: r.error }, r.status); return true }
       const names = r.queued.map((q) => q.name)
       logger.info({ name, skills: names }, 'Skill(s) imported and queued for approval')
-      json(res, { ok: true, imported: names, pending: true, ids: r.queued.map((q) => q.id) })
+      const each: Array<{ name: string, id: string, pending: boolean, live: boolean, held?: string }> = []
+      for (const q of r.queued) each.push({ name: q.name, id: q.id, ...(await liveOrPending(q.id, serializeSkillsDir)) })
+      json(res, { ok: true, imported: names, pending: each.some((e) => e.pending), ids: r.queued.map((q) => q.id), skills: each })
     } catch (err) {
       logger.error({ err }, 'Failed to import skill')
       json(res, { error: 'Failed to extract .skill file' }, 500)
@@ -166,7 +168,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     }
     const queued = queueGeneratedSkill(target, skillName, skillMd)
     logger.info({ agent: agentName, name: skillName, id: queued.id }, 'Agent skill generated and queued for approval')
-    json(res, { ok: true, name: skillName, pending: true, id: queued.id })
+    json(res, { ok: true, name: skillName, ...(await liveOrPending(queued.id, serializeSkillsDir)), id: queued.id })
     return true
   }
 

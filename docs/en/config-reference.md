@@ -24,6 +24,7 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
 | `store/telegram-topics.json` | `/topic new <name>` (Telegram) | The named topics of the main chat: `{ "chatId", "topics": { "<name>": <message_thread_id> } }` (0600); written only while `TELEGRAM_TOPICS_ENABLED` is on |
+| `store/extra-hooks.json` | by hand (optional) | Install-local extra hooks for every sub-agent's generated `settings.json`, after the built-in gates -- see below |
 
 ### Dashboard language
 
@@ -152,6 +153,15 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API base URL | yes |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (empty) | Ollama model that tiers memories on import (override); empty = auto-detect an installed `gemma4`, else all warm | yes |
 | `MEMORY_CONTENT_FILTER_STRICT_COMMANDS` | boolean | `0` (off) | Strict command-syntax group of the memory content filter (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf) on memory POST/PUT/PATCH; cost: prose that only quotes a command form is a 400 too | yes |
+| `OSS_INVENTORY_NOTES_DIRS` | string | `research` | Comma-separated folder names inside each agent folder whose `*.md` research notes the adopted open-source inventory (Connectors page, `GET /api/opensource-inventory`) reads for star counts and measured before/after effects, e.g. `research,kutatas`; plain names only (no `/`, no `..`) | no |
+| `OSS_INVENTORY_OWN_OWNERS` | string | (empty) | Comma-separated repository owner names for the adopted open-source inventory, e.g. your own GitHub account(s). Clones the scan reaches that have a readable http(s) or ssh origin are listed unless their origin owner name is in OSS_INVENTORY_OWN_OWNERS. The scan does not look inside another clone, node_modules, caches, virtual environments, unpacked vendor packages or symlinked folders. The owner name is the first path segment of the clone's own origin URL, matched on any host (the host is not compared); a matched clone, a fork of third-party code kept under such an owner included, is counted (`summary.unlisted_clones`), not listed. Ownership is not inferred from the installation's remotes. Clones without a readable http(s) or ssh origin are counted, not listed | no |
+
+**Registry -- Audit module (excerpt):**
+
+| Key | Type | Default | Description | Restart |
+|-----|------|---------|-------------|---------|
+| `AGENT_TOKENS` | boolean | `0` (off) | Own dashboard token for every sub-agent (`agents/<name>/.dashboard-token`) with a server-side scope and identity binding; see `docs/agens-azonositas-api.md` section 8 | no (applies at the sub-agent's next start) |
+| `SKILL_QUARANTINE` | boolean | `0` (off) | Skill quarantine. Off: a new or improved skill (proposal, generation, import) goes live at once, with the scan, the hash binding and an audit line (`store/skills-audit.jsonl`); what the scan cannot show in full waits for approval. On: every new skill waits for the owner's approval. Turning it off over the API takes the dashboard login | no |
 
 **Registry -- Heartbeat module:**
 
@@ -347,6 +357,86 @@ FROM config_change_log ORDER BY created_at DESC LIMIT 20;
 
 Autonomy levels: `1` = notify only, `2` = propose + approval required, `3` = autonomous + reports afterwards. `locked: true` means max level is 1 (cannot be raised due to hard safety rule).
 
+### extra-hooks.json Structure
+
+Optional. An install that wants one more hook in every sub-agent (an own PreToolUse gate, an
+action log) does not patch `agent-scaffold.ts`: the entry goes here, and the scaffold writes it
+into every sub-agent's generated `agents/<name>/.claude/settings.json`, on spawn and on dashboard
+start (so existing agents get it without a respawn).
+
+```json
+{
+  "entries": [
+    { "event": "PreToolUse", "matcher": "Bash", "script": "local-hooks/post-gate.py", "timeout": 120, "failClosed": true },
+    { "event": "PostToolUse", "matcher": "Bash", "script": "local-hooks/action-log.py", "failClosed": false }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `event` | yes | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` or `Notification` |
+| `matcher` | no | Claude Code matcher (regex), at most 500 characters; without it the hook runs on every call |
+| `script` | yes | Path relative to the project root, inside `local-hooks/` (gitignored), `.py`, `.mjs` or `.js`; letters, digits and `_ . / @ + -` only, no `..` |
+| `timeout` | no | Seconds, 1..600, default 10 |
+| `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block |
+| `scope` | no | Only `"subagents"` (the default); any other value skips the entry |
+| `description` | no | Free text, not used by the scaffold |
+
+What an entry can NOT do: replace, remove or reorder a built-in hook (an extra is appended AFTER
+the built-in hooks of its event, and the scaffold only ever removes its own entries, the ones
+whose command starts with `: extra-hook;`); point anywhere but `<root>/local-hooks/` (symlinks
+resolved, so an agent directory cannot be linked in), under a volatile tmp directory or at a
+missing file (the same registration guard the built-in gates use); use a path or matcher that
+contains a file name of `scripts/` or `scripts/hooks/`, where the built-in gates live (the
+built-in injectors find their own entries by script name); rename a script whose name collides.
+
+Who may write it: `store/extra-hooks.json` and `local-hooks/` decide what runs in EVERY
+sub-agent's session. The intended writers are the operator and the main agent, which do not run
+the sub-agents' self-pace gate. What that gate guarantees is narrower than "a sub-agent cannot
+write them", so here is exactly what it does:
+
+- It denies a sub-agent's native file-tool write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
+  to either, by name and by resolved real path.
+- It denies a sub-agent's Bash command that **spells** one of the protected names, unless the
+  command is a plain read (`cat`, `grep`, `ls`, ...) with no output redirect onto it. "Spells"
+  includes:
+  - quoting, backslashes, `$'...'`, escapes and literal string concatenation
+    (`lo''cal-hooks`, `ext""ra-hooks.json`, `'extra-'+'hooks.json'` in `python3 -c`);
+  - a variable assigned a literal in the same command (`D=local; ... $D-hooks`);
+  - a glob, brace or partly-unresolved word that can expand onto the name: with at least three
+    of the name's own characters (`*-hooks`, `$X-hooks`), or with any characters right under the
+    real project root or store directory (a literal `cd` and symlinks are followed);
+  - a program that names the files it creates itself (`cp`, `mv`, `ln`, `install`, `rsync`,
+    `tar`, `unzip`, `cpio`, `patch`) pointed at the project root or the store directory itself.
+  The rule and its message are the same as for `store/egress-allowlist.json`.
+- It does **not** stop a sub-agent that wants to write the file. A name the command never
+  spells passes: a path built at run time (`chr()`, `base64`, a `$(...)` that prints it), a script
+  file written earlier and then run, or another program (an interpreter, `git apply` /
+  `git checkout`, a build tool) writing under a directory it picks itself. All agents
+  run as one OS user, so these files are in the same trust domain as every agent's own
+  `settings.json`, which a sub-agent can also edit.
+- To make up for that limit, a change is made visible. Every time the extras are synced
+  (dashboard start, sub-agent spawn), the dashboard logs the sha256 of the file and of each
+  `local-hooks/` script it names (`extra-hooks.json: sha256 of the file and of each script it
+  names`). It logs once per distinct content: the first sync after a start always logs, later
+  ones only on a change. Compare the line across starts in `dashboard.log`.
+
+For the same reason a script may not live in an agent's own directory (`agents/<name>/`): there
+the agent writes with no gate at all.
+
+Missing file, blank file or `{"entries": []}`: the generated settings are byte-identical to a
+render without this feature. Invalid JSON or the wrong shape: no extra is added; an invalid
+entry: only that entry is skipped. Both are logged at error level
+(`extra-hooks.json: invalid entries IGNORED`), and neither touches a built-in gate. Removing an
+entry from the file removes it from the agents on the next spawn or dashboard start.
+
+The main agent's hooks are the repo-shipped `.claude/settings.json`, which the scaffold never
+writes (#1305), so this file does not affect the main agent.
+
+`scripts/hook-load-watch.py` probes an extra `PreToolUse` hook for loading like the built-in ones,
+and `scripts/boot-hook-prune.py` removes it once its script is gone.
+
 ---
 
 ## agents/<name>/ -- Sub-agent Configuration
@@ -361,6 +451,7 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
 | `agents/<name>/CLAUDE.md` | manually | Agent instructions and persona |
 | `agents/<name>/SOUL.md` | manually | Optional deeper persona descriptor |
 | `agents/<name>/avatar.png` | manually | Agent Telegram bot profile picture |
+| `agents/<name>/.dashboard-token` | automatic (`AGENT_TOKENS=1`) | The sub-agent's own dashboard token (0600); with it the server allows only the agent API |
 
 ### agent-config.json Structure
 
@@ -492,6 +583,9 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
 | `BOT_NAME` | Main agent name (e.g. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = transcribe inbound voice notes for text-mode agents too (default off; per-agent `voice.transcribeInbound` overrides). See `voice.md` |
+| `WEB_ONLY` | `true` = every background service off (schedule runner, router, monitors, worker pre-start). **Read from the process environment only** (`WEB_ONLY=true node dist/index.js`); a `.env` line has no effect, there is no dotenv |
+| `MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES` | A second instance (git worktree, a clone under a temp dir) runs no background services even without WEB_ONLY, because its schedule runner would fire the global scheduled tasks into the live sessions. `1` = run them anyway (a deliberate test instance), logged as a warning at start. **Process environment only**, as `WEB_ONLY`. A second instance is a git worktree or a clone under a temp dir (`/tmp`, `/private/tmp`, `/var/folders`, the OS tmpdir): a plain `git clone` OUTSIDE those counts as an install and runs the services, so there `WEB_ONLY=true` is the guard |
+| `MXD_DASH_SOCK` | marveen-mxd's dash.sock path. **The other way round: read from the `.env` file only** (per call), never from the process environment; without it the platform default, the live socket. A test instance sets it in its own `.env` |
 
 ---
 

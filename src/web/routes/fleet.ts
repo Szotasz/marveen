@@ -2,7 +2,16 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
+
+// FLEETIMPORTGATE1022: two of these calls take the owner's session (mayIssueCredentials, the
+// predicate that guards issuing credentials), because the fleet's one shared token reaches
+// them from every agent. An export with a vault password hands out the vault's master key and
+// every secret, encrypted with a password the caller chose. An applied import overwrites
+// store/autonomy-config.json (an agent could raise email_send to 3 and switch the mail approval
+// gate off), the agents' settings and the global skills. The plain export (no secrets) and
+// the dry run (writes nothing) stay on the token.
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -15,6 +24,10 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/fleet/export' && method === 'GET') {
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
       json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
+      return true
+    }
+    if (vaultPassword && !mayActAsOwner(ctx.auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     try {
@@ -40,6 +53,11 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/fleet/import' && method === 'POST') {
     const apply = ctx.url.searchParams.get('apply') === 'true'
+    // Before the body is read: a refused apply does no work at all.
+    if (apply && !mayActAsOwner(ctx.auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
 
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {

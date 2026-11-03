@@ -587,6 +587,6 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     )
   }
 
-  setTimeout(sweep, INITIAL_DELAY_MS)
+  setTimeout(whileNotFrozen('reauth-healer', sweep), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('reauth-healer', sweep), PROBE_INTERVAL_MS)
 }

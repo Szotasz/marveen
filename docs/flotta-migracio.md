@@ -39,6 +39,10 @@ Ha az exportnál megadsz jelszót, a TELJES export JSON egyetlen titkosított bl
 
 Jelszó nélkül az export garantáltan titok-mentes: a rendszer kiszűri a titkokat, és ha bármi titkosítatlan titok bennmaradna (pl. egy MCP-token), hibát dob az export helyett hogy kiszivárogtatná.
 
+## Ki indíthatja
+
+A jelszavas export (benne a vault) és az import végrehajtása (Apply) a dashboard-bejelentkezést kéri, amint a gépen van dashboard-felhasználó. A közös dashboard-tokent minden ügynök ismeri, ezért ez a két művelet tokennel 403-at kap (`owner_session_required`). A jelszó nélküli export és az Ellenőrzés (dry-run) tokennel is megy, mert egyik sem ad ki titkot és nem ír semmit. Friss telepítésen, amíg nincs dashboard-felhasználó, a token mindkettőt megengedi (az első beállítás útja).
+
 ## Fő ügynök identitása (import után)
 
 Import után a cél rendszer ÁTVESZI a forrás fő ügynökének identitását: a fő ügynök neve a forrásé lesz, és minden adata is a forrás nevén marad. Ez azért kell, hogy a memóriák, naplók és a sub-agentek CLAUDE.md-hivatkozásai konzisztensek maradjanak, semmit nem kell kézzel átnevezni. A rendszer generikus: bármi is a forrás fő ügynökének neve, azt veszi át.

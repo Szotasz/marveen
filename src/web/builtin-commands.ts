@@ -522,7 +522,7 @@ export function boardText(cards: KanbanCard[], owner: string = OWNER_NAME): stri
       if (shown >= LIMIT) break
       lines.push(cardLine(c, owner, byId))
       const kids = openChildren(c, open).length
-      if (kids > 0) lines.push(`    └ ${kids} alfeladat`)
+      if (kids > 0) lines.push(`    └ ${kids} részfeladat`)
       first ??= c
       shown++
     }
@@ -636,7 +636,7 @@ export function boardHelpText(handle: string = botHandle()): string {
     '/board: a kanban tábla',
     '',
     '/board          ami rád vár (várakozik + hozzád rendelt)',
-    '/board 41       egy kártya, alfeladataival',
+    '/board 41       egy kártya, részfeladataival',
     '/board all      minden nyitott kártya, fában',
     '',
     'Egy oszlop:',
@@ -709,7 +709,7 @@ export function cardDetailText(card: KanbanCard, cards: KanbanCard[] = listKanba
   ]
   if (parent) lines.push(`↑ Szülő: ${seqOf(parent)}) ${clip(parent.title, TITLE_MAX)}`)
   if (kids.length > 0) {
-    lines.push('', `Alfeladatok (${openKids.length} nyitott${kids.length > openKids.length ? `, ${kids.length - openKids.length} kész` : ''}):`)
+    lines.push('', `Részfeladatok (${openKids.length} nyitott${kids.length > openKids.length ? `, ${kids.length - openKids.length} kész` : ''}):`)
     for (const k of openKids) lines.push(`${cardLine(k, owner, byId, { parentMark: false })} · ${k.status}`)
   }
   lines.push('', clip(card.description ?? '(nincs leírás)', 800), '', `Kommentek (${comments.length}):`)

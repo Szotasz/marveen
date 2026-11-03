@@ -28,7 +28,7 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
-import { agentDir } from './agent-config.js'
+import { agentDir, readJsonObjectForWrite } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 interface InviteEntry {
@@ -126,7 +126,13 @@ export function createInvite(
   ttlMs: number = INVITE_DEFAULT_TTL_MS,
 ): CreateInviteResult {
   const invitesPath = invitesPathFor(accessPath)
-  const store = readInvites(invitesPath)
+  // ACCESSREADFAIL1030: both files are read BEFORE anything is written, and
+  // strictly: a missing file is {}, an existing one that cannot be read or is
+  // not a JSON object throws (the route answers 500) instead of the lenient
+  // readers' {} -- which wrote back a one-key access.json / an invites.json
+  // without the other invites.
+  const store = readJsonObjectForWrite(invitesPath) as InvitesFile
+  const access = readJsonObjectForWrite(accessPath) as AccessFile
   const now = Date.now()
   pruneInvites(store, now)
 
@@ -143,7 +149,6 @@ export function createInvite(
   // Flip dmPolicy to 'pairing' so the plugin issues codes for unknown senders
   // during the validity window. This is the one field we must set in access.json;
   // the plugin preserves it across its own writes.
-  const access = readAccess(accessPath)
   if (access.dmPolicy !== 'disabled') {
     access.dmPolicy = 'pairing'
     writeAccess(accessPath, access)

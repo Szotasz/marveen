@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
@@ -11,10 +11,14 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
-import { sendOwnerMessage } from '../../notify.js'
+import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
+import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
+import { reactionRoute, reactionsOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -121,6 +125,13 @@ export function isConsumeRef(v: unknown): v is string {
   return true
 }
 
+// for_agent names one fleet agent. Same alphabet as sanitizeAgentIdent
+// (prompt-safety.ts) and the 64-char cap of the X-Agent-Id claim, so the stored
+// value is exactly what an agent token resolves to.
+export function isForAgentName(v: unknown): v is string {
+  return typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v)
+}
+
 // The window the acting tool asks for, in seconds. Absent = the default;
 // anything else must be a whole number inside 1..cap, or the call is refused
 // (400) rather than silently clamped, so a tool learns its policy is not what
@@ -131,8 +142,15 @@ export function categoryWindowSeconds(v: unknown): number | null {
   return v
 }
 
-// Owner-facing Telegram text. Pure + exported for tests. Plain text (no
-// markdown escaping concerns), proper accents: this is outgoing copy.
+// The dashboard's Approvals page as the BROWSER reaches it (DASHBOARD_PUBLIC_URL, else this host's port), for the
+// owner's message (APPROVALSLACK1030: the decision is one tap away). Exported for tests.
+export function approvalsPageUrl(publicUrl: string = DASHBOARD_PUBLIC_URL, port: number = WEB_PORT): string {
+  return `${publicUrl.trim().replace(/\/+$/, '') || `http://localhost:${port}`}/#approvals`
+}
+
+// Owner-facing text (Slack DM or the channel provider). Pure + exported for
+// tests. Plain text (no markdown escaping concerns), proper accents: this is
+// outgoing copy.
 export function buildOwnerApprovalText(approval: Approval): string {
   const expires = approval.timeout_at
     ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
@@ -142,6 +160,7 @@ export function buildOwnerApprovalText(approval: Approval): string {
     approval.action_description,
     `Lejárat: ${expires}`,
     `Döntés: Dashboard -> Jóváhagyások (id: ${approval.id})`,
+    approvalsPageUrl(),
   ].join('\n')
 }
 
@@ -198,12 +217,56 @@ function fallbackInBand(approval: Approval, reason: string): void {
 // message), and a failed note does NOT fall back in-band -- the only requester
 // allowed on this path is the main agent, which already knows the action is
 // approved; an [APPROVAL_REQUEST] marker would mislead it.
-function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null): void {
+// APPROVALSLACK1030 (2): what the reaction path reads, in one place (tests replace it).
+export const reactionDeps: RouteDeps = {
+  setting: (key) => String(getEffectiveSettingValue(key) ?? ''),
+  token: () => mainBotToken(),
+  ownerTarget: async () => (await slackTargetFor('owner')) || '',
+  verdict: (channel, owner) => ownerDmVerdict(channel, owner),
+  drift: (current) => noticeTargetDrift(current),
+  chunk: SLACK_CHUNK,
+}
+
+function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false): void {
   const informative = chatApprovedMessageId != null
-  const text = informative
+  let text = informative
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId)
     : buildOwnerApprovalText(approval)
   void (async () => {
+    // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
+    // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
+    if (!informative && reactionsOn(reactionDeps.setting)) {
+      const expires = approval.timeout_at ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }) : 'nincs'
+      const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl())
+      if (route.ok && await postReactionPrompt(approval, route)) return
+      text += '\n' + dashboardOnlyLine(route.ok ? 'slack_post_failed' : route.reason)
+    }
+    // APPROVALSLACK1030: an owner who moved to Slack (NOTIFY_SLACK_TARGET set) while the channel provider stays
+    // Telegram got the request on Telegram (measured 2026-10-30: both of the day's requests logged this function's
+    // Telegram branch, its messageId and no provider). The owner asked for Slack only: the request goes to the owner's
+    // Slack DM, and a miss falls back in-band, never to Telegram.
+    const slack = await sendOwnerSlackDm(text)
+    if (slack.attempted) {
+      if (slack.sent) {
+        logger.info({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification sent')
+        return
+      }
+      if (slack.error === 'no_slack_token') {
+        logger.warn({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification suppressed: no channel token')
+        if (!informative) fallbackInBand(approval, 'no-token')
+        return
+      }
+      if (slack.error?.startsWith('unresolved_target')) {
+        logger.warn({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification suppressed: no owner chat')
+        if (!informative) fallbackInBand(approval, 'no-owner-chat')
+        return
+      }
+      logger.warn({ approvalId: approval.id, provider: 'slack', error: slack.error, informative },
+        'approval owner notification FAILED -- the request is only visible on the dashboard')
+      if (!informative) fallbackInBand(approval, 'send-failed')
+      return
+    }
+
     // APPROVALVAK821 fixed this path so the request reaches the OWNER and not
     // only the main agent's queue -- but the fix went out Telegram-only, so on
     // any install that speaks another provider the old silence came straight
@@ -312,10 +375,20 @@ export function fileServerApproval(params: {
     timeout_at: computeTimeoutAt(params.category, undefined),
     content_hash: params.content_hash,
   })
-  notifyOwner(approval)
+  // serverFiled: the description is the server's own words, so the reaction path may show it (APPROVALSLACK1030 (2)).
+  notifyOwner(approval, null, true)
   notifyMainAgent(approval)
   logger.info({ id: approval.id, agent_id: approval.agent_id, category: approval.category }, 'Approval request filed by the server')
   return approval
+}
+
+/** APPROVALSLACK1030 (2): the owner's Slack reactions, read by the server (idle while the switch is off). */
+export function startApprovalReactionSweeper(): NodeJS.Timeout {
+  return startApprovalSlackSweeper({
+    setting: reactionDeps.setting,
+    token: reactionDeps.token,
+    alert: (t) => { void sendOwnerSlackDm(t).catch(() => {}) },
+  })
 }
 
 export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
@@ -390,7 +463,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown; for_agent?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -398,7 +471,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash, owner_approved_message_id } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash, owner_approved_message_id, for_agent } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -430,6 +503,24 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // for_agent grants the row to ONE sub-agent, whose own token (AGENT_TOKENS)
+    // may then consume it (auth-gate.ts binding on POST /api/approvals/:id/consume).
+    // Granting is the main agent's lane: the gate already refuses the field from
+    // a sub-agent token (owner-lane field, 403); this repeats it at the route so
+    // the grant never rests on the gate table alone.
+    let forAgent: string | null = null
+    if (for_agent !== undefined && for_agent !== null) {
+      if (ctx.auth?.kind === 'token' && ctx.auth.tokenAgent) {
+        json(res, { error: 'for_agent is set only by the main agent; a sub-agent token cannot grant an approval' }, 403)
+        return true
+      }
+      if (!isForAgentName(for_agent)) {
+        json(res, { error: 'for_agent, if given, must be one agent name (1-64 chars: letters, digits, _ or -)' }, 400)
+        return true
+      }
+      forAgent = for_agent
+    }
+
     // The main agent may file an approval for an action the
     // owner ALREADY approved in the chat, naming the owner's approving
     // message. Such a row is born approved and the owner is told, not asked.
@@ -452,7 +543,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // PATCH writes); a string id is kept in the owner note and the log line.
     let chatApprovedMessageId: number | string | null = null
     if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
-      if (!mayIssueCredentials(ctx.auth, req)) {
+      if (!mayActAsOwner(ctx.auth, req)) {
         logger.warn({ agent_id, category, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'born-approved approval refused: no owner session')
         json(res, OWNER_ONLY, 403)
         return true
@@ -480,6 +571,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
       content_hash: typeof content_hash === 'string' ? content_hash : null,
+      for_agent: forAgent,
     })
     if (chatApprovedMessageId != null) {
       // Same resolve path as PATCH, so the row is indistinguishable from a
@@ -491,7 +583,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     notifyOwner(approval, chatApprovedMessageId)
     notifyMainAgent(approval)
-    logger.info({ id, agent_id, category, chatApprovedMessageId }, chatApprovedMessageId != null ? 'Approval created as already approved in chat' : 'Approval request created')
+    logger.info({ id, agent_id, category, chatApprovedMessageId, forAgent }, chatApprovedMessageId != null ? 'Approval created as already approved in chat' : 'Approval request created')
     json(res, approval, 201)
     return true
   }
@@ -520,6 +612,17 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   // (handleCategoryConsume above).
   const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
   if (consumeMatch && method === 'POST') {
+    // A sub-agent's own token (AGENT_TOKENS) reaches this route only for its
+    // own request or a row the main agent granted to it with for_agent (the
+    // gate's identity binding). The route repeats the check so the rule never
+    // rests on the gate table alone; agent_id and for_agent are written once at
+    // creation and never updated. Same uniform 403 as the gate: no consume,
+    // and nothing said about whether the id exists.
+    const caller = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
+    if (caller && approvalGranteeOf(getApproval(consumeMatch[1])) !== caller) {
+      json(res, identityDenialBody(caller, MAIN_AGENT_ID, approvalNotGrantedReason(caller)), 403)
+      return true
+    }
     let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown; category?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -612,7 +715,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     // Approving takes the owner (see OWNER_ONLY); rejecting or timing out does not, since
     // an agent that cancels a request gains nothing by it.
-    if (status === 'approved' && !mayIssueCredentials(ctx.auth, req)) {
+    if (status === 'approved' && !mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: idMatch[1], resolved_by, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'approval approve refused: no owner session')
       json(res, OWNER_ONLY, 403)
       return true

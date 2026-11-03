@@ -118,6 +118,15 @@ export interface ScheduledTask {
   //   exit 0 + empty stdout  → run LLM normally
   //   non-zero exit          → log warning, run LLM anyway (fail-open)
   preCheck?: string
+  // The preCheck's own time limit, in SECONDS. Unset uses PRECHECK_TIMEOUT_MS
+  // (10 s), which fits a local state read and is too short for a preCheck that
+  // crosses the network: a pre-check that opens an SSH session to a remote
+  // host (ConnectTimeout 15, overall 30) is killed at 10 s on every tick,
+  // fails open, and the LLM runs anyway -- the gate costs a round trip and
+  // saves nothing. Clamped at both ends, see resolvePreCheckTimeoutMs.
+  // DISTINCT from timeoutMs (a 'command' task's own run) and from
+  // stuckAfterMinutes (the injected turn's age).
+  preCheckTimeoutSeconds?: number
   // How stale a MISSED occurrence may be and still be executed as a catch-up
   // after the scheduler was down (host powered off, dashboard restart). Unset
   // uses the per-type default in DEFAULT_CATCHUP_MAX_AGE_MIN; 0 disables
@@ -420,7 +429,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = skillBuf != null ? skillBuf.toString('utf-8') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; preCheckTimeoutSeconds?: unknown; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown } = {}
   try {
     config = JSON.parse(configBuf != null ? configBuf.toString('utf-8') : '{}')
   } catch { /* use defaults */ }
@@ -446,6 +455,11 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
     catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
+    // Not parseFiniteMinutes: same acceptance rule, but this field is SECONDS
+    // and a minutes-named helper on it reads as a unit bug at every call site.
+    preCheckTimeoutSeconds: typeof config.preCheckTimeoutSeconds === 'number' && Number.isFinite(config.preCheckTimeoutSeconds)
+      ? config.preCheckTimeoutSeconds
+      : undefined,
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
     injectMetrics: config.injectMetrics === true,
@@ -508,7 +522,7 @@ export interface ScheduledTaskWritten {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null; once?: boolean },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; preCheckTimeoutSeconds?: number; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null; once?: boolean },
 ): ScheduledTaskWritten {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -543,6 +557,7 @@ export function writeScheduledTask(
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
   if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
+  if (data.preCheckTimeoutSeconds !== undefined) config.preCheckTimeoutSeconds = data.preCheckTimeoutSeconds
   if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
   if (data.injectMetrics !== undefined) config.injectMetrics = data.injectMetrics
   if (data.sendDigestDirect !== undefined) config.sendDigestDirect = data.sendDigestDirect

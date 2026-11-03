@@ -32,7 +32,7 @@ import {
   type LaunchResult, type LoginErrorCode, type LoginTimeouts,
 } from '../setup-token-login.js'
 import { commitNewPlan } from './claude-plans.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { getDeviceKey } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
@@ -115,7 +115,7 @@ export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<bool
   const { req, res, path, method } = ctx
   if (!path.startsWith('/api/claude-plans/login/')) return false
 
-  if (!mayIssueCredentials(ctx.auth, req) && !isPairedBridgeKey(ctx.auth)) {
+  if (!mayActAsOwner(ctx.auth, req) && !isPairedBridgeKey(ctx.auth)) {
     json(res, OWNER_SESSION_REQUIRED, 403)
     return true
   }

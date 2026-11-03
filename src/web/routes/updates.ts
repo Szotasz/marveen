@@ -13,7 +13,7 @@ import {
   checkUpdatePreflight, checkNoConcurrentUpdate, classifyLockWriteError,
   type GitRunner, type PidfileRunner,
 } from '../../update-preflight.js'
-import { json, readBody } from '../http-helpers.js'
+import { json, readBody, readBodyOrRefuse } from '../http-helpers.js'
 import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
@@ -173,8 +173,10 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     // failure into a managed stash + pop pattern inside update.sh.
     // Without it, a dirty working tree returns 409 'dirty-tree' as before.
     let autoStash = false
+    // A body cut off mid-way is refused, not read as "no autoStash".
+    const buf = await readBodyOrRefuse(ctx.req, res)
+    if (!buf) return true
     try {
-      const buf = await readBody(ctx.req)
       if (buf.length > 0) {
         const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown }
         autoStash = parsed.autoStash === true

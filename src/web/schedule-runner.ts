@@ -85,7 +85,8 @@ import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-mo
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneOneLine } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
-import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { channelStateDir, getProvider, readChannelToken, readTeamsCreds, type ChannelProviderType } from '../channel-provider.js'
+import { sendTeamsMessage } from '../teams-send.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -260,6 +261,12 @@ export interface TaskInflightEntry {
   // run; the next sweep checks whether that item has left pending/ (progress:
   // the reader consumed the head, so our item's wait is backlog, not neglect).
   worksourcePendingHead?: string
+  // The sweep time at which the item was first seen in pending/ in its current
+  // stay there; cleared with worksourcePendingSince, but never restarted by
+  // queue progress. Only the alert texts read it ("N minutes in pending/"). A
+  // stretch with an unreadable stage (null) keeps it, as it keeps
+  // worksourcePendingSince: no signal either way.
+  worksourcePendingEnteredAt?: number
   // Set once the sweep has pressed its single recovery Enter for a prompt parked
   // in an overfull input box, so a second 'lost' verdict on this entry takes the
   // ordinary lost path instead of Enter-looping.
@@ -1081,14 +1088,24 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
     if (typeof first === 'string' && first.trim()) return first.trim()
     if (typeof first === 'number') return String(first)
   }
+  // #2404 (WRONGRECIP819, the #2403 Discord rule on every provider): exactly one allowed group or channel is the target;
+  // two or more are no target at all. The key order is insertion order, a re-pairing can reorder it, and everyone in a
+  // group or channel reads what lands there, so the first key would be a guess that can leak. resolveBoundChannel
+  // turns 2+ into ambiguousCandidates, so the delivery is skipped and reported.
+  const targets = groupOrChannelTargets(o)
+  return targets.length === 1 ? targets[0]! : null
+}
+
+/** The allowed groups (Telegram, Discord: `groups`) and channels (Slack: `channels`) of an access.json, in file order. */
+export function groupOrChannelTargets(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object') return []
+  const o = raw as Record<string, unknown>
+  const out: string[] = []
   for (const key of ['groups', 'channels'] as const) {
     const map = o[key]
-    if (map && typeof map === 'object') {
-      const keys = Object.keys(map as Record<string, unknown>)
-      if (keys.length > 0) return keys[0]
-    }
+    if (map && typeof map === 'object' && !Array.isArray(map)) out.push(...Object.keys(map as Record<string, unknown>))
   }
-  return null
+  return out
 }
 
 
@@ -1234,6 +1251,19 @@ export function deliveryFallbackClause(
   return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
+// The task types whose prompt carries ONLY a bare tag, never a "send the result to
+// <channel>" instruction. heartbeat: a background check nobody is waiting for.
+// dream-engine (#2284): its SKILL.md forbids a channel send twice (the owner is asleep;
+// DREAM.md goes out with the 07:30 briefing), so the runner must not say the opposite in
+// the same prompt. The type is cast, not validated (see catchUpMaxAgeMs), so every
+// other type, unknown ones included, keeps the delivery instruction; catch-up budget and
+// quota class are NOT changed here. Returns the tag, or null for a delivering type.
+export function silentTaskTag(task: Pick<ScheduledTask, 'type' | 'name'>): string | null {
+  if (task.type === 'heartbeat') return `[Heartbeat: ${task.name}] `
+  if ((task.type as string) === 'dream-engine') return `[Utemezett feladat: ${task.name}] `
+  return null
+}
+
 /** The prompt prefix of a non-heartbeat scheduled task whose delivery target resolved.
  *  `threadId`: a Telegram topic (resolveTaskTopicThreadId); without one the text is unchanged. */
 export function taskDeliveryPrefix(taskName: string, provider: ChannelProviderType, chatId: string, isMain: boolean, threadId: number | null = null): string {
@@ -1301,6 +1331,36 @@ export interface BoundChannel {
    *  config gap (missing/empty access.json), which is not an ambiguity, just
    *  nothing to deliver to. */
   ambiguousCandidates?: number
+  /** Set only when chatId is null BECAUSE the agent is Discord-bound and its
+   *  access.json lists DM USER ids (allowFrom) but no channel (groups): a user id
+   *  is not a Discord delivery target (#2390). A config gap the owner must
+   *  close with a channel id, so it is reported, not just logged. */
+  discordNoChannel?: boolean
+}
+
+/** DISCORD (#2390): the Discord plugin's reply needs a CHANNEL id. Its outbound
+ *  gate (fetchAllowedChannel) starts with client.channels.fetch(id), and the
+ *  plugin's own comment says it plainly: "DM channel ID != user ID". So the
+ *  allowFrom entries, which are USER ids, are never a target here: handed in as
+ *  chat_id they fail with "Unknown Channel" (reported on a Discord install,
+ *  2026-10-31). Only an allowed guild channel (a groups key) is a target, and only
+ *  when there is exactly one (two or more are ambiguous). allowFrom alone -> no target,
+ *  flagged so the caller can say so. Resolving a user id to its DM channel needs
+ *  the bot token on the plugin's side and is a separate change. */
+export function discordBoundChannelFromAccess(raw: unknown): { chatId: string | null; discordNoChannel?: true; ambiguousCandidates?: number } {
+  if (!raw || typeof raw !== 'object') return { chatId: null }
+  const o = raw as Record<string, unknown>
+  const groups = o.groups
+  if (groups && typeof groups === 'object') {
+    const keys = Object.keys(groups as Record<string, unknown>)
+    // Exactly one allowed channel is the target. Two or more are an ambiguity (WRONGRECIP819, Dani 64034): the key order
+    // is insertion order, a re-pairing can reorder it, and everyone in a guild channel reads what lands there, so the
+    // first key would be a guess that can leak. The ambiguous branch skips and reports it.
+    if (keys.length === 1) return { chatId: keys[0]! }
+    if (keys.length > 1) return { chatId: null, ambiguousCandidates: keys.length }
+  }
+  const users = Array.isArray(o.allowFrom) ? o.allowFrom.filter((x) => (typeof x === 'string' && x.trim() !== '') || typeof x === 'number') : []
+  return users.length > 0 ? { chatId: null, discordNoChannel: true } : { chatId: null }
 }
 
 /** The agent's own bound channel + chat, or {provider, chatId:null} when no
@@ -1316,12 +1376,20 @@ export function resolveBoundChannel(agentName: string, providerOverride?: Channe
     : channelStateDir(provider, agentDir(agentName))
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
+    // #2390: on Discord the allowFrom entries are user ids, never targets, so
+    // their count is no ambiguity either; only a groups channel resolves.
+    if (provider === 'discord') return { provider, ...discordBoundChannelFromAccess(raw) }
     const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
     // WRONGRECIP819: 2+ DM contacts is a GUESS, not a binding. Returning the
     // first one with a warn line still delivers to a possibly-wrong person,
     // and the log line is read only after the damage. Refuse instead: the
     // caller skips delivery and raises the ambiguity where someone acts on it.
     if (candidates > 1) return { provider, chatId: null, ambiguousCandidates: candidates }
+    // #2404: with no DM contact, two or more allowed groups/channels are the same kind of guess.
+    if (candidates === 0) {
+      const targets = groupOrChannelTargets(raw).length
+      if (targets > 1) return { provider, chatId: null, ambiguousCandidates: targets }
+    }
     return { provider, chatId: chatIdFromAccessConfig(raw) }
   } catch { return { provider, chatId: null } }
 }
@@ -1365,6 +1433,70 @@ export type PreCheckResult = { skip: boolean; prefix?: string }
 
 // The preCheck script's time limit; over it the script is killed and the LLM runs anyway.
 export const PRECHECK_TIMEOUT_MS = 10_000
+// Ceiling for the per-task override below. The cron loop AWAITS the pre-check
+// under the tickRunning guard, so a slow script does not block the event loop
+// any more (runPreCheckAsync) but it still holds the NEXT tick.
+//
+// The ceiling is PER TASK, and the tick awaits the gates ONE AFTER ANOTHER, so
+// what a task at the end of a tick actually waits for is the SUM of the gates
+// before it -- not 60 s (review note on #2300). Treat the ceiling as a bound on
+// a single bad gate, not on the tick. Several network-crossing pre-checks due
+// in the same minute is a scheduling decision to make deliberately, and the
+// cheap way out of it is a gate that reads a state file somebody else refreshes.
+// 60 s leaves room for an ssh ConnectTimeout 15 plus the query; anything slower
+// is a job, not a gate.
+export const PRECHECK_MAX_TIMEOUT_MS = 60_000
+// Floor: a sub-second limit kills every real script and turns the gate into a
+// pure cost (fail-open after a spawn), which is worse than having no gate.
+export const PRECHECK_MIN_TIMEOUT_MS = 1_000
+
+// A task's pre-check time limit. Same clamp shape as resolveStuckTimeoutMs: an
+// unset/invalid/non-positive value takes the default, a configured one is
+// pinned into [PRECHECK_MIN_TIMEOUT_MS, maxMs]. Per task -- see the note on
+// PRECHECK_MAX_TIMEOUT_MS for what that does NOT bound.
+//
+// Why this is configurable at all: at the fixed 10 s a pre-check that crosses
+// the network is killed on every tick and fails open, so the gate costs a
+// round trip and saves nothing -- measured need: a heartbeat whose pre-check
+// opens an SSH session to a remote host (ConnectTimeout 15, overall 30).
+// A local state read stays on the 10 s default.
+export function resolvePreCheckTimeoutMs(
+  task: Pick<ScheduledTask, 'preCheckTimeoutSeconds'>,
+  defaultMs: number = PRECHECK_TIMEOUT_MS,
+  maxMs: number = PRECHECK_MAX_TIMEOUT_MS,
+): number {
+  const configured = task.preCheckTimeoutSeconds
+  if (typeof configured !== 'number' || !Number.isFinite(configured) || configured <= 0) return defaultMs
+  return Math.min(Math.max(configured * 1_000, PRECHECK_MIN_TIMEOUT_MS), maxMs)
+}
+
+// Where the pre-check script runs. It used to inherit the dashboard's own
+// working directory, which is a correctness bug for any script that derives
+// WHOSE state it is reading from the cwd: ledger-live-drain.py calls
+// ledger_lib.agent_id_from_cwd(os.getcwd()), so under the dashboard's cwd it
+// read the MAIN agent's ledger whatever agent the task targeted. On the main
+// agent (the only place it is deployed today) that happens to be the right
+// answer, which is exactly why the bug could sit here unseen: the first other
+// agent to get a cwd-sensitive pre-check would have silently gated on someone
+// else's state.
+//
+// 'all' keeps the old behaviour on purpose. The cron loop runs the pre-check
+// ONCE per task, not once per target, because the gate is documented as
+// reading state that does not vary by agent; a broadcast task therefore has no
+// single agent directory to name, and picking one of them would be a guess.
+// A cwd-sensitive pre-check on a broadcast task is a configuration error, not
+// something this function can resolve.
+export function preCheckCwd(task: Pick<ScheduledTask, 'agent'>): string {
+  const agentName = task.agent || MAIN_AGENT_ID
+  if (agentName === 'all' || agentName === MAIN_AGENT_ID) return PROJECT_ROOT
+  const dir = agentDir(agentName)
+  // Fall back rather than hand spawn a directory that is not there: an absent
+  // cwd makes spawn fail with ENOENT, which this file treats as fail-open, so
+  // a task pointed at a deleted agent would stop being gated at all and run
+  // the LLM every tick instead. A wrong-but-present cwd is the behaviour that
+  // shipped for years; silently switching the gate off is not.
+  return existsSync(dir) ? dir : PROJECT_ROOT
+}
 // spawnSync's default maxBuffer: a longer stdout fails the run the same way in both forms.
 const PRECHECK_MAX_STDOUT_BYTES = 1024 * 1024
 
@@ -1428,7 +1560,7 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
   const inv = preCheckInvocation(task, scriptPath)
   if ('result' in inv) return inv.result
   try {
-    const r = spawnSync('bash', inv.args, { timeout: PRECHECK_TIMEOUT_MS, encoding: 'utf-8' })
+    const r = spawnSync('bash', inv.args, { timeout: resolvePreCheckTimeoutMs(task), cwd: preCheckCwd(task), encoding: 'utf-8' })
     if (r.error) {
       logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
       return { skip: false }
@@ -1505,7 +1637,7 @@ export function runPreCheckAsync(
   }
   const inv = preCheckInvocation(task, scriptPath)
   if ('result' in inv) return Promise.resolve(inv.result)
-  const timeoutMs = opts.timeoutMs ?? PRECHECK_TIMEOUT_MS
+  const timeoutMs = opts.timeoutMs ?? resolvePreCheckTimeoutMs(task)
   const maxStdoutBytes = opts.maxStdoutBytes ?? PRECHECK_MAX_STDOUT_BYTES
   return new Promise<PreCheckResult>((resolve) => {
     let settled = false
@@ -1520,7 +1652,7 @@ export function runPreCheckAsync(
     try {
       // detached: the script leads its own process group, so the limit can end
       // everything it started (endPreCheckGroup), not just bash.
-      child = spawn('bash', inv.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+      child = spawn('bash', inv.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, cwd: preCheckCwd(task) })
     } catch (err) {
       logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
       settle({ skip: false })
@@ -1675,6 +1807,13 @@ const lastMcpMissing = new Map<string, string[]>()
 // The error-level log line stays per fire: logs are for the operator reading
 // them on purpose, the agent message is an interrupt.
 const ambiguousTargetAlerted = new Set<string>()
+// #2390: tasks already reported for a Discord binding with no channel id.
+const discordNoChannelAlerted = new Set<string>()
+
+/** The one-time notice for a Discord-bound task whose access.json has user ids only (#2390). */
+export function discordNoChannelNotice(taskName: string, agentName: string, scheduleId: string): string {
+  return `[FELHÍVÁS] A(z) "${taskName}" ütemezett feladat (agent: ${agentName}) Discordra kézbesítene, de nincs Discord csatorna-azonosító: az ágens Discord access.json-jában csak felhasználó-azonosító (allowFrom) van, a Discord plugin pedig csatorna-azonosítóra küld (felhasználó-azonosítóra "Unknown Channel" hibát ad). A kézbesítési utasítás kimaradt EBBŐL a futásból (nem küldtünk felhasználó-azonosítóra). Állítsd be a csatornát: PUT /api/schedules/${scheduleId} ({"channelProvider": "discord", "telegramChatId": "<Discord csatorna-azonosító>"}), vagy az install SCHEDULED_DELIVERY_CHANNEL beállítását ("discord:<csatorna-azonosító>"). A task-config.json kézi szerkesztése hash-eltérés miatt leállítja a feladatot.`
+}
 
 // Per target pane (host + session), the usage-limit episode the
 // pre-injection gate is tracking. In-memory on purpose: a dashboard restart
@@ -1833,14 +1972,14 @@ export function scheduledWorksourceMeta(taskName: string, itemId: string): Recor
 // never be picked up. The main agent is excluded: it has no worksource
 // channel, and queueing its own scheduler's prompts would strand them.
 //
-// The sender-role gate (agent-config.json senderRoleGate) also keeps the typed
+// The sender-role gate (store/agent-sender-role-gates.json) also keeps the typed
 // path. A queued item reaches the agent inside a <channel> envelope, which the
 // gate's hook reads as a NON-OWNER sender and answers by denying the risky
 // tools; a typed prompt carries no envelope and is treated as the owner. The
 // item's `from: scheduler` meta is not an owner credential -- anything that
 // can write the queue directory can set it -- so it is deliberately not used
 // to lift the gate. A readFlag or readGate that throws keeps the typed path
-// too: a broken agent-config.json must not take the schedule down with it.
+// too: a broken config must not take the schedule down with it (an unreadable gate store reads as a gate).
 export function shouldQueueScheduledToWorksource(
   agentName: string,
   host: string | null,
@@ -2034,7 +2173,8 @@ async function attemptFireTask(
 
   try {
     let prefix: string
-    if (task.type === 'heartbeat') {
+    const silentTag = silentTaskTag(task)
+    if (silentTag !== null) {
       // Heartbeat prompts get ONLY a minimal tag. The agent's CLAUDE.md and
       // the task SKILL.md drive behaviour -- the runner MUST NOT prepend any
       // operational directive here.
@@ -2053,7 +2193,7 @@ async function attemptFireTask(
       // is handled separately by the channels TUI keepalive
       // (channel-coordinator/liveness.ts), never by injecting instructions into
       // heartbeat prompts.
-      prefix = `[Heartbeat: ${task.name}] `
+      prefix = silentTag
     } else {
       // Target the RUNNING agent's own bound channel, NOT the global
       // ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it here
@@ -2073,6 +2213,7 @@ async function attemptFireTask(
         // Resolved cleanly: forget any earlier ambiguity alert for this task so
         // that removing the pin again is not silently swallowed.
         ambiguousTargetAlerted.delete(task.name)
+        discordNoChannelAlerted.delete(task.name)
         const isMain = agentName === MAIN_AGENT_ID
         const topic = resolveTaskTopicThreadId(task, { provider: bound.provider, chatId: bound.chatId }, isMain)
         if (topic.problem) {
@@ -2085,14 +2226,25 @@ async function attemptFireTask(
         // branch below) but this is NOT a config gap, it is an unresolved
         // author decision, so it gets error-level visibility plus a direct
         // nudge to fix it, instead of a log line nobody is watching.
-        logger.error({ task: task.name, agent: agentName, provider: bound.provider, candidates: bound.ambiguousCandidates }, 'scheduled task: delivery target is ambiguous (2+ DM contacts, no pinned chat id) -- skipping the delivery instruction instead of guessing')
+        logger.error({ task: task.name, agent: agentName, provider: bound.provider, candidates: bound.ambiguousCandidates }, 'scheduled task: delivery target is ambiguous (2+ DM contacts, or 2+ allowed groups/channels; no pinned chat id) -- skipping the delivery instruction instead of guessing')
         if (!ambiguousTargetAlerted.has(task.name)) {
           ambiguousTargetAlerted.add(task.name)
           createAgentMessage(
             'system',
             MAIN_AGENT_ID,
-            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
+            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges cimzett van az agens access.json-jaban (DM-kontakt az allowFrom-ban, vagy engedelyezett csoport/csatorna a groups/channels alatt), es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
           )
+        }
+        prefix = `[Utemezett feladat: ${task.name}] `
+      } else if (bound.discordNoChannel) {
+        // #2390: Discord-bound, but the access.json has only DM user ids. A user id
+        // as chat_id fails in the plugin with "Unknown Channel", so the delivery is
+        // skipped (bare tag) and the gap is reported once per task, like the
+        // ambiguous branch above, until a channel id resolves.
+        logger.error({ task: task.name, agent: agentName, provider: bound.provider }, 'scheduled task: Discord delivery has no channel id (allowFrom holds user ids only) -- skipping the delivery instruction instead of sending to a user id')
+        if (!discordNoChannelAlerted.has(task.name)) {
+          discordNoChannelAlerted.add(task.name)
+          createAgentMessage('system', MAIN_AGENT_ID, discordNoChannelNotice(task.name, agentName, task.dirName ?? task.name))
         }
         prefix = `[Utemezett feladat: ${task.name}] `
       } else {
@@ -2763,12 +2915,66 @@ function pendingRetryAlertText(view: PendingRetryView, prefix: string, ageMinute
       ]).join('\n')
 }
 
+// Where a stuck scheduled task's OWN channel target learns about the stall.
+// The main-agent notice below reaches the main agent's session, but the team
+// that asked for the result (a Teams channel bound to the stuck agent) waits
+// in silence: its agent is the one that could not start, so nobody in that
+// conversation knows the result is late. This is a team-facing one-liner --
+// no operator detail (tmux, MCP, dashboard page, login steps) -- because the
+// recipients are the humans waiting for the output, not the person who has to
+// fix the session. Best effort and never a throw: the stall is already being
+// escalated through the stage-1/stage-2 paths below, so a failed Teams send
+// must not take the tick down with it.
+export type StallNoticeOutcome = 'sent' | 'not-teams' | 'no-target' | 'failed'
+
+export async function notifyTaskTargetOfStall(
+  task: Pick<ScheduledTask, 'name' | 'agent' | 'telegramChatId' | 'channelProvider'>,
+  agentName: string,
+  ageMinutes: number,
+  deps: {
+    resolveTarget?: typeof resolveTaskChannelTarget
+    send?: typeof sendTeamsMessage
+    readCreds?: typeof readTeamsCreds
+  } = {},
+): Promise<StallNoticeOutcome> {
+  try {
+    // The stuck ROW's agent, not task.agent: a multi-agent task is retried
+    // once per (task, agent) row, and the channel to tell is the one bound to
+    // the agent that could not start.
+    const target = (deps.resolveTarget ?? resolveTaskChannelTarget)({ ...task, agent: agentName })
+    if (target.provider !== 'teams') return 'not-teams'
+    if (!target.chatId) {
+      const reason = task.telegramChatId === 'none' ? 'opted-out' : target.ambiguousCandidates ? 'ambiguous' : 'unbound'
+      logger.info({ task: task.name, agent: agentName, reason, ambiguousCandidates: target.ambiguousCandidates }, 'Teams stall notice skipped: no target conversation for the task')
+      return 'no-target'
+    }
+    // The Teams bot credentials live in the state dir of the agent that owns
+    // the channel: install-scoped for the main agent, agent-scoped otherwise.
+    const isMain = agentName === MAIN_AGENT_ID
+    const dir = isMain ? channelStateDir('teams') : channelStateDir('teams', agentDir(agentName))
+    const creds = (deps.readCreds ?? readTeamsCreds)('', isMain ? undefined : [join(dir, '.env')])
+    const text = `[ütemező] A(z) "${task.name}" ütemezett feladat (${agentName}) ${ageMinutes} perce nem tudott elindulni, ezért az eredménye késik. A rendszer tovább próbálkozik.`
+    await (deps.send ?? sendTeamsMessage)(creds, dir, target.chatId, text)
+    logger.info({ task: task.name, agent: agentName, ageMinutes }, 'Teams stall notice sent')
+    return 'sent'
+  } catch (err) {
+    // Never rethrow, and never log `creds` (it holds the bot secret) or the
+    // error object itself -- only its message string.
+    logger.warn({ task: task.name, agent: agentName, error: err instanceof Error ? err.message : String(err) }, 'Teams stall notice failed')
+    return 'failed'
+  }
+}
+
 // Stage 1: inter-agent notice to the main agent once a pending retry crosses
 // ALERT_THRESHOLD_MS. This used to go straight to the operator's channel
 // (see sendPendingRetryAlert below, now the stage-2 escalation) -- too
 // eager: a handful of tasks that all resolved themselves within the hour
 // each fired a direct alert for nothing.
-function sendPendingRetryMainAgentNotice(view: PendingRetryView, nowMs: number): void {
+export function sendPendingRetryMainAgentNotice(
+  view: PendingRetryView,
+  nowMs: number,
+  task?: Pick<ScheduledTask, 'name' | 'agent' | 'telegramChatId' | 'channelProvider'>,
+): void {
   // Stamp first, same claim-before-send guard as the channel path: if
   // another tick raced us, markPendingTaskRetryAlert returns false (the
   // WHERE alert_sent_at IS NULL guards it) and we skip the send entirely.
@@ -2782,6 +2988,10 @@ function sendPendingRetryMainAgentNotice(view: PendingRetryView, nowMs: number):
   try {
     createAgentMessage('system', MAIN_AGENT_ID, text)
     logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry main-agent notice sent')
+    // Only once the notice is safely in the DB: the task's own channel target
+    // has to be told too (see notifyTaskTargetOfStall). Fire-and-forget -- it
+    // never rejects and must never roll back the claim above.
+    if (task) void notifyTaskTargetOfStall(task, view.agentName, ageMinutes)
   } catch (err) {
     // A failed DB insert here does not block stage-2 escalation -- see
     // sendTaskInflightMainAgentNotice for the same rationale on the other path.
@@ -3149,10 +3359,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
     tickRunning = true
     try {
     // Scheduled-task registry: only tasks whose files hash-match the server-owned registry
-    // are considered at all (cron fires, catch-ups AND pending retries -- a
-    // retry of a task that was tampered with after queueing finds no taskDef
-    // and is dropped like a deleted task).
-    const tasks = filterRegisteredTasks(listScheduledTasks(), sendRegistrySkipNotice)
+    // are considered at all (cron fires, catch-ups AND pending retries). A
+    // pending retry of a task that is still on disk and enabled but currently
+    // refused by the gate (e.g. edited after queueing) is KEPT, not fired: it
+    // fires once the task passes the gate again. A retry of a task that is gone
+    // from disk or disabled is dropped.
+    const onDisk = listScheduledTasks()
+    const tasks = filterRegisteredTasks(onDisk, sendRegistrySkipNotice)
     const now = Date.now()
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
@@ -3206,6 +3419,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // made NO progress can ever span the grace window.
       if (entry.viaWorksource === true) {
         if (worksourceStage === 'pending') {
+          if (entry.worksourcePendingEnteredAt == null) entry.worksourcePendingEnteredAt = now
           if (entry.worksourcePendingSince == null) {
             entry.worksourcePendingSince = now
           } else if (entry.worksourcePendingHead != null) {
@@ -3218,6 +3432,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         } else if (worksourceStage === 'active' || worksourceStage === 'done') {
           entry.worksourcePendingSince = undefined
           entry.worksourcePendingHead = undefined
+          entry.worksourcePendingEnteredAt = undefined
         }
       }
       const decision = decideTaskTimeout(entry, state, now, {
@@ -3235,6 +3450,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
         isWorksourceItemStuckInPending(entry, worksourceStage, now, TASK_FIRE_GRACE_MS)
           ? 'worksource-pending'
           : undefined
+      // The pending wording counts the item's current stay in pending/, not the time since the injection (an item
+      // requeued after a long hand-over has stood there only since the requeue) and not the pending run the
+      // decisions time, which queue progress restarts.
+      const alertElapsedMs = pendingReason === 'worksource-pending' && entry.worksourcePendingEnteredAt != null
+        ? now - entry.worksourcePendingEnteredAt
+        : now - entry.injectedAt
       // PROMPTCSONK923: record what actually ARRIVED, from the transcript. On
       // a closing decision this is the last look, so a head-only arrival is
       // recorded as 'tail-lost' instead of waiting for a tail that is not
@@ -3296,10 +3517,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
         }
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
-        sendTaskInflightMainAgentNotice(entry, now - entry.injectedAt, pendingReason)
+        sendTaskInflightMainAgentNotice(entry, alertElapsedMs, pendingReason)
         entry.alerted = true
       } else if (decision === 'escalate') {
-        sendTaskTimeoutAlert(entry, now - entry.injectedAt, pendingReason)
+        sendTaskTimeoutAlert(entry, alertElapsedMs, pendingReason)
         entry.ownerAlerted = true
       } else if (decision === 'lost' && !entry.parkedEnterSent && isOwnPromptParkedOverfull(pane, getInjectedPrompt(entry.session))) {
         // Not lost: our prompt is parked in a box taller than the pane, where
@@ -3393,6 +3614,15 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // retry silently -- nothing to fire.
       const taskDef = tasks.find(t => t.name === row.task_name)
       if (!taskDef) {
+        // A task still on disk that the registry gate skipped is NOT gone: the
+        // skip can be transient (an updater mid-refresh, a one-off
+        // registry-error) or end with the operator re-registering it. Keep its
+        // retry; it fires (the registered content) once the gate passes again.
+        // Not for a DISABLED on-disk task: the operator's disable drops the
+        // retry (as below), else re-registering and enabling it later would
+        // fire the stale retry at once. Matched on `name`, the key the retry
+        // rows are written under (insertPendingTaskRetryIfNew(task.name, ...)).
+        if (onDisk.some(t => t.name === row.task_name && t.enabled !== false)) continue
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
@@ -3466,7 +3696,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // do not alert.
       const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
       const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
-      if (stillPresent && view.alertDue) sendPendingRetryMainAgentNotice(view, now)
+      if (stillPresent && view.alertDue) sendPendingRetryMainAgentNotice(view, now, current)
       if (stillPresent && view.ownerAlertDue) sendPendingRetryAlert(view, now)
 
       // SCHEDPARK814 stale-parked-input janitor. A 'busy' verdict that keeps
@@ -3813,6 +4043,6 @@ export function startScheduleRunner(): NodeJS.Timeout {
   }
 
   // Run immediately on start (catches missed tasks)
-  setTimeout(() => { void runCheck() }, 5000)
+  setTimeout(whileNotFrozen('schedule-runner', () => { void runCheck() }), 5000)
   return setInterval(whileNotFrozen('schedule-runner', () => { void runCheck() }), SCHEDULE_TICK_MS)
 }

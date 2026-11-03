@@ -50,7 +50,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 export const FEDERATION_VERSION = 1
@@ -303,7 +303,7 @@ const FED_OWNER_SESSION_REQUIRED = {
 }
 
 function refuseUnlessOwner(ctx: RouteContext): boolean {
-  if (mayIssueCredentials(ctx.auth, ctx.req)) return false
+  if (mayActAsOwner(ctx.auth, ctx.req)) return false
   logger.warn({ fed: true, path: ctx.path, method: ctx.method, kind: ctx.auth?.kind }, 'federation: credential issuance refused (owner session required)')
   json(ctx.res, FED_OWNER_SESSION_REQUIRED, 403)
   return true
@@ -370,7 +370,11 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // Content is stored VERBATIM: normalizeKanbanRefs must not run here -- it
     // would rewrite the PEER's #hex card refs against the LOCAL board
     // (content corruption + a card-id oracle for the peer).
-    const msg = createAgentMessage(verdict.from, verdict.to, verdict.content)
+    // The ref is kept ONLY for a peer-authenticated caller, like the dedup key: it is what
+    // the completion receipt names back to that peer (routes/messages.ts federatedReceipt),
+    // and a dashboard-token smoke test has no peer for it to mean anything to.
+    const msg = createAgentMessage(verdict.from, verdict.to, verdict.content, null, null,
+      { remoteRef: callerPeerId !== null ? verdict.ref : null })
     if (callerPeerId !== null && verdict.ref !== null) rememberRef(`${callerPeerId}:${verdict.ref}`, msg.id)
     logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, from: verdict.from, to: verdict.to, ref: verdict.ref }, 'federation inbox: message accepted')
     json(res, { id: msg.id, ref: verdict.ref }, 202)

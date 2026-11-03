@@ -300,6 +300,6 @@ export function startAutoRestartRunner(): NodeJS.Timeout {
       tickRunning = false
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
+  setTimeout(whileNotFrozen('auto-restart', sweep), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('auto-restart', sweep), INTERVAL_MS)
 }

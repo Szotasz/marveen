@@ -22,11 +22,12 @@ const WEB = join(__dirname, '..', '..', 'web')
 const css = readFileSync(join(WEB, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 const html = readFileSync(join(WEB, 'index.html'), 'utf8')
 
-/** Does an unconditional `.cls { ... display: <not none> ... }` rule exist? */
+/** Does an unconditional `.cls { ... display: <not none> ... }` rule exist? A
+ *  selector list counts too: `.a, .cls { display: flex }` styles .cls. */
 function hasUnconditionalDisplay(cls: string): boolean {
-  const re = new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`, 'g')
-  for (const m of css.matchAll(re)) {
-    const decl = /(^|;)\s*display\s*:\s*([a-z-]+)/i.exec(m[1])
+  for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    if (!m[1].split(',').some((sel) => sel.trim() === `.${cls}`)) continue
+    const decl = /(^|;)\s*display\s*:\s*([a-z-]+)/i.exec(m[2])
     if (decl && decl[2].toLowerCase() !== 'none') return true
   }
   return false
@@ -57,6 +58,17 @@ describe('[hidden] stays effective for class-styled containers', () => {
     expect(hasHiddenOverride('auth-setup-banner')).toBe(true)
   })
 
+  it.each(['skill-detail-keywords', 'skill-detail-agents-coverage', 'skill-detail-edit-actions'])(
+    'the skill detail modal can hide its %s',
+    (cls) => {
+      // Regression: the Save/Cancel row showed while not editing and its Cancel looked dead; an empty
+      // keywords or agents box left a gap. The keywords box sits in a selector list, which the sweep
+      // below did not see before it learned selector lists.
+      expect(hasUnconditionalDisplay(cls)).toBe(true)
+      expect(hasHiddenOverride(cls)).toBe(true)
+    },
+  )
+
   // Pre-existing offenders found by the sweep when this guard was added. They
   // are NOT fixed here (each needs its own visual check -- some may never be
   // toggled via the attribute at all); the allowlist exists so the guard can
@@ -65,8 +77,6 @@ describe('[hidden] stays effective for class-styled containers', () => {
     'kanban-swimlane-board',
     'modal-footer',
     'badge',
-    'skill-detail-agents-coverage',
-    'skill-detail-edit-actions',
   ]
 
   it('no NEW hidden-by-default container silently ignores [hidden]', () => {

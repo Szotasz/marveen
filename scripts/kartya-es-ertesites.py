@@ -169,8 +169,44 @@ def _token_kapu(dry_run, elozmeny=None, farok=None):
 # tortenetben). Merve ugyanabban az ablakban: 251 komment megy gazda-felelosu kartyara. Ha a kapu
 # rajuk is allna, 251 esetben olyat kovetelne, amit teljesiteni sem lehet -- a gazdahoz Telegramon
 # kell szolni, nem uzenetsoron.
-FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli',
-         'marveen'}
+# KARTYAFLEET1030: a kezi lista elavult (abel, bence, nora, orsi, vera hianyzott; Bence 2026-10-30
+# nem tudott kartyat nyitni). A FLEET mostantol a FUTO FLOTTABOL is jon, ugyanazzal a szaballyal,
+# mint a dashboard listAgentNames-e (src/web/agent-config.ts): agents/<nev> valodi konyvtar, nem
+# agents/-on beluli symlink, nem a fo agens neve, es nincs benne a .hidden-from-dashboard jel.
+# A regi kezi lista ALSO KORLAT marad (pl. hidli nem agents/-konyvtar), tehat a halmaz nem szukul.
+_FLEET_KEZI = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli',
+               'marveen'}
+_REJTETT_JEL = '.hidden-from-dashboard'
+_NEV_RX = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
+
+
+def flotta_az_agents_konyvtarbol(root, fo_agens='marveen'):
+    """A futo flotta nevei a <root>/agents alol, a dashboard listAgentNames szabalyaval."""
+    base = os.path.join(root, 'agents')
+    try:
+        base_real = os.path.realpath(base)
+        nevek = os.listdir(base)
+    except OSError:
+        return set()
+    out = set()
+    for n in nevek:
+        if n == fo_agens or not _NEV_RX.match(n):
+            continue
+        p = os.path.join(base, n)
+        try:
+            if os.path.islink(p):
+                cel = os.path.realpath(p)
+                if cel == base_real or cel.startswith(base_real + os.sep):
+                    continue  # ugyanaz az agens masodik neven (ROSTERALIAS1026)
+            if not os.path.isdir(p) or os.path.exists(os.path.join(p, _REJTETT_JEL)):
+                continue
+        except OSError:
+            continue
+        out.add(n)
+    return out
+
+
+FLEET = _FLEET_KEZI | flotta_az_agents_konyvtarbol(ROOT, os.environ.get('MAIN_AGENT_ID') or 'marveen')
 COORDINATOR = 'marveen'
 GAZDA = 'szabolcs'
 

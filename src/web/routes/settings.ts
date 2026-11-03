@@ -1,4 +1,4 @@
-import { readBody, json } from '../http-helpers.js'
+import { readBody, readBodyOrRefuse, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
 import { clearOverride, getEffectiveSettingSource, getEffectiveSettingValue, getSettingFallback, setOverride } from '../../settings-store.js'
@@ -6,7 +6,9 @@ import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { noticeTargetDrift } from '../../notify.js'
+import { announceSlackOwnerChange } from '../../notify.js'
 
 // A change the registry marks as loosening a security control (SettingDefinition.loosens) needs the
 // owner. The shared fleet token is held by every agent, so it cannot be told apart from the agent
@@ -14,7 +16,7 @@ import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 // (mayIssueCredentials, #2163): the owner's session, also when the browser sends the stored token
 // alongside it; the bare token only before the first dashboard login exists.
 function ownerCredential(ctx: RouteContext): boolean {
-  return mayIssueCredentials(ctx.auth, ctx.req)
+  return mayActAsOwner(ctx.auth, ctx.req)
 }
 const LOOSEN_FORBIDDEN = {
   ...OWNER_SESSION_REQUIRED,
@@ -99,6 +101,10 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
 
       logConfigChange(key, oldValue, validation.value!, resolvedActor)
       logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
+      // APPROVALSLACK1030: where the owner's requests go changed -> the OLD target is told (Samu 66026).
+      if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(validation.value), { fallbackOld: String(oldValue) })
+      // APPROVALSLACK1030 (2): the approving Slack id changed -> the OLD one is told (Dani 65925).
+      if (key === 'SLACK_OWNER_USER_ID') void announceSlackOwnerChange(String(oldValue), String(validation.value))
 
       // The rotation switch also wires its heartbeat, in both directions: on
       // creates or re-enables it (otherwise the switch is inert, measured
@@ -133,12 +139,15 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
 
       let actor = 'dashboard'
+      // A body cut off mid-way is refused (nothing reset), not read as "no body".
+      const raw = await readBodyOrRefuse(req, res)
+      if (!raw) return true
       try {
-        const body = (await readBody(req)).toString()
+        const body = raw.toString()
         const parsed = body ? JSON.parse(body) : null
         if (parsed && typeof parsed.actor === 'string' && parsed.actor) actor = parsed.actor
       } catch {
-        // A DELETE usually has no body; an unreadable one just keeps the default actor.
+        // A DELETE usually has no body; an unparsable one just keeps the default actor.
       }
 
       if (def.loosens?.(String(getEffectiveSettingValue(key)), String(getSettingFallback(key).value)) && !ownerCredential(ctx)) {
@@ -156,6 +165,8 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       if (result.removed) {
         logConfigChange(key, oldValue, now.value, actor)
         logger.info({ key, oldValue, newValue: now.value, source: now.source }, 'Setting override removed')
+        if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(now.value), { fallbackOld: String(oldValue) })
+        if (key === 'SLACK_OWNER_USER_ID') void announceSlackOwnerChange(String(oldValue), String(now.value))
         if (key === 'CLAUDE_ROTATION_ENABLED') syncRotationAfterChange()
       }
       json(res, { ok: true, key, removed: result.removed, value: now.value, source: now.source, requiresRestart: def.requiresRestart })

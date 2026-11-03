@@ -14,7 +14,11 @@ const h = vi.hoisted(() => ({
   pane: '',
   captured: [] as string[],          // every session capturePane was asked for
   exec: [] as string[][],
-  routine: vi.fn(),
+  // A held peer message waits on a person by design (no keystrokes sent), so
+  // the watcher must use the owner-action alert, never the gated routine one
+  // (Szotasz/marveen#2353 review) -- hence routineUnused staying empty below.
+  ownerAction: vi.fn(),
+  routineUnused: vi.fn(),
   alert: vi.fn(),
 }))
 
@@ -39,7 +43,7 @@ vi.mock('../web/channel-monitor.js', () => ({
   lastMainRespawnAt: () => 0,
   MARVEEN_POST_RESPAWN_GRACE_MS: 120_000,
 }))
-vi.mock('../web/routine-alert.js', () => ({ sendRoutineAlert: h.routine }))
+vi.mock('../web/routine-alert.js', () => ({ sendRoutineAlert: h.routineUnused, sendOwnerActionAlert: h.ownerAction }))
 
 let startWatcher: typeof import('../web/stuck-tool-call-watcher.js').startStuckToolCallWatcher
 
@@ -85,7 +89,8 @@ beforeEach(async () => {
   h.pane = HELD_PEER_PANE
   h.captured.length = 0
   h.exec.length = 0
-  h.routine.mockClear()
+  h.ownerAction.mockClear()
+  h.routineUnused.mockClear()
   h.alert.mockClear()
 })
 afterEach(() => { vi.useRealTimers() })
@@ -93,15 +98,16 @@ afterEach(() => { vi.useRealTimers() })
 describe('the main session holding a peer message', () => {
   it('alerts the owner once the dialog outlives the confirm window, never inside it, and sends no key', async () => {
     const alertsBeforePoll: number[] = []
-    await drive(7, () => { alertsBeforePoll.push(h.routine.mock.calls.length) })
+    await drive(7, () => { alertsBeforePoll.push(h.ownerAction.mock.calls.length) })
     expect(alertsBeforePoll[6]).toBe(0)          // nothing through poll 5 (185 s)
-    expect(h.routine).toHaveBeenCalledTimes(1)   // poll 6 (215 s)
-    const [key, text] = h.routine.mock.calls[0]
+    expect(h.ownerAction).toHaveBeenCalledTimes(1)   // poll 6 (215 s)
+    const [key, text] = h.ownerAction.mock.calls[0]
     expect(key).toBe('agent-wait:marveen')
     expect(text).toContain('Marveen')
     expect(text).toContain('másik sessionből')
     expect(text).toContain('tmux attach -t main-test')
     expect(h.alert).not.toHaveBeenCalled()
+    expect(h.routineUnused).not.toHaveBeenCalled()   // never the gated path (Szotasz/marveen#2353 review)
     expect(sentKeys()).toEqual([])
     // The pane read is the main channels session's: with any other session the
     // alert would go silent while the canned pane kept this test green (#2079 review, K7).
@@ -110,15 +116,15 @@ describe('the main session holding a peer message', () => {
 
   it('says it again only after the dedup window while the dialog still stands', async () => {
     await drive(60)        // 35 s .. 30 min 5 s: the first alert, then dedup
-    expect(h.routine).toHaveBeenCalledTimes(1)
+    expect(h.ownerAction).toHaveBeenCalledTimes(1)
     await drive(10)        // past 30 min after the first alert
-    expect(h.routine).toHaveBeenCalledTimes(2)
+    expect(h.ownerAction).toHaveBeenCalledTimes(2)
     expect(sentKeys()).toEqual([])
   })
 
   it('a dialog answered within the confirm window never alerts', async () => {
     await drive(20, (i) => { h.pane = i < 3 ? HELD_PEER_PANE : IDLE_PANE })
-    expect(h.routine).not.toHaveBeenCalled()
+    expect(h.ownerAction).not.toHaveBeenCalled()
   })
 })
 
@@ -126,13 +132,13 @@ describe('everything else on the main pane stays out of this check', () => {
   it('a tool-permission prompt is the channel-monitor\'s to report (card 68cb6715): no alert here', async () => {
     h.pane = PERMISSION_PANE
     await drive(20)
-    expect(h.routine).not.toHaveBeenCalled()
+    expect(h.ownerAction).not.toHaveBeenCalled()
     expect(sentKeys()).toEqual([])
   })
 
   it('an idle prompt never alerts', async () => {
     h.pane = IDLE_PANE
     await drive(20)
-    expect(h.routine).not.toHaveBeenCalled()
+    expect(h.ownerAction).not.toHaveBeenCalled()
   })
 })

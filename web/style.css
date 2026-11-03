@@ -606,19 +606,21 @@ main {
   background: var(--bg-input);
   overflow: hidden;
 }
-/* Weekly row: 7 equal day segments over the fill (separators drawn in the
-   card colour, so they read as gaps), day names underneath, and a thin
-   "now" marker. The fill is USAGE, the marker is TIME: usage right of the
-   marker means the week is being spent faster than it passes. */
+/* Weekly row: one segment per calendar day (a partial first and last day
+   when the reset is not at midnight), separators drawn in the card colour
+   so they read as gaps, day names underneath (column widths set inline to
+   match), and a thin "now" marker. The fill is USAGE, the marker is TIME:
+   usage right of the marker means the week is being spent faster than it
+   passes. */
 .quota-bar-col { position: relative; min-width: 0; }
 .quota-bar-track.week { position: relative; }
-.quota-bar-track.week::after {
-  content: '';
+.quota-bar-sep {
   position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(to right,
-    transparent 0, transparent calc(100% / 7 - 2px),
-    var(--bg-card) calc(100% / 7 - 2px), var(--bg-card) calc(100% / 7));
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--bg-card);
   pointer-events: none;
 }
 .quota-bar-now {
@@ -641,7 +643,7 @@ main {
    marker on the track still mark the days. */
 .quota-bar-days {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, 1fr); /* overridden inline per window */
   margin-top: 3px;
   font-size: 10px;
   color: var(--text-muted);
@@ -4555,6 +4557,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted);
   font-family: inherit;
 }
+
+/* Adopted open-source inventory (connectors page) */
+.oss-inv-note { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; line-height: 1.45; }
+.oss-inv-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; font-size: 12px; }
+.oss-inv-meta { color: var(--text-muted); flex: 1 1 220px; min-width: 0; }
+.oss-inv-check { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; }
+.oss-inv-agent { margin-bottom: 12px; }
+.oss-inv-agent-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.oss-inv-agent-counts { font-weight: 400; font-size: 11px; color: var(--text-muted); }
+.oss-inv-item { flex-direction: column; align-items: stretch; gap: 2px; font-family: inherit; }
+.oss-inv-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.oss-inv-name { font-family: monospace; font-weight: 500; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
+a.oss-inv-name:hover { text-decoration: underline; }
+.oss-inv-type { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-muted); }
+.oss-inv-version { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+.oss-inv-sub { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.oss-inv-effect { font-size: 12px; overflow-wrap: anywhere; }
 .github-repo-actions {
   display: flex;
   gap: 4px;
@@ -5971,7 +5990,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 
 .skill-health-label.skill-health-ok   { background: var(--success-soft, rgba(34,197,94,.15)); color: var(--success); }
-.skill-health-label.skill-health-warn { background: rgba(245,158,11,.15); color: var(--warning, #f59e0b); }
+.skill-health-label.skill-health-warn { background: rgba(245,158,11,.15); color: var(--accent); }
 .skill-health-label.skill-health-err  { background: var(--danger-soft, rgba(239,68,68,.15)); color: var(--danger); }
 
 .skill-keyword-tag {
@@ -6029,6 +6048,13 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 8px;
   margin-top: 10px;
 }
+
+/* The skill detail modal hides these by the hidden attribute (no keywords, no
+   agents, not editing); the display rules above would otherwise keep them on
+   screen, and the edit row's Cancel would look dead. */
+.skill-detail-keywords[hidden] { display: none; }
+.skill-detail-agents-coverage[hidden] { display: none; }
+.skill-detail-edit-actions[hidden] { display: none; }
 
 .skill-detail-rendered {
   white-space: normal;
@@ -6576,6 +6602,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin: 0 0 14px;
   font-size: 14px;
   line-height: 1.5;
+  white-space: pre-line;
 }
 .settings-reset-confirm-keys {
   list-style: none;
@@ -7296,6 +7323,11 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .bubble-out .bubble-id-chip { background: rgba(255,255,255,0.25); color: #fff; }
 .bubble-in .bubble-id-chip { background: var(--bg-hover); color: var(--text-muted); }
+/* Status/reply badges keep their theme colours on the neutral incoming bubble, but on the
+   accent-filled outgoing bubble those colours vanish (measured: green "reply" badge 1.14:1,
+   accent "failed" badge 1.0:1). A dark tint, not the id chip's white one: white on a
+   white-tinted accent is only 2.3:1, on a 20% black tint it is 4.6:1 (AA). */
+.bubble-out .badge { background: rgba(0,0,0,0.2); color: #fff; }
 .bubble-text { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .bubble-out .bubble-text { color: #fff; }
 .bubble-time { font-size: 10px; opacity: 0.55; text-align: right; margin-top: 2px; }
@@ -7580,6 +7612,31 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   line-height: 1.4;
 }
 
+/* === Gromzo card: owner QR (GROMZOOWNERQR1030) === */
+.gromzo-card .gromzo-status { font-size: 13px; color: var(--text-muted); margin: 6px 0 12px; }
+.gromzo-card .mobile-login-warn { text-align: left; margin-top: 10px; }
+.gromzo-qr-area { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 14px; }
+.gromzo-qr-area[hidden] { display: none; }
+.gromzo-qr-area .mobile-login-warn, .gromzo-qr-area .modal-desc { text-align: center; max-width: 420px; }
+.gromzo-countdown { font-size: 13px; font-variant-numeric: tabular-nums; margin: 0; }
+.gromzo-owner-info { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 4px 0 14px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-card); }
+.gromzo-owner-info[hidden] { display: none; }
+.gromzo-owner-info-text { margin: 0; font-size: 13px; color: var(--text); }
+.gromzo-agents { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.gromzo-agents-title { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.gromzo-agents-limit { font-size: 12px; color: var(--text-muted); margin: 4px 0 10px; }
+.gromzo-agent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.gromzo-agent-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; min-height: 44px; }
+.gromzo-agent-main { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gromzo-agent-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.gromzo-agent-state { font-size: 12px; color: var(--text-muted); }
+.gromzo-agent-state.is-on { color: var(--success); }
+.gromzo-agent-state.is-pending { color: var(--accent); }
+.gromzo-agent-state.is-error { color: var(--danger); }
+.gromzo-agent-state.is-warn { color: var(--accent); }
+.gromzo-agent-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+.gromzo-agent-row .btn-compact { min-height: 36px; }
+
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
 .docs-content-toolbar .btn-compact { font-size: 12px; }
@@ -7600,7 +7657,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .naplo-search { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
 .naplo-summary { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
 .naplo-empty { color: var(--text-muted); font-size: 14px; text-align: center; margin-top: 40px; }
-.naplo-empty.error { color: var(--danger, #ef4444); }
+.naplo-empty.error { color: var(--danger); }
 .naplo-timeline { display: flex; flex-direction: column; gap: 1px; }
 .naplo-entry { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border); font-size: 13px; }
 .naplo-entry-meta { display: flex; align-items: center; gap: 8px; }
@@ -7961,6 +8018,16 @@ body {
 }
 .mv-auth-card button:hover { background: var(--accent-hover); }
 .mv-auth-card button:disabled { opacity: 0.6; cursor: default; }
+/* The overlay's second button (Cancel, or Later on the Bridge offer) reads as the shared secondary button, centered;
+   the rule above would otherwise paint it as a second primary. */
+.mv-auth-card button.btn-secondary {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  justify-content: center;
+}
+.mv-auth-card button.btn-secondary:hover { background: var(--bg-input); border-color: var(--accent); color: var(--accent); }
 .mv-auth-err {
   color: var(--danger);
   font-size: 13px;
@@ -8357,3 +8424,5 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.gromzo-card > summary.gromzo-summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text-muted); user-select: none; }
+.gromzo-card[open] > summary.gromzo-summary { margin-bottom: 8px; color: var(--text); }

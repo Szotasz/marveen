@@ -1,9 +1,10 @@
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, existsSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { parseExtraChannels } from './agent-extra-channels.js'
+import { readEnvFile } from '../env.js'
+import { parseExtraChannels, wantsGromzo } from './agent-extra-channels.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { safeJoin } from './sanitize.js'
@@ -16,6 +17,7 @@ import {
   type ModelResolution,
 } from '../model-profiles.js'
 import { expandAndValidateConfigDir, hasParentTraversal } from '../config-dir-path.js'
+import { readSenderRoleGates, senderRoleGatesPath, storedGateConfig, UNREADABLE_GATES_POLICY } from './sender-role-gate-store.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -422,6 +424,25 @@ export function readAgentExtraChannels(name: string): ChannelProviderType[] {
   }
 }
 
+// GROMZOAGENTS1028: whether the agent also listens on Gromzo (agent-config `gromzo: true`).
+export function readAgentGromzo(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    return wantsGromzo((JSON.parse(readFileOr(configPath, '{}')) as Record<string, unknown>).gromzo)
+  } catch {
+    return false
+  }
+}
+
+// GROMZOAGENTPICK1101: the dashboard's switch writes the same flag readAgentGromzo reads.
+export function writeAgentGromzo(name: string, on: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (on) config.gromzo = true
+  else delete config.gromzo
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentExtraChannels(name: string, extras: readonly string[]): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   const config = readJsonObjectForWrite(configPath)
@@ -490,7 +511,7 @@ export function readAgentStateObserver(name: string): boolean {
 // denies the configured risky tools whenever the current turn carries a chat
 // envelope from a sender who is not an owner. These decide whether
 // the launcher WIRES that hook for the agent: the key must be present and not
-// be the explicit "off" shape (riskyTools missing or empty). A malformed
+// be the explicit "off" shape (riskyTools missing or empty, and no allowTools). A malformed
 // value (string, null, array, non-array riskyTools) deliberately returns
 // TRUE -- the hook gets wired and fails closed on its side -- while an
 // unparseable file returns false, matching how the rest of the launcher
@@ -503,6 +524,8 @@ export function senderRoleGateEnabled(config: unknown): boolean {
   if (!Object.hasOwn(cfg, 'senderRoleGate')) return false
   const gate = cfg.senderRoleGate
   if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return true
+  // allowTools present (any value) is a decision for the gate: wired, and the hook judges its shape.
+  if (Object.hasOwn(gate, 'allowTools')) return true
   const risky = (gate as Record<string, unknown>).riskyTools
   if (risky === undefined) return false
   if (Array.isArray(risky) && risky.length === 0) return false
@@ -519,12 +542,23 @@ export function senderRoleGatePolicyArg(config: unknown): string | null {
   return Buffer.from(JSON.stringify(value), 'utf-8').toString('base64url')
 }
 
-export function readAgentSenderRoleGatePolicy(name: string): string | null {
-  const configPath = join(agentDir(name), 'agent-config.json')
+/**
+ * The gate's --policy for an agent, from the store only (GROMZOGATECONF1030 (c), Samu 59516): the agent's own
+ * agent-config.json is no source any more (the agent can write it). An unreadable store fails closed: the gate is
+ * wired with a policy the hook reads as malformed (every tool denied in a non-owner's turn).
+ */
+export function readAgentSenderRoleGatePolicy(name: string, gatesPath: string = senderRoleGatesPath()): string | null {
+  const store = readSenderRoleGates(gatesPath)
+  return store.ok ? senderRoleGatePolicyArg(storedGateConfig(store, name)) : UNREADABLE_GATES_POLICY
+}
+
+/** Whether the agent's own agent-config.json still carries a senderRoleGate, which is ignored now (the launcher logs it). */
+export function agentConfigCarriesSenderRoleGate(name: string): boolean {
   try {
-    return senderRoleGatePolicyArg(JSON.parse(readFileOr(configPath, '{}')))
+    const cfg: unknown = JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}'))
+    return !!cfg && typeof cfg === 'object' && !Array.isArray(cfg) && Object.hasOwn(cfg, 'senderRoleGate')
   } catch {
-    return null
+    return false
   }
 }
 
@@ -651,6 +685,15 @@ export function writeAgentClaudePlan(name: string, planId: string): void {
 // jelenjen a dashboardon").
 export const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
 
+// ROSTERALIAS1026: statSync() FOLLOWS symlinks, so agents/alias -> agents/alpha
+// put ONE directory on the roster under TWO names -- the dashboard list,
+// supervision, the boot hook-seeding loop and the fleet export all saw a
+// phantom agent 'alias' that was really 'alpha'. A symlink whose target is
+// inside agents/ itself is an alias, not an agent, and is dropped; a link to a
+// directory OUTSIDE agents/ (an agent moved to another disk and linked back)
+// stays allowed.
+const warnedRosterAliases = new Set<string>()
+
 /**
  * EVERY agent directory, hidden technical workers included.
  *
@@ -674,9 +717,32 @@ export function listAllAgentNames(): string[] {
   // session. A directory of that name (old drafts left in agents/marveen) is
   // not a sub-agent, and listing it gave the team graph a second, stopped
   // 'marveen' node that replaced the main one (MAINGHOST1024).
+  let baseReal: string
+  try { baseReal = realpathSync(AGENTS_BASE_DIR) } catch { baseReal = resolve(AGENTS_BASE_DIR) }
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
     if (f === MAIN_AGENT_ID) return false
-    try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
+    const path = join(AGENTS_BASE_DIR, f)
+    try {
+      const st = lstatSync(path)
+      // Real directory, not through a link: listed exactly as before.
+      if (!st.isSymbolicLink()) return st.isDirectory()
+      const target = realpathSync(path)
+      // A symlink into agents/ itself (another roster directory, or something
+      // inside one) is the same agent under a second name, not a new agent.
+      if (target === baseReal || target.startsWith(baseReal + sep)) {
+        // This runs on every timer tick of many passes: warn once per entry.
+        if (!warnedRosterAliases.has(f)) {
+          warnedRosterAliases.add(f)
+          logger.warn({ entry: f, target }, 'agents/ entry is a symlink into agents/ itself -- not listed as an agent (ROSTERALIAS1026)')
+        }
+        return false
+      }
+      // Target outside agents/ (e.g. an agent directory moved to another disk
+      // and linked back): keep only if it really is a directory.
+      return statSync(path).isDirectory()
+    } catch {
+      return false
+    }
   })
 }
 
@@ -854,6 +920,48 @@ export function readAgentToolDeny(name: string): string[] {
     return sanitizeToolDenyList(config.toolDeny)
   } catch {
     return []
+  }
+}
+
+// ---- per-agent sudo opt-out ------------------------------------------------
+//
+// The fleet deny floor (FLEET_BASELINE_DENY) denies sudo to every sub-agent,
+// and it is rebuilt on every spawn, so a sudo grant written straight into
+// settings.json is gone at the next respawn. An agent whose job IS host
+// administration needs a durable way out.
+//
+// The grant LOOSENS a deny, so its source must not be writable by the agent it
+// frees. That rules out two obvious homes:
+//   - agents/<name>/agent-config.json: inside the agent's own cwd, so its own
+//     Write/Edit tools reach it (toolDeny lives there safely only because it can
+//     only TIGHTEN). An "allowSudo" field there is deliberately not read.
+//   - a SETTINGS_REGISTRY key: POST /api/settings writes it with the fleet's one
+//     shared Bearer token, which every sub-agent holds.
+// So it is the install's .env, key SUDO_AGENTS, read directly and NOT in the
+// registry (the settings route answers an unknown key with 404). It lists agent
+// names, separated by commas or whitespace; an entry that is not a valid agent
+// name is ignored, and an absent or empty key grants nothing.
+//
+// What this does NOT claim: .env sits outside every sub-agent's cwd, but on a
+// single-user host a permissive agent's Bash can still write it. Closing that
+// takes a per-agent OS user, not a deny rule.
+const SUDO_AGENT_NAME_RE = /^[a-z0-9-]{1,50}$/
+
+export function parseSudoAgents(raw: unknown): string[] {
+  if (typeof raw !== 'string') return []
+  const out: string[] = []
+  for (const part of raw.split(/[\s,]+/)) {
+    if (SUDO_AGENT_NAME_RE.test(part) && !out.includes(part)) out.push(part)
+  }
+  return out
+}
+
+export function agentMaySudo(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  try {
+    return parseSudoAgents(readEnvFile(['SUDO_AGENTS']).SUDO_AGENTS).includes(name)
+  } catch {
+    return false
   }
 }
 

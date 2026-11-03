@@ -19,6 +19,8 @@
 //     into its own segment, and the pattern needs no binary name.
 //   - Write-method calls to the dashboard kanban API (/api/kanban with
 //     -X POST/PUT/PATCH/DELETE or a data flag).
+//   - The write verbs of scripts/marveen-api.sh (kanban-create, -move, -claim,
+//     -release, -comment): see KANBAN_HELPER_WRITE_RX below.
 //
 // What must PASS (the worker's actual duties):
 //   - every kanban READ: sqlite3 SELECT, GET /api/kanban/heartbeat-summary;
@@ -53,6 +55,21 @@ const KANBAN_API_RX = /\/api\/kanban\b/i
 const WRITE_METHOD_RX = /(?:^|\s)(?:-X|--request)[\s=]*["']?(POST|PUT|PATCH|DELETE)\b/i
 const DATA_FLAG_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?|--json|-F|--form)\b/
 
+// The kanban recipes live on scripts/marveen-api.sh: a write is a VERB of the helper, with no /api/kanban URL and no
+// SQL on the command line, so the two rules above never see it. A segment denies when a write verb follows
+//   - the helper's name (marveen-api.sh / marveen_api.py), or
+//   - a runner (a shell or python, with or without a path) or a parameter expansion (`$H`, `${H}`), since the helper's
+//     path may sit in a variable: `bash "$H" kanban-move`, `"$H" kanban-move`, `timeout 30 bash "$H" ...`.
+// Both match the segment the shell would run: quotes and backslashes removed (`kanban-"move"`, `'kanban'-move`), and
+// a backslash-newline joined before the split (`kanban-mo\<newline>ve`). The read verbs (kanban-list, agents-list),
+// --help and `message` (the worker's report) pass. A write hidden in a function, an alias or a variable verb stays
+// out of reach: the gate catches the worker's mistake, not a determined detour.
+const KANBAN_HELPER_VERB = String.raw`(?:^|\s)kanban-(?:create|move|claim|release|comment)(?=$|[\s;|&)])`
+const KANBAN_HELPER_WRITE_RX = new RegExp(String.raw`marveen[-_]api\.(?:sh|py)\b.*?` + KANBAN_HELPER_VERB)
+const KANBAN_RUNNER_WRITE_RX = new RegExp(
+  String.raw`(?:^|\s)(?:(?:\S*/)?(?:bash|sh|dash|zsh|python3?)|\$\{?[A-Za-z_]\w*\}?)(?=\s).*?` + KANBAN_HELPER_VERB)
+const dequote = (seg) => seg.replace(/["'\\]/g, '')
+
 export function gateDecision(toolName, toolInput) {
   if (toolName !== 'Bash') return { deny: false }
   const command = toolInput?.command
@@ -70,6 +87,13 @@ export function gateDecision(toolName, toolInput) {
     }
     if (KANBAN_API_RX.test(seg) && (WRITE_METHOD_RX.test(seg) || DATA_FLAG_RX.test(seg))) {
       return { deny: true, reason: 'kanban-api-write' }
+    }
+  }
+  // The helper's verbs, on the command the shell sees: a backslash-newline is joined BEFORE the words are split.
+  for (const seg of splitSegments(stripDataPayloads(command.replace(/\\\r?\n/g, '')))) {
+    const plain = dequote(seg)
+    if (KANBAN_HELPER_WRITE_RX.test(plain) || KANBAN_RUNNER_WRITE_RX.test(plain)) {
+      return { deny: true, reason: 'kanban-helper-write' }
     }
   }
   return { deny: false }

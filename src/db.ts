@@ -67,6 +67,16 @@ function tightenDbPermissions(dbPath: string): void {
 export const KANBAN_CLAIM_COLUMNS = ['claimed_by TEXT', 'claimed_at INTEGER', 'claim_expires_at INTEGER'] as const
 
 export function ensureKanbanClaimSchema(d: Database.Database): boolean {
+  // ONE immediate transaction for the whole step: two processes starting on the
+  // same file (dashboard + a script) otherwise interleave DROP, DROP, CREATE,
+  // CREATE and the second CREATE fails with "trigger ... already exists", taking
+  // that startup down; the column check-then-ALTER races the same way. The
+  // transaction also closes the window in which a card write would find no
+  // release trigger in place.
+  return d.transaction((): boolean => ensureKanbanClaimSchemaStep(d)).immediate()
+}
+
+function ensureKanbanClaimSchemaStep(d: Database.Database): boolean {
   const present = () => new Set(
     (d.prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).map((c) => c.name),
   )
@@ -133,6 +143,14 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
 type CachedEmbedding = { len: number; vec: Float64Array | null; parsed: unknown; failed: boolean; normSq: number }
 const embeddingCache = new Map<number, CachedEmbedding>()
 const EMBEDDING_CACHE_MAX = 200_000
+// What the embedding_model column records: the model, plus the truncation
+// when EMBED_DIMS is set, so a change of either one marks old vectors as
+// another model's (excluded from search, re-embedded by the backfill).
+// Read at call time, not at import: many tests mock config.js without the
+// EMBED_* settings, and a module-level read fails their import.
+function embedIdentity(): string {
+  return EMBED_DIMS > 0 ? `${EMBED_MODEL}@${EMBED_DIMS}` : EMBED_MODEL
+}
 export function forgetCachedEmbedding(id: number | bigint): void { embeddingCache.delete(Number(id)) }
 /** Exposed for tests only. */
 export function getEmbeddingCacheSize(): number { return embeddingCache.size }
@@ -574,6 +592,22 @@ export function initDatabase(dbPathOverride?: string): void {
     // column already exists
   }
 
+  // Migration: which embedding model wrote the vector. When the column is
+  // added, every vector already stored is stamped with the model configured
+  // now. Assumption: those vectors were written by this model. A model switch
+  // made earlier without re-embedding is misattributed here, as it was before
+  // the column existed; the next switch re-embeds those rows like any other.
+  let addedEmbeddingModel = false
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN embedding_model TEXT')
+    addedEmbeddingModel = true
+  } catch {
+    // column already exists
+  }
+  if (addedEmbeddingModel) {
+    db.prepare('UPDATE memories SET embedding_model = ? WHERE embedding IS NOT NULL').run(embedIdentity())
+  }
+
   // MEMIRASNYOM915: write-trace columns. Every agent patches memories with
   // read-modify-write (read, append, write the WHOLE text back), so a lost
   // concurrent write is invisible after the fact -- the checker only sees
@@ -587,6 +621,20 @@ export function initDatabase(dbPathOverride?: string): void {
   }
   try {
     db.exec('ALTER TABLE memories ADD COLUMN updated_by TEXT')
+  } catch {
+    // column already exists
+  }
+  // Withdrawal (retractMemory) and replacement (supersedeMemories). A retracted
+  // row is kept -- who said what, and when they took it back, stays readable by
+  // id -- but no recall, search or listing returns it any more. `supersedes`
+  // records, on the replacing row, the ids it actually retracted.
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN retracted_at INTEGER')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN supersedes TEXT')
   } catch {
     // column already exists
   }
@@ -616,21 +664,26 @@ export function initDatabase(dbPathOverride?: string): void {
   // identical to what unixepoch() wrote.
   // DROP before CREATE: `CREATE TRIGGER IF NOT EXISTS` is a no-op against the
   // already-installed old body, so an upgrade would keep the broken trigger.
-  db.exec('DROP TRIGGER IF EXISTS memories_touch')
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
-    WHEN (new.content IS NOT old.content
-          OR new.keywords IS NOT old.keywords
-          OR new.category IS NOT old.category
-          OR new.agent_id IS NOT old.agent_id)
-     AND new.updated_at IS old.updated_at
-    BEGIN
-      UPDATE memories SET
-        updated_at = CAST(strftime('%s','now') AS INTEGER),
-        updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
-      WHERE id = new.id;
-    END
-  `)
+  // The drop and the create are one immediate transaction, for the same reason
+  // as kanban_cards_version_bump below: two processes starting together would
+  // otherwise both drop, and an update in between would find no trigger.
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS memories_touch')
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
+      WHEN (new.content IS NOT old.content
+            OR new.keywords IS NOT old.keywords
+            OR new.category IS NOT old.category
+            OR new.agent_id IS NOT old.agent_id)
+       AND new.updated_at IS old.updated_at
+      BEGIN
+        UPDATE memories SET
+          updated_at = CAST(strftime('%s','now') AS INTEGER),
+          updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
+        WHERE id = new.id;
+      END
+    `)
+  }).immediate()
 
   // Memory version history (card 27ab6a18, 2026-09-14).
   //
@@ -733,24 +786,27 @@ export function initDatabase(dbPathOverride?: string): void {
       resolved_at INTEGER
     )
   `)
-  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_comments_ai')
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_comments_ai AFTER INSERT ON kanban_comments
-    WHEN ${triggerLikeClause('NEW.content')}
-    BEGIN
-      INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), CAST(strftime('%s','now') AS INTEGER));
-    END
-  `)
-  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_cards_ai')
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_cards_ai AFTER INSERT ON kanban_cards
-    WHEN ${triggerLikeClause('NEW.title')}
-    BEGIN
-      INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), CAST(strftime('%s','now') AS INTEGER));
-    END
-  `)
+  // Drop + create as one immediate transaction (see kanban_cards_version_bump).
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_comments_ai')
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_comments_ai AFTER INSERT ON kanban_comments
+      WHEN ${triggerLikeClause('NEW.content')}
+      BEGIN
+        INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
+        VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), CAST(strftime('%s','now') AS INTEGER));
+      END
+    `)
+    db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_cards_ai')
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_cards_ai AFTER INSERT ON kanban_cards
+      WHEN ${triggerLikeClause('NEW.title')}
+      BEGIN
+        INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
+        VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), CAST(strftime('%s','now') AS INTEGER));
+      END
+    `)
+  }).immediate()
 
   // Status-change audit trail: one row per real status transition so the board
   // can answer "who moved this card, when, from/to status". Written by
@@ -1135,6 +1191,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
   // 0 for every older row.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  // Federated inbound rows: the sending peer's message id (the inbox `ref`), stored so the
+  // completion receipt sent back over the bridge names the message the PEER knows -- our local
+  // id means nothing on the other system. Null for local rows and for federated rows from before.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -1643,6 +1705,34 @@ export function initDatabase(dbPathOverride?: string): void {
   // used it. Rows consumed by the gate leave both NULL.
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // The sub-agent a row is GRANTED to (AGENT_TOKENS). A row the main agent
+  // files (agent_id = main, often born approved via owner_approved_message_id)
+  // may be acted on by a tool that runs under a sub-agent's OWN token; for_agent
+  // names that sub-agent, and only it may consume the row with its token
+  // (auth-gate.ts binding). Set once at creation, by a non-sub-agent principal
+  // only; never updated. NULL (every older row) = no grant: the filer's own
+  // token, and the main token, behave as before.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN for_agent TEXT') } catch { /* already exists */ }
+  // APPROVALSLACK1030 (2): the request as it was posted into the owner's Slack DM, for the server's own reaction check.
+  // The owner id is a SNAPSHOT taken at posting (a later change of SLACK_OWNER_USER_ID does not move an open request);
+  // text_sha256 is over the exact posted text; decided_at closes the row once (a later reaction change only logs).
+  // A security table: the db-write-gate denies an agent's write on it, like approvals.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_slack_posts (
+      approval_id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      text_sha256 TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      bot_user_id TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      decision TEXT,
+      last_checked_ms INTEGER
+    )
+  `)
+  // Dani 66059: the sweeper rotates by the last check, so old unanswered requests cannot starve a newer one.
+  try { db.exec('ALTER TABLE approval_slack_posts ADD COLUMN last_checked_ms INTEGER') } catch { /* already exists */ }
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -1960,6 +2050,10 @@ export interface Memory {
   auto_generated: number
   keywords: string | null
   embedding: string | null
+  /** Unix seconds when the author took it back; null while it stands. */
+  retracted_at?: number | null
+  /** Comma-separated ids this row replaced (and retracted); null when none. */
+  supersedes?: string | null
 }
 
 export function saveMemory(
@@ -1988,7 +2082,7 @@ export function saveMemory(
   // backfilled it by hand.
   generateEmbedding(content).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), embedIdentity(), id, content, null)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
@@ -2186,7 +2280,7 @@ export function searchMemories(
       db.prepare(
         `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''}${dt.sql}
+         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''} AND m.retracted_at IS NULL${dt.sql}
          ORDER BY rank
          LIMIT ?`
       ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
@@ -2200,7 +2294,7 @@ export function searchMemories(
 
 export function recentMemories(chatId: string, limit = 5): Memory[] {
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC LIMIT ?')
+    .prepare('SELECT * FROM memories WHERE chat_id = ? AND retracted_at IS NULL ORDER BY accessed_at DESC LIMIT ?')
     .all(chatId, limit) as Memory[]
 }
 
@@ -2246,7 +2340,7 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // The date range (card f90928e3) goes into the query for the same reason.
   const dt = tsClause('created_at', range)
   return db
-    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
     .all(chatId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
 }
 
@@ -2344,7 +2438,7 @@ function insertMemoryRow(
 function scheduleEmbedding(id: number, content: string, keywords: string | undefined): void {
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), embedIdentity(), id, content, keywords ?? null)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
@@ -2367,7 +2461,7 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   if (cached) return cached
   const dt = tsClause('created_at', range)
   const result = db.prepare(
-    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
   ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
@@ -2401,7 +2495,7 @@ export function searchAgentMemories(
       db.prepare(
         `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${category ? ' AND m.category = ?' : ''}${dt.sql}
+         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${category ? ' AND m.category = ?' : ''} AND m.retracted_at IS NULL${dt.sql}
          ORDER BY rank LIMIT ?`
       ).all(terms, agentId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     , allowRelaxed)
@@ -2411,7 +2505,7 @@ export function searchAgentMemories(
     const pattern = `%${escapeLike(query)}%`
     const ld = tsClause('created_at', range)
     return db.prepare(
-      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${ld.sql} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${ld.sql} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`
     ).all(agentId, ...(category ? [category] : []), ...ld.params, pattern, pattern, limit) as Memory[]
   }
 }
@@ -2494,6 +2588,77 @@ export function deleteMemoryById(id: number): boolean {
   return true
 }
 
+export type RetractOutcome = 'retracted' | 'not_found' | 'not_owner' | 'already_retracted'
+
+/**
+ * Take back one's own memory without deleting it. The row stays readable by id
+ * (who said what, and when it was taken back), but no recall, search or listing
+ * returns it any more. Only the row's author (its agent_id) can retract it.
+ *
+ * Returns what actually happened, so a caller can tell "withdrawn" from "not
+ * yours" from "already withdrawn" -- outcomes an `ok: true` would flatten.
+ * ONE conditional UPDATE, not read-then-write: two callers racing on the same
+ * id must not both be told `retracted`.
+ */
+export function retractMemory(id: number, agentId: string): RetractOutcome {
+  const done = db.prepare(
+    'UPDATE memories SET retracted_at = ? WHERE id = ? AND agent_id = ? AND retracted_at IS NULL'
+  ).run(Math.floor(Date.now() / 1000), id, agentId)
+  const row = db.prepare('SELECT agent_id, category, retracted_at FROM memories WHERE id = ?').get(id) as
+    { agent_id: string; category: string; retracted_at: number | null } | undefined
+  if (done.changes === 1) {
+    // Listings are cached; a retracted row must leave them now, not after the TTL.
+    if (row?.category === 'shared') clearMemoryCache()
+    else memoryCacheInvalidate(agentId)
+    return 'retracted'
+  }
+  if (!row) return 'not_found'
+  if (row.agent_id !== agentId) return 'not_owner'
+  return 'already_retracted'
+}
+
+export interface SupersedeResult {
+  /** Ids this call retracted; recorded on the new row. */
+  superseded: number[]
+  /** Ids it left alone, and why. */
+  skipped: Array<{ id: number; reason: Exclude<RetractOutcome, 'retracted'> | 'self' | 'duplicate' }>
+}
+
+/**
+ * Save a memory that REPLACES older ones: the new row is saved, each listed id
+ * is retracted through retractMemory (so only the author's own rows go, the
+ * same rule as the retract endpoint), and the new row records, in `supersedes`,
+ * the ids it actually retracted. One transaction, so a failure leaves neither a
+ * half-applied replacement nor a new row claiming replacements that did not
+ * happen.
+ */
+export function saveAgentMemorySuperseding(
+  agentId: string,
+  content: string,
+  category: string,
+  keywords: string | undefined,
+  supersedes: number[],
+): { id: number } & SupersedeResult {
+  return db.transaction(() => {
+    const { id } = saveAgentMemory(agentId, content, category, keywords, true)
+    const superseded: number[] = []
+    const skipped: SupersedeResult['skipped'] = []
+    const seen = new Set<number>()
+    for (const old of supersedes) {
+      if (seen.has(old)) { skipped.push({ id: old, reason: 'duplicate' }); continue }
+      seen.add(old)
+      if (old === id) { skipped.push({ id: old, reason: 'self' }); continue }
+      const outcome = retractMemory(old, agentId)
+      if (outcome === 'retracted') superseded.push(old)
+      else skipped.push({ id: old, reason: outcome })
+    }
+    if (superseded.length > 0) {
+      db.prepare('UPDATE memories SET supersedes = ? WHERE id = ?').run(superseded.join(','), id)
+    }
+    return { id, superseded, skipped }
+  })()
+}
+
 export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string, updatedBy?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Read the row's CURRENT owner and category before writing. The agentId
@@ -2543,7 +2708,10 @@ export function updateMemory(id: number, content: string, category?: string, age
   // resends the unchanged body on a category-only edit), so presence alone says
   // nothing about a change.
   const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
-  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
+  if (before && (before.content !== content || keywordsChanged)) {
+    sets.push('embedding = NULL')
+    sets.push('embedding_model = NULL')
+  }
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
@@ -2789,8 +2957,8 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
   const fromTs = toBudapestTs(from, false)
   const toTs = toBudapestTs(to, true)
   const memSql = agentId
-    ? `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') AND ${NOT_MIRROR} ORDER BY created_at ASC`
-    : `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND ${NOT_MIRROR} ORDER BY created_at ASC`
+    ? `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') AND retracted_at IS NULL AND ${NOT_MIRROR} ORDER BY created_at ASC`
+    : `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND retracted_at IS NULL AND ${NOT_MIRROR} ORDER BY created_at ASC`
   const memParams = agentId ? [fromTs, toTs, agentId] : [fromTs, toTs]
   const memories = db.prepare(memSql).all(...memParams) as Memory[]
 
@@ -2806,8 +2974,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       // same λ-blend as the other search paths, so a strongly matching older
       // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
-        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND m.retracted_at IS NULL AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND m.retracted_at IS NULL AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
       const { rows } = ftsWithOrFallback(query, (terms) =>
         agentId
           ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
@@ -2816,8 +2984,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       memories = withoutRank(reRankByRecency(rows, limit)) as Memory[]
     } catch {
       const sql = agentId
-        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
-        : `SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
+        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND retracted_at IS NULL AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
+        : `SELECT * FROM memories WHERE retracted_at IS NULL AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
       const pat = `%${escaped}%`
       memories = agentId
         ? db.prepare(sql).all(agentId, pat, pat, limit) as Memory[]
@@ -4642,6 +4810,9 @@ export interface AgentMessage {
   // Card 71263d15 (C): 1 = a STOP from an authenticated writer (see the migration). Optional in the type
   // only because rows built in code before the column (tests, fixtures) do not carry it.
   stop_authorized?: number
+  // The SENDER's own id for a federated inbound row (the bridge's `ref`), so a completion
+  // receipt can name the message the peer knows. Null for local rows and older federated ones.
+  remote_ref?: string | null
 }
 
 export function createAgentMessage(
@@ -4650,7 +4821,7 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1 },
+  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
@@ -4662,9 +4833,10 @@ export function createAgentMessage(
   // Card ad771121: the stored delivery priority (0 normal, 1 high), as the caller decided it (the route's
   // per-pair budget, decidePriority). An urgent row is above high by its own column; the route stores it 0.
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
+  const remoteRef = opts?.remoteRef ?? null
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -4676,6 +4848,7 @@ export function createAgentMessage(
     urgent,
     stop_authorized: stopAuthorized,
     priority,
+    remote_ref: remoteRef,
   }
 }
 
@@ -5053,6 +5226,95 @@ export function markMessageFailed(id: number, error?: string): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
 }
 
+// The result text the router stores when it abandons a message because the
+// target session was absent for the whole retry window.
+export const ABANDONED_SESSION_ABSENT = 'Abandoned: target session absent for full retry window'
+
+export interface RequeueAbandonedOpts { maxAgeSec?: number; cap?: number; now?: number }
+
+// A "card anchor": a bracketed card id inside a handoff's content, e.g.
+// "[ABCDEF1234] deploy PROD". The id must look like a card id -- uppercase
+// letters and digits, 6-40 characters, at least one digit: plain bracketed
+// words ([HOLD], [URGENT]) are tags, not cards, and would match far too much
+// traffic to mean anything. Returned WITH the brackets, distinct, in order of
+// first appearance.
+const CARD_ANCHOR_RE = /\[([A-Z][A-Z0-9]{5,39})\]/g
+
+export function cardAnchors(content: string | null | undefined): string[] {
+  if (!content) return []
+  const anchors: string[] = []
+  for (const match of content.matchAll(CARD_ANCHOR_RE)) {
+    // a card id always has a digit in it, so [URGENT]-style tags stay out
+    if (/[0-9]/.test(match[1]) && !anchors.includes(match[0])) anchors.push(match[0])
+  }
+  return anchors
+}
+
+// Put an agent's messages that were abandoned while its session was down back
+// in its queue. Each row is revived at most once (requeued_at), so a row that
+// is abandoned again stays failed and does not re-notify. A row carrying a
+// delivered_at was delivered or closed before something overwrote it to failed,
+// and is never revived. Stop and urgent rows are never revived either: they
+// only meant something at the time they were sent. A row is also left failed
+// when the sender has moved on -- either the same sender wrote the same
+// recipient anything after the abandon, or it wrote a NEWER message to any
+// recipient carrying one of the row's card anchors (a bracketed id matching
+// /\[([A-Z][A-Z0-9]{5,39})\]/g with a digit in it): the card was re-sent or
+// re-delegated elsewhere, and reviving the old copy would duplicate the work.
+// The window (24 hours by default) and the cap (20 by default) bound the
+// backlog as a whole: of the eligible rows the newest `cap` are revived and
+// every remaining one is marked requeue_skipped_at and stays failed for good.
+// The rows themselves go back to 'pending' (not copies), so delivery shows
+// their real age. Returns the requeued ids, oldest first.
+export function requeueAbandonedForAgent(agent: string, opts: RequeueAbandonedOpts = {}): number[] {
+  const maxAgeSec = opts.maxAgeSec ?? 24 * 3600
+  const cap = opts.cap ?? 20
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  if (cap <= 0 || maxAgeSec <= 0) return []
+  return db.transaction(() => {
+    const rows = db.prepare(
+      `SELECT m.id, m.from_agent, m.content, COALESCE(m.completed_at, m.created_at) AS since_ts FROM agent_messages m
+       WHERE m.to_agent = ? AND m.status = 'failed' AND m.result = ? AND m.created_at >= ?
+         AND m.requeued_at IS NULL AND m.requeue_skipped_at IS NULL AND m.delivered_at IS NULL
+         -- a stop or an urgent message only means something at the time it was sent, so it is never revived
+         AND m.stop_authorized = 0 AND m.urgent = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_messages n
+           WHERE n.from_agent = m.from_agent AND n.to_agent = m.to_agent
+             AND n.id > m.id AND n.created_at >= COALESCE(m.completed_at, m.created_at)
+         )
+       ORDER BY m.created_at DESC, m.id DESC`
+    ).all(agent, ABANDONED_SESSION_ABSENT, now - maxAgeSec) as { id: number; from_agent: string; content: string | null; since_ts: number }[]
+    // The card-anchor half of "moved on". instr, not LIKE: LIKE is
+    // case-insensitive for ASCII in SQLite, and [abcdef1234] is a different
+    // card from [ABCDEF1234].
+    const anchorSentOn = db.prepare(
+      'SELECT 1 FROM agent_messages n WHERE n.from_agent = ? AND n.id > ? AND n.created_at >= ? AND instr(n.content, ?) > 0 LIMIT 1'
+    )
+    const revive = db.prepare(
+      "UPDATE agent_messages SET status = 'pending', result = NULL, completed_at = NULL, delivered_at = NULL, requeued_at = ? WHERE id = ? AND status = 'failed' AND result = ? AND requeued_at IS NULL AND delivered_at IS NULL"
+    )
+    const skip = db.prepare(
+      "UPDATE agent_messages SET requeue_skipped_at = ? WHERE id = ? AND status = 'failed' AND result = ? AND requeued_at IS NULL AND requeue_skipped_at IS NULL AND delivered_at IS NULL"
+    )
+    const kept: number[] = []
+    const skipped: number[] = []
+    for (const m of rows) {
+      // an anchor-blocked row is neither revived nor marked: the cap must
+      // count only rows the sender has NOT moved on from
+      if (cardAnchors(m.content).some(a => anchorSentOn.get(m.from_agent, m.id, m.since_ts, a))) continue
+      if (kept.length < cap) {
+        if (revive.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1) kept.push(m.id)
+      } else if (skip.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1) {
+        skipped.push(m.id)
+      }
+    }
+    if (skipped.length) logger.info({ agent, skipped: skipped.length, ids: skipped }, 'abandoned messages over the requeue cap stay failed')
+    // Selected newest first by created_at; hand them back oldest first.
+    return kept.reverse()
+  })()
+}
+
 // Close a message that is still OPEN (pending or delivered), atomically: the
 // status check and the write are one UPDATE, so of two concurrent closes only
 // one changes the row. Used by the PUT /api/messages/:id route, where a second
@@ -5068,6 +5330,23 @@ export function closeOpenMessage(id: number, status: 'done' | 'failed', result?:
   return db.prepare(sql).run(...args).changes > 0
 }
 
+// The close a SUB-AGENT token may perform (auth-gate.ts, AGENT_TOKENS),
+// enforced in the write itself: closeOpenMessage plus `to_agent = recipient`,
+// one statement, so nothing can slip between a check and the update. The
+// gate's to_agent lookup runs before the route awaits the rest of its work;
+// a write guarded by `id` alone would let a PUT pre-armed on the NEXT id close
+// another agent's message the moment it is created. Returns false when 0 rows
+// changed; the caller then creates NO completion report. The main-token path
+// keeps closeOpenMessage unchanged.
+export function closeMessageAsRecipient(id: number, recipient: string, status: 'done' | 'failed', result?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const sql = status === 'done'
+    ? "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND to_agent = ? AND status NOT IN ('done', 'failed')"
+    : "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND to_agent = ? AND status NOT IN ('done', 'failed')"
+  const args = status === 'done' ? [result ?? null, now, now, id, recipient] : [result ?? null, now, id, recipient]
+  return db.prepare(sql).run(...args).changes > 0
+}
+
 // Status-guarded fail for the federation bridge's terminal branches: it must
 // only fire (and only bounce a failure notice) when THIS call actually closed
 // a still-pending row. The unguarded markMessageFailed above would also
@@ -5076,6 +5355,19 @@ export function closeOpenMessage(id: number, status: 'done' | 'failed', result?:
 // notice. The drain-inbox path deliberately keeps the unguarded variant (it
 // fails an already-delivered row).
 export function markPendingFederatedFailed(id: number, error: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
+}
+
+// The same status guard for the router's ABANDONED write: it may only fail a
+// row that is still pending. The router decides from the pending snapshot it
+// took at the top of the tick, with awaits in between, so a PUT
+// /api/messages/<id> close can land first; the unguarded markMessageFailed
+// would then overwrite that close with failed + abandoned, and a handoff that
+// HAD landed would read as abandoned. Returns false on such a row, so the
+// caller skips the sender's failure notice, which must only follow a close
+// THIS call performed.
+export function markPendingMessageFailed(id: number, error: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
 }
@@ -5856,10 +6148,14 @@ function vectorSearch(
   // vector's byte length: the vectors come from embeddingCache. The date
   // window (card f90928e3) narrows the candidates here, so the similarity
   // floor below is computed over the windowed rows.
+  // A vector from another model with the same dimension cannot be told apart by
+  // length, so the model name is the filter. The migration stamps the vectors
+  // it finds; a NULL row was written later by a build from before the column
+  // and keeps the length check.
   const dt = tsClause('created_at', range)
   const cands = db.prepare(
-    `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
-  ).all(agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
+    `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (embedding_model IS NULL OR embedding_model = ?) AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}`
+  ).all(embedIdentity(), agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
 
   // Parse only what is new or changed since the last call.
   let getVec: Database.Statement | null = null
@@ -6057,15 +6353,17 @@ export interface BackfillResult {
 }
 
 export async function backfillEmbeddings(): Promise<BackfillResult> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
+  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE (embedding IS NULL OR (embedding_model IS NOT NULL AND embedding_model != ?)) AND retracted_at IS NULL').all(embedIdentity()) as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      // The write only lands if the row still holds the text that was embedded; an
+      // edit in between leaves the vector NULL for the next backfill round.
+      const stored = db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), embedIdentity(), row.id, row.content, row.keywords).changes > 0
       forgetCachedEmbedding(row.id)
-      count++
+      if (stored) count++
     }
     // Small delay to not overwhelm Ollama
     await new Promise(r => setTimeout(r, 100))
@@ -7144,6 +7442,9 @@ export interface Approval {
   consumed_ref?: string | null
   content_hash: string | null
   consumed_at: number | null
+  // The sub-agent allowed to consume this row with its own token; NULL = none.
+  // Optional in the type only, like consumed_by above.
+  for_agent?: string | null
 }
 
 export function createApproval(params: {
@@ -7154,11 +7455,12 @@ export function createApproval(params: {
   action_payload?: string | null
   timeout_at?: number | null
   content_hash?: string | null
+  for_agent?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash, for_agent)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -7168,6 +7470,7 @@ export function createApproval(params: {
     params.timeout_at ?? null,
     now,
     params.content_hash ?? null,
+    params.for_agent ?? null,
   )
   return {
     id: params.id,
@@ -7185,6 +7488,7 @@ export function createApproval(params: {
     consumed_ref: null,
     content_hash: params.content_hash ?? null,
     consumed_at: null,
+    for_agent: params.for_agent ?? null,
   }
 }
 
@@ -7200,6 +7504,57 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
         telegram_message_id = COALESCE(?, telegram_message_id)
     WHERE id = ? AND status = 'pending'
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+}
+
+// APPROVALSLACK1030 (2): the posted request (approval_slack_posts).
+export interface ApprovalSlackPostRow {
+  approval_id: string
+  channel: string
+  ts: string
+  text_sha256: string
+  owner_user_id: string
+  bot_user_id: string
+  posted_at: number
+  decided_at: number | null
+  decision: string | null
+  last_checked_ms: number | null
+}
+
+export function recordApprovalSlackPost(p: { approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string }): boolean {
+  return db.prepare(`
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000)).changes > 0
+}
+
+/**
+ * Posts still waiting for the owner: undecided, the request pending and not timed out. The least recently checked come
+ * first (never checked before any checked one), then the oldest: a sweep takes the head of this list and stamps what it
+ * checked, so every pending post is reached within ceil(pending / SWEEP_MAX_PER_ROUND) rounds, however many older
+ * requests the owner leaves unanswered (Dani 66059: oldest-first starved a newer request until the old ones expired).
+ */
+export function pendingApprovalSlackPosts(limit = 50): ApprovalSlackPostRow[] {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    SELECT p.* FROM approval_slack_posts p JOIN approvals a ON a.id = p.approval_id
+    WHERE p.decided_at IS NULL AND a.status = 'pending' AND (a.timeout_at IS NULL OR a.timeout_at > ?)
+    ORDER BY COALESCE(p.last_checked_ms, 0) ASC, p.posted_at ASC, p.rowid ASC LIMIT ?
+  `).all(now, limit) as ApprovalSlackPostRow[]
+}
+
+export function getApprovalSlackPost(approvalId: string): ApprovalSlackPostRow | undefined {
+  return db.prepare('SELECT * FROM approval_slack_posts WHERE approval_id = ?').get(approvalId) as ApprovalSlackPostRow | undefined
+}
+
+/** Stamps the moment the sweeper last asked Slack about this post (the rotation key of pendingApprovalSlackPosts). */
+export function markApprovalSlackPostChecked(approvalId: string, atMs: number = Date.now()): void {
+  db.prepare('UPDATE approval_slack_posts SET last_checked_ms = ? WHERE approval_id = ?').run(atMs, approvalId)
+}
+
+/** Closes the row ONCE: false when it was already decided (a later reaction change does not reopen anything). */
+export function markApprovalSlackPostDecided(approvalId: string, decision: string): boolean {
+  return db.prepare('UPDATE approval_slack_posts SET decided_at = ?, decision = ? WHERE approval_id = ? AND decided_at IS NULL')
+    .run(Math.floor(Date.now() / 1000), decision, approvalId).changes > 0
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

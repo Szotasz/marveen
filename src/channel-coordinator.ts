@@ -27,10 +27,10 @@
 // drains, persists offset, exits cleanly.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
@@ -140,21 +140,122 @@ function readToken(): string {
 
 // Two pollers on one token = guaranteed 409. Refuse to start if another live
 // coordinator already holds the pid file. Stale pid (process gone) is reclaimed.
-function acquireSingleInstanceLock(): void {
-  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  if (existsSync(PID_FILE)) {
-    const prev = parseInt(readFileSync(PID_FILE, 'utf-8').trim(), 10)
-    if (Number.isInteger(prev) && prev > 0 && prev !== process.pid) {
-      let alive = false
-      try { process.kill(prev, 0); alive = true } catch { alive = false }
-      if (alive) {
-        logger.error({ prev }, 'channel-coordinator: another live instance holds the pid lock, exiting')
-        process.exit(1)
-      }
-      logger.warn({ stalePid: prev }, 'channel-coordinator: reclaiming stale pid file')
+export interface PidLockDeps {
+  isAlive(pid: number): boolean // kill(pid, 0): true on success or EPERM, false on ESRCH
+  // The process's command line. string = the command line; null = the process
+  // does not exist (gone); undefined = could not be determined (ps missing, denied, timed out).
+  argvOf(pid: number): string | null | undefined
+}
+export type PidLockResult =
+  | { ok: true; reclaimed: number | null }
+  | { ok: false; holder: number | null; reason: 'held' | 'unknown' | 'contention' }
+
+// True when some whitespace-separated token of argv has a last path segment of
+// exactly channel-coordinator.js / .ts (so `tail -f channel-coordinator.log` does not match).
+export function isCoordinatorArgv(argv: string): boolean {
+  return argv.split(/\s+/).some((tok) => {
+    const base = tok.slice(tok.lastIndexOf('/') + 1)
+    return base === 'channel-coordinator.js' || base === 'channel-coordinator.ts'
+  })
+}
+
+function parsePid(raw: string): number | null {
+  const t = raw.trim()
+  if (!/^[1-9][0-9]*$/.test(t)) return null
+  const n = Number(t)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+// A bare kill(pid, 0) is not enough: after a reboot or crash the recorded pid can
+// belong to an unrelated process (pid reuse), so the holder must also look like a
+// coordinator by its argv. A live pid whose argv cannot be read is treated as held
+// (fail closed). O_EXCL makes the create exclusive; reclaiming a stale file re-reads
+// it right before unlinking, which narrows but cannot fully close the window in which
+// two starters act on the same stale file (Node has no flock). Attempts are bounded;
+// if another starter keeps winning we refuse (the safe side).
+export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLockDeps): PidLockResult {
+  let reclaimed: number | null = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeFileSync(pidFile, String(selfPid), { flag: 'wx', mode: 0o600 })
+      return { ok: true, reclaimed }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
     }
+    let content: string
+    try { content = readFileSync(pidFile, 'utf-8') } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      throw err
+    }
+    const prev = parsePid(content)
+    if (prev !== null) {
+      if (prev === selfPid) return { ok: true, reclaimed: null }
+      if (deps.isAlive(prev)) {
+        const argv = deps.argvOf(prev)
+        if (argv === undefined) return { ok: false, holder: prev, reason: 'unknown' }
+        if (argv !== null && isCoordinatorArgv(argv)) return { ok: false, holder: prev, reason: 'held' }
+      }
+    }
+    // Stale: unlink only if the file is still exactly what the decision was based on.
+    let again: string
+    try { again = readFileSync(pidFile, 'utf-8') } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      throw err
+    }
+    if (again !== content) continue
+    try { unlinkSync(pidFile) } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    if (prev !== null) reclaimed = prev
   }
-  writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 })
+  return { ok: false, holder: null, reason: 'contention' }
+}
+
+export const realPidLockDeps: PidLockDeps = {
+  isAlive: (pid) => {
+    try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException)?.code === 'EPERM' }
+  },
+  argvOf: (pid) => {
+    // /bin/ps first (as elsewhere in the codebase), then ps from PATH for hosts
+    // that have no /bin/ps (e.g. NixOS).
+    // Empty output is "gone" only when kill(pid, 0) agrees: a ps that cannot
+    // inspect a live process can print nothing too. Anything else is unknown.
+    const goneOrUnknown = (): null | undefined => {
+      try { process.kill(pid, 0); return undefined } catch (k) {
+        return (k as NodeJS.ErrnoException)?.code === 'ESRCH' ? null : undefined
+      }
+    }
+    for (const ps of ['/bin/ps', 'ps']) {
+      try {
+        return execFileSync(ps, ['-p', String(pid), '-o', 'args='], { timeout: 2000, encoding: 'utf-8' }).trim() || goneOrUnknown()
+      } catch (err) {
+        const e = err as { status?: number | null; stdout?: string; code?: string }
+        if (e.code === 'ENOENT') continue
+        // ps exits 1 with no output when the pid does not exist.
+        if (e.status === 1 && !String(e.stdout ?? '').trim()) return goneOrUnknown()
+        return undefined // denied, timed out, killed: unknown
+      }
+    }
+    return undefined // no ps at all: unknown
+  },
+}
+
+export function acquireSingleInstanceLock(pidFile: string = PID_FILE, deps: PidLockDeps = realPidLockDeps, exit: (code: number) => never = process.exit): void {
+  if (!existsSync(dirname(pidFile))) mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 })
+  const res = tryAcquirePidLock(pidFile, process.pid, deps)
+  if (!res.ok) {
+    if (res.reason === 'held') {
+      logger.error({ prev: res.holder }, 'channel-coordinator: another live instance holds the pid lock, exiting')
+    } else if (res.reason === 'unknown') {
+      logger.error({ prev: res.holder }, 'channel-coordinator: the pid lock holder is alive but its command line cannot be read; refusing to start')
+    } else {
+      logger.error('channel-coordinator: could not acquire the pid lock (another starter kept winning); exiting')
+    }
+    exit(1)
+  }
+  if (res.ok && res.reclaimed != null) {
+    logger.warn({ stalePid: res.reclaimed }, 'channel-coordinator: reclaiming stale pid file')
+  }
 }
 
 function releaseLock(): void {
@@ -243,22 +344,29 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // ---- batch processing ----------------------------------------------------
 
 // Process one getUpdates batch. For each update: normalize, dedup-insert, and
-// (if newly inserted) hand off to Marveen. Returns the highest update_id seen
-// so the caller can advance the offset AFTER the whole batch is durable.
-function processBatch(updates: { update_id: number }[]): number | null {
-  let maxUpdateId: number | null = null
+// (if newly inserted) hand off to Marveen. The returned offset only covers
+// updates that are stored or deliberately skipped (unhandled kinds). If a store
+// fails, the batch stops there: the failed update and everything after it are
+// NOT covered by the offset, so Telegram redelivers them on the next
+// getUpdates. Dedup on update_id makes that redelivery safe.
+export function processBatch(updates: { update_id: number }[]): { offset: number | null; stalled: boolean } {
+  let durable: number | null = null
   for (const raw of updates) {
-    maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
-    if (!ev) continue // unhandled update kind: offset still advances past it
+    if (!ev) {
+      // unhandled update kind: offset still advances past it
+      durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
+      continue
+    }
 
     let ins: InsertResult
     try {
       ins = insertIncomingEvent(SOURCE, ev)
     } catch (err) {
-      logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed')
-      continue
+      logger.error({ err, update_id: raw.update_id }, 'channel-coordinator: insertIncomingEvent failed; stopping the batch so Telegram redelivers it')
+      return { offset: durable == null ? null : Math.min(durable, raw.update_id - 1), stalled: true }
     }
+    durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
     try {
@@ -269,7 +377,7 @@ function processBatch(updates: { update_id: number }[]): number | null {
       logger.error({ err, eventId: ins.eventId }, 'channel-coordinator: handoff failed; event left pending for replay')
     }
   }
-  return maxUpdateId
+  return { offset: durable, stalled: false }
 }
 
 // ---- reconcile (no-message-loss replay) ----------------------------------
@@ -345,6 +453,7 @@ export async function fatalExit(err: TelegramApiError, exit: (code: number) => n
 
 async function runLoop(token: string): Promise<void> {
   let transientAttempt = 0
+  let stallAttempt = 0
   while (!stopping) {
     // No-message-loss replay runs every tick, regardless of state.
     reconcilePending()
@@ -431,9 +540,15 @@ async function runLoop(token: string): Promise<void> {
       continue
     }
 
-    const maxUpdateId = processBatch(updates)
+    const { offset, stalled } = processBatch(updates)
     // Persist offset ONLY after the batch is durable + handed off.
-    if (maxUpdateId != null) setOffset(SOURCE, maxUpdateId)
+    if (offset != null) setOffset(SOURCE, offset)
+    if (stalled) {
+      // The store is failing: back off instead of re-fetching the same updates in a tight loop.
+      await sleep(transientBackoffMs(Math.min(++stallAttempt, 6)))
+    } else {
+      stallAttempt = 0
+    }
   }
 }
 

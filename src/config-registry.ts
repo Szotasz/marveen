@@ -119,6 +119,46 @@ function validKeepAlive(v: string): string | null {
   return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
 }
 
+// OSS_INVENTORY_NOTES_DIRS: comma-separated folder names under each agent
+// folder that hold research notes. Each name is one plain directory (no path
+// separator, not '.' or '..'); '' means the default. Returns the list, or null
+// when any name is invalid. Shared by the validator and the inventory route.
+export const OSS_INVENTORY_DEFAULT_NOTES_DIRS = 'research'
+export function parseOssNotesDirs(raw: string): string[] | null {
+  const names = raw.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  if (names.length === 0) return OSS_INVENTORY_DEFAULT_NOTES_DIRS.split(',')
+  for (const n of names) {
+    if (n === '.' || n === '..' || n.includes('/') || n.includes('\\') || n.length > 64 || n.startsWith('-')) return null
+  }
+  return [...new Set(names)]
+}
+
+function validOssNotesDirs(v: string): string | null {
+  return parseOssNotesDirs(v) ? null : 'Vesszővel elválasztott mappanevek kellenek (pl. research,kutatas), útvonal-elválasztó és .. nélkül.'
+}
+
+// OSS_INVENTORY_OWN_OWNERS: comma-separated repository owner names for the
+// open-source inventory. Clones the scan reaches that have a readable http(s)
+// or ssh origin are listed unless their origin owner name is in
+// OSS_INVENTORY_OWN_OWNERS; what the scan does not look inside is listed in
+// scripts/opensource-inventory.py ("Git clones"). The owner name is the first
+// path segment of the clone's own origin URL, matched on any host (the host is
+// not compared); a fork of third-party code kept under such an owner is
+// matched too. Ownership is not inferred from the installation's remotes.
+// Returns the list (lower case, deduplicated), or null when a name is invalid.
+const OSS_OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/
+export function parseOssOwnOwners(raw: string): string[] | null {
+  const names = raw.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  for (const n of names) {
+    if (!OSS_OWNER_RE.test(n)) return null
+  }
+  return [...new Set(names.map((n) => n.toLowerCase()))]
+}
+
+function validOssOwnOwners(v: string): string | null {
+  return parseOssOwnOwners(v) ? null : 'Vesszővel elválasztott fióknevek kellenek (pl. sajat-nev,sajat-ceg), útvonal és szóköz nélkül.'
+}
+
 function validFusionWeight(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -390,6 +430,26 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'OSS_INVENTORY_NOTES_DIRS',
+    type: 'string',
+    default: OSS_INVENTORY_DEFAULT_NOTES_DIRS,
+    description: 'Az átvett nyílt forrású projektek leltára (Kapcsolatok oldal) ezekből a mappákból olvassa az ügynökök kutatási jegyzeteit (csillagszám, mért előtte/utána hatás): vesszővel elválasztott mappanevek az ügynök mappáján belül, pl. research,kutatas. Üres = research. A következő leltár-frissítéskor érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validOssNotesDirs,
+  },
+  {
+    key: 'OSS_INVENTORY_OWN_OWNERS',
+    type: 'string',
+    default: '',
+    description: 'Repó-tulajdonosnevek az átvett nyílt forrású projektek leltárához (Kapcsolatok oldal), vesszővel elválasztva, pl. a saját fiók(ok). A bejárás által elért, olvasható http(s)- vagy ssh-originű klónok a listán vannak, hacsak az origin-tulajdonosnevük nem szerepel az OSS_INVENTORY_OWN_OWNERS beállításban. A bejárás nem néz bele másik klónba, node_modules-ba, gyorsítótárakba, virtuális környezetekbe, kicsomagolt vendor-csomagokba és szimbolikus linkkel bekötött mappákba. A név a klón saját origin-címének első útvonal-tagja, bármelyik hoszton (a hosztot nem nézi); az egyező klónt megszámolja, nem listázza, egy ilyen tulajdonosnál tartott, harmadik féltől származó forkot is. A tulajdonjogot nem a telepítés remote-jaiból következteti ki. Az olvasható http(s)- vagy ssh-origin nélküli klónt megszámolja, nem listázza. A következő leltár-frissítéskor érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validOssOwnOwners,
   },
   {
     key: 'OLLAMA_URL',
@@ -671,6 +731,28 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
     loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'enforce' && newValue.trim() !== 'enforce',
   },
+  {
+    // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
+    // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
+    key: 'SKILL_QUARANTINE',
+    type: 'boolean',
+    default: '0',
+    description: 'Skill-karantén. Kikapcsolva (alapértelmezés) az új vagy javított skill (javaslat, generálás, import) azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni, az nem élesedik, hanem jóváhagyásra vár. Bekapcsolva minden új skill a gazda jóváhagyásáig karanténban vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => ['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && !['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
+  },
+  {
+    key: 'AGENT_TOKENS',
+    type: 'boolean',
+    default: '0',
+    description: 'Saját dashboard-token minden al-ügynöknek (agents/<név>/.dashboard-token, 0600). Bekapcsolva az al-ügynök a következő indításkor saját tokent kap, a CLAUDE.md-je erre a fájlra mutat, és a szerver ezzel a tokennel csak az ügynök-API-t engedi (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezés- és vault-olvasás a store/vault-acl.json szerint): ütemezést nem írhat, és minden from/agent_id/author mező csak a saját neve lehet. Kikapcsolva (alapértelmezés) minden ügynök a közös store/.dashboard-token-t használja, mint eddig; visszakapcsoláskor az indítás a CLAUDE.md-t visszaírja a közös tokenre. Baleset elleni védelem, nem elzárás: minden ügynök ugyanazzal a felhasználóval fut, és a közös token fájlja olvasható.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => ['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && !['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
+  },
   // --- Token usage module ---
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',
@@ -765,10 +847,12 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',
-    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy.',
+    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy. Egy D-vel kezdődő azonosítóra a jóváhagyás-kérések is közvetlenül ide mennek; minden változásáról a RÉGI cél értesítést kap.',
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // APPROVALSLACK1030 (Samu 66026): the owner's approval requests go here, so ANY change needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'NOTIFY_SLACK_ALERT_TARGET',
@@ -797,14 +881,43 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Boot-time const in src/config.ts, like the opt-in switches further down this
+  // module -- so a saved value takes effect only after the dashboard restarts.
+  // It sits HERE, next to the notify switches, because its default is ON: the
+  // comment above that lower block says its entries default to '0', which would
+  // not be true of this one.
+  {
+    key: 'NOTIFY_ROUTINE_ALERTS',
+    type: 'boolean',
+    default: '1',
+    description: 'Menjenek-e ki a csatornára a routine (önjavító recovery) értesítések: a flotta saját újraindításai és beragadásai, például "a fő session beragadt, automatikusan újraindítottam", "a session eltűnt, újraindítom". Alapértelmezés: BE, a viselkedés változatlan. Kikapcsolva (off/0) a sendRoutineAlert csak naplót ír (dashboard.log), a csatornára nem küld semmit; a VALÓDI hiba-értesítések (sendAlert, például "az automatikus újraindítás NEM sikerült") másik függvényen mennek ki, és ettől függetlenül mindig kimennek. A módosítás a dashboard újraindításakor lép életbe (boot-time const, nem a settings-store live-olvasásos útja).',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
   {
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
     default: '',
-    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll.',
+    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll. Ha a Slack-reakciós jóváhagyás be van kapcsolva, ennek a felhasználónak a ✅/❌ reakciója dönt; minden változásáról a RÉGI azonosító DM-et kap.',
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // APPROVALSLACK1030 (2), Samu 65935: this id names whose Slack reaction approves, so ANY change of it needs the
+    // owner's session; with the shared token an agent could make itself the approver.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    key: 'APPROVAL_SLACK_REACTIONS',
+    type: 'string',
+    default: 'off',
+    description: 'Slack-reakciós jóváhagyás (APPROVALSLACK1030): bekapcsolva (on) a jóváhagyás-kérés a gazda Slack-DM-jébe EGY üzenetként megy, és a gazda ✅ (jóváhagy) vagy ❌ (elutasít) reakcióját a szerver maga ellenőrzi. Csak kifejezett SLACK_OWNER_USER_ID mellett, és csak olyan kérésre, amelynek tartalmát a szerver ellenőrizni tudja (levélnél a teljes boríték, a horgonnyal egyezően); minden más kérésnél a döntés a dashboardon marad. Alapból KI.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    // Switching it ON opens one more way to approve: that needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
     key: 'SCHEDULED_DELIVERY_CHANNEL',

@@ -542,18 +542,45 @@ boundary for prompt injection (see the SKILLSCAN824 research). An empty findings
 list means the filter found no known shape, not that the skill is safe. The
 load-bearing control is that nothing goes live without the approval.
 
+A fifth route, `POST /api/skills/propose`, is how an agent offers a skill to the
+whole fleet: it sends a complete `SKILL.md`, which is queued for the global root
+like the others. If that name is already live, the proposal is a replacement:
+its `SKILL.md` replaces the live one and the live skill's other files are copied
+into the proposal, so the approver sees (and the hash binds) the whole directory
+that goes live; the approver is also shown the current `SKILL.md`, the approval
+fails if the live skill changed since it was proposed, and on approval the old
+version is moved to `store/skills-replaced/` first. Proposing needs only the
+dashboard token; approving needs the owner's session, as for every pending skill.
+When the backup area and the skill root are on different filesystems, the
+move is a copy and a remove: the live skill is re-hashed after the copy and
+removed only if it did not change, so a write that lands in the short window
+between that check and the remove would be lost. That is a stated limit, not a
+boundary: the same OS user can write `~/.claude/skills` directly anyway.
+
+An agent's OWN skill folder (its working directory's `.claude/skills`) is left
+outside the quarantine on purpose: only that agent loads it, and it already
+writes anything else in its own directory with its file tools, so a queue there
+would add a click without adding a boundary. The shipped instructions tell every
+agent to write its own skills there and to propose everything global. That is an
+instruction, not a control: the same OS user can still write `~/.claude/skills`.
+The main agent has no private folder (its working directory is the project root,
+which every sub-agent sees), so its instructions always propose.
+
 **Not covered, stated out loud:**
 
 - An agent writing a skill directory directly with its file tools. All agents
-  run as one OS user, and the self-learning instructions tell them to do this.
+  run as one OS user. The shipped instructions keep direct writes to the
+  agent's own folder and send everything global through
+  `POST /api/skills/propose`, but nothing stops a direct write to
+  `~/.claude/skills`.
 - The fleet import, the agent-bundle import and the `skill` CLI, which have
   their own paths.
 - Editing a live skill's `SKILL.md` through `PUT /api/skills/:name` (a follow-up
   PR puts it through the same queue).
-- Who approves. The approve route takes the same credentials as every other
-  dashboard write, and with the one shared dashboard token an agent can call it
-  too. "Only a human approves" needs the per-agent identity decision (#1985)
-  first.
+- Who approves. The approve and reject routes take the owner's browser session;
+  the shared dashboard token every agent holds is refused, except before the
+  first dashboard login exists. On such an install an agent could approve its
+  own proposal, so log in once before relying on the queue.
 
 # A second reviewer for high-risk tool calls (opt-in)
 
@@ -685,11 +712,37 @@ What happens now:
   (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
   without this check.
 
-**Not covered, stated out loud:** the rest of the import (agent files, settings,
-the vault, scheduled tasks) still writes with the same shared token, and on a
-single-user host an agent whose Bash is permissive can write `.env` directly.
-Closing those needs the per-agent identity decision (#1985) and per-agent OS
-users, not this filter.
+**Not covered, stated out loud:** on a single-user host an agent whose Bash is
+permissive can write `.env` directly. Closing that needs the per-agent identity
+decision (#1985) and per-agent OS users, not this filter. (The rest of the
+import no longer runs on the shared token once a login exists: see the next
+section.)
+
+# Fleet transfer: the applied import and the vault export take the owner
+
+FLEETIMPORTGATE1022. The fleet's one shared dashboard token reaches
+`/api/fleet/*` from every agent, and two of those calls were wider than the
+token should reach:
+
+- `POST /api/fleet/import?apply=true` overwrites `store/autonomy-config.json`
+  from the payload, `maxLevel` included. With `email_send` at 3 the mail
+  approval gate (`scripts/hooks/email-approval-gate.py`) lets every send
+  through; measured in a throwaway store: level 2 denies, level 3 allows. The
+  same call writes the agents' settings and the global skills.
+- `GET /api/fleet/export` with an `X-Vault-Password` returns the vault's master
+  key and every secret, encrypted with a password the CALLER chose, so the
+  caller can open it.
+
+Once a dashboard login exists, both take the owner's session
+(`mayIssueCredentials`, the predicate of the credential-issuing routes since
+DEVKEYMINT1022), checked before the body is read or anything is exported; any
+other caller gets 403 `owner_session_required`. A full device key is refused
+too. The dry run (no `apply`, writes nothing) and the export without a vault
+password (no secret; it refuses rather than leak one) stay on the token. On a
+fresh install with no dashboard user yet, the token keeps both for the setup.
+
+Related, not changed here: `POST /api/autonomy` raises a level with the token
+too, up to the category's `maxLevel` (a locked category stays at 1).
 
 # Sub-agent mail gate: sender scripts under any name
 
@@ -748,3 +801,31 @@ and the main agent's `email_send` approval gate keeps its current reach.
     cwd, not `dir`;
   - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+
+# Autonomy levels: a raise takes the owner
+
+FLEETIMPORTGATE1022 (4). `POST /api/autonomy` raised any unlocked category up
+to its `maxLevel` with the fleet's one shared dashboard token, so any agent
+could set `email_send` to 3, and at 3 the mail approval gate
+(`scripts/hooks/email-approval-gate.py`) lets every send through. Once a
+dashboard login exists, a raise takes the owner's session
+(`mayIssueCredentials`); any other caller, a full device key included, gets
+403 `owner_session_required` and nothing is written. Lowering and setting the
+same level stay on the token: they only narrow what an agent may do. A current
+level that is not a number counts as a raise. On a fresh install with no
+dashboard user yet, the token keeps raising for the setup. The locked
+categories and `maxLevel` are checked as before.
+
+**Not covered, stated out loud:** an agent that can write files can still edit
+`store/autonomy-config.json` directly, and the mail gate reads the file, not
+this endpoint. This change closes the token path only; a write guard for that
+file is separate work.
+
+# Vault resolver: only a loopback dashboard
+
+VAULTURLGATE1027. `scripts/vault-dashboard-client.mjs` sends the dashboard
+token with every resolve request, and `VAULT_RESOLVE_URL` comes from the
+environment. The URL is checked before the request is built: `http` or
+`https`, no user info, and the host `127.0.0.1`, `::1` or `localhost`. Any other
+URL is refused like an unreachable dashboard (audit mode: the local fallback with
+a warning; enforce mode: exit 5), so the token never leaves the machine.

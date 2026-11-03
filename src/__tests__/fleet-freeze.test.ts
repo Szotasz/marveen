@@ -221,6 +221,42 @@ describe('the loops', () => {
     expect(src.match(/return setInterval\(/g)?.length ?? 0).toBeLessThanOrEqual(2)
   })
 
+  // The first tick. A loop that starts with a one-shot setTimeout before its
+  // interval ran that first tick ungated: after a dashboard restart under a 'stop' freeze, the
+  // channel monitor's first check revived the stopped agents (desired-state reconcile) and the
+  // schedule runner injected prompts 5 s after boot. Every start function that arms a one-shot
+  // first tick right before its gated interval gates that tick too, under the same label.
+  const FIRST_TICK_FILES = [
+    'web/channel-monitor.ts', 'web/schedule-runner.ts', 'web/auto-restart-runner.ts', 'web/model-fallback-runner.ts',
+    'web/reauth-healer.ts', 'web/context-guard-runner.ts', 'web/channel-health-monitor.ts', 'web/stuck-input-watcher.ts',
+    'web/stuck-tool-call-watcher.ts', 'web/inbox-nudge-watcher.ts', 'web/federation/poller.ts', 'web/federation/capability-runner.ts',
+  ]
+  it.each(FIRST_TICK_FILES)('%s gates its one-shot first tick like its interval', (file) => {
+    const lines = readFileSync(join(SRC, file), 'utf-8').split('\n')
+    let pairs = 0
+    lines.forEach((line, i) => {
+      const m = line.match(/^\s*return setInterval\(whileNotFrozen\('([^']+)'/)
+      if (!m) return
+      let j = i - 1
+      while (j >= 0 && /^\s*\/\//.test(lines[j])) j--
+      if (j < 0 || !/^\s*setTimeout\(/.test(lines[j])) return
+      pairs++
+      expect(lines[j], `${file}:${j + 1}`).toMatch(new RegExp(`^\\s*setTimeout\\(whileNotFrozen\\('${m[1]}', `))
+    })
+    expect(pairs, `${file}: no first-tick setTimeout found next to the gated interval`).toBeGreaterThan(0)
+  })
+
+  it('a gated first tick armed while frozen never runs, even though the freeze outlived a restart', async () => {
+    vi.useFakeTimers()
+    try {
+      await freeze(TOKEN)
+      const body = vi.fn()
+      setTimeout(whileNotFrozen('fake-first-tick', body), 30_000)
+      vi.advanceTimersByTime(31_000)
+      expect(body).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
   // Behaviour, not text, for the timer wiring of the three loops that matter most:
   // a fake clock drives the real start function; frozen, the wrapped body never runs.
   it('a wrapper handed to setInterval runs nothing while frozen, and runs again after', async () => {

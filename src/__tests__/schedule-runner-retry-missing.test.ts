@@ -32,6 +32,11 @@ const mockSendPrompt = vi.fn(() => 'sent')
 const mockSessionExists = vi.fn(() => true)
 const mockStartAgent = vi.fn(() => ({ ok: false, error: 'tmux unavailable' }))
 const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
+// Stage-1 claim: lost by default, so the alert paths stay quiet unless a test
+// wins it on purpose.
+const mockMarkAlert = vi.fn((..._a: unknown[]) => false)
+const mockCreateAgentMessage = vi.fn()
+const mockSendTeams = vi.fn(async (..._a: unknown[]) => ({ status: 201 }))
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -49,9 +54,15 @@ vi.mock('../db.js', () => ({
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(...a),
   updatePendingTaskRetry: mockUpdatePendingRetry,
   insertPendingTaskRetryIfNew: vi.fn(),
-  markPendingTaskRetryAlert: vi.fn(() => false),
+  markPendingTaskRetryAlert: (...a: unknown[]) => mockMarkAlert(...a),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
+  createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...a),
+}))
+
+// The stage-1 Teams stall notice: never a real Bot Framework call.
+vi.mock('../teams-send.js', () => ({
+  sendTeamsMessage: (...a: unknown[]) => mockSendTeams(...a),
 }))
 
 // The runner's alert paths resolve a REAL bot token from install-level config
@@ -203,5 +214,47 @@ describe('schedule runner: pending retry survives a missing target session', () 
     await runOneTick()
 
     expect(mockDeletePendingRetry).toHaveBeenCalledWith(DAILY.name, 'retryagent')
+  })
+
+  // The tick must hand the task definition to the stage-1 notice: without it
+  // the notice still reaches the main agent, and the team waiting in the
+  // task's own Teams conversation hears nothing.
+  it("tells the task's own Teams conversation once the stage-1 notice lands", async () => {
+    const teams = task({ name: 'retry-missing-e2e-teams', schedule: '0 8 * * *', channelProvider: 'teams', telegramChatId: 'a:teams-conv-1' })
+    mockListScheduledTasks.mockReturnValue([teams])
+    mockListPendingRetries.mockReturnValue([retryRow({ task_name: teams.name, first_attempt: Date.now() - 61 * 60000 })])
+    mockMarkAlert.mockReturnValueOnce(true)
+    await runOneTick()
+
+    expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
+    expect(mockSendTeams).toHaveBeenCalledTimes(1)
+    expect(mockSendTeams.mock.calls[0][2]).toBe('a:teams-conv-1')
+    expect(String(mockSendTeams.mock.calls[0][3])).toContain(teams.name)
+  })
+
+  it('sends no Teams notice for a task bound to another channel', async () => {
+    mockListPendingRetries.mockReturnValue([retryRow({ first_attempt: Date.now() - 61 * 60000 })])
+    mockMarkAlert.mockReturnValueOnce(true)
+    await runOneTick()
+
+    expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
+    expect(mockSendTeams).not.toHaveBeenCalled()
+  })
+
+  // An all-agents task is retried once per (task, agent) row. The tick must
+  // hand the stuck ROW's agent to the notice: task.agent is 'all', which names
+  // no agent, no channel state directory and nobody the team could ask about.
+  it("names the stuck row's agent, not task.agent, for an all-agents task", async () => {
+    const all = task({ name: 'retry-missing-e2e-all', schedule: '0 8 * * *', agent: 'all', channelProvider: 'teams', telegramChatId: 'a:teams-conv-2' })
+    mockListScheduledTasks.mockReturnValue([all])
+    mockListPendingRetries.mockReturnValue([retryRow({ task_name: all.name, first_attempt: Date.now() - 61 * 60000 })])
+    mockMarkAlert.mockReturnValueOnce(true)
+    await runOneTick()
+
+    expect(mockSendTeams).toHaveBeenCalledTimes(1)
+    const [, stateDir, conversationId, text] = mockSendTeams.mock.calls[0]
+    expect(conversationId).toBe('a:teams-conv-2')
+    expect(String(text)).toContain(`"${all.name}" ütemezett feladat (retryagent)`)
+    expect(String(stateDir)).toContain('retryagent')
   })
 })

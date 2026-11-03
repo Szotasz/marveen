@@ -115,15 +115,18 @@ describe('the FINAL heartbeat settings file carries the gates, in BOTH boot orde
 })
 
 describe('the seeding pass covers sentinel-hidden agents', () => {
+  // ROSTERALIAS1026: the loop became forEachAgentIsolated(...); the pin keeps
+  // guarding which lister it walks.
+  const PIN = /forEachAgentIsolated\(\[MAIN_AGENT_ID, \.\.\.listAllAgentNames\(\)\]/
   it('web.ts iterates listAllAgentNames, not the dashboard-filtered lister', () => {
     // Source-level pin with the measured incident as rationale: the runtime
     // path cannot be exercised here (the loop lives inside startWeb), so this
     // guards the one line whose regression recreates the whole class.
     const src = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
-    expect(src).toMatch(/for \(const agentName of \[MAIN_AGENT_ID, \.\.\.listAllAgentNames\(\)\]\)/)
+    expect(src).toMatch(PIN)
   })
   it('KNOWN-POSITIVE for the pin: the pre-fix line shape would fail it', () => {
-    const preFix = 'for (const agentName of [MAIN_AGENT_ID, ...listAgentNames()]) {'
-    expect(preFix).not.toMatch(/listAllAgentNames/)
+    const preFix = 'forEachAgentIsolated([MAIN_AGENT_ID, ...listAgentNames()], (agentName) => {'
+    expect(preFix).not.toMatch(PIN)
   })
 })

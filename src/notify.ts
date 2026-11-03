@@ -1,7 +1,8 @@
-import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID } from './config.js'
+import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID, STORE_DIR } from './config.js'
 import { normalizeChatId, resolveAlertOwnerChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { markIfTestRun } from './test-run-marker.js'
 import type { sendSlackNotification as SendSlack } from './slack-notify.js'
 
@@ -36,18 +37,20 @@ export async function slackTargetFor(kind: 'owner' | 'alert', setting?: SettingF
 export async function deliverWithSlack(
   kind: 'owner' | 'alert',
   text: string,
-  telegram: () => Promise<void>,
+  telegram: () => Promise<boolean | void>,
   send?: typeof SendSlack,
-): Promise<void> {
+): Promise<boolean> {
+  // Resolves true when the message reached a channel (Slack, or the Telegram
+  // callback when it did not report a failure), false when it was lost.
   const setting = await loadSetting()
   const noFallback = setting('NOTIFY_TELEGRAM_FALLBACK') === '0'
   const target = await slackTargetFor(kind, setting)
   if (!target) {
     if (noFallback) {
       logger.error({ kind }, 'Ertesites ELVESZETT: nincs Slack-cel, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
-      return
+      return false
     }
-    return telegram()
+    return (await telegram()) !== false
   }
   let sendFn: typeof SendSlack
   try {
@@ -58,18 +61,69 @@ export async function deliverWithSlack(
     // unless the owner switched the Telegram fallback off.
     if (noFallback) {
       logger.error({ err: msg }, 'Ertesites ELVESZETT: a Slack modul nem toltheto be, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
-      return
+      return false
     }
     logger.warn({ err: msg }, 'Slack modul nem toltheto be; Telegram tartalek')
-    return telegram()
+    return (await telegram()) !== false
   }
   const r = await sendFn(target, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
   if (!r.ok && noFallback) {
     logger.error({ target, error: r.error }, 'Ertesites ELVESZETT: a Slack-kuldes bukott, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
-    return
+    return false
   }
   if (!r.ok) logger.warn({ target, error: r.error }, 'Slack ertesites nem ment ki; Telegram tartalek')
-  if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
+  if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') {
+    const tg = (await telegram()) !== false
+    return r.ok ? true : tg
+  }
+  return true
+}
+
+/**
+ * APPROVALSLACK1030: an approval request on an install whose owner moved to Slack (a NOTIFY_SLACK_TARGET is set,
+ * SLACKATALLAS1006) goes straight to the owner's Slack DM, and the result is REPORTED, never a Telegram fallback: the
+ * owner asked for Slack only, and a miss is the caller's in-band fallback. attempted=false: Slack is not the owner's
+ * channel on this install, the caller keeps its provider path. Exported for tests.
+ */
+export async function sendOwnerSlackDm(
+  text: string,
+  send?: typeof SendSlack,
+  opts: {
+    verdict?: (channel: string, owner: string | null) => Promise<'ok' | 'foreign' | 'unknown'>
+    drift?: (current: string) => Promise<boolean>
+  } = {},
+): Promise<{ attempted: boolean; sent: boolean; error?: string }> {
+  const setting = await loadSetting()
+  const target = await slackTargetFor('owner', setting)
+  if (!target) return { attempted: false, sent: false }
+  let sn: typeof import('./slack-notify.js')
+  try {
+    sn = await import('./slack-notify.js')
+  } catch {
+    return { attempted: true, sent: false, error: 'slack_module_unavailable' }
+  }
+  const sendFn = send ?? sn.sendSlackNotification
+  // Dani 66036: a change made AROUND the settings route (a script writing the overrides, an .env edit) is caught here,
+  // before the next owner DM: the OLD target is told first, then the new one is recorded.
+  await (opts.drift ?? noticeTargetDrift)(target)
+  // APPROVALSLACK1030 (Samu 66026): the bot has no im:write, so conversations.open (the 'dm' path) fails with
+  // missing_scope (measured, Marveen 66022) and this DM never arrived. A raw D id in NOTIFY_SLACK_TARGET (the one
+  // scripts/notify.sh already writes to) is posted to directly; first the confidentiality check (Dani 66016 (b)).
+  const direct = /^D[A-Z0-9]{6,}$/.test(target) ? target : null
+  const ownerUserId = setting('SLACK_OWNER_USER_ID')
+  if (direct) {
+    const owner = sn.resolveOwnerUserId(ownerUserId, (() => {
+      try { const f = `${sn.mainSlackStateDir()}/access.json`; return existsSync(f) ? readFileSync(f, 'utf-8') : null } catch { return null }
+    })())
+    const verdict = await (opts.verdict ?? sn.ownerDmVerdict)(direct, owner)
+    if (verdict === 'foreign') {
+      logger.error({ channel: direct }, 'owner Slack DM NOT sent: someone other than the owner writes in that channel (NOTIFY_SLACK_TARGET)')
+      return { attempted: true, sent: false, error: 'dm_channel_foreign' }
+    }
+  }
+  // raw: the request's text is the requesting agent's, shown as written (Dani 55614 F1).
+  const r = await sendFn(direct ?? 'dm', markIfTestRun(text), { ownerUserId, raw: true })
+  return r.ok ? { attempted: true, sent: true } : { attempted: true, sent: false, error: r.error }
 }
 
 /** What a channel send did, for callers that must react to a miss. */
@@ -118,13 +172,17 @@ export function alertIsRedirected(): boolean {
 }
 
 // Operational alert (watchdogs, restarts, stuck sessions). Goes to
-// ALERT_CHAT_ID when it is set, otherwise to the owner chat.
-export async function notifyChannel(text: string, meta?: AlertMeta): Promise<void> {
+// ALERT_CHAT_ID when it is set, otherwise to the owner chat. Resolves true when
+// the message was handed to a channel (Slack or the channel provider: every
+// chunk), false when the send was skipped (no token/chat) or failed on every
+// route. Never throws; fire-and-forget callers may ignore the result, a caller
+// that records "alert sent" (dedupe, retry) should record it only on true.
+export async function notifyChannel(text: string, meta?: AlertMeta): Promise<boolean> {
   return deliverWithSlack('alert', text, () => {
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
-    // sendToChat reports now, this caller does not care: drop the result so the
-    // callback keeps its Promise<void> shape (slack-notify wiring contract).
-    if (alertChat) return sendToChat(alertChat, text, 'alert', { meta, recipient: 'alert-chat' }).then(() => {})
+    // sendToChat reports a ChannelSendResult; deliverWithSlack takes the
+    // callback's boolean (false = lost), so map it to `sent`.
+    if (alertChat) return sendToChat(alertChat, text, 'alert', { meta, recipient: 'alert-chat' }).then((r) => r.sent)
     return telegramOwner(text, meta)
   })
 }
@@ -163,11 +221,11 @@ function signalOwnerChatMissing(text: string, reason: string): void {
 
 // Owner-facing content (heartbeat digest, security events): always the owner
 // chat, never rerouted by ALERT_CHAT_ID.
-export async function notifyOwner(text: string, meta?: AlertMeta): Promise<void> {
+export async function notifyOwner(text: string, meta?: AlertMeta): Promise<boolean> {
   return deliverWithSlack('owner', text, () => telegramOwner(text, meta))
 }
 
-async function telegramOwner(text: string, meta?: AlertMeta): Promise<void> {
+async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
   // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
@@ -191,9 +249,9 @@ async function telegramOwner(text: string, meta?: AlertMeta): Promise<void> {
     // No token means no channel on this install: the log line is enough. A token
     // with no owner chat is the 2026-09-16 shape, and that one must reach someone.
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
-    return
+    return false
   }
-  await sendToChat(owner.chatId, text, 'owner', { meta, recipient: 'owner' })
+  return (await sendToChat(owner.chatId, text, 'owner', { meta, recipient: 'owner' })).sent
 }
 
 // PR1655 review, ask 2: this used to return void and swallow every provider
@@ -328,5 +386,113 @@ export async function notifySecurityEvent(text: string): Promise<void> {
     await notifyOwner(text)
   } catch {
     /* never let a notification failure break the recovery action itself */
+  }
+}
+
+/**
+ * APPROVALSLACK1030 (Samu 66026): NOTIFY_SLACK_TARGET names where the owner's approval requests go (a raw D id is
+ * posted to directly). When it changes, the OLD target is told, so a change made around the gate (a text brake) is
+ * still seen where the owner was reading. Never throws; logged either way. Exported for tests.
+ */
+export async function announceSlackTargetChange(oldTarget: string, newTarget: string, opts: { send?: typeof SendSlack; now?: Date } = {}): Promise<{ sent: boolean; reason?: string }> {
+  const before = oldTarget.trim()
+  const after = newTarget.trim()
+  if (!before) return { sent: false, reason: 'no_old_target' }
+  if (before === after) return { sent: false, reason: 'unchanged' }
+  try {
+    const { APP_TZ } = await import('./config.js')
+    const when = (opts.now ?? new Date()).toLocaleString('hu-HU', { timeZone: APP_TZ })
+    const text = [
+      `[FIGYELEM] A gazda-értesítések és jóváhagyás-kérések Slack-célja megváltozott: ${before} -> ${after || '(nincs)'} (${when}).`,
+      'Ide ezután nem jönnek a kérések.',
+      'Ha nem te változtattál, a Dashboard -> Beállítások -> NOTIFY_SLACK_TARGET alatt állítsd vissza, és szólj.',
+    ].join('\n')
+    const send = opts.send ?? (await import('./slack-notify.js')).sendSlackNotification
+    const r = await send(before, text, { raw: true })
+    if (r.ok) {
+      logger.warn({ before, after }, 'owner Slack target changed: the old target was told')
+      return { sent: true }
+    }
+    logger.warn({ before, after, error: r.error }, 'owner Slack target changed: telling the OLD target FAILED')
+    return { sent: false, reason: r.error ?? 'send_failed' }
+  } catch (err) {
+    logger.warn({ err }, 'owner Slack target changed: telling the old target threw')
+    return { sent: false, reason: 'error' }
+  }
+}
+
+/** The owner Slack target last announced (Dani 66036): a store file behind the db-write-gate. */
+export function announcedTargetPath(storeDir: string = STORE_DIR): string {
+  return `${storeDir}/.owner-slack-target`
+}
+
+/**
+ * Dani 66036: compares the owner Slack target in effect with the one last announced. On a difference the OLD target is
+ * told (announceSlackTargetChange) and the new one recorded, so a change that went around the settings route is seen
+ * at the next owner DM. The first sight (no record, no old value given) only records. Never throws.
+ */
+export async function noticeTargetDrift(
+  current: string,
+  opts: { fallbackOld?: string; read?: () => string | null; write?: (v: string) => void; announce?: (oldT: string, newT: string) => Promise<unknown> } = {},
+): Promise<boolean> {
+  const read = opts.read ?? (() => { try { const f = announcedTargetPath(); return existsSync(f) ? readFileSync(f, 'utf-8') : null } catch { return null } })
+  const write = opts.write ?? ((v: string) => { try { writeFileSync(announcedTargetPath(), v, { mode: 0o600 }) } catch (err) { logger.warn({ err }, 'owner Slack target record could not be written') } })
+  const announce = opts.announce ?? ((o: string, n: string) => announceSlackTargetChange(o, n))
+  try {
+    const stored = read()
+    const now = current.trim()
+    const old = (stored ?? opts.fallbackOld ?? '').trim()
+    if (stored === null && !opts.fallbackOld) { write(now); return false }
+    if (old === now) { if (stored === null || stored.trim() !== now) write(now); return false }
+    await announce(old, now)
+    write(now)
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'owner Slack target drift check failed')
+    return false
+  }
+}
+
+/**
+ * APPROVALSLACK1030 (2), Dani 65925 / Samu 65935: the Slack id whose reaction approves changed. The OLD owner gets a DM
+ * about it, so a change made around the gate (a text brake, not an OS boundary) is still seen by the person it
+ * replaced. The effective ids resolve as the DM target does (the setting, else the single allowFrom entry). Never
+ * throws; the result is logged either way. Exported for tests (send and readAccess are injectable).
+ */
+export async function announceSlackOwnerChange(
+  oldSetting: string,
+  newSetting: string,
+  opts: { send?: typeof SendSlack; readAccess?: () => string | null; now?: Date } = {},
+): Promise<{ sent: boolean; reason?: string }> {
+  try {
+    const sn = await import('./slack-notify.js')
+    const access = opts.readAccess ? opts.readAccess() : (() => {
+      try {
+        const f = `${sn.mainSlackStateDir()}/access.json`
+        return existsSync(f) ? readFileSync(f, 'utf-8') : null
+      } catch { return null }
+    })()
+    const before = sn.resolveOwnerUserId(oldSetting, access)
+    const after = sn.resolveOwnerUserId(newSetting, access)
+    if (!before) return { sent: false, reason: 'no_old_owner' }
+    if (before === after) return { sent: false, reason: 'unchanged' }
+    const { APP_TZ } = await import('./config.js')
+    const when = (opts.now ?? new Date()).toLocaleString('hu-HU', { timeZone: APP_TZ })
+    const text = [
+      `[FIGYELEM] A jóváhagyó Slack-azonosító megváltozott: ${before} -> ${after ?? '(nincs)'} (${when}).`,
+      'Mostantól nem a te Slack-reakciód hagyja jóvá a kéréseket.',
+      'Ha nem te változtattál, a Dashboard -> Beállítások -> SLACK_OWNER_USER_ID alatt állítsd vissza, és szólj.',
+    ].join('\n')
+    const send = opts.send ?? sn.sendSlackNotification
+    const r = await send('dm', text, { ownerUserId: before, raw: true })
+    if (r.ok) {
+      logger.warn({ before, after }, 'approval Slack owner changed: the old owner was told')
+      return { sent: true }
+    }
+    logger.warn({ before, after, error: r.error }, 'approval Slack owner changed: telling the OLD owner FAILED')
+    return { sent: false, reason: r.error ?? 'send_failed' }
+  } catch (err) {
+    logger.warn({ err }, 'approval Slack owner changed: telling the old owner threw')
+    return { sent: false, reason: 'error' }
   }
 }

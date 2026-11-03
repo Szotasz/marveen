@@ -49,6 +49,18 @@ describe('native file tools', () => {
       symlinkSync(join(store, f), link)
       expect(decide('Write', { file_path: link, content: '{}' })).toEqual(DENY)
     })
+    it(`an upper-case spelling of ${f} in the store dir is denied (case-insensitive volume)`, () => {
+      expect(decide('Write', { file_path: join(store, f.toUpperCase()), content: '{}' })).toEqual(DENY)
+    })
+    it(`a store dir passed through a symlinked directory still denies a renamed link to ${f}`, () => {
+      const alias = join(root, 'alias')
+      symlinkSync(root, alias)
+      const aliasStore = join(alias, 'store')
+      const link = join(root, `innocent-${f}`)
+      symlinkSync(join(store, f), link)
+      expect(gateDecision('Write', { file_path: link, content: '{}' },
+        { storeDir: aliasStore, allowlistPath: join(aliasStore, 'egress-allowlist.json'), cwd: root })).toEqual(DENY)
+    })
   }
   it('another file in store/ is not affected', () => {
     expect(decide('Write', { file_path: join(store, 'other.json'), content: '{}' }).deny).toBe(false)

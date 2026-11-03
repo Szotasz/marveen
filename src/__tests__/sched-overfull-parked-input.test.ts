@@ -142,6 +142,6 @@ describe('wiring', () => {
   })
 
   it('a multi-chunk prompt waits for the pane to settle before its Enter', () => {
-    expect(AGENT).toMatch(/if \(oneLine\.length > CHUNK\) await waitForPaneSettle\(\(\) => capturePane\(session, host\)\)\s*\n\s*runTmux\(host, \['send-keys', '-t', exactTmuxTarget\(session\), 'Enter'\]/)
+    expect(AGENT).toMatch(/if \(oneLine\.length > CHUNK\) await budgetedWait\(PANE_SETTLE_MAX_MS, \(maxMs\) => waitForPaneSettle\(\(\) => capturePane\(session, host\), \{ maxMs \}\)\)\s*\n[\s\S]{0,1500}?\n\s*runTmux\(host, \['send-keys', '-t', exactTmuxTarget\(session\), 'Enter'\]/)
   })
 })

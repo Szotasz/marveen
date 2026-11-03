@@ -20,6 +20,7 @@ stderr); 2 = usage error or no token, nothing was sent; 3 = the dashboard could 
 """
 import json
 import os
+import posixpath
 import re
 import sys
 import urllib.error
@@ -33,6 +34,16 @@ ID_RE = re.compile(r'^[0-9]{1,18}$')
 APPROVAL_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 CATEGORY_KEY_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 HASH_RE = re.compile(r'^[A-Za-z0-9:_-]{8,128}$')
+# SKILLSPLIT1101: the server's rule (skill-quarantine.ts PROPOSED_FILE_RE) for the file name part.
+REF_FILE_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,99}\.md$')
+# a card id is one path segment: no '/', '.', '?' or '#', so it cannot leave /api/kanban/<id>/
+CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+# the status set belongs to the server; this only keeps the value one plain token
+STATUS_RE = re.compile(r'^[a-z][a-z_]{1,31}$')
+PRIORITIES = ('low', 'normal', 'high', 'urgent')
+# a card's assignee: an agent name, or the owner's name as the board holds it ("Szabolcs"); letters (any script),
+# digits, space, '.', '-', '_'; a JSON value in the body, never a path or a shell word
+ASSIGNEE_RE = re.compile(r'^[^\W_][\w .-]{0,63}$')
 
 USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   message <from> <to> <content-file> [--priority high|normal]
@@ -44,9 +55,21 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
-  approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>]
+  taskstate-save <agent> <json-file>
+  approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>] [--payload-file <json-file>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
+  skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
+                (each --ref-file goes as references/<its file name>, markdown only)
+  kanban-list
+  schedules-list
+  kanban-create <assignee> <low|normal|high|urgent> <title-file>
+  kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
+  kanban-claim <card-id> <agent> [--ttl <seconds>]
+  kanban-release <card-id> <agent>
+  kanban-comment <card-id> <author> <content-file>
+  kanban-assign <card-id> <assignee> [--actor <name>]
+  agents-list
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -102,6 +125,13 @@ def check_env():
         if not on_loopback and b not in configured:
             return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
                     'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
+        # VOICETOKENLEAK1101 PR-B (Dani 65495): an ORIGIN only. A base carrying a path, a query or a fragment
+        # (http://127.0.0.1:3420/api/schedules?x=) would turn every verb's own path into a query or a fragment, so the
+        # request would go to that path instead: the schedule-write guard and the agent's own scope would look at the
+        # wrong path.
+        if u.path not in ('', '/') or u.query or u.fragment or '?' in b or '#' in b or not u.netloc:
+            return (f'MARVEEN_API_BASE={b} must be an origin only (scheme://host[:port]), with no path, query or '
+                    'fragment; nothing was sent.')
     token_file = os.environ.get('MARVEEN_TOKEN_FILE')
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
@@ -130,14 +160,39 @@ def read_token():
     return token
 
 
+# VOICETOKENLEAK1101 PR-A1 (Dani 65157/1, Samu 65160): the generated recipes name ONE fixed payload file per kind
+# (api-uzenet.txt, api-memoria.txt, ...). Two texts prepared in one round would both send the second. So a file with
+# that name is emptied after a successful send, and an empty one stops the call: an old text is never sent again.
+PAYLOAD_NAME_RE = re.compile(r'^api-[a-z]+\.txt$')
+SENT_PAYLOADS = []
+
+
+def is_recipe_payload(path):
+    return path != '-' and PAYLOAD_NAME_RE.fullmatch(os.path.basename(path)) is not None
+
+
 def read_text(path):
     if path == '-':
         return sys.stdin.read()
     try:
         with open(path, encoding='utf-8') as f:
-            return f.read()
+            text = f.read()
     except OSError as e:
         fail_usage(f'cannot read {path}: {e.strerror}')
+    if is_recipe_payload(path):
+        if not text.strip():
+            fail_usage(f'{path} is empty: a recipe payload file is emptied after each send, write the new text first')
+        SENT_PAYLOADS.append(path)
+    return text
+
+
+def empty_sent_payloads():
+    for p in SENT_PAYLOADS:
+        try:
+            with open(p, 'w', encoding='utf-8'):
+                pass
+        except OSError as e:
+            print(f'WARN: sent, but could not empty {p} ({e.strerror}); empty it before the next use.', file=sys.stderr)
 
 
 def take_flag(args, flag):
@@ -159,7 +214,7 @@ def take_opt(args, opt):
 
 
 def check(value, rx, what):
-    if not rx.match(value or ''):
+    if not rx.fullmatch(value or ''):
         fail_usage(f'invalid {what}: {value!r}')
     return value
 
@@ -177,6 +232,23 @@ def positional(args, n, verb):
     if len(args) != n:
         fail_usage(f'{verb}: expected {n} argument(s), got {len(args)}')
     return args
+
+
+SCHEDULE_ROUTE = '/api/schedules'
+
+
+def schedule_write_refused(method, path):
+    """VOICETOKENLEAK1101 PR-B (Dani 65425): the helper never writes a schedule. The self-pace gate reads the COMMAND
+    text, and a helper call names no route, so the gate cannot see what a verb sends: this is the one place where the
+    path is put together, so the guard sits here, for every verb, before anything is sent. Any method but GET under
+    the schedule route (after normalising the path) is refused."""
+    # The path the request will really go to (Dani 65495): the final URL's, not the verb's alone. Unquoted, leading
+    # slashes collapsed (POSIX normpath keeps a leading //), then normalised.
+    sent = urllib.parse.urlsplit(api_base() + path).path
+    route = posixpath.normpath('/' + urllib.parse.unquote(sent).lstrip('/'))
+    if (route == SCHEDULE_ROUTE or route.startswith(SCHEDULE_ROUTE + '/')) and method.upper() != 'GET':
+        return f'{method} {route}: the helper only reads schedules (writes are the main agent\'s); nothing was sent.'
+    return None
 
 
 def build_request(verb, args):
@@ -259,8 +331,23 @@ def build_request(verb, args):
         if not content.strip():
             fail_usage('daily-log: the content is empty')
         return 'POST', '/api/daily-log', {'agent_id': agent, 'content': content}, headers, {}
+    if verb == 'taskstate-save':
+        # #2338: the PreCompact hook's task-state save, the last raw-curl recipe. The record is a
+        # JSON object (summary, doneSteps, alreadyDelegated, nextAction, pendingDecision); it is
+        # parsed here so a broken file fails loudly before anything is sent.
+        agent, json_file = positional(args, 2, verb)
+        check(agent, NAME_RE, 'agent name')
+        try:
+            record = json.loads(read_text(json_file))
+        except ValueError as e:
+            fail_usage(f'taskstate-save: {json_file} is not valid JSON ({e})')
+        if not isinstance(record, dict) or not record:
+            fail_usage('taskstate-save: the file must hold a non-empty JSON object')
+        headers['X-Agent-Id'] = agent
+        return 'POST', f'/api/agent-taskstate/{agent}', record, headers, {}
     if verb == 'approval-request':
         content_hash = take_opt(args, '--content-hash')
+        payload_file = take_opt(args, '--payload-file')
         agent, category, timeout, description_file = positional(args, 4, verb)
         check(agent, NAME_RE, 'agent name')
         check(category, CATEGORY_KEY_RE, 'category key')
@@ -268,6 +355,16 @@ def build_request(verb, args):
         body = {'agent_id': agent, 'category': category, 'action_description': read_text(description_file), 'timeout_seconds': int(timeout)}
         if content_hash is not None:
             body['content_hash'] = check(content_hash, HASH_RE, 'content hash')
+        # APPROVALSLACK1030 (2): the letter itself ({"envelope": {...}}), so the server can recompute the anchor and
+        # show the owner what the approval is for; without it the decision stays on the dashboard.
+        if payload_file is not None:
+            try:
+                payload = json.loads(read_text(payload_file))
+            except ValueError as e:
+                fail_usage(f'approval-request: {payload_file} is not valid JSON ({e})')
+            if not isinstance(payload, dict) or not payload:
+                fail_usage('approval-request: the payload file must hold a non-empty JSON object')
+            body['action_payload'] = json.dumps(payload, ensure_ascii=False)
         return 'POST', '/api/approvals', body, headers, {}
     if verb == 'approval-status':
         (approval_id,) = positional(args, 1, verb)
@@ -283,6 +380,96 @@ def build_request(verb, args):
         if content_hash is not None:
             body['content_hash'] = check(content_hash, HASH_RE, 'content hash')
         return 'POST', f'/api/approvals/{approval_id}/consume', body, headers, {}
+    if verb == 'skill-propose':
+        reason_file = take_opt(args, '--reason-file')
+        # SKILLSPLIT1101: a long skill split into SKILL.md + references/*.md; each file under its own name.
+        ref_files = []
+        while True:
+            ref = take_opt(args, '--ref-file')
+            if ref is None:
+                break
+            ref_files.append(ref)
+        name, skill_md_file = positional(args, 2, verb)
+        check(name, NAME_RE, 'skill name')
+        body = {'name': name, 'skill_md': read_text(skill_md_file)}
+        if not body['skill_md'].strip():
+            fail_usage('skill-propose: the SKILL.md is empty')
+        if reason_file is not None:
+            body['reason'] = read_text(reason_file)
+        if ref_files:
+            files = {}
+            for ref in ref_files:
+                base = os.path.basename(ref)
+                check(base, REF_FILE_RE, 'reference file name (lowercase letters, digits, . _ -, ending in .md)')
+                key = f'references/{base}'
+                if key in files:
+                    fail_usage(f'skill-propose: {base} is given twice')
+                files[key] = read_text(ref)
+            body['files'] = files
+        return 'POST', '/api/skills/propose', body, headers, {}
+    if verb == 'kanban-list':
+        positional(args, 0, verb)
+        return 'GET', '/api/kanban', None, headers, {}
+    if verb == 'schedules-list':
+        # VOICETOKENLEAK1101 PR-B: the schedule list, read only (the self-pace gate keeps every schedule WRITE to the main
+        # agent; schedule_write_refused stops any non-GET under the schedule route before it is sent).
+        positional(args, 0, verb)
+        return 'GET', '/api/schedules', None, headers, {}
+    if verb == 'agents-list':
+        positional(args, 0, verb)
+        return 'GET', '/api/agents', None, headers, {}
+    if verb == 'kanban-create':
+        assignee, priority, title_file = positional(args, 3, verb)
+        check(assignee, NAME_RE, 'agent name')
+        if priority not in PRIORITIES:
+            fail_usage(f'invalid priority: {priority!r} (one of {", ".join(PRIORITIES)})')
+        title = read_text(title_file).strip()
+        if not title:
+            fail_usage('kanban-create: the title is empty')
+        if len(title) > 300:
+            fail_usage('kanban-create: the title is longer than 300 characters (the board would cut it)')
+        return 'POST', '/api/kanban', {'title': title, 'status': 'planned', 'assignee': assignee, 'priority': priority}, headers, {}
+    if verb == 'kanban-move':
+        expected = take_opt(args, '--expected-status')
+        evidence_file = take_opt(args, '--evidence-file')
+        actor = take_opt(args, '--actor')
+        card, status = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        body = {'status': check(status, STATUS_RE, 'status')}
+        if expected is not None:
+            body['expected_status'] = check(expected, STATUS_RE, 'status')
+        if evidence_file is not None:
+            body['evidence'] = read_text(evidence_file)
+            if not body['evidence'].strip():
+                fail_usage('kanban-move: the evidence is empty')
+        if actor is not None:
+            body['actor'] = check(actor, NAME_RE, 'agent name')
+        return 'POST', f'/api/kanban/{card}/move', body, headers, {}
+    if verb in ('kanban-claim', 'kanban-release'):
+        ttl = take_opt(args, '--ttl') if verb == 'kanban-claim' else None
+        card, agent = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        body = {'agent': check(agent, NAME_RE, 'agent name')}
+        if ttl is not None:
+            body['ttl_seconds'] = int(check(ttl, ID_RE, 'ttl'))
+        return 'POST', f'/api/kanban/{card}/{verb.split("-")[1]}', body, headers, {}
+    if verb == 'kanban-assign':
+        # VOICETOKENLEAK1101 round 2: the kanban dispatch's hand-back step (PUT /api/kanban/<id> {assignee}).
+        actor = take_opt(args, '--actor')
+        card, assignee = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        body = {'assignee': check(assignee, ASSIGNEE_RE, 'assignee')}
+        if actor is not None:
+            body['actor'] = check(actor, NAME_RE, 'agent name')
+        return 'PUT', f'/api/kanban/{card}', body, headers, {}
+    if verb == 'kanban-comment':
+        card, author, content_file = positional(args, 3, verb)
+        check(card, CARD_ID_RE, 'card id')
+        check(author, NAME_RE, 'agent name')
+        content = read_text(content_file)
+        if not content.strip():
+            fail_usage('kanban-comment: the content is empty')
+        return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 
@@ -298,11 +485,21 @@ def main(argv):
         # marveen-api.sh asks this before it hands the message verb to agent-msg.sh, which reads
         # the same two variables.
         return 0
+    if argv[0] == '--check-token':
+        # ...and this one too: the token file the way the other verbs read it (missing, unreadable
+        # or empty -> exit 2, nothing sent). agent-msg.sh alone would send an empty Bearer for an
+        # empty file (VOICETOKENLEAK1101 PR-A0).
+        read_token()
+        return 0
     verb, rest = argv[0], argv[1:]
     try:
         method, path, body, headers, flags = build_request(verb, rest)
     except UsageError as e:
         print(f'FAIL: {e}\n{USAGE}', file=sys.stderr)
+        return 2
+    refused = schedule_write_refused(method, path)
+    if refused:
+        print(f'FAIL: {refused}', file=sys.stderr)
         return 2
     token = read_token()
     data = json.dumps(body).encode('utf-8') if body is not None else None
@@ -330,6 +527,7 @@ def main(argv):
         label = resp_headers.get('X-Memory-Search') if resp_headers else None
         print(f'X-Memory-Search: {label}' if label else 'X-Memory-Search: MISSING (the search did not run as asked)')
     if 200 <= status < 300:
+        empty_sent_payloads()
         print(text)
         return 0
     print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)

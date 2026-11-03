@@ -24,6 +24,7 @@ const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'),
 const WEB = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
 const AGENT_PROCESS = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 const TEMPLATES = join(__dirname, '..', '..', 'templates')
+const TOKENS = readFileSync(join(__dirname, '..', 'web', 'agent-tokens.ts'), 'utf-8')
 
 const OLD = '/Users/peterszollos/klaudia'
 const NEW = '/Users/pcha0s/klaudia'
@@ -188,7 +189,12 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
   })
 
   it('keeps the absolute token path (the relative form is the measured 401)', () => {
-    expect(SCAFFOLD).toContain("const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')")
+    // The recipes read a PER-AGENT token path (AGENT_TOKENS), resolved
+    // absolutely in agent-tokens.ts (agents/<name>/.dashboard-token, else the
+    // shared store token) -- still absolute, never the relative form.
+    expect(SCAFFOLD).toContain('const tokenPath = dashboardTokenPathFor(name)')
+    expect(TOKENS).toContain("export function mainTokenPath(): string { return join(PROJECT_ROOT, 'store', '.dashboard-token') }")
+    expect(TOKENS).toContain("function agentsBaseDir(): string { return join(PROJECT_ROOT, 'agents') }")
     expect(INSTALL_ANCHORED_SUFFIXES).toContain('/store/.dashboard-token')
   })
 })
@@ -222,7 +228,10 @@ describe('every install path written into a CLAUDE.md or a hook prompt is re-anc
     INSTALL_ANCHORED_SUFFIXES.some((s) => (s.endsWith('/') ? suffix.startsWith(s) : suffix === s))
 
   it('the scanner finds the known recipe paths (not a vacuous pass)', () => {
-    expect(all).toEqual(expect.arrayContaining(['/store/.dashboard-token', '/scripts/recipient-ledger.mjs', '/scripts/skill-lint.mjs', '/scripts/skill-index.sh']))
+    // #2338: the PreCompact prompt names the helper, no longer the token file (the
+    // token suffix stays in INSTALL_ANCHORED_SUFFIXES for prompts and CLAUDE.md files
+    // already written with it).
+    expect(all).toEqual(expect.arrayContaining(['/scripts/marveen-api.sh', '/scripts/recipient-ledger.mjs', '/scripts/skill-lint.mjs', '/scripts/skill-index.sh']))
   })
 
   it.each(all)('%s is covered by INSTALL_ANCHORED_SUFFIXES or exempted with a reason', (suffix) => {

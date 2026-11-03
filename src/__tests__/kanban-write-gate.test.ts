@@ -15,6 +15,9 @@ import {
   injectKanbanWriteGate,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID } from '../config.js'
+import { spawnSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const bash = (command: string) => gateDecision('Bash', { command })
 
@@ -87,6 +90,94 @@ describe('kanban-write-gate gateDecision: the worker duties that MUST pass', () 
   })
   it('ignores non-Bash tools', () => {
     expect(gateDecision('Write', { file_path: '/x', content: 'UPDATE kanban_cards SET' }).deny).toBe(false)
+  })
+})
+
+describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080)', () => {
+  // #2080 moved the kanban recipes onto scripts/marveen-api.sh: a write is now a verb of the helper,
+  // with no /api/kanban URL and no SQL on the command line, so neither rule above sees it. The helper
+  // path -- or a bash / sh / python runner or a parameter expansion, since the path may sit in a variable --
+  // followed by a write verb denies; the read verbs, the help and the report message pass.
+  const denied = (command: string) => {
+    const v = bash(command)
+    expect({ command, deny: v.deny, reason: v.reason }).toEqual({ command, deny: true, reason: 'kanban-helper-write' })
+  }
+  it('denies every write verb of the helper', () => {
+    for (const command of [
+      'bash scripts/marveen-api.sh kanban-create heartbeat normal /tmp/title.txt',
+      'bash scripts/marveen-api.sh kanban-move abcd1234 done --evidence-file /tmp/ev.txt',
+      'bash scripts/marveen-api.sh kanban-claim abcd1234 heartbeat',
+      'bash scripts/marveen-api.sh kanban-release abcd1234 heartbeat',
+      'bash scripts/marveen-api.sh kanban-comment abcd1234 heartbeat /tmp/c.txt',
+    ]) denied(command)
+  })
+  it('denies the other spellings of the same call', () => {
+    for (const command of [
+      'bash /home/marveen/marveen/scripts/marveen-api.sh kanban-move abcd1234 done',
+      "bash '/home/x y/marveen/scripts/marveen-api.sh' 'kanban-move' abcd1234 done",
+      'cd /home/marveen/marveen && MARVEEN_API_BASE=http://127.0.0.1:3420 bash scripts/marveen-api.sh kanban-comment abcd1234 heartbeat /tmp/c.txt',
+      'scripts/marveen-api.sh kanban-claim abcd1234 heartbeat',
+      'timeout 30 bash scripts/marveen-api.sh kanban-release abcd1234 heartbeat',
+      'python3 scripts/lib/marveen_api.py kanban-create heartbeat high /tmp/t.txt',
+      'H=scripts/marveen-api.sh; bash "$H" kanban-move abcd1234 done',
+      // the shell joins what the quotes split, and a quoted space keeps NAME=value one word
+      'H=scripts/marveen-api.sh; bash "$H" kanban-"move" abcd1234 done',
+      "bash scripts/marveen-api.sh 'kanban'-move abcd1234 done",
+      "H=scripts/marveen-api.sh; X='a b' bash \"$H\" kanban-move abcd1234 done",
+      'H=scripts/marveen-api.sh; timeout 30 bash "$H" kanban-move abcd1234 done',
+      // the helper run straight from a variable: a parameter expansion is a runner, too
+      'H=scripts/marveen-api.sh; "$H" kanban-move abcd1234 done',
+      'H=scripts/marveen-api.sh; ${H} kanban-claim abcd1234 heartbeat',
+      'P=scripts/lib/marveen_api.py; python3.11 "$P" kanban-create heartbeat high /tmp/t.txt',
+      // a backslash-newline is joined by the shell before it splits words
+      'bash scripts/marveen-api.sh kanban-mo\\\nve abcd1234 done',
+    ]) denied(command)
+  })
+  it('allows the read verbs, the help and the report message', () => {
+    for (const command of [
+      'bash scripts/marveen-api.sh kanban-list',
+      'bash scripts/marveen-api.sh agents-list',
+      'bash scripts/marveen-api.sh --help',
+      'bash scripts/marveen-api.sh message heartbeat marveen /tmp/jelolt.txt',
+      "bash scripts/marveen-api.sh message heartbeat marveen - <<'EOF'\nabcd1234 | waiting | javasolt: kanban-move abcd1234 done | msg 123\nEOF",
+      'grep -n kanban-move scripts/lib/marveen_api.py',
+    ]) expect({ command, deny: bash(command).deny }).toEqual({ command, deny: false })
+  })
+  // The word boundaries (maintainer mutants on #2080): the shell drops a backslash anywhere in a word, not only
+  // before a newline; the runner and the verb count only as whole words.
+  it('denies a verb with a backslash inside the word', () => {
+    for (const command of [
+      'bash scripts/marveen-api.sh kanban-mo\\ve abcd1234 done',
+      'bash scripts/marveen-api.sh kanban\\-claim abcd1234 heartbeat',
+    ]) denied(command)
+  })
+  it('allows a runner name inside a longer word: git push, git show, a path ending in .sh, $VAR/path', () => {
+    for (const command of [
+      'git push fork kanban-move',
+      'git show kanban-move',
+      './scripts/agent-msg.sh lead "kanban-move done"',
+      'cat "$TMPDIR/kanban.txt" kanban-move',
+    ]) expect({ command, deny: bash(command).deny }).toEqual({ command, deny: false })
+  })
+  it('allows a verb inside a longer word: a path, a file name, a plural', () => {
+    for (const command of [
+      'bash scripts/marveen-api.sh message heartbeat marveen /tmp/kanban-move',
+      'bash scripts/marveen-api.sh message heartbeat marveen kanban-comment.txt',
+      'bash scripts/marveen-api.sh message heartbeat marveen kanban-moves',
+    ]) expect({ command, deny: bash(command).deny }).toEqual({ command, deny: false })
+  })
+  it('the hook process: deny-JSON for a helper write; empty output for kanban-list and for broken input; exit 0', () => {
+    const gate = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'kanban-write-gate.mjs')
+    const run = (input: string) => spawnSync(process.execPath, [gate], { input, encoding: 'utf-8' })
+    const call = (command: string) => run(JSON.stringify({ tool_name: 'Bash', tool_input: { command } }))
+    const w = call('bash scripts/marveen-api.sh kanban-move abcd1234 done')
+    expect({ status: w.status, decision: JSON.parse(w.stdout).hookSpecificOutput.permissionDecision }).toEqual({ status: 0, decision: 'deny' })
+    const r = call('bash scripts/marveen-api.sh kanban-list')
+    expect({ status: r.status, stdout: r.stdout }).toEqual({ status: 0, stdout: '' })
+    const c = call('bash scripts/marveen-api.sh kanban-mo\\\nve abcd1234 done')
+    expect({ status: c.status, decision: JSON.parse(c.stdout).hookSpecificOutput.permissionDecision }).toEqual({ status: 0, decision: 'deny' })
+    const b = run('{not json')
+    expect({ status: b.status, stdout: b.stdout }).toEqual({ status: 0, stdout: '' })
   })
 })
 

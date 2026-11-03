@@ -11,7 +11,7 @@
   <!-- QR generator for the mobile-login button (renders a scannable QR of the
        ?token= bootstrap URL on the already-authenticated desktop -- the token
        never travels through chat). MIT, dependency-free, same CDN as xterm. -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js" integrity="sha384-e9EFD6BGC90bkW9aDV5xbbBfzwN7G8YImHao2lfLVKV/hPB0E0go+H3I64h7oHtA" crossorigin="anonymous"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <link rel="icon" href="/api/marveen/avatar">
@@ -943,16 +943,37 @@
         <div class="connector-external-paths">
           <div class="connector-external-header" id="githubReposToggle">
             <span class="connector-scope-toggle">▶</span>
-            GitHub repok <span class="connector-scope-count" id="githubRepoCount">0</span>
+            <span data-i18n="connectors.github_repos">GitHub-repók</span> <span class="connector-scope-count" id="githubRepoCount">0</span>
           </div>
           <div class="connector-external-body" id="githubReposBody" hidden>
             <div id="githubRepoList"></div>
             <div class="connector-external-add">
               <input type="text" id="githubRepoInput" class="input" placeholder="https://github.com/user/repo">
-              <button class="btn-secondary btn-compact" id="githubRepoAddBtn">Telepites</button>
+              <button class="btn-secondary btn-compact" id="githubRepoAddBtn" data-i18n="connectors.catalog.install_btn">Telepítés</button>
             </div>
             <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="githubRepoRunScripts"> <span data-i18n="connectors.run_scripts_label">npm install scriptek futtatása (a repó kódja lefut ezen a gépen)</span></label>
             <div id="githubRepoStatus" class="github-repo-status" hidden></div>
+          </div>
+        </div>
+
+        <!-- Adopted open-source inventory: code the scan finds in the agents' own
+             folders. The GitHub repos count above counts dashboard-installed
+             repos, so on its own it can read 0 while the agents use more. -->
+        <div class="connector-external-paths" id="ossInventorySection">
+          <div class="connector-external-header" id="ossInventoryToggle">
+            <span class="connector-scope-toggle">▶</span>
+            <span data-i18n="oss.title">Átvett nyílt forrású projektek</span> <span class="connector-scope-count" id="ossInventoryCount">…</span>
+          </div>
+          <div class="connector-external-body" id="ossInventoryBody" hidden>
+            <div class="oss-inv-note" data-i18n="oss.note">A bejárás által az ágensek saját mappáiban talált kód: skill-forrás, git-klón, MCP, npm, pip. A fenti „GitHub-repók” szám a dashboardon át telepített repókat számolja, ezeket nem.</div>
+            <div class="oss-inv-toolbar">
+              <span class="oss-inv-meta" id="ossInventoryMeta"></span>
+              <label class="oss-inv-check"><input type="checkbox" id="ossInventoryTransitive"> <span data-i18n="oss.show_transitive">Közvetett függőségek is (pip és npm)</span></label>
+              <button class="btn-secondary btn-compact" id="ossInventoryRefresh" data-i18n="common.refresh">Frissítés</button>
+            </div>
+            <div class="github-repo-status error" id="ossInventoryError" hidden></div>
+            <div class="oss-inv-sub" id="ossInventoryOwnClones" hidden></div>
+            <div id="ossInventoryList"></div>
           </div>
         </div>
 
@@ -1331,6 +1352,42 @@
 
       <nav class="tab-nav" id="settingsTabNav" style="margin-bottom:0"></nav>
       <div id="settingsTabPanels"></div>
+
+      <!-- GROMZOOWNERQR1030: the Gromzo app's owner QR code, collapsed at the bottom of
+           Settings (the owner asked for a less prominent place for now). The first time it is the
+           registration code, afterwards the login code for a new phone. The code is
+           drawn client-side into #gromzoQr only, shown for at most 2 minutes, then
+           wiped. Rendered by setupGromzoCard() in app.js. -->
+      <details class="card gromzo-card" id="gromzoCard" style="margin-top:16px">
+        <summary class="gromzo-summary" data-i18n="gromzo.card.title">Gromzo (mobilapp)</summary>
+        <p class="modal-desc" data-i18n="gromzo.card.desc">Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.</p>
+        <p class="gromzo-status" id="gromzoStatus"></p>
+        <div class="gromzo-owner-info" id="gromzoOwnerInfo" role="status" hidden>
+          <p class="gromzo-owner-info-text" data-i18n="gromzo.owner_login.info">Az ügynökök kapcsolásához és a telefon hozzáadásához be kell lépned a dashboard-jelszavaddal: a tulajdonost csak a jelszó azonosítja, a Bridge vagy a hozzáférési kulcs nem. A belépés ebben az ablakban megmarad, amíg ki nem jelentkezel, vagy le nem jár.</p>
+          <button class="btn-primary btn-compact" id="gromzoLoginBtn" data-i18n="gromzo.btn.login">Belépés jelszóval</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary btn-compact" id="gromzoAddPhoneBtn" data-i18n="gromzo.btn.add_phone">Telefon hozzáadása</button>
+        </div>
+        <p class="mobile-login-warn" id="gromzoError" hidden></p>
+        <div class="gromzo-owner-logout">
+          <button class="btn-secondary btn-compact" id="gromzoLogoutBtn" hidden data-i18n="gromzo.btn.logout">Tulajdonosi kijelentkezés</button>
+        </div>
+        <div class="gromzo-qr-area" id="gromzoQrArea" hidden>
+          <div id="gromzoQr" class="mobile-login-qr"></div>
+          <p class="modal-desc" id="gromzoQrHint"></p>
+          <p class="gromzo-countdown" id="gromzoCountdown"></p>
+          <p class="mobile-login-warn" data-i18n="gromzo.qr.warn">A kód belépést ad a fiókodba. Csak a saját telefonoddal olvasd be, ne fotózd le és ne oszd meg.</p>
+          <button class="btn-secondary btn-compact" id="gromzoQrClose" data-i18n="gromzo.btn.hide">Kód elrejtése</button>
+        </div>
+        <div class="gromzo-agents" id="gromzoAgents">
+          <h4 class="gromzo-agents-title" data-i18n="gromzo.agents.title">Ügynökök a Gromzóban</h4>
+          <p class="modal-desc" data-i18n="gromzo.agents.desc">Itt választod ki, melyik ügynököd érhető el a Gromzo appban. Bekapcsolás előtt a telefonodon, a Gromzo appban kell jóváhagynod.</p>
+          <p class="gromzo-agents-limit" data-i18n="gromzo.agents.limit">Óránként legfeljebb 3 változtatás. Minden változtatás után a chat-szolgáltatás néhány másodpercre újraindul.</p>
+          <ul class="gromzo-agent-list" id="gromzoAgentList"></ul>
+          <p class="mobile-login-warn" id="gromzoAgentsError" hidden></p>
+        </div>
+      </details>
       <!-- Sticky save bar -- shown only when there are unsaved changes -->
       <div id="settingsSaveBar" style="display:none;position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:12px 24px;display:none;align-items:center;justify-content:space-between;gap:12px;z-index:10">
         <span id="settingsDirtyCount" style="font-size:13px;color:var(--text-muted)"></span>
@@ -1567,7 +1624,7 @@
           </div>
           <div class="vault-field-group">
             <label class="vault-field-label" data-i18n="vault.field.desc_label">Leiras (opcionalis)</label>
-            <input type="text" id="vaultPageLabelInput" class="input" placeholder="pl. OpenAI production key">
+            <input type="text" id="vaultPageLabelInput" class="input" maxlength="200" placeholder="pl. OpenAI production key">
           </div>
           <div class="vault-field-group">
             <label class="vault-field-label" data-i18n="vault.field.value_label">Ertek</label>
@@ -2299,11 +2356,11 @@
         </div>
 
         <div id="cardChildrenSection" style="display:none; margin-top:12px">
-          <h4 data-i18n="kanban.modal.subtasks_title">Subtask-ok</h4>
+          <h4 data-i18n="kanban.modal.subtasks_title">Részfeladatok</h4>
           <div id="cardChildrenList" class="comments-list"></div>
           <div id="cardAddSubtaskSection" style="display:none; margin-top:8px">
             <div class="form-row" style="gap:8px; align-items:center">
-              <input type="text" id="newSubtaskTitle" placeholder="Új alfeladat neve..." data-i18n-placeholder="kanban.detail.subtask_placeholder" style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <input type="text" id="newSubtaskTitle" placeholder="Új részfeladat neve..." data-i18n-placeholder="kanban.detail.subtask_placeholder" style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
               <button class="btn-primary btn-compact" id="addSubtaskBtn" data-i18n="common.btn.add">Hozzáadás</button>
             </div>
           </div>
@@ -2358,7 +2415,7 @@
           <textarea id="breakdownSuccessCriteria" class="input" rows="2" placeholder="Mikor tekinthető sikeresnek a feladat?" data-i18n-placeholder="kanban.breakdown.success_placeholder" style="width:100%;resize:vertical;font-size:13px"></textarea>
         </div>
         <div class="detail-actions" style="gap:8px; margin-top:16px">
-          <button class="btn-primary" id="breakdownAcceptBtn" data-i18n="kanban.breakdown.accept_btn">Subtask-ok létrehozása</button>
+          <button class="btn-primary" id="breakdownAcceptBtn" data-i18n="kanban.breakdown.accept_btn">Részfeladatok létrehozása</button>
           <button class="btn-secondary" id="breakdownRejectBtn" data-i18n="common.btn.cancel">Mégse</button>
         </div>
       </div>

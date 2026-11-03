@@ -10,7 +10,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import {
-  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, rejectPending, targetRoot,
+  appendSkillAudit, approvePending, archiveSuperseded, getPending, importArchiveToPending, listPending, liveOrPending, nameConflict, quarantineOn, queueGeneratedSkill, queueProposedSkill, parseProposedFiles, MAX_PROPOSED_SKILL_BYTES, rejectPending, targetRoot,
   type SkillTarget,
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
@@ -18,7 +18,7 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName } from '../sanitize.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -285,7 +285,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // browser sends the stored token alongside it; the bare token only before the first dashboard
     // login exists. Reject is held to the same bar, so an agent cannot discard what is waiting for
     // the owner's review either.
-    if (!mayIssueCredentials(ctx.auth, req)) {
+    if (!mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: pendingActionMatch[1], action: pendingActionMatch[2], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Pending skill decision refused: no owner session')
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
@@ -419,6 +419,66 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // D4: an agent proposes a complete SKILL.md for the GLOBAL root. It is queued like a generated
+  // skill and waits for the owner's approval; an already-live name is a replacement, whose
+  // approval backs the old version up (skill-quarantine.ts). Proposing needs only the dashboard
+  // token every agent holds; approving stays owner-only (see the pending routes above).
+  if (path === '/api/skills/propose' && method === 'POST') {
+    let body: { name?: unknown; skill_md?: unknown; reason?: unknown; files?: unknown }
+    // Strict UTF-8 (SKILLSPLIT1101, Dani 65108): Buffer.toString() would turn an invalid byte into U+FFFD silently,
+    // so the approver would read, and the skill would carry, something other than what was sent.
+    let bodyText: string
+    const rawBody = await readBody(req)
+    try { bodyText = new TextDecoder('utf-8', { fatal: true }).decode(rawBody) } catch { json(res, { error: 'The body is not valid UTF-8' }, 400); return true }
+    try { body = JSON.parse(bodyText) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    const rawName = typeof body?.name === 'string' ? body.name : ''
+    const name = sanitizeSkillName(rawName)
+    if (!name || name !== rawName) { json(res, { error: 'Invalid skill name (use lowercase letters, digits and hyphens)' }, 400); return true }
+    const root = targetRoot({ scope: 'global' })
+    if (!join(root, name).startsWith(root + sep)) { json(res, { error: 'Invalid skill name' }, 400); return true }
+    const skillMd = body?.skill_md
+    if (typeof skillMd !== 'string' || !skillMd.trim()) { json(res, { error: 'skill_md (the full SKILL.md text) is required' }, 400); return true }
+    if (Buffer.byteLength(skillMd) > MAX_PROPOSED_SKILL_BYTES) { json(res, { error: `skill_md is over ${MAX_PROPOSED_SKILL_BYTES} bytes` }, 400); return true }
+    // SKILLSPLIT1101: optional references/<name>.md files next to the SKILL.md (skill-quarantine.ts parseProposedFiles).
+    const parsed = parseProposedFiles(body?.files, Buffer.byteLength(skillMd))
+    if (!parsed.ok) { json(res, { error: parsed.error }, 400); return true }
+    const reason = typeof body?.reason === 'string' ? body.reason.slice(0, 2000) : undefined
+    const proposedBy = typeof ctx.auth?.agent === 'string' && ctx.auth.agent ? ctx.auth.agent : undefined
+    // SKILLAPPROVALOFF1101 follow-up (Samu 65825, final shape Dani 65845 / Samu 65847): with the quarantine OFF, a new
+    // proposal of a name that is already waiting supersedes the waiting one, whoever sent either (OFF, any agent can
+    // put any new name live anyway, and the sender is self-declared, null on every proposal from before). The new one
+    // goes live on the OFF path first; only then is the waiting one archived. If the new one is held, it is dropped
+    // and the waiting one stays. ON keeps today's 409.
+    const off = !quarantineOn()
+    const r = queueProposedSkill(name, skillMd, { proposedBy, reason, files: parsed.files, ...(off ? { mayReplacePending: () => true } : {}) })
+    if (!r.ok) { json(res, { error: r.error }, r.status); return true }
+    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy, supersedes: r.waiting }, 'Global skill proposed and queued for approval')
+    const lp = await liveOrPending(r.meta.id, serializeSkillsDir)
+    const { hash: _h, ...answer } = lp
+    let superseded: string | undefined
+    if (r.waiting) {
+      if (!lp.live) {
+        rejectPending(r.meta.id)
+        logger.warn({ name, id: r.meta.id, waiting: r.waiting }, 'skill: a superseding proposal was held, so the waiting one stays')
+        json(res, { error: `The new proposal could not go live (${lp.held ?? 'held'}); the waiting one of this name stays`, held: lp.held, waiting: r.waiting }, 409)
+        return true
+      }
+      const old = await serializeSkillsDir(() => archiveSuperseded(r.waiting!))
+      if (old) {
+        superseded = r.waiting
+        appendSkillAudit({
+          at: new Date().toISOString(), event: 'superseded_unquarantined', id: r.waiting, name, source: 'propose', target: { scope: 'global' },
+          proposedBy: old.proposedBy, hash: old.hash, replaces: false, findings: {}, findingsTruncated: false,
+          supersededBy: { id: r.meta.id, hash: lp.hash ?? null, proposedBy: proposedBy ?? null },
+        })
+      } else {
+        logger.error({ name, waiting: r.waiting }, 'skill: the superseded proposal could not be archived; it is still listed as waiting')
+      }
+    }
+    json(res, { ok: true, name, ...answer, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [], ...(superseded ? { superseded } : {}) })
+    return true
+  }
+
   // MARVEENGAPS1020 (b): a generated skill is QUEUED for approval, never written
   // into the global root, which every agent of the fleet loads. See
   // skill-quarantine.ts for what the approver is shown and what is not covered.
@@ -448,7 +508,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     const queued = queueGeneratedSkill(target, skillName, skillMd)
     logger.info({ name: skillName, id: queued.id }, 'Global skill generated and queued for approval')
-    json(res, { ok: true, name: skillName, pending: true, id: queued.id })
+    json(res, { ok: true, name: skillName, ...(await liveOrPending(queued.id, serializeSkillsDir)), id: queued.id })
     return true
   }
 
@@ -462,7 +522,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (!r.ok) { json(res, { error: r.error }, r.status); return true }
       const names = r.queued.map((q) => q.name)
       logger.info({ skills: names }, 'Global skill(s) imported and queued for approval')
-      json(res, { ok: true, imported: names, pending: true, ids: r.queued.map((q) => q.id) })
+      const each: Array<{ name: string, id: string, pending: boolean, live: boolean, held?: string }> = []
+      for (const q of r.queued) each.push({ name: q.name, id: q.id, ...(await liveOrPending(q.id, serializeSkillsDir)) })
+      json(res, { ok: true, imported: names, pending: each.some((e) => e.pending), ids: r.queued.map((q) => q.id), skills: each })
     } catch (err) {
       logger.error({ err }, 'Failed to import global skill')
       json(res, { error: 'Failed to extract .skill file' }, 500)

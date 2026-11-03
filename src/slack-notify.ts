@@ -122,6 +122,38 @@ export function agentSlackStateDir(agent: string): string {
   return join(PROJECT_ROOT, 'agents', agent, '.claude', 'channels', 'slack')
 }
 
+/**
+ * APPROVALSLACK1030 (Samu 66026, Dani 66016 (b)): before an owner message goes straight to a raw DM id (no
+ * conversations.open: the bot lacks im:write, measured by Marveen 66022), is that channel really the owner's DM with
+ * our bot? Read with im:history: among the last 50 messages, no human other than the owner wrote (our bot aside).
+ * 'foreign': someone else wrote there, do not post. 'unknown': the check could not run (no token, no owner id, an API
+ * error): the caller posts anyway, the id's source being protected (loosens + db-write-gate). Never throws.
+ */
+export async function ownerDmVerdict(channel: string, ownerUserId: string | null, deps: Partial<SlackDeps> = {}): Promise<'ok' | 'foreign' | 'unknown'> {
+  const d: SlackDeps = { ...defaultDeps, ...deps }
+  try {
+    if (!/^D[A-Z0-9]{6,}$/.test(channel) || !ownerUserId) return 'unknown'
+    const token = tokenFrom(mainSlackStateDir(d.readFile), d)
+    if (!token) return 'unknown'
+    const auth = await api(d, token, 'auth.test', {}) as { ok: boolean; user_id?: string }
+    if (!auth.ok || !auth.user_id) return 'unknown'
+    const h = await api(d, token, 'conversations.history', { channel, limit: 50 }) as { ok: boolean; messages?: Array<{ user?: unknown; bot_id?: unknown }> }
+    if (!h.ok || !Array.isArray(h.messages)) return 'unknown'
+    const humans = new Set(h.messages.filter((m) => typeof m.user === 'string' && !m.bot_id).map((m) => m.user as string))
+    humans.delete(auth.user_id)
+    humans.delete(ownerUserId)
+    return humans.size === 0 ? 'ok' : 'foreign'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** The main agent's bot token (xoxb), or null: the dashboard's own Slack calls use it (APPROVALSLACK1030 (2)). */
+export function mainBotToken(deps: Partial<SlackDeps> = {}): string | null {
+  const d: SlackDeps = { ...defaultDeps, ...deps }
+  return tokenFrom(mainSlackStateDir(d.readFile), d)
+}
+
 function tokenFrom(dir: string, deps: SlackDeps): string | null {
   const raw = deps.readFile(join(dir, '.env'))
   if (!raw) return null
@@ -153,7 +185,15 @@ async function api(deps: SlackDeps, token: string, method: string, body: Record<
   return (await resp.json()) as { ok: boolean; error?: string; channel?: { id?: string } }
 }
 
-async function postWith(deps: SlackDeps, token: string, target: SlackTarget, text: string): Promise<SendResult> {
+/**
+ * Slack's mandatory escape for text it must show as written (& < >): no <url|label> link, no @-mention, no channel
+ * reference can come out of it. Exported for tests.
+ */
+export function slackEscape(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+async function postWith(deps: SlackDeps, token: string, target: SlackTarget, text: string, raw = false): Promise<SendResult> {
   let channel: string
   if (target.kind === 'dm') {
     const opened = await api(deps, token, 'conversations.open', { users: target.userId })
@@ -162,7 +202,9 @@ async function postWith(deps: SlackDeps, token: string, target: SlackTarget, tex
   } else {
     channel = target.id
   }
-  for (const chunk of splitForSlack(formatForSlackMrkdwn(text))) {
+  // raw (APPROVALSLACK1030, Dani 55614 F1): text another agent wrote, shown as written: escaped, never turned into mrkdwn
+  // links ([label](url) would become <url|label>, a link whose label lies about its address).
+  for (const chunk of splitForSlack(raw ? slackEscape(text) : formatForSlackMrkdwn(text))) {
     const r = await api(deps, token, 'chat.postMessage', { channel, text: chunk, unfurl_links: false, unfurl_media: false })
     if (!r.ok) return { ok: false, channel, error: r.error ?? 'post_failed' }
   }
@@ -178,7 +220,7 @@ const FALLBACK_ERRORS = new Set(['not_in_channel', 'channel_not_found', 'dm_open
 export async function sendSlackNotification(
   rawTarget: string,
   text: string,
-  opts: { sender?: string; ownerUserId?: string; deps?: Partial<SlackDeps> } = {},
+  opts: { sender?: string; ownerUserId?: string; raw?: boolean; deps?: Partial<SlackDeps> } = {},
 ): Promise<SendResult> {
   const deps: SlackDeps = { ...defaultDeps, ...opts.deps }
   try {
@@ -190,12 +232,12 @@ export async function sendSlackNotification(
     const mainToken = tokenFrom(mainDir, deps)
     const ownToken = sender ? tokenFrom(agentSlackStateDir(sender), deps) : mainToken
     if (ownToken) {
-      const r = await postWith(deps, ownToken, target, text)
+      const r = await postWith(deps, ownToken, target, text, opts.raw)
       if (r.ok) return { ...r, via: sender ? 'own' : 'main' }
       if (!sender || !FALLBACK_ERRORS.has(r.error ?? '')) return r
     }
     if (!mainToken) return { ok: false, error: 'no_slack_token' }
-    const r = await postWith(deps, mainToken, target, sender ? `[${sender}] ${text}` : text)
+    const r = await postWith(deps, mainToken, target, sender ? `[${sender}] ${text}` : text, opts.raw)
     return r.ok ? { ...r, via: 'main' } : r
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }

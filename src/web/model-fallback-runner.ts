@@ -234,6 +234,6 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
       tickRunning = false
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
+  setTimeout(whileNotFrozen('model-fallback', sweep), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('model-fallback', sweep), INTERVAL_MS)
 }

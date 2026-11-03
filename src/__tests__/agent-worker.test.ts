@@ -100,14 +100,32 @@ describe('workerHomeFor (WORKERHOME1: worker home derives from MAIN_AGENT_ID)', 
 })
 
 describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker start)', () => {
+  // An explicit install root: the default (PROJECT_ROOT) would make these depend on where the suite runs
+  // (a worktree checkout is itself a second instance).
+  const install = { projectRoot: '/Users/x/ClaudeClaw', isGitFile: () => false, tmpDir: '/var/folders/zz/T' }
+
   it('blocks in WEB_ONLY staging', () => {
-    expect(workerStartAllowed({ WEB_ONLY: 'true' })).toBe(false)
+    expect(workerStartAllowed({ WEB_ONLY: 'true' }, install)).toBe(false)
   })
 
   it('allows on a normal install (unset or explicit false)', () => {
-    expect(workerStartAllowed({})).toBe(true)
-    expect(workerStartAllowed({ WEB_ONLY: 'false' })).toBe(true)
-    expect(workerStartAllowed({ WEB_ONLY: '' })).toBe(true)
+    expect(workerStartAllowed({}, install)).toBe(true)
+    expect(workerStartAllowed({ WEB_ONLY: 'false' }, install)).toBe(true)
+    expect(workerStartAllowed({ WEB_ONLY: '' }, install)).toBe(true)
+  })
+
+  it('#2419 follow-up: blocks a second instance (worktree, linked worktree, temp clone) unless it opts in', () => {
+    const second = [
+      { projectRoot: '/Users/x/ClaudeClaw/.claude/worktrees/wt1', isGitFile: () => false, tmpDir: '/var/folders/zz/T' },
+      { projectRoot: '/Users/x/abel-wt-bridgemeasure', isGitFile: () => true, tmpDir: '/var/folders/zz/T' },
+      { projectRoot: '/private/tmp/canary', isGitFile: () => false, tmpDir: '/var/folders/zz/T' },
+    ]
+    for (const where of second) {
+      expect(workerStartAllowed({}, where), where.projectRoot).toBe(false)
+      expect(workerStartAllowed({ MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES: '1' }, where), where.projectRoot).toBe(true)
+      expect(workerStartAllowed({ MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES: 'true' }, where), where.projectRoot).toBe(false)
+      expect(workerStartAllowed({ WEB_ONLY: 'true', MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES: '1' }, where), where.projectRoot).toBe(false)
+    }
   })
 
   // String-contract wiring guard (house idiom: the pure predicate alone cannot

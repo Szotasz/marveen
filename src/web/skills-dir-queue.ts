@@ -5,9 +5,9 @@
 // an approval could change a directory under it: zip exits 18 on a file removed
 // after its scan (the export then fails with 500), and a copy can take half of a
 // skill, and a fleet export can read half of one. Export, assign, approve,
-// delete and the fleet import and export go through this queue. Agent bundles
-// and writers outside the dashboard (an agent editing its own skills) are not
-// covered.
+// delete, the fleet import and export, the agent bundle export and import and the
+// removal of an agent's directory go through this queue. Writers outside the
+// dashboard (an agent editing its own skills) are not covered.
 let skillsDirQueue: Promise<unknown> = Promise.resolve()
 
 export function serializeSkillsDir<T>(op: () => Promise<T> | T): Promise<T> {

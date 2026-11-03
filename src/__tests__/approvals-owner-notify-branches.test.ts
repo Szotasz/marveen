@@ -28,6 +28,8 @@ const { cfg } = vi.hoisted(() => ({
 
 const ownerSends: string[] = []
 vi.mock('../notify.js', () => ({
+  // APPROVALSLACK1030: no Slack target on this install, the provider path is what these tests pin.
+  sendOwnerSlackDm: async () => ({ attempted: false, sent: false }),
   sendOwnerMessage: async (text: string) => { ownerSends.push(text); return cfg.ownerResult },
   notifyChannel: async () => {},
   notifyTelegram: async () => {},

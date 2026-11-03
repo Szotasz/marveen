@@ -127,6 +127,10 @@ describe('wiring (card 12b0f698)', () => {
     const track = handler.indexOf('trackSlowRequest(res, method, url)')
     expect(track).toBeGreaterThan(-1)
     expect(track).toBeLessThan(handler.indexOf("if (method === 'OPTIONS')"))
-    expect(track).toBeLessThan(handler.indexOf('resolveAuth('))
+    // web.ts resolves the principal through gateRequest() (resolveAuth runs
+    // inside it, auth-gate.ts), so either call marks the auth step.
+    const authAt = [handler.indexOf('resolveAuth('), handler.indexOf('gateRequest(')].filter((i) => i > -1)
+    expect(authAt.length).toBeGreaterThan(0)
+    expect(track).toBeLessThan(Math.min(...authAt))
   })
 })

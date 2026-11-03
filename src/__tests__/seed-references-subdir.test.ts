@@ -118,7 +118,7 @@ describe('a fresh seed ships the references/ subdir, rendered (SEEDREFDIR1018)',
 })
 
 // Sliced per call, so a missing helper fails the refresh tests, not the file.
-const funcs = () => ['render_seed_template', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file', 'refresh_untouched_seeds']
+const funcs = () => ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file', 'refresh_untouched_seeds']
   .map((n) => sliceShellFn(UPDATE, n))
   .join('\n')
 

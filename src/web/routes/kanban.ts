@@ -25,8 +25,9 @@ import {
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
-import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
+import { agentDir, listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { shellWord } from '../sanitize.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
@@ -95,12 +96,16 @@ export function isAgentActor(actor: string | undefined): boolean {
 // result goes where the work was asked for, with zero extra board clutter. The
 // token is read from the store at call time (never embedded in the message).
 export function kanbanMoveInstructions(id: string, target: string): string {
-  const tokenPath = join(STORE_DIR, '.dashboard-token')
-  const base = `http://${WEB_HOST}:${WEB_PORT}`
-  const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
-  const moveUrl = `${base}/api/kanban/${id}/move`
-  const commentUrl = `${base}/api/kanban/${id}/comments`
-  const cardUrl = `${base}/api/kanban/${id}`
+  // VOICETOKENLEAK1101 round 2 (#2080 review 5727304277): every step goes through scripts/marveen-api.sh, which reads
+  // the token itself (scripts/lib/marveen_api.py), so the token is never on a command line (argv, the pane, the
+  // transcript); a text the agent writes (the result, the evidence) goes in a file, never on the command line either.
+  const api = `bash ${shellWord(join(PROJECT_ROOT, 'scripts', 'marveen-api.sh'))}`
+  // The agent writes these with its file tool, in its own directory (a strict profile writes nowhere else).
+  const own = target === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(target)
+  const resultFile = shellWord(join(own, `kanban-${id}-eredmeny.txt`))
+  const evidenceFile = shellWord(join(own, `kanban-${id}-bizonyitek.txt`))
+  const escalateFile = shellWord(join(own, `kanban-${id}-kerdes.txt`))
+  const card = shellWord(id)
   // Escalation target when blocked: sub-agents hand back to the main agent
   // (their delegator), who triages and only escalates to the operator when
   // the block genuinely needs a human decision. Only the main agent itself
@@ -143,27 +148,35 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // gives the reader no reason to ever read it. Two agent incidents on one card
   // (2026-09-15, 7ed56208) confirmed the failure mode -- the reader ran exactly
   // this probe, saw a status, and never saw the override sitting one field over.
+  // The helper prints the list on stdout, or nothing (its FAIL line goes to stderr, exit 1); an empty or non-list
+  // answer is reported, never a Python traceback.
   const statusProbe =
-    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
+    `  ${api} kanban-list | python3 -c "import sys,json;s=sys.stdin.read();d=(json.loads(s) if s.lstrip().startswith('[') else s);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a kartya-lista nem jott meg (a FAIL sor fent mondja, miert): '+str(d)[:120]))"`
   return [
     'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
     'Ha a "status:" sor már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
     'A "description:" sort is OLVASD EL, ne csak a státuszt: ha benne kártya-specifikus kikötés áll (pl. más záró-státusz, "nincs éles restart"), az felülírja ennek a sablonnak az alapértelmezését, lásd a 2) lépésnél.',
     '',
+    // The status probe above answers "is the work already done?", not "is
+    // someone else doing it right now?": two agents can both read in_progress
+    // and both start. The claim is the atomic lock that settles it, so where the
+    // lock is on the dispatch hands it over as a runnable step. With the lock
+    // off /claim answers 404 claim_lock_disabled, so the step is left out and
+    // the text never tells an agent to call a route that cannot work.
+    ...(isKanbanClaimLockEnabled() ? [
+      'FOGLALD LE a kártyát, MIELŐTT dolgozni kezdesz (két ügynök ne dolgozzon ugyanazon):',
+      `  ${api} kanban-claim ${card} ${target}`,
+      'Csak sikeres válasz után kezdj bele (0-s kilépés, a válasz kiírva). Ha "FAIL: HTTP 409" jön (más foglalja, a válasz megmondja, ki és meddig), NE dolgozz rajta párhuzamosan, jelezd a delegálódnak. A foglalás alapból 2 óráig él; hosszabb munkánál ugyanezzel a hívással újítsd meg. Automatikusan elengedi a done, a waiting vagy a testing státusz, az archiválás, és az is, ha a kártyát másra osztod át (lent, elakadásnál): így az átvevő le tudja foglalni.',
+      '',
+    ] : []),
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
-    '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
-    `  curl -s -X POST ${commentUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
+    `1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége). A szöveget a fájl-eszközöddel írd ide: ${resultFile}, majd:`,
+    `  ${api} kanban-comment ${card} ${target} ${resultFile}`,
     '',
-    '2) Állítsd a kártyát done-ra, és az "evidence" mezőbe írd, MIVEL ellenőrizted (teszt eredménye, PR link, visszaolvasott fájl, mért szám). Bizonyíték nélkül a kártya "testing"-be kerül, nem done-ba:',
-    `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"done","actor":"${target}","expected_status":"in_progress","evidence":"MIVEL ELLENORIZTED"}'`,
+    `2) Állítsd a kártyát done-ra, és a bizonyítékba írd, MIVEL ellenőrizted (teszt eredménye, PR link, visszaolvasott fájl, mért szám). A bizonyítékot a fájl-eszközöddel írd ide: ${evidenceFile}, majd (bizonyíték nélkül a kártya "testing"-be kerül, nem done-ba):`,
+    `  ${api} kanban-move ${card} done --actor ${target} --expected-status in_progress --evidence-file ${evidenceFile}`,
     // The close used to be unconditional, so a dispatch read a round late (see
     // the pre-flight comment above) could still drag a card that had moved on
     // (reviewed to testing, closed by someone else, put back to planned) to
@@ -172,7 +185,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // expected_status makes the close a compare-and-set (one UPDATE ... WHERE
     // status=?), so a card that is no longer in_progress is left alone and the
     // reader gets a 409 saying where it is now.
-    'Az "expected_status":"in_progress" mező feltételessé teszi a mozgatást: csak akkor lép, ha a kártya MÉG in_progress. Ha a válasz HTTP 409 ("status_conflict", a "current_status" mező mutatja, hol tart most), a kártya közben továbblépett: NE mozgasd újra feltétel nélkül, NE dolgozz rajta tovább, hanem jelezd a delegálódnak. Ugyanez a mező kell a lenti waiting- és a záró-státusz-hívásba is.',
+    'Az --expected-status in_progress feltételessé teszi a mozgatást: csak akkor lép, ha a kártya MÉG in_progress. Ha a válasz "FAIL: HTTP 409" ("status_conflict", a "current_status" mező mutatja, hol tart most), a kártya közben továbblépett: NE mozgasd újra feltétel nélkül, NE dolgozz rajta tovább, hanem jelezd a delegálódnak. Ugyanez a kapcsoló kell a lenti waiting- és a záró-státusz-hívásba is.',
     '',
     // `done` is right for almost every card, so this template keeps it as the
     // default -- but not for every board PROGRAM. A program can give its cards
@@ -182,26 +195,23 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // deciding which one wins, or (worse) quietly follows this template and the
     // work closes unreviewed. One sentence fixes it; swapping the default
     // globally would break the close everywhere else.
-    'Ha a KÁRTYA SZÖVEGE más záró-státuszt ír elő (például `testing`, hogy a delegálód átnézze a munkát), AZ az irányadó: a kártya program-specifikus szabálya erősebb ennél a sablonnál. Ilyenkor a fenti hívásban a "done" helyére azt a státuszt írd, az "actor" és az "expected_status":"in_progress" mezőt ugyanúgy küldve. Ha a kártya nem ír elő mást, a "done" az alapértelmezés.',
+    'Ha a KÁRTYA SZÖVEGE más záró-státuszt ír elő (például `testing`, hogy a delegálód átnézze a munkát), AZ az irányadó: a kártya program-specifikus szabálya erősebb ennél a sablonnál. Ilyenkor a fenti hívásban a "done" helyére azt a státuszt írd, az --actor és az --expected-status in_progress kapcsolót ugyanúgy küldve. Ha a kártya nem ír elő mást, a "done" az alapértelmezés.',
     '',
     // The "actor" field is not decoration: it is what tells the board WHO moved
     // the card. Without it a self-pickup (agent -> in_progress on its own card)
     // is indistinguishable from an assignment, and the dispatcher echoes the
     // task back at the agent that just started it.
-    `Az "actor":"${target}" mezőt MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
-    `  curl -s -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"in_progress","actor":"${target}"}'`,
+    `Az --actor ${target} kapcsolót MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
+    `  ${api} kanban-move ${card} in_progress --actor ${target}`,
     '',
     `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
-    `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
+    `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda). A szöveget a fájl-eszközöddel írd ide: ${escalateFile}, majd:`,
+    `     ${api} kanban-comment ${card} ${target} ${escalateFile}`,
     `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
-    `     curl -s -X PUT ${cardUrl} \\`,
-    `       ${auth} \\`,
-    `       -H 'Content-Type: application/json' \\`,
-    `       -d '{"assignee":"${escalateTo}"}'`,
-    `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett, az "expected_status":"in_progress" mezővel együtt; 409-nél ugyanaz a teendő, mint fent).`,
+    `     ${api} kanban-assign ${card} ${shellWord(escalateTo)} --actor ${target}`,
+    `  c) Csak EZUTÁN állítsd a kártyát waiting-re:`,
+    `     ${api} kanban-move ${card} waiting --actor ${target} --expected-status in_progress`,
+    `     ("FAIL: HTTP 409"-nél ugyanaz a teendő, mint fent).`,
     isMainAgent
       ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`
       : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
@@ -231,8 +241,11 @@ function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: 
 //
 // The id is caller-supplied on POST /api/kanban (a readable slug, trimmed, not
 // shape-checked), so it is free text too: only an id of this shape is put in
-// the message, anything else is reported instead of dispatched.
-export const DISPATCH_SAFE_CARD_ID_RE = /^[A-Za-z0-9._-]{1,80}$/
+// the message, anything else is reported instead of dispatched. The shape is the
+// one scripts/lib/marveen_api.py takes (CARD_ID_RE), since every step of the recipe
+// goes through it (VOICETOKENLEAK1101, Dani 64894): no '.', so never a '..' path
+// segment; at most 64 characters.
+export const DISPATCH_SAFE_CARD_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const DISPATCH_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
 
 export function buildKanbanDispatchContent(card: { id: string; priority?: string | null }, target: string): string {
@@ -1121,7 +1134,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const after = getKanbanCard(id)
       if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
       json(res, {
-        ok: true,
+        // ok is false when the close was held: a client that reads only ok must not report a closed card.
+        ok: !putNeedsEvidence,
         version: written.version,
         ...(putNeedsEvidence ? {
           status: 'testing',
@@ -1342,7 +1356,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const moved = getKanbanCard(id)
       if (before?.status !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, who.actor)
       json(res, {
-        ok: true,
+        // ok is false when the close was held: a client that reads only ok must not report a closed card.
+        ok: !needsEvidence,
         ...(needsEvidence ? {
           status: 'testing',
           evidence_required: true,

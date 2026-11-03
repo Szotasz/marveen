@@ -21,12 +21,16 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Printing-press CLI-k](printing-press-cli.md) | API nélküli oldalakhoz is agent-natív CLI generálás |
 | [Skool CLI](skool-cli.md) | Közösségi platform kezelése parancssorból (API nélkül) |
 | [connectors.hu](connectors-hu.md) | Üzleti API-átjáró (NAV, Billingo, Wise, fal.ai) MCP-n |
+| [Egy Google-jóváhagyás minden fogyasztónak](google-consent.md) | Egy telefonos jóváhagyás, egy refresh token a Gmail/Calendar/Drive MCP-knek és az API-szkripteknek, mindegyik a saját fájlformátumában; scope-hiány és 7 napos "Testing" token hangos jelzése ([EN](en/google-consent.md)) |
 | [Vault & titkosítás](vault.md) | Titkosított titok-tár (AES-256-GCM) OS-kulcstárral |
 | [Belépés-visszaút & vészreset](dashboard-auth-recovery.md) | Elfelejtett jelszó, kizárás, `security:reset` pánikgomb -- HTTP-független break-glass CLI |
 | [Dream-engine](dream-engine.md) | Éjszakai tudás-konszolidáció + reggeli prioritás-javaslatok |
 | [Proaktív hírszerző (intel registry)](intel-registry.md) | Óránkénti gyűjtő + napi brief közös SQLite tény-registry-vel, dedup + tény-életciklus |
 | [Háttér-feladatok](background-tasks.md) | Leválasztott, hosszú feladatok futtatása + értesítés |
 | [Piros gomb: a flotta fagyasztása](fleet-freeze.md) | Egy mozdulattal leállítható flotta: eszközhívás-tiltás, álló háttér-ciklusok, feloldás csak a gazdának |
+| [Meta Graph olvasó](meta-graph-olvasas.md) | Csak olvasó Facebook/Instagram Graph-hívások egy paranccsal: kizárólag GET, a token a store-ból, közös hívásszám-szünet ([EN](en/meta-graph-read.md)) |
+| [Hook-metaadatok és env-kapcsolók](hook-metaadatok.md) | Oldalfájl a settings.json hookjai mellett: a CI megfogja a csendes hook-átírást, átrendezést és a hiányzó szkriptet; naplózó hook env-ből kikapcsolható, kapu soha ([EN](en/hook-metadata.md)) |
+| [Nehéz-feladat kapu](heavy-job-gate.md) | Egyszerre egy nehéz feladat (render, teljes tesztsor, build) érkezési sorrendben, memória-padló és saját cgroup-memóriakeret; opt-in, csak Linuxon |
 | [macOS: Spotlight és a System Data](macos-spotlight.md) | Ha a „System Data” nő: a Spotlight-index a sok napló/jsonl/sqlite írástól; ellenőrzés, javítás a Keresési adatvédelem listával |
 
 *A dokumentáció él; javításokat/bővítéseket szívesen fogadunk.*

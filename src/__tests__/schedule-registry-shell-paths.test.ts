@@ -37,7 +37,7 @@ function sliceShellFn(src: string, name: string): string | null {
 
 // Required functions + the helpers this round added (optional, so the same
 // harness also runs against the pre-fix update.sh for the red-before check).
-const REQUIRED = ['render_seed_template', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file',
+const REQUIRED = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file',
   'refresh_untouched_seeds', 'run_seed_refresh', 'register_seeded_schedules']
 const OPTIONAL = ['sched_pre_verify_once', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
 const UPDATE_FUNCS = [
@@ -138,6 +138,10 @@ const SKILL = (v: number) => `---\nname: demo\n---\n\nshipped prompt v${v} for {
 const CONFIG = (v: number) => `{"schedule":"0 9 * * *","agent":"{{MAIN_AGENT_ID}}","preCheck":"check.sh","v":${v}}\n`
 const REF = (v: number) => `reference notes v${v} for {{MAIN_AGENT_ID}}\n`
 const render = (s: string) => s.replaceAll('{{MAIN_AGENT_ID}}', 'marveen')
+// A top-level task-config.json as the dashboard seeder writes it (#2285,
+// copyTaskConfigWithAgentRewrite): parsed, "agent" set to MAIN_AGENT_ID,
+// 2-space JSON, nothing else substituted. update.sh's refresh compares with this.
+const seededConfig = (s: string) => JSON.stringify({ ...JSON.parse(s), agent: 'marveen' }, null, 2) + '\n'
 
 /** Install repo with top-level scheduled-tasks/<name>/ shipped in two versions. */
 function makeUpdateFixture(names: string[], opts: { cli?: boolean; refs?: boolean } = {}) {
@@ -168,7 +172,7 @@ function makeUpdateFixture(names: string[], opts: { cli?: boolean; refs?: boolea
   const writeLive = (n: string, files: { skill?: string; config?: string; check?: string; ref?: string } = {}) => {
     mkdirSync(live(n), { recursive: true })
     writeFileSync(join(live(n), 'SKILL.md'), files.skill ?? render(SKILL(1)))
-    writeFileSync(join(live(n), 'task-config.json'), files.config ?? render(CONFIG(1)))
+    writeFileSync(join(live(n), 'task-config.json'), files.config ?? seededConfig(CONFIG(1)))
     if (files.check !== undefined) writeFileSync(join(live(n), 'check.sh'), files.check)
     if (files.ref !== undefined) {
       mkdirSync(join(live(n), 'references'), { recursive: true })
@@ -224,7 +228,7 @@ describe('update.sh seed refresh re-registers only provably trusted tasks', () =
       f.writeLive('demo-task', { skill: tampered })
       const r = runUpdateRefresh(f.install, f.home)
       expect(r.code).toBe(0)
-      expect(readFileSync(join(f.live('demo-task'), 'task-config.json'), 'utf-8')).toBe(render(CONFIG(2)))
+      expect(readFileSync(join(f.live('demo-task'), 'task-config.json'), 'utf-8')).toBe(seededConfig(CONFIG(2)))
       expect(readFileSync(join(f.live('demo-task'), 'SKILL.md'), 'utf-8')).toBe(tampered)
       expect(isVerified(f.install, f.home, 'demo-task')).toBe(false)
     } finally {
@@ -257,7 +261,7 @@ describe('update.sh seed refresh re-registers only provably trusted tasks', () =
       const r = runUpdateRefresh(f.install, f.home)
       expect(r.code).toBe(0)
       expect(readFileSync(join(f.live('demo-task'), 'SKILL.md'), 'utf-8')).toBe(render(SKILL(2)))
-      expect(readFileSync(join(f.live('demo-task'), 'task-config.json'), 'utf-8')).toBe(render(CONFIG(2)))
+      expect(readFileSync(join(f.live('demo-task'), 'task-config.json'), 'utf-8')).toBe(seededConfig(CONFIG(2)))
       expect(isVerified(f.install, f.home, 'demo-task')).toBe(true)
       expect(readRegistry(f.install)['demo-task'].source).toBe('cli:update-sh')
       expect(r.out).not.toMatch(/kezi atnezes/)
@@ -276,7 +280,7 @@ describe('update.sh seed refresh re-registers only provably trusted tasks', () =
       const r = runUpdateRefresh(f.install, f.home)
       expect(r.code).toBe(0)
       expect(readFileSync(join(f.live('demo-task'), 'SKILL.md'), 'utf-8')).toBe(apiEdited)
-      expect(readFileSync(join(f.live('demo-task'), 'task-config.json'), 'utf-8')).toBe(render(CONFIG(2)))
+      expect(readFileSync(join(f.live('demo-task'), 'task-config.json'), 'utf-8')).toBe(seededConfig(CONFIG(2)))
       expect(isVerified(f.install, f.home, 'demo-task')).toBe(true)
     } finally {
       rmSync(f.base, { recursive: true, force: true })
@@ -336,7 +340,7 @@ describe('update.sh seed refresh re-registers only provably trusted tasks', () =
   it('references/: a registered, untouched seed whose references/ file is refreshed stays ok', () => {
     const f = makeUpdateFixture(['demo-task'], { refs: true })
     try {
-      f.writeLive('demo-task', { skill: render(SKILL(2)), config: render(CONFIG(2)), ref: render(REF(1)), check: '#!/bin/bash\nexit 0\n' })
+      f.writeLive('demo-task', { skill: render(SKILL(2)), config: seededConfig(CONFIG(2)), ref: render(REF(1)), check: '#!/bin/bash\nexit 0\n' })
       expect(fakeCli(f.install, f.home, ['register', 'demo-task'])).toBe(0)
       const r = runUpdateRefresh(f.install, f.home)
       expect(r.code).toBe(0)
@@ -352,7 +356,7 @@ describe('update.sh seed refresh re-registers only provably trusted tasks', () =
   it('references/: a registered, untouched seed whose missing references/ file is ADDED stays ok', () => {
     const f = makeUpdateFixture(['demo-task'], { refs: true })
     try {
-      f.writeLive('demo-task', { skill: render(SKILL(2)), config: render(CONFIG(2)), check: '#!/bin/bash\nexit 0\n' })
+      f.writeLive('demo-task', { skill: render(SKILL(2)), config: seededConfig(CONFIG(2)), check: '#!/bin/bash\nexit 0\n' })
       expect(fakeCli(f.install, f.home, ['register', 'demo-task'])).toBe(0)
       const r = runUpdateRefresh(f.install, f.home)
       expect(r.code).toBe(0)

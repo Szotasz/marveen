@@ -64,8 +64,11 @@ describe('wiring in channel-monitor.ts', () => {
     const head = '    () => {\n'
     const cb = helper.slice(helper.indexOf(head) + head.length, helper.indexOf('\n    },\n'))
     const lines = cb.split('\n').map((l) => l.trim()).filter(Boolean)
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(4)
     expect(lines[0]).toMatch(/^logger\.error\(/)
-    expect(lines[1]).toMatch(/^sendRoutineAlert\('main-hard-restart-no-claude', /)
+    // Owner-action alert (Szotasz/marveen#2353 review): a verification
+    // failure is never a self-heal, so it must stay off the gated path.
+    expect(lines.some((l) => /^sendOwnerActionAlert\('main-hard-restart-no-claude', /.test(l))).toBe(true)
+    expect(lines.some((l) => /^sendRoutineAlert\(/.test(l))).toBe(false)
   })
 })

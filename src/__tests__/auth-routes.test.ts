@@ -149,6 +149,22 @@ describe('POST /api/auth/login', () => {
     expect(cookieHeader(res)).toContain('Secure')
   })
 
+  it('GROMZOAGENTPICK1101 (Dani 64392): a device key on the login buys nothing: wrong or missing password -> 401, no cookie, no session row', async () => {
+    await seedUser('alice')
+    const DEVICE: RouteContext['auth'] = { kind: 'device', device: 'Macbookom', deviceId: 3, scope: 'full' }
+    const count = () => (getDb().prepare('SELECT COUNT(*) AS n FROM auth_sessions').get() as { n: number }).n
+    for (const body of [{ username: 'alice', password: 'wrong-password-123' }, { username: 'alice' }, { username: 'alice', password: '' }, {}]) {
+      const r = await call('POST', '/api/auth/login', { auth: DEVICE, headers: { authorization: 'Bearer mvdk_x' }, body })
+      expect(r.res.statusCode, JSON.stringify(body)).toBe(401)
+      expect(cookieHeader(r.res), JSON.stringify(body)).toBe('')
+    }
+    expect(count()).toBe(0)
+    // the right password still works with the key on the request: the session comes from the password only
+    const ok = await call('POST', '/api/auth/login', { auth: DEVICE, body: { username: 'alice', password: GOOD_PW } })
+    expect(ok.res.statusCode).toBe(200)
+    expect(count()).toBe(1)
+  })
+
   it('mints a fresh session id on every login (fixation defence)', async () => {
     await seedUser('alice')
     const a = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })

@@ -11,12 +11,15 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
+import { agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
+import { shellWord } from './sanitize.js'
+import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
+import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -49,7 +52,12 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, A
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
 // and every call 401s silently. Measured 2026-07-25: relative 401, absolute
 // 200; this had been silently killing sub-agent memory saves and searches.
-const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
+//
+// Resolved PER AGENT (agent-tokens.ts dashboardTokenPathFor): the main agent,
+// and every agent while AGENT_TOKENS is off, gets the shared
+// store/.dashboard-token; with the switch on a sub-agent gets its own
+// agents/<name>/.dashboard-token once that file exists. Every builder below
+// that emits a recipe binds a local `tokenPath` from the agent name.
 
 // #2232: a strict-profile agent runs under `defaultMode: dontAsk`, where a command substitution
 // never matches the allow-list, so every `$(cat <token>)` curl recipe in its CLAUDE.md was
@@ -58,12 +66,78 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // the token itself and takes every payload from a file the agent writes with its file tool. The
 // allow-list entry is in templates/profiles/developer-junior.json. Every other agent keeps the
 // curl recipes byte for byte.
-const apiHelper = `bash ${join(PROJECT_ROOT, 'scripts', 'marveen-api.sh')}`
+const apiHelper = `bash ${shellWord(join(PROJECT_ROOT, 'scripts', 'marveen-api.sh'))}`
 
-// Where a strict agent writes a payload before it hands the path to the helper: its own
-// directory, the only place its profile lets it write.
-function strictPayloadPath(name: string): string {
-  return join(agentDir(name), 'api-payload.txt')
+// VOICETOKENLEAK1101 PR-A1 (#2080 review 5727304277, Samu 64933, Dani 64941): the generated sections give EVERY agent
+// the helper recipes, not only a strict one: a curl recipe's `$(cat <token>)` puts the token VALUE on the curl argv,
+// visible in ps to every process of the same user. One payload file per recipe kind, in the agent's own directory
+// (the main agent's: the project root, git-ignored as /api-*.txt), overwritten on every use, so they never pile up.
+export type ApiPayloadKind = 'uzenet' | 'jovahagyas' | 'memoria' | 'naplo' | 'eredmeny'
+export function apiPayloadPath(name: string, kind: ApiPayloadKind): string {
+  return join(name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name), `api-${kind}.txt`)
+}
+
+// Dani 65157/1, Samu 65160: one fixed file per kind means two texts prepared in one round would both send the second.
+// The helper empties the file after a successful send and stops on an empty one (scripts/lib/marveen_api.py).
+export const ONE_FILE_ONE_SEND = 'Egy fájl, egy küldés: írd, küldd, és csak utána a következőt; kettőt párhuzamosan ne készíts elő (ugyanaz a fájl, a második felülírná az elsőt). A segéd sikeres küldés után kiüríti a fájlt, és üres fájlra hibával megáll: régi szöveget nem küld.'
+
+// The verbs the generated sections run; a deny rule that hits any of them keeps the agent on the old recipes.
+const HELPER_SECTION_VERBS = ['message', 'message-close', 'directive-verify', 'memory-search', 'memory-save', 'memory-update',
+  'approval-request', 'approval-status', 'approval-consume', 'skill-propose'] as const
+
+/** True when a Claude Code Bash permission rule matches this command (prefix `:*`, `*` glob, or exact). */
+export function bashRuleMatches(rule: string, command: string): boolean {
+  if (rule === 'Bash') return true
+  const m = /^Bash\((.*)\)$/s.exec(rule)
+  if (!m) return false
+  const p = m[1]
+  if (p.endsWith(':*')) return command.startsWith(p.slice(0, -2))
+  if (p.includes('*')) {
+    const re = new RegExp('^' + p.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 's')
+    return re.test(command)
+  }
+  return command === p
+}
+
+function settingsBashDenies(path: string): string[] {
+  try {
+    const deny = (JSON.parse(readFileSync(path, 'utf-8')) as { permissions?: { deny?: unknown } }).permissions?.deny
+    return Array.isArray(deny) ? deny.filter((r): r is string => typeof r === 'string' && r.startsWith('Bash')) : []
+  } catch {
+    return []
+  }
+}
+
+// The deny rule of this agent's settings that stops a helper call, if any. A sub-agent: its own settings.json, written
+// from its profile on every start before the sections are rendered. The main agent: the project and user settings.
+export function apiHelperDenyRule(name: string): string | null {
+  const files = name === MAIN_AGENT_ID
+    ? [join(PROJECT_ROOT, '.claude', 'settings.json'), join(PROJECT_ROOT, '.claude', 'settings.local.json'), agentSettingsPath(name)]
+    : [agentSettingsPath(name)]
+  const rules = files.flatMap(settingsBashDenies)
+  for (const verb of HELPER_SECTION_VERBS) {
+    const command = `${apiHelper} ${verb} x`
+    const hit = rules.find((r) => bashRuleMatches(r, command))
+    if (hit) return hit
+  }
+  return null
+}
+
+const helperDenyWarned = new Set<string>()
+
+// Whether this agent's generated sections carry the helper recipes. A strict agent always does (#2232: its dontAsk mode
+// denies the curl recipes' command substitution). Every other agent too, unless its own settings deny the helper (a
+// custom profile): then it keeps the old recipes and the log says why, so it never stalls silently (Dani 64941/1).
+export function agentUsesApiHelper(name: string): boolean {
+  if (agentRunsStrict(name)) return true
+  const rule = apiHelperDenyRule(name)
+  if (rule === null) return true
+  const key = `${name}\u0000${rule}`
+  if (!helperDenyWarned.has(key)) {
+    helperDenyWarned.add(key)
+    logger.warn({ name, rule }, 'agent API recipes: the agent settings deny scripts/marveen-api.sh; its CLAUDE.md keeps the curl recipes (the token goes on the curl argv) until the profile allows the helper')
+  }
+  return false
 }
 
 // True when the agent's resolved security profile is strict (dontAsk). The main agent has no
@@ -594,6 +668,181 @@ export function upgradeTaskStateHeaderInHookPrompts(existingHooks: Record<string
   return changed
 }
 
+/**
+ * #2338: the PreCompact prompt's save recipes go through scripts/marveen-api.sh.
+ * The shipped prompt told every agent to save memory, the daily log and the
+ * task state with `curl -X POST ... -H "Authorization: Bearer $(cat <token>)"`.
+ * A strict profile runs under `dontAsk`, where a command substitution never
+ * matches the allow-list, and the researcher profile denies `curl -X POST`
+ * outright: for those agents the pre-compaction save was refused, silently.
+ * The template now names the helper; this pass brings an EXISTING agent's
+ * prompt along, because the add pass never rewrites a `type: "agent"` prompt.
+ *
+ * Line by line and only the exact shipped spelling (rendered with this
+ * install's placeholders), like the X-Agent-Id pass above. It runs after the
+ * HOSTMOVE root re-anchoring and the X-Agent-Id pass, so a prompt from another
+ * host or from before the header matches too.
+ *
+ * All or nothing per prompt (review #2340): if a save recipe would be left as
+ * curl -- an operator-edited line, or a spelling not in the table -- the prompt
+ * is left exactly as it is and the line is logged. Rewriting the intro to "use
+ * the helper" above curl lines that stay would hand the agent two
+ * contradicting instructions, and on a strict profile keep the very silent
+ * failure this fixes. Idempotent: no new line contains an old one. Exported
+ * for tests.
+ */
+const API_HELPER_TPL = 'bash {{PROJECT_ROOT}}/scripts/marveen-api.sh'
+const PRECOMPACT_TASKSTATE_BODY = '{"summary":"egy mondat mit csinálsz","doneSteps":["már kész lépés"],"alreadyDelegated":["mit kinek adtál már át"],"nextAction":"a következő konkrét lépés","pendingDecision":"nyitott döntés vagy blokkoló ha van"}'
+// The shipped spellings vary on three axes: the port (literal 3420 before the
+// WEB_PORT placeholder, #616), the token path (~/ClaudeClaw before the
+// PROJECT_ROOT placeholder, still on live agents measured 2026-10-29) and the
+// bot name in the intro ("Marveen" before BOT_NAME, #510).
+const PRECOMPACT_PORTS = ['{{WEB_PORT}}', '3420']
+const PRECOMPACT_TOKENS = ['{{PROJECT_ROOT}}/store/.dashboard-token', '~/ClaudeClaw/store/.dashboard-token']
+const precompactCurls = (indent: string, path: string, extraHeaders: string, body: string) =>
+  PRECOMPACT_PORTS.flatMap((port) => PRECOMPACT_TOKENS.map((token) =>
+    `${indent}curl -s -X POST http://localhost:${port}/api/${path} -H 'Content-Type: application/json'${extraHeaders} -H "Authorization: Bearer $(cat ${token})" -d '${body}'`))
+// The PreCompact prompt's payload line, as templates/settings.json.template ships it (a test ties the two).
+export const PRECOMPACT_PAYLOAD_INTRO = 'Használd a segédet (előtte a mentendő szöveget a Write eszközzel írd a munkamappádba: a memóriát az api-memoria.txt, a naplót az api-naplo.txt fájlba). Egy fájl, egy küldés: írd, küldd, és csak utána a következőt; kettőt párhuzamosan ne készíts elő (a második felülírná az elsőt). A segéd sikeres küldés után kiüríti a fájlt, és üres fájlra hibával megáll: régi szöveget nem küld.'
+// [old shipped spellings, the line that replaces them]
+const PRECOMPACT_HELPER_UPGRADES: ReadonlyArray<readonly [readonly string[], string]> = [
+  [
+    ['{{BOT_NAME}}', 'Marveen'].flatMap((bot) => PRECOMPACT_TOKENS.map((token) =>
+      `A ${bot} /api/* Bearer tokenes. A token a projekt gyökerében: cat ${token}`)),
+    `A {{BOT_NAME}} /api/* hívásai EGY segéden mennek: ${API_HELPER_TPL} <ige> (az igék: ${API_HELPER_TPL} --help). A tokent a segéd maga olvassa, ezért nem kell sem nyers curl, sem parancs-behelyettesítés: szigorú profilon ezeket a Claude Code kérdés nélkül megtagadja. A szöveget a segéd CSAK fájlból veszi: előbb a Write eszközzel írd a munkamappádba, és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
+  ],
+  // VOICETOKENLEAK1101 PR-C (Samu 65492): one payload file per kind. The prompt saves a memory AND writes a log in one
+  // round; on one shared api-payload.txt, two texts prepared ahead would send the second twice (Dani 65157/1). The
+  // #2338 helper lines (api-payload.txt) are old spellings too now, so an agent they reached moves on as well.
+  [
+    ['Használd a curl parancsokat:', 'Használd a segédet (előtte a mentendő szöveget írd az api-payload.txt fájlba a munkamappádban):'],
+    PRECOMPACT_PAYLOAD_INTRO,
+  ],
+  [
+    [...precompactCurls('  ', 'memories', '', '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'),
+      `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-payload.txt`],
+    `  ${API_HELPER_TPL} memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-memoria.txt`,
+  ],
+  [
+    [...precompactCurls('  ', 'daily-log', '', '{"agent_id":"SAJAT_NEVED","content":"..."}'),
+      `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-payload.txt`],
+    `  ${API_HELPER_TPL} daily-log SAJAT_NEVED api-naplo.txt`,
+  ],
+  [
+    precompactCurls('', 'agent-taskstate/SAJAT_NEVED', " -H 'X-Agent-Id: SAJAT_NEVED'", PRECOMPACT_TASKSTATE_BODY),
+    `Írd a rekordot JSON-ként az api-payload.json fájlba a munkamappádban:\n${PRECOMPACT_TASKSTATE_BODY}\nmajd:\n${API_HELPER_TPL} taskstate-save SAJAT_NEVED api-payload.json`,
+  ],
+]
+// A save recipe still written as curl: what the all-or-nothing guard looks for.
+const PRECOMPACT_CURL_RECIPE_RE = /\bcurl\b.*\/api\/(?:memories|daily-log|agent-taskstate)\b/
+export function upgradePreCompactRecipesToHelper(
+  existingHooks: Record<string, unknown>,
+  // Test seam only: renders the placeholders as another install would (a WEB_PORT
+  // other than 3420). Production callers pass nothing.
+  render: (s: string) => string = resolveTemplatePlaceholders,
+  // false when upgradeRetiredHookPrompts runs this pass over the retired list itself:
+  // that runs on every start, and an old entry it cannot rewrite is not news.
+  warn: boolean = true,
+): boolean {
+  const pairs = PRECOMPACT_HELPER_UPGRADES.map(([olds, next]) => ({
+    olds: [...new Set(olds.map((o) => render(o)))],
+    next: render(next),
+  }))
+  let changed = false
+  for (const entries of Object.values(existingHooks)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (typeof hook.prompt !== 'string') continue
+        const lines = hook.prompt.split('\n')
+        let touched = false
+        const out = lines.map((line) => {
+          const hit = pairs.find((p) => p.olds.includes(line))
+          if (!hit) return line
+          touched = true
+          return hit.next
+        })
+        if (!touched) continue
+        const leftover = out.find((line) => PRECOMPACT_CURL_RECIPE_RE.test(line))
+        if (leftover !== undefined) {
+          if (warn) {
+            logger.warn({ line: leftover.trim().slice(0, 200) },
+              'upgradePreCompactRecipesToHelper: a PreCompact save recipe is not a shipped spelling; prompt left unchanged (#2338)')
+          }
+          continue
+        }
+        hook.prompt = out.join('\n')
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
+/**
+ * A stock agent-hook prompt an earlier template shipped (templates/retired-hook-prompts.json,
+ * resolved like the template) that an agent still carries word for word was never edited:
+ * it becomes the current template prompt of the same event. Any other prompt was edited by
+ * someone and stays. A prompt also counts as stock when it equals a retired entry after
+ * upgradePreCompactRecipesToHelper rewrote that entry. Exported for unit tests.
+ */
+export function upgradeRetiredHookPrompts(
+  existingHooks: Record<string, unknown>,
+  tplHooks: Record<string, unknown>,
+  retired: Record<string, string[]>,
+): boolean {
+  let changed = false
+  for (const [event, oldPrompts] of Object.entries(retired)) {
+    const tplEntries = tplHooks[event]
+    if (!Array.isArray(tplEntries)) continue
+    const current = (tplEntries as HookEntry[])
+      .flatMap((e) => e.hooks ?? [])
+      .find((h) => h.type === 'agent' && typeof h.prompt === 'string')?.prompt as string | undefined
+    if (current === undefined) continue
+    const entries = existingHooks[event]
+    if (!Array.isArray(entries)) continue
+    // #2200 review: an agent the #2338 pass (upgradePreCompactRecipesToHelper) already
+    // rewrote never edited its prompt either, so a retired entry counts in both forms:
+    // as shipped, and as that pass makes it.
+    const accepted = new Set(oldPrompts)
+    for (const old of oldPrompts) {
+      const probe: Record<string, unknown> = { [event]: [{ hooks: [{ type: 'agent', prompt: old }] }] }
+      upgradePreCompactRecipesToHelper(probe, resolveTemplatePlaceholders, false)
+      accepted.add((probe[event] as HookEntry[])[0].hooks![0].prompt as string)
+    }
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (hook.type !== 'agent' || typeof hook.prompt !== 'string') continue
+        if (hook.prompt !== current && accepted.has(hook.prompt)) {
+          hook.prompt = current
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
+// The retired stock prompts, resolved like the template. A missing file means no
+// migration; an unreadable one is logged and also means no migration. The path is
+// a test seam only.
+export function readRetiredHookPrompts(
+  p: string = join(PROJECT_ROOT, 'templates', 'retired-hook-prompts.json'),
+): Record<string, string[]> {
+  if (!existsSync(p)) return {}
+  try {
+    const parsed = JSON.parse(resolveTemplatePlaceholders(readFileSync(p, 'utf-8'))) as Record<string, unknown>
+    const out: Record<string, string[]> = {}
+    for (const [event, list] of Object.entries(parsed)) {
+      if (Array.isArray(list)) out[event] = list.filter((s): s is string => typeof s === 'string')
+    }
+    return out
+  } catch (err) {
+    logger.warn({ err, path: p }, 'ensureAgentHooks: retired-hook-prompts.json unreadable, stock prompts are not migrated')
+    return {}
+  }
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -655,8 +904,18 @@ export function ensureAgentHooks(
     // HOSTMOVE923: an existing PreCompact prompt inherited from another
     // install/host names a dead root; the add pass below would never see it.
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
-    // The same blind spot for the task-state curl's X-Agent-Id header.
+    // #2200: an agent still on a stock prompt from an earlier template gets the
+    // current one; an edited prompt stays. Before the header pass, so a stock
+    // prompt is compared as it shipped.
+    const retiredPrompts = readRetiredHookPrompts()
+    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, retiredPrompts)) changed = true
+    // The add pass's blind spot also hides the task-state curl's X-Agent-Id header.
     if (upgradeTaskStateHeaderInHookPrompts(existingHooks)) changed = true
+    // #2338: and for the save recipes, which now go through marveen-api.sh.
+    if (upgradePreCompactRecipesToHelper(existingHooks)) changed = true
+    // #2200 review: once more after the helper pass, so a prompt that pass just turned
+    // into a retired stock prompt reaches the template prompt in this start, not the next.
+    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, retiredPrompts)) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
@@ -867,7 +1126,9 @@ export function enforceStrictPermissionMode(
   return true
 }
 
-export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
+// `extraHooksPath` is a test seam (the install-local extras file); production
+// callers pass nothing and get store/extra-hooks.json.
+export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate, extraHooksPath?: string): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
   const settingsPath = join(settingsDir, 'settings.json')
@@ -904,8 +1165,13 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
   // the profile already declared (developer-senior and marketer both carry some
-  // of these), so the written file stays readable.
+  // of these), so the written file stays readable. The sudo pair is the one part
+  // an agent can be let out of (.env SUDO_AGENTS, default empty; see
+  // agentMaySudo for why not agent-config.json), and only the floor's copy: a
+  // profile-declared sudo rule above stays.
+  const allowSudo = agentMaySudo(name)
   for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+    if (allowSudo && FLEET_SUDO_DENY.includes(rule)) continue
     if (!denyList.includes(rule)) denyList.push(rule)
   }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
@@ -952,6 +1218,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
   }
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
+  // (e) the dashboard DB's security surface and this install's gate wiring
+  // (APPROVALDBGATE1030): every sub-agent; the main agent's entry is
+  // repo-shipped in the tracked .claude/settings.json.
+  if (agentGetsGovernanceGates(name)) injectDbWriteGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
@@ -971,7 +1241,86 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
+  // Install-local extras LAST, so they land after every built-in gate.
+  injectExtraHookEntries(name, existing, extraHooksPath)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+}
+
+// Install-local extra hook entries (store/extra-hooks.json), see
+// extra-hook-entries.ts. The commands are built by the SAME builders and the
+// same registration guard as the built-in gates.
+export function extraHooksConfigPath(): string {
+  return join(STORE_DIR, EXTRA_HOOKS_FILE)
+}
+
+function extraHookDeps(): ExtraHookDeps {
+  return {
+    projectRoot: PROJECT_ROOT,
+    shippedScriptsDir: join(PROJECT_ROOT, 'scripts'),
+    nodeBin: HOOK_NODE_BIN,
+    nodeGateCommand: (p, t) => hookCommand(p, [], t),
+    pythonGateCommand: (p, t) => pythonHookCommand(p, [], t),
+    isUnsafe: isUnsafeHookCommand,
+  }
+}
+
+// One error line per distinct problem set, not one per agent and boot.
+const _loggedExtraHookProblems = new Set<string>()
+
+// The fingerprint line (review #2001): the self-pace gate stops a sub-agent
+// command that spells extra-hooks.json or local-hooks/, not one that builds the
+// path at run time (see extra-hook-entries.ts, "Trust"). So every sync logs the
+// sha256 of the file and of each script it names, once per distinct content
+// and process: the first sync after a start always logs, a later one only when
+// something changed. An unexpected change then shows up in dashboard.log, the
+// way the egress allowlist's baseline reports its file. No file, no line.
+let _lastExtraHooksDigest = ''
+export function logExtraHooksDigest(path = extraHooksConfigPath()): void {
+  const digest = extraHooksDigest(path, PROJECT_ROOT)
+  if (!digest) { _lastExtraHooksDigest = ''; return }
+  const key = `${path}\n${JSON.stringify(digest)}`
+  if (key === _lastExtraHooksDigest) return
+  _lastExtraHooksDigest = key
+  logger.info({ path, sha256: digest.sha256, scripts: digest.scripts },
+    'extra-hooks.json: sha256 of the file and of each script it names (a change nobody made on purpose is a write to check)')
+}
+
+// Append the extras to a sub-agent's settings object (after removing the ones
+// an earlier pass wrote). Never the main agent. Any failure here leaves the
+// built-in hooks exactly as the injectors above wrote them.
+export function injectExtraHookEntries(name: string, existing: Record<string, unknown>, path = extraHooksConfigPath()): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  try {
+    logExtraHooksDigest(path)
+    const { entries, errors } = loadExtraHookEntries(path, extraHookDeps())
+    if (errors.length) {
+      const key = `${path}\n${errors.join('\n')}`
+      if (!_loggedExtraHookProblems.has(key)) {
+        _loggedExtraHookProblems.add(key)
+        logger.error({ path, errors, applied: entries.length },
+          'extra-hooks.json: invalid entries IGNORED (built-in hooks unaffected)')
+      }
+    }
+    return applyExtraHookEntries(existing, entries)
+  } catch (err) {
+    logger.error({ err, path }, 'extra-hooks.json: could not be applied, extras IGNORED (built-in hooks unaffected)')
+    return false
+  }
+}
+
+// Startup migration twin: brings the extras of an EXISTING sub-agent in line
+// with the file (added, changed or removed) without waiting for a respawn. A
+// settings file that is not there is not created. Returns true if written.
+export function ensureExtraHookEntries(name: string, path = extraHooksConfigPath()): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureExtraHookEntries')) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown>
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  if (!injectExtraHookEntries(name, settings, path)) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Which agents are subject to the email-send hard-gate: every agent EXCEPT the
@@ -1335,6 +1684,10 @@ export const FLEET_BASELINE_DENY = [
   'mcp__playwright__browser_run_code_unsafe',
 ]
 
+// The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
+// exactly these two rules and nothing else of the floor.
+export const FLEET_SUDO_DENY = ['Bash(sudo:*)', 'Bash(*/sudo *)']
+
 // Idempotently merge the egress deny rules into a settings object's
 // permissions.deny. Pure (no I/O) so both the rule set and the merge behaviour
 // are unit-testable; ensureBashEgressDeny() below is the filesystem wrapper.
@@ -1542,6 +1895,26 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// Idempotently wire the db-write-gate PreToolUse hook (APPROVALDBGATE1030): no
+// SQL write on the dashboard's security tables, no file-level write of the
+// database, no write of this install's gate wiring or autonomy levels. Write,
+// Edit, MultiEdit and NotebookEdit are in the matcher: the install-file part is
+// reachable through the native file tools as well as Bash.
+export const DB_WRITE_GATE_MATCHER = 'Bash|Write|Edit|MultiEdit|NotebookEdit'
+export function injectDbWriteGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = { matcher: DB_WRITE_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('db-write-gate.mjs')),
+    entry,
+  ]
+}
+
 // Which agents are subject to the kanban-write gate: ONLY the hidden heartbeat
 // worker (HBFUTTATOIR824). Its skill has forbidden board writes in prompt text
 // since 2026-08-22 ("A FUTTATO A TABLARA NEM IR. SEMMIT.") with zero
@@ -1709,14 +2082,15 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
 }
 
 // The sender-role gate (scripts/hooks/sender-role-gate.py): in a turn that carries a chat message from a
-// sender who is not listed as an owner in the agent's agent-config.json `senderRoleGate`, the configured
-// risky tools are denied. Opt-in per agent: wired only when that key is set, and removed again on the
-// next spawn once it is not, so an agent without the key pays no hook at all. The table itself rides on
-// the hook's command line (--policy, see senderRoleGatePolicyArg): it is read from agent-config.json at
-// spawn, so an edit the agent makes to that file in this session cannot loosen the running gate.
+// sender who is not listed as an owner in the agent's `senderRoleGate`, the configured risky tools are
+// denied. Opt-in per agent: wired only when the agent has a gate, and removed again on the next spawn once
+// it has none, so an agent without one pays no hook at all. The table itself rides on the hook's command
+// line (--policy, see senderRoleGatePolicyArg): it is read at spawn from store/agent-sender-role-gates.json
+// only (GROMZOGATECONF1030 (c)), which no agent can write, never from the agent's own agent-config.json.
 const SENDER_ROLE_GATE_SCRIPT = 'sender-role-gate.py'
 
-// Sub-agents only: the main agent is out of scope on purpose.
+// Sub-agents only here: the main agent's gate rides its session-only --settings file instead
+// (main-extra-plugins-settings.ts), because the sub-agents read the install-root project settings.
 export function agentGetsSenderRoleGate(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }
@@ -2526,6 +2900,10 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  const dbGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
+  const dbGateStale = ptu.some((e) => JSON.stringify(e).includes('db-write-gate.mjs')
+    && (e as { matcher?: unknown })?.matcher !== DB_WRITE_GATE_MATCHER)
+  const needDbGate = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, dbGateCmd) || dbGateStale)
   // The destructive gate has the same two failure modes, plus a third that is
   // specific to it: it was hand-wired on 2026-09-08, so an install can carry a
   // correct-looking entry this code never wrote. Treat a stale matcher as
@@ -2549,11 +2927,12 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
   // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
   const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
-  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
+  if (!needEmail && !needPace && !needDbGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
+  if (needDbGate) injectDbWriteGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
   if (needReviewer) injectSecondReviewerGate(settings)
@@ -2750,6 +3129,19 @@ export function scaffoldAgentDir(name: string) {
   mkdirSync(join(dir, '.claude', 'agents'), { recursive: true })
   mkdirSync(channelStateDir(CHANNEL_PROVIDER, dir), { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
+
+  // AGENT_TOKENS: the agent's own dashboard token (0600, idempotent), so the
+  // CLAUDE.md generated next points at it instead of the shared token.
+  // Best-effort: a failure must not abort agent creation -- the generated
+  // CLAUDE.md then falls back to the shared token path (dashboardTokenPathFor),
+  // and startAgentProcess() retries the provisioning on every start.
+  if (agentTokensEnabled()) {
+    try {
+      ensureAgentToken(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'per-agent dashboard token provisioning failed at scaffold (agent keeps the shared token)')
+    }
+  }
 
   // Deploy the quarantine-reader sub-agent definition from the template so every
   // scaffolded agent can use it for safe web/RSS fetching without calling WebFetch
@@ -3041,21 +3433,31 @@ function buildFleetRosterBody(selfName: string): string {
 // never changes based on runtime fleet state, but the curl examples embed the
 // resolved dashboard origin and the agent's own name so agents don't have to
 // guess. A strict-profile agent gets the helper recipes instead (#2232).
-function autonomyLevel1Strict(name: string): string[] {
+function autonomyLevel1Strict(name: string, strict: boolean): string[] {
+  const file = shellWord(apiPayloadPath(name, 'uzenet'))
   return [
-    'Az üzenet szövegét írd egy fájlba (pl. `[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.`), majd küldd el:',
+    `Az üzenet szövegét a Write eszközzel írd ide: ${file} (pl. \`[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\`), majd küldd el:`,
     '```bash',
-    `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${strictPayloadPath(name)}`,
+    `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${file}`,
     '```',
-    'Minden dashboard-hívásod ezen az egy segéden megy, a szöveg mindig fájlból: a részletek a',
-    '"Dashboard-hívások a strict profilodban" szakaszban.',
+    ...(strict ? [
+      'Minden dashboard-hívásod ezen az egy segéden megy, a szöveg mindig fájlból: a részletek a',
+      '"Dashboard-hívások a strict profilodban" szakaszban.',
+    ] : [
+      'A segéd a tokent maga olvassa, így az soha nem kerül parancssorba. A szöveget CSAK fájlból veszi, a fájl útját',
+      'add át: a shell a szöveget sosem látja, tehát a benne álló backtick vagy `$(...)` nem fut le.',
+    ]),
+    ONE_FILE_ONE_SEND,
   ]
 }
 
 function autonomyLevel2Strict(name: string): string[] {
+  const file = shellWord(apiPayloadPath(name, 'jovahagyas'))
+  const ownToken = dashboardTokenPathFor(name) !== mainTokenPath()
   return [
-    'Jóváhagyás kérése: a leírást (mit tervezel elvégezni és miért) írd egy fájlba, majd:',
-    `${apiHelper} approval-request ${name} CATEGORY_KEY 3600 ${strictPayloadPath(name)}`,
+    `Jóváhagyás kérése: a leírást (mit tervezel elvégezni és miért) a Write eszközzel írd ide: ${file}, majd:`,
+    `${apiHelper} approval-request ${name} CATEGORY_KEY 3600 ${file}`,
+    ONE_FILE_ONE_SEND,
     'A válaszban kapott id-vel kérdezheted le a döntést.',
     '',
     'Döntés lekérdezése (60 mp-enként ismételve):',
@@ -3064,18 +3466,27 @@ function autonomyLevel2Strict(name: string): string[] {
     'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
     `${apiHelper} approval-consume <id> CATEGORY_KEY ${name}`,
     'Csak 0-s kilépési kód (HTTP 200) után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
+    // AGENT_TOKENS: the helper sends the agent's OWN token (PR-A0), so the same 403 as the curl recipe's applies.
+    ...(ownToken ? [ownTokenConsume403(name)] : []),
     'Ha a kérésben content_hash volt (`--content-hash <h>`), a felhasználásban is ugyanazt add meg (`--content-hash <h>`). Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
   ]
 }
 
-function buildAutonomyBody(name: string, strict = false): string {
+function ownTokenConsume403(name: string): string {
+  return `403 (agent-identity-binding) = a jóváhagyás NEM neked szól: a saját tokeneddel csak a saját kérésedet, vagy azt használhatod fel, amit ${MAIN_AGENT_ID} for_agent-tel neked iktatott. NE cselekedj. Kérd meg ${MAIN_AGENT_ID}-t (inter-agent üzenetben, a művelet leírásával és a content_hash-sel), hogy iktassa neked a jóváhagyást "for_agent":"${name}" mezővel; meglévő sorhoz ez utólag nem adható. Az új sort a tulajdonos hagyja jóvá, és annak az id-jával használd fel.`
+}
+
+// `helper`: the recipes go through scripts/marveen-api.sh (agentUsesApiHelper: every agent whose settings do not deny
+// it). `strict`: the agent also has the "Dashboard-hívások a strict profilodban" section the level-1 text points at.
+function buildAutonomyBody(name: string, helper = true, strict = false): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Autonómia és jóváhagyás',
     '',
     'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
-    ...(strict ? autonomyLevel1Strict(name) : [
+    ...(helper ? autonomyLevel1Strict(name, strict) : [
       '```bash',
       `curl -s -X POST ${dashboardOrigin}/api/messages \\`,
       '  -H "Content-Type: application/json" \\',
@@ -3101,7 +3512,7 @@ function buildAutonomyBody(name: string, strict = false): string {
     '',
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
-    ...(strict ? autonomyLevel2Strict(name) : [
+    ...(helper ? autonomyLevel2Strict(name) : [
       'Jóváhagyás kérése (POST):',
       `curl -s -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
       'A válaszban kapott id-vel kérdezheted le a döntést.',
@@ -3112,6 +3523,12 @@ function buildAutonomyBody(name: string, strict = false): string {
       'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
       `curl -s -X POST ${dashboardOrigin}/api/approvals/<id>/consume -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"CATEGORY_KEY","consumer":"${name}"}'`,
       'Csak HTTP 200 után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
+      // AGENT_TOKENS: a sub-agent's OWN token consumes only its own request or a
+      // row the main agent filed for it with for_agent; anything else is 403.
+      // for_agent is set only when a row is CREATED (never added to an existing
+      // one), so the way out is a new row the main agent files, not a grant of
+      // this id. Only said where the recipe really uses the agent's own token.
+      ...(tokenPath === mainTokenPath() ? [] : [ownTokenConsume403(name)]),
       'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
     ]),
     '',
@@ -3295,7 +3712,11 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildMessageCloseBody(strict = false): string {
+// `name` picks the token path (a sub-agent with AGENT_TOKENS reads its OWN
+// token); the default keeps the zero-argument call shape. `helper`: the recipe goes through
+// scripts/marveen-api.sh (agentUsesApiHelper), the token never on a command line (VOICETOKENLEAK1101 PR-A1).
+export function buildMessageCloseBody(helper = true, name: string = MAIN_AGENT_ID): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
     '',
@@ -3308,12 +3729,13 @@ export function buildMessageCloseBody(strict = false): string {
     '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
     '  feladó várakozó sorát 1-ről 4-re vitte).',
     '',
-    ...(strict ? [
+    ...(helper ? [
       '```bash',
       `${apiHelper} message-close <id> --no-notify`,
       '```',
-      'Delegált feladatnál a `--no-notify` helyett `--result-file <fájl>` kell (a fájlba előbb a Write',
+      `Delegált feladatnál a \`--no-notify\` helyett \`--result-file ${shellWord(apiPayloadPath(name, 'eredmeny'))}\` kell (a fájlba előbb a Write`,
       'eszközzel írd, mit csináltál), hibánál `--failed`. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+      ONE_FILE_ONE_SEND,
     ] : [
       '```bash',
       `curl -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
@@ -3336,7 +3758,7 @@ export function ensureMessageCloseSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(agentRunsStrict(name))}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(agentUsesApiHelper(name), name)}\n${MSGCLOSE_END}`
 
   let existing: string
   try {
@@ -3428,7 +3850,7 @@ export function ensureAutonomySection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const body = buildAutonomyBody(name, agentRunsStrict(name))
+  const body = buildAutonomyBody(name, agentUsesApiHelper(name), agentRunsStrict(name))
   const block = `${AUTONOMY_BEGIN}\n${body}\n${AUTONOMY_END}`
 
   let existing: string
@@ -3579,9 +4001,13 @@ function buildSkillsPathTrapBody(name: string): string {
     'módban a `$CLAUDE_CONFIG_DIR/skills` SYMLINK a globálisra, tehát az 1. pont,',
     'más néven; üres változónál maga a `~/.claude/skills` az.',
     '',
-    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide írni tudatos,',
-    '   flotta-szintű döntés legyen, ne alapértelmezés. A skill-futtatás base',
-    '   directory-ja a saját config-gyökeredet MUTATHATJA -- attól még a flottáé.',
+    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide közvetlenül NE',
+    '   írj: új globális skill vagy egy meglévő javítása CSAK javaslatként megy',
+    '   (`POST /api/skills/propose`). Hogy azonnal élesedik (a scan és az audit',
+    '   akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a',
+    '   SKILL_QUARANTINE kapcsoló dönti el; a válasz `live` mezője megmondja. A',
+    '   skill-futtatás base directory-ja a saját config-gyökeredet MUTATHATJA --',
+    '   attól még a flottáé.',
   ]
   const perAgent = isMain
     ? [
@@ -3590,6 +4016,7 @@ function buildSkillsPathTrapBody(name: string): string {
         '   (`agents/<név>`) ezen BELÜL van, tehát ez a mappa az ŐSÜK: amit ide',
         '   írsz, az megjelenik a listájukban. Láthatóságban úgy viselkedik,',
         '   mint a globális.',
+        '   Ide se írj közvetlenül: ugyanúgy javaslatként megy.',
         '3. `agents/<név>/.claude/skills` -- egy SUB-ÁGENS saját mappája. Csak övé.',
         '   NEKED NINCS ilyen: az `agents/<sajat-neved>` mappa nem létezik, és egy',
         '   ott létrehozott mappa a te munkakönyvtárad GYEREKE lenne, nem az őse,',
@@ -3598,6 +4025,7 @@ function buildSkillsPathTrapBody(name: string): string {
         'KÖVETKEZMÉNY: ezen a telepítésen NINCS olyan hely, ahova a fő ágens',
         'csak-magának írhat skillt. Ne feltételezd, hogy privát -- 2026-09-23-án',
         'ez a feltételezés dőlt meg, és nem magától: egy sub-ágens mérte meg.',
+        'Ezért nálad MINDEN új vagy javított skill javaslatként megy (`POST /api/skills/propose`).',
       ]
     : [
         '2. A PROJEKT-GYÖKÉR `.claude/skills` mappája. A munkakönyvtárad EZEN BELÜL',
@@ -3674,6 +4102,104 @@ export function ensureSkillsPathTrapSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+const SKILL_SECTION_HEADING = '## Öntanulás és Skill rendszer'
+
+/** Whitespace-only differences do not make a section edited: an LLM copy may add or drop a blank
+ *  line anywhere (measured on a live sub-agent: one inserted between two text lines), or leave
+ *  trailing spaces or CRLF. So blank lines are dropped and every line is right-trimmed. */
+export function normalizeSectionWhitespace(s: string): string {
+  return s.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/[ \t]+$/, ''))
+    .filter((l) => l !== '').join('\n')
+}
+
+/** The section of a CLAUDE.md that starts at a line equal to `heading` (trailing spaces, tabs and CR ignored) and ends before the next line starting with "## " (or at the end). Lines inside ``` fences are text, not headings: the oldest shipped section carries a fenced SKILL.md sample with its own "## " lines. */
+export function findSection(text: string, heading: string): { start: number; end: number } | null {
+  const lines = text.split('\n')
+  let offset = 0
+  let start = -1
+  let inFence = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/[ \t\r]+$/, '')
+    if (line.trimStart().startsWith('```')) inFence = !inFence
+    else if (inFence) { /* a line of a code block */ }
+    else if (start < 0 && line === heading) start = offset
+    else if (start >= 0 && line.startsWith('## ')) return { start, end: offset }
+    offset += lines[i].length + 1
+  }
+  return start < 0 ? null : { start, end: text.length }
+}
+
+/** The CLAUDE.md with an unedited retired skill section replaced by `current`, or null when nothing changes. */
+export function upgradeRetiredSkillSection(text: string, retired: string[], current: string): string | null {
+  const at = findSection(text, SKILL_SECTION_HEADING)
+  if (!at) return null
+  const norm = normalizeSectionWhitespace(text.slice(at.start, at.end))
+  if (norm === normalizeSectionWhitespace(current)) return null
+  if (!retired.some((r) => normalizeSectionWhitespace(r) === norm)) return null
+  const tail = at.end < text.length ? '\n\n' : '\n'
+  return text.slice(0, at.start) + current.replace(/\n+$/, '') + tail + text.slice(at.end)
+}
+
+// The retired stock sections (templates/retired-claude-md-sections.json, newest first).
+// A missing file means no migration; an unreadable one is logged and also means no
+// migration. The path is a test seam only.
+export function readRetiredSkillSections(
+  p: string = join(PROJECT_ROOT, 'templates', 'retired-claude-md-sections.json'),
+): string[] {
+  if (!existsSync(p)) return []
+  try {
+    const parsed = JSON.parse(readFileSync(p, 'utf-8')) as Record<string, unknown>
+    const list = parsed[SKILL_SECTION_HEADING]
+    return Array.isArray(list) ? list.filter((s): s is string => typeof s === 'string') : []
+  } catch (err) {
+    logger.warn({ err, path: p }, 'ensureSkillSectionCurrent: retired-claude-md-sections.json unreadable, the skill section is not migrated')
+    return []
+  }
+}
+
+// SKILLAPPROVALOFF1101: the two sentences of the skill section that changed when the quarantine became a switch, as
+// they read before. preQuarantineSwitchSection turns today's section back into that text, so an agent still carrying
+// it (unedited) is migrated like one on a retired stock section.
+export const SKILL_SECTION_SWITCH_SENTENCES: ReadonlyArray<readonly [before: string, now: string]> = [
+  [
+    'csak javaslatként megy (lásd lent), és a gazda jóváhagyásáig karanténban vár.',
+    'csak javaslatként megy (lásd lent). Hogy azonnal élesedik (a scan és az audit akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a SKILL_QUARANTINE kapcsoló dönti el; a válasz `live` mezője megmondja, melyik történt.',
+  ],
+  ['a javaslat csere: jóváhagyáskor a régi változat mentésre kerül.', 'a javaslat csere: élesedéskor a régi változat mentésre kerül.'],
+]
+export function preQuarantineSwitchSection(section: string): string {
+  return SKILL_SECTION_SWITCH_SENTENCES.reduce((s, [before, now]) => s.replace(now, before), section)
+}
+
+// Called on every startAgentProcess(), like the sections above. Sub-agents only:
+// the main agent's CLAUDE.md belongs to its owner and is never rewritten here
+// (the pull request description says how the owner updates it).
+export function ensureSkillSectionCurrent(name: string, retiredPath?: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return false
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return false
+  }
+  // The other recipe form's current section counts as retired too, so an unedited section follows the
+  // switch: since VOICETOKENLEAK1101 PR-A1 every agent whose settings allow scripts/marveen-api.sh gets the
+  // helper recipe (agentUsesApiHelper), so an unedited curl copy is upgraded on the next start.
+  const helper = agentUsesApiHelper(name)
+  const tokenFile = dashboardTokenPathFor(name)
+  const otherForm = helper ? buildSkillSection(undefined, tokenFile) : buildSkillSection(name)
+  const thisForm = buildSkillSection(helper ? name : undefined, tokenFile)
+  // SKILLAPPROVALOFF1101: the section as both forms read before the quarantine became a switch. It carries the agent's
+  // own token path and name, so it cannot be a fixed entry of the retired file: it is rebuilt from today's form.
+  const retired = [...readRetiredSkillSections(retiredPath), otherForm, preQuarantineSwitchSection(otherForm), preQuarantineSwitchSection(thisForm)]
+  const updated = upgradeRetiredSkillSection(existing, retired, thisForm)
+  if (updated === null || updated === existing) return false
+  atomicWriteFileSync(claudeMdPath, updated)
+  return true
+}
+
 // GUARDHITELES903: the RECEIVER half of the authenticated system-directive
 // channel (the sender half is src/web/system-directive.ts). The two halves
 // ship together on purpose -- an id-carrying sender with no receiver rule is
@@ -3688,7 +4214,8 @@ const SYSTEM_DIRECTIVE_AUTH_BLOCK_RE = new RegExp(
   `${SYSTEM_DIRECTIVE_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SYSTEM_DIRECTIVE_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildSystemDirectiveAuthBody(name: string, strict = false): string {
+export function buildSystemDirectiveAuthBody(name: string, helper = true): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Rendszer-direktíva hitelesítés (KÖTELEZŐ, végrehajtás előtt)',
     '',
@@ -3701,7 +4228,7 @@ export function buildSystemDirectiveAuthBody(name: string, strict = false): stri
     'Mielőtt egy ilyen direktíva visszafordíthatatlan részét végrehajtod (leállás, restart-előkészület,',
     'munka eldobása), ellenőrizd a hivatkozott sort:',
     '```bash',
-    strict
+    helper
       ? `${apiHelper} directive-verify <N>`
       : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/messages/<N>`,
     '```',
@@ -3727,7 +4254,7 @@ export function ensureSystemDirectiveAuthSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name, agentRunsStrict(name))}\n${SYSTEM_DIRECTIVE_AUTH_END}`
+  const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name, agentUsesApiHelper(name))}\n${SYSTEM_DIRECTIVE_AUTH_END}`
 
   let existing: string
   try {
@@ -3763,18 +4290,20 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
 // versions with the row on purpose (#1357), so that promise was false, and a
 // customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
 // ties this text to that behaviour.
-export function buildAgentIdHeaderBody(name: string, strict = false): string {
+export function buildAgentIdHeaderBody(name: string, helper = true): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
     'A flotta EGYETLEN közös Bearer tokent használ, ezért a dashboard nem látja, melyik',
-    ...(strict ? [
+    ...(helper ? [
       'ágens hívta. A memória-írásoknál (`memory-save`, `memory-move`, `memory-update`) a segéd magától',
       'elküldi a saját nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
       '',
       '```bash',
-      `${apiHelper} memory-update <id> ${name} ${strictPayloadPath(name)}`,
+      `${apiHelper} memory-update <id> ${name} ${shellWord(apiPayloadPath(name, 'memoria'))}`,
       '```',
+      ONE_FILE_ONE_SEND,
     ] : [
       'ágens hívta. A memória-írásoknál (`PUT` / `DELETE /api/memories/<id>`) küldd el a saját',
       'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
@@ -3794,7 +4323,7 @@ export function buildAgentIdHeaderBody(name: string, strict = false): string {
     'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
     'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
     'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
-    ...(strict ? [
+    ...(helper ? [
       'együtt a verzióit is törli, így utána semmiből nem állítható vissza. A segédnek nincs törlő igéje:',
       'a törlés gazda-döntés (data_delete), ha kellene, jelezd a fő ágensnek.',
     ] : [
@@ -3811,7 +4340,7 @@ export function ensureAgentIdHeaderSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name, agentRunsStrict(name))}\n${AGENT_ID_HEADER_END}`
+  const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name, agentUsesApiHelper(name))}\n${AGENT_ID_HEADER_END}`
 
   let existing: string
   try {
@@ -4124,14 +4653,15 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // AGENT_NAME for the model to substitute -- this body is written deterministically,
 // so the header dump file is genuinely per-agent and two agents searching at the
 // same time cannot read each other's label out of one shared /tmp path.
-export function buildMemorySearchLabelBody(name: string, strict = false): string {
+export function buildMemorySearchLabelBody(name: string, helper = true): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
     '',
     'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
     'maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint',
     'egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a',
-    ...(strict ? [
+    ...(helper ? [
       'segéd a fejlécet MINDIG kiírja a válasz ELSŐ soraként, és azt az első sort KÖTELEZŐ elolvasni:',
       '',
       '```bash',
@@ -4153,7 +4683,7 @@ export function buildMemorySearchLabelBody(name: string, strict = false): string
     '  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.',
     '',
     'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
-    ...(strict ? [
+    ...(helper ? [
       '`--strict` kapcsolót: ott az üres válasz pontosan azt jelenti, aminek látszik.',
       '',
       'Időszakra szűrés: `--date tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
@@ -4167,7 +4697,7 @@ export function buildMemorySearchLabelBody(name: string, strict = false): string
     'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
     'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
     '',
-    ...(strict ? [
+    ...(helper ? [
       'A segéd a keresőszót maga kódolja, tehát az ékezetes szó is megy. Ha az első sor',
       '`X-Memory-Search: MISSING`, a keresés nem úgy futott, ahogy kérted (pl. 400-at kapott): az elszállt',
       'kérés, nem üres találat.',
@@ -4205,7 +4735,7 @@ export function ensureMemorySearchLabelSection(name: string): void {
   // context on every session start.
   if (!hasBlock && /x-memory-search/i.test(existing)) return
 
-  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentRunsStrict(name))}\n${MEMORY_SEARCH_LABEL_END}`
+  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentUsesApiHelper(name))}\n${MEMORY_SEARCH_LABEL_END}`
   const updated = hasBlock
     ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, block)
     : existing.trimEnd() + '\n\n' + block + '\n'
@@ -4324,6 +4854,33 @@ const STRICT_API_BLOCK_RE = new RegExp(
   `${STRICT_API_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${STRICT_API_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+// The recipe list both the strict-api block and the api-helper block carry: the calls of the creation-time body
+// (memory save, search, hot list, move, daily log, message), each text from its fixed per-kind file.
+function helperBodyRecipeLines(name: string): string[] {
+  return [
+    '```bash',
+    `${apiHelper} memory-save ${name} warm "kulcsszo1, kulcsszo2" ${shellWord(apiPayloadPath(name, 'memoria'))}`,
+    `${apiHelper} memory-search ${name} KULCSSZO --category warm`,
+    `${apiHelper} memory-list ${name} hot`,
+    `${apiHelper} memory-move <ID> cold ${name}`,
+    `${apiHelper} daily-log ${name} ${shellWord(apiPayloadPath(name, 'naplo'))}`,
+    `${apiHelper} message ${name} ${MAIN_AGENT_ID} ${shellWord(apiPayloadPath(name, 'uzenet'))}`,
+    `${apiHelper} schedules-list`,
+    '```',
+    '',
+    '- A keresés kimenetének ELSŐ sora az `X-Memory-Search` fejléc, ezt KÖTELEZŐ elolvasni: `relaxed=true`',
+    '  esetén amit látsz, az mentett közelítés, nem bizonyíték; `MISSING` esetén a keresés el sem indult.',
+    '  Hiány-állításhoz tedd hozzá a `--strict` kapcsolót. A keresőszót a segéd maga kódolja, az ékezetes szó is megy.',
+    `- ${ONE_FILE_ONE_SEND}`,
+    '- A tier hot, warm, cold vagy shared. Az átsorolás csak a tier-t állítja, a tartalmat nem kell újraküldeni.',
+  ]
+}
+
+const helperExitCodes = [
+  '- Kilépési kód: 0 = rendben; 1 = a szerver hibát adott; 2 = rossz hívás vagy nincs token, semmi nem ment el;',
+  '  3 = a dashboard nem érhető el vagy nem válaszolt (írásnál ismétlés előtt olvass vissza).',
+]
+
 export function buildStrictApiBody(name: string): string {
   return [
     '## Dashboard-hívások a strict profilodban',
@@ -4331,29 +4888,83 @@ export function buildStrictApiBody(name: string): string {
     'A profilod `dontAsk` módban fut: a parancs-behelyettesítést, a csövet és minden nem engedélyezett',
     'parancsot a Claude Code kérdés nélkül megtagadja. Ezért MINDEN dashboard-hívásod EGY segéden megy,',
     `amelynek az igéit a \`${apiHelper} --help\` sorolja fel. A tokent a segéd maga olvassa.`,
-    'A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba',
-    `(pl. \`${strictPayloadPath(name)}\`), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
+    'A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba (a lenti recept a fájlt',
+    'is megnevezi), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.',
     '',
     'Ha ennek a fájlnak egy MÁSIK része tokenes `curl`-receptet ad, az nálad nem fut le: helyette ezeket használd.',
     '',
-    '```bash',
-    `${apiHelper} memory-save ${name} warm "kulcsszo1, kulcsszo2" <fájl>`,
-    `${apiHelper} memory-search ${name} KULCSSZO --category warm`,
-    `${apiHelper} memory-list ${name} hot`,
-    `${apiHelper} memory-move <ID> cold ${name}`,
-    `${apiHelper} daily-log ${name} <fájl>`,
-    `${apiHelper} message ${name} ${MAIN_AGENT_ID} <fájl>`,
-    '```',
-    '',
-    '- A keresés kimenetének ELSŐ sora az `X-Memory-Search` fejléc, ezt KÖTELEZŐ elolvasni: `relaxed=true`',
-    '  esetén amit látsz, az mentett közelítés, nem bizonyíték; `MISSING` esetén a keresés el sem indult.',
-    '  Hiány-állításhoz tedd hozzá a `--strict` kapcsolót.',
-    '- A tier hot, warm, cold vagy shared. Az átsorolás csak a tier-t állítja, a tartalmat nem kell újraküldeni.',
-    `- Ütemezést nem hozhatsz létre, és nem is listázhatsz: ha kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) a \`message\` igével (név, leírás, prompt, cron, ágens, típus).`,
+    ...helperBodyRecipeLines(name),
+    `- Ütemezést nem hozhatsz létre és nem módosíthatsz: ha kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) a \`message\` igével (név, leírás, prompt, cron, ágens, típus). A meglévőket a \`schedules-list\` igével listázod (csak olvas).`,
     '- Törlő ige nincs: a törlés gazda-döntés (data_delete).',
-    '- Kilépési kód: 0 = rendben; 1 = a szerver hibát adott; 2 = rossz hívás vagy nincs token, semmi nem ment el;',
-    '  3 = a dashboard nem érhető el vagy nem válaszolt (írásnál ismétlés előtt olvass vissza).',
+    ...helperExitCodes,
   ].join('\n')
+}
+
+// VOICETOKENLEAK1101 PR-A2 (Samu 64954): the creation-time body of an agent created before PR-A2 keeps its curl
+// recipes (memory save, daily log, search, hot list, move, unknown-sender ping), and no start rewrites the body. This
+// block carries the helper recipes for every non-strict agent whose settings allow the helper (agentUsesApiHelper) and
+// says they OVERRIDE the curl recipes elsewhere in the file: a curl recipe puts the token value on its argv. A strict
+// agent has the strict-api block instead. The main agent gets it too, as this marker block only (Samu 65192,
+// Marveen 65196): its body is its owner's and stays byte for byte as it is. The block goes away when the agent becomes
+// strict or its settings start denying the helper (its text would then be false).
+const API_HELPER_BEGIN = '<!-- BEGIN GENERATED: api-helper (auto-generated, do not edit by hand) -->'
+const API_HELPER_END = '<!-- END GENERATED: api-helper -->'
+const API_HELPER_BLOCK_RE = new RegExp(
+  `${API_HELPER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${API_HELPER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildApiHelperBody(name: string): string {
+  return [
+    '## Dashboard-hívások: a segéd (ez ÍRJA FELÜL a curl-recepteket)',
+    '',
+    `MINDEN dashboard-hívásod EGY segéden megy, amelynek az igéit a \`${apiHelper} --help\` sorolja fel. A tokent a`,
+    'segéd maga olvassa, így az soha nem kerül parancssorba. A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd',
+    'a saját mappádba (a lenti recept a fájlt is megnevezi), és a fájl útját add át: a shell a szöveget sosem látja,',
+    'tehát a benne álló backtick vagy `$(...)` nem fut le.',
+    '',
+    'Ha ennek a fájlnak egy MÁSIK része tokenes `curl`-receptet ad (memória mentés, keresés, hot-lista, átsorolás, napi',
+    'napló, inter-agent üzenet BÁRMELY címzettnek, pl. a vezetődnek vagy a fő ágensnek, a feladat-kész jelzés is,',
+    'ismeretlen sender jelzése, ütemezések listája), az régi alak: a token ÉRTÉKÉT a parancssorba teszi, ahol minden',
+    'azonos felhasználójú folyamat látja. Helyette ezeket használd (a `message` receptben a második név a címzett:',
+    'a fő ágens helyére azt írd, akinek az üzenet szól):',
+    '',
+    ...helperBodyRecipeLines(name),
+    '- Az ütemezések listája: a `schedules-list` ige (csak olvas; ütemezést létrehozni vagy módosítani csak a fő ágens tud).',
+    '- Törlő ige nincs: a törlés gazda-döntés (data_delete).',
+    ...helperExitCodes,
+  ].join('\n')
+}
+
+export function ensureApiHelperSection(name: string): void {
+  // The main agent too (Samu 65192, Marveen 65196): ONLY as this marker block in the root CLAUDE.md, like its other
+  // generated sections; the owner's body text around it is never touched.
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const hasBlock = API_HELPER_BLOCK_RE.test(existing)
+  let updated: string
+  if (!agentRunsStrict(name) && agentUsesApiHelper(name)) {
+    const block = `${API_HELPER_BEGIN}\n${buildApiHelperBody(name)}\n${API_HELPER_END}`
+    updated = hasBlock
+      ? existing.replace(API_HELPER_BLOCK_RE, block)
+      : existing.trimEnd() + '\n\n' + block + '\n'
+  } else {
+    if (!hasBlock) return
+    updated = existing.replace(new RegExp(`\\n*${API_HELPER_BLOCK_RE.source}`), '')
+    if (!updated.endsWith('\n')) updated += '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
 }
 
 export function ensureStrictApiSection(name: string): void {
@@ -4387,14 +4998,20 @@ export function ensureStrictApiSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
-// #2232: the helper recipes a strict-profile agent gets in place of the curl lines of the
-// creation prompt below. For every other agent the prompt is unchanged byte for byte.
-function strictPromptRecipes(name: string) {
-  const file = strictPayloadPath(name)
+// #2232: the helper recipes a strict-profile agent gets in place of the curl lines of the creation prompt below;
+// since VOICETOKENLEAK1101 PR-A2 every agent whose settings allow the helper (agentUsesApiHelper) gets them too, with
+// a neutral intro (the dontAsk sentence is strict-only). One fixed payload file per recipe kind, in the agent's dir.
+function strictPromptRecipes(name: string, strict = true) {
+  const mem = shellWord(apiPayloadPath(name, 'memoria'))
+  const log = shellWord(apiPayloadPath(name, 'naplo'))
+  const msg = shellWord(apiPayloadPath(name, 'uzenet'))
+  const mode = strict
+    ? 'A profilod dontAsk módban fut, ezért a parancs-behelyettesítést, a csövet és minden nem engedélyezett parancsot a Claude Code kérdés nélkül megtagadja. A tokent a segéd maga olvassa.'
+    : 'A tokent a segéd maga olvassa, így az ÉRTÉKE soha nem kerül parancssorba, ahol minden azonos felhasználójú folyamat látná.'
   return {
-    intro: `Minden dashboard-hívásod EGY segéden megy: ${apiHelper} <ige> ... (az igék: ${apiHelper} --help). A profilod dontAsk módban fut, ezért a parancs-behelyettesítést, a csövet és minden nem engedélyezett parancsot a Claude Code kérdés nélkül megtagadja. A tokent a segéd maga olvassa. A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba (${file}), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba.`,
-    save: `${apiHelper} memory-save AGENT_NAME CATEGORY "kulcsszo1, kulcsszo2" ${file}\n(a fájlban: MIT)`,
-    dailyLog: `${apiHelper} daily-log AGENT_NAME ${file}\n(a fájlban: ## HH:MM -- Tema, utána: Mi tortent, mi lett az eredmeny)`,
+    intro: `Minden dashboard-hívásod EGY segéden megy: ${apiHelper} <ige> ... (az igék: ${apiHelper} --help). ${mode} A szöveget CSAK fájlból veszi: előbb a Write eszközzel írd a saját mappádba (a recept a fájlt is megnevezi), és a fájl útját add át. Szöveget soha ne tegyél a parancssorba. ${ONE_FILE_ONE_SEND}`,
+    save: `${apiHelper} memory-save AGENT_NAME CATEGORY "kulcsszo1, kulcsszo2" ${mem}\n(a fájlban: MIT)`,
+    dailyLog: `${apiHelper} daily-log AGENT_NAME ${log}\n(a fájlban: ## HH:MM -- Tema, utána: Mi tortent, mi lett az eredmeny)`,
     search: `${apiHelper} memory-search AGENT_NAME KULCSSZO --category warm`,
     searchLabel: 'A kimenet ELSŐ sora az X-Memory-Search fejléc, és KÖTELEZŐ elolvasni (ha MISSING, a keresés el sem indult).',
     strictFlag: 'a --strict kapcsolót',
@@ -4402,10 +5019,74 @@ function strictPromptRecipes(name: string) {
     hotList: `${apiHelper} memory-list AGENT_NAME hot`,
     move: `${apiHelper} memory-move <ID> cold AGENT_NAME`,
     scheduleAsk: '(a lenti message igével, a szöveg fájlban)',
-    scheduleList: `Listázni sem tudsz: a segéd ütemezést nem kezel. Ha látnod kell a meglévő ütemezéseket, azt is ${BOT_NAME}-től kérd.`,
-    ping: `${apiHelper} message AGENT_NAME ${MAIN_AGENT_ID} ${file}\n(a fájlban: Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?)`,
+    scheduleList: `Olvasni (listázni) szabad, a segéddel:\n${apiHelper} schedules-list\nA segéd csak olvas: ütemezést írni vele nem lehet (a küldés előtt megáll).`,
+    ping: `${apiHelper} message AGENT_NAME ${MAIN_AGENT_ID} ${msg}\n(a fájlban: Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?)`,
     pingNote: 'A sender szövegét a Write eszközzel írd a fájlba, és csak a fájl útját add át a segédnek: így a shell sosem látja a szöveget, tehát az idegen üzenet nem futhat parancsként a gépeden.',
   }
+}
+
+// #2232 for the proposal recipe: a strict-profile agent's dontAsk mode denies the mkdir, heredoc
+// and curl block of the section, so it writes both files with its file tool and the helper sends
+// them. The files sit in its own directory, the only place its profile lets it write. The reason
+// gets its own file: the shared payload file is overwritten by every other recipe in between.
+function strictSkillProposeRecipe(name: string): string {
+  const draft = join(agentDir(name), 'skill-javaslat.md')
+  const reason = join(agentDir(name), 'skill-javaslat-indok.txt')
+  return [
+    `A teljes SKILL.md-t (ugyanazzal a szerkezettel, mint egy saját skillé) a Write eszközzel írd ide: ${draft}`,
+    `Az indoklást (miért kell, mit javít) a Write eszközzel írd ide: ${reason}`,
+    'Utána küldd el:',
+    `${apiHelper} skill-propose SKILL-NEV ${draft} --reason-file ${reason}`,
+  ].join('\n')
+}
+
+// The current "## Öntanulás és Skill rendszer" section of a sub-agent CLAUDE.md,
+// as generateClaudeMd asks the model to copy it. One source for the prompt and
+// for ensureSkillSectionCurrent's migration of an unedited old copy. With a strict
+// agent's name the proposal goes through the helper; without one the text is unchanged.
+// The token file is the agent's own (dashboardTokenPathFor, #2325), as in every other
+// recipe of the CLAUDE.md.
+export function buildSkillSection(strictAgent?: string, tokenFile: string = mainTokenPath()): string {
+  return `## Öntanulás és Skill rendszer
+
+Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
+
+### Skill-ek helye
+- Egyéni: a te munkakönyvtárad .claude/skills/ mappája. Csak te látod; ide közvetlenül írsz.
+- Globális: ~/.claude/skills/ (minden ágens látja). Ide közvetlenül NE írj: új globális skill vagy egy meglévő javítása csak javaslatként megy (lásd lent). Hogy azonnal élesedik (a scan és az audit akkor is lefut), vagy a gazda jóváhagyásáig karanténban vár, azt a SKILL_QUARANTINE kapcsoló dönti el; a válasz \`live\` mezője megmondja, melyik történt.
+- CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
+
+### Automatikus skill generálás
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt a saját mappádban:
+
+mkdir -p .claude/skills/SKILL-NEV
+A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
+
+### Globális skill: csak javaslatként
+Ha a skill minden ágensnek hasznos, vagy egy meglévő globális skillt javítanál, írd meg a teljes SKILL.md-t piszkozatba, és küldd el. Ha a név már él, a javaslat csere: élesedéskor a régi változat mentésre kerül. Meglévő globális skill javításánál a mostani szövegből indulj (cat ~/.claude/skills/NEV/SKILL.md), és a TELJES javított szöveget küldd.
+
+${strictAgent ? strictSkillProposeRecipe(strictAgent) : `mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
+(a teljes SKILL.md, ugyanazzal a szerkezettel, mint egy saját skillé)
+SKILLEOF
+python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' SKILL-NEV .claude/skill-javaslat/SKILL.md "miért kell, mit javít" > .claude/skill-javaslat/body.json
+curl -s -X POST ${dashboardOrigin}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat ${tokenFile})" --data-binary @.claude/skill-javaslat/body.json`}
+
+### Skill patch (runtime javítás)
+Ha egy meglévő skill használata közben jobb megoldást találsz:
+1. A saját skilledben: ne írd újra az egészet, csak a megváltozott részt javítsd célzott cserével (régi szöveg -> új szöveg), és jegyezd fel a változtatás okát a Buktatók szekcióba.
+2. Globális skillnél: ne szerkeszd a helyén; a javított teljes szöveget küldd javaslatként (fent).
+
+### Mikor generálj skill-t?
+- 5+ tool hívás, sikeres befejezés: Generálj skill-t
+- Hiba -> recovery -> siker: Generálj skill-t (buktató szekcióval)
+- User korrekció: Patch-eld a meglévő skill-t
+- Nem triviális workflow: Generálj skill-t
+- Egyszerű, egylépéses feladat: Ne generálj semmit
+
+### Skill reflexió
+Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld meg:
+- Van-e a session-ben újrafelhasználható minta?
+- Van-e meglévő skill amit javítani kellene?`
 }
 
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
@@ -4420,13 +5101,25 @@ export async function generateClaudeMd(name: string, description: string, model:
   // without STORE_DIR (three suites collapsed at collection when this was static).
   // The value is only needed here, at generation time.
   const { getEffectiveSettingValue } = await import('../settings-store.js')
+  // The agent's OWN token file when AGENT_TOKENS is on and scaffoldAgentDir()
+  // provisioned it; otherwise the shared path, exactly as before.
+  const tokenPath = dashboardTokenPathFor(name)
+  const ownToken = tokenPath !== mainTokenPath()
+  const ownTokenIntro = ownToken
+    ? `\nEz a SAJÁT tokened, és csak az ügynök-API-ra szól (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezések olvasása, vault olvasása). Minden más végpontra a szerver 403-at ad ("rule":"agent-token-scope"): az ilyen kérést küldd a fő-ágensnek (${MAIN_AGENT_ID}) a /api/messages-en. A tokeneddel CSAK a saját nevedben írhatsz: a from, agent_id, author, actor, updated_by mező mindig a saját neved (AGENT_NAME), memóriát csak a sajátodat módosíthatod, és üzenetet csak a neked címzettet zárhatod le; eltérés esetén 403 ("rule":"agent-identity-binding").`
+    : ''
+  const ownTokenSchedule = ownToken
+    ? ', és a szerver is érvényesíti: a te tokeneddel minden nem-GET hívás a /api/schedules alatt 403-at ad ("only the main agent writes schedules")'
+    : ''
   const ownerDriveFolder = String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') || '')
   const driveDefault = ownerDriveFolder
     ? `Ha nincs MÁS kijelölve, az ALAPÉRTELMEZETT közös meghajtó: https://drive.google.com/drive/folders/${ownerDriveFolder} - ide írj, rendezett almappákba.`
     : `Ha nincs kijelölt közös meghajtó, MIELŐTT bárhova írsz, kérd el ${OWNER_NAME}-tól a megfelelő Drive mappát.`
   // The profile is written before this runs (routes/agents.ts), so the new agent's mode is known.
   const strict = agentRunsStrict(name)
-  const R = strictPromptRecipes(name)
+  const R = strictPromptRecipes(name, strict)
+  // The generated sections (autonomy, skill) are rendered as on every start: helper recipes unless the settings deny it.
+  const helper = agentUsesApiHelper(name)
   const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
 Agent name: ${name}
 Description of what the agent should do: ${description}
@@ -4462,24 +5155,24 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-${strict ? R.intro : `Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.
+${helper ? R.intro + ownTokenIntro.replace('Ez a SAJÁT tokened, és csak', 'A segéd a SAJÁT tokenedet küldi (AGENT_TOKENS), és az csak') : `Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.${ownTokenIntro}
 A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.`}
 
 Memória mentés:
-${strict ? R.save : `curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'`}
+${helper ? R.save : `curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'`}
 
 Napi napló (append-only):
-${strict ? R.dailyLog : `curl -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'`}
+${helper ? R.dailyLog : `curl -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'`}
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-${strict ? R.search : `curl -s -D /tmp/mem-fejlec-AGENT_NAME.txt -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+${helper ? R.search : `curl -s -D /tmp/mem-fejlec-AGENT_NAME.txt -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
 grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt`}
 
-${strict ? R.searchLabel : 'A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni.'} A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
+${helper ? R.searchLabel : 'A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni.'} A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
 relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
-Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá ${strict ? R.strictFlag : 'a &strict=1-et'}: ott az üres válasz pontosan azt jelenti, aminek látszik.
-${strict ? `Időszakra szűrés: ${R.dateFilter}` : 'Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva.'} A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
+Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá ${helper ? R.strictFlag : 'a &strict=1-et'}: ott az üres válasz pontosan azt jelenti, aminek látszik.
+${helper ? `Időszakra szűrés: ${R.dateFilter}` : 'Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva.'} A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
@@ -4487,10 +5180,10 @@ A dashboard-memória EGYIK tierje sem töltődik be magától a kontextusodba, s
 Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
 
 1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
-${strict ? R.hotList : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"`}
+${helper ? R.hotList : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"`}
 
 2. Átsorolás (a category-only PATCH elég, a tartalmat NEM kell újraküldeni):
-${strict ? R.move : `curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"cold","updated_by":"AGENT_NAME"}'`}
+${helper ? R.move : `curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"cold","updated_by":"AGENT_NAME"}'`}
 
 Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
 
@@ -4500,9 +5193,9 @@ TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id léte
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
-Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${strict ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)'}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
+Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja${ownTokenSchedule}. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben ${helper ? R.scheduleAsk : '(a lenti, idézett heredoces alakban)'}: név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
 
-${strict ? R.scheduleList : `Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
+${helper ? R.scheduleList : `Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
 curl -q -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/schedules
 
 A -q legyen az ELSŐ argumentum, a token útja SZÓ SZERINT ez az abszolút út (relatív út, ~ vagy $HOME esetén a kapu megtagadja), és ne tegyél mellé -X, -d, -o vagy -w kapcsolót.`}
@@ -4512,38 +5205,7 @@ Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00)
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le.
 
-## Öntanulás és Skill rendszer
-
-Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
-
-### Skill-ek helye
-- Globális: ~/.claude/skills/ (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad .claude/skills/ mappája
-- CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
-
-### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
-
-mkdir -p ~/.claude/skills/SKILL-NEV
-A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
-
-### Skill patch (runtime javítás)
-Ha egy meglévő skill használata közben jobb megoldást találsz:
-1. Ne írd újra az egész skill-t, csak a megváltozott részt javítsd
-2. Használj célzott cserét (régi szöveg -> új szöveg)
-3. Jegyezd fel a változtatás okát a skill Buktatók szekciójába
-
-### Mikor generálj skill-t?
-- 5+ tool hívás, sikeres befejezés: Generálj skill-t
-- Hiba -> recovery -> siker: Generálj skill-t (buktató szekcióval)
-- User korrekció: Patch-eld a meglévő skill-t
-- Nem triviális workflow: Generálj skill-t
-- Egyszerű, egylépéses feladat: Ne generálj semmit
-
-### Skill reflexió
-Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld meg:
-- Van-e a session-ben újrafelhasználható minta?
-- Van-e meglévő skill amit javítani kellene?
+${buildSkillSection(helper ? name : undefined, tokenPath)}
 
 ## Időkezelés
 
@@ -4578,14 +5240,14 @@ Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az ak
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
 Példa ping ${BOT_NAME}-nek:
-${strict ? R.ping : `curl -s -X POST ${dashboardOrigin}/api/messages \\
+${helper ? R.ping : `curl -s -X POST ${dashboardOrigin}/api/messages \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $(cat ${tokenPath})" \\
   --data-binary @- <<'JSON'
 {"from":"AGENT_NAME","to":"${MAIN_AGENT_ID}","content":"Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?"}
 JSON`}
 
-${strict ? R.pingNote : `Az IDÉZETT heredoc KÖTELEZŐ itt (\`<<'JSON'\`, nem \`<<JSON\` -- az utóbbi ugyanúgy
+${helper ? R.pingNote : `Az IDÉZETT heredoc KÖTELEZŐ itt (\`<<'JSON'\`, nem \`<<JSON\` -- az utóbbi ugyanúgy
 behelyettesít): a sender saját szövegét viszed a payloadba, és a
 \`-d "{...}"\` dupla idézőjeles alakban a shell a backtickot és a \`$(...)\`-t VÉGREHAJTJA,
 tehát az idegen üzenet parancsot futtatna a gépeden. Nyers " jelet a beidézett
@@ -4622,7 +5284,7 @@ Output ONLY the markdown content, no code fences.`
   // see or rewrite them. Single source of truth: same builders as the
   // ensure*Section() functions used on every subsequent respawn.
   const fleetBody = buildFleetRosterBody(name)
-  const autonomyBody = buildAutonomyBody(name, strict)
+  const autonomyBody = buildAutonomyBody(name, helper, strict)
   cleaned = cleaned.trimEnd()
     + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + fleetBody + '\n' + FLEET_ROSTER_END
     + '\n\n' + AUTONOMY_BEGIN + '\n' + autonomyBody + '\n' + AUTONOMY_END + '\n'

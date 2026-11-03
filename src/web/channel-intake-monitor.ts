@@ -35,7 +35,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { agentDir, listAgentNames } from './agent-config.js'
 import { isAgentRunning } from './agent-process.js'
 import { readLastIngestionTimestamp, readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
-import { sendRoutineAlert } from './routine-alert.js'
+import { sendOwnerActionAlert } from './routine-alert.js'
 
 const MINUTE_MS = 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -313,7 +313,9 @@ async function checkAgentIntake(agentName: string, projectRoot: string): Promise
     { agent: agentName, verdict: decision.verdict, pending: probe.pendingUpdates, silentForMs },
     'channel-intake-monitor: channel intake is dead',
   )
-  sendRoutineAlert(
+  // Owner-action, not self-heal: this monitor only observes and alerts, it
+  // never restarts anything itself, so NOTIFY_ROUTINE_ALERTS must not silence it.
+  sendOwnerActionAlert(
     `channel-intake:${agentName}:${decision.verdict}`,
     formatIntakeAlert(agentName, decision, probe, silentForMs),
     { cooldownMs: INTAKE_ALERT_COOLDOWN_MS },

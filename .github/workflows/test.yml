@@ -74,10 +74,33 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # ENDASHGATE1030 follow-up: the outgoing copy gate (em dash, spaced en dash,
+      # double hyphen, accents, homoglyphs, names) decides what may go out to a
+      # customer, yet none of its tests ran here, so a green CI said nothing about
+      # it. Every outgoing-copy-gate*.test.py runs, a new one included without
+      # touching this file; the first failure stops the step, and an empty glob
+      # fails too (the literal pattern is not a file). Hermetic: each test drives
+      # the hook as a subprocess with its own rules file or temp dir.
+      - name: Outgoing copy gate tests
+        run: |
+          set -e
+          for t in scripts/__tests__/outgoing-copy-gate*.test.py; do
+            echo "== $t"
+            python3 "$t"
+          done
+      # HOOKDRIFT926: the hook sidecar validator (drift / reorder / missing
+      # script / forbidden key) and the gate lock list of hook_switches.py,
+      # then the validator itself on the repo's own settings.
+      - run: python3 scripts/__tests__/hook-metadata.test.py
+      - run: python3 scripts/hook-metadata.py
       # The host resource heartbeat's exit code IS its alert (1 = resource
       # warning, 2 = nothing measured): a crash or a bad threshold that exits 1
       # would page someone for nothing. Hermetic: fake /proc files and disk.
       - run: python3 scripts/__tests__/host-resource-heartbeat.test.py
+      # The open-source inventory generator: what it lists, counts or withholds
+      # (credentials in remotes, absolute paths, own clones) is only asserted
+      # here. Hermetic: throwaway fixture trees, no network.
+      - run: python3 scripts/__tests__/opensource-inventory.test.py
       # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
       # so "CI green" said nothing about them -- the exact rot the comment
       # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
@@ -89,6 +112,12 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # NATIVEAUTOUPD1642 (#1642): the channels.sh install/update block on native
+      # hosts -- never npm, and the guarded daily `claude update` with rollback.
+      # The older native-guard suite had no CI wiring either. Both hermetic: the
+      # block runs against a throwaway HOME with npm and claude stubbed on PATH.
+      - run: bash scripts/__tests__/channels-native-install-no-npm.test.sh
+      - run: bash scripts/__tests__/channels-native-autoupdate.test.sh
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
@@ -121,3 +150,15 @@ jobs:
       # #2202: the second-reviewer hook decides whether a high-risk call goes through, so its
       # contract is a gate instrument. Hermetic: a local HTTP stand-in for the review route.
       - run: python3 scripts/__tests__/second-reviewer-gate.test.py
+      # The read-only Meta Graph helper: GET-only by construction, token never printed, shared
+      # rate-limit pause. Hermetic: a fake opener, temp token and pause files, a faked clock.
+      - run: python3 scripts/__tests__/graph-read.test.py
+      # The one-consent Google helper writes refresh tokens into other programs' files: its
+      # 0600 / never-print / write-nothing-on-a-short-grant contract is a gate instrument.
+      # Hermetic: temp HOME, a local fake token endpoint, any other URL fails the test.
+      - run: python3 scripts/__tests__/google-consent.test.py
+      # The heavy-job gate decides whether a heavy job may start, so its fail-closed exit
+      # codes (73/74/75/77) are gate instruments. Hermetic: fake /proc/meminfo, temp lock,
+      # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
+      # SKIP where the runner has no systemd user manager or its MemoryMax is not in effect.
+      - run: python3 scripts/__tests__/heavy-job-gate.test.py

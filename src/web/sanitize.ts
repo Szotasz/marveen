@@ -57,3 +57,12 @@ export function safeJoin(base: string, ...parts: string[]): string {
 export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'"
 }
+
+// A path as ONE shell word for a recipe line: as it is when it holds only letters, combining marks (a
+// decomposed accent), digits (any script) and characters the shell leaves alone (a tilde inside a path
+// is not expanded, but a leading one is, so that stays quoted). Then the line stays byte for byte
+// what it was, and a profile allow-list prefix still matches. Single-quoted otherwise: a space in
+// PROJECT_ROOT split the helper path in two.
+export function shellWord(s: string): string {
+  return /^(?!~)[\p{L}\p{M}\p{N}_@%+=:,./~-]+$/u.test(s) ? s : shellEscape(s)
+}

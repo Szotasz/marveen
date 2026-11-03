@@ -85,6 +85,16 @@ FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or
 [ "$C" = "-" ] && C="$(cat)"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
+# An exported TOKEN in the caller's environment keeps its export attribute through the assignment above (Dani
+# 65583, measured): drop it, so no child process (curl among them) gets the dashboard token in its environment.
+export -n TOKEN
+[ -n "$TOKEN" ] || { echo "FAIL: the token file at $TOKEN_FILE is empty; nothing was sent"; exit 1; }
+# VOICETOKENLEAK1101 round 3 (#2080 review "Token on argv: what remains", Samu 65565, Dani 65569): the token never
+# goes on curl's argv, which ps shows to every process of the same user, and never on disk: curl reads the
+# Authorization header from a process substitution (-H @<(printf ...); printf is a shell builtin, so it starts no
+# process and is in no argv; measured on /usr/bin/curl 8.7.1, -H @file exists since curl 7.55.0). The JSON body (the
+# message text) goes on stdin (--data-binary @-), so it is off the argv too; the /dev/fd channel does not clash with
+# it. TOKEN is a plain shell variable, never exported, so no child process sees it in its environment.
 
 # --- Homoglyph gate, BEFORE the payload is built (MSGGATE924) --------------
 # On the RAW text, not on the JSON: json.dumps escapes a Cyrillic letter into
@@ -144,7 +154,7 @@ print(json.dumps(d))')"
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
   attempt=$((attempt+1))
-  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+  RESP="$(printf '%s' "$BODY" | curl -s -X POST "$URL" -H "Content-Type: application/json" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") --data-binary @- -w $'\n%{http_code}' 2>/dev/null || true)"
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
   # An id ALONE is not delivery. The router answers 200 WITH an id even when the

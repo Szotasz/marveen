@@ -292,6 +292,6 @@ async function tick(): Promise<void> {
 }
 
 export function startInboxNudgeWatcher(): NodeJS.Timeout {
-  setTimeout(() => { void tick() }, INBOX_NUDGE_INITIAL_DELAY_MS).unref()
+  setTimeout(whileNotFrozen('inbox-nudge', () => { void tick() }), INBOX_NUDGE_INITIAL_DELAY_MS).unref()
   return setInterval(whileNotFrozen('inbox-nudge', () => { void tick() }), INBOX_NUDGE_INTERVAL_MS)
 }

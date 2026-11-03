@@ -2,7 +2,7 @@ import { tmuxStderr } from './tmux-stderr.js'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir, userInfo } from 'node:os'
+import { homedir, tmpdir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
 import { resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
@@ -25,6 +25,7 @@ import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
+import { shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY } from './hook-registration-guard.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 
 // =============================================================================
@@ -196,11 +197,25 @@ export function workerHomeFor(agentId: string, variant: 'slow' | 'fast'): string
  * fleet. The boot-time pre-start in web.ts is already gated, but the worker
  * also LAZY-starts from runViaWorker (scaffold generation, heartbeat, digest),
  * which is how a WEB_ONLY sandbox still created live tmux sessions and wrote
- * into worker config dirs (WORKERHOME1). Read at call time, pure, so the gate
+ * into worker config dirs (WORKERHOME1). Read at call time, so the gate
  * is unit-testable and follows env changes in tests.
+ *
+ * A second instance (a worktree checkout or a temp-dir clone) is refused too, by the same decision as the
+ * background services in web.ts (#2419, Samu 64972): a dashboard action in its UI must not start a live worker
+ * session or write the live worker's config dir either. MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES=1 in the process
+ * environment opts in, as it does for the services; WEB_ONLY=true always refuses.
  */
-export function workerStartAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env['WEB_ONLY'] !== 'true'
+export function workerStartAllowed(
+  env: NodeJS.ProcessEnv = process.env,
+  where: { projectRoot?: string; isGitFile?: (root: string) => boolean; tmpDir?: string } = {},
+): boolean {
+  return shouldRunBackgroundServices({
+    projectRoot: where.projectRoot ?? PROJECT_ROOT,
+    webOnly: env['WEB_ONLY'] === 'true',
+    allowSecondInstance: env[ALLOW_SECOND_INSTANCE_SERVICES_KEY] === '1',
+    isGitFile: where.isGitFile,
+    tmpDir: where.tmpDir ?? tmpdir(),
+  }).run
 }
 
 /**
@@ -612,7 +627,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // Gate BEFORE any side effect: in WEB_ONLY staging neither the tmux session
   // nor the ensureWorkerCwd config-dir writes may happen (WORKERHOME1).
   if (!workerStartAllowed()) {
-    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- refusing to start a worker session or write its config dir')
+    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY or second instance -- refusing to start a worker session or write its config dir')
     return
   }
   if (workerSessionExists(ctx)) return
@@ -856,7 +871,7 @@ async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
   // session that the gated start never created, then alertWorkerStuck would
   // notifyChannel the LIVE channel from a staging instance.
   if (!workerStartAllowed()) {
-    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- worker disabled, failing the request fast')
+    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY or second instance -- worker disabled, failing the request fast')
     return false
   }
   startWorkerSessionFor(ctx)
@@ -881,7 +896,7 @@ function restartWorkerSession(ctx: WorkerCtx): void {
   // gated upstream, but a restart here would kill-session a LIVE worker from a
   // staging instance -- never do that.
   if (!workerStartAllowed()) {
-    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- refusing to restart (kill) a worker session')
+    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY or second instance -- refusing to restart (kill) a worker session')
     return
   }
   // TMUXWINDOWATTR920: stderr piped; "not running" is the expected case here,

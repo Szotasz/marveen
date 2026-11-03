@@ -7,7 +7,8 @@ import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
-import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { gateRequest, requiresAuth, type AuthResult } from './web/auth-gate.js'
+import { createAgentTokenResolver } from './web/agent-tokens.js'
 import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
@@ -18,9 +19,10 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
+import { forEachAgentIsolated } from './web/agent-seed-loop.js'
 import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureBackgroundCheckpointSection } from './web/agent-scaffold.js'
-import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './web/agent-scaffold.js'
+import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -71,6 +73,7 @@ import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
+import { tryHandleOpensourceInventory } from './web/routes/opensource-inventory.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
@@ -97,9 +100,10 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
-import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
+import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
+import { tryHandleGromzo } from './web/routes/gromzo.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
@@ -134,6 +138,9 @@ export function startWebServer(port = 3420): http.Server {
   ensureDirs()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
+  // Per-agent tokens (agent-tokens.ts): with no agents/<name>/.dashboard-token
+  // on disk (AGENT_TOKENS off, the default) it never matches.
+  const resolveAgentToken = createAgentTokenResolver()
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
@@ -184,17 +191,16 @@ export function startWebServer(port = 3420): http.Server {
     // fleet curl call keeps working with users present or absent. requiresAuth()
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
-    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN)
-    if (requiresAuth(path, method) && auth.kind === 'none') {
-      if (isFederationWireEndpoint(path, method)) {
-        // 401s are otherwise silent; federation-endpoint auth failures are the
-        // brute-force surface -- make them visible (round-2 scoped-token gate).
-        logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
-      }
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Unauthorized' }))
-      return
-    }
+    // gateRequest (auth-gate.ts) is the old inline gate -- resolveAuth, then the
+    // 401 for a gated path with no principal -- plus, for a sub-agent's OWN
+    // token only (AGENT_TOKENS), the allowlist scope and the identity binding
+    // (403). The shared token passes through it unchanged.
+    const auth: AuthResult | null = await gateRequest(req, res, url, path, method, {
+      dashboardToken: DASHBOARD_TOKEN,
+      resolveAgentToken,
+      mainAgentId: MAIN_AGENT_ID,
+    })
+    if (auth === null) return
     // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
     // decided here, before ANY handler (including network-info below) runs.
     if (requiresAuth(path, method)) {
@@ -208,7 +214,7 @@ export function startWebServer(port = 3420): http.Server {
     }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
-      auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent }
+      auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent, ...(auth.tokenAgent ? { tokenAgent: auth.tokenAgent } : {}) }
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, scope: auth.scope }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
@@ -236,6 +242,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleFederation(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandlePrLedger(routeCtx)) return
+      if (await tryHandleOpensourceInventory(routeCtx)) return
       if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
@@ -269,6 +276,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleFleetFreeze(routeCtx)) return
+      if (await tryHandleGromzo(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
@@ -432,23 +440,33 @@ export function startWebServer(port = 3420): http.Server {
   if (webOnly) {
     logger.info('[staging] WEB_ONLY mode: background services disabled')
   }
+  // A second instance (worktree checkout, temp-dir clone) is off as if WEB_ONLY were set, unless it is
+  // started with the opt-in (Samu 64702): its schedule runner would fire the live fleet's global tasks.
+  // Both switches come from the process environment only (Samu 64709): a .env line sets neither.
+  const services = shouldRunBackgroundServices({
+    projectRoot: PROJECT_ROOT, webOnly, tmpDir: tmpdir(),
+    allowSecondInstance: process.env[ALLOW_SECOND_INSTANCE_SERVICES_KEY] === '1',
+  })
+  const servicesOff = !services.run
+  if (servicesOff && !webOnly) logger.warn({ reason: services.reason }, 'Second instance: background services disabled (start it with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1 in the environment to run them)')
+  if (services.override) logger.warn({ reason: services.reason }, 'Second instance with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1: background services RUN (schedule runner included)')
 
-  const routerInterval = webOnly ? undefined : startMessageRouter()
-  if (!webOnly) logger.info('Agent message router started (5s poll)')
+  const routerInterval = servicesOff ? undefined : startMessageRouter()
+  if (!servicesOff) logger.info('Agent message router started (5s poll)')
   // Card 3ed09d25: an alert whose owner chat cannot be resolved reaches the main
   // agent's inbox (once an hour) instead of vanishing; the log line fires every time.
-  if (!webOnly) setOwnerChatMissingSink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
+  if (!servicesOff) setOwnerChatMissingSink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
 
-  const scheduleInterval = webOnly ? undefined : startScheduleRunner()
-  if (!webOnly) logger.info('Schedule runner started (60s poll)')
+  const scheduleInterval = servicesOff ? undefined : startScheduleRunner()
+  if (!servicesOff) logger.info('Schedule runner started (60s poll)')
   // HBFABRIC1003 (B): a missing heartbeat digest is reported, whatever its route.
-  const heartbeatGapInterval = webOnly ? undefined : startHeartbeatGapGuard()
+  const heartbeatGapInterval = servicesOff ? undefined : startHeartbeatGapGuard()
 
   // Pre-start the interactive agent worker (subscription backend) so the first
   // heartbeat / scheduled generation after boot does not pay the cold-boot
   // latency. runViaWorker still lazy-starts + restarts it on demand, so this is
   // a warm-up, not a hard dependency. Skipped on the SDK rollback backend.
-  if (!webOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+  if (!servicesOff && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
     import('./web/agent-worker.js')
       .then(m => { m.startWorkerSession(); logger.info('Interactive agent worker pre-started') })
       .catch(err => logger.warn({ err }, 'Failed to pre-start agent worker (will lazy-start on first use)'))
@@ -465,7 +483,7 @@ export function startWebServer(port = 3420): http.Server {
   // event loop alive, so that is not just a leak: the process would never exit.
   // The other monitors are synchronous calls and cannot hit this.
   let workerLivenessCancelled = false
-  if (!webOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+  if (!servicesOff && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
     import('./web/worker-liveness.js')
       .then(m => {
         if (workerLivenessCancelled) return
@@ -475,13 +493,13 @@ export function startWebServer(port = 3420): http.Server {
       .catch(err => logger.warn({ err }, 'Failed to start the worker liveness monitor'))
   }
 
-  const pluginMonitorInterval = webOnly ? undefined : startChannelPluginMonitor()
-  if (!webOnly) logger.info('Channel plugin health monitor started (60s poll)')
+  const pluginMonitorInterval = servicesOff ? undefined : startChannelPluginMonitor()
+  if (!servicesOff) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
   // the prober session file + allowlist are configured. Wrapped so a failure
   // never crashes server startup.
-  if (!webOnly) {
+  if (!servicesOff) {
     try {
       startInboundProber()
     } catch (err) {
@@ -489,60 +507,60 @@ export function startWebServer(port = 3420): http.Server {
     }
   }
 
-  const channelHealthInterval = webOnly ? undefined : startChannelHealthMonitor()
-  if (!webOnly) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
+  const channelHealthInterval = servicesOff ? undefined : startChannelHealthMonitor()
+  if (!servicesOff) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
 
   // The pane-grep above only sees a channel that SAYS it failed. This one asks
   // Telegram whether anyone is still fetching the agent's updates, which is the
   // only signal a silently deaf poller leaves behind.
-  const channelIntakeInterval = webOnly ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
-  if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
-  const teamsCredentialInterval = webOnly ? undefined : startTeamsCredentialMonitor()
-  if (!webOnly) logger.info('Teams credential monitor started (daily, 5min offset)')
+  const channelIntakeInterval = servicesOff ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
+  if (!servicesOff) logger.info('Channel intake monitor started (5min poll, 100s offset)')
+  const teamsCredentialInterval = servicesOff ? undefined : startTeamsCredentialMonitor()
+  if (!servicesOff) logger.info('Teams credential monitor started (daily, 5min offset)')
 
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
   // endpoint must not write (was flagged in review); this is the one place that does.
-  const costsSyncInterval = webOnly ? undefined : startCostsSyncTask()
-  if (!webOnly) logger.info('CostOps fixed-cost sync started (10min poll + startup)')
+  const costsSyncInterval = servicesOff ? undefined : startCostsSyncTask()
+  if (!servicesOff) logger.info('CostOps fixed-cost sync started (10min poll + startup)')
 
-  const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
-  if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
+  const stuckInputInterval = servicesOff ? undefined : startStuckInputWatcher()
+  if (!servicesOff) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
 
-  const messageSeenInterval = webOnly ? undefined : startMessageSeenSweep()
-  if (!webOnly) logger.info('Message-seen sweep started (60s poll)')
+  const messageSeenInterval = servicesOff ? undefined : startMessageSeenSweep()
+  if (!servicesOff) logger.info('Message-seen sweep started (60s poll)')
 
-  const midTurnCommandInterval = webOnly ? undefined : startMidTurnCommandWatcher()
-  if (!webOnly) logger.info('Mid-turn command watcher started (3s poll)')
+  const midTurnCommandInterval = servicesOff ? undefined : startMidTurnCommandWatcher()
+  if (!servicesOff) logger.info('Mid-turn command watcher started (3s poll)')
 
-  const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
-  if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
+  const stuckToolCallInterval = servicesOff ? undefined : startStuckToolCallWatcher()
+  if (!servicesOff) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
-  const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
-  if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
+  const inboxNudgeInterval = servicesOff ? undefined : startInboxNudgeWatcher()
+  if (!servicesOff) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
-  const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
-  if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
+  const reauthHealerInterval = servicesOff ? undefined : startReauthHealer()
+  if (!servicesOff && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
-  const autoRestartInterval = webOnly ? undefined : startAutoRestartRunner()
-  if (!webOnly) logger.info('Auto-restart runner started (60s poll, 40s offset)')
+  const autoRestartInterval = servicesOff ? undefined : startAutoRestartRunner()
+  if (!servicesOff) logger.info('Auto-restart runner started (60s poll, 40s offset)')
 
-  const modelFallbackInterval = webOnly ? undefined : startModelFallbackRunner()
-  if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
+  const modelFallbackInterval = servicesOff ? undefined : startModelFallbackRunner()
+  if (!servicesOff) logger.info('Model-fallback runner started (60s poll, 50s offset)')
 
   // The kanban archive sweep used to ride along on every listKanbanCards() call (measured on
   // our install), so reading the board wrote to it. It is a scheduled job now -- and it MUST
   // be started here, or KANBAN_ARCHIVE_DONE_DAYS silently stops doing anything. Same caveat as
   // every neighbouring runner on this line: a web-only instance never starts it, so on a
   // web-only deployment the setting is a silent no-op too -- same failure class this comment
-  // is about, just inherited from the webOnly gate rather than reintroduced by this change.
-  const kanbanArchiveInterval = webOnly ? undefined : startKanbanArchiveRunner()
-  if (!webOnly) logger.info('Kanban archive runner started (60min poll, 70s offset)')
+  // is about, just inherited from the servicesOff gate rather than reintroduced by this change.
+  const kanbanArchiveInterval = servicesOff ? undefined : startKanbanArchiveRunner()
+  if (!servicesOff) logger.info('Kanban archive runner started (60min poll, 70s offset)')
 
-  const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
-  if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
+  const contextGuardInterval = servicesOff ? undefined : startContextGuardRunner()
+  if (!servicesOff) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
 
-  if (!webOnly) {
+  if (!servicesOff) {
     startContextRestartGateRunner()
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
   }
@@ -554,19 +572,20 @@ export function startWebServer(port = 3420): http.Server {
   const eventLoopLag = startEventLoopLagMonitor()
   logger.info(`Event-loop-lag monitor started (${eventLoopLag.sampleMs / 1000}s window, WARN past ${eventLoopLag.warnMs}ms block)`)
 
-  const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
-  if (!webOnly) logger.info('Update checker started (15min poll)')
+  const updateCheckerInterval = servicesOff ? undefined : startUpdateChecker()
+  if (!servicesOff) logger.info('Update checker started (15min poll)')
 
-  const federationPollerInterval = webOnly ? undefined : startFederationPoller()
-  if (!webOnly) logger.info('Federation manifest poller started (10min poll, 25s offset)')
+  const federationPollerInterval = servicesOff ? undefined : startFederationPoller()
+  if (!servicesOff) logger.info('Federation manifest poller started (10min poll, 25s offset)')
 
-  const capabilityRunnerInterval = webOnly ? undefined : startCapabilitySummaryRunner()
-  if (!webOnly) logger.info('Capability summary runner started (5min poll, 65s offset; idle while federation is off)')
+  const capabilityRunnerInterval = servicesOff ? undefined : startCapabilitySummaryRunner()
+  if (!servicesOff) logger.info('Capability summary runner started (5min poll, 65s offset; idle while federation is off)')
 
   // Collect token usage from JSONL transcripts every hour so the run-history
   // token estimates stay fresh without requiring a manual dashboard visit.
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
+  const approvalReactionInterval = startApprovalReactionSweeper()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.
@@ -586,11 +605,11 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     }
   }, 60 * 60 * 1000)
 
-  const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
+  const tokenCollectInterval = servicesOff ? undefined : setInterval(() => {
     collectTokenUsageAndCheckBudgets(collectTokenUsage, checkAgentBudgets)
       .catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
-  if (!webOnly) {
+  if (!servicesOff) {
     collectTokenUsageAndCheckBudgets(collectTokenUsage, checkAgentBudgets)
       .catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (1h poll + startup)')
@@ -622,7 +641,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   // (do NOT copy the hook backfill's ungated placement). The ensure heals
   // the two known loss vectors: update.sh --regen-claudemd and a stale
   // dashboard-editor buffer PUT.
-  if (!webOnly) {
+  if (!servicesOff) {
     ensureFederationClaudeMdSection()
     ensureAutonomySection(MAIN_AGENT_ID)
     ensureSkillsPathTrapSection(MAIN_AGENT_ID)
@@ -633,6 +652,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     ensureEvidenceSection(MAIN_AGENT_ID)
     ensureMcpListChannelSection(MAIN_AGENT_ID)
     ensureMessageCloseSection(MAIN_AGENT_ID)
+    // VOICETOKENLEAK1101 PR-A2 (Samu 65192, Marveen 65196): the helper recipes as a marker block only; the body is untouched.
+    ensureApiHelperSection(MAIN_AGENT_ID)
     ensureBackgroundCheckpointSection(MAIN_AGENT_ID)
   }
 
@@ -642,7 +663,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   registerBuiltinCommands()
   // /topic exists only with the topics switch on (topic-commands.ts header).
   if (telegramTopicsEnabled()) registerTopicCommands()
-  if (!webOnly) {
+  if (!servicesOff) {
     initCustomCommands()
     // The /model hold revert: a one-shot timer at the exact expiry (re-armed
     // here from a hold that survived a restart), with the gate's main sweep as
@@ -677,6 +698,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const copyGatePatched: string[] = []
       const childGuardPatched: string[] = []
       const envelopePatched: string[] = []
+      const extraHooksPatched: string[] = []
       const pruned: string[] = []
       // BASH_EGRESS_HOST_ALLOW: the main agent's parser hook lives in the project-local
       // settings and only while the switch is on. FIRST, because ensureBashEgressDeny
@@ -691,7 +713,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       // digest-provenance-gate included), and heartbeat-worker froze at the
       // partial set from its last pre-hiding seed. Hidden technical workers
       // need the guard hooks MORE than visible agents, not less.
-      for (const agentName of [MAIN_AGENT_ID, ...listAllAgentNames()]) {
+      forEachAgentIsolated([MAIN_AGENT_ID, ...listAllAgentNames()], (agentName) => {
         // Self-heal FIRST: drop entries this app previously wrote whose script
         // file no longer exists (e.g. a deleted worktree instance's paths), so
         // the re-registration below lands on a clean, unblocked settings file.
@@ -717,8 +739,11 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         if (ensureTelegramCopyGate(agentName)) copyGatePatched.push(agentName)
         if (ensureChildClaudeGuard(agentName)) childGuardPatched.push(agentName)
         if (ensureWebSearchEnvelope(agentName)) envelopePatched.push(agentName)
+        // Install-local extras (store/extra-hooks.json) LAST: after every
+        // built-in backfill above, so they stay behind the built-in gates.
+        if (ensureExtraHookEntries(agentName)) extraHooksPatched.push(agentName)
         ensureQuarantineReader(agentName)
-      }
+      }, (agentName, err) => logger.warn({ err, agent: agentName }, 'Agent hook backfill failed for one agent; the others continue (ROSTERALIAS1026)'))
       // EGRESSRENDER824: a grant added to store/egress-allowlist.json must
       // reach the reader PROMPT copies without waiting for the next boot --
       // the egress-gate hook reads the JSON live, the prompt copies do not.
@@ -746,29 +771,44 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (copyGatePatched.length) logger.info({ patched: copyGatePatched }, 'outgoing-copy-gate wired onto the Telegram send tools in agent settings.json (GATECOPY828)')
       if (childGuardPatched.length) logger.info({ patched: childGuardPatched }, 'child-claude channel guard wired onto Bash in agent settings.json (CHILDCLAUDEPOLLER1010)')
       if (envelopePatched.length) logger.info({ patched: envelopePatched }, 'WebSearch untrusted-content envelope wired as PostToolUse in agent settings.json (MARVEENGAPS1020)')
+      if (extraHooksPatched.length) logger.info({ patched: extraHooksPatched }, 'install-local extra hook entries (store/extra-hooks.json) synced into agent settings.json')
     } catch (err) {
       logger.warn({ err }, 'Agent hook backfill skipped')
     }
   }
 
-  try {
-    ensureDefaultScheduledTasks()
-    logger.info('Default scheduled tasks seeded')
-  } catch (err) {
-    logger.warn({ err }, 'Scheduled tasks seed skipped')
+  // A second instance (a worktree checkout, a temp root, WEB_ONLY staging) never seeds the user-global scheduled
+  // tasks dir: it reads the "removed default" tombstones from its OWN store, so it could write back a default the
+  // owner deleted, and every task it writes is the live fleet's (Ábel 64492, Dani 64510; measured 2026-11-01 15:23 on
+  // a worktree instance). The same decision as the hook registration above.
+  // The rotation heartbeat task below is the same class (Dani 64715): it writes the global dir too, its tombstone
+  // and its switch (CLAUDE_ROTATION_ENABLED) are the instance's own.
+  if (!hookDecision.register) {
+    logger.info({ reason: hookDecision.reason }, 'Default scheduled tasks not seeded (second instance)')
+  } else {
+    try {
+      ensureDefaultScheduledTasks()
+      logger.info('Default scheduled tasks seeded')
+    } catch (err) {
+      logger.warn({ err }, 'Scheduled tasks seed skipped')
+    }
+
+    // Claude plan rotation needs its heartbeat task; installs that turned
+    // rotation on before this was automatic (or updated into it) get it here.
+    // Never overwrites an existing task, and honors an operator's deletion.
+    try {
+      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
+      if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
+    } catch (err) {
+      logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
+    }
   }
 
-  // Claude plan rotation needs its heartbeat task; installs that turned
-  // rotation on before this was automatic (or updated into it) get it here.
-  // Never overwrites an existing task, and honors an operator's deletion.
-  try {
-    const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
-    if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
-  } catch (err) {
-    logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
+  // The orphan sweep kills a background task's tmux session past its time limit; a second instance reads a copied
+  // database, so it could stop a LIVE fleet session on the shared tmux server (Dani 64963, Samu 64966).
+  if (!servicesOff) {
+    sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
   }
-
-  sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())
@@ -800,6 +840,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(kanbanArchiveInterval)
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
+    clearInterval(approvalReactionInterval)
     clearInterval(authSessionSweepInterval)
     eventLoopLag.stop()
     clearInterval(updateCheckerInterval)

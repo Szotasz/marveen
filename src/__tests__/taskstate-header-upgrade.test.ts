@@ -6,6 +6,7 @@ import { PROJECT_ROOT } from '../config.js'
 import {
   agentSettingsPath,
   ensureAgentHooks,
+  resolveTemplatePlaceholders,
   upgradeTaskStateHeaderInHookPrompts,
 } from '../web/agent-scaffold.js'
 
@@ -27,10 +28,17 @@ function templatePreCompactPrompt(): string {
   return prompt
 }
 
+// #2338 moved the template's task-state save to marveen-api.sh, so the curl
+// this pass upgrades now lives only in prompts an agent already has. The last
+// shipped curl prompt is frozen as a fixture; "old" is it without the header.
+function headerPrompt(): string {
+  return readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-pre2338.txt'), 'utf-8')
+}
+
 function oldPrompt(): string {
-  const current = templatePreCompactPrompt()
+  const current = headerPrompt()
   const old = current.replace(HEADER, '')
-  // Precondition: the template carries the header exactly once, so "old" is
+  // Precondition: the fixture carries the header exactly once, so "old" is
   // the prompt an agent scaffolded before this change has today.
   expect(old).not.toBe(current)
   expect(old.includes("X-Agent-Id")).toBe(false)
@@ -42,7 +50,7 @@ describe('upgradeTaskStateHeaderInHookPrompts', () => {
     const hooks: Record<string, unknown> = { PreCompact: [{ hooks: [{ type: 'agent', prompt: oldPrompt(), timeout: 180 }] }] }
     expect(upgradeTaskStateHeaderInHookPrompts(hooks)).toBe(true)
     const h = (hooks.PreCompact as Array<{ hooks: Array<{ prompt: string; timeout: number }> }>)[0].hooks[0]
-    expect(h.prompt).toBe(templatePreCompactPrompt())
+    expect(h.prompt).toBe(headerPrompt())
     expect(h.timeout).toBe(180)
   })
 
@@ -67,7 +75,7 @@ describe('upgradeTaskStateHeaderInHookPrompts', () => {
   })
 
   it('leaves the current template prompt alone (no second header)', () => {
-    const hooks: Record<string, unknown> = { PreCompact: [{ hooks: [{ type: 'agent', prompt: templatePreCompactPrompt() }] }] }
+    const hooks: Record<string, unknown> = { PreCompact: [{ hooks: [{ type: 'agent', prompt: headerPrompt() }] }] }
     expect(upgradeTaskStateHeaderInHookPrompts(hooks)).toBe(false)
     const p = (hooks.PreCompact as Array<{ hooks: Array<{ prompt: string }> }>)[0].hooks[0].prompt
     expect(p.split("X-Agent-Id: SAJAT_NEVED").length - 1).toBe(1)
@@ -111,9 +119,10 @@ describe('ensureAgentHooks upgrades an existing agent', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  it('a settings file scaffolded before the change gets the header on the next pass', () => {
+  it('a settings file scaffolded before the header ends up on the current template prompt', () => {
+    // A live agent's prompt is RENDERED (placeholders resolved at scaffold time).
     writeFileSync(settings, JSON.stringify({
-      hooks: { PreCompact: [{ hooks: [{ type: 'agent', prompt: oldPrompt(), timeout: 180 }] }] },
+      hooks: { PreCompact: [{ hooks: [{ type: 'agent', prompt: resolveTemplatePlaceholders(oldPrompt()), timeout: 180 }] }] },
     }, null, 2))
     // Both cross-scope paths point into the temp dir: the operator's real
     // ~/.claude is never read.
@@ -122,6 +131,7 @@ describe('ensureAgentHooks upgrades an existing agent', () => {
       { hooks: { PreCompact: Array<{ hooks: Array<{ prompt?: string }> }> } }
     const prompts = parsed.hooks.PreCompact.flatMap((e) => e.hooks).map((h) => h.prompt ?? '').filter(Boolean)
     expect(prompts).toHaveLength(1)
-    expect(prompts[0]).toContain("/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json' -H 'X-Agent-Id: SAJAT_NEVED'")
+    // The header pass, then the #2338 helper pass: byte-identical to what a fresh agent gets.
+    expect(prompts[0]).toBe(resolveTemplatePlaceholders(templatePreCompactPrompt()))
   })
 })

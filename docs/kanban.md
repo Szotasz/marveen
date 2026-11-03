@@ -48,7 +48,7 @@ Az `in_progress`-re húzás alapból felébreszti a kártya felelősét. Ha ezt 
 
 ### Foglalás (claim), feloldás, lezárási bizonyíték
 
-Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik.
+Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik. Bekapcsolva az `in_progress`-re húzott kártya kiosztó üzenete a munka előtti lépésként tartalmazza a foglaló hívást.
 
 ```
 POST /api/kanban/:id/claim    {"agent":"NEV","ttl_seconds":7200}  -- 200 foglalva/megújítva, 409 más foglalja (a válasz megnevezi, ki és meddig)
@@ -117,9 +117,9 @@ Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanWip` kulcs) → `window._
 A webes dashboard (`http://localhost:3420`) kártyaszerkesztőjének főbb viselkedései:
 
 - **Komment-szerző default:** az új komment szerzőjeként az elsődleges humán felelős jelenik meg előre kiválasztva (az `owner` típusú assignee), nem a bot.
-- **Alfeladat hozzáadás:** szülő-kártyánál (nem alfeladatnál) „Új alfeladat" form jelenik meg. Az új alfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet alfeladatot hozzáadni.
-- **Alfeladat törlés:** alfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
-- **Szülő-feladat szerkesztése:** alfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
+- **Részfeladat hozzáadás:** szülő-kártyánál (nem részfeladatnál) „Új részfeladat" form jelenik meg. Az új részfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet részfeladatot hozzáadni.
+- **Részfeladat törlés:** részfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
+- **Szülő-feladat szerkesztése:** részfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
 
 ### Beakadt kártyák vizuális jelzése
 

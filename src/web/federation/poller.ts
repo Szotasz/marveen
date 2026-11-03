@@ -263,6 +263,6 @@ export function resetFederationPollerCache(peerId?: string): void {
 }
 
 export function startFederationPoller(): NodeJS.Timeout {
-  setTimeout(() => { refreshFederationStatus().catch(() => {}) }, FEDERATION_POLL_INITIAL_DELAY_MS).unref()
+  setTimeout(whileNotFrozen('federation-poller', () => { refreshFederationStatus().catch(() => {}) }), FEDERATION_POLL_INITIAL_DELAY_MS).unref()
   return setInterval(whileNotFrozen('federation-poller', () => { refreshFederationStatus().catch(() => {}) }), FEDERATION_POLL_INTERVAL_MS)
 }

@@ -106,6 +106,27 @@ describe('POST /api/updates/apply pre-check is asynchronous', () => {
     }
   })
 
+  it('refuses a body that did not arrive in full before any pre-check (400 incomplete-body)', async () => {
+    // Dirty tree: had the route carried on with autoStash=false it would answer 409 dirty-tree.
+    writeFileSync(join(tmpRoot, 'a.txt'), 'changed\n')
+    try {
+      const req = Object.assign(new Readable({ read() {} }), { headers: { 'content-type': 'application/json' } })
+      req.push(Buffer.from('{"autoStash":tr'))
+      setImmediate(() => req.destroy())
+      let status = 0
+      let out = ''
+      const res = { setHeader() {}, writeHead(s: number) { status = s }, end(b?: string) { out = b ?? '' } }
+      const t0 = Date.now()
+      await tryHandleUpdates({ req, res, path: '/api/updates/apply', method: 'POST', url: new URL('http://localhost/api/updates/apply') } as any)
+      expect(status).toBe(400)
+      expect(JSON.parse(out).code).toBe('incomplete-body')
+      expect(Date.now() - t0).toBeLessThan(1000)
+      expect(existsSync(join(tmpRoot, 'store', 'update.pid'))).toBe(false)
+    } finally {
+      writeFileSync(join(tmpRoot, 'a.txt'), 'a\n')
+    }
+  })
+
   it('refuses a detached HEAD before any origin probe', async () => {
     git('checkout', '-q', '--detach')
     try {

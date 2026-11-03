@@ -1610,6 +1610,35 @@ function curlConfigFromPrintf(configs, { norm, masked, orig, a, b, lifted, feeds
   const k = all.findIndex(([s, e]) => s === a && e === b)
   return cfg !== null && k !== -1 && onlyTheRecipe(cfg, { norm, masked, lifted, all, k, src: -1, kSubst: subs[0] })
 }
+// `IFS=x read -r line` (also with other assignments before `read`): a prefix assignment lasts for that one
+// builtin and never re-splits the words of a later command, so it is not an IFS change for the
+// ifs-expanded-command rule (EGRESSIFSREAD1025). The text is the masked one, where quoted values are already
+// blanked. Only blanks and tabs may separate the words (a newline or a `;` ends the command),
+// so an IFS assignment on its own, or on anything else than `read`, still counts.
+const IFS_READ_PREFIX = /(?:[A-Za-z_]\w*\+?=[^\s"';&|()<>]*[ \t]+)*IFS\+?=[^\s"';&|()<>]*(?:[ \t]+[A-Za-z_]\w*\+?=[^\s"';&|()<>]*)*[ \t]+read(?=[\s;&|)]|$)/g
+// The assignment has to open a simple command (#2298 review): behind `export`, `declare`, `readonly`, `typeset`,
+// `local` or any other command word the same text is an ARGUMENT, and the assignment persists in the shell.
+// atCommandStart reads the ORIGINAL text before `idx` (the masked one turns `'export'` into blanks): the
+// previous token must be a command separator (`;` `&` `|` `(` or a newline, not escaped), or the start of the text, or one of the keywords below, or a lone `!` or `{`, and
+// each of these has to stand at a command start itself (so `export do IFS=_ read` and `export ! IFS=_ read` do not pass).
+const COMMAND_KEYWORDS = new Set(['while', 'until', 'if', 'then', 'do', 'elif', 'else'])
+function atCommandStart(text, idx) {
+  let i = idx
+  while (i > 0 && (text[i - 1] === ' ' || text[i - 1] === '\t')) i--
+  if (i === 0) return true
+  const c = text[i - 1]
+  if (c === '\n') return true
+  if (c === ';' || c === '&' || c === '|' || c === '(') return text[i - 2] !== '\\'
+  let j = i
+  while (j > 0 && !/[\s;&|()<>]/.test(text[j - 1])) j--
+  const word = text.slice(j, i)
+  return (word === '!' || word === '{' || COMMAND_KEYWORDS.has(word)) && atCommandStart(text, j)
+}
+// ...and `read` has to be the builtin. A `read` function, an alias for it, or POSIX mode (where an assignment
+// in front of a function persists) take the exemption away. The check reads the whole text with the quotes
+// taken out (so `eval 'set -o posix'` and `re''ad(){ :; }` count too), and it is deliberately loose: a false
+// hit only takes the exemption away. Text that only a later eval or source computes stays out of reach.
+const READ_NOT_BUILTIN = /\bPOSIXLY_CORRECT\b|\b(?:set|shopt)\b[^;&|\n]*\bposix\b|\balias\b[^;&|\n]*\bread=|\bfunction[ \t]+read\b|\bread[ \t]*\([ \t]*\)/
 // Function bodies are judged per call, and a body calling other functions fans out: identical
 // readings are judged once per top-level command, and past FUNCTION_BUDGET judgements the command
 // denies (measured: 30 functions calling each other took 12 s before the memo).
@@ -1661,7 +1690,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
   }
   const inDef = (at) => defs.some((d) => at >= d.start && at < d.end)
-  const ifsSet = /(?:^|[\s;&|(!{])IFS\+?=/.test(masked)
+  const readIsBuiltin = !READ_NOT_BUILTIN.test(norm.replace(/['"\\]/g, '')) && !defs.some((d) => d.name === 'read')
+  const ifsSet = /(?:^|[\s;&|(!{])IFS\+?=/.test(readIsBuiltin && masked.includes('IFS') ? masked.replace(IFS_READ_PREFIX, (m, at) => (atCommandStart(orig, at) ? ' ' : m)) : masked)
   const calls = new Map()                                         // function name -> spans calling it
   if (fetches) {
     const redirect = envRedirect(masked) ?? envIndirect(orig, masked)

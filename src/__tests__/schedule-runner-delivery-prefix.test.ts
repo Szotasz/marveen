@@ -1,6 +1,41 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-const { taskDeliveryPrefix, deliveryFallbackClause, resolveTaskTopicThreadId } = await import('../web/schedule-runner.js')
+const { taskDeliveryPrefix, deliveryFallbackClause, resolveTaskTopicThreadId, silentTaskTag } = await import('../web/schedule-runner.js')
+
+// #2284: dream-engine's SKILL.md forbids a channel send twice, and the runner told it
+// "send the result" in the same prompt. The silent types get the bare tag only.
+describe('silentTaskTag (#2284: no delivery instruction for a silent type)', () => {
+  it('heartbeat and dream-engine get only their tag', () => {
+    expect(silentTaskTag({ type: 'heartbeat', name: 'kanban-audit' })).toBe('[Heartbeat: kanban-audit] ')
+    expect(silentTaskTag({ type: 'dream-engine' as never, name: 'dream-engine' })).toBe('[Utemezett feladat: dream-engine] ')
+  })
+
+  it('a delivering type, an unknown one included, gets null (the delivery branch)', () => {
+    expect(silentTaskTag({ type: 'task', name: 'napi-hirek' })).toBeNull()
+    expect(silentTaskTag({ type: 'command' as never, name: 'backup' })).toBeNull()
+    expect(silentTaskTag({ type: 'some-future-type' as never, name: 'x' })).toBeNull()
+  })
+
+  it('the prompt builder takes its prefix from silentTaskTag before any delivery resolution', () => {
+    // The binding, not only the helper: without it the helper could be right and unused.
+    const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
+    const at = src.indexOf('const silentTag = silentTaskTag(task)')
+    expect(at).toBeGreaterThan(0)
+    const branch = src.slice(at, src.indexOf('resolveTaskChannelTarget(task)', at))
+    expect(branch).toMatch(/if \(silentTag !== null\) \{/)
+    expect(branch).toMatch(/prefix = silentTag\n/)
+    expect(branch).not.toMatch(/taskDeliveryPrefix\(/)
+  })
+
+  it('the shipped dream-engine seed is a silent type, and its SKILL.md still forbids sending', () => {
+    const dir = join(__dirname, '..', '..', 'scheduled-tasks', 'dream-engine')
+    const cfg = JSON.parse(readFileSync(join(dir, 'task-config.json'), 'utf-8')) as { type: string }
+    expect(silentTaskTag({ type: cfg.type as never, name: 'dream-engine' })).not.toBeNull()
+    expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toMatch(/NE küldj üzenetet/)
+  })
+})
 
 // The prompt prefix a non-heartbeat scheduled task gets when its delivery
 // target resolved. Pinned byte for byte: the agent reads it as its delivery

@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { kanbanMoveInstructions } from '../web/routes/kanban.js'
+import { kanbanMoveInstructions, DISPATCH_SAFE_CARD_ID_RE } from '../web/routes/kanban.js'
+import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
+import { recipeLine, runRecipeLine, RECIPE_TOKEN } from './helpers/kanban-recipe.js'
+import { execFileSync as git } from 'node:child_process'
+import { join } from 'node:path'
+import { PROJECT_ROOT } from '../config.js'
 
-// The one line of the dispatch that is a COMMAND rather than prose.
+// The status probe: the one line that pipes the board into a program.
 const probeLine = (out: string): string | undefined =>
-  out.split('\n').find((l) => l.includes('/api/kanban |'))
+  out.split('\n').find((l) => l.includes('marveen-api.sh kanban-list |'))
 
 // A card dispatched to an agent used to just say "drag it to done" -- but a
 // headless agent cannot drag, and the run left no record on the card. The
@@ -13,14 +18,15 @@ const probeLine = (out: string): string | undefined =>
 // (visible in the dashboard UI) -- the lightweight alternative to per-session
 // cards.
 describe('kanbanMoveInstructions', () => {
-  it('gives the agent the curl to post a result comment AND to mark done', () => {
+  it('gives the agent the command to post a result comment AND to mark done (run for real: what reaches the wire)', async () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    // Step 1: a human-readable result comment lands on the card.
-    expect(out).toContain('/api/kanban/abc123/comments')
-    expect(out).toContain('"author":"cody"')
-    // Step 2: mark the card done.
-    expect(out).toContain('/api/kanban/abc123/move')
-    expect(out).toContain('"status":"done"')
+    // Step 1: a human-readable result comment lands on the card; the text comes from a file the agent writes.
+    const c = await runRecipeLine(recipeLine(out, 'kanban-comment', 'abc123', 'cody'), { 'kanban-abc123-eredmeny.txt': 'Kész, a PR #1 nyitva.' })
+    expect([c.method, c.url, c.body]).toEqual(['POST', '/api/kanban/abc123/comments', { author: 'cody', content: 'Kész, a PR #1 nyitva.' }])
+    // Step 2: mark the card done, the evidence from a file, guarded by the expected status.
+    const d = await runRecipeLine(recipeLine(out, 'kanban-move', 'abc123', 'done'), { 'kanban-abc123-bizonyitek.txt': 'suite 12/12' })
+    expect([d.method, d.url, d.body]).toEqual(['POST', '/api/kanban/abc123/move', { status: 'done', expected_status: 'in_progress', evidence: 'suite 12/12', actor: 'cody' }])
+    expect(d.headers.authorization).toBe(`Bearer ${RECIPE_TOKEN}`)
     // It must NOT rely on the agent "dragging" the card (a headless agent can't).
     expect(out).not.toContain('húzd "done"-ra')
   })
@@ -28,10 +34,34 @@ describe('kanbanMoveInstructions', () => {
   // Without an actor the board cannot tell a self-pickup from an assignment, so
   // every move curl the agent is handed names the agent as the mover -- including
   // the in_progress self-pickup, which is the one the dispatcher used to echo back.
-  it('names the agent as the actor on every move it is told to make', () => {
+  it('names the agent as the actor on every move it is told to make', async () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('"status":"done","actor":"cody"')
-    expect(out).toContain('"status":"in_progress","actor":"cody"')
+    for (const status of ['done', 'in_progress', 'waiting']) {
+      expect((await runRecipeLine(recipeLine(out, 'kanban-move', 'abc123', status))).body).toMatchObject({ status, actor: 'cody' })
+    }
+    expect((await runRecipeLine(recipeLine(out, 'kanban-move', 'abc123', 'waiting'))).body).toMatchObject({ expected_status: 'in_progress' })
+  })
+
+  // The hand-back: a sub-agent's card goes to the main agent, the main agent's to the owner (a name like "Szabolcs").
+  it('hands the card back with kanban-assign: a PUT of the assignee, the agent as the actor', async () => {
+    const sub = await runRecipeLine(recipeLine(kanbanMoveInstructions('abc123', 'cody'), 'kanban-assign', 'abc123', MAIN_AGENT_ID))
+    expect([sub.method, sub.url, sub.body]).toEqual(['PUT', '/api/kanban/abc123', { assignee: MAIN_AGENT_ID, actor: 'cody' }])
+    const main = await runRecipeLine(recipeLine(kanbanMoveInstructions('abc123', MAIN_AGENT_ID), 'kanban-assign', 'abc123', OWNER_NAME))
+    expect(main.body).toEqual({ assignee: OWNER_NAME, actor: MAIN_AGENT_ID })
+  })
+
+  // VOICETOKENLEAK1101 round 2 (#2080 review 5727304277): no command in the message carries the token, not even
+  // a $(cat ...) that would put its VALUE on the argv at run time: the helper reads it itself.
+  it('carries no token and no token read: no $(cat, no .dashboard-token, no Authorization in the text', async () => {
+    for (const target of ['cody', MAIN_AGENT_ID]) {
+      const out = kanbanMoveInstructions('abc123', target)
+      expect(out).not.toContain('$(cat')
+      expect(out).not.toContain('.dashboard-token')
+      expect(out).not.toContain('Authorization')
+      expect(out).not.toContain('curl ')
+    }
+    const line = recipeLine(kanbanMoveInstructions('abc123', 'cody'), 'kanban-move', 'abc123', 'done')
+    expect((await runRecipeLine(line)).argv.join(' ')).not.toContain(RECIPE_TOKEN)
   })
 
   // The dispatch fires once, when the card enters in_progress, and is correct at
@@ -51,10 +81,9 @@ describe('kanbanMoveInstructions', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     const probe = probeLine(out)
     expect(probe).toBeDefined()
-    // Same token discipline as every other command in the message: read at run
-    // time, never embedded.
-    expect(probe).toContain('$(cat ')
-    expect(probe).toContain('.dashboard-token')
+    // The board comes through the helper, which reads the token itself.
+    expect(probe!.trim().startsWith('bash ')).toBe(true)
+    expect(probe).not.toContain('$(cat')
   })
 
   // Text assertions cannot tell a working command from a plausible-looking one,
@@ -87,6 +116,10 @@ describe('kanbanMoveInstructions', () => {
     const err = runProbeProgram(out, JSON.stringify({ error: 'Unauthorized' }))
     expect(err).toContain('Unauthorized')
     expect(err).not.toContain('Traceback')
+    // The helper's failure: its FAIL line goes to stderr and stdout stays empty. Still an answer, never a traceback.
+    const none = runProbeProgram(out, '')
+    expect(none).toContain('ismeretlen -- a kartya-lista nem jott meg')
+    expect(none).not.toContain('Traceback')
   })
 
   it('puts the warning BEFORE the completion steps -- it is a pre-flight check', () => {
@@ -96,11 +129,6 @@ describe('kanbanMoveInstructions', () => {
     expect(out.startsWith('MIELŐTT NEKIKEZDESZ')).toBe(true)
   })
 
-  it('keeps the bearer token out of the message (reads it at run time)', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('$(cat ')
-    expect(out).toContain('.dashboard-token')
-  })
 
   // The template closes every card with `done`, but a board program can give a
   // card its OWN closing status -- for example a review status, so the delegator
@@ -118,7 +146,7 @@ describe('kanbanMoveInstructions', () => {
     // recognise the abstraction in the middle of a task.
     expect(out).toContain('testing')
     // ...and `done` stays the default: the sentence is an exception, not a swap.
-    expect(out).toContain('"status":"done","actor":"cody"')
+    expect(out).toContain('kanban-move abc123 done --actor cody')
     expect(out).toContain('a "done" az alapértelmezés')
   })
 
@@ -134,5 +162,19 @@ describe('kanbanMoveInstructions', () => {
     expect(escalation).toBeGreaterThan(-1)
     expect(ranking).toBeGreaterThan(step2)
     expect(ranking).toBeLessThan(escalation)
+  })
+
+  // Dani 64894 (2): only an id the helper takes is dispatched, so a recipe step never fails on the id, and a '..' never
+  // reaches a path. (3): the main agent's payload files land in the project root, where git must ignore them.
+  it('dispatches only the helper\'s card-id shape: no dot, at most 64 characters', () => {
+    for (const ok of ['abc123', 'A_b-9', 'x'.repeat(64)]) expect(DISPATCH_SAFE_CARD_ID_RE.test(ok), ok).toBe(true)
+    for (const bad of ['a.b', '..', 'x'.repeat(65), 'a b', 'a/b', '']) expect(DISPATCH_SAFE_CARD_ID_RE.test(bad), bad).toBe(false)
+  })
+
+  it("the main agent's payload files are ignored by git", () => {
+    for (const f of ['kanban-abc123-eredmeny.txt', 'kanban-abc123-bizonyitek.txt', 'kanban-abc123-kerdes.txt']) {
+      const r = git('git', ['-C', PROJECT_ROOT, 'check-ignore', '-q', join(PROJECT_ROOT, f)], { stdio: 'pipe' })
+      expect(r).toBeDefined() // check-ignore exits 0 only when ignored (a non-zero exit throws)
+    }
   })
 })

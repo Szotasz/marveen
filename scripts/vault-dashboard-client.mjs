@@ -79,9 +79,33 @@ export function dashboardConfigured(root) {
   return existsSync(dashboardTokenFile(root))
 }
 
+// How long the resolver scripts wait for the dashboard. A scheduled task's preCheck runs under
+// PRECHECK_TIMEOUT_MS (10 s, src/web/schedule-runner.ts) and is killed at it, so a wait of the same length
+// never reaches the fallback after it (audit: resolve locally, enforce: exit 5) and the runner starts the model
+// anyway. Half the limit leaves the other half to the node start and the local fallback. An install whose
+// dashboard is slower raises it with VAULT_RESOLVE_TIMEOUT_MS (whole milliseconds, > 0; anything else is ignored).
+export const VAULT_RESOLVE_DEFAULT_TIMEOUT_MS = 5_000
+
+export function resolveTimeoutMs(env = process.env) {
+  const raw = (env.VAULT_RESOLVE_TIMEOUT_MS || '').trim()
+  const n = /^\d+$/.test(raw) ? Number(raw) : 0
+  return n > 0 && Number.isSafeInteger(n) ? n : VAULT_RESOLVE_DEFAULT_TIMEOUT_MS
+}
+
+// VAULTURLGATE1027: the dashboard the resolver may ask is on this machine. VAULT_RESOLVE_URL (tests, a
+// moved port) is read from the environment, and the request sends the dashboard token, so any other host
+// would carry the token off the machine. Only http(s) to 127.0.0.1, ::1 or localhost, with no user info.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost'])
+
+export function isLoopbackUrl(raw) {
+  let u
+  try { u = new URL(raw) } catch { return false }
+  return (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && LOOPBACK_HOSTS.has(u.hostname)
+}
+
 // { ok: true, values, missing, refused } or { ok: false, configured, error }.
 // configured === false means there is no dashboard token at all (not an install).
-export async function resolveViaDashboard(root, ids, { timeoutMs = 10_000 } = {}) {
+export async function resolveViaDashboard(root, ids, { timeoutMs = resolveTimeoutMs() } = {}) {
   const tokenFile = dashboardTokenFile(root)
   if (!existsSync(tokenFile)) return { ok: false, configured: false, error: 'no dashboard token' }
   let token = ''
@@ -89,6 +113,8 @@ export async function resolveViaDashboard(root, ids, { timeoutMs = 10_000 } = {}
   if (!token) return { ok: false, configured: true, error: 'empty dashboard token' }
   if (!/^[\x21-\x7e]+$/.test(token)) return { ok: false, configured: true, error: 'malformed dashboard token' }
   const url = process.env.VAULT_RESOLVE_URL || `http://127.0.0.1:${installSetting(root, 'WEB_PORT', '3420')}/api/vault/resolve`
+  // The request carries the dashboard token: a VAULT_RESOLVE_URL off this machine is refused before it is built.
+  if (!isLoopbackUrl(url)) return { ok: false, configured: true, error: 'VAULT_RESOLVE_URL is not a loopback address' }
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
   const agent = claimedAgentName()
   if (agent) headers['X-Agent-Id'] = agent
@@ -116,13 +142,15 @@ export async function resolveViaDashboard(root, ids, { timeoutMs = 10_000 } = {}
 }
 
 // The dashboard accepts at most 100 ids per request: send the ids in batches and merge the answers.
-// Any failed batch fails the whole call (the first failure is returned).
+// Any failed batch fails the whole call (the first failure is returned). The wait (timeoutMs) is one budget for
+// the whole call, not one per batch: three slow batches must not add up to three times the limit.
 export async function resolveInBatches(root, ids, opts, size = 100) {
   const values = Object.create(null)
   const missing = []
   const refused = []
+  const deadline = Date.now() + ((opts && opts.timeoutMs) || resolveTimeoutMs())
   for (let i = 0; i < ids.length; i += size) {
-    const r = await resolveViaDashboard(root, ids.slice(i, i + size), opts)
+    const r = await resolveViaDashboard(root, ids.slice(i, i + size), { ...opts, timeoutMs: deadline - Date.now() })
     if (!r.ok) return r
     for (const k of Object.keys(r.values)) values[k] = r.values[k]
     missing.push(...r.missing)

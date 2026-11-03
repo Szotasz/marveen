@@ -79,7 +79,7 @@ function tick(): void {
 }
 
 export function startCapabilitySummaryRunner(): NodeJS.Timeout {
-  setTimeout(tick, CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
+  setTimeout(whileNotFrozen('capability-runner', tick), CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
   return setInterval(whileNotFrozen('capability-runner', tick), CAPABILITY_RUNNER_INTERVAL_MS)
 }
 

@@ -20,6 +20,8 @@ if [ "${1:-}" = "message" ]; then
   shift
   # agent-msg.sh reads MARVEEN_API_BASE and MARVEEN_TOKEN_FILE too: the same guard first.
   python3 "$DIR/lib/marveen_api.py" --check-env || exit 2
+  # The token file it will read: missing, unreadable or empty stops here, never an empty Bearer.
+  python3 "$DIR/lib/marveen_api.py" --check-token || exit 2
   PRIORITY=()
   ARGS=()
   while [ "$#" -gt 0 ]; do
@@ -39,6 +41,23 @@ if [ "${1:-}" = "message" ]; then
     exec bash "$DIR/agent-msg.sh" ${PRIORITY[@]+"${PRIORITY[@]}"} "$FROM" "$TO" -
   fi
   [ -r "$FILE" ] || { echo "FAIL: cannot read $FILE; nothing was sent." >&2; exit 2; }
+  # A recipe payload file (api-<kind>.txt, one fixed name per kind) is emptied after a successful send and an empty one
+  # stops here, so an old text is never sent twice (VOICETOKENLEAK1101 PR-A1, Dani 65157/1); the same rule as the
+  # python verbs (marveen_api.py read_text).
+  case "$(basename "$FILE")" in
+    api-*.txt)
+      if ! grep -q '[^[:space:]]' "$FILE"; then
+        echo "FAIL: $FILE is empty: a recipe payload file is emptied after each send, write the new text first; nothing was sent." >&2
+        exit 2
+      fi
+      rc=0
+      bash "$DIR/agent-msg.sh" ${PRIORITY[@]+"${PRIORITY[@]}"} "$FROM" "$TO" - < "$FILE" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        : > "$FILE" || echo "WARN: sent, but could not empty $FILE; empty it before the next use." >&2
+      fi
+      exit "$rc"
+      ;;
+  esac
   exec bash "$DIR/agent-msg.sh" ${PRIORITY[@]+"${PRIORITY[@]}"} "$FROM" "$TO" - < "$FILE"
 fi
 

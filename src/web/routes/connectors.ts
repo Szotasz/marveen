@@ -15,7 +15,7 @@ import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } 
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
-import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
+import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
@@ -783,7 +783,15 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
-    setSecret(id.trim(), label || id.trim(), value)
+    if (label !== undefined && label !== null && typeof label !== 'string') { json(res, { error: 'label must be a string' }, 400); return true }
+    // An unchanged stored label passes whatever its length (value rotation re-sends it); a new
+    // secret or a changed label is capped. listSecrets() never decrypts anything.
+    if (typeof label === 'string' && label.trim().length > VAULT_LABEL_MAX_LENGTH
+        && label.trim() !== listSecrets().find(s => s.id === id.trim())?.label) {
+      json(res, { error: `label must be at most ${VAULT_LABEL_MAX_LENGTH} characters` }, 400)
+      return true
+    }
+    setSecret(id.trim(), normalizeVaultLabel(id.trim(), label ?? ''), value)
     const syncResult = syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
     return true
@@ -861,6 +869,30 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     logVaultRead(id, ctx.auth, val !== null, acl)
     if (val === null) { json(res, { error: 'Not found' }, 404); return true }
     json(res, { id, value: val })
+    return true
+  }
+
+  // Label-only update: never decrypts or re-sends the value, and there is nothing to sync
+  // (syncSecret propagates the VALUE into bound MCP configs; the label is not part of them).
+  if (vaultMatch && !isVaultSubroute && method === 'PATCH') {
+    const id = decodeURIComponent(vaultMatch[1])
+    // ssh-key-* entries are managed exclusively by the SSH key pool.
+    if (isSshPrivateKeyId(id)) {
+      json(res, { error: 'SSH private keys are managed by the SSH key pool' }, 403)
+      return true
+    }
+    let body: { label?: unknown } | null
+    try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    if (!body || typeof body !== 'object' || typeof body.label !== 'string') {
+      json(res, { error: 'label must be a string' }, 400)
+      return true
+    }
+    if (body.label.trim().length > VAULT_LABEL_MAX_LENGTH) {
+      json(res, { error: `label must be at most ${VAULT_LABEL_MAX_LENGTH} characters` }, 400)
+      return true
+    }
+    if (!updateSecretLabel(id, normalizeVaultLabel(id, body.label))) { json(res, { error: 'Not found' }, 404); return true }
+    json(res, { ok: true })
     return true
   }
 

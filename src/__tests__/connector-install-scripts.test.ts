@@ -1058,7 +1058,7 @@ describe('PATCH /api/connectors/github-repos/:name', () => {
 // --- UI wiring: the real handlers from web/app.js, run against stubs ---
 // The GitHub-repo block (opt-in helper, list with the update button, install
 // wiring) is cut out of app.js by its function markers and evaluated with a
-// fake document, fetch, confirm and alert, so the tests prove what each
+// fake document, fetch, confirmDialog and alert, so the tests prove what each
 // answer of the operator actually sends.
 describe('dashboard UI wiring', () => {
   const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -1084,6 +1084,7 @@ describe('dashboard UI wiring', () => {
     const calls: Call[] = []
     const alerts: string[] = []
     const confirms: string[] = []
+    const dialogs: { title: string, okLabel: string, danger?: boolean }[] = []
     const answers = [...opts.confirm]
     const ids: Record<string, El> = {
       githubReposToggle: el(), githubReposBody: el(), githubRepoAddBtn: el(),
@@ -1100,11 +1101,14 @@ describe('dashboard UI wiring', () => {
       return { ok: true, json: async () => data }
     }
     const noop = () => undefined
-    const fn = new Function('document', 'fetch', 'confirm', 'alert', 't', 'escapeHtml', 'loadConnectors', 'loadExternalPaths', 'loadVault', 'showEnvVarModal', 'setTimeout',
+    const fn = new Function('document', 'fetch', 'confirmDialog', 'alert', 't', 'escapeHtml', 'loadConnectors', 'loadExternalPaths', 'loadVault', 'showEnvVarModal', 'setTimeout',
       `${SRC}\nreturn { offer: offerGitHubRepoScriptsOptIn, load: loadGitHubRepos }`)
-    const api = fn(document, fetch, (m: string) => { confirms.push(m); return answers.shift() ?? false }, (m: string) => { alerts.push(m) },
+    const confirmDialog = async (o: { title: string, message: string, okLabel: string, danger?: boolean }) => {
+      confirms.push(o.message); dialogs.push({ title: o.title, okLabel: o.okLabel, danger: o.danger }); return answers.shift() ?? false
+    }
+    const api = fn(document, fetch, confirmDialog, (m: string) => { alerts.push(m) },
       (k: string, p?: Record<string, unknown>) => `${k}${p ? ' ' + JSON.stringify(p) : ''}`, (x: string) => x, noop, noop, noop, async () => ({}), noop)
-    return { api, ids, created, calls, alerts, confirms, clickInstall: () => ids.githubRepoAddBtn.listeners.click() }
+    return { api, ids, created, calls, alerts, confirms, dialogs, clickInstall: () => ids.githubRepoAddBtn.listeners.click() }
   }
   const POST = 'POST /api/connectors/github-repos'
   const PATCH = 'PATCH /api/connectors/github-repos/acme--tool'
@@ -1113,6 +1117,21 @@ describe('dashboard UI wiring', () => {
     expect(startAt).toBeGreaterThan(-1)
     expect(wireAt).toBeGreaterThan(startAt)
     expect(endAt).toBeGreaterThan(wireAt)
+  })
+  it('the block asks in confirmDialog only, never the native confirm()', () => {
+    expect(SRC).not.toMatch(/(^|[^.\w])confirm\(/)
+  })
+  it('install: its own title and button; a danger dialog only when the scripts run', async () => {
+    for (const checked of [false, true]) {
+      const h = harness({ confirm: [false], checked })
+      await h.clickInstall()
+      expect(h.dialogs).toEqual([{ title: 'connectors.install_confirm_title', okLabel: 'connectors.install_confirm_ok', danger: checked }])
+    }
+  })
+  it('the "run the scripts now?" question is a danger dialog with its own title and button', async () => {
+    const h = harness({ confirm: [false] })
+    await h.api.offer('acme--tool', ['prepare'])
+    expect(h.dialogs).toEqual([{ title: 'connectors.scripts_skipped_confirm_title', okLabel: 'connectors.scripts_skipped_confirm_ok', danger: true }])
   })
   it('the checkbox exists in the page with its i18n key', () => {
     expect(html).toMatch(/<input type="checkbox" id="githubRepoRunScripts">/)

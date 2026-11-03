@@ -25,6 +25,8 @@ reports/
 # '*/**/.claude/' keeps nested .claude dirs ignored like before.
 .claude/*
 !.claude/settings.json
+# HOOKDRIFT926: the hook sidecar travels with the settings it describes.
+!.claude/hooks.metadata.json
 */**/.claude/
 .config/
 
@@ -156,3 +158,14 @@ transcripts/
 #   supabase/.temp/  -> ignores a real directory, MISSES the symlink (it shows in
 #                       `git status`, so the next CLI run commits it again)
 supabase/.temp
+
+# Install-local hook scripts named by store/extra-hooks.json (docs/config-reference.md)
+local-hooks/
+
+# VOICETOKENLEAK1101 (Dani 64894): the main agent's kanban recipe payload files (written in the project root)
+/kanban-*-eredmeny.txt
+/kanban-*-bizonyitek.txt
+/kanban-*-kerdes.txt
+
+# VOICETOKENLEAK1101 PR-A1 (Dani 64941/2): the main agent's dashboard-API payload files (written in the project root)
+/api-*.txt

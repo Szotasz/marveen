@@ -16,16 +16,29 @@ envelope from a sender whose role is not "owner".
 The rule in one sentence: risky tool + any non-owner envelope anywhere in
 the current turn -> deny; everything else -> allow silently.
 
+allowTools (optional) turns the list around for such a turn: every tool that
+does NOT match it is risky too. An agent that serves its owner and colleagues
+in one session (a team chat channel) lists only the chat's own reply tools
+there, so a tool installed later is closed in a colleague's turn by default,
+not open (Dani 50388). riskyTools and allowTools add up: a tool on both is
+denied.
+
 What it reads:
-  --policy <base64url of the agent-config.json "senderRoleGate" value, copied
-  by the launcher at the agent's start> (or --config <an agent-config.json>
+  --policy <base64url of the agent's "senderRoleGate" value, copied by the
+  launcher at the agent's start from store/agent-sender-role-gates.json (a
+  sub-agent) or store/main-agent-config.json (the main agent)> (or --config <an agent-config.json>
   for tests and manual checks). The value:
-  {"riskyTools": [glob patterns], "roles":
-  [{"channel","sender","role"}], "senderKeys": {channel: attribute}}.
-  riskyTools patterns are fnmatch-case globs matched after replacing every
+  {"riskyTools": [glob patterns], "allowTools": [glob patterns], "roles":
+  [{"channel","sender","role"}], "senderKeys": {channel: attribute or [attributes]}}.
+  riskyTools and allowTools patterns are fnmatch-case globs matched after replacing every
   "-" with "_" on BOTH sides, so "send_mail" and "send-mail" are the same
   tool. Sender ids come from the envelope attributes (telegram: user_id,
-  teams: aad_object_id, overridable per channel via senderKeys).
+  teams: aad_object_id, overridable per channel via senderKeys). A list of
+  attributes makes the sender their values joined with "|", every one required
+  (GROMZOGATECONF1030: gromzo ["sender_role", "verified"] -> "owner|true"), and
+  an envelope that states verified as anything but "true" is never an owner's,
+  whatever the keys say (the gromzo plugin writes sender_role and verified
+  apart, so sender_role="owner" alone also comes from an unverified device).
 
 What a "turn" is (see find_window): the window from the last batch of
 turn-start records (type "user" with turnPosition.turnIndex) to the end of
@@ -105,10 +118,10 @@ def load_config(path):
     return classify_config(parsed)
 
 
-# What the launcher wires: base64url (no padding) of the senderRoleGate value, copied out of
-# agent-config.json at the agent's start. The table then sits in the generated settings.json next to
-# every other gate, so an edit the agent itself makes to agent-config.json in this session does not
-# change it.
+# What the launcher wires: base64url (no padding) of the senderRoleGate value, copied out of the
+# store at the agent's start (GROMZOGATECONF1030 (c): a sub-agent's from store/agent-sender-role-gates.json,
+# never from its own agent-config.json, which it can write). The table then sits in the generated
+# settings.json next to every other gate.
 POLICY_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -132,17 +145,21 @@ def classify_config(parsed):
         return ("malformed", None, "senderRoleGate is not an object")
     # 1.4(c) beats 1.5: riskyTools missing or [] turns the gate off even when
     # other keys are garbage -- an explicitly empty list is a decision, not a
-    # fault.
-    if "riskyTools" not in gate or gate["riskyTools"] == []:
+    # fault. Unless allowTools is there: its presence alone is a decision for
+    # the gate (an empty allowTools allows nothing in a member turn).
+    if ("riskyTools" not in gate or gate["riskyTools"] == []) and "allowTools" not in gate:
         return ("off", None, None)
     return validate_gate(gate)
 
 
 def validate_gate(gate):
     """A gate that is neither off nor absent: check every key, or say why not."""
-    risky = gate["riskyTools"]
+    risky = gate.get("riskyTools", [])
     if not isinstance(risky, list) or not all(isinstance(p, str) for p in risky):
         return ("malformed", None, "riskyTools is not a list of strings")
+    allow = gate.get("allowTools")  # absent: None, no allow-list
+    if "allowTools" in gate and (not isinstance(allow, list) or not all(isinstance(p, str) for p in allow)):
+        return ("malformed", None, "allowTools is not a list of strings")
     roles_raw = gate.get("roles", [])
     if not isinstance(roles_raw, list):
         return ("malformed", None, "roles is not a list")
@@ -159,14 +176,29 @@ def validate_gate(gate):
         if roles.get((channel, sender)) != "member":  # listed twice: the stricter role stays
             roles[(channel, sender)] = role
     keys_raw = gate.get("senderKeys", {})
-    if not is_plain_object(keys_raw) or not all(isinstance(k, str) for k in keys_raw.values()):
-        return ("malformed", None, "senderKeys is not an object of strings")
+    if not is_plain_object(keys_raw) or not all(sender_key_ok(k) for k in keys_raw.values()):
+        return ("malformed", None, "senderKeys is not an object of strings or non-empty lists of strings")
     sender_keys = dict(DEFAULT_SENDER_KEYS)
     sender_keys.update(keys_raw)
-    return ("on", {"riskyTools": risky, "roles": roles, "senderKeys": sender_keys}, None)
+    return ("on", {"riskyTools": risky, "allowTools": allow, "roles": roles, "senderKeys": sender_keys}, None)
 
 
-def tool_is_risky(tool, patterns):
+def sender_key_ok(key):
+    """One attribute name, or a non-empty list of them (GROMZOGATECONF1030)."""
+    if isinstance(key, str):
+        return True
+    return isinstance(key, list) and len(key) > 0 and all(isinstance(k, str) and k for k in key)
+
+
+def tool_is_risky(tool, settings):
+    """On riskyTools, or (allowTools set) not on allowTools."""
+    if tool_matches(tool, settings["riskyTools"]):
+        return True
+    allow = settings["allowTools"]
+    return allow is not None and not tool_matches(tool, allow)
+
+
+def tool_matches(tool, patterns):
     """Glob match with '-'/'_' normalised on BOTH sides (fnmatchcase, so the
     match stays case-sensitive and locale-free)."""
     tool_norm = tool.replace("-", "_")
@@ -336,16 +368,21 @@ def envelope_role(attrs, roles, sender_keys):
     if not isinstance(source, str) or not source:
         return ("member", "it carries a message envelope without a source attribute")
     channel = source.rsplit(":", 1)[-1]
+    # A sender the channel itself marks unverified is never an owner, whatever the keys say (GROMZOGATECONF1030).
+    if "verified" in attrs and attrs.get("verified") != "true":
+        return ("member", "it carries a message from channel %s from a sender it marks unverified" % channel)
     key = sender_keys.get(channel)
     if not key:
         return ("member",
                 "it carries a message from channel %s, which has no sender key "
                 "configured" % channel)
-    sender = attrs.get(key)
-    if not isinstance(sender, str) or not sender:
+    names = key if isinstance(key, list) else [key]
+    parts = [attrs.get(name) for name in names]
+    if not all(isinstance(part, str) and part for part in parts):
         return ("member",
                 "it carries a message from channel %s whose %s attribute is "
-                "missing" % (channel, key))
+                "missing" % (channel, "/".join(names)))
+    sender = "|".join(parts)
     role = roles.get((channel, sender), "member")
     if role != "owner":
         return ("member", "it carries a message from a sender who is not an "
@@ -435,7 +472,7 @@ def run(raw_stdin, state, settings, problem):
         # 1.5: every tool is risky, every enveloped sender a member.
         risky, roles, sender_keys = True, {}, dict(DEFAULT_SENDER_KEYS)
     else:
-        risky = tool_is_risky(tool, settings["riskyTools"])
+        risky = tool_is_risky(tool, settings)
         roles, sender_keys = settings["roles"], settings["senderKeys"]
     if not risky:
         return 0

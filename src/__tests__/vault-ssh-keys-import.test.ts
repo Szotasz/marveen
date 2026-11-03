@@ -4,16 +4,17 @@
 // and returns 201, then fails later when something actually reads the stored
 // key: an OpenSSH parser rejects a PEM without its closing newline. The gate
 // here therefore checks the STORED value, not the response status.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { RouteContext } from '../web/routes/types.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'vault-ssh-keys-import-'))
+afterAll(() => { rmSync(tmpRoot, { recursive: true, force: true }) })
 mkdirSync(join(tmpRoot, 'store'), { recursive: true })
 
 vi.mock('../config.js', async (orig) => {
@@ -60,8 +61,14 @@ async function importKey(privateKey: string) {
 function freshPrivateKeyWithNewline(): string {
   const dir = mkdtempSync(join(tmpdir(), 'vault-ssh-keys-fixture-'))
   const keyPath = join(dir, 'k')
-  execFileSync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-C', 'fixture'], { stdio: 'pipe' })
-  return readFileSync(keyPath, 'utf-8')
+  // A private key file, even a throwaway one, is removed as soon as it is read: one
+  // left in TMPDIR costs every later audit a check of whether it is a real key.
+  try {
+    execFileSync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-C', 'fixture'], { stdio: 'pipe' })
+    return readFileSync(keyPath, 'utf-8')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 describe('POST /api/vault/ssh-keys/import: stored value trailing newline', () => {

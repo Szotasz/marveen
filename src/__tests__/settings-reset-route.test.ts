@@ -110,6 +110,22 @@ describe('GET /api/settings says what a reset would turn each value into', () =>
 })
 
 describe('DELETE /api/settings/<KEY>', () => {
+  it('refuses a body that did not arrive in full: 400 incomplete-body, the override stays', async () => {
+    setOverride('KANBAN_WIP_WARN_PCT', 55)
+    const { ctx, out } = call('DELETE', '/api/settings/KANBAN_WIP_WARN_PCT')
+    // Some bytes, then the request closes without 'end' (a cut-off client).
+    const listeners: Record<string, Array<(c?: Buffer) => void>> = {}
+    ctx.req = { on(event: string, cb: (c?: Buffer) => void) { (listeners[event] ??= []).push(cb) } }
+    const done = tryHandleSettings(ctx)
+    for (const cb of listeners.data ?? []) cb(Buffer.from('{"actor":"ops'))
+    for (const cb of listeners.close ?? []) cb()
+    expect(await done).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body?.code).toBe('incomplete-body')
+    expect(JSON.parse(readFileSync(OVERRIDES_PATH, 'utf-8')).KANBAN_WIP_WARN_PCT).toBe(55)
+    expect(configChanges).toEqual([])
+  })
+
   it('removes the override: the registry default answers again, and the change is logged', async () => {
     setOverride('KANBAN_WIP_WARN_PCT', 55)
     const def = await listed('KANBAN_WIP_WARN_PCT')

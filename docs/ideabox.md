@@ -1,6 +1,6 @@
 # Ötletláda
 
-Az ötletláda egy könnyű ötletgyűjtő és -priorizáló rendszer, amely a Marveen dashboardon él. Az ötletek kanban-kártyává válhatnak, AI-segítséggel alfeladatokra bonthatók, és impact×effort pontozással rangsorolhatók.
+Az ötletláda egy könnyű ötletgyűjtő és -priorizáló rendszer, amely a Marveen dashboardon él. Az ötletek kanban-kártyává válhatnak, AI-segítséggel részfeladatokra bonthatók, és impact×effort pontozással rangsorolhatók.
 
 ## Használat
 
@@ -29,7 +29,7 @@ A **score** = Impact - Effort. Pozitív szám: nagy érték, kevés munkával. A
 
 ### AI-bontás és promóció
 
-Ha egy ötlet elég konkrét, a "Lebont" gombbal AI-segítséggel alfeladatokra bonthatod. Az AI javaslatait szerkesztheted és jóváhagyhatod -- ezután egyetlen kattintással kanban-kártyák jönnek létre belőlük. Ha az ötlet annyira egyértelmű, hogy nincs szükség bontásra, a "Promótálás" gombbal közvetlenül kártyává alakítható.
+Ha egy ötlet elég konkrét, a "Lebont" gombbal AI-segítséggel részfeladatokra bonthatod. Az AI javaslatait szerkesztheted és jóváhagyhatod -- ezután egyetlen kattintással kanban-kártyák jönnek létre belőlük. Ha az ötlet annyira egyértelmű, hogy nincs szükség bontásra, a "Promótálás" gombbal közvetlenül kártyává alakítható.
 
 **Siker-kritérium megadása:** AI-bontásnál a jóváhagyás előtt megadhatsz egy rövid siker-kritériumot ("mikor tekintjük késznek?"). Ez automatikusan bekerül a létrehozott szülő kanban-kártya leírásába, hogy a végrehajtás során mindenki tudja, mi a "kész" definíciója.
 
@@ -77,7 +77,7 @@ Minden ötlethez kommentek fűzhetők az ötlet-részlet nézetből (cím kattin
 
 ## AI-lebontás (breakdown)
 
-A "Lebont" gomb meghívja `POST /api/ideas/:id/breakdown`-t, amely AI-segítséggel 3-N alfeladatot generál (alapértelmezett N=10). A max. alfeladatok száma (2-20) konfigurálható:
+A "Lebont" gomb meghívja `POST /api/ideas/:id/breakdown`-t, amely AI-segítséggel 3-N részfeladatot generál (alapértelmezett N=10). A max. részfeladatok száma (2-20) konfigurálható:
 
 ```bash
 # .env-be, vagy a launchd plist-be:
@@ -86,7 +86,7 @@ IDEA_BREAKDOWN_MAX_SUBTASKS=8
 
 Ez a kulcs a dashboard **Beállítások** felületén (Ötletláda szekció) is szerkeszthető; a config-réteg élőben olvassa, így a módosítás újraindítás nélkül érvényesül.
 
-Az ötlet-nézet jóváhagyás után `POST /api/ideas/:id/promote-breakdown` hív, amely létrehozza a szülő kanban-kártyát és az alfeladat-kártyákat.
+Az ötlet-nézet jóváhagyás után `POST /api/ideas/:id/promote-breakdown` hív, amely létrehozza a szülő kanban-kártyát és a részfeladat-kártyákat.
 
 ## Elavult (stale) ötletek
 

@@ -23,7 +23,7 @@ Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of 
 - **Mission Control**: Web dashboard (http://localhost:3420) a csapat kezeléséhez
 - **Inter-agent kommunikáció**: Az ágensek delegálhatnak egymásnak feladatokat
 - **Ütemezések**: Cron-alapú feladatok automatikus futtatása
-- **Kanban**: Feladattábla AI auto-bontással; Jira-szerű nézetek — swimlane (csoportosítás felelős vagy prioritás szerint), oszloponkénti WIP-limit, beakadt-kártya jelzés (card-aging), alfeladat-beágyazás és kártya-szerkesztő
+- **Kanban**: Feladattábla AI auto-bontással; Jira-szerű nézetek: swimlane (csoportosítás felelős vagy prioritás szerint), oszloponkénti WIP-limit, beakadt-kártya jelzés (card-aging), részfeladat-beágyazás és kártya-szerkesztő
 - **Heartbeat**: Csendes háttér-monitorozás, csak fontosnál szól (naptár, email, kanban)
 - **Memória**: Hot/Warm/Cold tier rendszer, hibrid kereséssel (FTS5 + vektor) és gráf nézettel
 - **MCP Connectorok**: Gmail, Calendar, Drive, Notion, Slack és más szolgáltatások

@@ -31,26 +31,78 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+// The auth gate reads the body ONCE, before the route, when it has to check
+// the identity a sub-agent token asserts in it (from, agent_id, author, ...;
+// auth-gate.ts AGENT_IDENTITY_BINDINGS). The stream is then drained, so the
+// gate stashes the bytes here and readBody() hands them to the route
+// unchanged. Without a stash readBody behaves exactly as before.
+const PRE_READ_BODY = Symbol.for('marveen.preReadBody')
+
+export function stashPreReadBody(req: http.IncomingMessage, body: Buffer): void {
+  (req as unknown as Record<symbol, Buffer>)[PRE_READ_BODY] = body
+}
+
 export function readBody(
   req: http.IncomingMessage,
   opts: { maxBytes?: number } = {},
 ): Promise<Buffer> {
   const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
+  const pre = (req as unknown as Record<symbol, Buffer | undefined>)[PRE_READ_BODY]
+  if (pre !== undefined) {
+    // The route's own cap still applies to a body the gate already buffered.
+    return pre.length > maxBytes ? Promise.reject(new RequestBodyTooLargeError(maxBytes)) : Promise.resolve(pre)
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
+    // Exactly one outcome per call, and it is the FIRST intended one. This
+    // matters because req.destroy() emits 'aborted' synchronously on Node 22
+    // and 'close' right after: a listener reacting to either must not replace
+    // a reason readBody has already chosen (e.g. RequestBodyTooLargeError).
+    let settled = false
+    const fail = (err: unknown) => { if (!settled) { settled = true; reject(err) } }
     req.on('data', (c: Buffer) => {
+      if (settled) return
       total += c.length
       if (total > maxBytes) {
+        // Record the rejection BEFORE destroy() triggers the close path.
+        fail(new RequestBodyTooLargeError(maxBytes))
         req.destroy()
-        reject(new RequestBodyTooLargeError(maxBytes))
         return
       }
       chunks.push(c)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
+    req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks)) } })
+    req.on('error', fail)
+    // A request destroyed without an error (req.destroy() elsewhere while the
+    // body is still awaited) emits only 'aborted' and 'close', never 'end' or
+    // 'error'; without this the promise, and the route awaiting it, would never
+    // settle. 'close' after 'end' (the normal finish) or after an 'error' is a
+    // no-op. ('aborted' is deprecated and always followed by 'close'.)
+    req.on('close', () => fail(new Error('request closed before the body ended')))
   })
+}
+
+// For routes whose body is OPTIONAL (a missing or unparsable body means
+// "use the defaults"): such a route must still not run with defaults when the
+// body was cut off. readBody() rejects in that case (client disconnect, early
+// close, over the limit); this answers the request (413 over the limit, 400
+// otherwise) and returns null, so the caller stops instead of falling back.
+export async function readBodyOrRefuse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: { maxBytes?: number } = {},
+): Promise<Buffer | null> {
+  try {
+    return await readBody(req, opts)
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) {
+      json(res, { error: `Request body too large (max ${err.limit} bytes)`, code: 'body-too-large' }, 413)
+    } else {
+      json(res, { error: 'The request body did not arrive in full; nothing was done', code: 'incomplete-body' }, 400)
+    }
+    return null
+  }
 }
 
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {

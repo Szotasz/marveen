@@ -43,6 +43,55 @@ MASQUERADE = ("3005022 3004904 bun run --cwd /home/user/.local/share/"
               "claude-plugins-official/telegram/0.0.7 --shell=bun --silent start")
 
 
+# CHANPROCGATEFP1026 (measured 2026-10-26 on the main agent, pid 5921, anonymised):
+# three channels, three runtimes. Only the bun one used to count as alive, so the
+# gate alarmed "slack-channel, gromzo-channel missing" for running workers.
+CLAUDE_THREE = ("4005921 4001008 /opt/homebrew/bin/claude --continue --channels "
+                "plugin:telegram@claude-plugins-official plugin:slack-channel@marveen-marketplace "
+                "plugin:gromzo-channel@gromzo-local")
+TMUX_THREE = "marveen-channels 4005921\n"
+BUN_TG3 = ("4006184 4005921 bun run --cwd /home/user/.claude/plugins/cache/"
+           "claude-plugins-official/telegram/0.0.6 --shell=bun --silent start")
+NODE_SLACK = ("4006185 4005921 node /home/user/.claude/plugins/cache/marveen-marketplace/"
+              "slack-channel/0.1.0/node_modules/.bin/tsx /home/user/.claude/plugins/cache/"
+              "marveen-marketplace/slack-channel/0.1.0/server.ts")
+# A directory marketplace: Claude Code runs the plugin from its source dir, not the cache.
+NODE_GROMZO = "4006187 4005921 node /home/user/local-plugins/gromzo/gromzo-channel/dist/server.js"
+# A shell under the session that merely NAMES the gromzo path is not a worker.
+SHELL_GROMZO = "4006190 4005921 /bin/zsh -c ls /home/user/local-plugins/gromzo/gromzo-channel/dist"
+MARKETS = {"gromzo-local": {"source": {"source": "directory", "path": "/home/user/local-plugins/gromzo"}},
+           "marveen-marketplace": {"source": {"source": "github", "repo": "x/y"}}}
+
+
+# Not a worker even though it is a runtime: the gromzo path is only an argument
+# (an MCP server's allowed dir), not what it runs (Dani 50006).
+NODE_MCP_NAMING = ("4006191 4005921 node /opt/mcp/server.js --allowed-dir "
+                   "/home/user/local-plugins/gromzo/gromzo-channel")
+# Not a worker: the directory root appears inside a longer path, not as its prefix.
+NODE_NOT_UNDER_ROOT = "4006192 4005921 node /x/home/user/local-plugins/gromzo/gromzo-channel/dist/server.js"
+# Not a worker: a sibling directory whose name merely starts with the root. It is named
+# <root>-gromzo-channel so that a root check without the "/" would read it as gromzo-channel.
+NODE_SIBLING_OF_ROOT = "4006193 4005921 node /home/user/local-plugins/gromzo-gromzo-channel/dist/server.js"
+
+
+def run_three(ps_rows, markets=MARKETS, extra_markets=()):
+    import json as _json
+    with tempfile.TemporaryDirectory() as d:
+        ps, tm = (os.path.join(d, n) for n in ("ps.txt", "tmux.txt"))
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER] + list(ps_rows)) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX_THREE)
+        cmd = [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm,
+               "--state", os.path.join(d, "state.json")]
+        for i, m in enumerate([markets] + list(extra_markets)):
+            km = os.path.join(d, f"km{i}.json")
+            with open(km, "w") as fh:
+                _json.dump(m, fh)
+            cmd += ["--marketplaces-file", km]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+
 def run(ps_rows, extra=()):
     with tempfile.TemporaryDirectory() as d:
         ps = os.path.join(d, "ps.txt")
@@ -62,6 +111,55 @@ class GateTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("[zold] main-agent-channels", r.stdout)
         self.assertNotIn("PIROS", r.stdout)
+
+    def test_node_and_directory_marketplace_workers_count_as_alive(self):
+        """CHANPROCGATEFP1026: bun, node-from-cache and node-from-directory are all workers."""
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_GROMZO])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=-", r.stdout)
+
+    def test_a_really_missing_directory_worker_is_still_red(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_shell_naming_the_plugin_path_is_not_a_worker(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, SHELL_GROMZO])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_directory_worker_without_its_registry_entry_is_not_guessed(self):
+        """No known_marketplaces entry for the path: the gate does not invent the name."""
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_GROMZO], markets={})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_missing_node_slack_worker_is_red(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_GROMZO])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=marveen-marketplace/slack-channel", r.stdout)
+
+    def test_a_runtime_naming_the_plugin_path_only_as_an_argument_is_not_a_worker(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_MCP_NAMING])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_the_directory_root_must_be_a_prefix_not_a_substring(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_NOT_UNDER_ROOT])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_sibling_directory_starting_with_the_root_is_not_under_it(self):
+        """The root must be followed by "/" (a directory boundary)."""
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_SIBLING_OF_ROOT])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_either_registrys_root_names_the_worker(self):
+        """Two registries that disagree: the stale one must not raise a false alarm."""
+        stale = {"gromzo-local": {"source": {"source": "directory", "path": "/old/place/gromzo"}}}
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_GROMZO], markets=stale, extra_markets=[MARKETS])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_missing_telegram_worker_is_red(self):
         """The measured 09-05 / 09-06 failure: declared but no worker."""
@@ -333,6 +431,112 @@ class DefaultStatePathTest(unittest.TestCase):
                              "the gate created store/ in a tree it does not own")
             self.assertFalse(os.path.exists(os.path.join(home, "marveen")),
                              "the gate conjured an orphan ~/marveen")
+
+
+class TestFixtureFalseAlarmTest(unittest.TestCase):
+    """CHANGATEFP1101 (2026-11-01 15:35:07, a false alarm to the owner): a full suite's fake `claude --channels`
+    processes (the channel-poller-reap tests) were announced as sessions with a dead telegram worker. The names are the
+    two from the live state file (`pid:21153`, `pid:22176`): outside every tmux pane, from marketplaces nobody knows.
+    Measured against the stub notifier, never the owner."""
+
+    FAKE_DETACHED = ("21153 1 /private/tmp/vitest-x/bin/claude --channels "
+                     "plugin:telegram@guards-cf075d41-pane-parent-15518-1793543701020")
+    FAKE_FOREIGN = ("22176 1 /private/tmp/vitest-y/bin/claude --channels "
+                    "plugin:telegram@own-uid-35ea0375-foreign-15525-1793543705514")
+    # The same fake started INSIDE an agent's pane tree (the suite runs in agent-heimdall's pane): the pane pid
+    # 2972889 is the real claude, the suite below it, the fake below that.
+    SUITE_NODE = "5100001 2972889 node /home/user/marveen/node_modules/.bin/vitest run"
+    FAKE_IN_PANE = ("5100002 5100001 /tmp/vitest-z/bin/claude --channels "
+                    "plugin:telegram@guards-cf075d41-pane-parent-15518-1793543701020")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.log = os.path.join(self.dir, "sent.log")
+        self.stub = os.path.join(self.dir, "stub-notify.sh")
+        with open(self.stub, "w") as fh:
+            fh.write("#!/bin/bash\nprintf '%s\\n' \"$1\" >> \"$STUB_LOG\"\nexit 0\n")
+        os.chmod(self.stub, 0o755)
+        self.state = os.path.join(self.dir, "state.json")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _run(self, rows, markets=None):
+        import json as _json
+        ps = os.path.join(self.dir, "ps.txt")
+        tm = os.path.join(self.dir, "tmux.txt")
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER] + list(rows)) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX)
+        km = os.path.join(self.dir, "km.json")
+        with open(km, "w") as fh:
+            _json.dump(MARKETS if markets is None else markets, fh)
+        env = dict(os.environ, CHANNEL_GATE_NOTIFY_CMD=self.stub, STUB_LOG=self.log)
+        cmd = [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm, "--state", self.state,
+               "--marketplaces-file", km, "--notify", "--json"]
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    def sent(self):
+        try:
+            with open(self.log, encoding="utf-8") as fh:
+                return [l for l in fh.read().splitlines() if l]
+        except OSError:
+            return []
+
+    def test_the_incidents_fake_claudes_outside_every_pane_are_not_sessions(self):
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, self.FAKE_DETACHED, self.FAKE_FOREIGN])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("pid:", r.stdout)
+        self.assertEqual(self.sent(), [], "nothing goes to the owner for a test fixture")
+
+    def test_a_claude_outside_every_pane_is_not_a_session_even_from_a_known_marketplace(self):
+        # Only the pane rule stops this one: the official marketplace is known, but no tmux pane is above it.
+        detached = "21154 1 /private/tmp/vitest-q/bin/claude --channels plugin:telegram@claude-plugins-official"
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, detached])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("pid:21154", r.stdout)
+        self.assertEqual(self.sent(), [])
+
+    def test_a_fake_inside_an_agents_pane_from_an_unknown_marketplace_is_not_a_channel(self):
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, OTHER, OTHER_BUN, self.SUITE_NODE, self.FAKE_IN_PANE])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("guards-cf075d41", r.stdout)
+        self.assertEqual(self.sent(), [])
+
+    def test_a_real_session_with_a_dead_worker_still_alarms(self):
+        # The real main session declares telegram+discord (the built-in official marketplace), its discord worker is gone.
+        r = self._run([CLAUDE_BOTH, BUN_TG, self.FAKE_DETACHED])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("main-agent-channels", self.sent()[0])
+        self.assertIn("discord", self.sent()[0])
+
+    def test_a_known_non_official_marketplace_still_counts(self):
+        # The marveen-marketplace slack worker is missing: a known marketplace, so it is measured and red.
+        r = self._run(["4005921 888007 /opt/homebrew/bin/claude --channels plugin:slack-channel@marveen-marketplace"])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("marveen-marketplace/slack-channel", r.stdout)
+
+    def test_without_a_readable_registry_nothing_is_dropped(self):
+        # No registry to read: a dead worker of ANY marketplace inside a pane is still reported, never hidden.
+        r = self._run(["4005921 888007 /opt/homebrew/bin/claude --channels plugin:telegram@some-other-market"], markets=[])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("some-other-market/telegram", r.stdout)
+
+    def test_the_stuck_pid_keys_leave_the_state(self):
+        import json as _json
+        with open(self.state, "w") as fh:
+            _json.dump({"pid:21153": {"missing": ["guards-x/telegram"], "announced": ["guards-x/telegram"]},
+                        "main-agent-channels": {"missing": [], "announced": []}}, fh)
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(self.state, encoding="utf-8") as fh:
+            st = _json.load(fh)
+        self.assertNotIn("pid:21153", st)
+        self.assertIn("main-agent-channels", st)
+        self.assertEqual(self.sent(), [], "no 'recovered' line for a key that was never a session")
 
 
 if __name__ == "__main__":

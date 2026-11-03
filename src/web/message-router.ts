@@ -8,7 +8,9 @@ import {
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
+  ABANDONED_SESSION_ABSENT,
   markPendingFederatedFailed,
+  markPendingMessageFailed,
   setMessageResult,
   createAgentMessage,
   lastMessageFromAgentAt,
@@ -38,7 +40,8 @@ import {
 } from './agent-process.js'
 import { detectPaneState, detectQuotaWall, detectsBlockingMenu, detectsFirstRunGate, detectsHeldPeerMessage, detectsPermissionDialog, permissionPromptSummary, type FirstRunGateKind, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
-import { classifyAgentMessage, isChannelInboundSender, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { shouldNotifySenderOfFailure } from './requeue-notice.js'
 import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-router-window.js'
@@ -198,21 +201,10 @@ function notifyOrchestratorOfPullStale(msg: AgentMessage, ageMs: number): void {
   }
 }
 
-/**
- * Card 71263d15 (A), 01603e03: may the SENDER of a failed message get a notice?
- *
- * The sender got an id back when it posted, so on its side the send looks done;
- * until now only the main agent heard about the failure. The exceptions keep the
- * notice from looping or doubling: 'system' rows get no receipt (a failed notice
- * cannot beget another), the main agent already gets the orchestrator notice, a
- * channel-inbound sender is a person on a channel rather than an agent inbox, and a
- * federated sender is notifyDelegationFailed's job.
- */
-export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: string): boolean {
-  if (!fromAgent || fromAgent === 'system' || fromAgent === mainAgentId) return false
-  if (isQualifiedId(fromAgent) || fromAgent.includes('/')) return false
-  return !isChannelInboundSender(fromAgent)
-}
+// Moved to ./requeue-notice.ts (the requeue notices need it, and importing it
+// back from here would have been the cycle); re-exported so existing importers
+// of this module keep working.
+export { shouldNotifySenderOfFailure } from './requeue-notice.js'
 
 /** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060).
  *  It also names where the FULL text is (GET /api/messages/<id>): the preview stops at 220
@@ -431,8 +423,9 @@ export function detectUrgentPaneHold(pane: string | null): UrgentPaneHold | null
 }
 
 /**
- * Pure: the last look at the pane inside the send lane, right before the first key
- * (sendPromptToSession's emitGuard). Stricter than detectUrgentPaneHold: any blocking
+ * Pure: the last look at the pane inside the send lane, right before the first key and
+ * again right before every submitting Enter and follow-up key (sendPromptToSession's
+ * emitGuard, #2143). Stricter than detectUrgentPaneHold: any blocking
  * menu, a held peer message, and a pane that cannot be read, refuse too -- here no
  * later step could undo an Enter that landed in the wrong place. The held peer message
  * is checked on its own because detectsBlockingMenu leaves it out (the menu pass must
@@ -466,12 +459,21 @@ export function shouldNoticeUrgentHold(hold: UrgentPaneHold, prev: { key: string
   return now - prev.at >= (hold.kind === 'quota-wall' ? QUOTA_WALL_SILENCE_MS : STUCK_ESCALATE_MS)
 }
 
-export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agent' | 'to_agent'>, session: string, hold: UrgentPaneHold, label: string): string {
-  const head = `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
-  const keep = 'The row stays pending and goes out on the first tick after the pane is free.'
+// typed: the refusal came before the submitting Enter (sendPromptToSession 'aborted-guard-typed',
+// #2143), so the row's text is already in the pane, unsubmitted; false: nothing was typed.
+export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agent' | 'to_agent'>, session: string, hold: UrgentPaneHold, label: string, typed = false): string {
+  const head = typed
+    ? `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting: its text WAS typed into the pane but NOT submitted (no Enter):`
+    : `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
+  const keep = typed
+    ? 'The row stays pending and is typed AGAIN on the first tick after the pane is free; if the first copy is still in the input box then, clear it, or the agent gets the text twice.'
+    : 'The row stays pending and goes out on the first tick after the pane is free.'
   if (hold.kind === 'permission-prompt') {
     const ask = hold.ask ? ` It asks: ${hold.ask.title} -- ${hold.ask.reason}` : ''
-    return `${head} the pane is on a TOOL-PERMISSION PROMPT.${ask} Typed text + Enter would APPROVE that prompt, and an Escape would deny it, so the router sends neither. Answer the prompt in the pane (tmux attach -t ${session}). ${keep}`
+    const keys = typed
+      ? 'The prompt opened after the text went in. An Enter would APPROVE that prompt, and an Escape would deny it, so the router pressed neither.'
+      : 'Typed text + Enter would APPROVE that prompt, and an Escape would deny it, so the router sends neither.'
+    return `${head} the pane is on a TOOL-PERMISSION PROMPT.${ask} ${keys} Answer the prompt in the pane (tmux attach -t ${session}). ${keep}`
   }
   if (hold.kind === 'first-run') {
     return `${head} the pane is on a Claude Code first-run gate (${hold.gate}); a keystroke would answer it. Clear the gate in the pane (tmux attach -t ${session}). ${keep}`
@@ -480,12 +482,12 @@ export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agen
   return `${head} the agent is at the PLAN USAGE LIMIT (quota wall). ${resume} Banner: "${hold.wall.banner}". It cannot act on the row before the reset or a key switch. ${keep}`
 }
 
-function noticeUrgentHold(msg: AgentMessage, session: string, hold: UrgentPaneHold, label: string, now: number): void {
+function noticeUrgentHold(msg: AgentMessage, session: string, hold: UrgentPaneHold, label: string, now: number, typed = false): void {
   const prev = agentUrgentHoldNoticed.get(msg.to_agent)
   if (!shouldNoticeUrgentHold(hold, prev, now)) return
   agentUrgentHoldNoticed.set(msg.to_agent, { key: urgentHoldKey(hold), at: now })
   try {
-    createAgentMessage('system', MAIN_AGENT_ID, formatUrgentHoldNotice(msg, session, hold, label))
+    createAgentMessage('system', MAIN_AGENT_ID, formatUrgentHoldNotice(msg, session, hold, label, typed))
     logger.info({ id: msg.id, to: msg.to_agent, hold: hold.kind }, 'urgent-held surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, id: msg.id }, 'Failed to enqueue urgent-held notification')
@@ -1018,14 +1020,15 @@ export async function runMessageRouterTick(): Promise<void> {
       const absentForMs = continuousAbsenceMs(msg.to_agent, sessionExists, now)
       if (!worksourceServing && shouldAbandon(sessionExists, absentForMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, absentForMs }, 'Agent message abandoned: target session absent for full retry window')
-        const closed = markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')
-        if (!closed) {
-          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+        const closed = markPendingMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)
+        // Only the row this call closed earns the failure notices: a row closed concurrently
+        // was not failed by us, and must not be reported as failed to anyone.
+        if (closed) {
+          notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
+          notifySenderOfFailedHandoff(msg, 'a címzett munkamenete a teljes türelmi ablakban (60 perc) folyamatosan hiányzott')
+        } else {
+          logger.warn({ id: msg.id }, 'markPendingMessageFailed affected 0 rows (closed or deleted concurrently?)')
         }
-        notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
-        // Only the row this call closed earns a sender notice: a row closed concurrently
-        // was not failed by us, and must not be reported as failed.
-        if (closed) notifySenderOfFailedHandoff(msg, 'a címzett munkamenete a teljes türelmi ablakban (60 perc) folyamatosan hiányzott')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         continue
@@ -1364,14 +1367,18 @@ export async function runMessageRouterTick(): Promise<void> {
           } else {
             // STOP: no idle wait (the 12 s budget exists to find an idle gap, and a STOP
             // must not wait for one), but a last look at the pane inside the send lane,
-            // right before the first key: a running turn can open a permission prompt
-            // between the check above and this send (urgentEmitRefusal).
+            // right before the first key and again right before the submitting Enter (#2143):
+            // a running turn can open a permission prompt between the check above and either
+            // of them (urgentEmitRefusal).
             if (isStop) {
               const outcome = await sendPromptToSession(session, prefix + wrapped, host, { waitForIdle: false, emitGuard: urgentEmitRefusal })
-              if (outcome === 'aborted-guard') {
+              if (outcome === 'aborted-guard' || outcome === 'aborted-guard-typed') {
+                const typed = outcome === 'aborted-guard-typed'
                 const hold = detectUrgentPaneHold(capturePane(session, host))
-                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null }, 'message-router: urgent or STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
-                if (hold) noticeUrgentHold(msg, session, hold, urgentLabel, now)
+                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null, typed }, typed
+                  ? 'message-router: urgent or STOP row typed but NOT submitted, the pane turned into a prompt before the Enter; the row stays pending'
+                  : 'message-router: urgent or STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
+                if (hold) noticeUrgentHold(msg, session, hold, urgentLabel, now, typed)
                 continue
               }
               logger.info({ id: msg.id, to: msg.to_agent, urgent: msg.urgent === 1 }, 'message-router: urgent or STOP row sent without waiting for an idle pane')

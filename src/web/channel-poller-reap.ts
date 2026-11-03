@@ -23,7 +23,7 @@
 //      environment when invoked with `e`; we grep that.
 
 import { execFileSync, execSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -40,7 +40,28 @@ import { shQuote } from './ssh-tmux.js'
 // is gone -- so the old form was blind to the very thing this scan exists to
 // find (card PSEWWMACOSBLIND1007). `x` adds the tty-less processes; procps on
 // Linux accepts the same BSD-style `axeww`.
+// REAPERENOBUFS1101: the reaper no longer runs this whole-host form (envScan below reads only the processes a
+// poller can be); it stays as the tty-inclusive form's name for scripts/channels.sh's boot pass, which streams it
+// through awk with no buffer limit.
 export const PS_ENV_SCAN_CMD = '/bin/ps axeww'
+
+/**
+ * TESTENVLEAK1101: what a failed execSync (ps, tmux) may put in a log line. Never the error object itself: execSync's error carries
+ * the child's whole stdout, and for the env scan that is every process's environment, tokens included (measured
+ * 2026-11-01: dashboard.log held an 8.4 MB `err.stdout` from an ENOBUFS scan, every ~11 minutes). Only the kind of
+ * failure and how much output there was.
+ */
+export function execFailure(err: unknown): { code: string | null; signal: string | null; status: number | null; stdoutBytes: number } {
+  const e = (err ?? {}) as { code?: unknown; signal?: unknown; status?: unknown; stdout?: unknown }
+  const out = e.stdout
+  const stdoutBytes = typeof out === 'string' ? Buffer.byteLength(out) : Buffer.isBuffer(out) ? out.length : 0
+  return {
+    code: typeof e.code === 'string' ? e.code : null,
+    signal: typeof e.signal === 'string' ? e.signal : null,
+    status: typeof e.status === 'number' ? e.status : null,
+    stdoutBytes,
+  }
+}
 
 const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   telegram: 'TELEGRAM_STATE_DIR',
@@ -89,8 +110,9 @@ export function parsePollerPidsFromPs(
   return out
 }
 
-// The scan itself is psEwwSnapshot's (below): one PS_ENV_SCAN_CMD call site for
-// this path and reapChannelOrphans, so neither can drift back to a blind form.
+// The scan itself is psEwwSnapshot's (below): one env-scan call site (envScan,
+// REAPERENOBUFS1101) for this path and reapChannelOrphans, so neither can drift
+// back to a blind form.
 function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
   return parsePollerPidsFromPs(psEwwSnapshot(chanDir), envVar, chanDir)
 }
@@ -214,15 +236,110 @@ export function stateDirPluginPollerPids(provider: ChannelProviderType, chanDir:
   return parseStateDirPollerPids(psEww, STATE_ENV_VAR[provider], chanDir, PLUGIN_ROOT_NEEDLE[provider])
 }
 
-// One env-scan snapshot (PS_ENV_SCAN_CMD, so tty-less processes are listed on
-// macOS too); empty on failure (no candidate then, so nothing is reaped).
-function psEwwSnapshot(chanDir: string): string {
-  try {
-    return execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
-  } catch (err) {
-    logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
-    return ''
+// ---------------------------------------------------------------------------
+// REAPERENOBUFS1101: the env scan reads only the processes a poller can be.
+//
+// The whole-host `ps axeww` (PS_ENV_SCAN_CMD) printed every process's environment.
+// Measured 2026-11-01 on the host: 17.5 MB, 4039 rows, 2.3 s. That is over the
+// 8 MB buffer, so execSync threw ENOBUFS, the scan came back empty, and nothing
+// was reaped; it also held the dashboard's event loop for ~2 s every round.
+// A poller is always a JS runtime (POLLER_RUNTIMES; selectReapablePollers spares
+// everything else anyway), and its argv (`bun server.ts`) carries no provider
+// slug, so only the environment says whose it is. So the scan first lists the
+// processes by name only, then reads the environment of the runtime ones plus
+// the bot.pid holder. Measured the same minute: the name list 0.76 MB in 0.47 s,
+// the environment of the 193 runtime processes 0.53 MB in 0.24 s.
+//
+// macOS: `ps -axo pid=,comm=` and `ps eww -o pid,command -p <pids>` (measured:
+// a list where some pids have exited still prints the live ones with exit 0;
+// one where all have exited prints the header only, exit 1: an empty scan).
+// Linux: /proc/<pid>/comm, cmdline and environ, so the row does not depend on how
+// a procps build mixes BSD `e` with -o (not measurable on the macOS host).
+// A row is `<pid> <command> <env k=v ...>`, as the parsers above expect.
+
+const ENV_SCAN_MAX_BUFFER = 16 * 1024 * 1024
+
+/** The pids of the JS-runtime processes in a `ps -axo pid=,comm=` listing (comm may be a full path). Exported for testability. */
+export function runtimePidsFromComm(listing: string): number[] {
+  const pids: number[] = []
+  for (const line of listing.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(.+?)\s*$/)
+    if (!m) continue
+    if (!POLLER_RUNTIMES.has(m[2]!.split('/').pop() ?? '')) continue
+    const pid = parseInt(m[1]!, 10)
+    if (pid > 1) pids.push(pid)
   }
+  return pids
+}
+
+export interface EnvScanDeps {
+  /** /proc is there (Linux): read the rows from it instead of ps. */
+  useProc: boolean
+  /** Runs /bin/ps with these arguments and returns its stdout; throws as execFileSync does. */
+  ps: (args: readonly string[]) => string
+  /** /proc: the numeric entries, and one file of one pid (comm, cmdline, environ); null when gone. */
+  procPids: () => number[]
+  procRead: (pid: number, file: 'comm' | 'cmdline' | 'environ') => string | null
+}
+
+const defaultEnvScanDeps: EnvScanDeps = {
+  useProc: existsSync('/proc/self'),
+  ps: (args) => execFileSync('/bin/ps', [...args], { timeout: 5000, encoding: 'utf-8', maxBuffer: ENV_SCAN_MAX_BUFFER }),
+  procPids: () => readdirSync('/proc').filter((d) => /^\d+$/.test(d)).map(Number),
+  procRead: (pid, file) => {
+    try { return readFileSync(`/proc/${pid}/${file}`, 'utf-8') } catch { return null }
+  },
+}
+
+/**
+ * The narrowed env scan: one row per JS-runtime process, plus each of [extraPids] (the bot.pid holder, whatever it runs),
+ * `<pid> <command> <environment>`. Throws when the listing or the ps read fails (the caller logs and reaps nothing).
+ * Exported for testability.
+ */
+export function envScan(extraPids: readonly number[] = [], deps: EnvScanDeps = defaultEnvScanDeps): string {
+  const extra = extraPids.filter((p) => Number.isInteger(p) && p > 1)
+  if (deps.useProc) {
+    const runtime = deps.procPids().filter((pid) => POLLER_RUNTIMES.has((deps.procRead(pid, 'comm') ?? '').trim()))
+    const rows: string[] = []
+    for (const pid of [...new Set([...runtime, ...extra])]) {
+      const cmdline = deps.procRead(pid, 'cmdline')
+      const environ = deps.procRead(pid, 'environ')
+      if (cmdline === null || environ === null) continue // gone, or not ours to read
+      rows.push(`${pid} ${cmdline.split('\0').filter(Boolean).join(' ')} ${environ.split('\0').filter(Boolean).join(' ')}`)
+    }
+    return rows.join('\n')
+  }
+  const pids = [...new Set([...runtimePidsFromComm(deps.ps(['-axo', 'pid=,comm='])), ...extra])]
+  if (pids.length === 0) return ''
+  try {
+    return deps.ps(['eww', '-o', 'pid,command', '-p', pids.join(',')])
+  } catch (err) {
+    // Every listed pid exited between the two calls: ps prints the header and exits 1. An empty scan, not a failure.
+    const e = err as { status?: unknown; stdout?: unknown }
+    if (e.status === 1 && typeof e.stdout === 'string' && !/^\s*\d+\s/m.test(e.stdout)) return e.stdout
+    throw err
+  }
+}
+
+/** Env-scan failures in a row (this process): logged at error level, so a blind reaper is never quiet. */
+let envScanFailuresInARow = 0
+
+function envScanOrEmpty(where: Record<string, unknown>, extraPids: readonly number[] = []): string | null {
+  try {
+    const out = envScan(extraPids)
+    envScanFailuresInARow = 0
+    return out
+  } catch (err) {
+    logger.error({ ...execFailure(err), ...where, failuresInARow: ++envScanFailuresInARow }, 'channel-poller-reap: env scan FAILED, nothing is reaped this round (REAPERENOBUFS1101)')
+    return null
+  }
+}
+
+// One env-scan snapshot for a channel dir (the bot.pid holder included); empty on
+// failure (no candidate then, so nothing is reaped), and the failure is loud.
+function psEwwSnapshot(chanDir: string): string {
+  const botPid = readBotPid(chanDir)
+  return envScanOrEmpty({ chanDir }, botPid !== null ? [botPid] : []) ?? ''
 }
 
 function readBotPid(chanDir: string): number | null {
@@ -914,7 +1031,7 @@ function snapshotProcs(): ProcRow[] {
     }
     return rows
   } catch (err) {
-    logger.warn({ err }, 'channel-poller-reap: ps -axww snapshot failed')
+    logger.warn(execFailure(err), 'channel-poller-reap: ps -axww snapshot failed')
     return []
   }
 }
@@ -926,7 +1043,7 @@ function tmuxServerPid(tmuxPath: string): number | null {
     const n = parseInt(out.trim().split('\n')[0] ?? '', 10)
     return Number.isFinite(n) && n > 1 ? n : null
   } catch (err) {
-    logger.warn({ err }, 'channel-poller-reap: tmux display-message failed')
+    logger.warn(execFailure(err), 'channel-poller-reap: tmux display-message failed')
     return null
   }
 }
@@ -941,7 +1058,7 @@ function livePanePids(tmuxPath: string): Set<number> {
     }
     return s
   } catch (err) {
-    logger.warn({ err }, 'channel-poller-reap: tmux list-panes failed')
+    logger.warn(execFailure(err), 'channel-poller-reap: tmux list-panes failed')
     return new Set()
   }
 }
@@ -1157,13 +1274,9 @@ export function reapForeignMainPollers(opts: {
   const legit = mainSessionPanePids(opts.mainSession, tmuxPath)
   if (legit.size === 0) return [] // fail-safe: cannot distinguish legit from thief
 
-  let psEww: string
-  try {
-    psEww = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
-  } catch (err) {
-    logger.warn({ err }, 'channel-poller-reap: ps env scan failed (foreign-main reap skipped)')
-    return []
-  }
+  // REAPERENOBUFS1101: the narrowed scan (envScan); a failure is logged loud and nothing is reaped.
+  const psEww = envScanOrEmpty({ provider: opts.provider, mainSession: opts.mainSession, reaper: 'foreign-main' })
+  if (psEww === null) return []
   const candidates = parseMainDirPollerPids(psEww, PLUGIN_ROOT_NEEDLE[opts.provider], STATE_ENV_VAR[opts.provider])
   if (candidates.length === 0) return []
 

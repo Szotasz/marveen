@@ -1,7 +1,7 @@
 {
   "id": "developer-junior",
   "label": "Fejlesztő (junior)",
-  "description": "Feature-fejlesztésre saját branch-en. A main/master-re tiltott push, sudo tiltott, SSH/AWS kulcsok elrejtve. Csak a saját munkakönyvtárába írhat.",
+  "description": "Feature-fejlesztésre saját branch-en. A main/master-re tiltott push, sudo tiltott, SSH/AWS kulcsok elrejtve. Csak a saját munkakönyvtárába írhat. A marveen-api.sh engedély a kanban-író igéket is megadja (kanban-create, kanban-move, kanban-claim, kanban-release, kanban-comment), tehát ez a profil a táblára is írhat.",
   "permissionMode": "strict",
   "filesystem": {
     "allow": [

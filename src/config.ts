@@ -591,6 +591,22 @@ export const HEARTBEAT_AGENT_ENABLED =
 // web/permission-prompt-alert.ts. PERMFLOOD1012.
 export const PERMISSION_ALERT_MARKS = (cfg('PERMISSION_ALERT_MARKS') ?? '').trim()
 
+// Routine (self-healing) recovery alerts on the owner's channel (DEFAULT ON).
+// web/routine-alert.ts reports the fleet's own recoveries -- "the main session
+// got stuck, I restarted it", "the session disappeared, respawning". They exist
+// because a SILENT wedge cost a morning (2026-07-30), but they are also the
+// fleet's normal operating noise, and an install may want them off the channel
+// without losing the record. The default must stay ON: an install that never
+// touches this key keeps the exact behaviour it had before the switch existed.
+// Only an explicit off value silences them, and even then the occurrence is
+// still logged (dashboard.log) -- this gate turns a message into a log line, it
+// never drops the fact. The REAL failure alerts are a different function
+// (sendAlert in web/channel-monitor.ts, e.g. "the automatic restart did NOT
+// succeed") and always go out, whatever this is set to.
+// Boot-time const (like SUBAGENT_INBOX_TEE): takes effect on dashboard restart.
+export const NOTIFY_ROUTINE_ALERTS =
+  !['0', 'false', 'no', 'off'].includes((cfg('NOTIFY_ROUTINE_ALERTS') ?? '1').trim().toLowerCase())
+
 // Sub-agent Telegram inbox delivery-path tee (opt-in, DEFAULT OFF).
 // When enabled, a telegram sub-agent loads the channel plugin via a per-agent
 // mcp.json wrapped in the inbound-tee (scripts/channel-inbound-tee.mjs), which

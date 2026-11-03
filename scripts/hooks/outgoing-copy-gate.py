@@ -88,6 +88,30 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 # the shared send-invocation-cases.json binds the two.
 _CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
+# MAILGATEAPIB1027 (Samu 50983): mail / mailx / s-nail send when given an address, a subject, a cc/bcc/from/attach
+# option or any operand (a recipient); with none of these (`mail`, `mail -f mbox`, `mail -u user`) they read mail.
+_MAIL_PROG = re.compile(r"^(mail|mailx|s-nail)$", re.I)
+_MAIL_SEND_OPT = re.compile(r"^-[A-Za-z]*[sbcrtaAq]")
+_CURL_SMTP = re.compile(r"^(?:smtps?://|--mail-(?:rcpt|from)(?:=|$))", re.I)
+
+
+def _mail_prog_sends(rest) -> bool:
+    skip = False
+    for t in rest:
+        if skip:
+            skip = False
+            continue
+        if "@" in t:
+            return True
+        if t in ("-f", "-u"):
+            skip = True
+            continue
+        if t.startswith("-"):
+            if _MAIL_SEND_OPT.match(t):
+                return True
+            continue
+        return True
+    return False
 _SENDPY = re.compile(r"^send\.py$", re.I)
 # SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13t) is the same python.
 _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
@@ -133,10 +157,181 @@ _CODE_EXECISH = re.compile(
 _CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
 
 
-def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code):
+# MAILGATESCRIPT1027: a Microsoft Graph send endpoint (sendMail, or send/reply/replyAll/forward of a message)
+# MAILGATESCRIPT1027 R2: no ASCII word character, '-' or non-ASCII letter may follow the action word (the same rule in
+# both twins), so send-preview, or reply followed by an accented letter, is no action; any punctuation ends it.
+# MAILGATESCRIPT1027 R1: a send needs the endpoint shape AND Graph evidence in the same text (an application
+# route of the same shape is no send); `\/` is normalised to `/` first (JSON-escaped URLs).
+_GRAPH_SEND = re.compile(
+    r"/(?:me|users/[^\n]{1,120}?)/(?:sendMail(?![A-Za-z0-9_-]|[^\x00-\x7f])|messages/[^\n]{1,160}?/(?:send|reply|replyAll|forward)(?![A-Za-z0-9_-]|[^\x00-\x7f]))",
+    re.I,
+)
+_GRAPH_EVIDENCE = re.compile(r"graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(", re.I)
+
+
+def _graph_sends(text: str) -> bool:
+    t = text.replace("\\/", "/")
+    return bool(_GRAPH_SEND.search(t) and _GRAPH_EVIDENCE.search(t))
+
+
+# MAILGATEHTTPAPI1027: an HTTP mail API reached from a script (Marveen 50920: a Gmail REST send from
+# urllib went past the approval gate, because only SMTP, nodemailer and Graph were known). Each provider
+# needs its own evidence AND a send shape in the same text, so a Gmail read (messages list, profile) or a
+# text that only names the provider is no send. The evidence is a literal API host or a client call or
+# package name, never the bare provider word: after the `\/` normalisation a gate's own regex source and
+# comments carry the shapes, and a gate file must not count as a sender. Mirrored in email-send-gate.mjs
+# (MAIL_API_RULES); scripts/hooks/mail-api-send-cases.json binds the two twins.
+_ACTION_END = r"(?![A-Za-z0-9_-]|[^\x00-\x7f])"
+_MAIL_API_RULES = (
+    # Gmail: the REST host (also when the URL is assembled from a base) or the Python or Node gmail client;
+    # the send shapes are the messages or drafts send call.
+    (re.compile(r"gmail\.googleapis\.com|[/]gmail[/]v1[/]|\bbuild\s*\(\s*['\"]gmail['\"]|\bgoogle\.gmail\s*\(|['\"]@googleapis/gmail['\"]", re.I),
+     re.compile(r"/(?:messages|drafts)/send" + _ACTION_END + r"|\.(?:messages|drafts)\s*(?:\(\s*\))?\s*\.send\s*\(", re.I)),
+    # Resend: the emails endpoint on the API host (and its batch), or the SDK's emails.send( on a client
+    # of any name (Samu 50950 A1: `const client = new Resend(k)`), the package being the evidence.
+    (re.compile(r"api\.resend\.com|['\"]resend['\"]|\bimport\s+resend\b", re.I),
+     re.compile(r"api\.resend\.com/emails(?:/batch)?" + _ACTION_END + r"|\.emails\.send\s*\(", re.I)),
+    # SendGrid: v3 mail send on the API host, or the mail client.
+    (re.compile(r"api\.sendgrid\.com|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\s*\(", re.I),
+     re.compile(r"api\.sendgrid\.com/v3/mail/send" + _ACTION_END + r"|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\s*\(", re.I)),
+    # Mailgun: the API host with a v3 domain messages path (an assembled URL too), or the client's
+    # messages.create( next to the package name. A bare "/messages" is no evidence: the dashboard's own
+    # /api/messages is one.
+    (re.compile(r"mailgun\.net|['\"]mailgun(?:\.js)?['\"]", re.I),
+     re.compile(r"/v3/[^\n]{1,200}?/messages(?:\.mime)?" + _ACTION_END + r"|\.messages\.create\s*\(", re.I)),
+    # Postmark: the email endpoints on the API host (single, batch, with a template), or the SDKs (MAILGATEAPIB1027,
+    # Samu 50950 B1): the node client's sendEmail family, python postmarker's emails.send family.
+    (re.compile(r"api\.postmarkapp\.com|['\"]postmark['\"]|\bpostmarker\b", re.I),
+     re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END
+                + r"|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(", re.I)),
+)
+
+def _mail_api_sends(text: str) -> bool:
+    t = text.replace("\\/", "/")
+    return any(ev.search(t) and send.search(t) for ev, send in _MAIL_API_RULES)
+
+
+def _web_mail_sends(text: str) -> bool:
+    """A Microsoft Graph send or an HTTP mail API send in a code string or a script file."""
+    return _graph_sends(text) or _mail_api_sends(text)
+
+
+# MAILGATEHEREDOCFP1027: a send marker that only sits in DATA is no send. A heredoc or a -c string that writes an
+# inter-agent message or a probe file carries the sender's words in a string literal ("the gate knows smtplib",
+# "client.emails.send(...)"), and the rules, read on the raw text, refused it every day. The interpreter's code is
+# read with its prose blanked: a string literal whose text holds whitespace (a sentence, a JSON body, a docstring)
+# and every comment become spaces, the length and the line breaks kept. A literal without whitespace stays as it is,
+# because that is how a real send carries its evidence: a URL, a package name, a 'sendmail' argv item, 'send'. The
+# interpolations of an f-string or a template literal are code and stay. An unterminated literal is left raw, so a
+# cut text is judged as before. Not a parser: a JS regex literal holding a quote can shift the scan (stated limit).
+# Mirrored in email-send-gate.mjs (maskProseLiterals); scripts/hooks/prose-literal-cases.json binds the two.
+_PY_STR_PREFIX = re.compile(r"(?i)(?:rb|br|fr|rf|r|b|u|f)$")
+
+
+def _mask_prose_literals(text: str, lang) -> str:
+    if lang not in ("py", "js"):
+        return text
+    out = []
+    i, n = 0, len(text)
+
+    def blank(s):
+        return "".join(c if c == "\n" else " " for c in s)
+
+    while i < n:
+        c = text[i]
+        if lang == "py" and c == "#":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out.append(blank(text[i:j]))
+            i = j
+            continue
+        if lang == "js" and text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out.append(blank(text[i:j]))
+            i = j
+            continue
+        if lang == "js" and text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j == -1:
+                out.append(text[i:])
+                break
+            out.append(blank(text[i:j + 2]))
+            i = j + 2
+            continue
+        if c in "'\"" or (lang == "js" and c == "`"):
+            prefix = ""
+            if lang == "py":
+                k = i
+                while k > 0 and text[k - 1].isalpha() and i - k < 2:
+                    k -= 1
+                if k < i and _PY_STR_PREFIX.match(text[k:i]) and (k == 0 or not (text[k - 1].isalnum() or text[k - 1] == "_")):
+                    prefix = text[k:i].lower()
+            triple = lang == "py" and text.startswith(c * 3, i)
+            quote = c * 3 if triple else c
+            interp = (lang == "js" and c == "`") or "f" in prefix
+            multiline = triple or (lang == "js" and c == "`")
+            j = i + len(quote)
+            parts = []  # (is_code, text) between the quotes
+            buf = []
+            closed = False
+            while j < n:
+                ch = text[j]
+                if ch == "\\" and j + 1 < n:
+                    buf.append(text[j:j + 2])
+                    j += 2
+                    continue
+                if text.startswith(quote, j):
+                    closed = True
+                    break
+                if ch == "\n" and not multiline:
+                    break
+                if interp and ((lang == "js" and text.startswith("${", j)) or (lang == "py" and ch == "{" and not text.startswith("{{", j))):
+                    start = j + (2 if lang == "js" else 1)
+                    depth, k = 1, start
+                    while k < n and depth:
+                        if text[k] == "{":
+                            depth += 1
+                        elif text[k] == "}":
+                            depth -= 1
+                        k += 1
+                    if depth:
+                        break
+                    parts.append((False, "".join(buf)))
+                    buf = []
+                    parts.append((True, text[j:k]))
+                    j = k
+                    continue
+                if interp and lang == "py" and text.startswith("{{", j):
+                    buf.append("{{")
+                    j += 2
+                    continue
+                buf.append(ch)
+                j += 1
+            if not closed:
+                # Raw up to where the scan stopped: its text is not read again as code (a `//` in it is no comment).
+                out.append(text[i:j])
+                i = j
+                continue
+            parts.append((False, "".join(buf)))
+            # ASCII whitespace only, the same set in both twins (str.isspace and JS \s differ outside ASCII).
+            prose = any(any(ch in " \t\n\r\f\v" for ch in s) for code, s in parts if not code)
+            out.append(quote)
+            for code, s in parts:
+                out.append(s if code or not prose else blank(s))
+            out.append(quote)
+            i = j + len(quote)
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _code_string_sends(code: str, lang=None) -> bool:
+    masked = _mask_prose_literals(code, lang)
+    if _CODE_SEND.search(masked) or _CODE_SEND_MODULE.search(masked) or _web_mail_sends(masked):
         return True
-    return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
+    return bool(_CODE_EXECISH.search(masked) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
@@ -685,6 +880,11 @@ def _head_is_send(toks, depth: int) -> bool:
     rest = toks[1:]
     if _SENDER_PROG.match(prog):
         return True
+    if _MAIL_PROG.match(prog) and _mail_prog_sends(rest):
+        return True
+    # MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
+    if _CURLISH.match(prog) and any(_CURL_SMTP.match(t) for t in rest):
+        return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
     if _WRAPPER_SHELL.match(prog) and depth < 3:
         for i, t in enumerate(rest):
@@ -694,7 +894,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
-            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1]):
+            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1], _lang_of(prog)):
                 return True
     # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
     candidates = [prog] + (
@@ -779,10 +979,19 @@ def wrapper_depth_hit(cmd: str) -> bool:
 _HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
 
 
-def _heredoc_body_sends(body: str) -> bool:
-    if _CODE_SEND.search(body) or _CODE_SEND_MODULE.search(body):
+def _heredoc_body_sends(body: str, lang=None) -> bool:
+    masked = _mask_prose_literals(body, lang)
+    if _CODE_SEND.search(masked) or _CODE_SEND_MODULE.search(masked):
         return True
-    return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
+    return bool(_CODE_EXECISH.search(masked) and _HEREDOC_SENDER_ARGV.search(body))
+
+
+def _lang_of(prog: str):
+    """The masking language of an interpreter (MAILGATEHEREDOCFP1027): python, a JS runtime, else none."""
+    prog = _basename(prog)
+    if _PYTHON.match(prog):
+        return "py"
+    return "js" if _NODEISH.match(prog) else None
 
 
 _HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash)\b[^\n<]*$", re.I)
@@ -814,7 +1023,7 @@ def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
             if not args or args[0] not in written:
                 continue
             body = written[args[0]]
-            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body):
+            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body, _lang_of(prog)):
                 return True
             if _WRAPPER_SHELL.match(prog) and depth < 3 and is_send_invocation(body, _depth=depth + 1):
                 return True
@@ -834,13 +1043,14 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
             if _WRAPPER_SHELL.match(piped.group(1)):
                 if depth < 3 and is_send_invocation(pbody, _depth=depth + 1):
                     return True
-            elif _heredoc_body_sends(pbody):
+            elif _heredoc_body_sends(pbody, _lang_of(piped.group(1))):
                 return True
         line_start = cmd.rfind("\n", 0, m.start()) + 1
         head = cmd[line_start:m.start()]
         body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
-        if _HEREDOC_INTERP.search(head):
-            if _heredoc_body_sends(body):
+        interp = _HEREDOC_INTERP.search(head)
+        if interp:
+            if _heredoc_body_sends(body, _lang_of(interp.group(1))):
                 return True
         elif _HEREDOC_SHELL.search(head) and depth < 3:
             if is_send_invocation(body, _depth=depth + 1):
@@ -873,6 +1083,416 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
     except ValueError:
         return bool(_FALLBACK_LITERALS.search(cmd))
+
+# MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
+# so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the
+# port of scriptRunSends in email-send-gate.mjs (the sub-agent gate; see SCRIPTSENDGATE1020 there for the
+# rationale and the stated limits): the script an interpreter runs is read, and it is a send when it imports
+# an SMTP library or nodemailer, or names a Microsoft Graph send endpoint, itself or in one level of local
+# helpers. Unlike the JS twin it is FAIL-CLOSED, because here a "send" only asks for the level check: a script
+# that cannot be found or read, or is too large, or whose path is a variable, counts as a send. Deliberately
+# NOT part of is_send_invocation (the shared contract of send-invocation-cases.json); email-approval-gate.py
+# calls it next to it.
+_PY_MAIL_MODULE = r"(?:(?:aio)?smtplib|yagmail)"
+_PY_MAIL_IMPORT = re.compile(
+    r"^[ \t]*(?:import[ \t]+[^\n#]*\b" + _PY_MAIL_MODULE + r"\b|from[ \t]+" + _PY_MAIL_MODULE + r"\b[^\n]*\bimport\b)"
+    r"|\bimport_module\(\s*['\"]" + _PY_MAIL_MODULE + r"['\"]",
+    re.M,
+)
+_NODE_MAIL_MODULE = r"['\"]nodemailer['\"]"
+_NODE_MAIL_IMPORT = re.compile(
+    r"\brequire\s*\(\s*" + _NODE_MAIL_MODULE + r"\s*\)|^[ \t]*import\b[^\n]*" + _NODE_MAIL_MODULE
+    + r"|\bimport\s*\(\s*" + _NODE_MAIL_MODULE + r"\s*\)",
+    re.M,
+)
+# MAILGATESCRIPT1027 R2: groups: 1 = X and 2 = NAMES of `from X import NAMES`, 3 = NAMES of `import NAMES`
+_PY_LOCAL_IMPORT = re.compile(
+    r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b(?:[ \t]*\(?[ \t]*([\w., \t]+))?|import[ \t]+([\w., \t]+))", re.M)
+_NODE_LOCAL_IMPORT = re.compile(
+    # MAILGATESCRIPT1027 R1: `export ... from './x'` (an ESM re-export) loads the helper too
+    # MAILGATESCRIPT1027 R2: a type-only import or export loads nothing
+    r"(?:^[ \t]*export(?![ \t]+type[ \t]*(?:\{|\*|[A-Za-z_$][\w$]*[ \t]+from\b))\b[^\n]*?\bfrom\s*|\brequire\s*\(\s*|^[ \t]*import(?![ \t]+type[ \t]*(?:\{|\*|[A-Za-z_$][\w$]*[ \t]+from\b))\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['\"](\.{1,2}/[^'\"\n]+)['\"]",
+    re.M,
+)
+_NODE_EXTS = ("", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs", "/index.ts")
+_HELPER_LIMIT = 40
+_ADDRESS_FLAG = re.compile(r"^--(?:to|cc|bcc)(?:=(.*))?$", re.S)
+_SCRIPT_FILE = re.compile(r"\.(?:py|mjs|cjs|js|ts)$", re.I)
+_SHELL_C_FLAG = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")
+_SCRIPT_READ_LIMIT = 1024 * 1024
+_SHEBANG_READ_LIMIT = 512
+_SHELL_C_DEPTH = 3
+
+
+def _read_script_head(path: str, limit: int = _SCRIPT_READ_LIMIT):
+    """The first `limit` bytes of the file as text, or None when it cannot be read."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+
+
+_CD_OPTIONS = ("-P", "-L", "-e", "-@")
+
+
+def _cd_bases(cwd, cmd_words):
+    """MAILGATESCRIPT1027 R1: (bases, undecidable): the directories a relative script may be under -- cwd, and
+    every literal `cd DIR` target of the command (cumulative over chained cds, and DIR alone under cwd).
+    undecidable: some `cd` names a directory that cannot be known here (a variable, `-`, `~user`, none)."""
+    cwd_abs = isinstance(cwd, str) and os.path.isabs(cwd)
+    cur = cwd if cwd_abs else None
+    bases = [cwd] if cwd_abs else []
+    undecidable = False
+    i = 0
+    while i < len(cmd_words):
+        if cmd_words[i] != "cd":
+            i += 1
+            continue
+        i += 1
+        while i < len(cmd_words) and cmd_words[i] in _CD_OPTIONS:
+            i += 1
+        if i < len(cmd_words) and cmd_words[i] == "--":
+            i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
+        d = cmd_words[i] if i < len(cmd_words) else None
+        tilde = d is not None and (d == "~" or d.startswith("~/"))
+        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)):
+            undecidable = True
+            cur = None
+            continue
+        if tilde:
+            new = os.path.expanduser(d)
+        elif os.path.isabs(d):
+            new = d
+        elif cur is not None:
+            new = os.path.join(cur, d)
+        else:
+            undecidable = True
+            cur = None
+            continue
+        bases.append(new)
+        if not tilde and not os.path.isabs(d) and cwd_abs:
+            bases.append(os.path.join(cwd, d))
+        cur = new
+    return list(dict.fromkeys(os.path.normpath(b) for b in bases)), undecidable
+
+
+def _relative_under_undecidable_cd(script, cwd, cmd_words) -> bool:
+    """MAILGATESCRIPT1027 R1: a relative script-shaped operand and a cd that cannot be resolved."""
+    if not script or os.path.isabs(script) or script == "~" or script.startswith("~/"):
+        return False
+    if not (_SCRIPT_FILE.search(script) or "/" in script):
+        return False
+    return _cd_bases(cwd, cmd_words)[1]
+
+
+def _resolve_script_paths(script, cwd, cmd_words):
+    """Every absolute path the script operand can name: itself when absolute, `~` expanded, a relative
+    one under cwd and under every literal `cd DIR` target of the command. May be empty."""
+    if not script or _UNDECIDABLE_PATH.search(script):
+        return []
+    p = script
+    if p == "~" or p.startswith("~/"):
+        p = os.path.expanduser(p)
+    if os.path.isabs(p):
+        return [p]
+    bases = _cd_bases(cwd, cmd_words)[0]
+    out = []
+    for b in bases:
+        c = os.path.normpath(os.path.join(b, p))
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def _node_script_operand(prog, rest):
+    """node/tsx/bun/deno: the first non-option word is the script (-e/--eval code strings are
+    is_send_invocation's). `bun run x` / `deno run x` skip the run word; `npx tsx x` / `npx ts-node x` /
+    `npx node x` name the script after the runner, any other npx package is no script."""
+    words = []
+    for t in rest:
+        if t == "--":
+            continue
+        if t.startswith("-"):
+            return None
+        words.append(t)
+        if len(words) == 2:
+            break
+    if prog == "npx":
+        return (words[1] if len(words) > 1 else None) if words and words[0] in ("tsx", "ts-node", "node") else None
+    if prog in ("bun", "deno") and words and words[0] == "run":
+        return words[1] if len(words) > 1 else None
+    return words[0] if words else None
+
+
+def _address_flag_given(rest) -> bool:
+    for i, t in enumerate(rest):
+        m = _ADDRESS_FLAG.match(t)
+        if not m:
+            continue
+        val = m.group(1) if m.group(1) is not None else (rest[i + 1] if i + 1 < len(rest) else "")
+        if "@" in val:
+            return True
+    return False
+
+
+def _shebang_kind(text):
+    """'py' | 'node' | None from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`)."""
+    m = re.match(r"#!\s*(\S+)([^\n]*)", text or "")
+    if not m:
+        return None
+    prog = _basename(m.group(1))
+    if prog == "env":
+        prog = _basename(next((w for w in m.group(2).split() if not w.startswith("-") and "=" not in w), ""))
+    if _PYTHON.match(prog):
+        return "py"
+    if _NODEISH.match(prog) and prog != "npx":
+        return "node"
+    return None
+
+
+def _local_helper_paths(path, text, kind):
+    """One level of local helpers: modules the script imports, resolved next to it."""
+    # MAILGATESCRIPT1027 R1: next to the script and, for a symlinked entry, next to its real path
+    dirs = [os.path.dirname(path)]
+    try:
+        real = os.path.dirname(os.path.realpath(path))
+        if real not in dirs:
+            dirs.append(real)
+    except (OSError, ValueError):
+        pass  # the lexical directory only
+    # MAILGATESCRIPT1027 R2: the limit applies per directory, so a symlinked entry's real-path helpers are looked at
+    lists = []
+    for d in dirs:
+        out = []
+        if kind == "py":
+            for m in _PY_LOCAL_IMPORT.finditer(text):
+                if m.group(1) and m.group(1).startswith("."):
+                    x = m.group(1)
+                    rest = x.lstrip(".")
+                    base = d
+                    for _ in range(len(x) - len(rest) - 1):
+                        base = os.path.dirname(base)
+                    if rest:
+                        rels = [rest.replace(".", "/")]
+                    else:
+                        rels = [(n.split() or [""])[0] for n in (m.group(2) or "").split(",")]
+                    for rel in rels:
+                        if rel:
+                            out += [os.path.normpath(os.path.join(base, rel + ".py")),
+                                    os.path.normpath(os.path.join(base, rel, "__init__.py"))]
+                    continue
+                names = [m.group(1)] if m.group(1) else [(n.split() or [""])[0] for n in (m.group(3) or "").split(",")]
+                for name in names:
+                    if not name or name.startswith("."):
+                        continue
+                    rel = name.replace(".", "/")
+                    out += [os.path.normpath(os.path.join(d, rel + ".py")),
+                            os.path.normpath(os.path.join(d, rel, "__init__.py"))]
+        else:
+            for m in _NODE_LOCAL_IMPORT.finditer(text):
+                out += [os.path.normpath(os.path.join(d, m.group(1) + ext)) for ext in _NODE_EXTS]
+        lists.append([p for p in dict.fromkeys(out) if p != path][:_HELPER_LIMIT])
+    return list(dict.fromkeys(p for lst in lists for p in lst))
+
+
+# MAILGATEAPIB1027 (Samu 50983): a subprocess that runs a mail program, written into a FILE, went through, while
+# the same code as a -c string did not. The file path takes a CALL shape: a process-starting call whose first
+# argument (a string, or the first item of a list) starts with sendmail, msmtp or swaks. Read on the raw text, since
+# a shell string ('sendmail -t < m.eml') holds whitespace and the masker blanks it. Not the code-string rule as it
+# is: measured over the repo, its loose form (exec word anywhere, the sender word anywhere, plus sendMail( / mail.send
+# / SMTP( anywhere) made 21 of the gates' own sources and tests a "sender" for the sub-agents' hard gate, which
+# would refuse running them. Not send.py either: the support-mail test harnesses run it under stubs.
+# Samu 50995 N1: the call is found on the MASKED text (its name and the opening parenthesis are code there; a call
+# shape quoted inside a prose literal is blanked), and its first argument is read from the RAW text at the same
+# position (the masker keeps the length in code points), since a shell string holds whitespace.
+_FILE_EXEC_CALL = re.compile(
+    r"(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)\s*\(")
+_FILE_EXEC_ARG = re.compile(r"""\s*\[?\s*['"`](?:[^'"`\s]*/)?(?:sendmail|msmtp|swaks)(?=['"`\s])""")
+
+
+def _file_exec_sends(raw: str, masked: str) -> bool:
+    if len(raw) != len(masked):  # not expected; the raw text is then judged alone, which errs toward a send
+        masked = raw
+    return any(_FILE_EXEC_ARG.match(raw, m.end()) for m in _FILE_EXEC_CALL.finditer(masked))
+
+
+def _text_sends(raw: str, masked: str, imports) -> bool:
+    """A script file's (or helper's) text: the mail imports, the web mail APIs, and a call that runs a mail program."""
+    return bool(imports.search(masked) or _web_mail_sends(masked) or _file_exec_sends(raw, masked))
+
+
+def _file_sends(path, text, kind, read_script) -> bool:
+    imports = _PY_MAIL_IMPORT if kind == "py" else _NODE_MAIL_IMPORT
+    lang = "py" if kind == "py" else "js"
+    if _text_sends(text, _mask_prose_literals(text, lang), imports):
+        return True
+    # The helpers are found on the raw text: a helper named only in a docstring is read too, which errs toward a send.
+    for h in _local_helper_paths(path, text, kind):
+        t = read_script(h, _SCRIPT_READ_LIMIT)
+        if t is not None and _text_sends(t, _mask_prose_literals(t, lang), imports):
+            return True
+    return False
+
+
+# MAILGATEDIRZIP1027: python runs a directory's __main__.py, and a zip app's __main__.py from inside the
+# archive. The archive is not unpacked here, so a zip run by python is a send.
+_ZIP_MAGIC = "PK\x03\x04"
+
+
+def _judge_candidates(paths, kind, read_script):
+    """(readable, verdict): a send when ANY readable candidate sends -- the candidates are where the script
+    may be (cwd, each `cd` target), and which one runs is not known here; a file over the read limit is a send."""
+    readable = False
+    for path in paths:
+        text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None and kind == "py":
+            path = os.path.join(path, "__main__.py")
+            text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None and kind == "node":
+            # node runs DIR/package.json "main", else DIR/index.js; a main that cannot be read as named is a send
+            pkg = read_script(os.path.join(path, "package.json"), _SCRIPT_READ_LIMIT + 1)
+            main = None
+            if pkg is not None:
+                try:
+                    data = json.loads(pkg)
+                except ValueError:
+                    return True, True
+                main = data.get("main") if isinstance(data, dict) else None
+            declared = isinstance(main, str) and main != ""
+            path = os.path.normpath(os.path.join(path, main)) if declared else os.path.join(path, "index.js")
+            text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+            if text is None and declared:
+                return True, True
+        if text is None:
+            continue
+        readable = True
+        if kind == "py" and _ZIP_MAGIC in text:
+            return True, True
+        if len(text.encode("utf-8")) > _SCRIPT_READ_LIMIT or _file_sends(path, text, kind, read_script):
+            return True, True
+    return readable, False
+
+
+def _python_module(rest):
+    """MAILGATESCRIPT1027 R1: MOD of `-m MOD` / `-mMOD` among the interpreter options, else None."""
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t == "-m":
+            return rest[i + 1] if i + 1 < len(rest) else None
+        if re.match(r"^-m[^-]", t):
+            return t[2:]
+        # MAILGATEDIRZIP1027: -m at the end of a cluster of flags without a value (`-um MOD`, `-BmMOD`)
+        cluster = re.match(r"^-[bBdEhiIOPqRsSuvVx]+m(.*)$", t)
+        if cluster:
+            return cluster.group(1) or (rest[i + 1] if i + 1 < len(rest) else None)
+        if t in _PY_OPT_WITH_ARG:
+            i += 2
+            continue
+        if t.startswith("-") and t != "--" and not t.startswith("-c"):
+            i += 1
+            continue
+        return None
+    return None
+
+
+def _python_module_sends(module, cwd, cmd_words, read_script) -> bool:
+    """MAILGATESCRIPT1027 R1: `python -m MOD` runs MOD.py or MOD/__main__.py under cwd or a cd target. An
+    installed module cannot be read here, so with no readable candidate it is not a send."""
+    if not re.match(r"^[\w.]+$", module):
+        return False
+    rel = module.replace(".", "/")
+    bases, undecidable = _cd_bases(cwd, cmd_words)
+    if undecidable:
+        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed
+    paths = []
+    for base in bases:
+        paths += [os.path.normpath(os.path.join(base, rel + ".py")),
+                  os.path.normpath(os.path.join(base, rel, "__main__.py"))]
+    return _judge_candidates(paths, "py", read_script)[1]
+
+
+def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
+    if not toks:
+        return False
+    prog = _basename(toks[0])
+    rest = toks[1:]
+    if _WRAPPER_SHELL.match(prog):
+        if depth >= _SHELL_C_DEPTH:
+            return False
+        for i in range(len(rest) - 1):
+            if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
+                return True
+        return False
+    if _PYTHON.match(prog):
+        if _address_flag_given(rest):  # also under -m / -c, where no file is named
+            return True
+        module = _python_module(rest)
+        if module:
+            return _python_module_sends(module, cwd, cmd_words, read_script)
+        script = _python_script_operand(rest)[0]
+        kind = "py"
+    elif _NODEISH.match(prog):
+        script = _node_script_operand(prog, rest)
+        # MAILGATESCRIPT1027 R1: npx with another package than the tsx / ts-node / node runner form is no script run
+        if prog == "npx" and script is None:
+            return False
+        if _address_flag_given(rest):
+            return True
+        kind = "node"
+    elif _SCRIPT_FILE.search(toks[0]) or "/" in toks[0]:
+        # a directly executed file: its #! line picks the interpreter, else its extension
+        # MAILGATESCRIPT1027 R1: every candidate is judged on its own, with its own kind
+        paths = _resolve_script_paths(toks[0], cwd, cmd_words)
+        ext_kind = "py" if re.search(r"\.py$", toks[0], re.I) else "node" if _SCRIPT_FILE.search(toks[0]) else None
+        if _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
+            return True
+        addr = _address_flag_given(rest)
+        readable = False
+        for p in paths:
+            head = read_script(p, _SHEBANG_READ_LIMIT)
+            if head is None:
+                continue
+            kind = _shebang_kind(head) or ext_kind
+            if not kind:
+                continue
+            if addr:
+                return True
+            readable = True
+            if _judge_candidates([p], kind, read_script)[1]:
+                return True
+        if readable:
+            return False
+        if not ext_kind:
+            # no candidate with a kind is readable: a #! line cannot be known, the extension gives none
+            return False
+        return True  # the kind is known and no candidate is readable: fail-closed
+    else:
+        return False
+    if script is None:
+        return False
+    if _UNDECIDABLE_PATH.search(script):
+        return True  # what runs is undecidable here: fail-closed
+    if _relative_under_undecidable_cd(script, cwd, cmd_words):
+        return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
+    readable, verdict = _judge_candidates(_resolve_script_paths(script, cwd, cmd_words), kind, read_script)
+    if readable:
+        return verdict
+    return bool(_SCRIPT_FILE.search(script) or "/" in script)  # a missing script is a send; `bun test` is not
+
+
+def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
+    if read_script is None:
+        read_script = _read_script_head
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False  # unparseable: is_send_invocation's legacy fallback already judged it
+    cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
+    return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+               for toks in segments for h in _command_heads(toks))
+
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
@@ -1170,6 +1790,29 @@ _char_script = char_script   # the name this file used before the extraction
 
 
 EM_DASH = "—"
+# ENDASHGATE1030: an en dash after a word with horizontal white space before it (NBSP and tabs included, line breaks
+# not) and either horizontal white space and a word after it, or the end of the line (a dash where the line was
+# broken), i.e. a dash in prose; an unspaced range ("10–12") and a list marker at the start of a line do not match.
+# Group 1 is the character before the white space, for the range exception below.
+SPACED_EN_DASH = re.compile(r"(\S)[^\S\r\n]+\u2013(?:[^\S\r\n]+(?=\S)|[^\S\r\n]*(?=\r?\n|$))")
+# A time span or a date range is a range, not a dash ("10:00 – 12:00", "október 30. – november 2.", "2026 – 2027"):
+# a digit, or a period right after a digit ("30."), before the white space, and a digit or a month name (lower case,
+# inflected too: "novemberig") after the dash. Any other period or colon before it is prose ("kész. – 3 dolog").
+_DIGITS = "0123456789"
+_RANGE_AFTER = re.compile(r"\d|(?:január|február|március|április|május|június|július|augusztus|szeptember|október"
+                          r"|november|december)")
+
+
+def spaced_en_dashes(prose: str) -> int:
+    """How many spaced en dashes in `prose` are dashes (ENDASHGATE1030); a time span or date range is not one."""
+    n = 0
+    for m in SPACED_EN_DASH.finditer(prose):
+        before = m.group(1)
+        number_before = before in _DIGITS or (before == "." and m.start() > 0 and prose[m.start() - 1] in _DIGITS)
+        if number_before and _RANGE_AFTER.match(prose, m.end()):
+            continue
+        n += 1
+    return n
 
 # GATEPERSIST816: owner-specific NAME rules load from an UNTRACKED local file,
 # not from this (public-repo) script. The generic checks (accents, em dash,
@@ -1437,8 +2080,13 @@ _TECH_SUFFIXED = r"""
         \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
-      | \b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek)
+      | (?:(?<![\w-])--)?\b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek), --flag alakban is
 """
+# FLAGDASH1030 (2026-10-30): the hyphenated-identifier branch above used to eat only the word part of a
+# '--select-release-current' flag, so strip_technical() left the leading '--' between two spaces, and the double-hyphen
+# rule counted it as a dash in prose: 'plesk installer --select-release-current --upgrade-installed-components' was
+# BLOCKED twice. The optional '--' prefix takes the flag whole. A real ' -- ' in prose is still counted: the prefix
+# needs a letter right after the two hyphens, and a prose dash has a space there.
 TECHNICAL = re.compile(_TECH_COMMON + "|" + _TECH_SUFFIXED, re.X)
 NAME_MASK = re.compile(_TECH_COMMON, re.X)
 
@@ -1850,6 +2498,21 @@ def audit(text: str):
         problems.append(
             f"DUPLA KOTOJEL gondolatjel-potlokent {dh} helyen (' -- ') -- Szabi jelzese: "
             "ugyanugy zavaro, mint az em dash. Ird at kotojel nelkul: kettospont, zarojel, vagy uj mondat."
+        )
+    # ENDASHGATE1030 (2026-10-30): a szokozzel korulvett EN DASH (" – ", U+2013) a
+    # magyar gondolatjel tipikus alakja, es eddig atment (a kapu csak az em dash-t
+    # es a " -- "-t nezte). A PROZAN merjuk, mint a dupla kotojelet. A szo utani,
+    # vizszintes szokozzel (NBSP, tab is) kezdodo en dash szamit, ha utana szokoz es
+    # szo, vagy a sor vege jon. Nem gondolatjel: a szokoz nelkuli tartomany ("10–12"),
+    # a sor eleji felsorolasjel ("– elem"), es az idosav/datumtartomany ("10:00 –
+    # 12:00", "oktober 30. – november 2."): tartomany, nem gondolatjel (Samu
+    # 55873/55879; spaced_en_dashes). Az &ndash; entitas a fenti html.unescape
+    # miatt ugyanide jut.
+    ed = spaced_en_dashes(prose)
+    if ed:
+        problems.append(
+            f"GONDOLATJEL (en dash szokozokkel, ' – ', U+2013) {ed} helyen -- a gondolatjel tilos. "
+            "Ird at: kettospont, zarojel, vagy uj mondat. Idosav es datumtartomany (10:00 – 12:00, 10–12) tartomany, nem gondolatjel: az maradhat."
         )
     # 4. ellenorzes (GATEHOMOGLIF816): vegyes irasrendszeru szo. SZANDEKOSAN
     # NEM magyar-kapuzott (elteres Marveen specjetol, ervvel): az FP-vedelem

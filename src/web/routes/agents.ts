@@ -1,6 +1,8 @@
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { isSingleLineEnvValue } from '../../env.js'
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
+import type { ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
@@ -54,6 +56,7 @@ import {
   writeAgentMemoryIsolation,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
+  readAgentRunAsUser,
   readAgentRemoteHost,
   writeAgentRemoteConfig,
   readAgentVoiceConfig,
@@ -64,7 +67,7 @@ import {
   type AuthMode,
   readJsonObjectForWrite,
 } from '../agent-config.js'
-import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
+import { readClaudePlans } from '../claude-plans.js'
 import {
   readAgentTeam,
   writeAgentTeam,
@@ -123,6 +126,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  withTmuxBatch,
   paneCurrentCommand,
   delay,
   resolveAgentProvider,
@@ -156,7 +160,8 @@ import {
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+import { readBody, readBodyOrRefuse, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+import { serializeSkillsDir } from '../skills-dir-queue.js'
 import {
   exportAgentBundle,
   importAgentBundle,
@@ -294,6 +299,11 @@ itt írhatod meg.
 // local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
 const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
 const remotePaneCache = new RemoteStatusCache<string | null>(3000)
+
+// One computed /api/agents/activity answer shared by every open dashboard tab.
+const ACTIVITY_CACHE_TTL_MS = 2000
+let activityCache: { at: number; entries: unknown[] } | null = null
+export function resetAgentsActivityCacheForTests(): void { activityCache = null }
 
 // Resolve an agent's run state, cached for remote agents to avoid blocking on
 // ssh. `isRemote` is passed by the caller (it already read the remote config).
@@ -433,6 +443,28 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
   return join(dir, 'access.json')
 }
 
+// ACCESSREADFAIL1030: the read half of every dashboard write to a channel
+// access.json (pairing approve, allowlist remove, Slack channel-request
+// approve). A MISSING file is a fresh start ({}), as before. A file that
+// EXISTS but cannot be read (EACCES/EPERM/...) or is not a JSON object is
+// refused: the route answers 500, writes nothing and renames nothing.
+// readFileOr's '{}' fallback used to turn an unreadable file into an empty
+// allowlist that the route then wrote back, wiping allowFrom, policy and
+// groups. readJsonObjectForWrite logs the path and the error, never the
+// file's contents. Returns null once the error response has been sent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function readChannelAccessForWrite(res: ServerResponse, accessPath: string): Record<string, any> | null {
+  try {
+    return readJsonObjectForWrite(accessPath)
+  } catch (err) {
+    json(res, {
+      error: 'access.json exists but cannot be read or is not valid JSON; nothing was changed',
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500)
+    return null
+  }
+}
+
 function extractBotId(token: string): string | null {
   const colon = token.indexOf(':')
   if (colon < 1) return null
@@ -499,6 +531,8 @@ export interface AgentSummary {
   hasSlack: boolean
   hasGooglechat: boolean
   hasTeams: boolean
+  /** The agent's own channel provider from agent-config.json, null when unset. */
+  channelProvider: string | null
   status: 'configured' | 'draft'
   running: boolean
   /** Tri-state: 'running' | 'stopped' | 'unreachable' (remote ssh failure). */
@@ -506,6 +540,11 @@ export interface AgentSummary {
   /** Remote ssh destination + workdir, or null for a local agent. */
   remoteHost: string | null
   remoteWorkdir: string | null
+  /** The OS user the agent runs as (agent-config.json runAsUser, validated by
+   *  readAgentRunAsUser -- the same value the spawn uses), null when not
+   *  configured. Not a secret: tools acting for the agent read it here instead
+   *  of parsing agent-config.json themselves (#2358). */
+  runAsUser: string | null
   session?: string
   hasAvatar: boolean
   /** Character nickname from store/team-nicknames.json; undefined when unset. */
@@ -568,7 +607,12 @@ interface AgentDetail extends AgentSummary {
 // launcher's logic is how the two paths drift.
 export function resolveTranscriptLocation(name: string): { workingDir: string; configDir: string | undefined } {
   if (!isMainChannelsAgent(name)) {
-    return { workingDir: agentDir(name), configDir: resolveAgentConfigDir(name).configDir ?? undefined }
+    // configDirFor, not resolveAgentConfigDir: the latter only knows an explicit
+    // claudeConfigDir field and answers null for an auto-provisioned
+    // agents/<name>/.claude-config, so the listing read the host default root and
+    // showed contextTokens null while the guard (configDirFor) saw the live
+    // transcript (measured 2026-10-26 on a sub-agent of the owner's install).
+    return { workingDir: agentDir(name), configDir: configDirFor(name) }
   }
   const isolated = join(PROJECT_ROOT, '.channels-config')
   return {
@@ -644,11 +688,13 @@ function getAgentSummary(name: string): AgentSummary {
     hasSlack: sc.hasSlack,
     hasGooglechat: gc.hasGooglechat,
     hasTeams: tc.hasTeams,
+    channelProvider: readAgentChannelProvider(name),
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
     running,
     runState,
     remoteHost: remote.host,
     remoteWorkdir: remote.workdir,
+    runAsUser: readAgentRunAsUser(name),
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     nickname: nicknameFor(name),
@@ -701,7 +747,7 @@ function getAgentDetail(name: string): AgentDetail {
 }
 
 export function listAgentSummaries(): AgentSummary[] {
-  return listAgentNames().map(getAgentSummary)
+  return withTmuxBatch(() => listAgentNames().map(getAgentSummary))
 }
 
 // Max inter-agent messages a single main-agent inbox drain returns. The rest
@@ -906,41 +952,51 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const bgAgentsOf = (running: boolean, pane: string | null): { total: number; running: number; queued: number } | null =>
       running && pane !== null ? detectBackgroundAgents(pane) : null
 
+    const now = Date.now()
+    if (activityCache && now - activityCache.at >= 0 && now - activityCache.at < ACTIVITY_CACHE_TTL_MS) {
+      jsonMaybeGzip(req, res, activityCache.entries)
+      return true
+    }
+
     const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; bgAgents: { total: number; running: number; queued: number } | null; tail: string[] }> = []
 
-    // Main agent runs in the --channels session, not agent-<name>.
-    {
-      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
-      const running = mainPane !== null
-      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
-      entries.push({
-        name: MAIN_AGENT_ID,
-        isMain: true,
-        running,
-        state: paneActivityLabel(running, mainPane, mainPaneCommand),
-        mode: modeOf(running, mainPane),
-        bgAgents: bgAgentsOf(running, mainPane),
-        tail: tailOf(mainPane),
-      })
-    }
-
-    for (const name of withoutMainAgent(listAgentNames())) {
-      // Remote agents: resolve run state + pane through the short-TTL caches so
-      // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
-      const host = readAgentRemoteHost(name)
-      const runState = agentRunStateCached(name, host != null)
-      const running = runState === 'running'
-      let pane: string | null = null
-      if (running) {
-        pane = host
-          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
-          : capturePane(agentSessionName(name))
+    withTmuxBatch(() => {
+      // Main agent runs in the --channels session, not agent-<name>.
+      {
+        const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+        const running = mainPane !== null
+        const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
+        entries.push({
+          name: MAIN_AGENT_ID,
+          isMain: true,
+          running,
+          state: paneActivityLabel(running, mainPane, mainPaneCommand),
+          mode: modeOf(running, mainPane),
+          bgAgents: bgAgentsOf(running, mainPane),
+          tail: tailOf(mainPane),
+        })
       }
-      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
-      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane, paneCommand)
-      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), bgAgents: bgAgentsOf(running, pane), tail: tailOf(pane) })
-    }
 
+      for (const name of withoutMainAgent(listAgentNames())) {
+        // Remote agents: resolve run state + pane through the short-TTL caches so
+        // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
+        const host = readAgentRemoteHost(name)
+        const runState = agentRunStateCached(name, host != null)
+        const running = runState === 'running'
+        let pane: string | null = null
+        if (running) {
+          pane = host
+            ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+            : capturePane(agentSessionName(name))
+        }
+        const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+        const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane, paneCommand)
+        entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), bgAgents: bgAgentsOf(running, pane), tail: tailOf(pane) })
+      }
+    })
+
+    // Stamped after the compute: under load one compute can take most of the TTL itself.
+    activityCache = { at: Date.now(), entries }
     jsonMaybeGzip(req, res, entries)
     return true
   }
@@ -988,25 +1044,27 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     const rows: AgentStatusRow[] = []
-    {
-      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
-      const running = mainPane !== null
-      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
-      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped', mainPaneCommand)))
-    }
-    for (const name of withoutMainAgent(listAgentNames())) {
-      const host = readAgentRemoteHost(name)
-      const runState = agentRunStateCached(name, host != null)
-      const running = runState === 'running'
-      let pane: string | null = null
-      if (running) {
-        pane = host
-          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
-          : capturePane(agentSessionName(name))
+    withTmuxBatch(() => {
+      {
+        const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+        const running = mainPane !== null
+        const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
+        rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped', mainPaneCommand)))
       }
-      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
-      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState, paneCommand)))
-    }
+      for (const name of withoutMainAgent(listAgentNames())) {
+        const host = readAgentRemoteHost(name)
+        const runState = agentRunStateCached(name, host != null)
+        const running = runState === 'running'
+        let pane: string | null = null
+        if (running) {
+          pane = host
+            ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+            : capturePane(agentSessionName(name))
+        }
+        const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+        rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState, paneCommand)))
+      }
+    })
 
     jsonMaybeGzip(req, res, rows)
     return true
@@ -1481,6 +1539,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
         json(res, { error: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' }, 400); return true
       }
+      // Each goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028).
+      if (![saKeyPath, projectId, subscription].every((v) => isSingleLineEnvValue(v.trim()))) {
+        json(res, { error: 'Google Chat: a mezők nem tartalmazhatnak sortörést' }, 400); return true
+      }
       const gcDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
       mkdirSync(gcDir, { recursive: true })
       const gcEnv =
@@ -1542,6 +1604,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     const { botToken, appToken, channelId, extra, allowFrom } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string; extra?: unknown; allowFrom?: unknown }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
+    // Each token goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028); refused before any network check.
+    if (![botToken, appToken ?? '', channelId ?? ''].every((v) => typeof v === 'string' && isSingleLineEnvValue(v.trim()))) {
+      json(res, { error: 'A token nem tartalmazhat sortörést' }, 400); return true
+    }
 
     // AGENTEXTRACH1006: `extra: true` connects this provider NEXT TO the
     // agent's primary channel instead of replacing it. The primary's
@@ -2021,10 +2087,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       ? channelStateDir(provider)
       : channelStateDir(provider, agentDir(name))
     const accessPath = join(chDir, 'access.json')
-    const accessContent = readFileOr(accessPath, '{}')
+    const access = readChannelAccessForWrite(res, accessPath)
+    if (!access) return true
 
     try {
-      const access = JSON.parse(accessContent)
       const pending = access.pending || {}
       const entry = pending[code.trim()]
 
@@ -2107,7 +2173,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, result)
     } catch (err) {
       logger.error({ err }, 'Failed to create invite')
-      json(res, { error: 'Failed to create invite' }, 500)
+      // The detail names a refused unreadable/invalid access.json or
+      // invites.json (ACCESSREADFAIL1030) -- path only, never contents.
+      json(res, { error: 'Failed to create invite', detail: err instanceof Error ? err.message : String(err) }, 500)
     }
     return true
   }
@@ -2176,8 +2244,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       ? channelStateDir(provider)
       : channelStateDir(provider, agentDir(name))
     const accessPath = join(chDir, 'access.json')
+    const access = readChannelAccessForWrite(res, accessPath)
+    if (!access) return true
     try {
-      const access = JSON.parse(readFileOr(accessPath, '{}'))
       if (kind === 'user') {
         access.allowFrom = (access.allowFrom || []).filter((s: string) => s !== id)
         // safeJoin blocks a traversal id (e.g. "..%2F..%2Ftmp%2Fvictim") from
@@ -2227,18 +2296,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (provider !== 'slack') { json(res, { error: 'Only Slack agents support channel requests' }, 400); return true }
 
     const accessPath = resolveAccessPath(name, provider)
+    // A missing file starts from the default policy, as before. An existing
+    // file that cannot be read or parsed is refused (ACCESSREADFAIL1030): it
+    // used to be renamed to .corrupt-* and replaced by a fresh one, which
+    // dropped the live allowFrom/groups -- for a read error too, not only for
+    // a corrupt file.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let access: any = { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
+    if (existsSync(accessPath)) {
+      access = readChannelAccessForWrite(res, accessPath)
+      if (!access) return true
+    }
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let access: any = { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
-      if (existsSync(accessPath)) {
-        try {
-          access = JSON.parse(readFileSync(accessPath, 'utf-8'))
-        } catch (parseErr) {
-          const backupPath = `${accessPath}.corrupt-${Math.floor(Date.now() / 1000)}`
-          try { renameSync(accessPath, backupPath) } catch { /* best effort */ }
-          logger.warn({ parseErr, accessPath, backupPath }, 'Corrupt access.json backed up, starting fresh')
-        }
-      }
       if (!access.channels) access.channels = {}
 
       const channelConfig: Record<string, unknown> = { requireMention: opts.requireMention !== false }
@@ -2320,7 +2389,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
-    try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
+    // A body that did not arrive in full is refused, not read as "no options".
+    const startBody = await readBodyOrRefuse(req, res)
+    if (!startBody) return true
+    try { startFresh = JSON.parse(startBody.toString() || '{}').fresh === true } catch {}
     const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
@@ -2446,8 +2518,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
     // caller that wakes the agent itself can send { "wake": false } (no caller
     // in this repository does today). See restart-wake.ts.
-    let restartBody = ''
-    try { restartBody = (await readBody(req)).toString() } catch {}
+    // A body that did not arrive in full is refused, not read as "no options".
+    const restartRaw = await readBodyOrRefuse(req, res)
+    if (!restartRaw) return true
+    const restartBody = restartRaw.toString()
     const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
@@ -2477,18 +2551,23 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // before the generic /api/agents/:name GET further down, or "export-all"
   // would be read as an agent name.
   if (path === '/api/agents/export-all' && method === 'GET') {
-    const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
-    if (names.length === 0) { json(res, { error: 'No agents to export' }, 404); return true }
     const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
     const work = mkdtempSync(join(tmpdir(), 'marveen-fleet-dl-'))
     const outPath = join(work, fleetBundleFilename())
     try {
-      exportAllAgentsBundle(outPath, names, {
-        includeSecrets,
-        exportedBy: MAIN_AGENT_ID,
-        exportedAt: new Date().toISOString(),
+      // The tar reads every agent's skills: it waits on the skills directory queue, like the fleet export.
+      const data = await serializeSkillsDir(() => {
+        // Listed on the queue: the bundle holds the agents the operations queued before it left.
+        const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
+        if (names.length === 0) return null
+        exportAllAgentsBundle(outPath, names, {
+          includeSecrets,
+          exportedBy: MAIN_AGENT_ID,
+          exportedAt: new Date().toISOString(),
+        })
+        return readFileSync(outPath)
       })
-      const data = readFileSync(outPath)
+      if (!data) { json(res, { error: 'No agents to export' }, 404); return true }
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${fleetBundleFilename()}"`,
@@ -2517,12 +2596,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const work = mkdtempSync(join(tmpdir(), 'marveen-agent-dl-'))
     const outPath = join(work, bundleFilename(name))
     try {
-      exportAgentBundle(name, outPath, {
-        includeSecrets,
-        exportedBy: MAIN_AGENT_ID,
-        exportedAt: new Date().toISOString(),
+      // The tar reads the agent's skills: it waits on the skills directory queue.
+      const data = await serializeSkillsDir(() => {
+        // Checked again on the queue: a delete queued before this export may have removed the agent.
+        if (!existsSync(agentDir(name))) return null
+        exportAgentBundle(name, outPath, {
+          includeSecrets,
+          exportedBy: MAIN_AGENT_ID,
+          exportedAt: new Date().toISOString(),
+        })
+        return readFileSync(outPath)
       })
-      const data = readFileSync(outPath)
+      if (!data) { json(res, { error: 'Agent not found' }, 404); return true }
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
@@ -2559,11 +2644,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    const upload: Buffer = bundle
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.
-      if (peekBundleKind(bundle) === 'fleet') {
-        const result = importAllAgentsBundle(bundle, { overwrite })
+      // The importers write agent directories, skills included: they wait on the skills directory queue.
+      if (peekBundleKind(upload) === 'fleet') {
+        const result = await serializeSkillsDir(() => importAllAgentsBundle(upload, { overwrite }))
         // An imported agent is a NEW agent on this machine: the bundle carries
         // the agent directory, never store/context-guard.json. Same rule as
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
@@ -2587,7 +2674,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         return true
       }
 
-      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      const result = await serializeSkillsDir(() => importAgentBundle(upload, { overrideName: overrideName || undefined, overwrite }))
       seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
@@ -2773,7 +2860,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // stopAgentProcess() reads config from the dir (remote host, channel
     // provider) for its orphan reap, so it must run while the dir still exists.
     if (isAgentRunning(name)) await stopAgentProcess(name)
-    rmSync(dir, { recursive: true, force: true })
+    // An assign may be copying a skill into this directory: the removal waits on the skills directory queue.
+    await serializeSkillsDir(async () => {
+      // Started again while the removal waited (by hand: the reconciler no longer wants it): stop it first,
+      // for the same reason as above.
+      if (isAgentRunning(name)) await stopAgentProcess(name)
+      rmSync(dir, { recursive: true, force: true })
+    })
     cleanupTeamReferences(name)
     json(res, { ok: true })
     return true

@@ -87,6 +87,8 @@ const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
 const start = APP.indexOf('async function fedApplyToMainAgent()')
 const end = APP.indexOf('\n// Re-poll peer reachability', start)
 const SNIPPET = APP.slice(start, end)
+// The page's refusal text comes from the shared helper next to showToast (#2427).
+const HELPERS = APP.slice(APP.indexOf('async function readActionReply('), APP.indexOf('\n// === Agents API ==='))
 
 interface Reply { status: number; body: Record<string, unknown> }
 async function click(replies: Reply[], confirms: boolean[]) {
@@ -102,7 +104,7 @@ async function click(replies: Reply[], confirms: boolean[]) {
   const confirm = (m: string) => { asked.push(m); return confirms.shift() ?? false }
   const t = (k: string, p?: { msg?: string }) => (p?.msg ? `${k}:${p.msg}` : k)
   const showToast = (m: string) => { toasts.push(m) }
-  const fn = new Function('fetch', 'confirm', 't', 'showToast', `${SNIPPET}\nreturn fedApplyToMainAgent`)(fetch, confirm, t, showToast) as () => Promise<void>
+  const fn = new Function('fetch', 'confirm', 't', 'showToast', `${HELPERS}\n${SNIPPET}\nreturn fedApplyToMainAgent`)(fetch, confirm, t, showToast) as () => Promise<void>
   await fn()
   return { calls, toasts, asked }
 }

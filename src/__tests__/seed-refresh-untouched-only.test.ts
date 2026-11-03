@@ -32,7 +32,7 @@ function sliceShellFn(src: string, name: string): string {
 
 // The scheduled-task registry hooks are called from the refresh
 // loop; with no built CLI in the fixture they only print a warning.
-const FUNCS = ['render_seed_template', 'seed_copy_is_untouched', 'render_seed_file', 'sched_pre_verify_once',
+const FUNCS = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'sched_pre_verify_once',
   'refresh_one_seed_file', 'refresh_untouched_seeds', 'run_seed_refresh',
   'register_seeded_schedules', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
   .map((n) => sliceShellFn(UPDATE, n))
@@ -318,5 +318,99 @@ describe('top-level scheduled-tasks/ refresh (SEEDREFRESH826)', () => {
     // The pre-fix run_seed_refresh listed only seed-skills + seed-scheduled-tasks;
     // this pins that the fix is the source line, not an accident of the fixture.
     expect(FUNCS).toContain('refresh_untouched_seeds "scheduled-tasks"')
+  })
+})
+
+// #2285: the dashboard seeder (copyTaskConfigWithAgentRewrite) writes a top-level
+// task-config.json with "agent" set to MAIN_AGENT_ID, re-serialised, and no
+// placeholder substitution. The refresh compared against the placeholder render,
+// which kept the shipped literal "agent": "marveen": on any other MAIN_AGENT_ID an
+// untouched config never matched, so a shipped config fix never arrived while its
+// SKILL.md did.
+describe('top-level task-config.json on a non-default MAIN_AGENT_ID (#2285)', () => {
+  const v1 = { name: 'demo-cfg', type: 'dream-engine', schedule: '7 2 * * *', agent: 'marveen', note: '{{PROJECT_ROOT}}/x' }
+  const v2 = { ...v1, type: 'heartbeat' }
+  // Exactly what copyTaskConfigWithAgentRewrite writes.
+  const seeded = (cfg: Record<string, unknown>, agent: string) => JSON.stringify({ ...cfg, agent }, null, 2) + '\n'
+
+  function makeCfgFixture() {
+    const base = mkdtempSync(join(tmpdir(), 'seedrefresh-cfg-'))
+    const install = join(base, 'install')
+    const home = join(base, 'home')
+    const src = join(install, 'scheduled-tasks', 'demo-cfg')
+    mkdirSync(src, { recursive: true })
+    git(install, ['init', '-q'])
+    git(install, ['config', 'user.email', 'test@example.invalid'])
+    git(install, ['config', 'user.name', 'test'])
+    for (const [i, cfg] of [v1, v2].entries()) {
+      // The shipped files are 2-space JSON with the literal default agent.
+      writeFileSync(join(src, 'task-config.json'), JSON.stringify(cfg, null, 2) + '\n')
+      git(install, ['add', 'scheduled-tasks/demo-cfg/task-config.json'])
+      git(install, ['commit', '-q', '-m', `cfg v${i + 1}`])
+    }
+    const liveDir = join(home, '.claude', 'scheduled-tasks', 'demo-cfg')
+    mkdirSync(liveDir, { recursive: true })
+    return { base, install, home, livePath: join(liveDir, 'task-config.json') }
+  }
+
+  function runAs(install: string, home: string, agent: string): { out: string; code: number } {
+    const script = join(install, 'probe-cfg.sh')
+    writeFileSync(script, [
+      'set -u',
+      'GREEN=""; NC=""; ORANGE=""',
+      `INSTALL_DIR="${install}"`,
+      `HOME="${home}"`,
+      `MAIN_AGENT_ID="${agent}"; BOT_NAME="Bot"; OWNER_NAME="Owner"; WEB_PORT="3420"`,
+      FUNCS,
+      'run_seed_refresh',
+    ].join('\n') + '\n')
+    try {
+      return { out: execFileSync('bash', [script], { encoding: 'utf-8' }).trim(), code: 0 }
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; status?: number }
+      return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
+    }
+  }
+
+  for (const agent of ['jarvis', 'marveen']) {
+    it(`an untouched seeded config is refreshed on MAIN_AGENT_ID=${agent}, agent kept, nothing substituted`, () => {
+      const f = makeCfgFixture()
+      try {
+        writeFileSync(f.livePath, seeded(v1, agent))
+        const r = runAs(f.install, f.home, agent)
+        expect(r.code).toBe(0)
+        const after = readFileSync(f.livePath, 'utf-8')
+        expect(after).toBe(seeded(v2, agent))
+        expect(JSON.parse(after).agent).toBe(agent)
+        expect(after).toContain('{{PROJECT_ROOT}}/x') // the node seeder substitutes nothing in a config
+      } finally {
+        rmSync(f.base, { recursive: true, force: true })
+      }
+    })
+  }
+
+  it('a hand-edited config (schedule changed) stays byte-for-byte on a non-default MAIN_AGENT_ID', () => {
+    const f = makeCfgFixture()
+    try {
+      const edited = seeded({ ...v1, schedule: '30 3 * * *' }, 'jarvis')
+      writeFileSync(f.livePath, edited)
+      const r = runAs(f.install, f.home, 'jarvis')
+      expect(r.code).toBe(0)
+      expect(readFileSync(f.livePath, 'utf-8')).toBe(edited)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('an already-current config is not rewritten (idempotent, no refresh counted)', () => {
+    const f = makeCfgFixture()
+    try {
+      writeFileSync(f.livePath, seeded(v2, 'jarvis'))
+      const r = runAs(f.install, f.home, 'jarvis')
+      expect(r.code).toBe(0)
+      expect(r.out).not.toMatch(/frissitve: [1-9]/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
   })
 })

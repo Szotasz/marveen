@@ -20,11 +20,18 @@ vi.mock('node:child_process', async (orig) => {
   return {
     ...real,
     execFileSync: (cmd: string, args: string[], opts: unknown) =>
-      cmd === '/bin/ps' ? (args[1] === 'pid=,etime=' ? (etimesThrow ? (() => { throw Object.assign(new Error('ps exit 1'), etimesThrow) })() : etimes) : PS)
-        : (real.execFileSync as unknown as (c: string, a: string[], o: unknown) => string)(cmd, args, opts),
-    execSync: (cmd: string, opts: unknown) =>
-      cmd === '/bin/ps axeww' ? envScan : (real.execSync as unknown as (c: string, o: unknown) => string)(cmd, opts),
+      cmd !== '/bin/ps' ? (real.execFileSync as unknown as (c: string, a: string[], o: unknown) => string)(cmd, args, opts)
+        : args[1] === 'pid=,etime=' ? (etimesThrow ? (() => { throw Object.assign(new Error('ps exit 1'), etimesThrow) })() : etimes)
+        // The narrowed env scan (REAPERENOBUFS1101): the name listing, then the environment of the runtime pids.
+        : args[0] === '-axo' ? `70994 claude\n${POLLER_PID} /Users/u/.bun/bin/bun`
+        : args[0] === 'eww' ? envScan
+        : PS,
   }
+})
+// REAPERENOBUFS1101: the env scan is ps on macOS and /proc on Linux; this test pins the ps path on any host (CI is Linux).
+vi.mock('node:fs', async (orig) => {
+  const real = await orig<typeof import('node:fs')>()
+  return { ...real, existsSync: (p: string) => (p === '/proc/self' ? false : real.existsSync(p)) }
 })
 
 const { probeChannelPluginLiveness } = await import('../channel-coordinator/liveness.js')

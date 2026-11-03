@@ -1,8 +1,8 @@
 // VAULTSZELES826 F0: every vault VALUE read leaves one audit row (id, kind,
 // principal, allowlist verdict, found) and NEVER the value. Audit only: the
 // allowlist verdict does not block anything in this phase.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type http from 'node:http'
@@ -29,6 +29,7 @@ const { readVaultAcl, principalOf, evaluateVaultRead, logVaultRead, isSshPrivate
 const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 
 const tmp = mkdtempSync(join(tmpdir(), 'vault-acl-test-'))
+afterAll(() => { rmSync(tmp, { recursive: true, force: true }) })
 function aclFile(name: string, content: string): string {
   const p = join(tmp, name)
   writeFileSync(p, content, 'utf-8')

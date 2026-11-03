@@ -1,17 +1,17 @@
 # Ütemezett feladatok (scheduled tasks)
 
-> Cron-alapú, fájlrendszer-vezérelt automatizációk -- minden feladat egy mappa, a runner 60 másodpercenként nézi és kézbesíti az ágens tmux session-jébe.
+> Cron-alapú, fájlrendszer-vezérelt automatizációk -- minden feladat egy mappa, a runner 15 másodpercenként nézi és kézbesíti az ágens tmux session-jébe.
 
 ---
 
 ## Hogyan működik
 
-A schedule runner a dashboard folyamatának részeként fut. 60 másodpercenként végignézi a `~/.claude/scheduled-tasks/` mappában lévő összes feladatot, és amelyiknek a cron kifejezése illeszkedik az aktuális percre, azt kézbesíti a megadott ágens tmux session-jébe mint szöveges promptot.
+A schedule runner a dashboard folyamatának részeként fut. 15 másodpercenként végignézi a `~/.claude/scheduled-tasks/` mappában lévő összes feladatot, és amelyiknek a cron kifejezése illeszkedik az aktuális percre, azt kézbesíti a megadott ágens tmux session-jébe mint szöveges promptot.
 
 Kézbesítés után az ágens normál Claude Code session-ként dolgozza fel -- ugyanúgy, mintha te gépelted volna be a promptot.
 
 ```
-60s tick → cron illeszkedés? → session él? → prompt kézbesítés
+15s tick → cron illeszkedés? → session él? → prompt kézbesítés
                                     ↓ nem
                               auto-start + retry queue
 ```
@@ -84,8 +84,8 @@ the row exists only when the cron path did not queue the item, and it is a
 dedupe key, not an occurrence key. A manual "Run now" gets its own id with its
 own timestamp.
 
-**The sender-role gate keeps the typed path.** An agent configured with
-`senderRoleGate` still gets its scheduled prompts typed into its pane, even
+**The sender-role gate keeps the typed path.** An agent with a sender-role gate
+(`store/agent-sender-role-gates.json`) still gets its scheduled prompts typed into its pane, even
 with `worksourceChannel: true`. A queued item reaches the agent inside a
 `<channel source="worksource" ...>` envelope, which the gate's hook treats as
 a non-owner sender and answers by denying the configured risky tools; a typed
@@ -226,7 +226,7 @@ Ez a két flag a foglalt session kezelését szabályozza:
 
 ## Busy-session kezelés és retry queue
 
-Ha a célpont session elfoglalt és `skipIfBusy` nincs beállítva, a feladat bekerül a `pending_task_retries` táblába (SQLite, a dashboardon is látható). A runner minden 60s ticken újrapróbálja. Ha 1 órán túl is pending marad, Telegram alertet küld.
+Ha a célpont session elfoglalt és `skipIfBusy` nincs beállítva, a feladat bekerül a `pending_task_retries` táblába (SQLite, a dashboardon is látható). A runner minden 15s ticken újrapróbálja. Ha 1 órán túl is pending marad, Telegram alertet küld.
 
 Ha a session egyáltalán nem fut:
 1. A runner megpróbálja auto-startolni az ágenst
@@ -288,8 +288,9 @@ Ki regisztrál:
 - a `DELETE /api/schedules/<name>` törli a bejegyzést.
 
 Ha a fájl az API megkerülésével jött létre vagy változott (kézi szerkesztés, `cp`, ügynök Write-ja), a runner
-NEM indítja, egyszer figyelmeztet a logban és egy `[scheduler]` üzenetben a fő-ágensnek (csak a feladat nevével,
-a tartalma nélkül), és a feladatot nem törli, nem kapcsolja ki. A `PUT` és a `toggle` ilyen feladatra 409-et ad,
+NEM indítja, és ha az eltérés a következő tickben (15 mp) is fennáll, egyszer figyelmeztet a logban és egy `[scheduler]`
+üzenetben a fő-ágensnek (csak a feladat nevével, a tartalma nélkül); a feladatot nem törli, nem kapcsolja ki, és a
+függő újrapróbáját is megtartja, amíg a feladat a lemezen van és engedélyezett. A `PUT` és a `toggle` ilyen feladatra 409-et ad,
 hogy ne "mossa tisztára" az idegen tartalmat.
 
 Feloldás, ha a változás jogos: mentsd a dashboardon/API-n át, vagy nézd át a fájlokat és regisztráld:

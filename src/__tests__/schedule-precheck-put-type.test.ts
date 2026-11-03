@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,7 +49,7 @@ const cfgPath = () => join(io.SCHEDULED_TASKS_DIR, TASK, 'task-config.json')
 const cfg = () => JSON.parse(readFileSync(cfgPath(), 'utf-8')) as Record<string, unknown>
 
 beforeEach(() => {
-  rmSync(io.SCHEDULED_TASKS_DIR, { recursive: true, force: true })
+  safeRmTmp(io.SCHEDULED_TASKS_DIR)
   mkdirSync(join(io.SCHEDULED_TASKS_DIR, TASK), { recursive: true })
   writeFileSync(join(io.SCHEDULED_TASKS_DIR, TASK, 'SKILL.md'), `---\nname: ${TASK}\ndescription: fixture\n---\n\nrun it\n`)
   writeFileSync(cfgPath(), JSON.stringify({ schedule: '0 * * * *', agent: 'proba-ugynok', enabled: true, preCheck: 'old.sh' }, null, 2))

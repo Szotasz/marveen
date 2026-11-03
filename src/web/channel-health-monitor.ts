@@ -161,6 +161,6 @@ export function startChannelHealthMonitor(): NodeJS.Timeout {
 
   // Offset from channel-monitor's 30s initial delay to avoid
   // overlapping tmux interactions on the same tick.
-  setTimeout(check, 45_000)
+  setTimeout(whileNotFrozen('channel-health', check), 45_000)
   return setInterval(whileNotFrozen('channel-health', check), 60_000)
 }

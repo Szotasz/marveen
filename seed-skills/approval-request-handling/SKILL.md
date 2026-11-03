@@ -77,6 +77,31 @@ létrehozása előtt, ugyanaz a szabály, mint a hitelesítő adatok kiadásán�
 Mit tegyél helyette: nyiss rendes (pending) kérést, és kérd meg a tulajdonost, hogy a dashboardon
 hagyja jóvá. Ugyanez áll az állandó címzett élesítésére (`email_standing_recipient` kategória) is.
 
+## Jóváhagyás egy al-ügynök saját tokenjének (`for_agent`)
+
+Ha a telepítésen `AGENT_TOKENS=1`, egy al-ügynök a SAJÁT tokenjével csak a saját kérését, vagy azt
+a sort használhatja fel, amit te `for_agent`-tel neki iktattál; minden másra 403
+(`agent-identity-binding`). Ha ezért szól neked (a művelet leírásával és a `content_hash`-sel),
+iktass neki ÚJ sort. A `for_agent` CSAK létrehozáskor adható meg: meglévő sorhoz utólag nem lehet
+hozzáadni, a régi id tehát nem "kiadható".
+
+```bash
+PORT="$(sed -n 's/^WEB_PORT=//p' <install>/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
+curl -s -X POST "http://localhost:$PORT/api/approvals" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
+  --data-binary @- <<'JSON'
+{"agent_id":"<a te neved>","category":"<key>","action_description":"<mit és ki csinál>","content_hash":"<a kérő hash-e, ha volt>","for_agent":"<al-ügynök neve>"}
+JSON
+```
+- `for_agent`: egy ágensnév, 1-64 karakter (betű, szám, `_`, `-`); más alakra 400. Al-ügynök
+  saját tokenjével 403: kiadni csak te tudsz.
+- Az új sor `pending`. Ha van dashboard-felhasználó, a tulajdonos hagyja jóvá a dashboardon,
+  bejelentkezve (1. lépés); az `owner_approved_message_id` a közös tokennel ilyenkor 403, lásd fent.
+- Jóváhagyás után küldd el az ÚJ id-t az al-ügynöknek: ő a saját tokenjével használja fel
+  (`POST /api/approvals/<id>/consume`). A közös token (a tiéd is) bármely sort fel tudna használni:
+  ezt ne használd fel te, mert akkor az al-ügynök már 409-et kap.
+
 ## Buktatók
 
 - **409 = már eldöntötték, NEM hiba.** Ha a dashboardon (vagy máshol) már lezárták,

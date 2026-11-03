@@ -61,7 +61,10 @@ export function principalOf(auth: RouteContext['auth']): { kind: string; princip
     case 'session': return { kind: 'session', principal: auth.user ?? 'session' }
     case 'device': return { kind: 'device', principal: auth.device ?? 'device' }
     case 'federation': return { kind: 'federation', principal: auth.peer ?? 'federation' }
-    case 'token': return { kind: 'token', principal: 'token' }
+    // A sub-agent's OWN token (agent-tokens.ts) is the authenticated agent
+    // principal phase F1 reserved the 'agent' kind for; the shared token stays
+    // the nameless owner lane.
+    case 'token': return auth.tokenAgent ? { kind: 'agent', principal: auth.tokenAgent } : { kind: 'token', principal: 'token' }
     default: {
       // Forward-compatible with the F1 'agent' kind without widening the union
       // here: an unknown kind carrying an `agent` name is reported as such.
@@ -110,7 +113,14 @@ export function claimedAgentOf(auth: RouteContext['auth']): string | null {
 
 // Whether this read is refused. Only in 'enforce', only for a caller that claims an agent, and only when
 // the allowlist does not list that agent for the secret (no entry, an empty list, or another agent).
+//
+// A sub-agent's own token (auth.tokenAgent) is held to the allowlist in EVERY mode: the mode decides how
+// far a self-asserted claim is trusted, and an authenticated agent principal has nothing to switch off.
 export function vaultReadRefused(id: string, auth: RouteContext['auth'], acl: VaultAcl, mode: VaultAclMode = vaultAclMode()): boolean {
+  if (auth?.kind === 'token' && auth.tokenAgent) {
+    const listed = listedFor(acl, id)
+    return !listed || !listed.includes(auth.tokenAgent)
+  }
   if (mode !== 'enforce') return false
   const claimed = claimedAgentOf(auth)
   if (!claimed) return false

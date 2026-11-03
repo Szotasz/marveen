@@ -89,10 +89,11 @@ describe('shipped recipes only use binaries the installer guarantees', () => {
     // each operation asserted on its own: a single toContain('/api/kanban')
     // passed even when the LIST endpoint had been broken, because the move and
     // comment URLs still carried the substring (mutation control, 2026-08-04).
-    expect(section).toMatch(/^\s*http:\/\/localhost:\{\{WEB_PORT\}\}\/api\/kanban$/m)             // list (bare URL on its own line)
-    expect(section).toMatch(/-X POST http:\/\/localhost:\{\{WEB_PORT\}\}\/api\/kanban\s*\\/)      // create
-    expect(section).toMatch(/\/api\/kanban\/KARTYA_ID\/move/)                                     // move
-    expect(section).toMatch(/\/api\/kanban\/KARTYA_ID\/comments/)                                 // comment
+    // The recipes call scripts/marveen-api.sh (it reads the token itself, so none sits on a curl argv).
+    expect(section).toMatch(/^bash scripts\/marveen-api\.sh kanban-list$/m)                       // list (on its own line)
+    expect(section).toMatch(/^bash scripts\/marveen-api\.sh kanban-create \{\{MAIN_AGENT_ID\}\} /m)  // create
+    expect(section).toMatch(/marveen-api\.sh kanban-move KARTYA_ID /)                              // move
+    expect(section).toMatch(/marveen-api\.sh kanban-comment KARTYA_ID /)                           // comment
     expect(section).toMatch(/sqlite3/)   // it must WARN about it
   })
 })

@@ -139,6 +139,9 @@ function mainAgentId() {
       }
     }
     const res = await originalFetch(input, init)
+    // An owner action refused for want of the owner's session: offer the password login (Samu 65968). Not awaited:
+    // the caller gets its answer as before.
+    if (res.status === 403) void maybeOfferOnOwnerRefusal(res, isSameOriginApi)
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
@@ -185,7 +188,10 @@ function mainAgentId() {
 
   // Full-screen username+password login overlay. Posts to /api/auth/login; on
   // success the browser has the mv_session cookie and we reload authenticated.
-  function showLoginOverlay() {
+  // opts.cancellable: opened on purpose from a page that already works (the Bridge, whose
+  // device key authenticates every call: a Gromzo owner action needs the password login on
+  // top of it, GROMZOAGENTPICK1101), so it gets a Cancel button.
+  function showLoginOverlay(opts) {
     if (document.getElementById('mv-login-overlay')) return
     const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
     const overlay = document.createElement('div')
@@ -201,6 +207,24 @@ function mainAgentId() {
         '<div class="mv-auth-err" id="mv-login-err"></div>' +
       '</form>'
     document.body.appendChild(overlay)
+    if (opts && opts.later) {
+      // BRIDGEPWLOGIN1101: the offer on opening the Bridge says what the login is for.
+      const desc = overlay.querySelector('.mv-auth-desc')
+      if (desc) desc.textContent = tr('auth.login.bridge_desc', 'Sign in with your dashboard password to approve, decide and change settings from here.')
+    }
+    if (opts && opts.cancellable) {
+      const cancel = document.createElement('button')
+      cancel.type = 'button'
+      cancel.id = 'mv-login-cancel'
+      cancel.className = 'btn-secondary btn-compact'
+      cancel.textContent = opts.later ? tr('auth.login.later', 'Later') : tr('auth.login.cancel', 'Cancel')
+      cancel.addEventListener('click', () => {
+        // "Later" quiets the offer for this run of the window (sessionStorage), not for good.
+        if (opts.later) { try { sessionStorage.setItem(LOGIN_LATER_KEY, '1') } catch { /* storage blocked */ } }
+        overlay.remove()
+      })
+      overlay.querySelector('#mv-login-form').appendChild(cancel)
+    }
     const form = overlay.querySelector('#mv-login-form')
     const userEl = overlay.querySelector('#mv-login-user')
     const passEl = overlay.querySelector('#mv-login-pass')
@@ -235,6 +259,38 @@ function mainAgentId() {
     })
     setTimeout(() => userEl.focus(), 50)
   }
+
+  window.mvShowLogin = (opts) => showLoginOverlay(opts)
+
+  // BRIDGEPWLOGIN1101 (Samu 64763, plan A; the moment: Samu 65968): the Bridge opens the dashboard with its device key,
+  // which never makes the owner. Most Bridge use needs no owner session, so nothing is offered on load: the offer comes
+  // when an owner action is first refused (403 owner_session_required, maybeOfferOnOwnerRefusal in the fetch wrapper),
+  // once per page, and only when a password login exists and no owner session rides on this window. "Later" quiets it
+  // for this run. The key stays: the overlay's login adds the cookie beside it, and the owner gates take the pair. Only
+  // a full key gets owner_session in the status at all, so an operator key is never offered this. The refusal's own
+  // toast still shows, the fallback when the overlay does not open.
+  const LOGIN_LATER_KEY = 'mv-login-later'
+  const ownerOffer = { seen: false }
+  function maybeOfferOnOwnerRefusal(res, isApi) {
+    if (ownerOffer.seen || !isApi || !res || res.status !== 403) return Promise.resolve()
+    return res.clone().json().then((b) => {
+      if (ownerOffer.seen || !b || b.code !== 'owner_session_required') return
+      ownerOffer.seen = true
+      return offerOwnerLoginOnce()
+    }).catch(() => { /* not JSON, or the offer failed: the caller's toast stands */ })
+  }
+  async function offerOwnerLoginOnce() {
+    try { if (sessionStorage.getItem(LOGIN_LATER_KEY) === '1') return } catch { /* storage blocked: offer it */ }
+    if (!sessionToken) return
+    let s = null
+    try {
+      const r = await originalFetch('/api/auth/status', { headers: { Authorization: 'Bearer ' + sessionToken }, cache: 'no-store' })
+      if (r.ok) s = await r.json()
+    } catch { return }
+    if (!s || s.method !== 'device' || !s.login_available || s.owner_session !== false) return
+    showLoginOverlay({ cancellable: true, later: true })
+  }
+  window.mvOfferOwnerLogin = offerOwnerLoginOnce
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
   // The user pastes the access token (the value after ?token= in the server's
@@ -365,6 +421,8 @@ function switchPage(pageId) {
   if (pageId !== 'agents') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
+  // GROMZOOWNERQR1030: the owner QR never outlives the Settings page.
+  if (pageId !== 'settings' && typeof window.clearGromzoQr === 'function') window.clearGromzoQr()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
@@ -833,8 +891,8 @@ let breakdownIdeaId = null
 const columns = document.querySelectorAll('.kanban-col-body')
 
 // Modal wiring
-document.getElementById('cardModalClose').addEventListener('click', () => closeModal(cardModalOverlay))
-document.getElementById('cardDetailClose').addEventListener('click', () => closeModal(cardDetailOverlay))
+document.getElementById('cardModalClose').addEventListener('click', () => requestOverlayClose(cardModalOverlay))
+document.getElementById('cardDetailClose').addEventListener('click', () => requestOverlayClose(cardDetailOverlay))
 attachOverlayCloseGuard(cardModalOverlay)
 attachOverlayCloseGuard(cardDetailOverlay)
 
@@ -2998,7 +3056,13 @@ async function showCardDetail(card) {
 
   // Delete
   document.getElementById('cardDeleteBtn').onclick = async () => {
-    if (!confirm(t('kanban.confirm.delete'))) return
+    const confirmed = await confirmDialog({
+      title: t('kanban.confirm.delete_title'),
+      message: t('kanban.confirm.delete'),
+      okLabel: t('kanban.confirm.delete_ok'),
+      danger: true,
+    })
+    if (!confirmed) return
     try {
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, { method: 'DELETE' })
       closeModal(cardDetailOverlay)
@@ -3064,7 +3128,13 @@ async function showCardDetail(card) {
           delBtn.textContent = t('kanban.modal.delete_btn')
           delBtn.onclick = async (e) => {
             e.stopPropagation()
-            if (!confirm(t('kanban.confirm.delete_subtask', { title: ch.title }))) return
+            const confirmed = await confirmDialog({
+              title: t('kanban.confirm.delete_subtask_title'),
+              message: t('kanban.confirm.delete_subtask', { title: ch.title }),
+              okLabel: t('kanban.confirm.delete_subtask_ok'),
+              danger: true,
+            })
+            if (!confirmed) return
             try {
               const r = await fetch(`/api/kanban/${encodeURIComponent(ch.id)}`, { method: 'DELETE' })
               if (!r.ok) { showToast(t('common.error_delete')); return }
@@ -3295,13 +3365,36 @@ function overlayHasUnsavedInput(overlay) {
   return false
 }
 
-// Backdrop click closes the modal only if it has no unsaved input; if it
-// does, a confirm() gates the close so the click has to be deliberate.
-function attachOverlayCloseGuard(overlay) {
-  overlay.addEventListener('click', (e) => {
+// The default question before a guarded modal closes: none for an empty form; with typed input, a
+// confirm dialog, so the close has to be deliberate. The dialog opens on top of this modal; its own
+// backdrop click and Escape are a "no".
+async function confirmUnsavedInputClose(overlay) {
+  if (!overlayHasUnsavedInput(overlay)) return true
+  return confirmDialog({
+    title: t('common.confirm.unsaved_title'),
+    message: t('common.confirm.unsaved'),
+    okLabel: t('common.confirm.unsaved_ok'),
+    danger: true,
+  })
+}
+
+// Every way of closing a guarded modal goes through here: the backdrop click, its own close button,
+// and Escape. Before, only the backdrop asked, so the close button or Escape still dropped the input.
+async function requestOverlayClose(overlay) {
+  const check = overlay._closeCheck
+  if (check && !(await check())) return
+  closeModal(overlay)
+}
+
+// Registers the modal's question (by default the unsaved-input one; a modal that knows better, like
+// the skill editor, passes its own) and wires the backdrop click. The question is kept on the element
+// itself: the first modals are guarded near the top of this file, long before a module-level Map
+// declared here would be initialized.
+function attachOverlayCloseGuard(overlay, check = () => confirmUnsavedInputClose(overlay)) {
+  overlay._closeCheck = check
+  overlay.addEventListener('click', async (e) => {
     if (e.target !== overlay) return
-    if (overlayHasUnsavedInput(overlay) && !confirm('Van be nem mentett szöveg -- biztosan bezárod mentés nélkül?')) return
-    closeModal(overlay)
+    await requestOverlayClose(overlay)
   })
 }
 
@@ -3313,20 +3406,22 @@ addBtn.addEventListener('click', () => {
 })
 
 // Close buttons
-document.getElementById('wizardClose').addEventListener('click', () => closeModal(agentWizardOverlay))
-document.getElementById('agentDetailClose').addEventListener('click', () => closeModal(agentDetailOverlay))
-document.getElementById('skillModalClose').addEventListener('click', () => closeModal(skillModalOverlay))
+document.getElementById('wizardClose').addEventListener('click', () => requestOverlayClose(agentWizardOverlay))
+document.getElementById('agentDetailClose').addEventListener('click', () => requestOverlayClose(agentDetailOverlay))
+document.getElementById('skillModalClose').addEventListener('click', () => requestOverlayClose(skillModalOverlay))
 
 // Click-outside-to-close
 attachOverlayCloseGuard(agentWizardOverlay)
 attachOverlayCloseGuard(agentDetailOverlay)
 attachOverlayCloseGuard(skillModalOverlay)
 
-// Close all modals on Escape
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-overlay.active').forEach((o) => closeModal(o))
-  }
+// Close all modals on Escape. A confirmDialog on top answers its own Escape as a "no", so the modal
+// under it stays open (closing it too would drop the input the dialog was protecting). A guarded
+// modal asks first, as its backdrop and close button do.
+document.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Escape') return
+  if (document.querySelector('.confirm-dialog')) return
+  for (const o of document.querySelectorAll('.modal-overlay.active')) await requestOverlayClose(o)
 })
 
 // === Avatar Gallery ===
@@ -3648,7 +3743,33 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 function showToast(msg, duration = 3000) {
   toast.textContent = msg
   toast.classList.add('visible')
-  setTimeout(() => toast.classList.remove('visible'), duration)
+  setTimeout(() => toast.classList.remove('visible'), toastDuration(msg, duration))
+}
+
+// A long message (a refusal with its reason and the steps to fix it) needs more
+// than the default 3 s to be read: about 60 ms per character, at most 15 s. Never
+// shorter than the duration the caller asked for.
+function toastDuration(msg, duration) {
+  return Math.max(duration, Math.min(15000, String(msg ?? '').length * 60))
+}
+
+// The server's answer decides what an action toast says (#2424-#2427): a refused
+// request is never shown as done. readActionReply() keeps the status and the JSON
+// body (an empty object when there is none). refusalReason() is the text for a
+// refusal: the owner-session refusal in the page language (the server's English
+// text is written for API callers), otherwise the server's own reason, otherwise
+// the HTTP status.
+async function readActionReply(res) {
+  const body = await res.json().catch(() => null)
+  return { ok: res.ok, status: res.status, body: body && typeof body === 'object' ? body : {} }
+}
+
+function ownerSessionText(body) {
+  return body && body.code === 'owner_session_required' ? t('common.owner_session_required') : ''
+}
+
+function refusalReason(res, body) {
+  return ownerSessionText(body) || (body && typeof body.error === 'string' && body.error) || ('HTTP ' + res.status)
 }
 
 // === Agents API ===
@@ -4238,7 +4359,7 @@ function renderAgents() {
 
     const modelClass = agent.model && agent.model !== 'inherit' ? agent.model : ''
     const modelLabel = agent.model || 'inherit'
-    const chConnected = agentIsConnected(agent)
+    const chConnected = agentOwnChannelConnected(agent)
     const chDotClass = chConnected ? 'connected' : 'disconnected'
     const chLabel = chConnected ? t('agents.status.online') : t('agents.status.offline')
     const isRunning = agent.running || false
@@ -4466,7 +4587,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailModel').textContent = currentAgent.activeModel || currentAgent.model || 'inherit'
   document.getElementById('agentDetailModelRestarting').hidden = true
 
-  const chConnected = agentIsConnected(currentAgent)
+  const chConnected = agentOwnChannelConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
   // Settings tab - load Ollama + DeepSeek + custom-provider models then set value
@@ -6045,6 +6166,28 @@ function agentIsConnected(agent) {
   return !!agent.hasTelegram
 }
 
+// The agent card and the detail header ask about the agent's OWN channel
+// (agent-config.json channelProvider, carried on the /api/agents summary).
+// An unset or unknown value falls back to agentIsConnected(), i.e. to the
+// dashboard-wide provider. The Channel tab keeps agentIsConnected(): it
+// follows its own provider dropdown.
+const AGENT_CHANNEL_FLAG = {
+  telegram: 'hasTelegram',
+  discord: 'hasDiscord',
+  slack: 'hasSlack',
+  teams: 'hasTeams',
+  googlechat: 'hasGooglechat',
+}
+
+function agentOwnChannelConnected(agent) {
+  if (!agent) return false
+  const own = agent.channelProvider
+  if (typeof own === 'string' && Object.prototype.hasOwnProperty.call(AGENT_CHANNEL_FLAG, own)) {
+    return !!agent[AGENT_CHANNEL_FLAG[own]]
+  }
+  return agentIsConnected(agent)
+}
+
 function getProviderLabel() {
   if (currentChannelProvider === 'discord') return 'Discord'
   if (currentChannelProvider === 'slack') return 'Slack'
@@ -6433,7 +6576,13 @@ async function refreshAllowedList() {
 async function removeAllowed(kind, id) {
   if (!currentAgent) return
   const label = kind === 'user' ? t('channel.kind.user') : t('channel.kind.group')
-  if (!confirm(t('channel.confirm.remove', { label, id }))) return
+  const confirmed = await confirmDialog({
+    title: t('channel.confirm.remove_title'),
+    message: t('channel.confirm.remove', { label, id }),
+    okLabel: t('channel.confirm.remove_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`${channelApiBase()}/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) {
@@ -6527,7 +6676,13 @@ async function generateInvite() {
 
 async function revokeInviteToken(token) {
   if (!currentAgent) return
-  if (!confirm(t('channel.confirm.revoke'))) return
+  const confirmed = await confirmDialog({
+    title: t('channel.confirm.revoke_title'),
+    message: t('channel.confirm.revoke'),
+    okLabel: t('channel.confirm.revoke_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
@@ -6673,10 +6828,16 @@ document.getElementById('chApproveBtn').addEventListener('click', async () => {
 document.getElementById('chDisconnectBtn').addEventListener('click', async () => {
   if (!currentAgent) return
   const provLabel = getProviderLabel()
-  if (!confirm(`Biztosan levalasztod a ${provLabel} csatornat?`)) return
+  const confirmed = await confirmDialog({
+    title: t('channel.confirm.disconnect_title'),
+    message: t('channel.confirm.disconnect', { provider: provLabel }),
+    okLabel: t('channel.confirm.disconnect_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     await fetch(`${channelApiBase()}`, { method: 'DELETE' })
-    showToast(`${provLabel} levalasztva`)
+    showToast(t('channel.toast.disconnected', { provider: provLabel }))
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch {
@@ -6721,7 +6882,13 @@ async function loadSkills(agentName) {
       const delBtn = item.querySelector('.btn-icon-danger')
       if (delBtn) {
         delBtn.addEventListener('click', async () => {
-          if (!confirm(t('skills.confirm.delete', { name: skill.name }))) return
+          const confirmed = await confirmDialog({
+            title: t('skills.confirm.delete_title'),
+            message: t('skills.confirm.delete', { name: skill.name }),
+            okLabel: t('skills.confirm.delete_ok'),
+            danger: true,
+          })
+          if (!confirmed) return
           try {
             await fetch(`/api/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' })
             showToast(t('skills.toast.deleted'))
@@ -6787,7 +6954,17 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
   const isGlobal = skillModalScope === 'global'
   if (!isGlobal && !currentAgent) return
   const name = document.getElementById('skillName').value.trim()
-  if (!name) { document.getElementById('skillName').focus(); return }
+  if (!name) {
+    document.getElementById('skillName').focus()
+    showToast(t('skills.toast.name_required'))
+    return
+  }
+  const description = document.getElementById('skillDescription').value.trim()
+  if (!description) {
+    document.getElementById('skillDescription').focus()
+    showToast(t('skills.toast.desc_required'))
+    return
+  }
 
   const btn = document.getElementById('saveSkillBtn')
   btn.disabled = true
@@ -6803,12 +6980,12 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name,
-        description: document.getElementById('skillDescription').value.trim(),
+        description,
       }),
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Hiba')
+      throw new Error(err.error || t('common.error'))
     }
     const created = await res.json().catch(() => ({}))
     closeModal(skillModalOverlay)
@@ -6819,7 +6996,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -6898,7 +7075,7 @@ document.getElementById('addScheduleBtn').addEventListener('click', () => {
     setTimeout(() => document.getElementById('scheduleName').focus(), 200)
   })
 })
-document.getElementById('scheduleModalClose').addEventListener('click', () => closeModal(scheduleModalOverlay))
+document.getElementById('scheduleModalClose').addEventListener('click', () => requestOverlayClose(scheduleModalOverlay))
 attachOverlayCloseGuard(scheduleModalOverlay)
 
 // Frequency change handler
@@ -7286,7 +7463,7 @@ function makeScheduleRow(task) {
         const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
         const data = await r.json().catch(() => ({}))
         if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''))
-        else showToast('Hiba: ' + (data.error || r.status))
+        else showToast(t('common.not_done', { msg: refusalReason(r, data) }))
         loadSchedules()
       } catch { showToast(t('tasks.toast.run_error')) }
     })
@@ -7294,18 +7471,28 @@ function makeScheduleRow(task) {
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
       e.stopPropagation()
       try {
-        await fetch(`/api/schedules/${encodeURIComponent(task.name)}/toggle`, { method: 'POST' })
-        showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'))
+        const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/toggle`, { method: 'POST' })
+        const reply = await readActionReply(res)
+        if (reply.ok) showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'))
+        else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
         loadSchedules()
       } catch { showToast(t('common.error')) }
     })
 
     row.querySelector('[data-action="delete"]').addEventListener('click', async (e) => {
       e.stopPropagation()
-      if (!confirm(t('tasks.confirm.task_delete'))) return
+      const confirmed = await confirmDialog({
+        title: t('tasks.confirm.task_delete_title'),
+        message: t('tasks.confirm.task_delete', { name: task.description || task.name }),
+        okLabel: t('tasks.confirm.task_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
-        await fetch(`/api/schedules/${encodeURIComponent(task.name)}`, { method: 'DELETE' })
-        showToast(t('tasks.toast.deleted'))
+        const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}`, { method: 'DELETE' })
+        const reply = await readActionReply(res)
+        if (reply.ok) showToast(t('tasks.toast.deleted'))
+        else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
         loadSchedules()
       } catch { showToast(t('common.error_delete')) }
     })
@@ -7339,7 +7526,7 @@ function renderScheduleList(tasks) {
 }
 
 const scheduleRunHistoryOverlay = document.getElementById('scheduleRunHistoryOverlay')
-document.getElementById('scheduleRunHistoryClose').addEventListener('click', () => closeModal(scheduleRunHistoryOverlay))
+document.getElementById('scheduleRunHistoryClose').addEventListener('click', () => requestOverlayClose(scheduleRunHistoryOverlay))
 attachOverlayCloseGuard(scheduleRunHistoryOverlay)
 
 const RUN_STATUS_LABEL = {
@@ -7898,11 +8085,13 @@ document.getElementById('memAddBtn').addEventListener('click', () => {
 })
 
 // Close memory modal
-document.getElementById('memModalClose').addEventListener('click', () => closeModal(memModalOverlay))
+document.getElementById('memModalClose').addEventListener('click', () => requestOverlayClose(memModalOverlay))
 attachOverlayCloseGuard(memModalOverlay)
 
-// Save memory (create or edit)
-document.getElementById('saveMemBtn').addEventListener('click', async () => {
+// Save memory (create or edit). A refused save (#2425) keeps the modal open with
+// the text: only a 2xx answer closes it. The destructive-edit refusal gets its own
+// text with the two lengths (the server's how_to_proceed is written for API callers).
+async function saveMemoryFromModal() {
   const content = document.getElementById('memContent').value.trim()
   if (!content) { document.getElementById('memContent').focus(); return }
 
@@ -7912,28 +8101,34 @@ document.getElementById('saveMemBtn').addEventListener('click', async () => {
   const keywords = document.getElementById('memKeywords').value.trim()
 
   try {
-    if (editId) {
-      await fetch(`/api/memories/${editId}`, {
+    const res = editId
+      ? await fetch(`/api/memories/${editId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, tier, agent_id: agentId, keywords }),
       })
-      showToast(t('memories.toast.updated'))
-    } else {
-      await fetch('/api/memories', {
+      : await fetch('/api/memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_id: agentId, content, tier, keywords }),
       })
-      showToast(t('memories.toast.created'))
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      const b = reply.body
+      showToast(b.error === 'destructive_memory_write' && Number.isFinite(b.old_len) && Number.isFinite(b.new_len)
+        ? t('memories.toast.destructive_refused', { old_len: b.old_len, new_len: b.new_len })
+        : t('memories.toast.save_refused', { msg: refusalReason(res, b) }), 6000)
+      return
     }
+    showToast(t(editId ? 'memories.toast.updated' : 'memories.toast.created'))
     closeModal(memModalOverlay)
     loadMemories()
     loadMemStats()
   } catch {
     showToast(t('common.error_save'))
   }
-})
+}
+document.getElementById('saveMemBtn').addEventListener('click', saveMemoryFromModal)
 
 async function loadMemStats() {
   try {
@@ -8082,7 +8277,13 @@ function renderMemories(memories) {
     const delBtn = item.querySelector('.btn-danger')
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
-      if (!confirm('Biztosan torlod ezt az emleket?')) return
+      const confirmed = await confirmDialog({
+        title: t('memories.confirm.delete_title'),
+        message: t('memories.confirm.delete'),
+        okLabel: t('memories.confirm.delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
         // MARVEENGAPS1020 (a): below data_delete level 3 the first DELETE files
         // an approval request (409 approval_required). Once it is approved, the
@@ -9010,7 +9211,7 @@ document.querySelectorAll('.catalog-filter-btn').forEach(btn => {
 })
 
 // Catalog install modal
-document.getElementById('catalogInstallClose').addEventListener('click', () => closeModal(catalogInstallOverlay))
+document.getElementById('catalogInstallClose').addEventListener('click', () => requestOverlayClose(catalogInstallOverlay))
 attachOverlayCloseGuard(catalogInstallOverlay)
 
 async function loadCatalog() {
@@ -9160,7 +9361,13 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
 })
 
 async function catalogUninstall(item) {
-  if (!confirm(t('connectors.confirm.remove', { name: item.name }))) return
+  const confirmed = await confirmDialog({
+    title: t('connectors.confirm.remove_title'),
+    message: t('connectors.confirm.remove', { name: item.name }),
+    okLabel: t('connectors.confirm.remove_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
     const data = await res.json()
@@ -9190,8 +9397,8 @@ document.getElementById('addConnectorBtn').addEventListener('click', () => {
   loadNewConnectorAgents()
   openModal(connectorModalOverlay)
 })
-document.getElementById('connectorModalClose').addEventListener('click', () => closeModal(connectorModalOverlay))
-document.getElementById('connectorDetailClose').addEventListener('click', () => closeModal(connectorDetailOverlay))
+document.getElementById('connectorModalClose').addEventListener('click', () => requestOverlayClose(connectorModalOverlay))
+document.getElementById('connectorDetailClose').addEventListener('click', () => requestOverlayClose(connectorDetailOverlay))
 attachOverlayCloseGuard(connectorModalOverlay)
 attachOverlayCloseGuard(connectorDetailOverlay)
 
@@ -9246,6 +9453,7 @@ async function loadConnectors() {
     renderConnectors()
     loadExternalPaths()
     loadGitHubRepos()
+    loadOssInventory()
     loadVault()
   } catch (err) {
     console.error('Connector betöltés hiba:', err)
@@ -9508,7 +9716,12 @@ function renderConnectors() {
 // re-runs the update with scripts and stores the choice for later updates.
 async function offerGitHubRepoScriptsOptIn(name, skipped) {
   if (!Array.isArray(skipped) || skipped.length === 0) return
-  const ok = confirm(t('connectors.scripts_skipped_confirm', { name: name.replace('--', '/'), list: skipped.join(', ') }))
+  const ok = await confirmDialog({
+    title: t('connectors.scripts_skipped_confirm_title'),
+    message: t('connectors.scripts_skipped_confirm', { name: name.replace('--', '/'), list: skipped.join(', ') }),
+    okLabel: t('connectors.scripts_skipped_confirm_ok'),
+    danger: true,
+  })
   if (!ok) return
   const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, {
     method: 'PATCH',
@@ -9531,7 +9744,7 @@ async function loadGitHubRepos() {
       const item = document.createElement('div')
       item.className = 'connector-external-item github-repo-item'
       const date = new Date(r.installedAt).toLocaleDateString('hu-HU')
-      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(r.name.replace('--', '/'))}</span><span class="github-repo-date">${date}</span></div><div class="github-repo-actions"><button class="github-repo-update" title="Frissites">&#x21bb;</button><button class="github-repo-delete" title="Torles">&times;</button></div>`
+      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(r.name.replace('--', '/'))}</span><span class="github-repo-date">${date}</span></div><div class="github-repo-actions"><button class="github-repo-update" title="${t('common.btn.refresh')}">&#x21bb;</button><button class="github-repo-delete" title="${t('common.btn.delete')}">&times;</button></div>`
       item.querySelector('.github-repo-update').addEventListener('click', async (e) => {
         const btn = e.currentTarget
         btn.disabled = true
@@ -9545,7 +9758,13 @@ async function loadGitHubRepos() {
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
       })
       item.querySelector('.github-repo-delete').addEventListener('click', async () => {
-        if (!confirm(`Torlod: ${r.name.replace('--', '/')}?`)) return
+        const confirmed = await confirmDialog({
+          title: t('connectors.confirm.repo_delete_title'),
+          message: t('connectors.confirm.repo_delete', { name: r.name.replace('--', '/') }),
+          okLabel: t('connectors.confirm.repo_delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'DELETE' })
         loadGitHubRepos()
         loadExternalPaths()
@@ -9555,6 +9774,149 @@ async function loadGitHubRepos() {
     }
   } catch { /* ignore */ }
 }
+
+// --- Adopted open-source inventory ---
+// Read-only view of scripts/opensource-inventory.py's output. The header count
+// is the number of DIRECT entries (transitive pip and npm deps are behind the
+// checkbox), shown next to the GitHub repos counter, which counts dashboard installs.
+let ossInventory = null
+const OSS_TYPE_ORDER = ['skill', 'vendor', 'mcp', 'npm', 'pip']
+
+async function loadOssInventory(refresh = false) {
+  const countEl = document.getElementById('ossInventoryCount')
+  const errEl = document.getElementById('ossInventoryError')
+  if (!countEl || !errEl) return
+  try {
+    const res = await fetch('/api/opensource-inventory' + (refresh ? '?refresh=1' : ''))
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !Array.isArray(data.entries)) {
+      throw new Error(data.detail || data.error || ('HTTP ' + res.status))
+    }
+    ossInventory = data
+    const regenError = data.cache && data.cache.regen_error
+    errEl.hidden = !regenError
+    errEl.textContent = regenError ? t('oss.regen_error', { msg: regenError }) : ''
+    renderOssInventory()
+  } catch (err) {
+    countEl.textContent = '?'
+    errEl.hidden = false
+    errEl.textContent = t('oss.load_error', { msg: err && err.message ? err.message : String(err) })
+  }
+}
+
+function renderOssInventory() {
+  const data = ossInventory
+  const list = document.getElementById('ossInventoryList')
+  const countEl = document.getElementById('ossInventoryCount')
+  const metaEl = document.getElementById('ossInventoryMeta')
+  const showTransitive = !!document.getElementById('ossInventoryTransitive')?.checked
+  if (!data || !list) return
+  const entries = data.entries
+  const transitive = entries.filter((e) => !e.direct).length
+  countEl.textContent = String(entries.length - transitive)
+  const when = data.generated_at ? new Date(data.generated_at).toLocaleString(window._lang === 'en' ? 'en-GB' : 'hu-HU') : '?'
+  metaEl.textContent = t('oss.meta', { total: entries.length, transitive, when })
+  // Clones the generator counts but does not list (no name, path or origin),
+  // one sentence per reason, saying what the generator checked: the clone's
+  // own origin owner name is in the OSS_INVENTORY_OWN_OWNERS setting, or the
+  // clone has no readable http(s) or ssh origin. Clones the scan reaches that
+  // have a readable http(s) or ssh origin are listed unless their origin owner
+  // name is in the setting; while it is empty, the hint says so. What the scan
+  // does not look inside: scripts/opensource-inventory.py, "Git clones".
+  const ownEl = document.getElementById('ossInventoryOwnClones')
+  const unlisted = data.summary && data.summary.unlisted_clones
+  if (ownEl) {
+    const num = (v) => (Number.isInteger(v) ? v : 0)
+    const byReason = (unlisted && unlisted.by_reason) || {}
+    const inSetting = num(byReason.owner_in_setting)
+    const noHttpSsh = num(byReason.no_http_ssh_origin)
+    const settingEmpty = num(unlisted && unlisted.owners_in_setting) === 0
+    const listedClones = num(unlisted && unlisted.listed_network_clones)
+    const lines = []
+    if (inSetting > 0) lines.push(t('oss.clones_owner_in_setting', { n: inSetting }))
+    if (noHttpSsh > 0) lines.push(t('oss.clones_no_http_ssh_origin', { n: noHttpSsh }))
+    if (unlisted && settingEmpty && listedClones > 0) lines.push(t('oss.own_owners_hint'))
+    ownEl.hidden = lines.length === 0
+    ownEl.textContent = lines.join(' · ')
+  }
+  list.innerHTML = ''
+  if (entries.length === 0) {
+    list.innerHTML = `<div class="oss-inv-sub">${escapeHtml(t('oss.empty'))}</div>`
+    return
+  }
+  const byAgent = new Map()
+  for (const e of entries) {
+    if (!byAgent.has(e.agent)) byAgent.set(e.agent, [])
+    byAgent.get(e.agent).push(e)
+  }
+  for (const [agent, rows] of [...byAgent.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const visible = rows.filter((e) => showTransitive || e.direct)
+    const hidden = rows.length - visible.length
+    const typeCounts = OSS_TYPE_ORDER
+      .map((ty) => [ty, rows.filter((e) => e.type === ty && (showTransitive || e.direct)).length])
+      .filter(([, n]) => n > 0)
+      .map(([ty, n]) => `${ty} ${n}`)
+      .join(' · ')
+    const group = document.createElement('div')
+    group.className = 'oss-inv-agent'
+    group.innerHTML = `<div class="oss-inv-agent-head"><span>${escapeHtml(agent)}</span>`
+      + `<span class="oss-inv-agent-counts">${escapeHtml(t('oss.agent_count', { n: visible.length }))}`
+      + `${typeCounts ? ' · ' + escapeHtml(typeCounts) : ''}`
+      + `${hidden > 0 ? ' · ' + escapeHtml(t('oss.transitive_hidden', { n: hidden })) : ''}</span></div>`
+    for (const e of visible) group.appendChild(renderOssRow(e))
+    list.appendChild(group)
+  }
+}
+
+function renderOssRow(e) {
+  const item = document.createElement('div')
+  item.className = 'connector-external-item oss-inv-item'
+  const safeUrl = typeof e.source_url === 'string' && /^https:\/\//.test(e.source_url) ? e.source_url : null
+  const name = safeUrl
+    ? `<a class="oss-inv-name" href="${escapeHtml(safeHref(safeUrl))}" target="_blank" rel="noopener noreferrer">${escapeHtml(e.name)}</a>`
+    : `<span class="oss-inv-name">${escapeHtml(e.name)}</span>`
+  // An npx MCP spec without @version is its bare name: that is "not pinned",
+  // not a version string.
+  const version = e.version || (e.declared && e.declared !== e.name ? e.declared : t('oss.unpinned'))
+  const sub = []
+  if (e.license) {
+    const tip = e.license_source === 'skill-header' ? ` title="${escapeHtml(t('oss.license_header'))}"` : ''
+    sub.push(`<span${tip}>${escapeHtml(e.license)}${e.license_source === 'skill-header' ? '*' : ''}</span>`)
+  } else {
+    sub.push(escapeHtml(t('oss.license_unknown')))
+  }
+  if (e.stars) {
+    sub.push(`<span title="${escapeHtml(t('oss.source', { src: e.stars_source || '' }))}">${escapeHtml(t('oss.stars', { n: e.stars }))}</span>`)
+  }
+  if (e.used_in && e.used_in.length) sub.push(escapeHtml(t('oss.used_in', { list: e.used_in.join(', ') })))
+  sub.push(escapeHtml(e.path))
+  let html = `<div class="oss-inv-line">${name}<span class="oss-inv-type">${escapeHtml(e.type)}</span>`
+    + `<span class="oss-inv-version">${escapeHtml(version)}</span></div>`
+    + `<div class="oss-inv-sub">${sub.join(' · ')}</div>`
+  if (e.effect) {
+    html += `<div class="oss-inv-effect">${escapeHtml(t('oss.effect', { text: e.effect }))}`
+      + ` <span class="oss-inv-sub">(${escapeHtml(e.effect_source || '')})</span></div>`
+  }
+  item.innerHTML = html
+  return item
+}
+
+;(function wireOssInventory() {
+  const toggle = document.getElementById('ossInventoryToggle')
+  const body = document.getElementById('ossInventoryBody')
+  if (!toggle || !body) return
+  toggle.addEventListener('click', () => {
+    const arrow = toggle.querySelector('.connector-scope-toggle')
+    if (body.hidden) { body.hidden = false; arrow.textContent = '▼' }
+    else { body.hidden = true; arrow.textContent = '▶' }
+  })
+  document.getElementById('ossInventoryTransitive')?.addEventListener('change', renderOssInventory)
+  const refreshBtn = document.getElementById('ossInventoryRefresh')
+  refreshBtn?.addEventListener('click', async () => {
+    refreshBtn.disabled = true
+    try { await loadOssInventory(true) } finally { refreshBtn.disabled = false }
+  })
+})()
 
 ;(function wireGitHubRepos() {
   const toggle = document.getElementById('githubReposToggle')
@@ -9573,9 +9935,15 @@ async function loadGitHubRepos() {
     if (!val) return
     const runScriptsBox = document.getElementById('githubRepoRunScripts')
     const runScripts = !!(runScriptsBox && runScriptsBox.checked)
-    if (!confirm(t(runScripts ? 'connectors.install_confirm_scripts' : 'connectors.install_confirm', { url: val }))) return
+    const confirmed = await confirmDialog({
+      title: t('connectors.install_confirm_title'),
+      message: t(runScripts ? 'connectors.install_confirm_scripts' : 'connectors.install_confirm', { url: val }),
+      okLabel: t('connectors.install_confirm_ok'),
+      danger: runScripts,
+    })
+    if (!confirmed) return
     addBtn.disabled = true
-    addBtn.textContent = 'Telepites...'
+    addBtn.textContent = t('common.installing')
     status.hidden = false
     status.className = 'github-repo-status loading'
     status.textContent = t('connectors.cloning')
@@ -9635,7 +10003,7 @@ async function loadGitHubRepos() {
       status.textContent = 'Hiba: ' + err.message
     } finally {
       addBtn.disabled = false
-      addBtn.textContent = 'Telepites'
+      addBtn.textContent = t('connectors.catalog.install_btn')
     }
   })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
@@ -10370,51 +10738,65 @@ function renderVaultGrid(secrets) {
     })
   })
   list.querySelectorAll('.vault-card-edit').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id')
-      const label = btn.getAttribute('data-label')
+      const label = (btn.getAttribute('data-label') || '').trim() || id
       const card = btn.closest('.vault-card')
       const existing = card.querySelector('.vault-card-edit-form')
       if (existing) { existing.remove(); return }
       card.querySelector('.vault-card-value')?.remove()
-      const res = await fetch(`/api/vault/${encodeURIComponent(id)}`)
-      const data = await res.json()
-      if (!data.value) return
+      // The current value is never fetched here: leaving the value empty keeps it,
+      // and the card has its own Show button.
+      const initialLabel = label === id ? '' : label
       const form = document.createElement('div')
       form.className = 'vault-card-edit-form'
-      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
+      form.innerHTML = `<input type="text" class="input vault-edit-label" maxlength="200" value="${escapeHtml(initialLabel)}" placeholder="${escapeHtml(id)}" aria-label="${escapeHtml(t('vault.field.desc_label'))}" style="font-size:13px;margin-bottom:6px"><input type="password" class="input vault-edit-value" value="" placeholder="${escapeHtml(t('vault.edit.value_placeholder'))}" aria-label="${escapeHtml(t('vault.field.value_label'))}" autocomplete="new-password" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
       card.appendChild(form)
+      const labelInput = form.querySelector('.vault-edit-label')
       const input = form.querySelector('.vault-edit-value')
-      input.focus()
-      input.select()
+      labelInput.focus()
       form.querySelector('.vault-edit-cancel').addEventListener('click', () => form.remove())
       form.querySelector('.vault-edit-save').addEventListener('click', async () => {
         const newVal = input.value
-        if (!newVal) return
+        const newLabel = labelInput.value.trim() || id
+        if (!newVal && newLabel === label) { form.remove(); return }
         const saveBtn = form.querySelector('.vault-edit-save')
         saveBtn.disabled = true
         saveBtn.textContent = '...'
-        const res = await fetch('/api/vault', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, label, value: newVal }),
-        })
-        if (!res.ok) {
-          const e = await res.json().catch(() => ({}))
-          showToast('Frissítés sikertelen: ' + (e.error || res.status))
+        const request = newVal
+          ? ['/api/vault', 'POST', { id, label: newLabel, value: newVal }]
+          : [`/api/vault/${encodeURIComponent(id)}`, 'PATCH', { label: newLabel }]
+        let failure = null
+        try {
+          const res = await fetch(request[0], {
+            method: request[1],
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request[2]),
+          })
+          if (!res.ok) {
+            const e = await res.json().catch(() => ({}))
+            failure = e.error || res.status
+          }
+        } catch (err) {
+          failure = err && err.message ? err.message : String(err)
+        }
+        if (failure !== null) {
+          showToast(t('vault.toast.update_error') + ': ' + failure)
           saveBtn.disabled = false
-          saveBtn.textContent = 'Mentés'
+          saveBtn.textContent = t('vault.btn.save')
           return
         }
         form.remove()
-        showToast('Kulcs frissitve es szinkronizalva')
+        showToast(t(newVal ? 'vault.toast.updated_synced' : 'vault.toast.label_updated'))
         loadVaultPage()
         loadVault()
       })
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') form.querySelector('.vault-edit-save').click()
-        if (e.key === 'Escape') form.remove()
-      })
+      for (const el of [labelInput, input]) {
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') form.querySelector('.vault-edit-save').click()
+          if (e.key === 'Escape') form.remove()
+        })
+      }
     })
   })
   list.querySelectorAll('.vault-card-delete').forEach(btn => {
@@ -10448,11 +10830,26 @@ function renderVaultGrid(secrets) {
     const value = document.getElementById('vaultPageValueInput').value
     if (!id || !value) return
     addBtn.disabled = true
-    await fetch('/api/vault', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, value }),
-    })
+    let failure = null
+    try {
+      const res = await fetch('/api/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, label, value }),
+      })
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}))
+        failure = e.error || res.status
+      }
+    } catch (err) {
+      failure = err && err.message ? err.message : String(err)
+    }
+    if (failure !== null) {
+      // keep the inputs so the pasted value is not lost
+      showToast(t('vault.toast.save_error') + ': ' + failure)
+      addBtn.disabled = false
+      return
+    }
     document.getElementById('vaultPageIdInput').value = ''
     document.getElementById('vaultPageLabelInput').value = ''
     document.getElementById('vaultPageValueInput').value = ''
@@ -10861,7 +11258,13 @@ async function openConnectorDetail(connector) {
 
   // Delete button
   document.getElementById('connectorDeleteBtn').onclick = async () => {
-    if (!confirm(`Biztosan torlod: ${connector.name}?`)) return
+    const confirmed = await confirmDialog({
+      title: t('connectors.confirm.delete_title'),
+      message: t('connectors.confirm.delete', { name: connector.name }),
+      okLabel: t('connectors.confirm.delete_ok'),
+      danger: true,
+    })
+    if (!confirmed) return
     try {
       await fetch(`/api/connectors/${encodeURIComponent(connector.name)}`, { method: 'DELETE' })
       closeModal(connectorDetailOverlay)
@@ -11440,7 +11843,7 @@ document.getElementById('memImportOpenBtn').addEventListener('click', () => {
 })
 
 // Close import modal
-document.getElementById('memImportClose').addEventListener('click', () => closeModal(memImportOverlay))
+document.getElementById('memImportClose').addEventListener('click', () => requestOverlayClose(memImportOverlay))
 attachOverlayCloseGuard(memImportOverlay)
 
 // File area click -> trigger file input
@@ -11958,8 +12361,8 @@ function formatMtime(ms) {
   return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-document.getElementById('skillDetailClose').addEventListener('click', () => closeModal(skillDetailOverlay))
-attachOverlayCloseGuard(skillDetailOverlay)
+document.getElementById('skillDetailClose').addEventListener('click', () => requestOverlayClose(skillDetailOverlay))
+attachOverlayCloseGuard(skillDetailOverlay, _skillDetailConfirmDiscard)
 
 // Scope for the next skill create/import action. 'global' means the
 // Skills page opened the modal (write to ~/.claude/skills/); any other
@@ -12037,13 +12440,27 @@ function pendingEl(tag, cls, text) {
   return el
 }
 
-function pendingFileRow(f) {
+// SKILLSPLIT1101 (Dani 65108): where a file of a proposal comes from, so on a 15-file replacement the approver
+// sees what to read: the proposal's own SKILL.md and references (new or overwriting), or copied from the live skill.
+function pendingFileOrigin(p, path) {
+  if (!p || p.source !== 'propose') return null
+  if (path === 'SKILL.md') return p.replaces ? 'proposed_replaced' : 'proposed_new'
+  const pf = Array.isArray(p.proposedFiles) ? p.proposedFiles.find((x) => x.path === path) : null
+  if (pf) return pf.replaced ? 'proposed_replaced' : 'proposed_new'
+  // Not the proposal's, yet not equal to the live file (Dani 65296): never "unchanged".
+  const drift = Array.isArray(p.liveDrift) ? p.liveDrift.find((x) => x.path === path) : null
+  if (drift) return drift.live === 'missing' ? 'not_proposed_missing' : 'not_proposed_changed'
+  return p.replaces ? 'from_live' : null
+}
+
+function pendingFileRow(f, origin) {
   const det = pendingEl('details', 'skills-pending-file')
-  const flagged = f.kind === 'script' || f.kind === 'binary' || f.executable
+  const flagged = f.kind === 'script' || f.kind === 'binary' || f.executable || (origin || '').startsWith('not_proposed')
   const sum = pendingEl('summary', flagged ? 'is-flagged' : null)
   const flags = [f.kind]
   if (f.executable) flags.push(t('skills.pending.executable'))
   if (f.shebang) flags.push(f.shebang)
+  if (origin) flags.push(t(`skills.pending.origin_${origin}`))
   sum.appendChild(pendingEl('code', null, f.path))
   sum.appendChild(pendingEl('span', null, ` ${f.size} B · ${flags.join(' · ')}`))
   det.appendChild(sum)
@@ -12057,7 +12474,7 @@ function pendingFileRow(f) {
     det.appendChild(pendingEl('pre', null, f.strings))
     det.open = true
   }
-  if (f.path === 'SKILL.md') det.open = true
+  if (f.path === 'SKILL.md' || (origin && origin !== 'from_live')) det.open = true
   return det
 }
 
@@ -12074,10 +12491,25 @@ function renderPendingSkills(box, list) {
     const where = p.target && p.target.scope === 'agent'
       ? t('skills.pending.target_agent', { agent: p.target.agent })
       : t('skills.pending.target_global')
-    const src = p.source === 'import' ? t('skills.pending.source_import') : t('skills.pending.source_generate')
+    const src = p.source === 'import' ? t('skills.pending.source_import')
+      : p.source === 'propose' ? t('skills.pending.source_propose', { agent: p.proposedBy || '?' })
+      : t('skills.pending.source_generate')
     head.appendChild(pendingEl('span', 'skills-pending-meta', `${src} · ${new Date(p.createdAt).toLocaleString()}`))
     card.appendChild(head)
     card.appendChild(pendingEl('div', p.target && p.target.scope === 'agent' ? 'skills-pending-target' : 'skills-pending-target is-global', where))
+    if (p.replaces) card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.replaces', { name: p.name })))
+    if (p.reason) card.appendChild(pendingEl('div', 'skills-pending-intro', t('skills.pending.reason', { reason: p.reason })))
+    // SKILLSPLIT1101: which references/*.md the proposal brought, and which of them overwrite a live file.
+    if (Array.isArray(p.proposedFiles) && p.proposedFiles.length) {
+      const list = p.proposedFiles.map((f) => `${f.path} (${t(f.replaced ? 'skills.pending.proposed_file_replaced' : 'skills.pending.proposed_file_new')})`).join(', ')
+      card.appendChild(pendingEl('div', p.proposedFiles.some((f) => f.replaced) ? 'skills-pending-sub is-flagged' : 'skills-pending-sub', t('skills.pending.proposed_files', { n: p.proposedFiles.length, list })))
+    }
+    if (p.replaces && typeof p.liveSkillMd === 'string') {
+      const cur = pendingEl('details', 'skills-pending-file')
+      cur.appendChild(pendingEl('summary', null, t('skills.pending.current_version')))
+      cur.appendChild(pendingEl('pre', null, p.liveSkillMd))
+      card.appendChild(cur)
+    }
 
     const report = p.report || { files: [], findings: [], truncated: false }
     const files = Array.isArray(report.files) ? report.files : []
@@ -12085,10 +12517,10 @@ function renderPendingSkills(box, list) {
     const rest = files.filter((f) => !risky.includes(f))
     if (risky.length) {
       card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.scripts', { n: risky.length })))
-      for (const f of risky) card.appendChild(pendingFileRow(f))
+      for (const f of risky) card.appendChild(pendingFileRow(f, pendingFileOrigin(p, f.path)))
     }
     card.appendChild(pendingEl('div', 'skills-pending-sub', t('skills.pending.files', { n: rest.length })))
-    for (const f of rest) card.appendChild(pendingFileRow(f))
+    for (const f of rest) card.appendChild(pendingFileRow(f, pendingFileOrigin(p, f.path)))
 
     card.appendChild(pendingEl('div', 'skills-pending-sub',
       report.findings.length ? t('skills.pending.findings', { n: report.findings.length }) : t('skills.pending.no_findings')))
@@ -12115,7 +12547,12 @@ function renderPendingSkills(box, list) {
     const reject = pendingEl('button', 'btn-danger btn-compact', t('skills.pending.reject'))
     approve.disabled = !p.approvable
     approve.addEventListener('click', async () => {
-      if (!confirm(t('skills.pending.confirm_approve', { name: p.name, where }))) return
+      const confirmed = await confirmDialog({
+        title: t('skills.pending.confirm_approve_title'),
+        message: t('skills.pending.confirm_approve', { name: p.name, where }),
+        okLabel: t('skills.pending.confirm_approve_ok'),
+      })
+      if (!confirmed) return
       approve.disabled = true
       try {
         const res = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}/approve`, {
@@ -12124,7 +12561,7 @@ function renderPendingSkills(box, list) {
           body: JSON.stringify({ hash: p.hash }),
         })
         const body = await res.json().catch(() => ({}))
-        if (!res.ok) throw new Error(body.error || String(res.status))
+        if (!res.ok) throw new Error(refusalReason(res, body))
         showToast(t('skills.pending.approved', { name: p.name }))
         loadGlobalSkills()
       } catch (err) {
@@ -12133,11 +12570,17 @@ function renderPendingSkills(box, list) {
       } finally { approve.disabled = !p.approvable }
     })
     reject.addEventListener('click', async () => {
-      if (!confirm(t('skills.pending.confirm_reject', { name: p.name }))) return
+      const confirmed = await confirmDialog({
+        title: t('skills.pending.confirm_reject_title'),
+        message: t('skills.pending.confirm_reject', { name: p.name }),
+        okLabel: t('skills.pending.confirm_reject_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       reject.disabled = true
       try {
         const res = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}/reject`, { method: 'POST' })
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || String(res.status))
+        if (!res.ok) throw new Error(refusalReason(res, await res.json().catch(() => ({}))))
         showToast(t('skills.pending.rejected', { name: p.name }))
       } catch (err) {
         showToast(`${t('skills.pending.error')}: ${err.message}`)
@@ -12341,6 +12784,25 @@ let _skillDetailCurrentName = null
 let _skillDetailCurrentAgentId = null
 let _skillDetailIsPlugin = false
 
+// The content as last loaded or saved. An edit that differs from it is unsaved: Cancel and the close
+// button ask before dropping it, and a confirmed Cancel puts this back, so a later Edit starts clean.
+let _skillDetailSavedContent = ''
+
+function _skillDetailHasUnsavedEdit() {
+  const editor = document.getElementById('skillDetailEditor')
+  return !editor.hidden && editor.value !== _skillDetailSavedContent
+}
+
+async function _skillDetailConfirmDiscard() {
+  if (!_skillDetailHasUnsavedEdit()) return true
+  return confirmDialog({
+    title: t('skills.confirm.discard_edit_title'),
+    message: t('skills.confirm.discard_edit'),
+    okLabel: t('skills.confirm.discard_edit_ok'),
+    danger: true,
+  })
+}
+
 function _skillDetailExitEdit() {
   const editor = document.getElementById('skillDetailEditor')
   const contentEl = document.getElementById('skillDetailContent')
@@ -12447,6 +12909,7 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
     // Prefill editor
     const editor = document.getElementById('skillDetailEditor')
     if (editor) editor.value = rawContent
+    _skillDetailSavedContent = rawContent
 
   } catch (err) {
     console.error('Skill detail hiba:', err)
@@ -12481,7 +12944,11 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
   }
 
   if (cancelBtn) {
-    cancelBtn.addEventListener('click', _skillDetailExitEdit)
+    cancelBtn.addEventListener('click', async () => {
+      if (!(await _skillDetailConfirmDiscard())) return
+      editor.value = _skillDetailSavedContent
+      _skillDetailExitEdit()
+    })
   }
 
   if (saveBtn) {
@@ -12500,6 +12967,7 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
         })
         if (!res.ok) throw new Error('PUT failed: ' + res.status)
         contentEl.innerHTML = renderMarkdown(newContent)
+        _skillDetailSavedContent = newContent
         _skillDetailExitEdit()
         showToast(t('skills.toast.saved'))
         // Refresh list to pick up new description/keywords
@@ -12773,6 +13241,9 @@ const MSG_STATUS_META = {
   delivered: { label: () => t('messages.status.delivered'), cls: 'badge-active' },
   done: { label: () => t('messages.status.done'), cls: 'badge-active' },
   failed: { label: () => t('messages.status.failed'), cls: 'badge-paused' },
+  // badges of the reply bubble chatWithReplies() adds after an owner's closed message
+  reply: { label: () => t('messages.conv.reply_label'), cls: 'badge-active' },
+  reply_failed: { label: () => t('messages.conv.reply_label'), cls: 'badge-paused' },
 }
 async function resolveOwnerName() {
   try {
@@ -12991,7 +13462,7 @@ async function loadChatAgentList() {
 }
 
 // Pagination state for the open thread
-const chatThreadState = { agent: null, minLoadedId: null, hasMore: true, loading: false }
+const chatThreadState = { agent: null, minLoadedId: null, hasMore: true, loading: false, liveSig: null, liveTimer: null, loadedCount: 0 }
 const CHAT_PAGE_SIZE = 10
 const CHAT_LOAD_MORE = 20
 
@@ -13003,6 +13474,7 @@ async function loadChatThread(agentName) {
   chatThreadState.minLoadedId = null
   chatThreadState.hasMore = true
   chatThreadState.loading = false
+  chatThreadState.loadedCount = 0
 
   const owner = chatOwnerName()
   const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : chatDisplayName(agentName)
@@ -13031,6 +13503,7 @@ async function loadChatThread(agentName) {
 
   // Initial load
   await fetchChatPage(agentName, null, CHAT_PAGE_SIZE, 'replace')
+  startChatLivePoll()
   // Mark thread as read (localStorage last-seen)
   const threadData = (await fetch('/api/messages/threads').then(r => r.ok ? r.json() : []).catch(() => []))
     .find(t => t.agent === agentName)
@@ -13082,6 +13555,112 @@ function buildBubbleHtml(m) {
   </div>`
 }
 
+// The ANSWER to a closed message lives in its `result` column, not in a row
+// of its own, so this view used to end at the request: the badge turned
+// "done" and the reply was nowhere on screen (measured twice on 2026-10-30,
+// both times read as "the agent never answered" -- it had, in 24 s).
+//
+// Drawn ONLY for the owner's own messages, on purpose. Agent -> agent, the
+// close also creates a reverse `[Eredmeny]` message (shouldNotifyDelegator in
+// routes/messages.ts), which already renders as its own bubble further down
+// the thread -- rendering `result` there too would show the same answer
+// twice. That notification is skipped when the sender is not a registered
+// agent, which is exactly the owner's case (they send under OWNER_NAME), so
+// this is the one path where the answer has no row to appear in.
+//
+// The reply is a plain message object handed to buildBubbleHtml, so it goes
+// through the same template and escaping as every other bubble. It is sent by
+// the RECIPIENT, so from/to are swapped; it keeps the request's id.
+//
+// The shared id is deliberate: the reply is the result column of that same
+// message, not a message of its own, and the #id chip should name the message
+// the owner can look up. Two rows therefore carry one data-msg-id, the request
+// first and its reply right after it; a lookup that needs the reply must take
+// the LAST row with that id (or the one with the reply badge), not the first.
+// Giving the reply an id of its own would mean a non-numeric value in the
+// m.id sink, which the HTML-sink allowlist pins as the integer primary key.
+function chatWithReplies(sorted) {
+  const owner = chatOwnerName()
+  const out = []
+  for (const m of sorted) {
+    out.push(m)
+    const closed = m.status === 'done' || m.status === 'failed'
+    const replyText = closed && owner && m.from_agent === owner ? String(m.result || '').trim() : ''
+    if (!replyText) continue
+    out.push({
+      id: m.id,
+      from_agent: m.to_agent,
+      to_agent: m.from_agent,
+      content: replyText,
+      status: m.status === 'failed' ? 'reply_failed' : 'reply',
+      created_at: m.completed_at || null,
+    })
+  }
+  return out
+}
+
+// What the newest page shows that can change after it is drawn: new ids, the
+// status badge and the reply (result) of a closed message.
+function chatListSig(msgs) {
+  return msgs.map(m => `${m.id}:${m.status || ''}:${String(m.result || '').length}:${m.completed_at || ''}`).join(',')
+}
+
+// Oldest first. created_at is whole seconds, so a tie is broken by id: the API
+// pages newest first by (created_at, id), and with created_at alone the page
+// drawn and the page polled could hold different ids at a same-second boundary,
+// so the signatures would never match and every poll would redraw.
+function chatSortAsc(msgs) {
+  return [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0) || a.id - b.id)
+}
+
+// Live refresh of the open thread. Before this the view only changed on the
+// manual reload button, so an agent's reply (or the done badge) stayed
+// invisible until the owner clicked. Polls the newest page; when it differs
+// from what was last drawn, the thread is redrawn through the normal initial
+// load (fetchChatPage 'replace'), so there is no second render path. Runs only
+// while a thread is open; skipped while the tab or the panel is hidden, a load
+// runs, or the owner has scrolled up to read older messages (the redraw would
+// jump the view -- the next poll catches up).
+//
+// The change check looks at the newest page only, but the redraw fetches as
+// many messages as are currently loaded (capped at the API's 200), so older
+// pages the owner paginated in survive the redraw instead of collapsing the
+// thread back to one page.
+const CHAT_LIVE_REDRAW_MAX = 200
+const CHAT_LIVE_POLL_MS = 5000
+function startChatLivePoll() {
+  stopChatLivePoll()
+  chatThreadState.liveTimer = setInterval(pollChatThread, CHAT_LIVE_POLL_MS)
+}
+function stopChatLivePoll() {
+  if (chatThreadState.liveTimer) clearInterval(chatThreadState.liveTimer)
+  chatThreadState.liveTimer = null
+}
+async function pollChatThread() {
+  const agent = chatThreadState.agent
+  const container = document.getElementById('chatBubbles')
+  if (!agent || !container) { stopChatLivePoll(); return }
+  if (document.hidden || container.offsetParent === null || chatThreadState.loading) return
+  if (container.scrollHeight - container.scrollTop - container.clientHeight >= 60) return
+  let msgs
+  try {
+    const res = await fetch(`/api/messages?agent=${encodeURIComponent(agent)}&limit=${CHAT_PAGE_SIZE}`)
+    if (!res.ok) return
+    msgs = await res.json()
+  } catch { return }
+  if (!Array.isArray(msgs) || chatThreadState.agent !== agent || chatThreadState.loading) return
+  const sorted = chatSortAsc(msgs)
+  if (chatListSig(sorted) === chatThreadState.liveSig) return
+  // New messages push the oldest loaded ones out of a same-size window, so the
+  // redraw asks for that many more.
+  const drawnIds = new Set(String(chatThreadState.liveSig || '').split(',').map(s => s.split(':')[0]))
+  const added = sorted.filter(m => !drawnIds.has(String(m.id))).length
+  const limit = Math.min(Math.max(CHAT_PAGE_SIZE, chatThreadState.loadedCount + added), CHAT_LIVE_REDRAW_MAX)
+  chatThreadState.minLoadedId = null
+  chatThreadState.hasMore = true
+  await fetchChatPage(agent, null, limit, 'replace')
+}
+
 async function fetchChatPage(agentName, beforeId, limit, mode) {
   if (chatThreadState.loading) return
   chatThreadState.loading = true
@@ -13095,24 +13674,27 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
     const res = await fetch(url)
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const msgs = await res.json()
-    const sorted = Array.isArray(msgs) ? [...msgs].sort((a, b) => (a.created_at || 0) - (b.created_at || 0)) : []
+    const sorted = Array.isArray(msgs) ? chatSortAsc(msgs) : []
 
     if (mode === 'replace') {
       if (sorted.length === 0) {
         container.innerHTML = '<p class="activity-empty">' + t('messages.empty_thread') + '</p>'
       } else {
         container.innerHTML = '<div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">' + t('messages.loading') + '</div>'
-        container.insertAdjacentHTML('beforeend', sorted.map(buildBubbleHtml).join(''))
+        container.insertAdjacentHTML('beforeend', chatWithReplies(sorted).map(buildBubbleHtml).join(''))
         container.scrollTop = container.scrollHeight
       }
       if (sorted.length < limit) chatThreadState.hasMore = false
+      chatThreadState.liveSig = chatListSig(sorted.slice(-CHAT_PAGE_SIZE))
+      chatThreadState.loadedCount = sorted.length
     } else { // prepend
       if (loadingIndicator) loadingIndicator.style.display = 'none'
       if (!sorted.length) { chatThreadState.hasMore = false; chatThreadState.loading = false; return }
       if (sorted.length < limit) chatThreadState.hasMore = false
+      chatThreadState.loadedCount += sorted.length
       const prevHeight = container.scrollHeight
       const indicator = document.getElementById('chatLoadingTop')
-      const html = sorted.map(buildBubbleHtml).join('')
+      const html = chatWithReplies(sorted).map(buildBubbleHtml).join('')
       if (indicator) {
         indicator.insertAdjacentHTML('afterend', html)
       } else {
@@ -13145,8 +13727,8 @@ function renderChatBubbles(msgs, agentName) {
     container.innerHTML = '<p class="activity-empty">' + t('messages.empty_thread') + '</p>'
     return
   }
-  const sorted = [...msgs].sort((a,b) => (a.created_at||0) - (b.created_at||0))
-  container.innerHTML = sorted.map(buildBubbleHtml).join('')
+  const sorted = chatSortAsc(msgs)
+  container.innerHTML = chatWithReplies(sorted).map(buildBubbleHtml).join('')
   container.scrollTop = container.scrollHeight
 }
 
@@ -13163,9 +13745,12 @@ async function sendChatMessage(toAgent) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, to: toAgent, content }),
     })
-    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Hiba') }
+    const reply = await readActionReply(res)
+    if (!reply.ok) throw new Error(refusalReason(res, reply.body))
     if (textarea) textarea.value = ''
-    showToast(t('messages.sent'))
+    // A stopped target (#2426): the server stores the message as pending and says
+    // queued; it is delivered when the agent starts, so "sent" would be wrong.
+    showToast(reply.body.queued === true ? t('messages.queued', { agent: toAgent }) : t('messages.sent'), reply.body.queued === true ? 6000 : 3000)
     await loadChatThread(toAgent)
     await loadChatAgentList()
   } catch (e) {
@@ -13503,13 +14088,19 @@ function quotaLevelClass(pct) {
   return ''
 }
 
-// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
-// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
-// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
-// current window), so the labels and the marker are derived from resetsAt,
-// never from "Monday". Each segment is labelled with the weekday it STARTS
-// on. Returns null when there is no usable current window -- the row then
-// keeps the plain bar instead of drawing a week it cannot place.
+// Weekly quota row: one segment per CALENDAR day, day names underneath and a
+// "now" marker. The window is NOT a calendar week: it runs resetsAt-7d ->
+// resetsAt and the reset is rarely at midnight (measured: Monday 09:00 CEST
+// on 2026-09-29, Friday 22:00 CEST on 2026-10-20). Equal 24 h segments
+// labelled by their start day were therefore up to a day off: with a Friday
+// 22:00 reset the "Friday" segment was 22 h of Saturday, and Tuesday morning
+// sat in "Monday" (Guido, 2026-10-20). So the segment boundaries are the
+// local midnights inside the window: a partial first and last day around 6
+// whole ones (8 segments, or 7 when the reset is at midnight), each labelled
+// with the day it covers. A segment shorter than half a day keeps its width
+// but no label (renderQuotaStrip), as a 2 h sliver has no room for one.
+// Returns null when there is no usable current window -- the row then keeps
+// the plain bar instead of drawing a week it cannot place.
 // timeZone is for tests only; the dashboard uses the viewer's local time.
 function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const WEEK = 7 * 86400
@@ -13518,7 +14109,35 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const start = resetsAt - WEEK
   if (resetsAt <= nowSec || nowSec < start) return null
   const locale = lang === 'en' ? 'en-US' : 'hu-HU'
-  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' })
+  // Local calendar date of an instant as one comparable number (YYYYMMDD).
+  const dateKey = (sec) => {
+    const p = {}
+    for (const x of fmt.formatToParts(new Date(sec * 1000))) p[x.type] = Number(x.value)
+    return p.year * 10000 + p.month * 100 + p.day
+  }
+  // The next day's first instant: the first second whose local DATE differs
+  // from sec's, found by binary search in (sec, sec + 26 h]. No wall-clock
+  // arithmetic, so a 23 h / 25 h DST day ends where it really ends, and on a
+  // day whose 00:00 does not exist (DST starting AT midnight, e.g.
+  // America/Santiago 2026-09-06) the cut is its real first instant, 01:00 --
+  // a 00:00 computed from offsets fell back to the previous day's 23:00 and
+  // left a zero-width segment (review of #2082).
+  const midnightAfter = (sec) => {
+    const day = dateKey(sec)
+    let lo = Math.floor(sec)
+    let hi = lo + 26 * 3600
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (dateKey(mid) === day) lo = mid
+      else hi = mid
+    }
+    return hi
+  }
+  const bounds = [start]
+  for (let m = midnightAfter(start); m < resetsAt && bounds.length < 9; m = midnightAfter(m)) bounds.push(m)
+  bounds.push(resetsAt)
+  const starts = bounds.slice(0, -1)
   const name = (weekday) => starts.map((sec) => {
     const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
     return s.charAt(0).toUpperCase() + s.slice(1)
@@ -13534,6 +14153,7 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const short = name('short')
   return {
     starts,
+    widths: starts.map((sec, i) => ((bounds[i + 1] - sec) / WEEK) * 100),
     labels: name('long'),
     shortLabels: short,
     narrowLabels: lang === 'en' ? name('narrow') : null,
@@ -13615,13 +14235,23 @@ function renderQuotaStrip(q, fable) {
     const week = labelKey === 'overview.quota.seven_day' && !w.expired
       ? weekSegments(w.resetsAt, nowSec, window._lang)
       : null
-    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
+    // Day separators sit on the inner boundaries; a segment under half a day
+    // (100/14 %) keeps its column but gets no label.
+    let seps = ''
+    if (week) {
+      let left = 0
+      for (const w of week.widths.slice(0, -1)) {
+        left += w
+        seps += `<div class="quota-bar-sep" style="left:${left.toFixed(2)}%"></div>`
+      }
+    }
+    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div>${seps}</div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
       ${week ? `<div class="quota-bar-col">
         ${trackHtml}
         <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
-        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}" style="grid-template-columns:${week.widths.map((w) => w.toFixed(3) + 'fr').join(' ')}">${week.labels.map((d, i) => week.widths[i] < 100 / 14 ? '<span></span>' : `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
       </div>` : trackHtml}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
@@ -14377,7 +15007,7 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { authBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        if (!res.ok) { authBtn.disabled = false; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
         // Fresh-install path: the server restarts the (previously
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
@@ -15272,7 +15902,7 @@ async function _resolveApproval(id, decision) {
       body: JSON.stringify({ status: decision, resolved_by: 'dashboard' }),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(t('approvals.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('approvals.toast.error', { msg: refusalReason(res, data) })); return }
     showToast(t(decision === 'approved' ? 'approvals.toast.approved' : 'approvals.toast.rejected'))
     // Update in-place to avoid full reload flicker
     const idx = _approvalsAll.findIndex(a => a.id === id)
@@ -15909,6 +16539,8 @@ async function loadSettings() {
   updateSettingsSaveBar()
 
   renderAuthCard()
+  if (typeof window.loadGromzoCard === 'function') window.loadGromzoCard()
+  if (typeof window.loadGromzoAgents === 'function') window.loadGromzoAgents()
 
   try {
     const res = await fetch('/api/settings')
@@ -19167,7 +19799,7 @@ async function openIdeaBreakdown(id) {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
     if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
-    if (!data.subtasks || !data.subtasks.length) { showToast('Az AI nem adott vissza alfeladatot'); return }
+    if (!data.subtasks || !data.subtasks.length) { showToast('Az AI nem adott vissza részfeladatot'); return }
     breakdownMode = 'idea'
     breakdownIdeaId = id
     breakdownSubtasks = data.subtasks
@@ -19607,7 +20239,7 @@ function renderFederationPage() {
     try {
       const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); e.target.checked = !enabled; return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); e.target.checked = !enabled; return }
       showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'))
       fedRefreshAndReload()
     } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); e.target.checked = !enabled }
@@ -19618,7 +20250,7 @@ function renderFederationPage() {
       try {
         const res = await fetch('/api/federation/routing-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
         const data = await res.json().catch(() => ({}))
-        if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+        if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
         showToast(t('federation.routing.toast_set', { mode: t('federation.routing.mode.' + mode + '.label') }))
       } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
     })
@@ -19674,7 +20306,7 @@ async function fedRevealToken(peerId, card) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/inbound-token`)
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     box.textContent = data.inboundToken
     box.hidden = false
     navigator.clipboard?.writeText(data.inboundToken).then(
@@ -19689,7 +20321,7 @@ async function fedRotateToken(peerId) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     showToast(t('federation.toast.rotated'))
     loadFederationPage()
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
@@ -19702,7 +20334,7 @@ async function fedToggleShareCap(peerId, share) {
       body: JSON.stringify({ shareCapabilitySummaries: share }),
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); loadFederationPage(); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); loadFederationPage(); return }
     showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); loadFederationPage() }
 }
@@ -19712,7 +20344,7 @@ async function fedDeletePeer(peerId) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     // Sweep browser leftovers scoped to the removed peer.
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i)
@@ -19748,7 +20380,7 @@ async function fedApplyToMainAgent() {
       res = await apply(true)
       data = await res.json().catch(() => ({}))
     }
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     showToast(t('federation.toast.applied'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
@@ -19792,14 +20424,14 @@ async function fedSavePeerModal() {
       else body.abandonWindowMinutes = null
       res = await fetch(`/api/federation/peers/${encodeURIComponent(fedPeerModalEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
       showToast(t('federation.toast.peer_saved'))
     } else {
       const body = { id, baseUrl }
       if (outbound) body.outboundToken = outbound
       res = await fetch('/api/federation/peers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
       // The minted inbound token is shown ONCE right away: the owner hands it
       // to the peer's operator during pairing.
       prompt(t('federation.modal.minted_token_hint'), data.inboundToken)
@@ -19815,7 +20447,7 @@ async function fedRemoveAll() {
   try {
     const res = await fetch('/api/federation/remove', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     federatedPeerStatus = []
     // Sweep browser leftovers for ALL federated (qualified) threads -- the
     // per-peer DELETE path does this per peer, full removal must do it wholesale.
@@ -20151,6 +20783,364 @@ async function openResearchDoc(agent, name) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
 })()
 
+// === Gromzo card: the owner's QR code (GROMZOOWNERQR1030, MOBILRELOGINDASH1025) ===
+// POST /api/gromzo/owner-qr answers with the app's URI: the registration code while
+// the owner seat is free, afterwards a new phone's login code. The URI carries a live
+// secret, so: it is drawn client-side into #gromzoQr (an SVG of modules, no text,
+// no attribute holding it), shown for at most 2 minutes (or less if the code expires
+// sooner), then wiped; closing the panel and leaving the page wipe it too. Nothing
+// is stored, nothing is copyable, the request is no-store.
+;(function setupGromzoCard() {
+  const card = document.getElementById('gromzoCard')
+  if (!card) return
+  const statusEl = document.getElementById('gromzoStatus')
+  const btn = document.getElementById('gromzoAddPhoneBtn')
+  const errEl = document.getElementById('gromzoError')
+  const area = document.getElementById('gromzoQrArea')
+  const qrBox = document.getElementById('gromzoQr')
+  const hintEl = document.getElementById('gromzoQrHint')
+  const cdEl = document.getElementById('gromzoCountdown')
+  const closeBtn = document.getElementById('gromzoQrClose')
+  const SHOW_MAX_S = 120
+  let timer = null
+
+  function clearQr(expiredNote) {
+    if (timer) { clearInterval(timer); timer = null }
+    qrBox.replaceChildren()
+    hintEl.textContent = ''
+    cdEl.textContent = ''
+    area.hidden = true
+    btn.disabled = false
+    if (expiredNote) showError(t('gromzo.qr.expired'))
+  }
+
+  function showError(msg) {
+    errEl.textContent = msg
+    errEl.hidden = !msg
+  }
+
+  function errorText(code) {
+    const key = 'gromzo.err.' + code
+    const s = t(key)
+    return s === key ? t('gromzo.err.generic', { code }) : s
+  }
+
+  async function loadStatus() {
+    statusEl.textContent = t('gromzo.status.loading')
+    try {
+      const r = await fetch('/api/gromzo/status', { cache: 'no-store' })
+      const s = r.ok ? await r.json() : { available: false, code: 'http_' + r.status }
+      if (s.available) {
+        statusEl.textContent = t(s.linked ? 'gromzo.status.linked' : 'gromzo.status.not_linked')
+      } else if (s.code === 'not_running' || s.code === 'no_access') {
+        statusEl.textContent = t('gromzo.status.not_running')
+      } else {
+        statusEl.textContent = t('gromzo.status.unknown', { code: String(s.code || '?') })
+      }
+    } catch (e) {
+      statusEl.textContent = t('gromzo.status.unknown', { code: 'network' })
+    }
+  }
+  window.loadGromzoCard = loadStatus
+
+  async function requestQr() {
+    clearQr(false)
+    showError('')
+    if (typeof qrcode !== 'function') { showError(t('gromzo.qr.lib_error')); return }
+    btn.disabled = true
+    statusEl.textContent = t('gromzo.qr.generating')
+    let data = null
+    try {
+      const r = await fetch('/api/gromzo/owner-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        cache: 'no-store',
+      })
+      if (!r.ok) {
+        let code = 'http_' + r.status
+        let wait = null
+        try {
+          const b = await r.json()
+          code = String(b.code || b.error || code)
+          if (Number.isInteger(b.retry_after) && b.retry_after > 0) wait = b.retry_after
+        } catch { /* keep the HTTP code */ }
+        // GROMZORESETWAIT1031: during the identity reset lock, when the code can be asked again.
+        // owner_session_required: the card's own notice says it, with the login button (no second message).
+        if (code === 'owner_session_required' && typeof window.gromzoOwnerLogin === 'function') window.gromzoOwnerLogin(true)
+        else showError(code === 'identity_reset_in_progress' && wait !== null
+          ? t('gromzo.err.identity_reset_wait', { min: Math.max(1, Math.ceil(wait / 60)) })
+          : errorText(code))
+        btn.disabled = false
+        loadStatus()
+        return
+      }
+      data = await r.json()
+    } catch (e) {
+      showError(t('gromzo.err.generic', { code: 'network' }))
+      btn.disabled = false
+      loadStatus()
+      return
+    }
+    loadStatus()
+    const ttl = Math.max(1, Math.min(SHOW_MAX_S, Number(data && data.expires_in) || SHOW_MAX_S))
+    const hint = t(data && data.kind === 'login' ? 'gromzo.qr.login_hint' : 'gromzo.qr.join_hint')
+    try {
+      const qr = qrcode(0, 'M')
+      qr.addData(String(data && data.uri || ''))
+      qr.make()
+      qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })
+    } catch (e) {
+      data = null
+      showError(t('gromzo.err.generic', { code: 'qr' }))
+      btn.disabled = false
+      return
+    }
+    data = null // the URI is in no variable past this point, only in the drawing
+    hintEl.textContent = hint
+    area.hidden = false
+    const until = Date.now() + ttl * 1000
+    const tick = () => {
+      const left = Math.ceil((until - Date.now()) / 1000)
+      if (left <= 0) { clearQr(true); return }
+      cdEl.textContent = t('gromzo.qr.countdown', { sec: left })
+    }
+    tick()
+    timer = setInterval(tick, 1000)
+  }
+
+  btn.addEventListener('click', requestQr)
+  closeBtn.addEventListener('click', () => clearQr(false))
+  // The card is a collapsed <details>: folding it away wipes the code as well.
+  card.addEventListener('toggle', () => { if (!card.open) clearQr(false) })
+  window.addEventListener('pagehide', () => clearQr(false))
+  // A hidden tab wipes it too; leaving the Settings page does (switchPage).
+  document.addEventListener('visibilitychange', () => { if (document.hidden) clearQr(false) })
+  window.clearGromzoQr = () => clearQr(false)
+})()
+
+// === Gromzo card: which agents are on Gromzo (GROMZOAGENTPICK1101) ===
+// GET /api/gromzo/agents lists the fleet; switching on asks the owner to approve in the
+// app (POST .../enable), then this panel asks POST .../consent every few seconds until the
+// owner decided (the server paces the real mxd check to one per ~11 s). Switching off
+// is POST .../disable. Only the owner's dashboard session may do any of it; the
+// consent id never reaches the browser.
+;(function setupGromzoAgents() {
+  const listEl = document.getElementById('gromzoAgentList')
+  const errEl = document.getElementById('gromzoAgentsError')
+  if (!listEl || !errEl) return
+  const POLL_MS = 6000
+  // slug -> { kind: 'pending'|'busy'|'error'|'restarting', text?, until? } (this page's view only)
+  const local = new Map()
+  let rows = []
+  let pollTimer = null
+
+  function agentErr(code) {
+    for (const key of ['gromzo.agents.err.' + code, 'gromzo.err.' + code]) {
+      const s = t(key)
+      if (s !== key) return s
+    }
+    return t('gromzo.agents.err.generic', { code })
+  }
+
+  async function codeOf(r) {
+    let code = 'http_' + r.status
+    try { const b = await r.json(); code = String(b.code || b.error || code) } catch { /* keep the HTTP code */ }
+    return code
+  }
+
+  function showError(msg) {
+    errEl.textContent = msg
+    errEl.hidden = !msg
+  }
+
+  function stateOf(row) {
+    if (row.main) return { cls: 'is-on', text: t('gromzo.agents.state.main') }
+    const l = local.get(row.slug)
+    if (l && l.kind === 'busy') return { cls: '', text: t('gromzo.agents.state.busy') }
+    if (l && l.kind === 'restarting') return { cls: 'is-on', text: t('gromzo.agents.state.restarting') }
+    if (l && l.kind === 'error') return { cls: 'is-error', text: l.text }
+    const until = (l && l.kind === 'pending' && l.until) || row.pendingUntil
+    if (until && until > Date.now()) {
+      const min = Math.max(1, Math.ceil((until - Date.now()) / 60000))
+      return { cls: 'is-pending', text: t('gromzo.agents.state.pending', { min }) }
+    }
+    if (row.held) return { cls: 'is-error', text: t('gromzo.agents.state.held') }
+    return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
+  }
+
+  function render() {
+    listEl.replaceChildren()
+    for (const row of rows) {
+      const li = document.createElement('li')
+      li.className = 'gromzo-agent-row'
+      const main = document.createElement('div')
+      main.className = 'gromzo-agent-main'
+      const name = document.createElement('span')
+      name.className = 'gromzo-agent-name'
+      name.textContent = row.name || row.slug
+      const st = stateOf(row)
+      const state = document.createElement('span')
+      state.className = 'gromzo-agent-state' + (st.cls ? ' ' + st.cls : '')
+      state.textContent = st.text
+      state.setAttribute('aria-live', 'polite')
+      main.append(name, state)
+      // The agent's picture on Gromzo (Samu 64526): say up front what would stop it (too large, not PNG/JPEG, ...).
+      if (!row.main && row.avatarProblem) {
+        const pic = document.createElement('span')
+        pic.className = 'gromzo-agent-state is-warn'
+        pic.textContent = t('gromzo.agents.avatar.' + row.avatarProblem)
+        main.append(pic)
+      }
+      li.append(main)
+      if (!row.main) {
+        const l = local.get(row.slug)
+        const pending = (l && l.kind === 'pending') || (row.pendingUntil && row.pendingUntil > Date.now())
+        const disabled = !!pending || !!(l && (l.kind === 'busy' || l.kind === 'restarting'))
+        const label = row.name || row.slug
+        const mk = (on, primary, textKey) => {
+          const b = document.createElement('button')
+          b.className = primary ? 'btn-primary btn-compact' : 'btn-secondary btn-compact'
+          b.textContent = t(textKey)
+          b.setAttribute('aria-label', t(on ? 'gromzo.agents.aria.on' : 'gromzo.agents.aria.off', { name: label }))
+          b.disabled = disabled
+          b.addEventListener('click', () => (on ? switchOn(row) : switchOff(row)))
+          return b
+        }
+        const actions = document.createElement('div')
+        actions.className = 'gromzo-agent-actions'
+        // A held agent: mxd lists it but its last start held it back; ask for a new approval, or take it off.
+        if (row.held) actions.append(mk(true, true, 'gromzo.agents.btn.reapprove'))
+        if (row.gromzo) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
+        else if (!row.held) actions.append(mk(true, true, 'gromzo.agents.btn.on'))
+        li.append(actions)
+      }
+      listEl.append(li)
+    }
+  }
+
+  // GROMZOAGENTPICK1101 (Bridge): the Bridge's device key authenticates every call, but an owner
+  // action needs the owner's password login as well (a session cookie next to the key). The login
+  // button opens the dashboard's own login overlay; the logout button ends that session (the
+  // Bridge has no other way to: its Settings show the device, not the session).
+  // Shown AHEAD of any click (the card's first list load answers owner_session_required), as a notice,
+  // not an error: the owner learns up front that the password login is the missing step (Samu 64431 (3)).
+  const ownerInfo = document.getElementById('gromzoOwnerInfo')
+  const loginBtn = document.getElementById('gromzoLoginBtn')
+  const logoutBtn = document.getElementById('gromzoLogoutBtn')
+  window.gromzoOwnerLogin = (needed) => { if (ownerInfo) ownerInfo.hidden = !needed }
+  if (loginBtn) loginBtn.addEventListener('click', () => { if (typeof window.mvShowLogin === 'function') window.mvShowLogin({ cancellable: true }) })
+  if (logoutBtn) logoutBtn.addEventListener('click', async () => {
+    try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* ignore */ }
+    window.location.reload()
+  })
+  async function showLogoutIfDevice() {
+    if (!logoutBtn) return
+    try {
+      const s = await (await fetch('/api/auth/status', { cache: 'no-store' })).json()
+      logoutBtn.hidden = s.method !== 'device'
+    } catch { logoutBtn.hidden = true }
+  }
+
+  async function loadAgents() {
+    showError('')
+    try {
+      const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
+      if (!r.ok) {
+        const code = await codeOf(r)
+        rows = []; render()
+        window.gromzoOwnerLogin(code === 'owner_session_required')
+        if (code !== 'owner_session_required') showError(agentErr(code))
+        if (logoutBtn) logoutBtn.hidden = true
+        return
+      }
+      window.gromzoOwnerLogin(false)
+      void showLogoutIfDevice()
+      rows = (await r.json()).agents || []
+      for (const row of rows) if (row.pendingUntil && row.pendingUntil > Date.now() && !local.has(row.slug)) local.set(row.slug, { kind: 'pending', until: row.pendingUntil })
+      render()
+      ensurePolling()
+    } catch {
+      rows = []; render(); showError(agentErr('network'))
+    }
+  }
+
+  async function post(slug, action) {
+    return fetch('/api/gromzo/agents/' + encodeURIComponent(slug) + '/' + action, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store',
+    })
+  }
+
+  async function switchOn(row) {
+    local.set(row.slug, { kind: 'busy' }); render()
+    try {
+      const r = await post(row.slug, 'enable')
+      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      const b = await r.json()
+      if (b.state === 'pending') local.set(row.slug, { kind: 'pending', until: Date.now() + (Number(b.expires_in) || 600) * 1000 })
+      else local.delete(row.slug)
+      await loadAgents()
+    } catch {
+      local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
+    }
+  }
+
+  async function switchOff(row) {
+    if (!confirm(t('gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
+    local.set(row.slug, { kind: 'busy' }); render()
+    try {
+      const r = await post(row.slug, 'disable')
+      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      local.set(row.slug, { kind: 'restarting' })
+      await loadAgents()
+      setTimeout(() => { if (local.get(row.slug)?.kind === 'restarting') { local.delete(row.slug); loadAgents() } }, 15000)
+    } catch {
+      local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
+    }
+  }
+
+  async function pollOnce() {
+    const slugs = [...local].filter(([, l]) => l.kind === 'pending').map(([s]) => s)
+    if (!slugs.length || document.hidden) { stopPolling(); return }
+    for (const slug of slugs) {
+      try {
+        const r = await post(slug, 'consent')
+        if (!r.ok) {
+          let code = 'http_' + r.status
+          let added = ''
+          try { const e = await r.json(); code = String(e.code || e.error || code); added = typeof e.added_slug === 'string' ? e.added_slug : '' } catch { /* keep the HTTP code */ }
+          // mxd reloading or a transient refusal: keep waiting; a gone consent ends the wait.
+          if (code === 'no_pending') local.delete(slug)
+          // The approval belonged to another agent and mxd added THAT one (its switch here stays off).
+          else if (code === 'consent_mismatch' && added) local.set(slug, { kind: 'error', text: t('gromzo.agents.err.consent_mismatch_added', { slug: added }) })
+          else if (!['not_running', 'timeout', 'rate_limited', 'too_soon', 'unavailable', 'io'].includes(code)) local.set(slug, { kind: 'error', text: agentErr(code) })
+          continue
+        }
+        const b = await r.json()
+        if (b.state === 'pending') continue
+        if (b.state === 'added' || b.state === 'on') {
+          local.set(slug, { kind: 'restarting' })
+          setTimeout(() => { if (local.get(slug)?.kind === 'restarting') { local.delete(slug); loadAgents() } }, 15000)
+        } else {
+          local.set(slug, { kind: 'error', text: t('gromzo.agents.result.' + b.state) })
+        }
+      } catch { /* network blip: the next round asks again */ }
+    }
+    await loadAgents()
+  }
+
+  function ensurePolling() {
+    const any = [...local.values()].some((l) => l.kind === 'pending')
+    if (any && !pollTimer) pollTimer = setInterval(pollOnce, POLL_MS)
+    if (!any) stopPolling()
+  }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ensurePolling() })
+  window.addEventListener('pagehide', stopPolling)
+  window.loadGromzoAgents = loadAgents
+})()
+
 // === Archivalt kartyak ===
 ;(() => {
   let archivedInit = false
@@ -20370,7 +21360,7 @@ async function openResearchDoc(agent, name) {
       const backBtn = document.getElementById('archivedBackToKanban')
       if (backBtn) backBtn.addEventListener('click', () => switchPage('kanban'))
       const adOverlay = document.getElementById('archivedDetailOverlay')
-      document.getElementById('archivedDetailClose').addEventListener('click', () => closeModal(adOverlay))
+      document.getElementById('archivedDetailClose').addEventListener('click', () => requestOverlayClose(adOverlay))
       attachOverlayCloseGuard(adOverlay)
     }
     populateArchivedProjects()

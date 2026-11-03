@@ -529,7 +529,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
     if ! git fetch origin "$CURRENT_BRANCH" --quiet 2>>"$INSTALL_DIR/store/update.log"; then
       RESULT_MSG="Auto-rebase megszakitva: a 'git fetch origin ${CURRENT_BRANCH}' elbukott, igy csak egy ELAVULT origin-refre lehetne rebase-elni. Nezd: store/update.log"
       echo -e "${RED}HIBA:${NC} a fetch elbukott, az auto-rebase kimarad (elavult origin-refre nem rebase-elunk)."
-      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: a fetch elbukott, az auto-rebase kimaradt. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: a fetch elbukott, az auto-rebase kimaradt. Részletek: store/update.log" >/dev/null 2>&1 || true
       restore_stash_before_exit
       exit 5
     fi
@@ -540,7 +540,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
       git rebase --abort 2>/dev/null || true
       RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott -- kezi (szemantikus) rebase kell. Nezd: git log @{u}..HEAD"
       echo -e "${RED}HIBA:${NC} auto-rebase konfliktus, kezi feloldas kell (git log @{u}..HEAD)."
-      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit utkozik az upstreammel, az auto-rebase konfliktusba futott. Kezi szemantikus rebase kell. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit ütközik az upstreammel, az auto-rebase konfliktusba futott. Kézi szemantikus rebase kell. Részletek: store/update.log" >/dev/null 2>&1 || true
       restore_stash_before_exit
       exit 5
     fi
@@ -1130,8 +1130,47 @@ render_seed_template() {
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
+# A top-level task-config.json on stdin, as the dashboard seeder writes it
+# (agent-scaffold.ts copyTaskConfigWithAgentRewrite): parsed, a string "agent"
+# set to MAIN_AGENT_ID, re-serialised as 2-space JSON plus a newline, and NO
+# placeholder substitution. Unparseable input comes out as is (the seeder's
+# byte-copy fallback). #2285: comparing against the placeholder render instead
+# kept the shipped literal "agent": "marveen", so on any other MAIN_AGENT_ID the
+# untouched copy never matched and a config fix never arrived.
+render_seeded_task_config() {
+  MAIN_AGENT_ID="${MAIN_AGENT_ID:-}" node -e '
+    let raw = ""
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", (d) => { raw += d })
+    process.stdin.on("end", () => {
+      let cfg
+      try { cfg = JSON.parse(raw) } catch { process.stdout.write(raw); return }
+      if (cfg && typeof cfg === "object" && typeof cfg.agent === "string") cfg.agent = process.env.MAIN_AGENT_ID
+      process.stdout.write(JSON.stringify(cfg, null, 2) + "\n")
+    })'
+}
+
+# The bytes a seeder writes for the shipped file on stdin. $1 = mode, $2 = its
+# path (repo-relative or the source file; only the file name is read).
+#   verbatim  as is (seed-skills)
+#   template  the identity placeholders (the shell seeders: seed-scheduled-tasks)
+#   seeded    what ensureDefaultScheduledTasks writes for the top-level
+#             scheduled-tasks: task-config.json via render_seeded_task_config,
+#             any other file with the placeholders
+render_seed_stream() {
+  case "$1" in
+    template) render_seed_template ;;
+    seeded)
+      case "$2" in
+        */task-config.json|task-config.json) render_seeded_task_config ;;
+        *) render_seed_template ;;
+      esac ;;
+    *) cat ;;
+  esac
+}
+
 # True (0) iff $1 (an installed file) is byte-identical to ANY historical version
-# of $2 (a repo-relative path), rendered when $3 = "template".
+# of $2 (a repo-relative path), rendered by mode $3 (render_seed_stream).
 seed_copy_is_untouched() {
   installed="$1"; rel="$2"; mode="${3:-verbatim}"
   [ -f "$installed" ] || return 1
@@ -1140,11 +1179,7 @@ seed_copy_is_untouched() {
   # Newest first, capped: a file we shipped 25+ revisions ago and never fixed
   # since is not worth the extra git calls.
   for blob in $(git -C "$INSTALL_DIR" log --format=%H -n 25 -- "$rel" 2>/dev/null); do
-    if [ "$mode" = "template" ]; then
-      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | render_seed_template | shasum -a 256 | awk '{print $1}')"
-    else
-      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
-    fi
+    candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | render_seed_stream "$mode" "$rel" | shasum -a 256 | awk '{print $1}')"
     [ "$cur" = "$candidate" ] && return 0
   done
   return 1
@@ -1152,7 +1187,7 @@ seed_copy_is_untouched() {
 
 # Render one shipped file the way the seeder would write it ($1 = source, $2 = mode).
 render_seed_file() {
-  if [ "$2" = "template" ]; then render_seed_template <"$1"; else cat "$1"; fi
+  render_seed_stream "$2" "$1" <"$1"
 }
 
 # Scheduled-task registry: take the registry verdict of the task dir being
@@ -1181,10 +1216,10 @@ refresh_one_seed_file() {
   [ "$want" = "$have" ] && return 0
   if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
     sched_pre_verify_once
-    if [ "$mode" = "template" ]; then
-      render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-    else
+    if [ "$mode" = "verbatim" ]; then
       cp "$f" "$installed"
+    else
+      render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
     fi
     SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
     sched_dir_refreshed=1
@@ -1250,10 +1285,10 @@ refresh_untouched_seeds() {
       elif [ "$skill_current" = "1" ]; then
         sched_pre_verify_once
         mkdir -p "$(dirname "$installed")"
-        if [ "$mode" = "template" ]; then
-          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-        else
+        if [ "$mode" = "verbatim" ]; then
           cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
+        else
+          render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
         sched_dir_refreshed=1
@@ -1294,7 +1329,9 @@ run_seed_refresh() {
     # ensureDefaultScheduledTasks but never refreshed -- a one-shot seed, so
     # every shipped fix reached new installs only. Measured on the reference
     # host: 5/5 live seeded copies had drifted. Same untouched-only rule.
-    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
+    # "seeded", not "template": that seeder rewrites the config's agent field and
+    # substitutes nothing in it (#2285, render_seeded_task_config).
+    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "seeded"
   fi
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
@@ -1379,11 +1416,7 @@ sched_task_all_shipped() {
       *) [ -f "$_sa_entry" ] || return 1 ;;
     esac
     [ ! -L "$_sa_seed" ] && [ -f "$_sa_seed" ] || return 1
-    if [ "$_sa_mode" = "template" ]; then
-      _sa_want="$(render_seed_template <"$_sa_seed" | shasum -a 256 | awk '{print $1}')"
-    else
-      _sa_want="$(shasum -a 256 <"$_sa_seed" | awk '{print $1}')"
-    fi
+    _sa_want="$(render_seed_file "$_sa_seed" "$_sa_mode" | shasum -a 256 | awk '{print $1}')"
     _sa_have="$(shasum -a 256 <"$_sa_entry" 2>/dev/null | awk '{print $1}')"
     [ -n "$_sa_have" ] && [ "$_sa_want" = "$_sa_have" ] || return 1
   done <<EOF_SA
@@ -1996,9 +2029,9 @@ _notify() { # status
   [ -x "$INSTALL_DIR/scripts/notify.sh" ] || [ -f "$INSTALL_DIR/scripts/notify.sh" ] || return 0
   local msg
   case "$1" in
-    success)     msg="✅ Auto-update kesz: ${OLD_SHORT} -> ${NEW_SHORT}. A dashboard ujraindult es valaszol (health OK)." ;;
-    rolled-back) msg="⚠️ Auto-update: a frissites nem sikerult (a dashboard nem indult), visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). Reszletek: store/update.log" ;;
-    *)           msg="🔴 Auto-update SIKERTELEN: a dashboard a frissites ES a rollback utan sem valaszol a ${PORT} porton. Kezi beavatkozas kell. Reszletek: store/update.log" ;;
+    success)     msg="✅ Auto-update kész: ${OLD_SHORT} -> ${NEW_SHORT}. A dashboard újraindult, és válaszol (health OK)." ;;
+    rolled-back) msg="⚠️ Auto-update: a frissítés nem sikerült (a dashboard nem indult), visszaálltunk a korábbi működő verzióra (${OLD_SHORT}). Részletek: store/update.log" ;;
+    *)           msg="🔴 Auto-update SIKERTELEN: a dashboard a frissítés ÉS a rollback után sem válaszol a ${PORT} porton. Kézi beavatkozás kell. Részletek: store/update.log" ;;
   esac
   bash "$INSTALL_DIR/scripts/notify.sh" "$msg" >/dev/null 2>&1 || true
 }

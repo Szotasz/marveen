@@ -121,6 +121,9 @@ TOKEN=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
+# VOICETOKENLEAK1101 round 3: never in a child's environment (an exported TOKEN the caller had keeps its export
+# attribute through the assignment), and never on curl's argv (the replay below passes it by process substitution).
+export -n TOKEN
 
 # Replays delivered-but-not-completed messages from the last 2 hours into
 # a freshly restarted agent session. Called after a confirmed restart.
@@ -143,7 +146,7 @@ replay_unfinished_messages() {
   # elnyeli a sor hatralevo reszet (merve: az URL is a kommentbe kerult, a `bash -n` megis zold
   # maradt -- a szintaxis-ellenorzes a JELENTEST nem meri).
   RESPONSE=$(curl -s -m 5 \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
     -w '\n%{http_code}' \
     "http://localhost:${WEB_PORT}/api/messages?agent=${AGENT_ID}&limit=200" 2>/dev/null) || return
   HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)

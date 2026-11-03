@@ -422,7 +422,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       success_criteria?: string
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
-      json(res, { error: 'Legalább egy jóváhagyott alfeladat kötelező' }, 400)
+      json(res, { error: 'Legalább egy jóváhagyott részfeladat kötelező' }, 400)
       return true
     }
     const baseDesc = idea.description ?? ''

@@ -25,6 +25,7 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
 | `store/telegram-topics.json` | `/topic new <név>` (Telegram) | A fő chat elnevezett témái: `{ "chatId", "topics": { "<név>": <message_thread_id> } }` (0600); csak `TELEGRAM_TOPICS_ENABLED` mellett íródik |
+| `store/extra-hooks.json` | kézzel (opcionális) | Telepítés-helyi plusz hookok minden sub-ágens generált `settings.json`-jába, a beépített kapuk után -- ld. lent |
 
 ### A dashboard nyelve
 
@@ -155,6 +156,15 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje (felülbírálás); üres = telepített `gemma4` felismerése, olyan híján minden warm | igen |
 | `MEMORY_CONTENT_FILTER_STRICT_COMMANDS` | boolean | `0` (ki) | A memória-tartalomszűrő szigorú parancs-szintaxis csoportja (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf) a memória POST/PUT/PATCH-en; ára: a parancsot csak idéző szöveg is 400-at kap | igen |
+| `OSS_INVENTORY_NOTES_DIRS` | string | `research` | Vesszővel elválasztott mappanevek az ügynök mappáján belül, amelyek `*.md` kutatási jegyzeteiből az átvett nyílt forrású projektek leltára (Kapcsolatok oldal, `GET /api/opensource-inventory`) a csillagszámot és a mért előtte/utána hatást olvassa, pl. `research,kutatas`; csak sima mappanév (nincs `/`, nincs `..`) | nem |
+| `OSS_INVENTORY_OWN_OWNERS` | string | (üres) | Vesszővel elválasztott repó-tulajdonosnevek az átvett nyílt forrású projektek leltárához, pl. a saját GitHub-fiók(ok). A bejárás által elért, olvasható http(s)- vagy ssh-originű klónok a listán vannak, hacsak az origin-tulajdonosnevük nem szerepel az OSS_INVENTORY_OWN_OWNERS beállításban. A bejárás nem néz bele másik klónba, node_modules-ba, gyorsítótárakba, virtuális környezetekbe, kicsomagolt vendor-csomagokba és szimbolikus linkkel bekötött mappákba. A név a klón saját origin-címének első útvonal-tagja, bármelyik hoszton (a hosztot nem nézi); az egyező klónt, egy ilyen tulajdonosnál tartott, harmadik féltől származó forkot is, megszámolja (`summary.unlisted_clones`), nem listázza. A tulajdonjogot nem a telepítés remote-jaiból következteti ki. Az olvasható http(s)- vagy ssh-origin nélküli klónt megszámolja, nem listázza | nem |
+
+**Registry -- Audit modul (részlet):**
+
+| Kulcs | Típus | Alapérték | Leírás | Újraindítás |
+|-------|-------|-----------|--------|-------------|
+| `AGENT_TOKENS` | boolean | `0` (ki) | Saját dashboard-token minden al-ügynöknek (`agents/<név>/.dashboard-token`), szerveroldali hatókörrel és azonosság-kötéssel; lásd `agens-azonositas-api.md` 8. fejezet | nem (az al-ügynök következő indításakor lép életbe) |
+| `SKILL_QUARANTINE` | boolean | `0` (ki) | Skill-karantén. Ki: az új vagy javított skill (javaslat, generálás, import) azonnal élesedik, a scan, a hash-kötés és egy auditsor (`store/skills-audit.jsonl`) mellett; ami a scan számára nem mutatható teljesen, jóváhagyásra vár. Be: minden új skill a gazda jóváhagyásáig vár. Kikapcsolni az API-n csak a dashboard-belépéssel lehet | nem |
 
 **Registry -- Heartbeat modul:**
 
@@ -351,6 +361,89 @@ FROM config_change_log ORDER BY created_at DESC LIMIT 20;
 
 Autonómia szintek: `1` = csak jelez, `2` = javasol + jóváhagyás kell, `3` = autonóm + utólag jelent. `locked: true` esetén max szint 1 (hard safety szabály miatt nem emelhető).
 
+### extra-hooks.json struktúra
+
+Opcionális. Ha egy telepítés minden sub-ágensbe egy plusz hookot akar (saját PreToolUse-kapu,
+műveletnapló), nem kell az `agent-scaffold.ts`-t foltozni: a bejegyzés ide kerül, és a scaffold
+minden sub-ágens generált `agents/<név>/.claude/settings.json`-jába beírja, a spawnkor és a
+dashboard indulásakor is (ilyenkor a meglévő ágensekre is, újraindítás nélkül).
+
+```json
+{
+  "entries": [
+    { "event": "PreToolUse", "matcher": "Bash", "script": "local-hooks/post-gate.py", "timeout": 120, "failClosed": true },
+    { "event": "PostToolUse", "matcher": "Bash", "script": "local-hooks/action-log.py", "failClosed": false }
+  ]
+}
+```
+
+| Mező | Kötelező | Jelentés |
+|------|----------|----------|
+| `event` | igen | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` vagy `Notification` |
+| `matcher` | nem | A Claude Code matcher-e (regex), legfeljebb 500 karakter; hiányában minden hívásra fut |
+| `script` | igen | Relatív út a projekt gyökeréhez képest, a `local-hooks/` mappán belül (gitignore-olt), `.py`, `.mjs` vagy `.js`; csak betű, szám és `_ . / @ + -`, `..` nélkül |
+| `timeout` | nem | Másodperc, 1..600, alapból 10 |
+| `failClosed` | igen | `true`: a beépített kapukkal azonos burok (hiányzó interpreter vagy a 0-tól és 2-től eltérő kilépés = tiltás, a határidő 2 mp-cel a timeout előtt). Csak `PreToolUse`-on engedett, mert `UserPromptSubmit`-en egy összeomlás minden promptot blokkolna. `false`: sima hívás, egy összeomlás nem blokkol |
+| `scope` | nem | Csak `"subagents"` (az alapértelmezés); más érték esetén a bejegyzés kimarad |
+| `description` | nem | Szabad szöveg, a scaffold nem használja |
+
+Amit egy bejegyzés NEM tud: beépített hookot cserélni, törölni vagy átrendezni (a plusz hook az
+eseménye beépített hookjai UTÁN kerül, és a scaffold csak a saját, `: extra-hook;` előtagú
+bejegyzéseit veszi ki); a `<gyökér>/local-hooks/` mappán kívüli (a symlinkeket feloldva, így
+ágenskönyvtár sem linkelhető be), ideiglenes (`/tmp`) vagy nem létező fájlra mutatni (ugyanaz a
+regisztrációs őr, mint a beépített kapuknál); olyan utat vagy matchert használni, amelyben egy
+`scripts/` vagy `scripts/hooks/` alatti fájlnév szerepel, mert ott élnek a beépített kapuk (a
+beépített injektorok fájlnév alapján találják meg a saját bejegyzésüket); az ütköző nevű szkriptet
+át kell nevezni.
+
+Ki írhatja: a `store/extra-hooks.json` és a `local-hooks/` dönti el, mi fut MINDEN sub-ágens
+sessionjében. A szándékolt írók a gazda és a fő ágens, ezeken a sub-ágensek self-pace kapuja nem
+fut. Amit ez a kapu garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:
+
+- Tiltja a sub-ágens natív fájleszközös írását (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
+  bármelyikre, név és feloldott valódi útvonal szerint.
+- Tiltja a sub-ágens olyan Bash-parancsát, amely **leírja** valamelyik védett nevet, kivéve, ha
+  a parancs sima olvasás (`cat`, `grep`, `ls`, ...), és a kimenete nincs rá irányítva. A
+  „leírja” ide érti:
+  - az idézőjeles, backslash-es, `$'...'`, escape-elt és szó szerinti összefűzéses alakot
+    (`lo''cal-hooks`, `ext""ra-hooks.json`, `'extra-'+'hooks.json'` egy `python3 -c`-ben);
+  - az ugyanabban a parancsban szó szerinti értéket kapó változót (`D=local; ... $D-hooks`);
+  - a glob-, kapcsos zárójeles vagy részben feloldatlan szót, amely a névre kibomolhat: ha a
+    név saját karaktereiből legalább hármat tartalmaz (`*-hooks`, `$X-hooks`), vagy ha
+    közvetlenül a valódi projektgyökér, illetve store-könyvtár alatt áll, akármennyit (a
+    szó szerinti `cd`-t és a symlinkeket követi);
+  - az olyan programot, amely maga nevezi el a létrehozott fájlokat (`cp`, `mv`, `ln`, `install`,
+    `rsync`, `tar`, `unzip`, `cpio`, `patch`), ha magát a projektgyökeret vagy a store-könyvtárat
+    kapja argumentumként.
+  A szabály és az üzenete ugyanaz, mint a `store/egress-allowlist.json`-é.
+- **Nem** állítja meg azt a sub-ágenst, amelyik meg akarja írni a fájlt. Átmegy minden név,
+  amelyet a parancs nem ír le: a futás közben összerakott útvonal (`chr()`, `base64`, egy azt
+  kiíró `$(...)`), egy korábban megírt, majd lefuttatott szkriptfájl, vagy egy másik program (egy
+  értelmező, `git apply` / `git checkout`, egy build-eszköz), amely egy maga választotta könyvtár
+  alá ír. Minden ágens ugyanazzal az OS-felhasználóval fut, így ezek a
+  fájlok ugyanabban a bizalmi körben vannak, mint bármelyik ágens saját `settings.json`-ja,
+  amelyet egy sub-ágens szintén szerkeszthet.
+- A korlátot a változás láthatóvá tétele ellensúlyozza. A dashboard minden szinkronnál
+  (dashboard-indulás, sub-ágens spawn) naplózza a fájl és az általa megnevezett összes
+  `local-hooks/` szkript sha256-át (`extra-hooks.json: sha256 of the file and of each script it
+  names`). Egy tartalmat egyszer naplóz: az indulás utáni első szinkron mindig ír, a későbbiek
+  csak változáskor. Vesd össze a sort az indulások között a `dashboard.log`-ban.
+
+Ugyanezért nem lehet a szkript egy ágens saját könyvtárában (`agents/<név>/`): azt az ágens
+semmilyen kapu nélkül írja.
+
+Hiányzó, üres fájl vagy `{"entries": []}`: a generált beállítás bájtra azonos azzal, ami e
+funkció nélkül készülne. Hibás JSON vagy rossz szerkezet: egyetlen plusz hook sem kerül be;
+hibás bejegyzés: csak az marad ki. Mindkettő `error` szintű naplósor
+(`extra-hooks.json: invalid entries IGNORED`), és egyik sem érinti a beépített kapukat. Ha egy
+bejegyzést törölsz a fájlból, a következő spawn vagy dashboard-indulás kiveszi az ágensekből.
+
+A fő ágens hookjai a repóban szállított `.claude/settings.json`-ban vannak, amit a scaffold nem ír
+(#1305), ezért ez a fájl a fő ágensre nem hat.
+
+A `scripts/hook-load-watch.py` a plusz `PreToolUse` hookot ugyanúgy betöltés-próbálja, mint a
+beépítetteket, a `scripts/boot-hook-prune.py` pedig kiveszi, ha a szkriptje eltűnt.
+
 ---
 
 ## agents/<name>/ -- sub-ágensek konfigurációja
@@ -365,6 +458,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 | `agents/<name>/CLAUDE.md` | kézzel | Az ágens instrukciói és személyisége |
 | `agents/<name>/SOUL.md` | kézzel | Opcionális mélyebb személyiség-leíró |
 | `agents/<name>/avatar.png` | kézzel | Az ágens Telegram bot profilképe |
+| `agents/<name>/.dashboard-token` | automatikus (`AGENT_TOKENS=1`) | Az al-ügynök saját dashboard-tokenje (0600); a szerver ezzel csak az ügynök-API-t engedi |
 
 ### agent-config.json struktúra
 
@@ -538,6 +632,9 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = a text módú ügynököknél is átirat készül a bejövő hangüzenetről (alapból ki; az ügynökönkénti `voice.transcribeInbound` felülírja). Lásd `voice.md` |
 | `PERMISSION_ALERT_MARKS` | Mikor szóljon a figyelő egy megválaszolatlan engedélykérő dialógusról: vesszővel elválasztott időpontok a dialógus megjelenésétől (alapból `15m,30m,1h,2h,8h,24h`; egy al-ügynök kérdéséről a fő ügynök azonnal üzenetet kap, a gazda az első időponttól; `s`/`m`/`h`/`d`, a puszta szám perc). Az utolsó érték egyben az ismétlési idő; a `0` első értékként azonnali jelzés. Értelmezhetetlen értéknél az alapértelmezés marad, naplózva |
+| `WEB_ONLY` | `true` = minden háttér-szolgáltatás ki (ütemező, router, monitorok, worker-előindítás). **Csak a folyamat környezetéből hat** (`WEB_ONLY=true node dist/index.js`); a `.env`-be írva hatástalan, mert nincs dotenv |
+| `MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES` | Egy második példány (git worktree, ideiglenes mappában álló klón) WEB_ONLY nélkül sem futtat háttér-szolgáltatást, mert az ütemezője a globális ütemezett feladatokat az élő sessionökbe lőné. `1` = mégis fusson (szándékos teszt-példány), és ezt indításkor figyelmeztetésként naplózza. **Csak a folyamat környezetéből hat**, mint a `WEB_ONLY`. Második példánynak a git worktree és az ideiglenes mappában (`/tmp`, `/private/tmp`, `/var/folders`, az OS tmpdir) álló klón számít: egy ezeken KÍVÜLI sima `git clone` telepítésnek számít, ott a szolgáltatások futnak, tehát ott a `WEB_ONLY=true` a védelem |
+| `MXD_DASH_SOCK` | A marveen-mxd dash.sock útja. **Fordítva: csak a `.env` fájlból olvasódik** (hívásonként), a folyamat környezetéből nem; nélküle a platform-alapértelmezett, éles socket. Teszt-példánynál a saját `.env`-jébe írd |
 
 ---
 

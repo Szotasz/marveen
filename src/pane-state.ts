@@ -250,6 +250,21 @@ const BUSY_INDICATORS: RegExp[] = [
   new RegExp(
     String.raw`\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*${TURN_ELAPSED}\s*·\s*↓`,
   ),
+  // Hook phase (HOOKPHASEBUSY1027). While Claude Code runs the hooks of a
+  // PreToolUse / PostToolUse / Stop / UserPromptSubmit event, the spinner line
+  // opens its parenthesis with `running <Event> hooks…` and a hook counter, so
+  // the elapsed time is no longer the first thing inside it and neither pattern
+  // above matches. Measured on live panes: "· Osmosing… (running PreToolUse
+  // hooks… 0/6 · 4m 49s · ↓ 23.5k tokens)", and "(running UserPromptSubmit
+  // hooks… 8/10 · 0s)" with no token counter at all. Such a pane read idle and
+  // ready for a prompt in the middle of a live turn. The match is anchored to
+  // the start of a line (`<glyph> <label>… (`) so prose or a quoted frame in
+  // the reply text, which never starts a line that way, stays idle; the
+  // trailing `· ` / `)` keeps the elapsed time a whole token.
+  new RegExp(
+    String.raw`^\s*\S \S+… \(running [A-Za-z]+ hooks(?:…|\.\.\.)\s*\d+/\d+\s*·\s*${TURN_ELAPSED}(?=\s*[·)])`,
+    'm',
+  ),
 ]
 
 // `esc to interrupt` is a footer-region-only busy signal: Claude Code

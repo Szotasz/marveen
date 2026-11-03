@@ -108,8 +108,8 @@ describe('agent-scaffold.ts buildAutonomyBody: approval wiring content', () => {
     // generateClaudeMd must append the autonomy section with markers after LLM output
     const genFn = SCAFFOLD.slice(SCAFFOLD.indexOf('async function generateClaudeMd('))
     expect(genFn).toContain('AUTONOMY_BEGIN')
-    // #2232: the creation path passes the agent's strict flag, so a strict agent gets the helper recipes
-    expect(genFn).toContain('buildAutonomyBody(name, strict)')
+    // #2232, VOICETOKENLEAK1101 PR-A1: the creation path renders the section as a start does (helper recipes unless denied)
+    expect(genFn).toContain('buildAutonomyBody(name, helper, strict)')
     expect(genFn).toContain('AUTONOMY_END')
   })
 

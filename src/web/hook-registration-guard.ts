@@ -33,6 +33,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'provenance-gate.py',
   'email-send-gate.mjs',
   'self-pace-gate.mjs',
+  'db-write-gate.mjs',
   'telegram_progress.py',
   'telegram_progress_clear.py',
   'telegram_progress_watchdog.py',
@@ -56,6 +57,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'tool-log-capture.py',
   'memory-frontmatter-gate.py',
   'memory-frontmatter-bash-gate.py',
+  'shell-rescan-guard.py',
   // The /clear continuity pair: SessionEnd capture + SessionStart replay.
   'clear-capture.py',
   'clear-replay.py',
@@ -146,6 +148,39 @@ export function shouldRegisterHooks(opts: {
     return { register: false, reason: 'WEB_ONLY staging mode' }
   }
   return { register: true }
+}
+
+// The opt-in for a second instance that runs the background services on purpose (Samu 64702, 64709):
+// read from the PROCESS environment, where WEB_ONLY is read (src/web.ts; there is no dotenv, so neither
+// of the two has any effect in the instance's .env file), and logged at start when it is on.
+export const ALLOW_SECOND_INSTANCE_SERVICES_KEY = 'MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES'
+
+export interface BackgroundServicesDecision {
+  run: boolean
+  /** Why the services are off, or why they run although this is a second instance. */
+  reason?: string
+  /** True when a second instance runs them only because of the opt-in. */
+  override?: boolean
+}
+
+// May this instance run the background services (schedule runner, message router, monitors, worker
+// pre-start, persona-file ensures)? The same second-instance decision as the hook registration: a
+// worktree checkout or a temp-dir clone reads the user-global scheduled tasks and the shared tmux
+// server, so its schedule runner fires the live fleet's tasks into live sessions (2026-11-01 15:23,
+// Abel's worktree instance without WEB_ONLY). WEB_ONLY=true always turns them off; a second instance
+// turns them back on only with the explicit opt-in (allowSecondInstance).
+export function shouldRunBackgroundServices(opts: {
+  projectRoot: string
+  webOnly: boolean
+  allowSecondInstance: boolean
+  isGitFile?: (root: string) => boolean
+  tmpDir?: string
+}): BackgroundServicesDecision {
+  if (opts.webOnly) return { run: false, reason: 'WEB_ONLY staging mode' }
+  const second = shouldRegisterHooks({ projectRoot: opts.projectRoot, webOnly: false, isGitFile: opts.isGitFile, tmpDir: opts.tmpDir })
+  if (second.register) return { run: true }
+  if (opts.allowSecondInstance) return { run: true, override: true, reason: second.reason }
+  return { run: false, reason: second.reason }
 }
 
 type CommandHook = { type?: string; command?: string; [k: string]: unknown }

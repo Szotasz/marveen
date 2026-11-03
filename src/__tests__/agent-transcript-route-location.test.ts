@@ -84,7 +84,12 @@ describe('transcript route: reads where the session writes', () => {
     const { ctx, out } = fakeCtx(`/api/agents/${SUB_AGENT}/transcript`)
     expect(await tryHandleAgents(ctx, WEB_DIR)).toBe(true)
     expect(out.status).toBe(200)
-    expect(configDirCalls).toEqual([SUB_AGENT])
+    // Two calls, not one: the route asks configDirFor() for the config root,
+    // and resolveTranscriptLocation() (asked for the working dir) now answers a
+    // sub-agent's config root through configDirFor() too. Both must be about
+    // this agent; the binding itself is pinned by opts.configDir below.
+    expect(configDirCalls.length).toBeGreaterThan(0)
+    expect(configDirCalls.every((n) => n === SUB_AGENT)).toBe(true)
     expect(seen).toHaveLength(1)
     expect(seen[0].opts.workingDir).toBe(join(PROJECT_ROOT, 'agents', SUB_AGENT))
     expect(seen[0].opts.configDir).toBe(`${ISOLATED_ROOT}/${SUB_AGENT}`)

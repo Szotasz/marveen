@@ -4,6 +4,7 @@ import { PROJECT_ROOT } from '../../config.js'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -73,6 +74,16 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
 
       if (level > cat.maxLevel) {
         json(res, { error: `Category "${key}" max level is ${cat.maxLevel}` }, 400)
+        return true
+      }
+
+      // FLEETIMPORTGATE1022 (4): raising a level takes the owner's session once a dashboard login
+      // exists. The fleet's one shared token reaches this route from every agent, and email_send
+      // at 3 lets the mail approval gate wave every send through. Lowering stays on the token:
+      // it only narrows what an agent may do. A current level that is not a number counts as a raise.
+      const lowering = typeof cat.level === 'number' && level <= cat.level
+      if (!lowering && !mayActAsOwner(ctx.auth, req)) {
+        json(res, OWNER_SESSION_REQUIRED, 403)
         return true
       }
 
