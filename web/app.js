@@ -7413,6 +7413,29 @@ function cronCadence(cron) {
 }
 const CADENCE_ICON = { 0: '⚡', 1: '☀️', 2: '📅', 3: '🗓️', 5: '•' }
 
+// A task the runner skips (#2429). GET /api/schedules carries `registry` per task:
+// 'ok' when the runner fires it, else the reason it does not ('unregistered',
+// 'hash-mismatch', 'no-hash', 'registry-error'). Such a row says "not firing"
+// in place of active/paused, with the reason and the fix in the row itself (a
+// tooltip alone is invisible on touch). An answer without the field (an older
+// server) renders as before.
+const SCHEDULE_REGISTRY_REASONS = ['unregistered', 'hash-mismatch', 'no-hash', 'registry-error']
+
+function scheduleNotFiring(task) {
+  return !!task && typeof task.registry === 'string' && task.registry !== 'ok'
+}
+
+function scheduleStatusBadge(task) {
+  if (scheduleNotFiring(task)) return `<span class="badge badge-not-firing">${t('tasks.status.not_firing')}</span>`
+  return `<span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>`
+}
+
+function scheduleNotFiringNote(task) {
+  if (!scheduleNotFiring(task)) return ''
+  const reason = SCHEDULE_REGISTRY_REASONS.includes(task.registry) ? t('tasks.registry.' + task.registry) : task.registry
+  return `<div class="schedule-not-firing">${escapeHtml(t('tasks.status.not_firing_tip', { reason, name: task.dirName || task.name }))}</div>`
+}
+
 function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
@@ -7426,13 +7449,14 @@ function makeScheduleRow(task) {
         <div class="schedule-title">
           ${escapeHtml(task.description || task.name)}
           ${task.type === 'heartbeat' ? '<span class="badge badge-heartbeat">💓 heartbeat</span>' : ''}
-          <span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
+          ${scheduleStatusBadge(task)}
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
           <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
+        ${scheduleNotFiringNote(task)}
       </div>
       <div class="schedule-actions">
         <button class="btn-icon" data-action="run" title="${t('tasks.btn.run_now')}">
@@ -14303,7 +14327,7 @@ async function loadOverview() {
     const taskDiff = d.tasksToday - d.tasksYesterday
     document.getElementById('statTasksSub').textContent = taskDiff === 0 ? t('overview.stat.same_as_yesterday') : (taskDiff > 0 ? '+' + taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim() : taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim())
     document.getElementById('statMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
-    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
+    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${t('overview.stat.sub.categories', { n: d.memories.categories })}`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     renderQuotaStrip(d.quota, d.quotaFable)
