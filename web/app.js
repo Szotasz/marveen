@@ -14815,6 +14815,14 @@ async function pollUpdateOutcome(resetBtn) {
         setTimeout(() => window.location.reload(), 2000)
         return
       }
+      if (st === 'warning') {
+        // ANETTUPDATESTASH1102: the update applied, but something needs a
+        // human (stash conflict, settings.json gate). No auto-reload: it
+        // would wipe this message before anyone reads it.
+        if (resetBtn) resetBtn()
+        showToast(t('updates.toast.warning', { old: result.old || '', new: result.new || '', msg: result.message || '' }), 30000)
+        return
+      }
       if (st === 'rolled-back') {
         if (resetBtn) resetBtn()
         showToast(t('updates.toast.rolled_back', { old: result.old || '', msg: result.message || '' }))

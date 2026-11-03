@@ -1902,6 +1902,7 @@ window._i18n.hu = {
   'updates.toast.started':       'Frissítés elindult, a dashboard újratöltődik...',
   'updates.toast.applying':      'Frissítés folyamatban (újraindítás és health-check)...',
   'updates.toast.success':       'Frissítve: {old} -> {new}. Újratöltés...',
+  'updates.toast.warning':       'Frissítve ({old} -> {new}), de kézi figyelmet igényel: {msg}',
   'updates.toast.rolled_back':   'A frissítés nem sikerült, visszaálltunk a korábbi verzióra ({old}). {msg}',
   'updates.toast.failed':        'Frissítés sikertelen ({phase}): {msg}',
   'updates.toast.status_timeout':'A frissítés állapota nem érkezett meg időben. Nézd meg a store/update.log fájlt.',
