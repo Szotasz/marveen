@@ -237,5 +237,95 @@ class ConflictedStashPop(Base):
         self.assertIn("UU .claude/settings.json", self.r.status())
 
 
+class ResolveConflictsMode(Base):
+    """BRIDGEREPAIR1103: the Bridge repair step passes --resolve-conflicts."""
+
+    make_conflict = ConflictedStashPop.make_conflict
+
+    def test_customer_key_on_the_stash_side_is_resolved_and_preserved_in_the_stash(self):
+        raw = cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace")
+        local = cli_enable(raw, "frontend-design@claude-plugins-official")
+        upstream = self.make_conflict(local)
+        stash_commit = self.r.git("rev-parse", "stash@{0}").stdout.decode().strip()
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([(c["path"], c["action"]) for c in out["resolvedConflicts"]],
+                         [(".claude/settings.json", "resolved-to-head")])
+        self.assertEqual(out["unmergedLeft"], [])
+        self.assertEqual(self.r.read(".claude/settings.json"), upstream)
+        self.assertEqual(self.r.git("diff", "--cached", "--name-only").stdout.decode(), "")  # git reset -q ran
+        # the customer's key is NOT lost: it is in the kept stash entry
+        self.assertEqual(out["stash"]["before"], 1)
+        self.assertEqual(out["stash"]["after"], 1)
+        self.assertTrue(out["stash"]["kept"])
+        self.assertEqual(out["stash"]["autoStash"][0]["commit"], stash_commit)
+        self.assertIn(b"frontend-design@claude-plugins-official",
+                      self.r.git("show", "stash@{0}:.claude/settings.json").stdout)
+
+    def test_any_unmerged_path_is_resolved_not_only_the_known_ones(self):
+        self.r.write("CLAUDE.md", b"line\n")
+        self.r.commit("add CLAUDE.md")
+        self.r.write("CLAUDE.md", b"customer line\n")
+        self.r.git("stash", "push", "-q", "-m", "marveen-update-auto-stash x")
+        self.r.write("CLAUDE.md", b"upstream line\n")
+        self.r.commit("upstream")
+        self.assertNotEqual(self.r.git("stash", "pop", check=False).returncode, 0)
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.r.read("CLAUDE.md"), b"upstream line\n")
+        self.assertEqual(self.r.status(), "")
+        self.assertTrue(out["stash"]["kept"])
+
+    def test_refuses_without_an_auto_stash_entry(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        # rename the entry: no marveen-update-auto-stash left in the list
+        c = self.r.git("rev-parse", "stash@{0}").stdout.decode().strip()
+        self.r.git("stash", "drop", "-q")
+        self.r.git("stash", "store", "-m", "someone else's stash", c)
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual((code, out["ok"], out["exitCode"]), (2, False, 2))
+        self.assertIn("auto-stash", out["error"])
+        self.assertIn("UU .claude/settings.json", self.r.status())
+
+    def test_dry_run_reports_and_changes_nothing(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        before = self.r.status()
+        code, out = self.r.repair("--resolve-conflicts", "--dry-run")
+        self.assertEqual([(c["path"], c["action"]) for c in out["resolvedConflicts"]],
+                         [(".claude/settings.json", "resolve")])
+        self.assertEqual(self.r.status(), before)
+
+    def test_json_contract_v1(self):
+        code, out = self.r.repair("--resolve-conflicts")
+        self.assertEqual(code, 0)
+        self.assertEqual(set(out), {"version", "ok", "exitCode", "dryRun", "resolvedConflicts", "results",
+                                    "unmergedLeft", "stash"})
+        self.assertEqual(out["version"], 1)
+        self.assertEqual(set(out["stash"]), {"before", "after", "kept", "autoStash"})
+
+    def test_a_lost_stash_entry_is_exit_3_not_success(self):
+        # The script never drops a stash; this guards the CHECK itself: inject a
+        # resolver that drops the entry and the run must say so (exit 3, kept=False).
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("install_drift_repair", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        real = mod.resolve_all_conflicts
+
+        def dropping(cwd, dry_run):
+            out = real(cwd, dry_run)
+            mod.git(cwd, "stash", "drop", "-q")
+            return out
+        mod.resolve_all_conflicts = dropping
+        summary, code = mod.run(self.r.dir, False, True)
+        self.assertEqual(code, 3)
+        self.assertFalse(summary["stash"]["kept"])
+
+    def test_install_dir_is_required(self):
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--json"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(p.returncode, 2)  # argparse usage error
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
