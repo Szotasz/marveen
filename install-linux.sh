@@ -2390,6 +2390,52 @@ if [ "$IS_WSL" = "true" ]; then
   unset _wslcfg _winprofile _cmd
 fi
 
+# ISSUE2472WSLSPIN1103 begin
+# WSL before 3.0.1 has an interop bug: the threads of wslhost.exe can spin
+# forever, and over hours or days the host's CPU is eaten (microsoft/WSL#41173,
+# fixed by #41319, first shipped in 3.0.1). The fix is a Windows-side update,
+# so only detect and explain. `wsl.exe --version` prints UTF-16LE (see the note
+# at the top of install-windows.ps1): drop the NUL bytes before parsing. Best
+# effort only: no wsl.exe, a hang (timeout), an empty or unreadable answer all
+# stay silent, and nothing here may stop the install (set -e + ERR trap).
+if [ "$IS_WSL" = "true" ]; then
+  # 0 when $1 < $2, compared numerically component by component (2.10 > 2.9).
+  _wsl_ver_lt() {
+    local _a _b _i _x _y
+    IFS=. read -r -a _a <<< "$1" || true
+    IFS=. read -r -a _b <<< "$2" || true
+    for _i in 0 1 2 3; do
+      _x=$((10#${_a[$_i]:-0})); _y=$((10#${_b[$_i]:-0}))
+      if [ "$_x" -lt "$_y" ]; then return 0; fi
+      if [ "$_x" -gt "$_y" ]; then return 1; fi
+    done
+    return 1
+  }
+  _wslexe="$(command -v wsl.exe 2>/dev/null || true)"
+  if [ -z "$_wslexe" ] && [ -x /mnt/c/Windows/System32/wsl.exe ]; then
+    _wslexe=/mnt/c/Windows/System32/wsl.exe
+  fi
+  _wslver=""
+  if [ -n "$_wslexe" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      _wslout="$(timeout 10 "$_wslexe" --version 2>/dev/null | LC_ALL=C tr -d '\000\r' || true)"
+    else
+      _wslout="$("$_wslexe" --version 2>/dev/null | LC_ALL=C tr -d '\000\r' || true)"
+    fi
+    # The first line is "WSL version: 2.7.10.0" (localized label, so match the
+    # leading "WSL" and its separator, not "WSLg"); a BOM may precede it.
+    _wslver="$(printf '%s\n' "$_wslout" | LC_ALL=C sed -n 's/^[^A-Za-z0-9]*WSL[^A-Za-z0-9][^0-9]*\([0-9][0-9]*\(\.[0-9][0-9]*\)\{1,3\}\).*/\1/p' | head -n 1 || true)"
+  fi
+  if [ -n "$_wslver" ] && _wsl_ver_lt "$_wslver" 3.0.1; then
+    echo ""
+    echo -e "  ${ORANGE}WSL ${_wslver}: ebben a regi WSL-verzioban ismert hiba van, amitol orak-napok alatt a wslhost.exe leterheli a gepet (a 3.0.1-es verziotol javitva).${NC}"
+    echo -e "  ${DIM}Javitas Windows PowerShellben: wsl --update, utana: wsl --shutdown${NC}"
+  fi
+  unset _wslexe _wslout _wslver
+  unset -f _wsl_ver_lt
+fi
+# ISSUE2472WSLSPIN1103 end
+
 # Ellenorzes
 sleep 3
 echo ""
