@@ -2540,6 +2540,27 @@ async function handleMarveenDown(): Promise<void> {
   if (marveenDownState.stage === 'hard') {
     marveenDownState.stage = 'gave_up'
     marveenDownState.lastAlertAt = now
+    // GAVEUPRELOAD1033: the independent channel-watchdog that takes over after
+    // tryReleaseOwnRespawnStamp below only respawns channels.sh -- it never
+    // sends /reload-plugins, which is the one thing measured to actually bring
+    // a confirmed-absent plugin back (RELOADPLUGINSABSENT1032 in
+    // channel-plugin-unlock.ts). Without this, the plugin stayed dead for ~1.5h
+    // of watchdog-only respawns until a human typed /reload-plugins by hand
+    // (measured 2026-11-01 02:45-04:20). Fire one last fire-and-forget attempt
+    // here, under the send lane so it can't splice into a live delivery; a
+    // skipped or failed attempt must not block the give-up path below.
+    try {
+      const res = await withSessionSendLock(MAIN_CHANNELS_SESSION, null, 'recover', async () => {
+        execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), '/reload-plugins', 'Enter'], { timeout: 5000 })
+      })
+      if (res.ran) {
+        logger.warn({ provider: providerLabel }, 'channel-monitor: giving-up stage sent one last /reload-plugins attempt before releasing respawn grace (GAVEUPRELOAD1033)')
+      } else {
+        logger.info({ provider: providerLabel }, 'channel-monitor: giving-up stage skipped the last /reload-plugins attempt, send lane busy (GAVEUPRELOAD1033)')
+      }
+    } catch (err) {
+      logger.warn({ err, provider: providerLabel }, 'channel-monitor: giving-up stage failed to send /reload-plugins (GAVEUPRELOAD1033)')
+    }
     logger.error({ provider: providerLabel }, 'Marveen channel plugin still down after hard restart -- giving up auto-recovery')
     const serviceCmd = process.platform === 'linux'
       ? `\`systemctl --user status ${SERVICE_ID}-channels\``

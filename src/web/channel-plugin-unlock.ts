@@ -194,6 +194,20 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
       // after one restart instead of looping fresh-restarts that cannot help.
       markPluginAbsent(session)
       try { execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
+      // RELOADPLUGINSABSENT1032: an absent (never-loaded) plugin is not what
+      // Enable/Reconnect fixes -- there is no menu entry for it -- but a manual
+      // `/reload-plugins` reliably brought it back (measured 2026-10-31, after
+      // channels-respawn.log showed 157 consecutive never-started cycles that no
+      // soft-reconnect/resume/hard-restart stage repaired on its own). Send the
+      // same command here: it reloads skills+agents+hooks+MCP servers in one
+      // shot from the main prompt, so there is no list position to get wrong.
+      try {
+        execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
+        execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), '/reload-plugins', 'Enter'], { timeout: 5000 })
+        logger.warn({ session, provider }, 'channel-plugin-unlock: sent /reload-plugins after confirmed-absent plugin')
+      } catch (err) {
+        logger.error({ err, session }, 'channel-plugin-unlock: failed to send /reload-plugins after confirmed-absent plugin')
+      }
       return
     }
 
