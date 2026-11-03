@@ -50,6 +50,8 @@ function run(opts: { ciRc: number; rollbackCiRc?: number; stashed?: boolean; via
     `npm() { if [ "$1" = ci ]; then if grep -q 'reset --hard' '${dir}/git.log' 2>/dev/null; then return ${opts.rollbackCiRc ?? 0}; fi; return ${opts.ciRc}; fi; return 0; }`,
     'sleep() { :; }',
     fn('retry'),
+    // ANETTUPDATESTASH1102: the early-exit restore pops through pop_auto_stash().
+    fn('pop_auto_stash'),
     fn('restore_stash_before_exit'),
     fn('npm_ci_failed'),
     opts.viaCallSite ? callSite() : `npm_ci_failed ${opts.ciRc}`,

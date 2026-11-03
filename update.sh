@@ -366,10 +366,13 @@ fi
 #
 # AUTO_STASH=1 (set by the dashboard's "Frissítés stash-elve" button)
 # turns the block into a managed stash + pop pattern: stash before
-# pulling, restore after a successful update. If the pop fails because
-# the upstream change conflicts with the stash, we drop the stash and
-# emit a warning so the operator does not lose work silently -- the
-# stash entry is also kept in `git stash list` for manual recovery.
+# pulling, restore after a successful update. If the pop conflicts with
+# the upstream change, pop_auto_stash() below puts the conflicted paths back
+# to the upstream version, KEEPS the stash entry in `git stash list` (git
+# never drops a stash whose pop failed), and makes the outcome a loud
+# non-success. The old wording here ("we drop the stash and emit a warning")
+# was wrong twice: nothing was dropped, and the conflict markers were left in
+# the working tree (ANETTUPDATESTASH1102).
 STASHED_AUTO=0
 # HEARTBEAT.md is rewritten by the agent every heartbeat tick (self-modifying).
 # Exclude it from the dirty check; the preflight ignores it too. It will be
@@ -399,6 +402,101 @@ if [ -n "$DIRTY" ]; then
   fi
 fi
 
+# ANETTUPDATESTASH1102 (field report, 2026-11-02): a dashboard "stash + update"
+# run whose pop conflicted left <<<<<<< markers in the TRACKED
+# .claude/settings.json and install-macos.sh, printed one FIGYELEM line, and
+# restarted the services anyway. Claude Code does not load an invalid
+# settings.json, so every project-scope hook in it (email approval, outgoing
+# copy gate) silently stopped running, while the update reported success.
+#
+# pop_auto_stash() is the single pop for both restore points. On a failed pop:
+#   - every conflicted path goes back to the upstream (HEAD) version, so no
+#     tracked file is left with conflict markers in it;
+#   - the index is reset (a conflicted pop leaves the cleanly merged part
+#     staged); the working tree keeps those cleanly restored local changes;
+#   - the stash entry stays in `git stash list` -- it is the operator's only
+#     copy of the conflicted local edits -- and is named in the outcome;
+#   - UPDATE_WARN is set, which turns the final verdict into "warning".
+# A pop that git refused because an untracked file of the stash is in the way
+# ("already exists, no checkout") is NOT all-or-nothing (Dani, measured on git
+# 2.50.1): the TRACKED edits come back, the untracked ones do not, and the
+# stash is kept. So the outcome never says "nothing came back"; it lists, per
+# path, what is in the working tree now and what is only in the stash
+# (stash_restore_report).
+STASH_POP_FAILED=0
+STASH_CONFLICT_PATHS=""
+UPDATE_WARN=""
+add_update_warn() { UPDATE_WARN="${UPDATE_WARN:+$UPDATE_WARN }$1"; }
+# Per path of the kept stash (stash@{0}, the one whose pop just failed): is the
+# stashed version in the working tree now, or only in the stash? Tracked paths
+# compare against stash@{0}, untracked ones against its third parent. A path
+# the stash deleted is skipped (nothing to put back).
+STASH_RESTORED=""
+STASH_NOT_RESTORED=""
+stash_restore_report() {
+  local p src
+  STASH_RESTORED=""; STASH_NOT_RESTORED=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    git cat-file -e "stash@{0}:$p" 2>/dev/null || continue
+    if [ -f "$p" ] && git show "stash@{0}:$p" 2>/dev/null | cmp -s - "$p"; then
+      STASH_RESTORED="${STASH_RESTORED:+$STASH_RESTORED, }$p"
+    else
+      STASH_NOT_RESTORED="${STASH_NOT_RESTORED:+$STASH_NOT_RESTORED, }$p"
+    fi
+  done < <(git stash show --name-only 'stash@{0}' 2>/dev/null)
+  if git rev-parse -q --verify 'stash@{0}^3' >/dev/null 2>&1; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      src="stash@{0}^3:$p"
+      if [ -f "$p" ] && git show "$src" 2>/dev/null | cmp -s - "$p"; then
+        STASH_RESTORED="${STASH_RESTORED:+$STASH_RESTORED, }$p"
+      else
+        STASH_NOT_RESTORED="${STASH_NOT_RESTORED:+$STASH_NOT_RESTORED, }$p"
+      fi
+    done < <(git ls-tree -r --name-only 'stash@{0}^3' 2>/dev/null)
+  fi
+  return 0
+}
+pop_auto_stash() {
+  if git stash pop; then
+    STASHED_AUTO=0
+    return 0
+  fi
+  # Handled here: the entry stays in `git stash list`; never pop it twice.
+  STASHED_AUTO=0
+  STASH_POP_FAILED=1
+  local conflicted p
+  conflicted="$(git diff --name-only --diff-filter=U 2>/dev/null)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if git cat-file -e "HEAD:$p" 2>/dev/null; then
+      git checkout HEAD -- "$p" >/dev/null 2>&1 || true
+    else
+      # Upstream deleted it; the operator's copy is still in the stash.
+      git rm -q -f -- "$p" >/dev/null 2>&1 || true
+    fi
+  done <<< "$conflicted"
+  git reset -q >/dev/null 2>&1 || true
+  STASH_CONFLICT_PATHS="$(printf '%s\n' "$conflicted" | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+  stash_restore_report
+  if [ -n "$STASH_CONFLICT_PATHS" ]; then
+    add_update_warn "A helyi valtozasok visszatetele utkozott, ezek a fajlok a frissitett (upstream) valtozatukon maradtak: ${STASH_CONFLICT_PATHS}."
+  else
+    add_update_warn "A git nem tudta az osszes helyi valtozast visszatenni (pl. egy fajl mar ott volt)."
+  fi
+  add_update_warn "Visszakerult: ${STASH_RESTORED:-semmi}. NEM kerult vissza, csak a stash-ben van: ${STASH_NOT_RESTORED:-semmi}. A stash megmaradt (git stash list, \"marveen-update-auto-stash\"); megnezni: git diff HEAD 'stash@{0}' -- <fajl>."
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo -e "${RED}WARNING:${NC} Auto-stash pop failed; the stash remains in 'git stash list'."
+    [ -n "$STASH_CONFLICT_PATHS" ] && echo -e "          Conflicted paths were put back to the upstream version: ${STASH_CONFLICT_PATHS}"
+  else
+    echo -e "${RED}FIGYELEM:${NC} Az auto-stash visszatetele nem sikerult; a stash benne marad a 'git stash list'-ben."
+    [ -n "$STASH_CONFLICT_PATHS" ] && echo -e "          Az utkozo fajlok a frissitett valtozatukra alltak vissza: ${STASH_CONFLICT_PATHS}"
+  fi
+  echo "          Manualisan kezeld: git stash list / git diff HEAD 'stash@{0}' -- <fajl> / git stash drop (csak ellenorzes utan)"
+  return 1
+}
+
 # Restore an auto-stash before an EARLY exit (AHEAD-check / pull-failure /
 # build-failure below) -- any exit between the stash push above and the
 # normal restore point further down would otherwise strand the operator's
@@ -408,17 +506,47 @@ fi
 restore_stash_before_exit() {
   if [ "$STASHED_AUTO" = "1" ]; then
     echo -e "  Auto-stash visszaallitasa (korai kilepes elott)..."
-    if git stash pop; then
-      STASHED_AUTO=0
-    else
-      if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-        echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
-      else
-        echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
-      fi
-      echo "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
+    if ! pop_auto_stash; then
+      RESULT_MSG="${RESULT_MSG:+$RESULT_MSG }${UPDATE_WARN}"
+      # A clean exit (e.g. "already up to date") must not stay "success".
+      [ "$RESULT_STATUS" = "success" ] && RESULT_STATUS="warning"
     fi
   fi
+}
+
+# ANETTUPDATESTASH1102 (b): the tracked .claude/settings.json carries the
+# project-scope hooks. If it is not valid JSON when the services restart,
+# Claude Code ignores it and the hooks stop with no error anywhere. Gate:
+# an invalid copy is saved under store/ and the upstream (HEAD) version is put
+# back, so the agents restart on a valid file; the outcome becomes "warning".
+# agents/*/.claude/settings.json are generated, not tracked: an invalid one is
+# reported, not rewritten.
+settings_json_valid() {
+  node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$1" >/dev/null 2>&1
+}
+settings_json_gate() {
+  local f=".claude/settings.json" save a bad=""
+  if [ -f "$f" ] && ! settings_json_valid "$f"; then
+    save="store/settings.json.invalid-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p store 2>/dev/null || true
+    cp "$f" "$save" 2>/dev/null || save=""
+    if git cat-file -e "HEAD:$f" 2>/dev/null && git checkout HEAD -- "$f" >/dev/null 2>&1 && settings_json_valid "$f"; then
+      add_update_warn "A .claude/settings.json ervenytelen JSON volt, a frissitett (ervenyes) valtozatra allt vissza${save:+, a hibas peldany: $save}."
+      echo -e "${RED}FIGYELEM:${NC} .claude/settings.json ervenytelen volt; visszaallitva a HEAD valtozatra${save:+ (hibas peldany: $save)}."
+    else
+      add_update_warn "A .claude/settings.json ervenytelen JSON, es nem sikerult visszaallitani: a projekt-hookok NEM futnak. Kezi javitas kell."
+      echo -e "${RED}HIBA:${NC} .claude/settings.json ervenytelen, es nem allithato vissza; a projekt-hookok nem futnak."
+    fi
+  fi
+  for a in agents/*/.claude/settings.json; do
+    [ -f "$a" ] || continue
+    settings_json_valid "$a" || bad="${bad:+$bad, }$a"
+  done
+  if [ -n "$bad" ]; then
+    add_update_warn "Ervenytelen JSON, az ugynok hookjai nem futnak: ${bad}."
+    echo -e "${RED}FIGYELEM:${NC} ervenytelen ugynok-settings.json: ${bad}"
+  fi
+  return 0
 }
 
 # UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
@@ -1943,8 +2071,7 @@ fi
 # stash.
 if [ "$STASHED_AUTO" = "1" ]; then
   echo -e "  Auto-stash visszaallitasa..."
-  if git stash pop; then
-    STASHED_AUTO=0
+  if pop_auto_stash; then
     if [ "${SKIP_BUILD:-0}" != "1" ]; then
       echo -e "  Ujraforditas a visszaallitott helyi valtozasokkal..."
       if ! retry 2 3 npm run build --silent; then
@@ -1958,15 +2085,11 @@ if [ "$STASHED_AUTO" = "1" ]; then
         echo "$NEW_VERSION_FULL" > "$BUILT_COMMIT_FILE"
       fi
     fi
-  else
-    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-      echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
-    else
-      echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
-    fi
-    echo -e "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
   fi
 fi
+
+# ANETTUPDATESTASH1102 (b): never restart onto an invalid settings.json.
+settings_json_gate
 
 # Restart services -- via a DETACHED finalizer.
 #
@@ -1993,8 +2116,10 @@ cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
 #   $5 RESULT_FILE  $6 BUILT_COMMIT_FILE  $7 NEW_SHORT  $8 NODE_PIN_DIR
 #   $9 NOTIFY (1 = also send a channel report after the outcome; used by the
 #             unattended auto-update task, silent for a dashboard-triggered run)
+#   $10 WARN (ANETTUPDATESTASH1102: non-empty = the update applied but needs a
+#             human -- stash conflict or settings.json gate; verdict "warning")
 INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
-RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"
+RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"; WARN="${10:-}"
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
@@ -2024,18 +2149,19 @@ _write() { # status phase code message
 # notify.sh), because at 4am the Telegram plugin may be down and the finalizer
 # runs detached with no tmux session. Silent (NOTIFY!=1) for manual runs, where
 # the dashboard UI already polls /api/updates/status.
-_notify() { # status
+_notify() { # status [message]
   [ "$NOTIFY" = "1" ] || return 0
   [ -x "$INSTALL_DIR/scripts/notify.sh" ] || [ -f "$INSTALL_DIR/scripts/notify.sh" ] || return 0
   local msg
   case "$1" in
+    warning)     msg="⚠️ Auto-update lement (${OLD_SHORT} -> ${NEW_SHORT}), a dashboard válaszol, DE kézi figyelem kell: $2" ;;
     success)     msg="✅ Auto-update kész: ${OLD_SHORT} -> ${NEW_SHORT}. A dashboard újraindult, és válaszol (health OK)." ;;
     rolled-back) msg="⚠️ Auto-update: a frissítés nem sikerült (a dashboard nem indult), visszaálltunk a korábbi működő verzióra (${OLD_SHORT}). Részletek: store/update.log" ;;
     *)           msg="🔴 Auto-update SIKERTELEN: a dashboard a frissítés ÉS a rollback után sem válaszol a ${PORT} porton. Kézi beavatkozás kell. Részletek: store/update.log" ;;
   esac
   bash "$INSTALL_DIR/scripts/notify.sh" "$msg" >/dev/null 2>&1 || true
 }
-_finish() { _write "$1" "$2" "$3" "$4"; _notify "$1"; exit "$3"; }
+_finish() { _write "$1" "$2" "$3" "$4"; _notify "$1" "$4"; exit "$3"; }
 _health() { local i=0; while [ "$i" -lt 20 ]; do
   curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null && return 0
   sleep 1; i=$(( i + 1 )); done; return 1; }
@@ -2080,6 +2206,14 @@ fi
 _stage health
 if _health; then
   _stage write-verdict
+  # ANETTUPDATESTASH1102: an applied update that left something for a human is
+  # never a plain "success" -- the UI and the channel report must say so.
+  if [ -n "$WARN" ]; then
+    if [ -n "$UNIT_DRIFT" ]; then
+      WARN="${WARN} Ezen felul enabled unit(ok) nem active: ${UNIT_DRIFT}."
+    fi
+    _finish warning restart 0 "$WARN"
+  fi
   if [ -n "$UNIT_DRIFT" ]; then
     _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
   fi
@@ -2116,7 +2250,7 @@ FINALIZE_LAUNCHED=1
 # MARVEEN_UPDATE_NOTIFY=1 (set by the unattended auto-update task) makes the
 # finalizer send a channel report after the restart+health outcome. A manual
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
-FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}")
+FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}" "$UPDATE_WARN")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
 # ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
 # trace at all, so a run that died mid-restart looked identical to one that
