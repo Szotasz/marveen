@@ -32,7 +32,10 @@ Unmerged paths (a conflicted `git stash pop`) are handled: the side that is not
 HEAD's version is checked against the merge base with the same rules, and on a
 match the path is checked out from HEAD. The stash entry is never dropped.
 
-Usage: install-drift-repair.py --install-dir DIR [--resolve-conflicts] [--dry-run] [--json]
+Usage: install-drift-repair.py --install-dir DIR [--resolve-conflicts] [--dry-run] [--json | --lines]
+
+It never needs its own location: the Bridge runs it from stdin, with no file on
+the target:  python3 -I - --install-dir "$HOME/marveen" --resolve-conflicts --lines < it
 
   --resolve-conflicts  the Bridge "repair install" mode (BRIDGEREPAIR1103): first
                        check out EVERY unmerged path from HEAD, then `git reset -q`,
@@ -40,17 +43,29 @@ Usage: install-drift-repair.py --install-dir DIR [--resolve-conflicts] [--dry-ru
                        marveen-update-auto-stash entry exists, because the local side
                        of every conflict lives on in it. update.sh and the dashboard
                        do NOT pass it.
-  --json               exactly one JSON object on stdout (contract version 1):
-                       {version, ok, exitCode, dryRun, resolvedConflicts[], results[],
-                        unmergedLeft[], stash{before, after, kept, autoStash[]}}
-                       or, when it cannot run, {version, ok:false, exitCode:2, error}.
+  --lines              the Bridge's line protocol on stdout, nothing else:
+                         REPAIR_STEP repair|dry_run
+                         REPAIR_RESTORED <path>            an unmerged path checked out from HEAD
+                         REPAIR_CLEANED <path> <pattern>   settings_enabled_plugins | headless_installer
+                                                           | installer_mode_only | lock_has_install_script
+                         REPAIR_LEFT <path>                not ours, untouched
+                         REPAIR_STASH before=<n> after=<n>
+                         REPAIR_RESULT <state>             exactly one, always last
+                       <path> is repo-relative; every byte outside [A-Za-z0-9._/-] is
+                       %XX-encoded. Under --dry-run the same lines say what WOULD happen.
+  --json               one JSON object (version 1): {version, ok, state, exitCode, dryRun,
+                       resolvedConflicts[], results[], unmergedLeft[], stash{before, after,
+                       kept, autoStash[]}, error?}
 
-Exit:  0 the known paths are clean and nothing is unmerged;
-       1 something is left (a non-generated change, or an unmerged path);
-       2 cannot run (not a git work-tree top, a merge/rebase in progress, git
-         missing, or --resolve-conflicts without an auto-stash entry): nothing changed;
-       3 a stash entry that existed before is gone afterwards (must never happen).
-The stash is NEVER dropped, popped or applied by this script.
+States and exit codes:
+  ok | nothing_to_do                                       exit 0 (REPAIR_LEFT paths may remain
+                                                           dirty: not ours, they take the stash path)
+  refused:not_a_repo | refused:operation_in_progress |
+  refused:no_auto_stash | refused:unknown_change           exit 3 (unknown_change: an unmerged path
+                                                           is still left; otherwise nothing changed)
+  failed:<step>  (resolve_conflicts | cleanup | stash_check) exit 1 (stash_check: an entry that
+                                                           existed before is gone; must never happen)
+The stash is NEVER dropped, popped, cleared or applied; no reset --hard, no clean.
 """
 import argparse
 import difflib
@@ -236,6 +251,38 @@ def operation_in_progress(cwd):
 
 AUTO_STASH_TAG = "marveen-update-auto-stash"
 
+# Pattern ids, as the --lines protocol names them (REPAIR_CLEANED <path> <id>).
+PATTERN_ID = {
+    "settings": "settings_enabled_plugins",
+    "installer": "headless_installer",
+    "installer_mode": "installer_mode_only",
+    "lock": "lock_has_install_script",
+}
+
+
+class Refused(Exception):
+    """Cannot or must not run; nothing was changed. `state` goes after `refused:`."""
+
+    def __init__(self, state, message):
+        Exception.__init__(self, message)
+        self.state = state
+
+
+class Failed(Exception):
+    """A git step failed midway. `step` goes after `failed:`."""
+
+    def __init__(self, step, message):
+        Exception.__init__(self, message)
+        self.step = step
+
+
+def pattern_of(path, reason):
+    if path == SETTINGS:
+        return PATTERN_ID["settings"]
+    if path in INSTALL_SCRIPTS:
+        return PATTERN_ID["installer_mode"] if reason == "mode-only change" else PATTERN_ID["installer"]
+    return PATTERN_ID["lock"]
+
 
 def stash_entries(cwd):
     """[(commit, subject)] of `git stash list`, newest first."""
@@ -259,8 +306,8 @@ def resolve_all_conflicts(cwd, dry_run):
     if not paths:
         return []
     if not any(AUTO_STASH_TAG in subject for _, subject in stash_entries(cwd)):
-        raise GitError("unmerged paths but no %s entry in `git stash list`; the local side "
-                       "would not be preserved, not resolving" % AUTO_STASH_TAG)
+        raise Refused("no_auto_stash", "unmerged paths but no %s entry in `git stash list`; the local "
+                      "side would not be preserved, not resolving" % AUTO_STASH_TAG)
     out = []
     for path in paths:
         if blob(cwd, "HEAD:" + path) is None:
@@ -276,32 +323,47 @@ def resolve_all_conflicts(cwd, dry_run):
 
 
 def run(install_dir, dry_run, resolve_conflicts=False):
+    """Returns (summary, state). state: ok | nothing_to_do | refused:<why> | failed:<step>."""
     cwd = os.path.realpath(install_dir)
-    top = git(cwd, "rev-parse", "--show-toplevel", check=False)
+    try:
+        top = git(cwd, "rev-parse", "--show-toplevel", check=False)
+    except GitError as e:
+        raise Refused("not_a_repo", str(e))
     if top.returncode != 0 or os.path.realpath(top.stdout.decode().strip()) != cwd:
-        raise GitError("%s is not the top of a git work tree" % cwd)
+        raise Refused("not_a_repo", "%s is not the top of a git work tree" % cwd)
     busy = operation_in_progress(cwd)
     if busy:
-        raise GitError("a git operation is in progress (%s); not touching anything" % busy)
+        raise Refused("operation_in_progress", "a git operation is in progress (%s); not touching anything" % busy)
     stash_before = stash_entries(cwd)
-    conflicts = resolve_all_conflicts(cwd, dry_run) if resolve_conflicts else []
-    pending = {c["path"] for c in conflicts if c["action"] == "resolve"}
-    results = []
-    restore = []
-    for path, xy in sorted(status_codes(cwd).items()):
-        if path in pending:
-            continue  # dry run: would be resolved to HEAD first
-        ok, why = decide(cwd, path, xy)
-        results.append({"path": path, "status": xy, "action": "restore" if ok else "leave", "reason": why})
-        if ok:
-            restore.append(path)
-    if restore and not dry_run:
-        git(cwd, "checkout", "HEAD", "--", *restore)
-        left = status_codes(cwd)
-        for r in results:
-            if r["action"] == "restore":
-                r["action"] = "restored" if r["path"] not in left else "restore-failed"
-    stash_after = stash_entries(cwd)
+    step = "resolve_conflicts"
+    try:
+        conflicts = resolve_all_conflicts(cwd, dry_run) if resolve_conflicts else []
+        step = "cleanup"
+        pending = {c["path"] for c in conflicts if c["action"] == "resolve"}
+        results = []
+        restore = []
+        for path, xy in sorted(status_codes(cwd).items()):
+            if path in pending:
+                continue  # dry run: would be resolved to HEAD first
+            ok, why = decide(cwd, path, xy)
+            results.append({"path": path, "status": xy, "action": "restore" if ok else "leave", "reason": why,
+                            "pattern": pattern_of(path, why) if ok else None})
+            if ok:
+                restore.append(path)
+        if restore and not dry_run:
+            git(cwd, "checkout", "HEAD", "--", *restore)
+            left = status_codes(cwd)
+            for r in results:
+                if r["action"] == "restore":
+                    r["action"] = "restored" if r["path"] not in left else "restore-failed"
+        step = "stash_check"
+        stash_after = stash_entries(cwd)
+        if dry_run:  # what WOULD still be unmerged afterwards
+            unmerged_left = [u for u in unmerged_paths(cwd) if u not in pending and u not in restore]
+        else:
+            unmerged_left = unmerged_paths(cwd)
+    except GitError as e:
+        raise Failed(step, str(e))
     after_ids = {c for c, _ in stash_after}
     stash = {
         "before": len(stash_before),
@@ -309,48 +371,101 @@ def run(install_dir, dry_run, resolve_conflicts=False):
         "kept": all(c in after_ids for c, _ in stash_before),
         "autoStash": [{"commit": c, "subject": s} for c, s in stash_after if AUTO_STASH_TAG in s],
     }
-    unmerged_left = [] if dry_run else unmerged_paths(cwd)
-    left_known = [r for r in results if r["action"] in ("leave", "restore-failed")]
-    left_conflicts = [c for c in conflicts if c["action"] == "leave"]
-    summary = {
-        "resolvedConflicts": conflicts,
-        "results": results,
-        "unmergedLeft": unmerged_left,
-        "stash": stash,
-    }
+    summary = {"resolvedConflicts": conflicts, "results": results, "unmergedLeft": unmerged_left, "stash": stash}
     if not stash["kept"]:
-        return summary, 3
-    return summary, (1 if (left_known or left_conflicts or unmerged_left) else 0)
+        return summary, "failed:stash_check"
+    if any(r["action"] == "restore-failed" for r in results):
+        return summary, "failed:cleanup"
+    # Still blocked: an unmerged path is left (a customer change in default mode, or not in HEAD).
+    if unmerged_left:
+        return summary, "refused:unknown_change"
+    acted = [c for c in conflicts if c["action"] in ("resolved-to-head", "resolve")] + \
+        [r for r in results if r["action"] in ("restored", "restore")]
+    return summary, ("ok" if acted else "nothing_to_do")
+
+
+EXIT_FOR = {"ok": 0, "nothing_to_do": 0, "refused": 3, "failed": 1}
+
+
+def exit_code(state):
+    return EXIT_FOR[state.split(":", 1)[0]]
+
+
+SAFE_PATH = re.compile(r"[A-Za-z0-9._/-]")
+
+
+def line_path(path):
+    """Percent-encode every byte outside [A-Za-z0-9._/-] so a path is one token."""
+    out = []
+    for ch in path:
+        if SAFE_PATH.fullmatch(ch):
+            out.append(ch)
+        else:
+            out.extend("%%%02X" % b for b in ch.encode("utf-8"))
+    return "".join(out)
+
+
+def emit_lines(summary, state, dry_run):
+    w = sys.stdout.write
+    if summary is not None:
+        w("REPAIR_STEP %s\n" % ("dry_run" if dry_run else "repair"))
+        for c in summary["resolvedConflicts"]:
+            if c["action"] in ("resolved-to-head", "resolve"):
+                w("REPAIR_RESTORED %s\n" % line_path(c["path"]))
+            else:
+                w("REPAIR_LEFT %s\n" % line_path(c["path"]))
+        for r in summary["results"]:
+            if r["action"] in ("restored", "restore"):
+                w("REPAIR_CLEANED %s %s\n" % (line_path(r["path"]), r["pattern"]))
+            else:
+                w("REPAIR_LEFT %s\n" % line_path(r["path"]))
+        for path in summary["unmergedLeft"]:
+            if not any(x["path"] == path for x in summary["results"] + summary["resolvedConflicts"]):
+                w("REPAIR_LEFT %s\n" % line_path(path))
+        st = summary["stash"]
+        w("REPAIR_STASH before=%d after=%d\n" % (st["before"], st["after"]))
+    w("REPAIR_RESULT %s\n" % state)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--install-dir", required=True, help="the install's git work-tree top")
+    ap.add_argument("--install-dir", required=True, help="the install's git work-tree top (absolute)")
     ap.add_argument("--dry-run", action="store_true", help="decide and report, change nothing")
     ap.add_argument("--resolve-conflicts", action="store_true",
                     help="first check out EVERY unmerged path from HEAD and `git reset -q` "
                          "(only with a marveen-update-auto-stash entry present; it is never dropped)")
-    ap.add_argument("--json", action="store_true", help="one JSON object on stdout")
+    fmt = ap.add_mutually_exclusive_group()
+    fmt.add_argument("--json", action="store_true", help="one JSON object on stdout (version 1)")
+    fmt.add_argument("--lines", action="store_true", help="the REPAIR_* line protocol on stdout (the Bridge)")
     a = ap.parse_args(argv)
+    summary, error = None, None
     try:
-        summary, code = run(a.install_dir, a.dry_run, a.resolve_conflicts)
-    except GitError as e:
-        if a.json:
-            print(json.dumps({"version": 1, "ok": False, "exitCode": 2, "error": str(e)}))
-        else:
-            print("install-drift-repair: %s" % e, file=sys.stderr)
-        return 2
-    if a.json:
-        print(json.dumps(dict({"version": 1, "ok": code == 0, "exitCode": code, "dryRun": a.dry_run}, **summary)))
-    else:
+        summary, state = run(a.install_dir, a.dry_run, a.resolve_conflicts)
+    except Refused as e:
+        state, error = "refused:" + e.state, str(e)
+    except Failed as e:
+        state, error = "failed:" + e.step, str(e)
+    code = exit_code(state)
+    if error:
+        print("install-drift-repair: %s" % error, file=sys.stderr)
+    if a.lines:
+        emit_lines(summary, state, a.dry_run)
+    elif a.json:
+        doc = {"version": 1, "ok": code == 0, "state": state, "exitCode": code, "dryRun": a.dry_run}
+        if summary is not None:
+            doc.update(summary)
+        if error:
+            doc["error"] = error
+        print(json.dumps(doc))
+    elif summary is not None:
         for c in summary["resolvedConflicts"]:
             print("install-drift-repair: %-22s UU %s (%s)" % (c["path"], c["action"], c["reason"]))
-        if not summary["results"] and not summary["resolvedConflicts"]:
-            print("install-drift-repair: the known install files are clean")
         for r in summary["results"]:
             print("install-drift-repair: %-22s %s %s (%s)" % (r["path"], r["status"], r["action"], r["reason"]))
         st = summary["stash"]
-        print("install-drift-repair: stash entries %d -> %d, kept=%s" % (st["before"], st["after"], st["kept"]))
+        print("install-drift-repair: %s; stash entries %d -> %d, kept=%s" % (state, st["before"], st["after"], st["kept"]))
+    else:
+        print("install-drift-repair: %s" % state)
     return code
 
 

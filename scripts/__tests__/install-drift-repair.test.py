@@ -93,7 +93,7 @@ class Base(unittest.TestCase):
 class Restores(Base):
     def test_clean_tree_is_a_no_op(self):
         code, out = self.r.repair()
-        self.assertEqual((code, out["results"]), (0, []))
+        self.assertEqual((code, out["state"], out["results"]), (0, "nothing_to_do", []))
 
     def test_marveen2_fresh_bridge_install_all_three(self):
         # The exact marveen2 shape: telegram@marveen-marketplace added + reformat,
@@ -103,7 +103,7 @@ class Restores(Base):
         self.r.write("package-lock.json", LOCK_NPM)
         self.r.write("README.md", b"customer note\n")  # unrelated: never touched
         code, out = self.r.repair()
-        self.assertEqual(code, 0, out)
+        self.assertEqual((code, out["state"]), (0, "ok"), out)
         self.assertEqual(self.r.actions(out), {".claude/settings.json": "restored", "install-macos.sh": "restored",
                                                "package-lock.json": "restored"})
         self.assertEqual(self.r.status(), " M README.md\n")
@@ -129,12 +129,12 @@ class Restores(Base):
 
 
 class Leaves(Base):
-    """Anything that is not ours stays, and the exit code says so (the stash path takes over)."""
+    """Anything that is not ours stays (REPAIR_LEFT); the update then takes the stash path."""
 
     def assertLeft(self, path, reason_part):
         before = self.r.read(path)
         code, out = self.r.repair()
-        self.assertEqual(code, 1, out)
+        self.assertEqual((code, out["state"]), (0, "nothing_to_do"), out)
         self.assertEqual(self.r.actions(out)[path], "leave")
         self.assertIn(reason_part, [r for r in out["results"] if r["path"] == path][0]["reason"])
         self.assertEqual(self.r.read(path), before)
@@ -189,15 +189,15 @@ class Leaves(Base):
         head = self.r.git("rev-parse", "HEAD").stdout.decode().strip()
         with open(os.path.join(self.r.dir, ".git", "MERGE_HEAD"), "w") as f:
             f.write(head + "\n")
-        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(p.returncode, 2)
+        code, out = self.r.repair()
+        self.assertEqual((code, out["state"]), (3, "refused:operation_in_progress"))
         self.assertEqual(self.r.status(), " M package-lock.json\n")
 
     def test_not_the_top_of_a_work_tree(self):
-        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", os.path.join(self.r.dir, ".claude")],
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", os.path.join(self.r.dir, ".claude"), "--json"],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(p.returncode, 2)
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual(json.loads(p.stdout)["state"], "refused:not_a_repo")
 
 
 class ConflictedStashPop(Base):
@@ -232,7 +232,7 @@ class ConflictedStashPop(Base):
         raw = cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace")
         self.make_conflict(cli_enable(raw, "frontend-design@claude-plugins-official"))
         code, out = self.r.repair()
-        self.assertEqual(code, 1)
+        self.assertEqual((code, out["state"]), (3, "refused:unknown_change"))
         self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
         self.assertIn("UU .claude/settings.json", self.r.status())
 
@@ -283,7 +283,7 @@ class ResolveConflictsMode(Base):
         self.r.git("stash", "drop", "-q")
         self.r.git("stash", "store", "-m", "someone else's stash", c)
         code, out = self.r.repair("--resolve-conflicts")
-        self.assertEqual((code, out["ok"], out["exitCode"]), (2, False, 2))
+        self.assertEqual((code, out["ok"], out["exitCode"], out["state"]), (3, False, 3, "refused:no_auto_stash"))
         self.assertIn("auto-stash", out["error"])
         self.assertIn("UU .claude/settings.json", self.r.status())
 
@@ -298,8 +298,9 @@ class ResolveConflictsMode(Base):
     def test_json_contract_v1(self):
         code, out = self.r.repair("--resolve-conflicts")
         self.assertEqual(code, 0)
-        self.assertEqual(set(out), {"version", "ok", "exitCode", "dryRun", "resolvedConflicts", "results",
+        self.assertEqual(set(out), {"version", "ok", "state", "exitCode", "dryRun", "resolvedConflicts", "results",
                                     "unmergedLeft", "stash"})
+        self.assertEqual(out["state"], "nothing_to_do")
         self.assertEqual(out["version"], 1)
         self.assertEqual(set(out["stash"]), {"before", "after", "kept", "autoStash"})
 
@@ -318,13 +319,94 @@ class ResolveConflictsMode(Base):
             mod.git(cwd, "stash", "drop", "-q")
             return out
         mod.resolve_all_conflicts = dropping
-        summary, code = mod.run(self.r.dir, False, True)
-        self.assertEqual(code, 3)
+        summary, state = mod.run(self.r.dir, False, True)
+        self.assertEqual(state, "failed:stash_check")
+        self.assertEqual(mod.exit_code(state), 1)
         self.assertFalse(summary["stash"]["kept"])
 
     def test_install_dir_is_required(self):
         p = subprocess.run([sys.executable, "-I", SCRIPT, "--json"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(p.returncode, 2)  # argparse usage error
+
+
+class LineProtocol(Base):
+    """BRIDGEREPAIR1103 (Geri 67333): the Bridge parses ONLY REPAIR_* lines, run from stdin."""
+
+    make_conflict = ConflictedStashPop.make_conflict
+
+    def lines(self, *extra, stdin=False):
+        if stdin:
+            with open(SCRIPT, "rb") as f:
+                p = subprocess.run([sys.executable, "-I", "-", "--install-dir", self.r.dir, "--lines"] + list(extra),
+                                   stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tempfile.gettempdir())
+        else:
+            p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir, "--lines"] + list(extra),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = p.stdout.decode().splitlines()
+        for line in out:  # the allowlist: nothing else on stdout
+            self.assertRegex(line, r"^REPAIR_(STEP|RESTORED|CLEANED|LEFT|STASH|RESULT) ")
+        self.assertEqual(sum(1 for l in out if l.startswith("REPAIR_RESULT ")), 1)
+        self.assertTrue(out[-1].startswith("REPAIR_RESULT "))
+        return p.returncode, out
+
+    def test_marveen2_conflict_from_stdin_exact_lines_then_idempotent(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        self.r.write("install-macos.sh", INSTALLER + (MARKER + "\n").encode(), mode=0o644)
+        self.r.write("package-lock.json", LOCK_NPM)
+        code, out = self.lines("--resolve-conflicts", stdin=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(out, [
+            "REPAIR_STEP repair",
+            "REPAIR_RESTORED .claude/settings.json",
+            "REPAIR_CLEANED install-macos.sh headless_installer",
+            "REPAIR_CLEANED package-lock.json lock_has_install_script",
+            "REPAIR_STASH before=1 after=1",
+            "REPAIR_RESULT ok",
+        ])
+        code, out = self.lines("--resolve-conflicts", stdin=True)
+        self.assertEqual((code, out[-2:]), (0, ["REPAIR_STASH before=1 after=1", "REPAIR_RESULT nothing_to_do"]))
+
+    def test_dry_run_lines_change_nothing(self):
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        before = self.r.status()
+        code, out = self.lines("--resolve-conflicts", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertEqual(out[0], "REPAIR_STEP dry_run")
+        self.assertIn("REPAIR_RESTORED .claude/settings.json", out)
+        self.assertEqual(self.r.status(), before)
+
+    def test_left_and_cleaned_with_a_settings_pattern(self):
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace"))
+        self.r.write("install-linux.sh", INSTALLER + b"echo mine\n", mode=0o755)
+        code, out = self.lines()
+        self.assertEqual(code, 0)
+        self.assertIn("REPAIR_CLEANED .claude/settings.json settings_enabled_plugins", out)
+        self.assertIn("REPAIR_LEFT install-linux.sh", out)
+
+    def test_a_path_outside_the_safe_charset_is_percent_encoded(self):
+        self.r.write("my notes é.md", b"a\n")
+        self.r.commit("add")
+        self.r.write("my notes é.md", b"customer\n")
+        self.r.git("stash", "push", "-q", "-m", "marveen-update-auto-stash enc")
+        self.r.write("my notes é.md", b"upstream\n")
+        self.r.commit("upstream")
+        self.assertNotEqual(self.r.git("stash", "pop", check=False).returncode, 0)
+        code, out = self.lines("--resolve-conflicts")
+        self.assertEqual(code, 0)
+        self.assertIn("REPAIR_RESTORED my%20notes%20%C3%A9.md", out)
+
+    def test_refusals_are_exit_3_with_one_result_line(self):
+        code, out = self.lines()  # clean tree first: nothing_to_do
+        self.assertEqual((code, out[-1]), (0, "REPAIR_RESULT nothing_to_do"))
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", os.path.join(self.r.dir, ".claude"), "--lines"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual((p.returncode, p.stdout.decode()), (3, "REPAIR_RESULT refused:not_a_repo\n"))
+        self.make_conflict(cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        c = self.r.git("rev-parse", "stash@{0}").stdout.decode().strip()
+        self.r.git("stash", "drop", "-q")
+        self.r.git("stash", "store", "-m", "not ours", c)
+        code, out = self.lines("--resolve-conflicts")
+        self.assertEqual((code, out), (3, ["REPAIR_RESULT refused:no_auto_stash"]))
 
 
 if __name__ == "__main__":
