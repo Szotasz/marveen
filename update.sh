@@ -374,6 +374,14 @@ fi
 # was wrong twice: nothing was dropped, and the conflict markers were left in
 # the working tree (ANETTUPDATESTASH1102).
 STASHED_AUTO=0
+# INSTALLDIRTYTREE1103: first undo the drift the INSTALL itself left in tracked
+# files (the reformatted .claude/settings.json, the Bridge's headless installer,
+# the npm lock line). Only provably generated changes are restored; anything a
+# human changed stays and meets the guard below as before. Best effort: a
+# missing python3 or a failing helper never blocks the update.
+if [ -f "$INSTALL_DIR/scripts/install-drift-repair.py" ] && command -v python3 >/dev/null 2>&1; then
+  python3 "$INSTALL_DIR/scripts/install-drift-repair.py" --install-dir "$INSTALL_DIR" 2>&1 | sed 's/^/  /' || true
+fi
 # HEARTBEAT.md is rewritten by the agent every heartbeat tick (self-modifying).
 # Exclude it from the dirty check; the preflight ignores it too. It will be
 # auto-overwritten on the next heartbeat anyway, so no data loss.

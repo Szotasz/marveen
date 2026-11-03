@@ -6,6 +6,7 @@ import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
+import { runInstallDriftRepair } from '../../install-drift-repair.js'
 import {
   getUpdateStatus, refreshUpdateStatus,
 } from '../update-checker.js'
@@ -286,6 +287,10 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         }
       },
     }
+    // INSTALLDIRTYTREE1103: undo the install's own tracked-file drift first, so a
+    // fresh Bridge install does not meet the dirty-tree block (and the stash path).
+    const drift = await runInstallDriftRepair(PROJECT_ROOT)
+    if (drift.results.length > 0 || drift.error) logger.info({ drift }, 'install-drift-repair before the update preflight')
     let preflight
     try {
       preflight = await checkUpdatePreflight(git)
