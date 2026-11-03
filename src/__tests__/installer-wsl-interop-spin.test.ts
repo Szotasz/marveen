@@ -82,6 +82,10 @@ function run(answer: Buffer | null, opts: { strict?: boolean; rc?: number; timeo
 }
 
 const warned = (out: string) => out.includes('ismert hiba van')
+// bash 4.4+ warns "ignored null byte in input" when a command substitution
+// meets the raw UTF-16 NULs; the block strips them first, so the install log
+// stays clean (bash 3.2 drops them silently, so this bites on Linux only).
+const noNulWarning = (out: string) => expect(out).not.toMatch(/null byte/i)
 
 describe('install-linux.sh warns about the WSL interop spin before 3.0.1', () => {
   for (const strict of [false, true]) {
@@ -90,6 +94,7 @@ describe('install-linux.sh warns about the WSL interop spin before 3.0.1', () =>
     it(`UTF-16 3.0.3: silent, the install goes on (${mode})`, () => {
       const r = run(utf16(versionText('3.0.3.0')), { strict })
       expect(r.code).toBe(0)
+      noNulWarning(r.out)
       expect(r.out).toContain('REACHED_THE_END')
       expect(r.out).not.toContain('TRAP_FIRED')
       expect(warned(r.out)).toBe(false)
@@ -102,6 +107,7 @@ describe('install-linux.sh warns about the WSL interop spin before 3.0.1', () =>
       expect(r.out).not.toContain('TRAP_FIRED')
       expect(r.out).toContain('<O>WSL 2.7.10.0: ebben a regi WSL-verzioban ismert hiba van, amitol orak-napok alatt a wslhost.exe leterheli a gepet')
       expect(r.out).toContain('<D>Javitas Windows PowerShellben: wsl --update, utana: wsl --shutdown</>')
+      noNulWarning(r.out)
     })
 
     it(`empty or garbage answer, or a failing wsl.exe: silent, rc 0 (${mode})`, () => {
