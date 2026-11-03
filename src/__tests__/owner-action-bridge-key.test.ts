@@ -253,6 +253,30 @@ describe('on the real routes', () => {
     }
   })
 
+  // The other lane of the same audit line: a token or session caller passes the kind gate, and the actor is its auth kind
+  // (src/web/routes/auth.ts, the security.bridge_revoke line). R3b pins the device lane only.
+  it('R3c: revoking a paired key on the token or the session lane: the audit actor is the auth kind', async () => {
+    const prevSsh = process.env.MARVEEN_SSH_DIR
+    process.env.MARVEEN_SSH_DIR = mkdtempSync(join(tmpdir(), 'owner-action-ssh-'))
+    try {
+      const lanes: Array<[string, Record<string, string>]> = [
+        ['token', { authorization: `Bearer ${TOKEN}` }],
+        ['session', { cookie: cookieHeader() }],
+      ]
+      for (const [kind, headers] of lanes) {
+        const target = createDeviceKey(`Paired-${kind}`, { installId: `install-r3c-${kind}` })
+        const r = await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, headers)
+        expect(r.status).toBe(200)
+        expect(getDeviceKey(target.id)).toBeNull()
+        const row = getRecentConfigChanges(20).find((c) => c.key === 'security.bridge_revoke' && String(c.new_value).includes(`(install-r3c-${kind})`))
+        expect(row?.actor).toBe(kind)
+      }
+    } finally {
+      if (prevSsh === undefined) delete process.env.MARVEEN_SSH_DIR
+      else process.env.MARVEEN_SSH_DIR = prevSsh
+    }
+  })
+
   it('R4: dashboard users: key + cookie adds and removes one; a logged-out cookie does not', async () => {
     const key = keyOf()
     const withCookie = { authorization: `Bearer ${key}`, cookie: cookieHeader() }
