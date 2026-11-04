@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -96,6 +96,14 @@ describe('proposeTarget and the propose route', () => {
     expect(n.body.target).toBe('global')
     expect(n.body.replaces).toBe(false)
     expect(existsSync(join(PROJECT, 'new-skill'))).toBe(false)
+  })
+  it('the project root symlinked to the global root is ONE root: an existing name goes global, no 409 (Dani 68501)', async () => {
+    liveSkill(GLOBAL, 'shared-one')
+    mkdirSync(join(tmpRoot, '.claude'), { recursive: true })
+    symlinkSync(GLOBAL, PROJECT)
+    const r = await propose('shared-one')
+    expect(r.status).toBe(200)
+    expect(q.proposeTarget('shared-one')).toEqual({ ok: true, target: { scope: 'global' } })
   })
   it('a waiting proposal for the project root blocks a second one of the same name (quarantine on)', async () => {
     liveSkill(PROJECT, 'sync-skill')

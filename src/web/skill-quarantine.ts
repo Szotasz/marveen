@@ -56,7 +56,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import {
-  appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, relative, sep } from 'node:path'
@@ -303,6 +303,11 @@ export function parseProposedFiles(raw: unknown, skillMdBytes: number): { ok: tr
 // duplicate is the owner's or the main agent's decision.
 export function proposeTarget(name: string): { ok: true; target: SkillTarget } | { ok: false; status: number; error: string } {
   const lives = (dir: string): boolean => { try { lstatSync(join(dir, name)); return true } catch { return false } }
+  // One directory under two names (the project root symlinked to the global one): one root, not a duplicate.
+  // Without this, every existing name would be "in both" and every proposal a 409 (Dani 68501).
+  const real = (dir: string): string | null => { try { return realpathSync(dir) } catch { return null } }
+  const pr = real(projectSkillsRoot())
+  if (pr !== null && pr === real(globalSkillsRoot())) return { ok: true, target: { scope: 'global' } }
   const inProject = lives(projectSkillsRoot())
   const inGlobal = lives(globalSkillsRoot())
   if (inProject && inGlobal) {
