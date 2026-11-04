@@ -861,6 +861,30 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
   renameSync(tmp, path)
 }
 
+// MCPWRITEGATE1104 D4: which servers of an isolated .claude.json the dashboard copied from the shared config. Kept in
+// a file of its own next to .claude.json (Claude Code owns and rewrites .claude.json; an extra key there is not ours to
+// rely on). A missing or unreadable file is an empty set: nothing is then provably inherited.
+export const INHERITED_MCP_FILE = '.marveen-mcp-inherited.json'
+// Seeded into every agent before the provenance file existed, with a "/" root: removable without a record.
+const LEGACY_INHERITED_MCP_NAMES = new Set(['Filesystem'])
+
+function readInheritedMcpNames(cfgDir: string): Set<string> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(cfgDir, INHERITED_MCP_FILE), 'utf-8')) as { servers?: unknown }
+    return new Set(Array.isArray(parsed.servers) ? parsed.servers.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function writeInheritedMcpNames(cfgDir: string, names: Set<string>, perUser: boolean): void {
+  try {
+    writeJsonAtomic(join(cfgDir, INHERITED_MCP_FILE), { servers: [...names].sort() }, { groupShared: perUser })
+  } catch (err) {
+    logger.warn({ err, cfgDir }, 'isolated-config: could not write the inherited-MCP record')
+  }
+}
+
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
 // shared ~/.claude.json.
 //
@@ -876,7 +900,8 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
 //   - a server missing from the isolated file is copied in,
 //   - an entry that already exists is NEVER overwritten -- Claude Code owns its
 //     evolved state, and a per-agent scoping decision must survive,
-//   - a server removed from the shared config is left in place,
+//   - a server removed from the shared config is left in place (one exception since MCPWRITEGATE1104 D4: a server
+//     provably copied from the shared config, see readInheritedMcpNames below),
 //   - a non-object mcpServers on either side means we do not touch it at all,
 //     because we cannot merge what we do not understand.
 //
@@ -900,6 +925,8 @@ function reconcileMcpServers(
   sharedDot: string,
   name: string,
   cwd: string,
+  cfgDir: string | null = null,
+  perUser = false,
 ): boolean {
   if (!existsSync(sharedDot)) return false
   let shared: Record<string, unknown>
@@ -935,6 +962,32 @@ function reconcileMcpServers(
     added.push(key)
   }
   logNotInherited(name, 'gap-fill', notInherited)
+  // MCPWRITEGATE1104 D4 (Samu 68033): the one exception to "additive only". A server this reconcile or the seed
+  // provably copied FROM the shared config (the provenance file next to .claude.json) is taken back out once the
+  // shared config no longer has it. An entry with no such record is the
+  // agent's own (e.g. a voice server it was given by hand) and is never removed, with one named exception: the
+  // filesystem server, which the pre-provenance seeds copied into every agent with a "/" root.
+  const removed: string[] = []
+  if (name !== MAIN_AGENT_ID && cfgDir) {
+    const inherited = readInheritedMcpNames(cfgDir)
+    const before = inherited.size
+    for (const key of Object.keys(own)) {
+      const provable = inherited.has(key) || LEGACY_INHERITED_MCP_NAMES.has(key)
+      // gone from the shared config only: a narrowed inheritable list leaves existing agents alone (MCPOROKLES923)
+      const stillShared = key in (shared.mcpServers as Record<string, unknown>)
+      if (provable && !stillShared) {
+        delete own[key]
+        inherited.delete(key)
+        removed.push(key)
+      }
+    }
+    for (const key of added) inherited.add(key)
+    if (removed.length > 0 || inherited.size !== before || added.length > 0) writeInheritedMcpNames(cfgDir, inherited, perUser)
+    if (removed.length > 0) {
+      logger.info({ name, removed }, 'isolated-config: removed inherited MCP servers that left the shared config')
+    }
+  }
+  if (removed.length > 0) cur.mcpServers = own
   // Log the skips even when nothing was added: a silent skip is how this class
   // of bug stays invisible, and the name alone tells the next reader where the
   // agent's real definition lives.
@@ -944,7 +997,7 @@ function reconcileMcpServers(
       'isolated-config: skipped shared MCP servers the agent already defines in its own .mcp.json',
     )
   }
-  if (added.length === 0) return false
+  if (added.length === 0) return removed.length > 0
   cur.mcpServers = own
   logger.info({ name, added }, 'isolated-config: added missing MCP servers from the shared config')
   return true
@@ -1295,6 +1348,11 @@ function provisionIsolatedConfigDir(
         // shadow it, credentials included. Strip those before writing.
         stripProjectScopedCollisions(seed, cwd, name, notInheritedOnSeed)
         writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
+        // MCPWRITEGATE1104 D4: every server the seed kept came from the shared config; record that, so a later
+        // reconcile can take it back out when it leaves the shared config (and only then, and only these).
+        if (name !== MAIN_AGENT_ID && isPlainObject(seed.mcpServers)) {
+          writeInheritedMcpNames(cfg, new Set(Object.keys(seed.mcpServers)), perUser)
+        }
       } else {
         try {
           const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
@@ -1303,7 +1361,7 @@ function provisionIsolatedConfigDir(
             cur.hasCompletedOnboarding = true
             dirty = true
           }
-          if (reconcileMcpServers(cur, sharedDot, name, cwd)) dirty = true
+          if (reconcileMcpServers(cur, sharedDot, name, cwd, cfg, perUser)) dirty = true
           if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser })
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }

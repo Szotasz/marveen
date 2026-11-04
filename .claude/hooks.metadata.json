@@ -343,7 +343,7 @@
         "hook": "db-write-gate",
         "gate": true,
         "purpose": "PreToolUse gate: agent writes to the dashboard's SECURITY surface (APPROVALDBGATE1030), for EVERY agent, the main agent included.",
-        "fingerprint": "ccb220ffc34e4c03f9b8267c0aee515a0a618a9ebd8e4650feb9e8c5c31be04e"
+        "fingerprint": "38f20fadd64d70a1adb20d98e52f82cc8add436d5d68fde932e5d52eebeae94d"
       },
       {
         "index": 20,

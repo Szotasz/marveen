@@ -1719,6 +1719,12 @@ export const FLEET_BASELINE_DENY = [
   'Bash(git push --force:*)',
   'Bash(git push -f:*)',
   'mcp__playwright__browser_run_code_unsafe',
+  // MCPWRITEGATE1104 (Samu 68033 D2): the filesystem MCP server (its root was "/": its read tools walked past the
+  // Read(...) rules above, its write tools past every path gate) and gitnexus's repo-wide rename (it rewrites files
+  // with no path in its arguments). The bare server form denies every tool of that server, in every permission mode
+  // including bypassPermissions (code.claude.com/docs/en/permissions, /permission-modes).
+  'mcp__Filesystem',
+  'mcp__gitnexus__rename',
 ]
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
@@ -1908,6 +1914,12 @@ export function agentGetsGovernanceGates(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }
 
+// MCPWRITEGATE1104: every MCP tool too (mcp__.*): an MCP tool that writes or moves a local file reaches the store
+// through its own arguments. A matcher with a `.` or `*` is an UNANCHORED regex (code.claude.com/docs/en/hooks,
+// "Matcher patterns"), so the list is anchored: without it `Write` would also fire on TodoWrite. MultiEdit was
+// handled by gateDecision but missing here.
+export const SELF_PACE_GATE_MATCHER = '^(?:ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
+
 // Idempotently wire the self-pace-gate PreToolUse hook (blocks ScheduleWakeup /
 // Cron* / RemoteTrigger + the Bash self-injection routes). Same shape + dedupe
 // discipline as injectEmailSendGate.
@@ -1922,7 +1934,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     // Write|Edit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    matcher: SELF_PACE_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -1937,7 +1949,8 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
 // database, no write of this install's gate wiring or autonomy levels. Write,
 // Edit, MultiEdit and NotebookEdit are in the matcher: the install-file part is
 // reachable through the native file tools as well as Bash.
-export const DB_WRITE_GATE_MATCHER = 'Bash|Write|Edit|MultiEdit|NotebookEdit'
+// MCPWRITEGATE1104: and every MCP tool, anchored (see SELF_PACE_GATE_MATCHER).
+export const DB_WRITE_GATE_MATCHER = '^(?:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
 export function injectDbWriteGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
@@ -2936,7 +2949,11 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
-  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  // A self-pace entry under an older matcher (before MCPWRITEGATE1104: no mcp__, no MultiEdit) is stale, as for the
+  // db-write-gate below. The spawn rewrites it anyway (injectSelfPaceGate); this covers the dashboard-restart pass.
+  const paceStale = ptu.some((e) => JSON.stringify(e).includes('self-pace-gate.mjs')
+    && (e as { matcher?: unknown })?.matcher !== SELF_PACE_GATE_MATCHER)
+  const needPace = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, paceCmd) || paceStale)
   const dbGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
   const dbGateStale = ptu.some((e) => JSON.stringify(e).includes('db-write-gate.mjs')
     && (e as { matcher?: unknown })?.matcher !== DB_WRITE_GATE_MATCHER)
