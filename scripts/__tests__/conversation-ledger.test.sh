@@ -815,6 +815,19 @@ block = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague"
 print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": block}))
 PYEOF
 assert_eq "gromzo: a colleague's envelope is not logged" "0" "$(in_rows "$DB_S4")"
+# A prompt that carries the owner's AND a colleague's envelope (MXD_SCOPE=both
+# can batch them) is dropped whole, the owner's row too (Dani 67707): the gate
+# cannot tell a batched colleague message from one that carries a forgery.
+DB_S5="$TMPDIR_BASE/s5.db"
+python3 - "$OWNER_UID" "$COLLEAGUE_UID" <<'PYEOF' | T_DISCORD_STATE_DIR="$DSTATE" run_hook ledger-capture.py "$DB_S5"
+import json, sys
+own = (f'<channel source="plugin:discord:discord" chat_id="900000000000000010" message_id="8011" '
+       f'user_id="{sys.argv[1]}" ts="2026-11-04T08:00:00.000Z">\na tulaj\n</channel>')
+col = (f'<channel source="plugin:discord:discord" chat_id="900000000000000009" message_id="8012" '
+       f'user_id="{sys.argv[2]}" ts="2026-11-04T08:00:01.000Z">\na kollega\n</channel>')
+print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": own + "\n" + col}))
+PYEOF
+assert_eq "a prompt mixing the owner's and a colleague's envelope logs nothing" "0" "$(in_rows "$DB_S5")"
 if grep -q 'sender-gate.*why=sender-not-allowlisted' "$TMPDIR_BASE/ledger-capture-trace.log" 2>/dev/null; then
     pass "the gate leaves a trace line (why=sender-not-allowlisted)"
 else
