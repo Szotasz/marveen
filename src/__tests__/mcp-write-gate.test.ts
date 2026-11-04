@@ -128,6 +128,24 @@ describe('Dani 68192: create/update/replace writers, bare names, a known mover\'
   })
 })
 
+// Dani 68255, Samu 68259: with a measured base INSIDE a guarded directory, a dotless bare name is a path into it.
+describe('a bare name from inside a guarded directory (Dani 68255)', () => {
+  const inside = (dir: string) => ({ cwd: dir, projectDir: agent })
+  it('db-write-gate: save_note "evil" from scripts/hooks, "pre-commit" from .git/hooks: denied', () => {
+    mkdirSync(join(root, '.git', 'hooks'), { recursive: true })
+    expect(denied(db('mcp__notes__save_note', { filename: 'evil', body: 'x' }, inside(join(root, 'scripts', 'hooks'))))).toBe(true)
+    expect(denied(db('mcp__notes__save_note', { filename: 'pre-commit', body: 'x' }, inside(join(root, '.git', 'hooks'))))).toBe(true)
+  })
+  it('self-pace-gate: a bare name from local-hooks: denied', () => {
+    expect(denied(pace('mcp__notes__save_note', { filename: 'h', body: 'x' }, inside(join(root, 'local-hooks'))))).toBe(true)
+  })
+  it('control: the same call from a work directory passes on both gates', () => {
+    const w = { cwd: join(agent, 'work'), projectDir: join(agent, 'work') }
+    expect(db('mcp__notes__save_note', { filename: 'evil', body: 'x' }, w)).toEqual({ deny: false })
+    expect(pace('mcp__notes__save_note', { filename: 'evil', body: 'x' }, w)).toEqual({ deny: false })
+  })
+})
+
 // Dani 68239: real fleet writes with no path, at real size, must pass (the update/modify writer words made them
 // writers; the old 256-leaf / 6-deep bound denied them as mcp-path).
 describe('real-size writes with no path pass (Dani 68239)', () => {

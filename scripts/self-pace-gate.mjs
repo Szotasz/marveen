@@ -3219,7 +3219,26 @@ function mcpDecide(name, toolInput, opts) {
       if (m.cls !== 'other' && t.dir && mcpDirDeny(t.path, base, opts)) return { deny: true, reason: 'mcp-dir' }
     }
   }
+  // A base INSIDE a directory this gate guards (Dani 68255): there every bare name is a path into it, so the bare
+  // leaves the classifier left out go through the native Write branch too. Outside one this costs nothing.
+  if (m.bare?.length) {
+    for (const base of bases) {
+      if (!mcpBaseInsideGuarded(base, opts)) continue
+      for (const b of m.bare) {
+        const v = decide('Write', { file_path: b }, { ...opts, cwd: base })
+        if (v.deny) return { deny: true, reason: v.reason ? `mcp-${v.reason}` : 'mcp-schedule' }
+      }
+    }
+  }
   return { deny: false }
+}
+
+function mcpBaseInsideGuarded(base, opts) {
+  const key = pathKey(base)
+  const allowlistPath = opts.allowlistPath ?? DEFAULT_ALLOWLIST_PATH
+  const guarded = [opts.storeDir ?? DEFAULT_STORE_DIR, dirname(allowlistPath), join(dirname(allowlistPath), '..', 'local-hooks')]
+  if (guarded.some((g) => underKey(key, pathKey(g)))) return true
+  return nameForms(base).some((f) => SCHEDULE_DIR_PATH_RX.test(f) || f.split('/').some((s) => STORE_PARENTS.includes(s)))
 }
 
 function decide(toolName, toolInput, opts = {}) {
@@ -3450,7 +3469,7 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
     const selfAgent = selfAgentFromProjectDir(process.env.CLAUDE_PROJECT_DIR)
     // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
     const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
-    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated) allow()
+    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.bare.length) allow()
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent, projectDir: process.env.CLAUDE_PROJECT_DIR || null })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {

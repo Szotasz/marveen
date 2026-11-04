@@ -167,7 +167,12 @@ export function mcpFileTargets(toolName, toolInput) {
   // ...and every path-looking leaf, whatever its key (known or not): nothing a renamed key carries is skipped
   const { values, truncated } = leaves(toolInput)
   for (const v of values) if (looksLikePath(v, cls)) add(v, cls === 'mover')
+  // The bare leaves looksLikePath left out (no dot, not a guarded name, not a number), for a writer or a mover:
+  // a gate judges them only while a measured base is INSIDE a guarded directory (Dani 68255, Samu 68259), where any
+  // bare name is a path into it ('evil' from scripts/hooks, 'pre-commit' from .git/hooks).
+  const bare = cls === 'other' ? [] : [...new Set(values.filter((v) => v && !/\s|\//.test(v) && !v.startsWith('~')
+    && !/^[-+]?\d+(?:[.,]\d+)?$/.test(v) && !looksLikePath(v, cls)))]
   // every leaf naming the dashboard DB by name, whatever the class (Dani 68192 (1)): judged for every caller
   const dbNamed = values.some((v) => /(?:^|\/)claudeclaw\.db(?:-wal|-shm|-journal)?$/i.test(fileUriPath(v.trim())))
-  return { server: parsed.server, tool: parsed.tool, cls, known: !!known, targets, missingPath, truncated, dbNamed }
+  return { server: parsed.server, tool: parsed.tool, cls, known: !!known, targets, missingPath, truncated, dbNamed, bare }
 }

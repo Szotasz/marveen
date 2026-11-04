@@ -893,6 +893,20 @@ function mcpVerdict(m, opts) {
       if (r) worst = r
     }
   }
+  // A base INSIDE a guarded directory (Dani 68255): there every bare name is a path into it, so the bare leaves the
+  // classifier left out are judged as files too. Outside one (the usual case) this costs nothing.
+  if (m.bare?.length) {
+    for (const base of bases) {
+      const ctx = { root: opts.root ?? INSTALL_ROOT, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null }
+      const key = pathKey(base)
+      if (!installTargets(ctx.root, ctx.subAgent, ctx.projectDir, ctx.configDir).list.some((t) => t.dir && !t.pattern && underKey(key, t.key))) continue
+      for (const b of m.bare) {
+        const r = fileToolDeny({ file_path: b }, { ...opts, cwd: base })
+        if (r === 'db') return 'db'
+        if (r) worst = r
+      }
+    }
+  }
   return worst
 }
 
@@ -1083,7 +1097,7 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
   try {
     // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
     const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
-    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.dbNamed) allow()
+    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.dbNamed && !mcp.bare.length) allow()
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input,
       {
         cwd: payload?.cwd,
