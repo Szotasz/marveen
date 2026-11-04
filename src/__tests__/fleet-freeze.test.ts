@@ -303,9 +303,11 @@ describe("the dashboard's own Claude calls and the worker session", () => {
     expect(WORKER_FREEZE_GATE_CMD).toContain(join('scripts', 'hooks', 'fleet-freeze-gate.sh'))
   })
 
-  it('ensureWorkerCwd writes the worker settings through withFleetFreezeGate', () => {
+  it('ensureWorkerCwd writes the worker settings through withWorkerGates, which applies withFleetFreezeGate first', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-worker.ts'), 'utf-8')
-    expect(src).toMatch(/writeFileSync\(settingsPath, JSON\.stringify\(withFleetFreezeGate\(\{/)
+    expect(src).toMatch(/writeFileSync\(settingsPath, JSON\.stringify\(withWorkerGates\(\{/)
+    // ENVRELAXGATE1104: the worker gates build on the freeze gate, never instead of it
+    expect(src).toMatch(/export function withWorkerGates\(settings: WorkerSettings\): WorkerSettings \{\n  const out = withFleetFreezeGate\(settings\)/)
   })
 })
 
