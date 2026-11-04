@@ -107,6 +107,7 @@ try:
         (f'env -S "-a x python3 {D}/evil/send.py"', True, "env -S with -a ARG at the start, absolute script"),
         (f'env -S "--c {D}/evil" python3 send.py', True, "env -S value of options only, the command after it"),
         (f'env -S "-S \'-C {D}/evil python3 send.py\'"', True, "env -S nested in an -S value"),
+        (f'env --split-string="-C {D}/evil python3 send.py"', True, "env --split-string= with -C DIR at its start"),
         (f'env -S "-C {D}/decoy python3 send.py"', False, "control: env -S -C into a dir whose script does not send"),
     ]:
         got = ocg.script_run_sends(cmd, C)

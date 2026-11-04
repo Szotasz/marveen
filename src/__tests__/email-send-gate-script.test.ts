@@ -442,6 +442,7 @@ describe('env -C and the launchers in front of the sender (ENVOPTHEAD1104, Bence
     for (const cmd of [`env -S "-C ${cwd}/evil python3 send.py"`, `env -S "--chdir=${cwd}/evil python3 send.py"`,
       `env -S "-u X python3 ${cwd}/evil/send.py"`, `env -S "-a x python3 ${cwd}/evil/send.py"`,
       `env -S "--c ${cwd}/evil" python3 send.py`, `env -S "-S '-C ${cwd}/evil python3 send.py'"`,
+      `env --split-string="-C ${cwd}/evil python3 send.py"`,
       './sa', './sc', './su', './si']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }
