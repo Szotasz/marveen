@@ -586,6 +586,7 @@ window._i18n.en = {
   'skills.pending.title': 'Waiting for approval ({n})',
   'skills.pending.intro': 'These skills are not live yet: no agent sees them. Before approving, look through the files, the findings and the SKILL.md text. An empty findings list does not mean the skill is safe, only that the filter found no known pattern.',
   'skills.pending.target_global': 'Global: the whole fleet sees and loads it',
+  'skills.pending.target_project': 'Project (.claude/skills): every agent sees and loads it, as each works below the project',
   'skills.pending.target_agent': 'Only this agent: {agent}',
   'skills.pending.source_import': 'imported',
   'skills.pending.source_generate': 'generated',

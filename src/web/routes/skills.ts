@@ -452,7 +452,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const off = !quarantineOn()
     const r = queueProposedSkill(name, skillMd, { proposedBy, reason, files: parsed.files, ...(off ? { mayReplacePending: () => true } : {}) })
     if (!r.ok) { json(res, { error: r.error }, r.status); return true }
-    logger.info({ name, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy, supersedes: r.waiting }, 'Global skill proposed and queued for approval')
+    logger.info({ name, id: r.meta.id, target: r.meta.target.scope, replaces: !!r.meta.replaces, files: r.meta.proposedFiles?.length ?? 0, proposedBy, supersedes: r.waiting }, 'Skill proposed and queued for approval')
     const lp = await liveOrPending(r.meta.id, serializeSkillsDir)
     const { hash: _h, ...answer } = lp
     let superseded: string | undefined
@@ -467,7 +467,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (old) {
         superseded = r.waiting
         appendSkillAudit({
-          at: new Date().toISOString(), event: 'superseded_unquarantined', id: r.waiting, name, source: 'propose', target: { scope: 'global' },
+          at: new Date().toISOString(), event: 'superseded_unquarantined', id: r.waiting, name, source: 'propose', target: r.meta.target,
           proposedBy: old.proposedBy, hash: old.hash, replaces: false, findings: {}, findingsTruncated: false,
           supersededBy: { id: r.meta.id, hash: lp.hash ?? null, proposedBy: proposedBy ?? null },
         })
@@ -475,7 +475,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         logger.error({ name, waiting: r.waiting }, 'skill: the superseded proposal could not be archived; it is still listed as waiting')
       }
     }
-    json(res, { ok: true, name, ...answer, id: r.meta.id, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [], ...(superseded ? { superseded } : {}) })
+    json(res, { ok: true, name, ...answer, id: r.meta.id, target: r.meta.target.scope, replaces: !!r.meta.replaces, files: r.meta.proposedFiles ?? [], ...(superseded ? { superseded } : {}) })
     return true
   }
 
