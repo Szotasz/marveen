@@ -549,6 +549,11 @@ _WRAPPERS = {
     "chrt": ("TPD", ("sched-runtime", "sched-period", "sched-deadline"), 1),  # then the priority, then the command
     "caffeinate": ("tw", (), 0),
 }
+# JSCDSEND1104 (Bence 69588, Samu 69591): the homebrew coreutils install the GNU launchers with a g prefix (genv,
+# gtimeout, gnohup, gnice, gstdbuf); each reads as its pair. (chroot is no wrapper here, so gchroot has no pair.)
+_G_PREFIXED = ("env", "timeout", "nohup", "nice", "stdbuf")
+for _n in _G_PREFIXED:
+    _WRAPPERS["g" + _n] = _WRAPPERS[_n]
 _HEAD_DEPTH = 8
 
 # MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
@@ -667,7 +672,7 @@ def _command_heads(toks, _d: int = 0):
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
-    if w == "env":
+    if w in ("env", "genv"):
         return _env_heads(toks, _d)
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
@@ -738,49 +743,81 @@ def _env_split_value(t, words, j):
     return None
 
 
+# JSCDSEND1104: sudo -D/--chdir DIR runs the command in DIR, like env -C (Bence 69517; sudo needs runcwd in sudoers
+# to allow it, so it is rare, but the class is the same). sudo's long options, read by unique prefix as getopt_long.
+_SUDO_LONG_OPTIONS = ("askpass", "auth-type", "background", "bell", "chdir", "chroot", "close-from", "command-timeout",
+                      "edit", "group", "help", "host", "list", "login", "non-interactive", "other-user",
+                      "preserve-env", "preserve-groups", "prompt", "remove-timestamp", "reset-timestamp", "role",
+                      "set-home", "shell", "type", "user", "validate", "version")
+_SUDO_LONG_VALUES = ("auth-type", "chdir", "chroot", "close-from", "command-timeout", "group", "host", "other-user",
+                     "prompt", "role", "type", "user")
+
+
+def _long_name(t, names):
+    if not t.startswith("--") or t == "--":
+        return None
+    word = t[2:].split("=", 1)[0]
+    if word in names:
+        return word
+    hits = [o for o in names if word and o.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# program -> (short options that take a value, the short chdir letter, long option names, long ones with a value).
+# env's entry is added below _ENV_SHORT_VALUE / _ENV_LONG_VALUE, so both readers share one list.
+_CHDIR_SPECS = {
+    "sudo": ("ughpCUrtDRT", "D", _SUDO_LONG_OPTIONS, _SUDO_LONG_VALUES),
+}
+
+
 def _env_chdir_dirs(words, _d=0):
-    """ENVOPTHEAD1104 (Bence 69475): the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also
-    inside a cluster) runs its command in. A relative script there is resolved under DIR, not the cwd: they are handed
-    to the cd logic as `cd DIR` words, which also makes an undecidable DIR a send."""
+    """ENVOPTHEAD1104 (Bence 69475) / JSCDSEND1104: the directories `env -C DIR` (`--chdir DIR`, `--chdir=DIR`,
+    `-CDIR`, a cluster, a unique prefix, and inside an -S value, Bence 69552) and `sudo -D DIR` (the same forms) run
+    their command in. A relative script there is resolved under DIR, not the cwd: they are handed to the cd logic as
+    `cd DIR` words, which also makes an undecidable DIR a send."""
     out = []
     for i, w in enumerate(words):
-        if _basename(w) != "env":
+        spec = _CHDIR_SPECS.get(_basename(w))
+        if spec is None:
             continue
+        short_val, chdir_ch, long_names, long_vals = spec
         j = i + 1
         while j < len(words):
             t = words[j]
             if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
                 break
-            split = _env_split_value(t, words, j)
-            if split is not None:
-                # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
-                value, after = split
-                try:
-                    split_words = [x for seg in _segments_tokens(value) for x in seg]
-                except ValueError:
-                    split_words = []  # an unsplittable value is already a send by _env_split_heads
-                if _d < _HEAD_DEPTH:
-                    out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
-                break
-            if t == "-C" or (t.startswith("--") and "=" not in t and _env_long_name(t) == "chdir"):
+            if _basename(w) in ("env", "genv"):
+                split = _env_split_value(t, words, j)
+                if split is not None:
+                    # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+                    value, after = split
+                    try:
+                        split_words = [x for seg in _segments_tokens(value) for x in seg]
+                    except ValueError:
+                        split_words = []  # an unsplittable value is already a send by _env_split_heads
+                    if _d < _HEAD_DEPTH:
+                        out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
+                    break
+            long = _long_name(t, long_names) if t.startswith("--") else None
+            if t == "-" + chdir_ch or (long == "chdir" and "=" not in t):
                 if j + 1 < len(words):
                     out.append(words[j + 1])
                 j += 2
                 continue
-            if t.startswith("--") and "=" in t and _env_long_name(t) == "chdir":
+            if long == "chdir":
                 out.append(t.split("=", 1)[1])
-            elif t.startswith("--") and "=" not in t and _env_long_name(t) in ("unset", "split-string", "argv0"):
+            elif long in long_vals and "=" not in t:
                 j += 1  # its value
             elif t.startswith("-") and not t.startswith("--"):
-                k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
-                if k > 0 and t[k] == "C":
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+                if k > 0 and t[k] == chdir_ch:
                     if k < len(t) - 1:
                         out.append(t[k + 1:])
                     elif j + 1 < len(words):
                         out.append(words[j + 1])
                         j += 1
                 elif k == len(t) - 1:
-                    j += 1  # the value of -u / -P / -S
+                    j += 1  # the value of another value option
             j += 1
     return out
 
@@ -801,6 +838,7 @@ _ENV_LONG_NOVALUE = ("ignore-environment", "null", "debug", "list-signal-handlin
 # included, cannot be stepped over safely: the command behind it is undecidable, which counts as a send.
 _ENV_SHORT_VALUE = "uCSPaLU"
 _ENV_LONG_VALUE = ("unset", "chdir", "split-string", "argv0")
+_CHDIR_SPECS["env"] = _CHDIR_SPECS["genv"] = (_ENV_SHORT_VALUE, "C", _ENV_LONG_OPTIONS, _ENV_LONG_VALUE)
 
 
 def _env_heads(toks, _d):
@@ -1341,17 +1379,21 @@ def _cd_bases(cwd, cmd_words):
     undecidable = False
     i = 0
     while i < len(cmd_words):
-        if cmd_words[i] != "cd":
+        word = cmd_words[i]
+        if word not in ("cd", "pushd"):
             i += 1
             continue
         i += 1
-        while i < len(cmd_words) and cmd_words[i] in _CD_OPTIONS:
+        # Samu 69538: pushd DIR changes the directory like cd (its -n is stepped over: a DIR read as a target only adds a
+        # candidate); pushd +N / -N rotates the stack, which cannot be known here
+        while i < len(cmd_words) and (cmd_words[i] in _CD_OPTIONS or (word == "pushd" and cmd_words[i] == "-n")):
             i += 1
         if i < len(cmd_words) and cmd_words[i] == "--":
             i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
         d = cmd_words[i] if i < len(cmd_words) else None
         tilde = d is not None and (d == "~" or d.startswith("~/"))
-        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)):
+        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)
+                or (word == "pushd" and re.match(r"^[+-]\d+$", d))):
             undecidable = True
             cur = None
             continue
@@ -1362,6 +1404,9 @@ def _cd_bases(cwd, cmd_words):
         elif cur is not None:
             new = os.path.join(cur, d)
         else:
+            # after an undecidable cd: where DIR is cannot be known, but DIR under the cwd is still one candidate
+            if cwd_abs:
+                bases.append(os.path.join(cwd, d))
             undecidable = True
             cur = None
             continue
@@ -1445,7 +1490,7 @@ def _shebang_kind(text):
     if not m:
         return None
     prog = _basename(m.group(1))
-    if prog == "env":
+    if prog in ("env", "genv"):
         prog = _basename(_shebang_env_program(m.group(2).split()))
     if _PYTHON.match(prog):
         return "py"
@@ -1600,15 +1645,31 @@ def _python_module(rest):
     return None
 
 
-def _python_module_sends(module, cwd, cmd_words, read_script) -> bool:
+# JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
+# value) or an e-mail address anywhere in it. The two gates differ HERE, and only here:
+#   - the sub-agent gate (email-send-gate.mjs, a hard deny) calls the fail-closed branches (an undecidable cd, -m or
+#     script path, a missing or unreadable script) a send only on an addressed run, or a developer's
+#     `cd $WT && python3 -m pytest` would be refused;
+#   - this gate (the main agent's approval gate) keeps them fail-closed on every run: it guards the owner's real mail,
+#     a script can carry the address inside, and the cost of a false positive is an approval request, not a denial.
+# A READABLE sender is a send on both. script-run-cases.json holds both expected verdicts per row (main / sub).
+_FAIL_CLOSED_NEEDS_ADDRESS = False
+_EMAIL_IN_WORD = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+
+
+def _run_is_addressed(rest, cmd_words) -> bool:
+    return any(_ADDRESS_FLAG.match(w) or _EMAIL_IN_WORD.search(w) for w in list(rest) + list(cmd_words))
+
+
+def _python_module_sends(module, cwd, cmd_words, read_script, addressed=False) -> bool:
     """MAILGATESCRIPT1027 R1: `python -m MOD` runs MOD.py or MOD/__main__.py under cwd or a cd target. An
     installed module cannot be read here, so with no readable candidate it is not a send."""
     if not re.match(r"^[\w.]+$", module):
         return False
     rel = module.replace(".", "/")
     bases, undecidable = _cd_bases(cwd, cmd_words)
-    if undecidable:
-        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed
+    if undecidable and addressed:
+        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed when addressed (JSCDSEND1104)
     paths = []
     for base in bases:
         paths += [os.path.normpath(os.path.join(base, rel + ".py")),
@@ -1628,12 +1689,15 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
             if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
                 return True
         return False
+    # the fail-closed branches below fire when `addressed`: on this gate always (see _FAIL_CLOSED_NEEDS_ADDRESS)
+    # Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
+    addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _SUBST_MARK in cmd_words or _run_is_addressed(rest, cmd_words)
     if _PYTHON.match(prog):
         if _address_flag_given(rest):  # also under -m / -c, where no file is named
             return True
         module = _python_module(rest)
         if module:
-            return _python_module_sends(module, cwd, cmd_words, read_script)
+            return _python_module_sends(module, cwd, cmd_words, read_script, addressed)
         script = _python_script_operand(rest)[0]
         kind = "py"
     elif _NODEISH.match(prog):
@@ -1644,12 +1708,14 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if _address_flag_given(rest):
             return True
         kind = "node"
+    elif _subst_artefact(toks[0]):
+        return False  # Samu 69682: a piece of a cut command substitution, not a file that runs
     elif _SCRIPT_FILE.search(toks[0]) or "/" in toks[0]:
         # a directly executed file: its #! line picks the interpreter, else its extension
         # MAILGATESCRIPT1027 R1: every candidate is judged on its own, with its own kind
         paths = _resolve_script_paths(toks[0], cwd, cmd_words)
         ext_kind = "py" if re.search(r"\.py$", toks[0], re.I) else "node" if _SCRIPT_FILE.search(toks[0]) else None
-        if _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
+        if addressed and _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
             return True
         addr = _address_flag_given(rest)
         readable = False
@@ -1670,29 +1736,126 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if not ext_kind:
             # no candidate with a kind is readable: a #! line cannot be known, the extension gives none
             return False
-        return True  # the kind is known and no candidate is readable: fail-closed
+        return addressed  # the kind is known and no candidate is readable: fail-closed when addressed
     else:
         return False
     if script is None:
         return False
     if _UNDECIDABLE_PATH.search(script):
-        return True  # what runs is undecidable here: fail-closed
-    if _relative_under_undecidable_cd(script, cwd, cmd_words):
+        return addressed  # what runs is undecidable here: fail-closed when addressed
+    if addressed and _relative_under_undecidable_cd(script, cwd, cmd_words):
         return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
-    readable, verdict = _judge_candidates(_resolve_script_paths(script, cwd, cmd_words), kind, read_script)
+    paths = _resolve_script_paths(script, cwd, cmd_words)
+    if prog == "node" and not re.search(r"\.[^/]*$", _basename(script)):
+        # Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+        if addressed and any(read_script(p + ".node", _SHEBANG_READ_LIMIT) is not None for p in paths):
+            return True
+        paths = [c for p in paths for c in (p, p + ".js", p + ".json")]
+    readable, verdict = _judge_candidates(paths, kind, read_script)
     if readable:
         return verdict
-    return bool(_SCRIPT_FILE.search(script) or "/" in script)  # a missing script is a send; `bun test` is not
+    # a missing script is a send when addressed; `bun test` is not
+    return addressed and bool(_SCRIPT_FILE.search(script) or "/" in script)
+
+
+# Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
+# backtick cd reach _cd_bases as a bare `cd`. Read on the raw command: such a cd or pushd is an undecidable cd.
+_SUBST_CD = re.compile(r"""(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)""")
+_SUBST_MARK = "$CMD_SUBST_CD"  # the undecidable cd word handed on for it
+
+
+def _subst_artefact(t) -> bool:
+    """Samu 69682 (1): a head that starts with whitespace, or has more `)` than `(`, is a piece of a command
+    substitution the tokenizer cut (`H="$(cd "$(...)" && pwd)/x"`), not a file run by path. The JS twin agrees."""
+    return bool(re.match(r"\s", t)) or t.count(")") > t.count("(")
+
+
+# Samu 69682 (2): $(dirname P) / $(basename P) / $(realpath P) with a literal P are resolved on the raw command before
+# tokenizing (nested too); with a variable argument the substitution becomes an outside variable. See the JS twin.
+_DET_SUBST = re.compile(r"""\$\(\s*(dirname|basename|realpath)\s+(?:"([^"$`\\]*)"|'([^']*)'|([^\s$`'"()|;&<>*?\[\]{}\\]+)|("?)(\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*|[0-9]))\5)\s*\)""")
+_OUTSIDE_PATH_VAR = "$GATE_OUTSIDE_PATH"
+_SAFE_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\]+$""")
+
+
+def _det_subst_value(fn, p, cwd):
+    if fn == "dirname":
+        s = p.rstrip("/") or "/"
+        if s == "/":
+            return "/"
+        i = s.rfind("/")
+        if i < 0:
+            return "."
+        return s[:i].rstrip("/") or "/"
+    if fn == "basename":
+        s = p.rstrip("/")
+        return "/" if s == "" else s.split("/")[-1]
+    if os.path.isabs(p):
+        ab = p
+    elif isinstance(cwd, str) and os.path.isabs(cwd):
+        ab = os.path.join(cwd, p)
+    else:
+        return None
+    return os.path.realpath(ab) if os.path.exists(ab) else os.path.normpath(ab)
+
+
+def _resolve_deterministic_subst(cmd, cwd):
+    s = cmd
+    for _ in range(16):
+        m = _DET_SUBST.search(s)
+        if not m:
+            break
+        if m.group(6) is not None:
+            v = _OUTSIDE_PATH_VAR
+        else:
+            p = next(g for g in (m.group(2), m.group(3), m.group(4)) if g is not None)
+            v = _OUTSIDE_PATH_VAR if p == _OUTSIDE_PATH_VAR else _det_subst_value(m.group(1), p, cwd)
+            if v is None or not (v == _OUTSIDE_PATH_VAR or _SAFE_LITERAL.match(v)):
+                break
+        s = s[:m.start()] + v + s[m.end():]
+    return s
+
+
+_VAR_REF = re.compile(r"^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$")
+
+
+def _assigned_cd_dirs(segments):
+    """Samu 69648 (3a): `D=dir; cd $D` (also `export D=dir`): the literal dirs the command itself assigns to a cd's
+    variable, handed on as more cd words. The `cd $D` stays undecidable too; a VAR set only outside is not resolved."""
+    vars_, out = {}, []
+    for toks in segments:
+        assigns = toks[1:] if toks and toks[0] == "export" else toks
+        if assigns and all(_ENV_ASSIGN.match(t) for t in assigns):
+            for t in assigns:
+                name, v = t.split("=", 1)
+                if v == "" or _UNDECIDABLE_PATH.search(v):
+                    vars_.pop(name, None)
+                else:
+                    vars_[name] = v
+            continue
+        for i in range(1, len(toks)):
+            prev = toks[i - 1]
+            if prev not in ("cd", "pushd") and not (prev == "--" and i >= 2 and toks[i - 2] in ("cd", "pushd")):
+                continue
+            m = _VAR_REF.match(toks[i])
+            v = vars_.get(m.group(1) or m.group(2)) if m else None
+            if v is not None:
+                out.append(v)
+    return out
 
 
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    cmd = _resolve_deterministic_subst(cmd, cwd)
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
     cmd_words = _with_env_chdir(list(_cd_words) + [w for toks in segments for w in toks])
+    for d in _assigned_cd_dirs(segments):
+        cmd_words += ["cd", d]
+    if _SUBST_CD.search(cmd):
+        cmd_words += ["cd", _SUBST_MARK]
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 

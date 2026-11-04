@@ -461,6 +461,9 @@ const WRAPPERS = new Map([
   ['chrt', ['TPD', ['sched-runtime', 'sched-period', 'sched-deadline'], 1]],
   ['caffeinate', ['tw', [], 0]],
 ])
+// JSCDSEND1104 (Bence 69588, Samu 69591): the homebrew g-prefixed GNU launchers read as their pair (see the python twin)
+const G_PREFIXED = ['env', 'timeout', 'nohup', 'nice', 'stdbuf']
+for (const n of G_PREFIXED) WRAPPERS.set('g' + n, WRAPPERS.get(n))
 const HEAD_DEPTH = 8
 
 // MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
@@ -598,7 +601,7 @@ function commandHeads(toksIn, d = 0) {
   if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
-  if (w === 'env') return envHeads(toks, d)
+  if (w === 'env' || w === 'genv') return envHeads(toks, d)
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
@@ -860,6 +863,21 @@ export function wrapperDepthHit(cmd) {
   return heads.some((h) => h === null) && !heads.some((h) => h !== null && headIsSend(h, 0))
 }
 
+// JSCDSEND1104 (Samu 69516): a script run counts as a send when the script (found under the cwd or a cd / env -C
+// target) imports a mail library or names a mail API, and ALSO when it cannot be read: a missing script, an
+// undecidable path or cd. Then the way out of a false denial is a script that exists at run time, named so the gate
+// can find it.
+export function buildScriptSendMsg(botName, ownerName) {
+  return (
+    'TILTVA (governance hard-gate): a futtatott szkript levelet kuldhet, vagy a kapu nem tudja elolvasni. ' +
+    'Cimzettet vivo futasnal (--to/--cc/--bcc vagy e-mail-cim a parancsban), es egy cd $(...) utan mindig, kuldesnek ' +
+    'szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy cd / env -C ' +
+    'celkonyvtara nem dontheto el. ' +
+    'Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, es literalis uttal (vagy literalis cd utan) ' +
+    'futtasd. ' + buildGateMsg(botName, ownerName)
+  )
+}
+
 export function buildWrapperDepthMsg() {
   return (
     'TILTVA (governance hard-gate): a parancs valodi fejet nem latom. ' +
@@ -1037,12 +1055,62 @@ function readScriptHead(path, limit = SCRIPT_READ_LIMIT) {
   }
 }
 
-function resolveScriptPath(script, cwd) {
-  if (!script || UNDECIDABLE_PATH.test(script)) return null
+// JSCDSEND1104 (Bence 69475, Samu 69478): the python twin's cd handling (outgoing-copy-gate.py _cd_bases,
+// MAILGATESCRIPT1027 R1/R2), ported. This twin resolved a relative script under the cwd only, so
+// `cd <dir> && python3 send.py` read the cwd's file and a sender in <dir> was no send. The directories a relative
+// script may be under: the cwd, and every literal `cd DIR` target of the command (cumulative over chained cds, and
+// DIR alone under the cwd). undecidable: some `cd` names a directory that cannot be known here.
+const CD_OPTIONS = new Set(['-P', '-L', '-e', '-@'])
+
+function cdBases(cwd, cmdWords) {
+  const cwdAbs = typeof cwd === 'string' && isAbsolute(cwd)
+  let cur = cwdAbs ? cwd : null
+  const bases = cwdAbs ? [cwd] : []
+  let undecidable = false
+  let i = 0
+  while (i < cmdWords.length) {
+    const word = cmdWords[i]
+    if (word !== 'cd' && word !== 'pushd') { i++; continue }
+    i++
+    // Samu 69538: pushd DIR changes the directory like cd (its -n is stepped over: a DIR read as a target only adds a
+    // candidate); pushd +N / -N rotates the stack, which cannot be known here
+    while (i < cmdWords.length && (CD_OPTIONS.has(cmdWords[i]) || (word === 'pushd' && cmdWords[i] === '-n'))) i++
+    if (i < cmdWords.length && cmdWords[i] === '--') i++ // `--` ends the options: the next word is DIR
+    const d = i < cmdWords.length ? cmdWords[i] : null
+    const tilde = d !== null && (d === '~' || d.startsWith('~/'))
+    if (!d || d === '-' || (d.startsWith('~') && !tilde) || UNDECIDABLE_PATH.test(d)
+      || (word === 'pushd' && /^[+-]\d+$/.test(d))) { undecidable = true; cur = null; continue }
+    let next
+    if (tilde) next = join(homedir(), d.slice(1))
+    else if (isAbsolute(d)) next = d
+    else if (cur !== null) next = join(cur, d)
+    else {
+      // after an undecidable cd: where DIR is cannot be known, but DIR under the cwd is still one candidate (Samu 69648)
+      if (cwdAbs) bases.push(join(cwd, d))
+      undecidable = true; cur = null; continue
+    }
+    bases.push(next)
+    if (!tilde && !isAbsolute(d) && cwdAbs) bases.push(join(cwd, d))
+    cur = next
+  }
+  return { bases: [...new Set(bases.map((b) => resolve(b)))], undecidable }
+}
+
+// A relative script-shaped operand and a cd that cannot be resolved: what runs cannot be known (a send).
+function relativeUnderUndecidableCd(script, cwd, cmdWords) {
+  if (!script || isAbsolute(script) || script === '~' || script.startsWith('~/')) return false
+  if (!(SCRIPT_FILE.test(script) || script.includes('/'))) return false
+  return cdBases(cwd, cmdWords).undecidable
+}
+
+// Every absolute path the script operand can name: itself when absolute, `~` expanded, a relative one under the
+// cwd and under every literal `cd DIR` target of the command. May be empty.
+function resolveScriptPaths(script, cwd, cmdWords) {
+  if (!script || UNDECIDABLE_PATH.test(script)) return []
   let p = script
   if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1))
-  if (isAbsolute(p)) return p
-  return cwd ? resolve(cwd, p) : null
+  if (isAbsolute(p)) return [p]
+  return [...new Set(cdBases(cwd, cmdWords).bases.map((b) => resolve(b, p)))]
 }
 
 // node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
@@ -1084,7 +1152,7 @@ function shebangKind(text) {
   const m = /^#!\s*(\S+)([^\n]*)/.exec(text ?? '')
   if (!m) return null
   let prog = basename(m[1])
-  if (prog === 'env') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
+  if (prog === 'env' || prog === 'genv') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
   if (PYTHON.test(prog)) return 'py'
   if (NODEISH.test(prog) && prog !== 'npx') return 'node'
   return null
@@ -1168,7 +1236,8 @@ function fileSends(path, text, kind, readScript) {
 // python runs a directory's __main__.py, and a zip app's __main__.py from inside the archive
 // (MAILGATEDIRZIP1027). The archive is not unpacked here, so a zip run by python is a send.
 const ZIP_MAGIC = 'PK\u0003\u0004'
-function scriptFileSends(path, kind, readScript) {
+// JSCDSEND1104: { readable, sends } like the python twin's _judge_candidates for one path.
+function judgeScript(path, kind, readScript) {
   let p = path
   let text = readScript(p)
   if (text === null && kind === 'py') {
@@ -1180,16 +1249,32 @@ function scriptFileSends(path, kind, readScript) {
     const pkg = readScript(join(path, 'package.json'))
     let main = null
     if (pkg !== null) {
-      try { main = JSON.parse(pkg)?.main ?? null } catch { return true }
+      try { main = JSON.parse(pkg)?.main ?? null } catch { return { readable: true, sends: true } }
     }
     const declared = typeof main === 'string' && main !== ''
     p = declared ? resolve(path, main) : join(path, 'index.js')
     text = readScript(p)
-    if (text === null && declared) return true
+    if (text === null && declared) return { readable: true, sends: true }
   }
-  if (text === null) return false
-  if (kind === 'py' && text.includes(ZIP_MAGIC)) return true
-  return fileSends(p, text, kind, readScript)
+  if (text === null) return { readable: false, sends: false }
+  if (kind === 'py' && text.includes(ZIP_MAGIC)) return { readable: true, sends: true }
+  return { readable: true, sends: fileSends(p, text, kind, readScript) }
+}
+
+function scriptFileSends(path, kind, readScript) {
+  return judgeScript(path, kind, readScript).sends
+}
+
+// Any readable candidate that sends is a send; the candidates are where the script may be (the cwd, each cd target).
+function judgeCandidates(paths, kind, readScript) {
+  let readable = false
+  for (const path of paths) {
+    const r = judgeScript(path, kind, readScript)
+    if (!r.readable) continue
+    readable = true
+    if (r.sends) return { readable: true, sends: true }
+  }
+  return { readable, sends: false }
 }
 
 // MAILGATEDIRZIP1027: MOD of `-m MOD` / `-mMOD` among the interpreter options, else null (the Python twin's
@@ -1209,29 +1294,48 @@ function pythonModule(rest) {
   }
   return null
 }
-function pythonModuleSends(module, cwd, readScript) {
-  if (!/^[\w.]+$/.test(module) || !cwd) return false
-  const rel = module.split('.').join('/')
-  return [rel + '.py', join(rel, '__main__.py')].some((c) => scriptFileSends(resolve(cwd, c), 'py', readScript))
+// JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
+// value) or an e-mail address anywhere in it. This gate (a hard deny) calls the fail-closed branches (an undecidable cd,
+// -m or script path, a missing or unreadable script) a send ONLY on an addressed run: without an address, a script the
+// gate cannot read is no send (a developer's `cd $WT && python3 -m pytest`, a script written and run in one command).
+// A READABLE sender is a send either way, as it takes the address from inside. The main agent's approval gate (the
+// python twin) keeps the fail-closed branches on every run (its _FAIL_CLOSED_NEEDS_ADDRESS is false): this is the one
+// place the two gates differ, and script-run-cases.json holds both verdicts per row (main / sub).
+const FAIL_CLOSED_NEEDS_ADDRESS = true
+const EMAIL_IN_WORD = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
+function runIsAddressed(rest, cmdWords) {
+  return [...rest, ...cmdWords].some((w) => ADDRESS_FLAG.test(w) || EMAIL_IN_WORD.test(w))
 }
 
-function headRunsSenderScript(toks, cwd, readScript, depth) {
+function pythonModuleSends(module, cwd, readScript, cmdWords = [], addressed = false) {
+  if (!/^[\w.]+$/.test(module)) return false
+  const rel = module.split('.').join('/')
+  const { bases, undecidable } = cdBases(cwd, cmdWords)
+  if (undecidable && addressed) return true // JSCDSEND1104: a cd that cannot be resolved: fail-closed when addressed
+  const paths = bases.flatMap((b) => [resolve(b, rel + '.py'), resolve(b, rel, '__main__.py')])
+  return judgeCandidates(paths, 'py', readScript).sends
+}
+
+function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (!toks || !toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (WRAPPER_SHELL.test(prog)) {
     if (depth >= SHELL_C_DEPTH) return false
     for (let i = 0; i < rest.length - 1; i++) {
-      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1)) return true
+      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1, cmdWords)) return true
     }
     return false
   }
   let script
   let kind
+  // the fail-closed branches below fire when `addressed` (see FAIL_CLOSED_NEEDS_ADDRESS)
+  // Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
+  const addressed = !FAIL_CLOSED_NEEDS_ADDRESS || cmdWords.includes(SUBST_MARK) || runIsAddressed(rest, cmdWords)
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
-    if (module) return pythonModuleSends(module, cwd, readScript)
+    if (module) return pythonModuleSends(module, cwd, readScript, cmdWords, addressed)
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {
@@ -1240,46 +1344,177 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
     if (prog === 'npx' && script === null) return false
     if (addressFlagGiven(rest)) return true
     kind = 'node'
+  } else if (substArtefact(toks[0])) {
+    return false // Samu 69682: a piece of a cut command substitution, not a file that runs
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
-    // a directly executed file: its #! line picks the interpreter, else its extension
-    const path = resolveScriptPath(toks[0], cwd)
-    if (!path) return false
-    kind = shebangKind(readScript(path, SHEBANG_READ_LIMIT)) ??
-      (/\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null)
-    if (!kind) return false
-    if (addressFlagGiven(rest)) return true
-    return scriptFileSends(path, kind, readScript)
+    // a directly executed file: its #! line picks the interpreter, else its extension; every candidate on its own
+    const extKind = /\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null
+    if (addressed && relativeUnderUndecidableCd(toks[0], cwd, cmdWords)) return true
+    const addr = addressFlagGiven(rest)
+    let readable = false
+    for (const path of resolveScriptPaths(toks[0], cwd, cmdWords)) {
+      const head = readScript(path, SHEBANG_READ_LIMIT)
+      if (head === null) continue
+      const k = shebangKind(head) ?? extKind
+      if (!k) continue
+      if (addr) return true
+      readable = true
+      if (scriptFileSends(path, k, readScript)) return true
+    }
+    if (readable) return false
+    if (!extKind) return false // no candidate with a kind is readable: a #! line cannot be known, the extension gives none
+    return addressed // the kind is known and no candidate is readable: fail-closed when addressed (JSCDSEND1104)
   } else {
     return false
   }
   if (script === null) return false
-  const path = resolveScriptPath(script, cwd)
-  if (!path) return false
-  return scriptFileSends(path, kind, readScript)
+  if (UNDECIDABLE_PATH.test(script)) return addressed // what runs is undecidable here: fail-closed when addressed
+  if (addressed && relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
+  let paths = resolveScriptPaths(script, cwd, cmdWords)
+  if (prog === 'node' && !/\.[^/]*$/.test(basename(script))) {
+    // Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+    if (addressed && paths.some((p) => readScript(p + '.node', SHEBANG_READ_LIMIT) !== null)) return true
+    paths = paths.flatMap((p) => [p, p + '.js', p + '.json'])
+  }
+  const { readable, sends } = judgeCandidates(paths, kind, readScript)
+  if (readable) return sends
+  // JSCDSEND1104: a missing script is a send when addressed; `bun test` is not
+  return addressed && (SCRIPT_FILE.test(script) || script.includes('/'))
 }
 
-export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0) {
+// Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
+// backtick cd reach cdBases as a bare `cd` (and the next segment's first word looked like its DIR). Read on the raw
+// command: such a cd or pushd is an undecidable cd.
+const SUBST_CD = /(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)/
+// the undecidable cd word handed on for it; also what tells headRunsSenderScript a substitution cd was seen
+const SUBST_MARK = '$CMD_SUBST_CD'
+
+// Samu 69682 (1): the tokenizer does not nest quotes inside a command substitution, so `H="$(cd "$(...)" && pwd)/x"`
+// comes out in pieces, and ` && pwd)/x` stood at a segment's head like a file run by path. A head that starts with
+// whitespace, or has more `)` than `(`, is such a piece: no file runs under that name. The python twin agrees.
+function substArtefact(t) {
+  if (/^\s/.test(t)) return true
+  let open = 0, close = 0
+  for (const ch of t) { if (ch === '(') open++; else if (ch === ')') close++ }
+  return close > open
+}
+
+// Samu 69682 (2): substitutions whose value is known from a literal path are resolved on the raw command before it is
+// tokenized: $(dirname P), $(basename P), $(realpath P), P a literal (quoted or not), nested too. A cd after one is a
+// literal cd. With a variable argument ("$0", $VAR, ${VAR}) the substitution becomes an outside variable: the cd is
+// undecidable, but no command-substitution mark (a script's own `cd "$(dirname "$0")"` must not be a deny). Any other
+// substitution, or one with options, stays as it is.
+const DET_SUBST = /\$\(\s*(dirname|basename|realpath)\s+(?:"([^"$`\\]*)"|'([^']*)'|([^\s$`'"()|;&<>*?[\]{}\\]+)|("?)(\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*|[0-9]))\5)\s*\)/
+const OUTSIDE_PATH_VAR = '$GATE_OUTSIDE_PATH'
+const SAFE_LITERAL = /^[^\s$`'"()|;&<>*?[\]{}\\]+$/
+function detSubstValue(fn, p, cwd) {
+  if (fn === 'dirname') {
+    const s = p.replace(/\/+$/, '') || '/'
+    if (s === '/') return '/'
+    const i = s.lastIndexOf('/')
+    if (i < 0) return '.'
+    return s.slice(0, i).replace(/\/+$/, '') || '/'
+  }
+  if (fn === 'basename') {
+    const s = p.replace(/\/+$/, '')
+    return s === '' ? '/' : s.split('/').pop()
+  }
+  const abs = isAbsolute(p) ? p : (typeof cwd === 'string' && isAbsolute(cwd) ? join(cwd, p) : null)
+  if (abs === null) return null
+  try { return realpathSync(abs) } catch { return resolve(abs) }
+}
+function resolveDeterministicSubst(cmd, cwd) {
+  let s = cmd
+  for (let n = 0; n < 16; n++) {
+    const m = DET_SUBST.exec(s)
+    if (!m) break
+    let v
+    if (m[6] !== undefined) v = OUTSIDE_PATH_VAR
+    else {
+      const p = m[2] ?? m[3] ?? m[4]
+      v = p === OUTSIDE_PATH_VAR ? OUTSIDE_PATH_VAR : detSubstValue(m[1], p, cwd)
+      if (v === null || !(v === OUTSIDE_PATH_VAR || SAFE_LITERAL.test(v))) break
+    }
+    s = s.slice(0, m.index) + v + s.slice(m.index + m[0].length)
+  }
+  return s
+}
+
+// Samu 69648 (2): a shell comment is no recipient and runs nothing. The python twin's shlex drops an unquoted `#...`;
+// this tokenizer kept it, so `cd $WT && python3 -m pytest # ask a@x.hu` was an addressed run here only. Dropped as bash
+// does: an unquoted `#` at the start of a word, up to the newline (kept, so the next line is still a command); a
+// quoted `#` is text. Run on the command after its heredoc bodies are cut (a body is data, not shell).
+function stripShellComments(cmd) {
+  let out = ''
+  let q = null
+  const parens = [] // Bence 69701: 's' for an open $( , 'p' for a plain ( -- which ) closes a command substitution
+  let substCloseAt = -1
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    // a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701, as the python twin's mask)
+    if (ch === '#' && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]) || (cmd[i - 1] === ')' && substCloseAt !== i - 1))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += '$('; i++; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+    out += ch
+  }
+  return out
+}
+
+// Samu 69648 (3a): `D=dir; cd $D` (also `export D=dir`) names a directory the command itself sets. That literal dir is
+// handed on as one more cd word, so a script there is read; the `cd $D` itself stays undecidable (the variable may be
+// set elsewhere when the assignment does not run). A VAR set only outside the command is not resolved.
+const VAR_REF = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$/
+function assignedCdDirs(segments) {
+  const vars = new Map()
+  const out = []
+  for (const toks of segments) {
+    const assigns = toks[0] === 'export' ? toks.slice(1) : toks
+    if (assigns.length && assigns.every((t) => ENV_ASSIGN.test(t))) {
+      for (const t of assigns) {
+        const eq = t.indexOf('=')
+        const v = t.slice(eq + 1)
+        if (v === '' || UNDECIDABLE_PATH.test(v)) vars.delete(t.slice(0, eq))
+        else vars.set(t.slice(0, eq), v)
+      }
+      continue
+    }
+    for (let i = 1; i < toks.length; i++) {
+      if (toks[i - 1] !== 'cd' && toks[i - 1] !== 'pushd' && !(toks[i - 1] === '--' && (toks[i - 2] === 'cd' || toks[i - 2] === 'pushd'))) continue
+      const m = VAR_REF.exec(toks[i])
+      const v = m ? vars.get(m[1] ?? m[2]) : undefined
+      if (v !== undefined) out.push(v)
+    }
+  }
+  return out
+}
+
+export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
+  const cmd = resolveDeterministicSubst(cmdIn, cwd)
   let segments
   try {
-    segments = segmentsTokens(cmd)
+    segments = segmentsTokens(stripShellComments(cmd.replace(HEREDOC_RE, '$1')))
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
-  return segments.some((toks) => {
-    // ENVOPTHEAD1104 (Bence 69475): `env -C DIR` runs its command in DIR, so a relative script is read there too; a
-    // DIR that cannot be known (a variable, `-`, `~user`) makes an interpreter or script run behind it a send.
-    const dirs = envChdirDirs(toks)
-    const heads = commandHeads(toks)
-    // an undecidable DIR: an interpreter or script run behind it is a send (this twin does not call a missing script
-    // a send, so the directory cannot simply be read as one that does not exist)
-    if (dirs.some((d) => UNDECIDABLE_CHDIR.test(d))
-      && heads.some((h) => h && h.length && (PYTHON.test(basename(h[0])) || NODEISH.test(basename(h[0])) || h[0].includes('/')))) return true
-    const bases = [cwd, ...dirs.map((d) => (d === '~' || d.startsWith('~/') ? join(homedir(), d.slice(1)) : isAbsolute(d) ? d : join(cwd, d)))]
-    return heads.some((h) => bases.some((b) => headRunsSenderScript(h, b, readScript, depth)))
-  })
+  // JSCDSEND1104: every word of the command, so a `cd DIR` before the run is seen; ENVOPTHEAD1104 (Bence 69475):
+  // `env -C DIR` runs its command in DIR, handed on as a `cd DIR` word (an undecidable DIR then makes it a send).
+  const flat = [...cdWords, ...segments.flat()]
+  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...assignedCdDirs(segments).flatMap((d) => ['cd', d]),
+    ...(SUBST_CD.test(cmd) ? ['cd', SUBST_MARK] : [])]
+  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
 }
-
-const UNDECIDABLE_CHDIR = /^-$|^~[^/]|[*?[{$`]/
 
 // Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
 const ENV_LONG_OPTIONS = ['argv0', 'block-signal', 'chdir', 'debug', 'default-signal', 'ignore-environment', 'ignore-signal',
@@ -1292,7 +1527,6 @@ function envLongName(t) {
   return hits.length === 1 ? hits[0] : null
 }
 
-// ENVOPTHEAD1104: the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also in a cluster) runs in.
 // (value, index after it) when the env word t at j is -S / --split-string (also a prefix or a cluster); else null
 function envSplitValue(t, words, j) {
   if (t.startsWith('--')) {
@@ -1308,30 +1542,55 @@ function envSplitValue(t, words, j) {
   return null
 }
 
+// JSCDSEND1104: sudo -D/--chdir DIR, the same class as env -C; see the python twin.
+const SUDO_LONG_OPTIONS = ['askpass', 'auth-type', 'background', 'bell', 'chdir', 'chroot', 'close-from', 'command-timeout',
+  'edit', 'group', 'help', 'host', 'list', 'login', 'non-interactive', 'other-user', 'preserve-env', 'preserve-groups',
+  'prompt', 'remove-timestamp', 'reset-timestamp', 'role', 'set-home', 'shell', 'type', 'user', 'validate', 'version']
+const SUDO_LONG_VALUES = ['auth-type', 'chdir', 'chroot', 'close-from', 'command-timeout', 'group', 'host', 'other-user',
+  'prompt', 'role', 'type', 'user']
+function longName(t, names) {
+  if (!t.startsWith('--') || t === '--') return null
+  const word = t.slice(2).split('=')[0]
+  if (names.includes(word)) return word
+  const hits = names.filter((o) => word && o.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+const CHDIR_SPECS = new Map([
+  ['env', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
+  ['genv', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
+  ['sudo', ['ughpCUrtDRT', 'D', SUDO_LONG_OPTIONS, SUDO_LONG_VALUES]],
+])
+
+// ENVOPTHEAD1104 / JSCDSEND1104: the directories `env -C DIR` and `sudo -D DIR` (also `--chdir DIR`, `--chdir=DIR`,
+// joined, in a cluster, by a unique prefix, and for env also inside an -S value) run their command in.
 function envChdirDirs(words, d = 0) {
   const out = []
   for (let i = 0; i < words.length; i++) {
-    if (basename(words[i]) !== 'env') continue
+    const spec = CHDIR_SPECS.get(basename(words[i]))
+    if (!spec) continue
+    const [shortVal, chdirCh, longNames, longVals] = spec
     let j = i + 1
     while (j < words.length) {
       const t = words[j]
       if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
-      const split = envSplitValue(t, words, j)
-      if (split) {
-        // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
-        let splitWords = []
-        try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
-        if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
-        break
+      if (basename(words[i]) === 'env' || basename(words[i]) === 'genv') {
+        const split = envSplitValue(t, words, j)
+        if (split) {
+          // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+          let splitWords = []
+          try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
+          if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
+          break
+        }
       }
-      const long = envLongName(t)
-      if (t === '-C' || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
+      const long = t.startsWith('--') ? longName(t, longNames) : null
+      if (t === '-' + chdirCh || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
       if (long === 'chdir') out.push(t.slice(t.indexOf('=') + 1))
-      else if (long && !t.includes('=') && ['unset', 'split-string', 'argv0'].includes(long)) j++ // its value
+      else if (long && !t.includes('=') && longVals.includes(long)) j++ // its value
       else if (t.startsWith('-') && !t.startsWith('--')) {
         let k = -1
-        for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
-        if (k > 0 && t[k] === 'C') {
+        for (let x = 1; x < t.length; x++) if (shortVal.includes(t[x])) { k = x; break }
+        if (k > 0 && t[k] === chdirCh) {
           if (k < t.length - 1) out.push(t.slice(k + 1))
           else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }
         } else if (k === t.length - 1) j++
@@ -2040,6 +2299,7 @@ if (isInvokedDirectly()) {
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
+    if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and

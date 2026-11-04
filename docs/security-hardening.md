@@ -799,10 +799,18 @@ and the main agent's `email_send` approval gate keeps its current reach.
   - an import after the first 1 MiB of the file.
 - **Reach:**
   - helpers past the first level;
-  - a script started after `cd dir &&`, which is resolved against the session
-    cwd, not `dir`;
-  - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+- **Closed since (JSCDSEND1104):** a script started after `cd dir &&` (or
+  `env -C dir`, `sudo -D dir`, `pushd dir`) is resolved under `dir` too. When
+  the run is addressed (`--to`/`--cc`/`--bcc` or an e-mail address in the
+  command), an undecidable `cd` (also `cd $(...)`), path or `-m`, and a missing
+  script are a send on this gate; without an address they are not, so a
+  developer's `cd $WT && python3 -m pytest` passes. A readable script that
+  sends is a send either way. The main agent's approval gate keeps those
+  branches fail-closed on every run (a false positive there is an approval
+  request, not a denial). Both gates' script-run judgement runs on one shared
+  table (`scripts/hooks/script-run-cases.json`), which holds both verdicts per
+  row.
 
 # Autonomy levels: a raise takes the owner
 
