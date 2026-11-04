@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
@@ -885,6 +885,14 @@ function writeInheritedMcpNames(cfgDir: string, names: Set<string>, perUser: boo
   }
 }
 
+// PLUGINCODEWRITE1104 (Samu 68214): a config-dir link is right only when it points at its own target. Any other
+// symlink (one a sub-agent redirected at /tmp/evil, by a tool call or a script) is replaced at the next spawn, so a
+// retargeted cache/marketplaces/agents/skills/hooks link does not survive a respawn. Not a text gate: it also covers
+// what the db-write-gate's command-text reading cannot see.
+export function linkPointsAt(link: string, target: string): boolean {
+  try { return resolve(dirname(link), readlinkSync(link)) === resolve(target) } catch { return false }
+}
+
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
 // shared ~/.claude.json.
 //
@@ -1146,7 +1154,7 @@ function provisionIsolatedConfigDir(
       const link = join(cfg, entry)
       let needsLink = true
       try {
-        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        if (lstatSync(link).isSymbolicLink() && linkPointsAt(link, join(realClaude, entry))) needsLink = false
         else rmSync(link, { recursive: true, force: true })
       } catch { /* absent -> create */ }
       if (needsLink) {
@@ -1273,7 +1281,7 @@ function provisionIsolatedConfigDir(
       if (!existsSync(target)) continue
       let needsLink = true
       try {
-        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        if (lstatSync(link).isSymbolicLink() && linkPointsAt(link, target)) needsLink = false
         else rmSync(link, { recursive: true, force: true })
       } catch { /* absent -> create */ }
       if (needsLink) {

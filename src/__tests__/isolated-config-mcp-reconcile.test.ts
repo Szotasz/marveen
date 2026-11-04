@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, statSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -265,5 +265,26 @@ describe('isolated config dir: mcpServers reconcile', () => {
     const stray = readdirSync(join(SANDBOX, 'agents', AGENT, '.claude-config'))
       .filter((f) => f.includes('.tmp-'))
     expect(stray).toEqual([])
+  })
+
+  // PLUGINCODEWRITE1104 (Samu 68214): a config-dir link redirected elsewhere (by a tool call or a script) is put
+  // back at the next spawn; before, any symlink was accepted as is.
+  it('re-points a redirected plugins/cache and skills link at the next provisioning', () => {
+    const shared = join(SANDBOX, 'home', '.claude')
+    mkdirSync(join(shared, 'plugins', 'cache'), { recursive: true })
+    mkdirSync(join(shared, 'skills'), { recursive: true })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    const cfg = join(SANDBOX, 'agents', AGENT, '.claude-config')
+    const cacheLink = join(cfg, 'plugins', 'cache')
+    const skillsLink = join(cfg, 'skills')
+    expect(readlinkSync(cacheLink)).toBe(join(shared, 'plugins', 'cache'))
+    expect(readlinkSync(skillsLink)).toBe(join(shared, 'skills'))
+    const evil = join(SANDBOX, 'evil')
+    mkdirSync(evil, { recursive: true })
+    unlinkSync(cacheLink); symlinkSync(evil, cacheLink)
+    unlinkSync(skillsLink); symlinkSync(evil, skillsLink)
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(readlinkSync(cacheLink)).toBe(join(shared, 'plugins', 'cache'))
+    expect(readlinkSync(skillsLink)).toBe(join(shared, 'skills'))
   })
 })
