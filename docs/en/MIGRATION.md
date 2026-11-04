@@ -25,7 +25,7 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `assets/meetings/**` — meeting transcripts/memos
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` — per-agent identity
 - `agents/*/.claude/channels/*/.env`, `access.json` — sub-agent channel tokens + pairing
-- `agents/*/agent-config.json`, `.claude/settings.local.json`, `.claude/skills/` -- per-agent model/permission profile, deny rules and agent-private skills
+- `agents/*/agent-config.json`, `.claude/settings.local.json`, `.claude/skills/` -- per-agent model/permission profile, deny rules and agent-private skills. Credential-like files inside a skill folder (`.env`, `*.key`, `*.pem`, `credentials*`, `*token*`, `*secret*`) are left out unless `MARVEEN_BACKUP_AGENT_SECRETS=1` is set
 - `agents/*/secrets/` -- per-agent credentials kept outside the channel dirs (SSH keys, CLI logins, mailbox config). **Opt-in, off by default:** only taken when `MARVEEN_BACKUP_AGENT_SECRETS=1` is set. For a manual run, put it in the environment (`MARVEEN_BACKUP_AGENT_SECRETS=1 bash scripts/backup.sh`); for a systemd unit that runs the backup, add `Environment=MARVEEN_BACKUP_AGENT_SECRETS=1` to the `[Service]` section. Any other value (`0`, `yes`, `true`) leaves it out. Same trust level as the channel `.env` files above: the archive is created 0600, so keep it (and any second copy) off cloud-synced folders
 - `agents/*/.claude-config/projects/*/memory/` and `.channels-config/projects/*/memory/` -- file memory of agents (and of the main agent) that run with their own `CLAUDE_CONFIG_DIR`; transcripts next to it are not taken
 - `local-commits.bundle`: every local git branch that `origin` does not have
@@ -39,7 +39,7 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `~/.claude/scheduled-tasks/**` — file-based scheduled tasks (SKILL.md + task-config.json)
 - `~/.claude/channels/*/.env` — MAIN orchestrator channel token
 - `~/.claude/channels/*/access.json`, `invites.json`, `approved/**` — pairing allowlist + approvals
-- `~/.config/systemd/user/**` -- systemd `--user` units (Linux): the services that start the dashboard and the channel session
+- `~/.config/systemd/user/<SERVICE_ID>-*` -- this fleet's systemd `--user` units (Linux): the services that start the dashboard and the channel session, with their drop-ins and enable links. `SERVICE_ID` is `MAIN_AGENT_ID` unless `.env` sets it apart. Other applications' units are not taken
 - `~/Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist` — launchd jobs (prefix is your `MAIN_AGENT_ID`, `marveen` by default)
 
 **(3) Docker volumes — NOT in the tarball, migrate separately**

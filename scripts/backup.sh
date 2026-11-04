@@ -12,7 +12,8 @@
 #     assets/meetings/**       (meeting transcripts/memos)
 #     agents/*/CLAUDE.md, SOUL.md, .mcp.json
 #     agents/*/.claude/channels/{telegram,slack,discord}/.env, access.json
-#     agents/*/agent-config.json, .claude/settings.local.json, .claude/skills/,
+#     agents/*/agent-config.json, .claude/settings.local.json, .claude/skills/
+#       (token and key files in skills only with MARVEEN_BACKUP_AGENT_SECRETS=1),
 #       .claude-config/projects/*/memory/   (if present)
 #     agents/*/secrets/        (only with MARVEEN_BACKUP_AGENT_SECRETS=1; off by default)
 #     .channels-config/projects/*/memory/   (main agent file memory, if present)
@@ -20,7 +21,8 @@
 #   home/   -> extract under $HOME
 #     .claude/skills/**            (the self-built skill library)
 #     .claude/scheduled-tasks/**   (file-based scheduled tasks: SKILL.md + config)
-#     .config/systemd/user/**      (systemd --user units, Linux)
+#     .config/systemd/user/<SERVICE_ID>-*  (this fleet's systemd --user units, drop-ins and
+#                                  enable links, Linux; other applications' units are not taken)
 #     .claude/channels/*/.env      (MAIN orchestrator channel token)
 #     .claude/channels/*/access.json, invites.json, approved/**  (pairing state)
 #     Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist (launchd jobs)
@@ -133,7 +135,9 @@ add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
 add_if "${REPOLIST}" "${REPO_ROOT}" assets/meetings
 # Per-agent identity + channel secrets (glob; missing dir is not an error).
 if [[ -d agents ]]; then
-  find agents -type f \
+  # Agent skill folders are pruned here: they are taken further down, with the
+  # credential-file filter, and must not come back in through the '.env' match.
+  find agents -path 'agents/*/.claude/skills' -prune -o -type f \
     \( -name 'CLAUDE.md' -o -name 'SOUL.md' -o -name '.mcp.json' \
        -o -name 'access.json' -o -name '.env' \) \
     -print >> "${REPOLIST}"
@@ -142,7 +146,9 @@ if [[ -d agents ]]; then
   # permission rules, its own skills or the credentials it works with:
   #   agent-config.json            model, display name, team, permission profile
   #   .claude/settings.local.json  per-agent permission and deny rules
-  #   .claude/skills/              agent-private skills (not under ~/.claude)
+  #   .claude/skills/              agent-private skills (not under ~/.claude);
+  #                                .env, keys, credentials and token files in
+  #                                them only with MARVEEN_BACKUP_AGENT_SECRETS=1
   #   secrets/                     per-agent credentials kept out of the channel
   #                                dirs (SSH keys, CLI logins, mailbox config).
   #                                OPT-IN: only when MARVEEN_BACKUP_AGENT_SECRETS=1
@@ -154,9 +160,17 @@ if [[ -d agents ]]; then
   # A missing path is not an error: find prints nothing.
   find agents -mindepth 2 -maxdepth 2 -type f -name 'agent-config.json' -print >> "${REPOLIST}"
   find agents -mindepth 3 -maxdepth 3 -type f -path 'agents/*/.claude/settings.local.json' -print >> "${REPOLIST}"
-  find agents -mindepth 3 -maxdepth 3 -type d -path 'agents/*/.claude/skills' -print >> "${REPOLIST}"
+  # Skills are taken file by file: a skill folder can also hold credential
+  # files, and those follow the same opt-in switch as secrets/ below.
   if [[ "${MARVEEN_BACKUP_AGENT_SECRETS:-}" == "1" ]]; then
+    find agents -mindepth 4 -path 'agents/*/.claude/skills/*' \( -type f -o -type l \) -print >> "${REPOLIST}"
     find agents -mindepth 2 -maxdepth 2 -type d -name 'secrets' -print >> "${REPOLIST}"
+  else
+    find agents -mindepth 4 -path 'agents/*/.claude/skills/*' \( -type f -o -type l \) \
+      ! \( -name '.env' -o -name '.env.*' -o -name '*.env' -o -name '*.key' -o -name '*.pem' \
+           -o -name '*.p12' -o -name '*.pfx' -o -name 'id_rsa*' -o -name 'id_ed25519*' \
+           -o -iname 'credentials*' -o -iname '*token*' -o -iname '*secret*' \
+           -o -iname '.netrc' -o -iname '.npmrc' \) -print >> "${REPOLIST}"
   fi
   find agents -mindepth 5 -maxdepth 5 -type d -path 'agents/*/.claude-config/projects/*/memory' -print >> "${REPOLIST}"
 fi
@@ -169,9 +183,6 @@ fi
 # home/ group (relative to $HOME)
 add_if "${HOMELIST}" "${HOME}" .claude/skills
 add_if "${HOMELIST}" "${HOME}" .claude/scheduled-tasks
-# systemd --user units (Linux): the services that start the dashboard and the
-# channel session. The Linux counterpart of the LaunchAgents plists below.
-add_if "${HOMELIST}" "${HOME}" .config/systemd/user
 # The file-based auto-memory. Until 2026-09-04 this was NOT in the archive, and
 # a restore test that day proved what that costs: 490 markdown memories for the
 # main agent alone, none of them in the tarball. The SQLite copy is not a
@@ -214,6 +225,26 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
 fi
 if [[ -d "${HOME}/Library/LaunchAgents" ]]; then
   ( cd "${HOME}" && find Library/LaunchAgents -maxdepth 1 -name "com.${MAIN_AGENT_ID}.*.plist" -print ) >> "${HOMELIST}"
+fi
+# systemd --user units (Linux): the Linux counterpart of the LaunchAgents
+# above. Only this fleet's own units are taken, never other applications'
+# units (their Environment= lines can carry secrets). The installer names
+# them <SERVICE_ID>-*, and SERVICE_ID equals MAIN_AGENT_ID unless .env sets
+# it apart, so resolve it the same way: last definition wins, quotes stripped.
+SERVICE_ID="${MAIN_AGENT_ID}"
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  _sid="$(grep -E '^[[:space:]]*SERVICE_ID[[:space:]]*=' "${REPO_ROOT}/.env" | tail -1 \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/' || true)"
+  [[ -n "${_sid}" ]] && SERVICE_ID="${_sid}"
+fi
+if [[ -d "${HOME}/.config/systemd/user" ]]; then
+  # Unit files, their drop-in directories (<unit>.d), and the enable symlinks
+  # (<target>.wants/<unit>) that say which of them are switched on.
+  ( cd "${HOME}" && find .config/systemd/user -maxdepth 1 \( -type f -o -type l -o -type d \) \
+      \( -name "${SERVICE_ID}-*.service" -o -name "${SERVICE_ID}-*.timer" \
+         -o -name "${SERVICE_ID}-*.service.d" -o -name "${SERVICE_ID}-*.timer.d" \) -print ) >> "${HOMELIST}"
+  ( cd "${HOME}" && find .config/systemd/user -mindepth 2 -maxdepth 2 -path '*.wants/*' \
+      \( -name "${SERVICE_ID}-*.service" -o -name "${SERVICE_ID}-*.timer" \) -print ) >> "${HOMELIST}"
 fi
 
 # --- Local commits that live on no remote. ---------------------------------

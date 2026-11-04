@@ -48,7 +48,21 @@ printf 'm' > "$A/.claude-config/projects/p1/memory/note.md"
 printf 't' > "$A/.claude-config/projects/p1/transcripts/log.jsonl"
 printf 'm' > "$FAKE/.channels-config/projects/p1/memory/note.md"
 printf 't' > "$FAKE/.channels-config/projects/p1/transcripts/log.jsonl"
-printf '[Unit]' > "$FHOME/.config/systemd/user/marveen.service"
+# This fleet's units (default prefix: marveen-), a drop-in and an enable link,
+# next to another application's unit that must stay out.
+SD="$FHOME/.config/systemd/user"
+mkdir -p "$SD/marveen-channels.service.d" "$SD/default.target.wants"
+printf '[Unit]' > "$SD/marveen-channels.service"
+printf '[Unit]' > "$SD/marveen-backup.timer"
+printf '[Service]' > "$SD/marveen-channels.service.d/onfailure.conf"
+ln -s "$SD/marveen-channels.service" "$SD/default.target.wants/marveen-channels.service"
+printf '[Service]\nEnvironment=OTHER_APP_SETTING=1\n' > "$SD/other-app.service"
+ln -s "$SD/other-app.service" "$SD/default.target.wants/other-app.service"
+printf 'SECRET=1' > "$A/.claude/skills/own/.env"
+printf 'k' > "$A/.claude/skills/own/deploy.key"
+printf 't' > "$A/.claude/skills/own/credentials.json"
+mkdir -p "$A/.claude/skills/own/scripts"
+printf 'x' > "$A/.claude/skills/own/scripts/run.sh"
 
 set +e
 OUTPUT="$(cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" bash scripts/backup.sh 2>&1)"
@@ -65,8 +79,21 @@ for p in repo/agents/alpha/agent-config.json \
          repo/agents/alpha/.claude/skills/own/SKILL.md \
          repo/agents/alpha/.claude-config/projects/p1/memory/note.md \
          repo/.channels-config/projects/p1/memory/note.md \
-         home/.config/systemd/user/marveen.service; do
+         repo/agents/alpha/.claude/skills/own/scripts/run.sh \
+         home/.config/systemd/user/marveen-channels.service \
+         home/.config/systemd/user/marveen-backup.timer \
+         home/.config/systemd/user/marveen-channels.service.d/onfailure.conf \
+         home/.config/systemd/user/default.target.wants/marveen-channels.service; do
   if grep -qx "$p" "$LIST"; then pass "in the archive: $p"; else fail "missing from the archive: $p"; fi
+done
+
+# Credential files inside a skill folder and other applications' units stay out.
+for p in repo/agents/alpha/.claude/skills/own/.env \
+         repo/agents/alpha/.claude/skills/own/deploy.key \
+         repo/agents/alpha/.claude/skills/own/credentials.json \
+         home/.config/systemd/user/other-app.service \
+         home/.config/systemd/user/default.target.wants/other-app.service; do
+  if grep -qx "$p" "$LIST"; then fail "kept-out file is in the default archive: $p"; else pass "kept out of the default archive: $p"; fi
 done
 
 # agents/*/secrets/ is opt-in: absent by default.
@@ -95,6 +122,27 @@ if [ -n "$A1" ] && tar -tzf "$A1" | grep -qx "repo/agents/alpha/secrets/key"; th
 else
   fail "secrets/ is missing with MARVEEN_BACKUP_AGENT_SECRETS=1"
 fi
+for f in .env deploy.key credentials.json; do
+  if [ -n "$A1" ] && tar -tzf "$A1" | grep -qx "repo/agents/alpha/.claude/skills/own/$f"; then
+    pass "skills/own/$f is in the archive with MARVEEN_BACKUP_AGENT_SECRETS=1"
+  else
+    fail "skills/own/$f is missing with MARVEEN_BACKUP_AGENT_SECRETS=1"
+  fi
+done
+
+# SERVICE_ID in .env moves the unit prefix.
+printf 'SERVICE_ID=acme\n' > "$FAKE/.env"
+printf '[Unit]' > "$FHOME/.config/systemd/user/acme-dashboard.service"
+rm -rf "$OUT"; mkdir -p "$OUT"
+(cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" bash scripts/backup.sh >/dev/null 2>&1)
+A3="$(ls -1 "$OUT"/claudeclaw-*.tar.gz 2>/dev/null | head -1)"
+if [ -n "$A3" ] && tar -tzf "$A3" | grep -qx "home/.config/systemd/user/acme-dashboard.service" \
+   && ! tar -tzf "$A3" | grep -qx "home/.config/systemd/user/marveen-channels.service"; then
+  pass "SERVICE_ID in .env selects the unit prefix"
+else
+  fail "SERVICE_ID in .env did not select the unit prefix"
+fi
+rm -f "$FAKE/.env" "$FHOME/.config/systemd/user/acme-dashboard.service"
 rm -rf "$OUT"; mkdir -p "$OUT"
 (cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" bash scripts/backup.sh >/dev/null 2>&1)
 
@@ -118,9 +166,9 @@ if [ "$BRC" -eq 0 ]; then pass "an agent with none of the extra paths backs up c
 nightly() { ( cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" "$@" bash scripts/backup-nightly.sh 2>&1 ); }
 
 echo "  -- second copy off by default"
-BEFORE="$(ls -1 "$COPY" | wc -l)"
+BEFORE="$(ls -1 "$COPY" | wc -l | tr -d ' ')"
 nightly env >/dev/null; RC=$?
-AFTER="$(ls -1 "$COPY" | wc -l)"
+AFTER="$(ls -1 "$COPY" | wc -l | tr -d ' ')"
 if [ "$RC" -eq 0 ]; then pass "nightly exits 0 with the copy unset"; else fail "nightly exited $RC with the copy unset"; fi
 if [ "$BEFORE" = "$AFTER" ]; then pass "nothing is copied when MARVEEN_BACKUP_COPY_DIR is unset"; else fail "a copy was made without MARVEEN_BACKUP_COPY_DIR"; fi
 
@@ -136,7 +184,7 @@ nightly env MARVEEN_BACKUP_COPY_DIR="$COPY" MARVEEN_BACKUP_COPY_KEEP=2 >/dev/nul
 if [ "$RC" -eq 0 ]; then pass "nightly exits 0 with the copy on"; else fail "nightly exited $RC with the copy on"; fi
 NEWEST="$(ls -1t "$OUT"/claudeclaw-*.tar.gz | head -1)"
 if [ -f "$COPY/$(basename "$NEWEST")" ]; then pass "the newest archive is in the copy dir"; else fail "the newest archive was not copied"; fi
-N="$(ls -1 "$COPY"/claudeclaw-*.tar.gz | wc -l)"
+N="$(ls -1 "$COPY"/claudeclaw-*.tar.gz | wc -l | tr -d ' ')"
 if [ "$N" = "2" ]; then pass "retention keeps 2 archives"; else fail "retention left $N archives, expected 2"; fi
 if [ -f "$COPY/unrelated.txt" ]; then pass "retention leaves other files alone"; else fail "retention deleted an unrelated file"; fi
 
