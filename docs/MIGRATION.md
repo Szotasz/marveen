@@ -25,6 +25,9 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `assets/meetings/**` — meeting transcripts/memos
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` — per-agent identity
 - `agents/*/.claude/channels/*/.env`, `access.json` — sub-agent channel tokens + pairing
+- `agents/*/agent-config.json`, `.claude/settings.local.json`, `.claude/skills/` -- per-agent model/permission profile, deny rules and agent-private skills
+- `agents/*/secrets/` -- per-agent credentials kept outside the channel dirs (SSH keys, CLI logins, mailbox config). **Opt-in, off by default:** only taken when `MARVEEN_BACKUP_AGENT_SECRETS=1` is set. For a manual run, put it in the environment (`MARVEEN_BACKUP_AGENT_SECRETS=1 bash scripts/backup.sh`); for a systemd unit that runs the backup, add `Environment=MARVEEN_BACKUP_AGENT_SECRETS=1` to the `[Service]` section. Any other value (`0`, `yes`, `true`) leaves it out. Same trust level as the channel `.env` files above: the archive is created 0600, so keep it (and any second copy) off cloud-synced folders
+- `agents/*/.claude-config/projects/*/memory/` and `.channels-config/projects/*/memory/` -- file memory of agents (and of the main agent) that run with their own `CLAUDE_CONFIG_DIR`; transcripts next to it are not taken
 - `local-commits.bundle`: every local git branch that `origin` does not have
   (the source itself is NOT in the archive; it is expected on the remote). Restore:
   clone the upstream repo, then
@@ -36,6 +39,7 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `~/.claude/scheduled-tasks/**` — file-based scheduled tasks (SKILL.md + task-config.json)
 - `~/.claude/channels/*/.env` — MAIN orchestrator channel token
 - `~/.claude/channels/*/access.json`, `invites.json`, `approved/**` — pairing allowlist + approvals
+- `~/.config/systemd/user/**` -- systemd `--user` units (Linux): the services that start the dashboard and the channel session
 - `~/Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist` -- launchd jobs (the prefix is your `MAIN_AGENT_ID`, `marveen` by default)
 
 **(3) Docker volumes — NOT in the tarball, migrate separately**
@@ -61,6 +65,11 @@ the Docker volumes (3) are **separate** and must be moved on their own.
    tar -tzf backups/claudeclaw-*.tar.gz | sed -E 's,(^[^/]+/[^/]+/).*,\1...,' | sort -u
    ```
    Confirm both `repo/...` and `home/...` groups and the `MANIFEST.txt` are present.
+   For a nightly run with an optional second copy of the newest archive, use
+   `scripts/backup-nightly.sh`. The second copy is off unless `MARVEEN_BACKUP_COPY_DIR`
+   is set (`MARVEEN_BACKUP_COPY_KEEP`, default 7, is how many archives stay there). The
+   archive holds live secrets, so point it at a location that is not cloud-synced; a
+   requested copy that cannot be made makes the wrapper exit non-zero.
 3. Export the Docker volumes (time-series + dashboards):
    ```bash
    cd <repo>/projects/loxonTSDB && docker compose down   # quiesce writers first

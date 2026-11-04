@@ -12,10 +12,15 @@
 #     assets/meetings/**       (meeting transcripts/memos)
 #     agents/*/CLAUDE.md, SOUL.md, .mcp.json
 #     agents/*/.claude/channels/{telegram,slack,discord}/.env, access.json
+#     agents/*/agent-config.json, .claude/settings.local.json, .claude/skills/,
+#       .claude-config/projects/*/memory/   (if present)
+#     agents/*/secrets/        (only with MARVEEN_BACKUP_AGENT_SECRETS=1; off by default)
+#     .channels-config/projects/*/memory/   (main agent file memory, if present)
 #
 #   home/   -> extract under $HOME
 #     .claude/skills/**            (the self-built skill library)
 #     .claude/scheduled-tasks/**   (file-based scheduled tasks: SKILL.md + config)
+#     .config/systemd/user/**      (systemd --user units, Linux)
 #     .claude/channels/*/.env      (MAIN orchestrator channel token)
 #     .claude/channels/*/access.json, invites.json, approved/**  (pairing state)
 #     Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist (launchd jobs)
@@ -132,11 +137,41 @@ if [[ -d agents ]]; then
     \( -name 'CLAUDE.md' -o -name 'SOUL.md' -o -name '.mcp.json' \
        -o -name 'access.json' -o -name '.env' \) \
     -print >> "${REPOLIST}"
+  # Per-agent state that lives outside the five names above. Without it a
+  # restore brings an agent back with its persona but not its model, its
+  # permission rules, its own skills or the credentials it works with:
+  #   agent-config.json            model, display name, team, permission profile
+  #   .claude/settings.local.json  per-agent permission and deny rules
+  #   .claude/skills/              agent-private skills (not under ~/.claude)
+  #   secrets/                     per-agent credentials kept out of the channel
+  #                                dirs (SSH keys, CLI logins, mailbox config).
+  #                                OPT-IN: only when MARVEEN_BACKUP_AGENT_SECRETS=1
+  #                                (see docs/MIGRATION.md)
+  #   .claude-config/projects/*/memory
+  #                                file memory of an agent with its own
+  #                                CLAUDE_CONFIG_DIR; only memory/, not the
+  #                                transcripts next to it
+  # A missing path is not an error: find prints nothing.
+  find agents -mindepth 2 -maxdepth 2 -type f -name 'agent-config.json' -print >> "${REPOLIST}"
+  find agents -mindepth 3 -maxdepth 3 -type f -path 'agents/*/.claude/settings.local.json' -print >> "${REPOLIST}"
+  find agents -mindepth 3 -maxdepth 3 -type d -path 'agents/*/.claude/skills' -print >> "${REPOLIST}"
+  if [[ "${MARVEEN_BACKUP_AGENT_SECRETS:-}" == "1" ]]; then
+    find agents -mindepth 2 -maxdepth 2 -type d -name 'secrets' -print >> "${REPOLIST}"
+  fi
+  find agents -mindepth 5 -maxdepth 5 -type d -path 'agents/*/.claude-config/projects/*/memory' -print >> "${REPOLIST}"
+fi
+# The MAIN agent's file memory when it runs with an isolated config home
+# (<repo>/.channels-config): it lives here, not under ~/.claude/projects.
+if [[ -d .channels-config/projects ]]; then
+  find .channels-config/projects -mindepth 2 -maxdepth 2 -type d -name memory -print >> "${REPOLIST}"
 fi
 
 # home/ group (relative to $HOME)
 add_if "${HOMELIST}" "${HOME}" .claude/skills
 add_if "${HOMELIST}" "${HOME}" .claude/scheduled-tasks
+# systemd --user units (Linux): the services that start the dashboard and the
+# channel session. The Linux counterpart of the LaunchAgents plists below.
+add_if "${HOMELIST}" "${HOME}" .config/systemd/user
 # The file-based auto-memory. Until 2026-09-04 this was NOT in the archive, and
 # a restore test that day proved what that costs: 490 markdown memories for the
 # main agent alone, none of them in the tarball. The SQLite copy is not a
