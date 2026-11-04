@@ -140,7 +140,7 @@ import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPermissionMode, detectBackgroundAgents } from '../../pane-state.js'
 import { activityState, type ActivityState } from '../pane-liveness.js'
-import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
+import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS, agentPutOwnerFields } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
 import { readContextGuardConfig, mergeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
@@ -185,7 +185,7 @@ import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
-import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -1801,6 +1801,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (secGetMatch && method === 'PUT') {
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // APIAGENTWRITE1104: the profile rewrites the agent's settings.json (its permission mode and filesystem
+    // allow/deny), so it needs the owner, not the shared access token.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing an agent\'s security profile needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { profile?: string }
     const requested = (data.profile || '').trim()
@@ -1949,6 +1955,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(remoteCfgMatch[1])
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Main agent is always local' }, 400); return true }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // APIAGENTWRITE1104: host and workdir decide on which machine, over ssh, the agent's session runs.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing where an agent runs (remote host, workdir) needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const body = await readBody(req)
     let data: { host?: string; workdir?: string }
     try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'invalid JSON' }, 400); return true }
@@ -2654,6 +2665,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    // APIAGENTWRITE1104: with overwrite an import replaces an existing agent's whole directory (its CLAUDE.md and
+    // .mcp.json among it), the same change PUT /api/agents/:name gates. Importing a NEW agent is OWNERGATE2-1104.
+    if (overwrite && !mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Importing over an existing agent (overwrite) needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const upload: Buffer = bundle
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
@@ -2733,6 +2750,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const fieldCheck = checkAgentPutFields(name, data)
     if (!fieldCheck.ok) {
       json(res, { error: fieldCheck.message, rejected: fieldCheck.rejected, writable: AGENT_PUT_WRITABLE_FIELDS }, 400)
+      return true
+    }
+
+    // APIAGENTWRITE1104: the owner gate runs BEFORE the first write. The fields below are written one after the
+    // other, so a gate further down would leave the earlier ones on disk; here a refused body writes nothing, the
+    // token-writable model included.
+    const ownerFields = agentPutOwnerFields(data as Record<string, unknown>)
+    if (ownerFields.length > 0 && !mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: `Changing ${ownerFields.join(', ')} of an agent needs the dashboard login (an owner session); the shared access token can change only model and modelProfile.`, fields: ownerFields }, 403)
       return true
     }
 
