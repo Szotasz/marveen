@@ -75,6 +75,30 @@ import { mcpFileTargets } from './mcp-file-targets.mjs'
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
+// What a background worker loads at its start, under its home (WORKERCFGDIR1104, Dani 68629/68889): its config dir
+// (settings.json, .claude.json, worker-mcp.json, .credentials.json, ...), and, since the home is its cwd and a trusted
+// project (.claude.json projects[home].hasTrustDialogAccepted), the project-scope files there too: .claude/ (settings,
+// settings.local), .mcp.json (the dashboard writes it only when missing, so a planted server would stay), CLAUDE.md and
+// CLAUDE.local.md. scratch/, where the worker writes its answers, stays free, and so does the rest of the home.
+// The two CLAUDE*.md names are the first protected names without a leading dot that a caller reaches from its own cwd
+// (the worker's cwd IS its home): the words are split on quotes and parentheses (fail closed), so the `*` of a quoted
+// `count(*)` is a bare relative glob there, and without `noBareGlob` the worker's own `sqlite3 -readonly db "SELECT
+// count(*) ..."` was denied (worker-gates.test.ts). The skip is bound to QUOTING (Dani, #2514 follow-up review): the
+// shell never expands a glob inside quotes, so a quoted `*` is a literal whatever the command, while an UNQUOTED bare
+// `*` expands to every existing non-dot name whatever the command (read vs write is a weaker proxy: sqlite3 writes too).
+// A word of glob characters only skips these two entries when ALL of this holds: the segment's text, with its quoted
+// spans removed, has no bare-glob word left (a backslash-escaped `\*` counts as unquoted, an unterminated quote fails
+// closed); the whole command names no program that runs text as shell code again (reShellsText: a quoted `tee *`
+// handed to `bash -c`, `eval`, an interpreter, `xargs`, `find -exec` or sqlite3's `.shell` is globbed after all, Dani's
+// review of 7ae2931af); and the word is read from the caller's OWN project dir (another sub-agent's cd into the home
+// gets no skip at all). An absolute or ~ glob, a partial one (`C*`), the name itself and an unquoted `tee *` / `> *` /
+// `sed -i ... *` all still match. Stated limit: a program name put together at run time is beyond a text brake.
+const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.claude', dir: true }, { sub: '.mcp.json' },
+  { sub: 'CLAUDE.md', noBareGlob: true }, { sub: 'CLAUDE.local.md', noBareGlob: true }]
+function workerHomeTargets(homeRel) {
+  return WORKER_HOME_TARGETS.map((t) => ({ home: `${homeRel}/${t.sub}`, ...(t.dir ? { dir: true } : {}), ...(t.noBareGlob ? { noBareGlob: true } : {}) }))
+}
+
 // The install's own gate wiring and autonomy levels (Dani 56081 point 5, Samu 56090).
 export const PROTECTED_INSTALL_PATHS = [
   { rel: '.claude/settings.json' },
@@ -176,7 +200,6 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   //   ~/marveen-local-plugins      -- the gromzo directory marketplace: its plugin RUNS from there (installPath)
   //   ~/.claude/agents|skills|hooks -- subagent types, skills, hook scripts every session can load
   //   agents/*/.claude-config/plugins/{installed_plugins,known_marketplaces}.json -- each agent's own registries
-  //   the two workers' config dirs' plugins
   { home: '.claude/plugins', dir: true },
   { rel: 'plugins', dir: true },
   { home: 'marveen-local-plugins', dir: true },
@@ -185,8 +208,16 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { home: '.claude/hooks', dir: true },
   { rel: 'agents/*/.claude-config/plugins/installed_plugins.json', pattern: true },
   { rel: 'agents/*/.claude-config/plugins/known_marketplaces.json', pattern: true },
-  { home: '.marveen-worker/.claude-config/plugins', dir: true },
-  { home: '.marveen-worker-fast/.claude-config/plugins', dir: true },
+  // The two background workers' start-up files (WORKERCFGDIR1104, Dani 68629/68889, Samu 68631): WORKER_HOME_TARGETS
+  // under each home. The worker itself already may not write its own settings and server lists
+  // (callerSettingsEntries); another sub-agent could, and a hooks entry would stay (worker-mcp.json is rewritten on
+  // every start). The dashboard provisions these files, never a sub-agent's tool call. As with .channels-config: a
+  // whole directory covers a file added there later, and its symlinked entries (projects, skills, plugins, ...) resolve
+  // into ~/.claude and are judged where they land. The config dir replaces #2505's two plugins entries, which it
+  // contains. The default id's homes are listed here; a renamed install's (MAIN_AGENT_ID) are added per call by
+  // workerConfigEntries.
+  ...workerHomeTargets('.marveen-worker'),
+  ...workerHomeTargets('.marveen-worker-fast'),
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -305,13 +336,26 @@ export function dynamicPluginEntries(root, projectDir, src = dynamicSources(root
   return out
 }
 
+// The workers' start-up files of a renamed install (WORKERCFGDIR1104): their home is ~/.<MAIN_AGENT_ID>-worker{,-fast}
+// (agent-worker.ts workerHomeFor), with MAIN_AGENT_ID read from the install like the other settings here (overrides,
+// then .env; both files' mtimes are in the cache key). Only a plain id (letters, digits, _ and -) is used; the default
+// id adds nothing (the static entries cover it). A MARVEEN_WORKER_DIR{,_FAST} set only in the dashboard's process
+// environment is not visible to a hook (stated limit).
+const WORKER_ID_RX = /^[A-Za-z0-9_-]{1,64}$/
+export function workerConfigEntries(root) {
+  const id = installSetting(root, 'MAIN_AGENT_ID')
+  if (!id || !WORKER_ID_RX.test(id) || id === 'marveen') return []
+  return ['', '-fast'].flatMap((v) => workerHomeTargets(`.${id}-worker${v}`))
+    .map((t) => ({ rel: t.home, abs: join(homedir(), t.home), ...(t.dir ? { dir: true } : {}), ...(t.noBareGlob ? { noBareGlob: true } : {}) }))
+}
+
 const targetCache = new Map()
 export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir = null, configDir = null) {
   const k = resolve(root)
   const dyn = subAgent ? dynamicSources(k) : null
   const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}\u0000${dyn ? dyn.sig : ''}\u0000${subAgent ? homedir() : ''}`
   if (!targetCache.has(ck)) {
-    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...dynamicPluginEntries(k, projectDir, dyn)] : PROTECTED_INSTALL_PATHS
+    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...workerConfigEntries(k), ...dynamicPluginEntries(k, projectDir, dyn)] : PROTECTED_INSTALL_PATHS
     targetCache.set(ck, {
       rootKey: pathKey(k),
       list: entries.map((t) => {
@@ -348,6 +392,43 @@ const GLOB_CHAR_RX = /[*?[{]/
 // Only the Bash path sets shellGlob; a file tool's path or an MCP argument is never read this way.
 const DOTGLOB_RX = /dotglob|globdots|globignore|fignore|\([^)\s]*D[^)\s]*\)/i
 const namesDotglob = (cmd) => DOTGLOB_RX.test(cmd.replace(/_/g, ''))
+
+// Does a shell segment hold an UNQUOTED bare-glob word (`*`, `?`, `./*`)? The text outside '...' and "..." spans (a
+// backslash inside double quotes escapes the next character) is split into words; backslashes outside quotes are
+// dropped first, so an escaped `\*` counts as a bare glob (fail closed). An unterminated quote: the whole text is read.
+export function unquotedBareGlob(text) {
+  const src = String(text ?? '')
+  let out = ''
+  let q = null
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (q === "'") { if (c === "'") q = null; continue }
+    if (q === '"') { if (c === '\\') { i++; continue } if (c === '"') q = null; continue }
+    if (c === "'" || c === '"') { q = c; out += ' '; continue }
+    out += c
+  }
+  const plain = (q === null ? out : src).replace(/\\/g, '')
+  return plain.split(/[\s;&|<>()`=,{}]+/).some((w) => /^(?:\.\/)*[*?]+$/.test(w))
+}
+
+// Does a shell segment name a program that runs (part of) its text as shell code again, so that a quoted glob gets
+// expanded after all? Shells and eval/source, script interpreters, the command runners (xargs, find -exec, watch,
+// script, parallel) and sqlite3's dot commands .shell/.system. A version suffix is ignored (python3.12, bash5). The
+// whole command text is read (a pipe hands a quoted glob on), quoted parts included: a false hit only takes the
+// noBareGlob skip away (fail closed).
+// (env and exec run a program, never a string through a shell: `env bash -c` is caught by its bash.)
+export const RESHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'ash', 'busybox',
+  'eval', 'source', 'python', 'pypy', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh',
+  'osascript', 'awk', 'gawk', 'mawk', 'nawk', 'xargs', 'find', 'watch', 'script', 'parallel', 'make'])
+export function reShellsText(text) {
+  const src = String(text ?? '')
+  if (/(?:^|[;&|(]\s*)\.\s/.test(src) || /\.(?:shell|system)\b/i.test(src)) return true
+  return src.split(/[\s;&|<>()`'"=,{}$]+/).some((w) => {
+    if (/^-(?:exec|execdir|ok|okdir)$/i.test(w)) return true
+    const name = (w.split('/').pop() ?? '').toLowerCase().replace(/[\d.]+$/, '')
+    return RESHELL_NAMES.has(name)
+  })
+}
 
 // A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
 function patternExact(key, t) {
@@ -446,7 +527,14 @@ export function classifyWord(word, ctx) {
       const abs = e.startsWith('/') ? e : (ctx.cwd ? resolve(ctx.cwd, e) : null)
       if (!abs) continue
       const W = normalizePathSegments(abs)
+      // WORKERCFGDIR1104: a word of glob characters only (`*`, `./*`: relative by construction, an absolute or ~ word has
+      // a named segment) skips a noBareGlob entry only when its segment's every bare glob was quoted (ctx.bareGlobQuoted,
+      // set per segment; unset = not proven, no skip), no program in it re-runs text as shell code, and it is read from
+      // the caller's OWN project dir; after a cd elsewhere (another sub-agent into a worker's home) it does not
+      const bareRel = ctx.bareGlobQuoted === true && e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
+        && !!ctx.cwd && !!ctx.projectDir && sameKey(pathKey(resolve(ctx.cwd)), pathKey(resolve(String(ctx.projectDir))))
       for (const t of list) {
+        if (bareRel && t.noBareGlob) continue
         for (const T of t.segs) {
           const n = Math.min(W.length, T.length)
           let ok = true
@@ -807,7 +895,9 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd) }
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd),
+    // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
+    reShell: reShellsText(cmd) }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
@@ -898,6 +988,9 @@ export function installFileDeny(command, opts = {}) {
     const own = sub.body
     const view = { ...seg, own, text: [own, ...seg.bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
+    // WORKERCFGDIR1104: the segment's own text (a heredoc body is never globbed) and the whole command (re-shelling)
+    // decide the noBareGlob skip
+    ctx.bareGlobQuoted = ctx.reShell === false && !unquotedBareGlob(own)
     const rawHits = hitsIn(view.text, ctx)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
