@@ -104,6 +104,8 @@
     {"name": "no address: a directly executed file after an undecidable cd", "cmd": "cd $WT && ./nothere.py", "expected": false},
     {"name": "addressed: a directly executed file after an undecidable cd", "cmd": "cd $WT && ./nothere.py a@example.invalid", "expected": true},
     {"name": "addressed: the address in an assignment before the run", "cmd": "TO=a@example.invalid; cd $WT && python3 tool.py", "expected": true},
-    {"name": "control: an address-free assignment before the run", "cmd": "TO=nobody; cd $WT && python3 tool.py", "expected": false}
+    {"name": "control: an address-free assignment before the run", "cmd": "TO=nobody; cd $WT && python3 tool.py", "expected": false},
+    {"name": "addressed by a bare address: pushd +1 (the cwd's harmless tool.py is not where it runs)", "cmd": "pushd +1 && python3 tool.py a@example.invalid", "expected": true},
+    {"name": "addressed by a bare address: a cd $(...) (the cwd's harmless tool.py is not where it runs)", "cmd": "cd $(git rev-parse --show-toplevel) && python3 tool.py a@example.invalid", "expected": true}
   ]
 }
