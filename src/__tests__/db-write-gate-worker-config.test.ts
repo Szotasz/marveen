@@ -6,7 +6,7 @@
 // paths; HOME points at a temp dir for every test, so nothing here touches the real home directory.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, workerConfigEntries, unquotedBareGlob } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, workerConfigEntries, unquotedBareGlob, reShellsText, RESHELL_NAMES } from '../../scripts/hooks/db-write-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -112,10 +112,16 @@ describe('another sub-agent may not write the project-scope files in a worker\'s
     expect(bash('cd ~/.marveen-worker && echo x | tee *')).toEqual(SUB)
     expect(bash(`cd ${join(home, '.marveen-worker-fast')}; echo x | tee ./*`)).toEqual(SUB)
   })
-  it('after a cd into the home, a QUOTED bare glob (a literal) passes: the skip follows quoting, not the cwd', () => {
+  // Dani's review of 7ae2931af: after another sub-agent's cd into the home there is no skip at all (the project-dir tie
+  // is back), so a quoted glob re-run as shell code is denied too; a quoted count(*) from there is denied as well.
+  it.each([
+    'cd ~/.marveen-worker && echo x | tee *',
+    "cd ~/.marveen-worker && bash -c 'echo x | tee *'",
+    'cd ~/.marveen-worker && eval "echo x | tee *"',
+    'cd ~/.marveen-worker && sqlite3 -readonly /x/y.db "SELECT count(*) FROM t"',
+  ])('another sub-agent after a cd into the home, denied: %s', (c) => {
     writeFileSync(join(home, '.marveen-worker', 'CLAUDE.md'), 'x')
-    expect(bash('cd ~/.marveen-worker && sqlite3 -readonly /x/y.db "SELECT count(*) FROM t"')).toEqual(FREE)
-    expect(bash('cd ~/.marveen-worker && echo x | tee *')).toEqual(SUB)
+    expect(bash(c)).toEqual(SUB)
   })
   // Dani's follow-up review of 95ec2efad: the skip is bound to quoting. The worker in its own home, with a CLAUDE.md
   // there (a bare glob expands only existing names).
@@ -145,7 +151,45 @@ describe('another sub-agent may not write the project-scope files in a worker\'s
       'echo x | tee "a" *',
       'sqlite3 /x/y.db "SELECT 1" && echo x | tee *',
       'echo x > CLAUDE.md',
+      // quoted text a program runs as shell code again (Dani's review of 7ae2931af)
+      "bash -c 'echo x | tee *'",
+      'sh -c "echo x | tee *"',
+      'eval "echo x | tee *"',
+      "timeout 5 sh -c 'echo x | tee *'",
+      'python3 -c "import os; os.system(\'echo x | tee *\')"',
+      'sqlite3 /x/y.db ".shell echo x | tee *"',
+      'sqlite3 /x/y.db ".system echo x | tee *"',
+      "printf '%s' '*' | xargs rm",
+      "find . -name '*' -exec rm {} +",
+      "perl -e 'system(\"tee *\")'",
+      "node -e 'require(\"child_process\").execSync(\"tee *\")'",
+      "env bash -c 'tee *'",
+      "/bin/zsh -c 'tee *'",
+      "python3.12 -c 'import os; os.system(\"tee *\")'",
+      ". ./x.sh '*'",
+      'echo "$(echo x | tee *)"',
+      'echo "`echo x | tee *`"',
     ])('denied: %s', (c) => { expect(run(c).deny).toBe(true) })
+  })
+  it('reShellsText: every listed name, by itself and with a path or a version suffix', () => {
+    const names = ['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'ash', 'busybox', 'eval', 'source',
+      'python', 'pypy', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'osascript', 'awk', 'gawk',
+      'mawk', 'nawk', 'xargs', 'find', 'watch', 'script', 'parallel', 'make']
+    expect([...RESHELL_NAMES].sort()).toEqual([...names].sort())
+    for (const n of names) {
+      expect(reShellsText(`${n} x`)).toBe(true)
+      expect(reShellsText(`/usr/bin/${n}2 x`)).toBe(true)
+    }
+    expect(reShellsText("env -S 'tee *'")).toBe(false)
+  })
+  it('reShellsText: shells, eval/source, interpreters, runners, sqlite3 dot commands; a plain read is not one', () => {
+    for (const t of ["bash -c 'x'", 'eval "x"', 'source f', '. f', 'x; . f', 'python3.12 -c x', '/usr/bin/env node -e x',
+      'find . -name x -exec rm {} +', 'find . -okdir rm {} ;', 'xargs rm', 'sqlite3 db ".shell ls"', 'sqlite3 db ".SYSTEM ls"', 'awk "{print}" f']) {
+      expect(reShellsText(t)).toBe(true)
+    }
+    for (const t of ['sqlite3 -readonly db "SELECT count(*) FROM t"', 'echo x | tee "*"', 'cat ./a.md', 'grep -l foo f']) {
+      expect(reShellsText(t)).toBe(false)
+    }
   })
   it('unquotedBareGlob: quoted spans removed, escapes and unterminated quotes fail closed', () => {
     expect(unquotedBareGlob('sqlite3 db "SELECT count(*) FROM t"')).toBe(false)

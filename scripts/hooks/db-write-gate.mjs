@@ -88,8 +88,11 @@ export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..
 // `*` expands to every existing non-dot name whatever the command (read vs write is a weaker proxy: sqlite3 writes too).
 // A word of glob characters only skips these two entries when ALL of this holds: the segment's text, with its quoted
 // spans removed, has no bare-glob word left (a backslash-escaped `\*` counts as unquoted, an unterminated quote fails
-// closed). An absolute or ~ glob, a partial one (`C*`), the name itself, and an unquoted `tee *` / `> *` /
-// `sed -i ... *` from any cwd (the worker's own home, another sub-agent's cd into it) all still match.
+// closed); the whole command names no program that runs text as shell code again (reShellsText: a quoted `tee *`
+// handed to `bash -c`, `eval`, an interpreter, `xargs`, `find -exec` or sqlite3's `.shell` is globbed after all, Dani's
+// review of 7ae2931af); and the word is read from the caller's OWN project dir (another sub-agent's cd into the home
+// gets no skip at all). An absolute or ~ glob, a partial one (`C*`), the name itself and an unquoted `tee *` / `> *` /
+// `sed -i ... *` all still match. Stated limit: a program name put together at run time is beyond a text brake.
 const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.claude', dir: true }, { sub: '.mcp.json' },
   { sub: 'CLAUDE.md', noBareGlob: true }, { sub: 'CLAUDE.local.md', noBareGlob: true }]
 function workerHomeTargets(homeRel) {
@@ -405,6 +408,25 @@ export function unquotedBareGlob(text) {
   return plain.split(/[\s;&|<>()`=,{}]+/).some((w) => /^(?:\.\/)*[*?]+$/.test(w))
 }
 
+// Does a shell segment name a program that runs (part of) its text as shell code again, so that a quoted glob gets
+// expanded after all? Shells and eval/source, script interpreters, the command runners (xargs, find -exec, watch,
+// script, parallel) and sqlite3's dot commands .shell/.system. A version suffix is ignored (python3.12, bash5). The
+// whole command text is read (a pipe hands a quoted glob on), quoted parts included: a false hit only takes the
+// noBareGlob skip away (fail closed).
+// (env and exec run a program, never a string through a shell: `env bash -c` is caught by its bash.)
+export const RESHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'ash', 'busybox',
+  'eval', 'source', 'python', 'pypy', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh',
+  'osascript', 'awk', 'gawk', 'mawk', 'nawk', 'xargs', 'find', 'watch', 'script', 'parallel', 'make'])
+export function reShellsText(text) {
+  const src = String(text ?? '')
+  if (/(?:^|[;&|(]\s*)\.\s/.test(src) || /\.(?:shell|system)\b/i.test(src)) return true
+  return src.split(/[\s;&|<>()`'"=,{}$]+/).some((w) => {
+    if (/^-(?:exec|execdir|ok|okdir)$/i.test(w)) return true
+    const name = (w.split('/').pop() ?? '').toLowerCase().replace(/[\d.]+$/, '')
+    return RESHELL_NAMES.has(name)
+  })
+}
+
 // A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
 function patternExact(key, t) {
   // every nameForms() form of the key against the same form of the pattern (the real path, its case folds)
@@ -504,9 +526,10 @@ export function classifyWord(word, ctx) {
       const W = normalizePathSegments(abs)
       // WORKERCFGDIR1104: a word of glob characters only (`*`, `./*`: relative by construction, an absolute or ~ word has
       // a named segment) skips a noBareGlob entry only when its segment's every bare glob was quoted (ctx.bareGlobQuoted,
-      // set per segment; unset = not proven, no skip). Such a `*` is a literal the shell never expands, so it reaches no
-      // file from any cwd: the skip needs no tie to the caller's project dir.
+      // set per segment; unset = not proven, no skip), no program in it re-runs text as shell code, and it is read from
+      // the caller's OWN project dir; after a cd elsewhere (another sub-agent into a worker's home) it does not
       const bareRel = ctx.bareGlobQuoted === true && e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
+        && !!ctx.cwd && !!ctx.projectDir && sameKey(pathKey(resolve(ctx.cwd)), pathKey(resolve(String(ctx.projectDir))))
       for (const t of list) {
         if (bareRel && t.noBareGlob) continue
         for (const T of t.segs) {
@@ -869,7 +892,9 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd) }
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd),
+    // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
+    reShell: reShellsText(cmd) }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
@@ -960,8 +985,9 @@ export function installFileDeny(command, opts = {}) {
     const own = sub.body
     const view = { ...seg, own, text: [own, ...seg.bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
-    // WORKERCFGDIR1104: the segment's own text (a heredoc body is never globbed) decides the noBareGlob skip
-    ctx.bareGlobQuoted = !unquotedBareGlob(own)
+    // WORKERCFGDIR1104: the segment's own text (a heredoc body is never globbed) and the whole command (re-shelling)
+    // decide the noBareGlob skip
+    ctx.bareGlobQuoted = ctx.reShell === false && !unquotedBareGlob(own)
     const rawHits = hitsIn(view.text, ctx)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
