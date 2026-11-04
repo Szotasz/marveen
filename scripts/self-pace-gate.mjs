@@ -889,6 +889,10 @@ export function maskInertLiterals(command, heredocs, lenient = false, comments =
     // command there was never judged. A word start is the line start or after whitespace, ; & or | (not after `(`:
     // zsh's `*(#qD)` is a glob qualifier). A comment holding a command substitution or a backtick: not resolved here
     // (null, the caller reads more, not less). `comments` (optional) receives each comment's { start, end }.
+    // Dani's review of #2524: after `(` or `)` a # comments out the line in bash and zsh too (a subshell, `$(`), but
+    // zsh's EXTENDED_GLOB reads `(#i)...` and `(...)#` as glob syntax: not resolved here (null, the whole command is
+    // read). Only a `(` that follows a glob character in the same word stays a qualifier (`*(#qD)`).
+    if (c === '#' && i > 0 && (src[i - 1] === ')' || (src[i - 1] === '(' && !/[*?\]]/.test(src[i - 2] ?? '')))) return null
     if (c === '#' && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
       const nl = src.indexOf('\n', i)
       const end = nl < 0 ? src.length : nl
