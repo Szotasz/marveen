@@ -12,6 +12,7 @@ derived from the running session's cwd so each session only ever sees its OWN
 chat. Pure stdlib (sqlite3) -- no node startup, no jq.
 """
 import os
+import re
 import sqlite3
 import calendar
 import time
@@ -288,7 +289,8 @@ def connect():
 
 def log_inbound(agent_id, chat_id, message_id, text, ts,
                 attachment_kind=None, attachment_file_id=None,
-                reply_to_message_id=None, source=None):
+                reply_to_message_id=None, source=None,
+                sender_id=None, sender_name=None, sender_role=None):
     """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id).
 
     attachment_kind/file_id: set for voice / video_note messages that arrived
@@ -309,10 +311,13 @@ def log_inbound(agent_id, chat_id, message_id, text, ts,
         con.execute(
             "INSERT OR IGNORE INTO conversation_log"
             " (agent_id, chat_id, direction, message_id, text, ts, created_at,"
-            "  attachment_kind, attachment_file_id, reply_to_message_id, source)"
-            " VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  attachment_kind, attachment_file_id, reply_to_message_id, source,"
+            "  sender_id, sender_name, sender_role)"
+            " VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time()),
-             attachment_kind, attachment_file_id, reply_to_message_id, source),
+             attachment_kind, attachment_file_id, reply_to_message_id, source,
+             sender_id, clean_sender_name(sender_name),
+             sender_role if sender_role in SENDER_ROLES else None),
         )
         con.commit()
     finally:
@@ -349,11 +354,14 @@ def log_outbound(agent_id, chat_id, text, message_id=None):
 
 def recent(agent_id, limit=RECENT_LIMIT):
     """The last `limit` turns for this agent, oldest-first.
-    Rows: (direction, chat_id, text, ts, attachment_kind, attachment_file_id)."""
+    Rows: (direction, chat_id, text, ts, attachment_kind, attachment_file_id,
+    sender_role, sender_name). The two sender fields are LAST so a caller that
+    prefix-slices [:6] keeps working (HOOKARITAS821)."""
     con = connect()
     try:
         rows = con.execute(
-            "SELECT direction, chat_id, text, ts, attachment_kind, attachment_file_id"
+            "SELECT direction, chat_id, text, ts, attachment_kind, attachment_file_id,"
+            " sender_role, sender_name"
             " FROM conversation_log"
             " WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
             (str(agent_id), int(limit)),
@@ -386,6 +394,64 @@ def _arrival_epoch(ts, logged_at):
     except Exception:
         return logged_at
     return max(min(parsed, logged_at), logged_at - MAX_PROCESSING_LAG)
+
+
+# --- the sender's role (LEDGERROLELABEL1104 b) ------------------------------
+#
+# 'owner': the install's owner, decided by the capture (ledger-capture.py
+# _prompt_role). 'paired': let in by the channel's DM allowlist but not proven
+# the owner. NULL: a row from before the column, sender unknown -- never read as
+# the owner.
+SENDER_ROLES = ("owner", "paired")
+_NAME_RX = re.compile(r"[^\w .,'()_-]", re.UNICODE)
+
+
+def clean_sender_name(raw):
+    """A display name as the replay may show it: letters, digits, space and
+    . , ' ( ) _ - only, at most 64 characters; None when nothing is left. The
+    name comes from the envelope's `user` attribute, i.e. from the sender."""
+    if not isinstance(raw, str):
+        return None
+    c = re.sub(r"\s+", " ", _NAME_RX.sub("", raw)).strip()[:64]
+    return c or None
+
+
+def escape_untrusted(text):
+    """Text that cannot close a tag or a quote: & < > " become entities."""
+    return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def sender_label(role, name, owner):
+    """Who a replayed inbound line is from, as the fresh session reads it."""
+    if role == "owner":
+        return owner
+    if role == "paired":
+        return "%s (nem a tulaj)" % (clean_sender_name(name) or "ismeretlen")
+    return "korábbi sor, a feladó ismeretlen"
+
+
+def untrusted_block(text, nonce):
+    """A non-owner's text as data: a per-call nonce and every tag/quote
+    character escaped, so the text can neither close the block nor fake a line."""
+    return '<untrusted source="ledger" nonce="%s">%s</untrusted>' % (nonce, escape_untrusted(text))
+
+
+def inbound_sender(agent_id, chat_id, message_id):
+    """(sender_role, sender_name) of one inbound row, or (None, None). A
+    separate lookup on purpose, like source_for(): the open-question tuple is
+    not widened (HOOKARITAS821)."""
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT sender_role, sender_name FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND direction='in' AND message_id=?"
+            " ORDER BY id DESC LIMIT 1",
+            (str(agent_id), str(chat_id), str(message_id)),
+        ).fetchone()
+        return (row[0], row[1]) if row else (None, None)
+    finally:
+        con.close()
 
 
 def source_for(agent_id, chat_id):

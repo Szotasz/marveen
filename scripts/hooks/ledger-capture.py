@@ -20,6 +20,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import owner_chat  # noqa: E402
 
 # <channel source="plugin:telegram:telegram" chat_id="X" message_id="Y" ... ts="Z">
 #   TEXT
@@ -185,6 +187,81 @@ def _trace(reason, **fields):
         pass  # a trace must never block the prompt either
 
 
+# --- the sender's role (LEDGERROLELABEL1104 b) ------------------------------
+#
+# The gate above only says a sender is on the channel's DM allowlist; that list
+# can hold more people than the owner (pairing adds anyone). The replay labels a
+# row as the owner's words only for 'owner'; everyone else is 'paired'.
+#
+# Who the owner is comes from the MAIN install only, never from this session's
+# environment or this agent's own channel dir (a sub-agent's paired person is
+# not the install's owner, owner_chat._state_dir):
+#   1. an explicit owner id decides ALONE when set: Slack SLACK_OWNER_USER_ID
+#      (a registry setting: the overrides file, then .env, as settings-store
+#      reads it), Telegram a positive ALLOWED_CHAT_ID (a DM chat id is the
+#      user id);
+#   2. else the main install's sole DM-allowlist entry (owner_chat._from_access);
+#   3. else nobody is the owner.
+# One role per PROMPT, the lowest of its envelopes: one 'paired' tag makes every
+# row of the prompt 'paired', so text inside a body can only lower a role.
+OWNER_KEY_BY_PROVIDER = {"slack": "SLACK_OWNER_USER_ID", "telegram": "ALLOWED_CHAT_ID"}
+OVERRIDES_NAME = "config-overrides.json"  # read only, never written here
+
+
+def _owner_install_dir():
+    # LEDGER_OWNER_INSTALL_DIR is a test seam only: the main install's dir.
+    return os.environ.get("LEDGER_OWNER_INSTALL_DIR") or ledger_lib._install_dir()
+
+
+def _setting(install_dir, key):
+    """A registry key as settings-store resolves it: the override, then .env."""
+    try:
+        with open(os.path.join(install_dir, "store", OVERRIDES_NAME), encoding="utf-8") as fh:
+            ov = json.load(fh)
+        v = ov.get(key) if isinstance(ov, dict) else None
+        if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v).strip():
+            return str(v).strip()
+    except (OSError, ValueError):
+        pass
+    v = owner_chat._read_env_value(os.path.join(install_dir, ".env"), key)
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def _owner_id(provider, cache):
+    if provider in cache:
+        return cache[provider]
+    owner = None
+    install_dir = _owner_install_dir()
+    key = OWNER_KEY_BY_PROVIDER.get(provider)
+    explicit = _setting(install_dir, key) if key else None
+    if provider == "telegram" and explicit and not explicit.isdigit():
+        explicit = None  # a negative (group) chat id names no person
+    if explicit:
+        owner = explicit
+    elif provider in SENDER_KEY:
+        env_file = os.path.join(install_dir, ".env")
+        sole, _why = owner_chat._from_access(os.path.join(owner_chat._state_dir(env_file, provider), "access.json"))
+        owner = sole
+    cache[provider] = _norm(provider, owner) if owner else None
+    return cache[provider]
+
+
+def _prompt_role(prompt):
+    """'owner' only when EVERY envelope of the prompt is the owner's; else 'paired'.
+    Runs after the gate, so every tag parses and every sender is allowlisted."""
+    cache = {}
+    for match in CHANNEL_TAG_RE.finditer(prompt):
+        attrs = dict(ATTR_RE.findall(match.group(1)))
+        provider = attrs.get("source", "").rsplit(":", 1)[-1]
+        if provider == "gromzo":
+            continue  # the gate let in only the verified owner's envelope
+        sender = attrs.get(SENDER_KEY.get(provider, ""), "")
+        owner = _owner_id(provider, cache)
+        if not owner or _norm(provider, sender) != owner:
+            return "paired"
+    return "owner"
+
+
 def _attr(attrs, name):
     # A whole attribute name only: "user_id" must not match "reply_to_user_id".
     m = re.search(r'(?:^|\s)' + re.escape(name) + r'="([^"]*)"', attrs)
@@ -206,6 +283,7 @@ def main():
         _trace("sender-gate", agent=agent_id, why=refusal,
                envelopes=len(CHANNEL_TAG_RE.findall(prompt)))
         sys.exit(0)
+    role = _prompt_role(prompt)
     for m in CHANNEL_RX.finditer(prompt):
         matched += 1
         source, attrs, text = m.group(1), m.group(2), m.group(3)
@@ -226,6 +304,9 @@ def main():
         # that other row's own text, and storing it twice would drift the
         # moment either side is edited/redacted.
         reply_to_message_id = _attr(attrs, "reply_to_message_id")
+        provider = source.rsplit(":", 1)[-1]
+        sender_id = _attr(attrs, SENDER_KEY[provider]) if provider in SENDER_KEY else None
+        sender_name = _attr(attrs, "sender_name" if provider == "gromzo" else "user")
         if chat_id and message_id:
             try:
                 ledger_lib.log_inbound(
@@ -233,6 +314,9 @@ def main():
                     attachment_kind=att_kind, attachment_file_id=att_file_id,
                     reply_to_message_id=reply_to_message_id,
                     source=source,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    sender_role=role,
                 )
                 stored += 1
             except Exception as exc:
