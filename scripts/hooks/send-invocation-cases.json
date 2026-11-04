@@ -2063,6 +2063,36 @@
       "name": "ENVOPTHEAD1104: control, after NAME=VALUE an option-looking word is the program (-i), not an option",
       "cmd": "env A=1 -i sendmail a@b.hu",
       "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): -C DIR at the start of the -S value, then a sender",
+      "cmd": "env -S \"-C /tmp sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): --chdir=DIR at the start of the -S value",
+      "cmd": "env -S \"--chdir=/tmp sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): -u NAME at the start of the -S value",
+      "cmd": "env -S \"-u X sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): -a ARG at the start of the -S value",
+      "cmd": "env -S \"-a x sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): an unknown option at the start of the -S value is undecidable",
+      "cmd": "env -S \"--zzz ls\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): control, -C DIR at the start of the -S value before a non-sender",
+      "cmd": "env -S \"-C /tmp ls\"",
+      "expected": false
     }
   ]
 }

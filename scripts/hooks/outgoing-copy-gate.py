@@ -701,7 +701,24 @@ def _env_long_name(t):
     return hits[0] if len(hits) == 1 else None
 
 
-def _env_chdir_dirs(words):
+def _env_split_value(t, words, j):
+    """(value, index after it) when the env word `t` at `j` is -S / --split-string (also a prefix or a cluster)."""
+    if t.startswith("--"):
+        if _env_long_name(t) != "split-string":
+            return None
+        if "=" in t:
+            return t.split("=", 1)[1], j + 1
+        return (words[j + 1] if j + 1 < len(words) else ""), j + 2
+    if t.startswith("-"):
+        k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
+        if k > 0 and t[k] == "S":
+            if k < len(t) - 1:
+                return t[k + 1:], j + 1
+            return (words[j + 1] if j + 1 < len(words) else ""), j + 2
+    return None
+
+
+def _env_chdir_dirs(words, _d=0):
     """ENVOPTHEAD1104 (Bence 69475): the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also
     inside a cluster) runs its command in. A relative script there is resolved under DIR, not the cwd: they are handed
     to the cd logic as `cd DIR` words, which also makes an undecidable DIR a send."""
@@ -714,6 +731,17 @@ def _env_chdir_dirs(words):
             t = words[j]
             if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
                 break
+            split = _env_split_value(t, words, j)
+            if split is not None:
+                # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+                value, after = split
+                try:
+                    split_words = [x for seg in _segments_tokens(value) for x in seg]
+                except ValueError:
+                    split_words = []  # an unsplittable value is already a send by _env_split_heads
+                if _d < _HEAD_DEPTH:
+                    out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
+                break
             if t == "-C" or (t.startswith("--") and "=" not in t and _env_long_name(t) == "chdir"):
                 if j + 1 < len(words):
                     out.append(words[j + 1])
@@ -724,7 +752,7 @@ def _env_chdir_dirs(words):
             elif t.startswith("--") and "=" not in t and _env_long_name(t) in ("unset", "split-string", "argv0"):
                 j += 1  # its value
             elif t.startswith("-") and not t.startswith("--"):
-                k = next((x for x, ch in enumerate(t[1:], 1) if ch in "uCSPa"), -1)
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
                 if k > 0 and t[k] == "C":
                     if k < len(t) - 1:
                         out.append(t[k + 1:])
@@ -813,9 +841,12 @@ def _env_split_heads(value, rest, _d):
     if not segs:
         segs = [[]]
     segs[-1] = list(segs[-1]) + list(rest)
+    # Bence 69552: GNU env parses the options at the START of the split words too (`env -S "-C DIR python3 send.py"`
+    # runs python3 in DIR, measured with genv 9.10), so the first segment goes back through env's own option parser,
+    # as if it were `env <words> <rest>`, not with its first word taken as the program.
     heads = []
-    for s in segs:
-        heads += _command_heads(s, _d + 1)
+    for k, s in enumerate(segs):
+        heads += _command_heads((["env"] + list(s)) if k == 0 else s, _d + 1)
     return heads
 
 
@@ -1381,19 +1412,11 @@ def _address_flag_given(rest) -> bool:
 
 
 def _shebang_env_program(words):
-    """The program an `env` #! line runs. ENVOPTHEAD1104: -u, -C and -P take a value (`#!/usr/bin/env -P /x python3`
-    named /x before); -S only splits the rest, which is already split here; NAME=VALUE is skipped."""
-    i = 0
-    while i < len(words):
-        w = words[i]
-        if w in ("-u", "-C", "-P", "--unset", "--chdir"):
-            i += 2
-            continue
-        if w.startswith("-") or "=" in w:
-            i += 1
-            continue
-        return w
-    return ""
+    """The program an `env` #! line runs. ENVOPTHEAD1104 (Bence 69552): the line's words go through the same env
+    option parser as a command line's (a value option, a long prefix, -S with options at its start), so
+    `#!/usr/bin/env -S -a x python3` and `-S --c /tmp python3` are python3. An undecidable line names no program."""
+    progs = [_basename(h[0]) for h in _command_heads(["env"] + list(words)) if h]
+    return next((p for p in progs if _PYTHON.match(p) or (_NODEISH.match(p) and p != "npx")), progs[0] if progs else "")
 
 
 def _shebang_kind(text):

@@ -539,7 +539,9 @@ function envSplitHeads(value, rest, d) {
   try { segs = segmentsTokens(value) } catch { return [null] }
   if (!segs || !segs.length) segs = [[]]
   segs[segs.length - 1] = [...segs[segs.length - 1], ...rest]
-  return segs.flatMap((s) => commandHeads(s, d + 1))
+  // Bence 69552: GNU env parses the options at the START of the split words too; the first segment goes back
+  // through env's own option parser (see the python twin)
+  return segs.flatMap((s, k) => commandHeads(k === 0 ? ['env', ...s] : s, d + 1))
 }
 
 // Samu 69521: env's options read STRUCTURALLY (see the python twin): the known no-value ones are stepped over, a
@@ -1071,14 +1073,10 @@ function addressFlagGiven(rest) {
 }
 
 // ENVOPTHEAD1104: the program an `env` #! line runs; -u, -C and -P take a value, NAME=VALUE is skipped.
+// Bence 69552: a #! line's env words go through the same env option parser as a command line's (see the python twin)
 function shebangEnvProgram(words) {
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]
-    if (['-u', '-C', '-P', '--unset', '--chdir'].includes(w)) { i++; continue }
-    if (!w || w.startsWith('-') || w.includes('=')) continue
-    return w
-  }
-  return ''
+  const progs = commandHeads(['env', ...words.filter(Boolean)]).filter((h) => h && h.length).map((h) => basename(h[0]))
+  return progs.find((p) => PYTHON.test(p) || (NODEISH.test(p) && p !== 'npx')) ?? progs[0] ?? ''
 }
 
 // 'py' | 'node' | null from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`).
@@ -1295,7 +1293,22 @@ function envLongName(t) {
 }
 
 // ENVOPTHEAD1104: the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also in a cluster) runs in.
-function envChdirDirs(words) {
+// (value, index after it) when the env word t at j is -S / --split-string (also a prefix or a cluster); else null
+function envSplitValue(t, words, j) {
+  if (t.startsWith('--')) {
+    if (envLongName(t) !== 'split-string') return null
+    const eq = t.indexOf('=')
+    return eq >= 0 ? [t.slice(eq + 1), j + 1] : [words[j + 1] ?? '', j + 2]
+  }
+  if (t.startsWith('-')) {
+    let k = -1
+    for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
+    if (k > 0 && t[k] === 'S') return k < t.length - 1 ? [t.slice(k + 1), j + 1] : [words[j + 1] ?? '', j + 2]
+  }
+  return null
+}
+
+function envChdirDirs(words, d = 0) {
   const out = []
   for (let i = 0; i < words.length; i++) {
     if (basename(words[i]) !== 'env') continue
@@ -1303,13 +1316,21 @@ function envChdirDirs(words) {
     while (j < words.length) {
       const t = words[j]
       if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
+      const split = envSplitValue(t, words, j)
+      if (split) {
+        // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+        let splitWords = []
+        try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
+        if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
+        break
+      }
       const long = envLongName(t)
       if (t === '-C' || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
       if (long === 'chdir') out.push(t.slice(t.indexOf('=') + 1))
       else if (long && !t.includes('=') && ['unset', 'split-string', 'argv0'].includes(long)) j++ // its value
       else if (t.startsWith('-') && !t.startsWith('--')) {
         let k = -1
-        for (let x = 1; x < t.length; x++) if ('uCSPa'.includes(t[x])) { k = x; break }
+        for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
         if (k > 0 && t[k] === 'C') {
           if (k < t.length - 1) out.push(t.slice(k + 1))
           else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }

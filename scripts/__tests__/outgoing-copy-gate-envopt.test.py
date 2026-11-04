@@ -42,7 +42,10 @@ try:
     with open(os.path.join(D, "decoy", "send.py"), "w") as fh:
         fh.write("print('x')\n")
     for name, line in (("sender", "#!/usr/bin/env -P /usr/bin python3"), ("sender-u", "#!/usr/bin/env -u FOO python3"),
-                       ("sender-c", "#!/usr/bin/env -C /tmp python3"), ("harmless", "#!/usr/bin/env -P /usr/bin python3")):
+                       ("sender-c", "#!/usr/bin/env -C /tmp python3"), ("harmless", "#!/usr/bin/env -P /usr/bin python3"),
+                       # Bence 69552: options at the start of the -S value, on a #! line
+                       ("sender-sa", "#!/usr/bin/env -S -a x python3"), ("sender-sc", "#!/usr/bin/env -S --c /tmp python3"),
+                       ("sender-su", "#!/usr/bin/env -S -u X python3"), ("sender-si", "#!/usr/bin/env -S -i python3")):
         body = "print('x')\n" if name == "harmless" else 'import smtplib\nsmtplib.SMTP("x")\n'
         p = os.path.join(D, name)
         with open(p, "w") as fh:
@@ -59,6 +62,10 @@ try:
         ("./sender", True, "a #! line env -P DIR python3: the interpreter is python3"),
         ("./sender-u", True, "a #! line env -u NAME python3"),
         ("./sender-c", True, "a #! line env -C DIR python3"),
+        ("./sender-sa", True, "a #! line env -S -a x python3"),
+        ("./sender-sc", True, "a #! line env -S --c DIR python3 (prefix of --chdir)"),
+        ("./sender-su", True, "a #! line env -S -u X python3"),
+        ("./sender-si", True, "a #! line env -S -i python3"),
         ("env -P /usr/local/bin python3 plain.py", False, "control: env -P before a script that does not send"),
         ('env -S "python3 plain.py"', False, "control: env -S with a script that does not send"),
         ("./harmless", False, "control: the same #! line on a script that does not send"),
@@ -93,6 +100,14 @@ try:
         (f"env --chd {D}/evil python3 send.py", True, "env --chd DIR (prefix of --chdir)"),
         (f"env --un FOO --chd {D}/evil python3 send.py", True, "env --un NAME --chd DIR"),
         (f"env -C {D}/decoy python3 send.py", False, "control: env -C into a dir whose script does not send"),
+        # Bence 69552: GNU env parses the options at the start of the -S value too
+        (f'env -S "-C {D}/evil python3 send.py"', True, "env -S with -C DIR at the start of the value"),
+        (f'env -S "--chdir={D}/evil python3 send.py"', True, "env -S with --chdir=DIR at the start of the value"),
+        (f'env -S "-u X python3 {D}/evil/send.py"', True, "env -S with -u NAME at the start, absolute script"),
+        (f'env -S "-a x python3 {D}/evil/send.py"', True, "env -S with -a ARG at the start, absolute script"),
+        (f'env -S "--c {D}/evil" python3 send.py', True, "env -S value of options only, the command after it"),
+        (f'env -S "-S \'-C {D}/evil python3 send.py\'"', True, "env -S nested in an -S value"),
+        (f'env -S "-C {D}/decoy python3 send.py"', False, "control: env -S -C into a dir whose script does not send"),
     ]:
         got = ocg.script_run_sends(cmd, C)
         check(f"ENVOPTHEAD1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
