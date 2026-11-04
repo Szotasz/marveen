@@ -544,7 +544,7 @@ export function startWebServer(port = 3420): http.Server {
   if (!servicesOff) logger.info('Channel intake monitor started (5min poll, 100s offset)')
   // A message that reaches a sub-agent's Telegram plugin before Claude Code has registered its channel handler (the
   // first seconds after every restart) is dropped silently; this re-delivers it from the plugin's own inbound log.
-  const telegramInboundReplayInterval = servicesOff ? undefined : startTelegramInboundReplay()
+  const stopTelegramInboundReplay = servicesOff ? undefined : startTelegramInboundReplay()
   if (!servicesOff) logger.info('Telegram inbound replay started (60s poll, 90s offset)')
   const teamsCredentialInterval = servicesOff ? undefined : startTeamsCredentialMonitor()
   if (!servicesOff) logger.info('Teams credential monitor started (daily, 5min offset)')
@@ -858,7 +858,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
-    if (telegramInboundReplayInterval) clearInterval(telegramInboundReplayInterval)
+    if (stopTelegramInboundReplay) stopTelegramInboundReplay()
     if (teamsCredentialInterval) clearInterval(teamsCredentialInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
