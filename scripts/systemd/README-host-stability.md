@@ -23,6 +23,43 @@ WSL handle/terminal closes), Windows sleep/hibernate -> resume, `wsl
 The two notifiers deliberately use different triggers so a fleet-wide silence
 can be classified: **btime change = host/VM restart**, **OnFailure = app crash**.
 
+## Memory: three layers with different jobs (Linux)
+
+| Piece | Decides | When |
+|-------|---------|------|
+| `scripts/fleet-memory-gate.sh` (+ `fleet-safe-start.sh`) | may this AGENT start now? (safe-mode band, agent cap) | before every agent start (dashboard reconcile loop) |
+| `scripts/heavy-job-gate.sh` ([docs/heavy-job-gate.md](../../docs/heavy-job-gate.md)) | may this heavy JOB (render, ffmpeg, full test suite, `tsc`, browser test, local LLM batch) start now? | when an agent runs one |
+| `scripts/ram-emergency-brake.py` + `marveen-ram-emergency-brake.service` | memory is about to run out anyway: unload ollama, stop the heaviest allowlisted job | every 3 s, opt-in service |
+
+**Heavy-job gate.** Documented in [docs/heavy-job-gate.md](../../docs/heavy-job-gate.md)
+(lock `store/.heavy-job.lock`, queue `store/.heavy-job-queue/`, log
+`store/heavy-job-log.jsonl` by default; `HEAVY_JOB_STORE` moves all three). The brake
+does not read or take the gate's lock, queue or log; it only recognises the
+gate's transient `heavy-job-*.scope` units and never kills the gate process
+(`heavy-job-gate.py`, including its memory-cap probe child).
+
+**Emergency brake (opt-in).** Install the unit as its header says. It never
+stops agent sessions, tmux, the dashboard, channels, bun, sshd or ollama. Killable
+are a `heavy-job-*.scope` first, then ffmpeg/media tools, headless browsers and
+node test runners/builds/renders; python scripts only when listed in the
+optional `store/ram-emergency-brake.json`:
+
+    {"python_scripts": [
+      {"dir": "agents/video", "scripts": ["render.py", "batch.py"]},
+      {"dir": "agents/video/scripts", "scripts": "*"}
+    ]}
+
+(`dir` relative to the install root; a malformed file is ignored and logged as
+`config_error`, so it can only mean fewer kills; restart the service after an
+edit.) One owner alert per incident through `scripts/lib/send-telegram.sh`, owner
+chat resolved like `scripts/lib/owner-chat.sh` (`MARVEEN_ALERT_CHAT_ID`
+overrides). Every target is signalled on its own through one checked path (identity,
+owner, cgroup and never-kill re-checked right before each send); a process the brake
+cannot identify is never a target. One acting brake per install (an flock on
+`store/.ram-emergency-brake.lock`; a second one exits 3).
+Log: `store/ram-emergency-brake-log.jsonl`. Dry run:
+`python3 scripts/ram-emergency-brake.py --dry-run --cycles 3 --simulate-avail-mb 300`.
+
 ## Windows-side fix (do NOT automate from Linux)
 
 To stop the VM from auto-shutting-down when idle, edit on the Windows host:
