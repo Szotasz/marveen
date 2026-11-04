@@ -1583,36 +1583,43 @@ def _file_sends(path, text, kind, read_script) -> bool:
     return False
 
 
-# COPYGATEDRAFTFP1104 (Samu 69301): a python script given a --to/--cc/--bcc address used to be a send before it was
-# read (MAILGATESCRIPT1027), so an IMAP draft writer (`python3 draft.py --to a@x`, imaplib APPEND) needed approval like
-# a sender. The address rule now yields to the script judge ONLY when everything the script can run is visible here:
-# every module it imports, at any depth through its local helpers, is either the standard library or a local file
-# that is read in turn. It stays (a send) when the script or a helper imports an installed package (a sender may hide
-# there: `from acme_mail import deliver` is "readable, not a send" to the judge), reaches code the judge cannot follow
-# (dynamic import, exec/eval/compile, a process, a raw socket or TLS, a network client, unpickling), when an import
-# cannot be read as plain text, when the walk runs out of its depth or file budget, and on a Python without
-# sys.stdlib_module_names (before 3.10): there no import can be classed, so the old rule holds.
-# Builtins and attribute reaches that run code or a process the walk cannot follow, read on the masked text (a comment
-# or a prose string mentioning them does not count). A bare name, not an attribute: `re.compile` is not `compile`.
-_PY_UNFOLLOWED_CODE = re.compile(
-    r"(?<![\w.])(?:__import__|exec|eval|compile|execfile|__builtins__|getattr|globals|locals|vars|__loader__"
-    r"|__spec__|breakpoint)\b"
-    r"|\bsys\.(?:modules|path|meta_path|path_hooks)\b"
-    r"|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|fork\w*)\b"
-    r"|\bimport[ \t]+os[ \t]+as\b|\bfrom[ \t]+os[ \t]+import\b")
-# Standard-library modules whose use the judge cannot follow: dynamic loading, code execution, processes, raw sockets
-# and TLS, unpickling, and the network clients (the judge reads smtplib and the mail-API hosts, not a URL built at run
-# time). imaplib is not here: an IMAP connection cannot submit mail, it is the draft writer's own tool. Any module
-# whose name starts with "_" (the C halves: _socket, _posixsubprocess) counts too.
-_PY_UNFOLLOWED_STDLIB = frozenset((
-    "importlib", "runpy", "imp", "pkgutil", "zipimport", "site", "builtins", "code", "codeop",
-    "subprocess", "pty", "ctypes", "multiprocessing", "concurrent", "asyncio", "selectors", "posix", "nt", "pydoc",
-    "webbrowser", "distutils", "ensurepip", "venv",
-    "socket", "ssl", "socketserver", "urllib", "http", "xmlrpc", "ftplib", "telnetlib", "poplib", "nntplib",
-    "wsgiref", "smtpd",
-    "pickle", "marshal", "shelve", "copyreg",
+# COPYGATEDRAFTFP1104 (Samu 69301, Bence 69319): a python script given a --to/--cc/--bcc address used to be a send
+# before it was read (MAILGATESCRIPT1027), so an IMAP draft writer (`python3 draft.py --to a@x`, imaplib APPEND) needed
+# approval like a sender. The address rule now yields to the script judge ONLY when the script, and every local helper
+# it imports (read in turn), uses nothing but a short ALLOWLIST of modules a draft writer needs, in plain forms the walk
+# can follow. Everything else keeps the old rule (a send): any other module, standard library included (a stdlib module
+# can send or run code on its own: logging.handlers.SMTPHandler, timeit, pdb, cProfile ... -- Bence 69319), an
+# installed package, an import that cannot be parsed, code the judge cannot follow (dynamic import, exec/eval/compile,
+# getattr and friends, a dunder or private attribute, a module reached through another module's attribute:
+# `imaplib.socket`, `pathlib.os`), os and sys beyond a few plain attributes, the depth or file budget running out.
+_PY_DRAFT_MODULES = frozenset((
+    "imaplib", "email", "argparse", "json", "re", "datetime", "time", "calendar", "zoneinfo", "base64", "binascii",
+    "quopri", "pathlib", "textwrap", "html", "mimetypes", "uuid", "hashlib", "getpass", "string", "typing",
+    "dataclasses", "enum", "collections", "itertools", "functools", "math", "decimal", "fractions", "random",
+    "secrets", "unicodedata", "locale", "io", "csv", "codecs", "copy", "pprint", "abc", "__future__", "warnings",
+    "tomllib", "glob", "fnmatch", "shlex", "traceback", "os", "sys",
 ))
-_PY_FROM_IMPORT = re.compile(r"\bfrom[ \t]+(\.*[\w.]*)[ \t]+import\b[ \t]*\(?[ \t]*([\w., \t]*)")
+# os and sys only through these attributes (a bare `os`, passed on or aliased, is not followed)
+_PY_OS_ATTRS = frozenset(("path", "environ", "getenv", "getcwd", "sep", "linesep", "makedirs", "listdir", "remove",
+                          "unlink", "rename"))
+_PY_SYS_ATTRS = frozenset(("argv", "exit", "stdin", "stdout", "stderr", "version_info", "version", "platform",
+                           "maxsize", "getdefaultencoding"))
+# Builtins that run code (or a pager, help()), and the reflective reaches, as bare names (`re.compile` is not `compile`)
+_PY_UNFOLLOWED_CODE = re.compile(
+    r"(?<![\w.])(?:__import__|exec|eval|compile|execfile|__builtins__|getattr|setattr|delattr|globals|locals|vars"
+    r"|__loader__|__spec__|breakpoint|help|get_type_hints)\b")
+# An attribute that reaches a module or a raw channel through another object: `imaplib.socket`, `pathlib.os`,
+# `argparse._os`, an IMAP object's own socket and raw writer (`.sock`, `.send`: SMTP spoken over a re-opened IMAP
+# connection), the stream class that runs a command (`IMAP4_stream`), and every private or dunder attribute except
+# on self / cls (`uuid._get_command_stdout`, `os.__dict__`, `type(x).__subclasses__`).
+_PY_REACH_ATTRS = ("os", "sys", "socket", "subprocess", "ssl", "posix", "nt", "builtins", "importlib", "smtplib",
+                   "logging", "shutil", "pty", "ctypes", "signal", "multiprocessing", "asyncio", "threading", "select",
+                   "selectors", "http", "urllib", "operator", "IMAP4_stream", "sock", "send", "sendall", "file",
+                   "readline", "shutdown", "sslobj", "get_type_hints")
+_PY_REACH = re.compile(r"\.\s*(?:" + "|".join(_PY_REACH_ATTRS) + r")\b|(?<!self)(?<!cls)\.\s*_[A-Za-z_]")
+# a class built on an imaplib class can override what the constructor checks (and reach the socket)
+_PY_IMAP_SUBCLASS = re.compile(r"\bclass\b[^\n:]*\([^)]*\bIMAP4")
+_PY_FROM_IMPORT = re.compile(r"\bfrom[ \t]+(\.*[\w.]*)[ \t]+import\b[ \t]*(\([^)]*\)|[\w.,* \t]*)")
 _PY_PLAIN_IMPORT = re.compile(r"\bimport[ \t]+([\w., \t]+)")
 _PY_WALK_FILES = 24
 _PY_WALK_DEPTH = 4
@@ -1644,44 +1651,79 @@ def _py_script_dirs(path):
 
 
 def _py_imports(masked):
-    """(modules, ok): (name, required) for each module a masked text imports, a relative one with its leading dots; a
-    `from M import x` also lists M.x as not required (x may be a submodule, or only a name). ok=False when an `import`
-    word is not one of the two plain forms (a continuation line, `import(`), so nothing can be concluded."""
-    mods = []
-    spans = []
+    """(modules, froms, spans, ok). modules: (name, required) for each module a masked text imports, a relative one
+    with its leading dots; a `from M import x` also lists M.x as not required (x may be a submodule, or only a name).
+    froms: (M, [names]) per from-import. plains: (name, alias) per `import name [as alias]`. spans: the statements'
+    text ranges. ok=False when an `import` word is not one of the two plain forms (a continuation line, `import(`)."""
+    mods, froms, plains, spans = [], [], [], []
     for m in _PY_FROM_IMPORT.finditer(masked):
         spans.append((m.start(), m.end()))
         mod = m.group(1)
         if not mod:
-            return [], False
+            return [], [], [], [], False
         mods.append((mod, True))
-        for n in (m.group(2) or "").split(","):
+        names = []
+        for n in (m.group(2) or "").strip().strip("()").replace("\n", ",").split(","):
             name = (n.split() or [""])[0]
-            if name and name != "*":
-                mods.append((mod + ("" if mod.endswith(".") else ".") + name, False))
+            if name:
+                names.append(name)
+                if name != "*":
+                    mods.append((mod + ("" if mod.endswith(".") else ".") + name, False))
+        froms.append((mod, names))
     for m in _PY_PLAIN_IMPORT.finditer(masked):
         if any(a <= m.start() < b for a, b in spans):
             continue
         spans.append((m.start(), m.end()))
         for n in m.group(1).split(","):
-            name = (n.split() or [""])[0]
-            if not name:
-                return [], False
-            mods.append((name, True))
+            words = n.split()
+            if not words:
+                return [], [], [], [], False
+            mods.append((words[0], True))
+            plains.append((words[0], words[2] if len(words) >= 3 and words[1] == "as" else None))
     # every `import` keyword must sit inside one of the parsed statements (a `\` continuation, `import(` ... do not)
     for m in re.finditer(r"\bimport\b", masked):
         if not any(a <= m.start() < b for a, b in spans):
-            return [], False
+            return [], [], [], [], False
     if "\\\n" in masked:
-        return [], False
-    return mods, True
+        return [], [], [], [], False
+    return mods, froms, plains, spans, True
+
+
+def _py_code_unfollowed(masked, froms, plains, spans) -> bool:
+    """The allowlist's code rules over one masked file (see the block above)."""
+    for mod, alias in plains:
+        if alias and mod.split(".")[0] in ("os", "sys"):
+            return True
+    for mod, names in froms:
+        if mod.startswith("."):
+            continue
+        top = mod.split(".")[0]
+        for name in names:
+            if name == "*" or name.startswith("_") or name in _PY_REACH_ATTRS:
+                return True
+            if mod == "os" and name not in _PY_OS_ATTRS:
+                return True
+            if mod == "sys" and name not in _PY_SYS_ATTRS:
+                return True
+        if top not in ("os", "sys") and "*" in names:
+            return True
+    # the code outside the import statements
+    code = list(masked)
+    for a, b in spans:
+        code[a:b] = " " * (b - a)
+    code = "".join(code)
+    if _PY_UNFOLLOWED_CODE.search(code) or _PY_REACH.search(code) or _PY_IMAP_SUBCLASS.search(code):
+        return True
+    for m in re.finditer(r"(?<![\w.])(os|sys)\b", code):
+        attr = re.match(r"\s*\.\s*(\w+)", code[m.end():])
+        allowed = _PY_OS_ATTRS if m.group(1) == "os" else _PY_SYS_ATTRS
+        if not attr or attr.group(1) not in allowed:
+            return True
+    return False
 
 
 def _py_walk_verdict(path, text, read_script):
     """'send' | 'unfollowed' | 'clean' for a readable python script and everything it imports (see the block above)."""
-    stdlib = getattr(sys, "stdlib_module_names", None)
-    if not stdlib:
-        return "unfollowed"
     seen = {os.path.normpath(path)}
     queue = [(os.path.normpath(path), text, 0)]
     while queue:
@@ -1689,12 +1731,10 @@ def _py_walk_verdict(path, text, read_script):
         if len(body.encode("utf-8")) > _SCRIPT_READ_LIMIT or _ZIP_MAGIC in body:
             return "send"
         masked = _mask_prose_literals(body, "py")
-        if _text_sends(body, masked, _PY_MAIL_IMPORT):
-            return "send"
-        if _PY_UNFOLLOWED_CODE.search(masked):
-            return "unfollowed"
-        mods, ok = _py_imports(masked)
-        if not ok:
+        # no separate mail-text check here: smtplib, the network clients and the process modules are all off the
+        # allowlist, so a file that sends is already "unfollowed" (the judge's own text check runs before the walk)
+        mods, froms, plains, spans, ok = _py_imports(masked)
+        if not ok or _py_code_unfollowed(masked, froms, plains, spans):
             return "unfollowed"
         dirs = _py_script_dirs(cur)
         for mod, required in mods:
@@ -1714,7 +1754,7 @@ def _py_walk_verdict(path, text, read_script):
                 if not local:
                     if not required:
                         continue
-                    if top not in stdlib or top.startswith("_") or top in _PY_UNFOLLOWED_STDLIB:
+                    if top not in _PY_DRAFT_MODULES or (top == "os" and mod not in ("os", "os.path")):
                         return "unfollowed"
                     continue
             for f in local:

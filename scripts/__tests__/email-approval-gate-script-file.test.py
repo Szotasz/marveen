@@ -372,20 +372,54 @@ try:
         got = ocg.script_run_sends(cmd, os.path.join(D, "cg"))
         check(f"COPYGATEDRAFTFP1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 
-    # Python before 3.10: no sys.stdlib_module_names, so no import can be classed and the address rule holds
-    class _NoStdlibSys:
-        def __getattr__(self, name):
-            if name == "stdlib_module_names":
-                raise AttributeError(name)
-            return getattr(sys, name)
-    real_sys = ocg.sys
-    ocg.sys = _NoStdlibSys()
-    try:
-        got = ocg.script_run_sends("python3 draft.py --to a@example.test", os.path.join(D, "cg"))
-    finally:
-        ocg.sys = real_sys
-    check("COPYGATEDRAFTFP1104 without sys.stdlib_module_names the draft writer with an address stays a send",
-          got is True, f"got {got}")
+    # Bence 69319 (round 2): the stdlib rule is an ALLOWLIST. A stdlib module that sends or runs code, a module reached
+    # through another module's attribute, and os/sys beyond their plain attributes are not followed: DENY
+    round2 = {
+        "log_smtp": "import logging.handlers\nh = logging.handlers.SMTPHandler('x', 'a', ['b'], 's')\n",
+        "log_from": "from logging.handlers import SMTPHandler\nSMTPHandler('x', 'a', ['b'], 's')\n",
+        "timeit": "import timeit\ntimeit.timeit('1')\n",
+        "cprofile": "import cProfile\ncProfile.run('1')\n",
+        "trace": "import trace\ntrace.Trace().run('1')\n",
+        "pdb": "import pdb\npdb.run('1')\n",
+        "doctest": "import doctest\ndoctest.run_docstring_examples(f, {})\n",
+        "attrgetter": "import operator, os\noperator.attrgetter('sys' + 'tem')(os)('x')\n",
+        "os_dict": "import os\nos.__dict__['sys' + 'tem']('x')\n",
+        "os_path_os": "import os\nos.path.os.system('x')\n",
+        "bare_os": "import os\ndef f(m):\n    return m\nf(os)\n",
+        "sys_alias": "import sys as s\n",
+        "sys_modules": "import sys\nsys.modules['x']\n",
+        "imaplib_socket": "import imaplib\nimaplib.socket.create_connection(('x', 25))\n",
+        "imaplib_subprocess": "import imaplib\nimaplib.subprocess.run(['x'])\n",
+        "imap_stream": "import imaplib\nimaplib.IMAP4_stream('x')\n",
+        "from_imap_stream": "from imaplib import IMAP4_stream\n",
+        "paren_from": "from imaplib import (\n    IMAP4_SSL,\n    IMAP4_stream,\n)\n",
+        "from_imaplib_socket": "from imaplib import socket\n",
+        "from_star": "from imaplib import *\n",
+        "pathlib_os": "import pathlib\npathlib.os.system('x')\n",
+        "argparse_private": "import argparse\nargparse._os.system('x')\n",
+        "uuid_private": "import uuid\nuuid._get_command_stdout('x')\n",
+        "imap_reopen_send": "import imaplib\nc = imaplib.IMAP4_SSL('x')\nc.open('smtp.x', 465)\nc.send(b'EHLO x')\n",
+        "imap_subclass": "import imaplib\nclass C(imaplib.IMAP4):\n    def __init__(self):\n        pass\n",
+        "type_hints": "import typing\ntyping.get_type_hints(object)\n",
+        "help": "help(str)\n",
+        "not_allowlisted": "import shutil\n",
+    }
+    for name, body in round2.items():
+        put(f"cg/v_{name}.py", body)
+    # the allowlist's plain forms a draft writer uses: not a send
+    plain = {
+        "os_plain": "from os import environ, path\nfrom os.path import join\nimport os.path\nprint(environ, path, join('a'), os.path.join('a'))\n",
+        "sys_plain": "import sys\nprint(sys.argv[1:], file=sys.stderr)\nsys.exit(0)\n",
+        "class_self": "from typing import Optional\nfrom dataclasses import dataclass\n@dataclass\nclass D:\n    x: Optional[int] = None\n    def f(self):\n        return self._x\n",
+    }
+    for name, body in plain.items():
+        put(f"cg/p_{name}.py", body)
+    for cmd, want, what in (
+        [(f"python3 v_{n}.py --to a@example.test", True, f"round 2, not followed ({n})") for n in round2]
+        + [(f"python3 p_{n}.py --to a@example.test", False, f"round 2, plain form ({n})") for n in plain]
+    ):
+        got = ocg.script_run_sends(cmd, os.path.join(D, "cg"))
+        check(f"COPYGATEDRAFTFP1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 
     # end to end through the hook process, level 2, no approval
     store = make_store(D, level=2)
@@ -408,15 +442,15 @@ try:
     code, err = run_gate(f"cd {D}/cg && python3 pkgsend.py --to a@example.test")
     check("COPYGATEDRAFTFP1104 hook: an installed-package sender with --to is DENIED", code == 2,
           f"exit={code} err={err[:200]!r}")
-    # the same hook under a Python without sys.stdlib_module_names: still a send (the approval gate itself does not
-    # load there today, its email_extract dependency needs 3.10, so it is fail-closed before the copy gate is asked)
+    # the same hooks under Python < 3.10 (the walk needs no 3.10 feature): the draft writer passes, the package sender
+    # is denied (there by the approval gate's own fail-closed load of its email_extract dependency, EMAILGATEPY39-1104)
     old_py = next((x for x in ("/usr/bin/python3",) if os.path.exists(x)), None)
     if old_py and subprocess.run([old_py, "-c", "import sys; sys.exit(0 if sys.version_info < (3, 10) else 1)"]).returncode == 0:
-        payload = {"tool_name": "Bash", "tool_input": {"command": f"cd {D}/cg && python3 draft.py --to a@example.test"}, "cwd": D}
-        p = subprocess.run([old_py, gate_for(store, GATE)], input=json.dumps(payload).encode(), capture_output=True)
-        err = p.stderr.decode()
-        check("COPYGATEDRAFTFP1104 hook under Python < 3.10: the draft writer with an address stays denied",
-              p.returncode == 2, f"exit={p.returncode} err={err[:300]!r}")
+        for script, want in (("draft.py", 0), ("pkgsend.py", 2)):
+            payload = {"tool_name": "Bash", "tool_input": {"command": f"cd {D}/cg && python3 {script} --to a@example.test"}, "cwd": D}
+            p = subprocess.run([old_py, gate_for(store, GATE)], input=json.dumps(payload).encode(), capture_output=True)
+            check(f"COPYGATEDRAFTFP1104 hook under Python < 3.10: {script} with an address -> exit {want}",
+                  p.returncode == want, f"exit={p.returncode} err={p.stderr.decode()[:300]!r}")
     else:
         print("  [SKIP] no Python < 3.10 at /usr/bin/python3")
 finally:
