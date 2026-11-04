@@ -12514,6 +12514,7 @@ function renderPendingSkills(box, list) {
     head.appendChild(pendingEl('strong', null, p.name))
     const where = p.target && p.target.scope === 'agent'
       ? t('skills.pending.target_agent', { agent: p.target.agent })
+      : p.target && p.target.scope === 'project' ? t('skills.pending.target_project')
       : t('skills.pending.target_global')
     const src = p.source === 'import' ? t('skills.pending.source_import')
       : p.source === 'propose' ? t('skills.pending.source_propose', { agent: p.proposedBy || '?' })

@@ -841,6 +841,7 @@ window._i18n.hu = {
   'skills.pending.title': 'Jóváhagyásra vár ({n})',
   'skills.pending.intro': 'Ezek a skillek még nem élnek: egyik ágens sem látja őket. Jóváhagyás előtt nézd át a fájlokat, a jelzéseket és a SKILL.md szövegét. Az üres jelzéslista nem jelenti, hogy a skill biztonságos, csak azt, hogy a szűrő nem talált ismert mintát.',
   'skills.pending.target_global': 'Globális: az egész flotta látja és betölti',
+  'skills.pending.target_project': 'Projekt (.claude/skills): minden ügynök látja és betölti, mert a projekt alatt dolgozik',
   'skills.pending.target_agent': 'Csak ennek az ágensnek: {agent}',
   'skills.pending.source_import': 'importált',
   'skills.pending.source_generate': 'generált',

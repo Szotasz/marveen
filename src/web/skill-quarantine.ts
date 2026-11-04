@@ -56,17 +56,19 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import {
-  appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, relative, sep } from 'node:path'
-import { MAIN_AGENT_ID, STORE_DIR } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
-export type SkillTarget = { scope: 'global' } | { scope: 'agent'; agent: string }
+// 'project' (SKILLPROPOSESCOPE1104): the install's own <root>/.claude/skills. Every agent works below the root, so it
+// loads like the global one; a proposal of a name that lives there replaces it THERE (never a second, global copy).
+export type SkillTarget = { scope: 'global' } | { scope: 'project' } | { scope: 'agent'; agent: string }
 export type PendingSource = 'generate' | 'import' | 'propose'
 
 export interface PendingMeta {
@@ -160,7 +162,12 @@ export function normalizeTarget(target: SkillTarget): SkillTarget {
   return target.scope === 'agent' && target.agent === MAIN_AGENT_ID ? { scope: 'global' } : target
 }
 
+export function projectSkillsRoot(): string {
+  return join(PROJECT_ROOT, '.claude', 'skills')
+}
+
 export function targetRoot(target: SkillTarget): string {
+  if (target.scope === 'project') return projectSkillsRoot()
   if (target.scope === 'global' || target.agent === MAIN_AGENT_ID) return globalSkillsRoot()
   return join(agentDir(target.agent), '.claude', 'skills')
 }
@@ -179,7 +186,8 @@ function entryDir(id: string): string {
 
 function sameTarget(a: SkillTarget, b: SkillTarget): boolean {
   if (a.scope !== b.scope) return false
-  return a.scope === 'global' || (b.scope === 'agent' && a.agent === b.agent)
+  if (a.scope === 'agent') return b.scope === 'agent' && a.agent === b.agent
+  return true
 }
 
 function readMeta(id: string): PendingMeta | null {
@@ -289,7 +297,27 @@ export function parseProposedFiles(raw: unknown, skillMdBytes: number): { ok: tr
   return { ok: true, files }
 }
 
-// A complete SKILL.md proposed by an agent for the GLOBAL root. Never written into a skill root here.
+// Where a proposal of `name` goes (SKILLPROPOSESCOPE1104, Marveen 68194): the project root when the name lives there
+// (replaced in place, its scripts/ and references/ kept, the same hash binding), else the global root. A name that
+// lives in BOTH is refused: a proposal must not pick one of two live copies, nor make a third state; removing the
+// duplicate is the owner's or the main agent's decision.
+export function proposeTarget(name: string): { ok: true; target: SkillTarget } | { ok: false; status: number; error: string } {
+  const lives = (dir: string): boolean => { try { lstatSync(join(dir, name)); return true } catch { return false } }
+  // One directory under two names (the project root symlinked to the global one): one root, not a duplicate.
+  // Without this, every existing name would be "in both" and every proposal a 409 (Dani 68501).
+  const real = (dir: string): string | null => { try { return realpathSync(dir) } catch { return null } }
+  const pr = real(projectSkillsRoot())
+  if (pr !== null && pr === real(globalSkillsRoot())) return { ok: true, target: { scope: 'global' } }
+  const inProject = lives(projectSkillsRoot())
+  const inGlobal = lives(globalSkillsRoot())
+  if (inProject && inGlobal) {
+    return { ok: false, status: 409, error: `A skill named ${name} lives both in the global root and in the project root (.claude/skills); a proposal cannot pick one. Removing the duplicate is the owner's or the main agent's decision.` }
+  }
+  return { ok: true, target: inProject ? { scope: 'project' } : { scope: 'global' } }
+}
+
+// A complete SKILL.md proposed by an agent for the global root, or for the project root when the name lives there
+// (proposeTarget). Never written into a skill root here.
 // `mayReplacePending` (SKILLAPPROVALOFF1101 follow-up, Samu 65825, Dani 65845): when a proposal of this name is
 // already waiting and the caller lets this one supersede it, the new one is queued beside it and its id comes back as
 // `waiting`; the caller archives it (archiveSuperseded) only after the new one went live. Without it, or when it says
@@ -299,7 +327,9 @@ export function queueProposedSkill(
   skillMd: string,
   opts: { proposedBy?: string; reason?: string; files?: ProposedFiles; mayReplacePending?: (waiting: PendingMeta) => boolean } = {},
 ): ProposeResult {
-  const target: SkillTarget = { scope: 'global' }
+  const where = proposeTarget(name)
+  if (!where.ok) return { ok: false, status: where.status, error: where.error }
+  const target = where.target
   const files = opts.files ?? []
   // The same gate as the route, here too: this function is the one that writes.
   for (const f of files) {
