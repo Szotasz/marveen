@@ -26,6 +26,12 @@ const LOOSEN_FORBIDDEN = {
     'The token alone can do it only before the first login exists.',
 }
 
+const OWNER_GATED_FORBIDDEN = {
+  ...OWNER_SESSION_REQUIRED,
+  error: 'This setting chooses where the token, a prompt or memory text is sent: any change needs the dashboard login ' +
+    '(an owner session), not the shared token.',
+}
+
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -95,6 +101,11 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         json(res, LOOSEN_FORBIDDEN, 403)
         return true
       }
+      // NETTARGETENV1104: a target key needs the owner for ANY change, tightening or not.
+      if (def.ownerGated && !ownerCredential(ctx)) {
+        json(res, OWNER_GATED_FORBIDDEN, 403)
+        return true
+      }
 
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
       setStoreWriteActor(resolvedActor)
@@ -158,6 +169,10 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
 
       if (def.loosens?.(String(getEffectiveSettingValue(key)), String(getSettingFallback(key).value)) && !ownerCredential(ctx)) {
         json(res, LOOSEN_FORBIDDEN, 403)
+        return true
+      }
+      if (def.ownerGated && !ownerCredential(ctx)) {
+        json(res, OWNER_GATED_FORBIDDEN, 403)
         return true
       }
       setStoreWriteActor(actor)

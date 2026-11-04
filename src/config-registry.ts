@@ -97,6 +97,13 @@ export interface SettingDefinition {
    * Every key with `loosens`, and every `module: 'security'` key, is overrides-only without this flag (isOverridesOnly).
    */
   overridesOnly?: boolean
+  /**
+   * Optional (NETTARGETENV1104): ANY change of this key through the Settings route needs the owner (an owner session or
+   * a full-scope device key), not the shared fleet token. Unlike `loosens` it does NOT make the key overrides-only: its
+   * .env line keeps working. For keys that choose a TARGET (where the token, a prompt or memory text is sent) and whose
+   * .env form is documented and used by remote installs.
+   */
+  ownerGated?: boolean
 }
 
 // ENVRELAXGATE1104 step 2: the keys whose `.env` value may only tighten. A `loosens` function marks a security
@@ -423,6 +430,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'AGENT_API_ORIGIN',
@@ -432,6 +441,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'FLEET_PYTHON_VENV',
@@ -479,6 +490,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'EMBED_URL',
@@ -488,6 +501,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'EMBED_MODEL',
@@ -517,6 +532,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'MEMORY_VECTOR_MIN_MARGIN',
