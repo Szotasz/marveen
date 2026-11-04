@@ -1120,6 +1120,11 @@ function provisionIsolatedConfigDir(
     // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
     // bearing when it was not.
     delete settings.hooks
+    // ENVRELAXGATE1104 follow-up (Dani 67912, Samu 67923): disableAllHooks never rides the clone either. In an agent's
+    // config dir it switches off every gate hook the project scope registers, so a value written into the shared
+    // ~/.claude/settings.json would turn the whole fleet's gates off on their next start. The agent scaffold already
+    // drops it from the project-scope settings (#2497); this is the user-scope copy.
+    delete settings.disableAllHooks
     // The shared env reaches this agent as is (the shared file wins for every
     // name it defines), so an auth-path name in it changes which account or
     // endpoint this agent runs on. Said out loud on every start, names only:
@@ -1174,7 +1179,7 @@ function provisionIsolatedConfigDir(
             // (#1305), so without this exclusion an isolated dir that already
             // carries the old derived hooks would inherit them right back as a
             // "target-only" key on every re-provision.
-            if (key !== 'enabledPlugins' && key !== 'hooks' && !(key in settings)) {
+            if (key !== 'enabledPlugins' && key !== 'hooks' && key !== 'disableAllHooks' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
             }
