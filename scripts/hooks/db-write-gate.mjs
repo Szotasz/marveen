@@ -173,7 +173,6 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   //   ~/marveen-local-plugins      -- the gromzo directory marketplace: its plugin RUNS from there (installPath)
   //   ~/.claude/agents|skills|hooks -- subagent types, skills, hook scripts every session can load
   //   agents/*/.claude-config/plugins/{installed_plugins,known_marketplaces}.json -- each agent's own registries
-  //   the two workers' config dirs' plugins
   { home: '.claude/plugins', dir: true },
   { rel: 'plugins', dir: true },
   { home: 'marveen-local-plugins', dir: true },
@@ -182,8 +181,16 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { home: '.claude/hooks', dir: true },
   { rel: 'agents/*/.claude-config/plugins/installed_plugins.json', pattern: true },
   { rel: 'agents/*/.claude-config/plugins/known_marketplaces.json', pattern: true },
-  { home: '.marveen-worker/.claude-config/plugins', dir: true },
-  { home: '.marveen-worker-fast/.claude-config/plugins', dir: true },
+  // The two background workers' config dirs, whole (WORKERCFGDIR1104, Dani 68629, Samu 68631): settings.json (hooks,
+  // permissions), .claude.json, worker-mcp.json, .credentials.json and the rest are loaded at the worker's next start.
+  // The worker itself already may not write its own settings and server lists (callerSettingsEntries); another
+  // sub-agent could, and a hooks entry in settings.json would stay (worker-mcp.json is rewritten on every start). The
+  // dashboard provisions these files, never a sub-agent's tool call. As with .channels-config: the whole directory
+  // covers a file added there later, and its symlinked entries (projects, skills, plugins, ...) resolve into ~/.claude
+  // and are judged where they land. This replaces #2505's two plugins entries, which it contains. The default id's
+  // homes are listed here; a renamed install's (MAIN_AGENT_ID) are added per call by workerConfigEntries.
+  { home: '.marveen-worker/.claude-config', dir: true },
+  { home: '.marveen-worker-fast/.claude-config', dir: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -302,13 +309,28 @@ export function dynamicPluginEntries(root, projectDir, src = dynamicSources(root
   return out
 }
 
+// The workers' config dirs of a renamed install (WORKERCFGDIR1104): their home is ~/.<MAIN_AGENT_ID>-worker{,-fast}
+// (agent-worker.ts workerHomeFor), with MAIN_AGENT_ID read from the install like the other settings here (overrides,
+// then .env; both files' mtimes are in the cache key). Only a plain id (letters, digits, _ and -) is used; the default
+// id adds nothing (the static entries cover it). A MARVEEN_WORKER_DIR{,_FAST} set only in the dashboard's process
+// environment is not visible to a hook (stated limit).
+const WORKER_ID_RX = /^[A-Za-z0-9_-]{1,64}$/
+export function workerConfigEntries(root) {
+  const id = installSetting(root, 'MAIN_AGENT_ID')
+  if (!id || !WORKER_ID_RX.test(id) || id === 'marveen') return []
+  return ['', '-fast'].map((v) => {
+    const rel = `.${id}-worker${v}/.claude-config`
+    return { rel, abs: join(homedir(), rel), dir: true }
+  })
+}
+
 const targetCache = new Map()
 export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir = null, configDir = null) {
   const k = resolve(root)
   const dyn = subAgent ? dynamicSources(k) : null
   const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}\u0000${dyn ? dyn.sig : ''}\u0000${subAgent ? homedir() : ''}`
   if (!targetCache.has(ck)) {
-    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...dynamicPluginEntries(k, projectDir, dyn)] : PROTECTED_INSTALL_PATHS
+    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...workerConfigEntries(k), ...dynamicPluginEntries(k, projectDir, dyn)] : PROTECTED_INSTALL_PATHS
     targetCache.set(ck, {
       rootKey: pathKey(k),
       list: entries.map((t) => {
