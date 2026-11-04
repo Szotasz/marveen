@@ -1067,6 +1067,21 @@ PYEOF
 assert_eq "gromzo outbound: filed under the result's key, not the input's or the owner chat" "$GZ_CHAT" \
     "$(db_scalar "$DB_G" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
 
+# The other two result shapes (Dani 67668: a JSON string, and a {content:[...]}
+# dict) name the same key: no shape may silently fall back to the Slack chat.
+for SHAPE in json-string content-dict; do
+    DB_GS="$TMPDIR_BASE/g-$SHAPE.db"
+    python3 - "$GZ_CHAT" "$SHAPE" <<'PYEOF' | run_hook ledger-outbound.py "$DB_GS"
+import json, sys
+blocks = [{"type": "text", "text": "sent (1 part)\nchat_id: " + sys.argv[1]}]
+resp = json.dumps(blocks) if sys.argv[2] == "json-string" else {"content": blocks}
+print(json.dumps({"tool_name": "mcp__plugin_gromzo-channel_gromzo__reply",
+                  "tool_input": {"to": "owner", "text": "szia"}, "tool_response": resp}))
+PYEOF
+    assert_eq "gromzo outbound ($SHAPE result): filed under the key" "$GZ_CHAT" \
+        "$(db_scalar "$DB_GS" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
+done
+
 # No key line (after a plugin restart): today's fallback, the owner chat.
 DB_G2="$TMPDIR_BASE/g2.db"
 python3 - <<'PYEOF' | run_hook ledger-outbound.py "$DB_G2"

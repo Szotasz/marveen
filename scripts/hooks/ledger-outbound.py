@@ -130,21 +130,44 @@ def _extract_message_id(payload):
     return None
 
 
+def _result_texts(result, depth=0):
+    """Every text in a tool result, whatever its shape (Dani 67668: four shapes
+    measured, two were missed): a plain string, a JSON string of any of these, a
+    {"content": [...]} or {"text": "..."} dict, or a content-block list."""
+    if depth > 3:
+        return []
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except Exception:
+            return [result]
+        if isinstance(parsed, (dict, list)):
+            return _result_texts(parsed, depth + 1)
+        return [result]
+    if isinstance(result, dict):
+        out = []
+        if isinstance(result.get("text"), str):
+            out.append(result["text"])
+        if "content" in result:
+            out.extend(_result_texts(result["content"], depth + 1))
+        return out
+    if isinstance(result, list):
+        out = []
+        for block in result:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                out.append(block["text"])
+            elif isinstance(block, str):
+                out.append(block)
+        return out
+    return []
+
+
 def _gromzo_chat(payload):
     """The ledger key a Gromzo reply's result names, or None.
 
-    The result is a content-block list ([{"type": "text", "text": "sent (1
-    part)\nchat_id: gz..."}]) or a plain string; only a whole line in the
-    plugin's exact shape counts, so no other text can name a conversation."""
-    result = payload.get("tool_response")
-    texts = []
-    if isinstance(result, str):
-        texts.append(result)
-    elif isinstance(result, list):
-        for block in result:
-            if isinstance(block, dict) and isinstance(block.get("text"), str):
-                texts.append(block["text"])
-    for text in texts:
+    Only a whole line in the plugin's exact shape counts ("chat_id: gz" + 20
+    hex), so no other text can name a conversation."""
+    for text in _result_texts(payload.get("tool_response")):
         m = GROMZO_CHAT_RX.search(text)
         if m:
             return m.group(1)
