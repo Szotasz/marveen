@@ -188,7 +188,9 @@ jobs:
   # credential gates there (fail-closed: every send, and with the credential gate every Bash call, was denied), and
   # nothing here ran a 3.9 interpreter. This job runs the hook scripts' syntax check and the gate tests on 3.9.
   hooks-python39:
-    runs-on: ubuntu-latest
+    # Pinned: setup-python has no 3.9 build for the newest ubuntu-latest image (measured: "The version '3.9' with
+    # architecture 'x64' was not found for Ubuntu 26.04"); 22.04 has one.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
