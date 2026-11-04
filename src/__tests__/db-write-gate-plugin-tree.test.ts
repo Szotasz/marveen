@@ -69,6 +69,7 @@ describe('Bash: bare names, ancestors below $HOME, $CLAUDE_CONFIG_DIR', () => {
     ['cd ~/marveen-local-plugins && rm -rf gromzo', undefined],
     ['rsync -a /tmp/x/ ~/.claude/', undefined],
     ['cp -R /tmp/x/plugins ~/.claude/', undefined],
+    ['cp -R src/ ~/.claude/', undefined],
     ['tar -xf /tmp/p.tar', join(H, '.claude')],
     ['mv ~/.claude ~/.claude.bak', undefined],
     ['echo x > $CLAUDE_CONFIG_DIR/plugins/installed_plugins.json', undefined],
