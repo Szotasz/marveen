@@ -821,7 +821,7 @@ function dquoteEnd(src, from) {
   return -1
 }
 
-export function maskInertLiterals(command, heredocs, lenient = false) {
+export function maskInertLiterals(command, heredocs, lenient = false, comments = null) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
   let cur = ''
   let i = 0
@@ -882,6 +882,24 @@ export function maskInertLiterals(command, heredocs, lenient = false) {
       const inner = src.slice(i + 1, j)
       if (!lenient && /\$\(|`/.test(inner)) return null // may run a command -> not inert
       cur += blank(src.slice(i, j + 1)); i = j + 1; continue
+    }
+
+    // GATECOMMENTQUOTE1104: an unquoted # at a word start comments out the rest of the line. Its text is inert, and a
+    // quote character in it must not pair with one on a later line: it did, so a later line read as quoted text and a
+    // command there was never judged. A word start is the line start or after whitespace, ; & or | (not after `(`:
+    // zsh's `*(#qD)` is a glob qualifier). A comment holding a command substitution or a backtick: not resolved here
+    // (null, the caller reads more, not less). `comments` (optional) receives each comment's { start, end }.
+    // Dani's review of #2524: after `(` or `)` a # comments out the line in bash and zsh too (a subshell, `$(`), but
+    // zsh's EXTENDED_GLOB reads `(#i)...` and `(...)#` as glob syntax: not resolved here (null, the whole command is
+    // read). Only a `(` that follows a glob character in the same word stays a qualifier (`*(#qD)`).
+    if (c === '#' && i > 0 && (src[i - 1] === ')' || (src[i - 1] === '(' && !/[*?\]]/.test(src[i - 2] ?? '')))) return null
+    if (c === '#' && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
+      const nl = src.indexOf('\n', i)
+      const end = nl < 0 ? src.length : nl
+      const body = src.slice(i, end)
+      if (/\$\(|`/.test(body)) return null
+      if (Array.isArray(comments)) comments.push({ start: i, end })
+      cur += blank(body); i = end; continue
     }
 
     cur += c; i++
@@ -1615,8 +1633,12 @@ export function shellSegments(command, opts) {
   const src = resolveFlatSubst(resolveCatSubst(resolveLiteralHeredocSubst(String(command ?? '')), opts), opts)
     .replace(/\\\r?\n/g, ' ')
   const heredocs = []
-  const masked = maskInertLiterals(src, heredocs)
+  const comments = []
+  const masked = maskInertLiterals(src, heredocs, false, comments)
   if (masked == null || masked.length !== src.length) return null
+  // GATECOMMENTQUOTE1104: a comment is no part of its segment's words (same length, so the ranges still line up)
+  let plain = src
+  for (const k of comments) plain = plain.slice(0, k.start) + ' '.repeat(k.end - k.start) + plain.slice(k.end)
   const ranges = []
   let start = 0
   for (const m of masked.matchAll(SEGMENT_SEP_RX)) {
@@ -1628,7 +1650,7 @@ export function shellSegments(command, opts) {
   for (const r of ranges) {
     // a range that lies inside a heredoc body/terminator belongs to its owner
     if (heredocs.some((h) => r.start >= h.bodyStart && r.end <= h.end)) continue
-    const own = src.slice(r.start, r.end)
+    const own = plain.slice(r.start, r.end)
     // an empty range (`a |<newline>b`) is skipped WITHOUT touching the previous
     // separator: the pipe before it still connects to the next real command
     if (!own.trim()) continue
