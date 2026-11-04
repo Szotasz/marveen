@@ -15862,7 +15862,11 @@ function _renderApprovalsTable() {
            <button class="btn-danger btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
          </div>`
       : (() => {
-          const resolvedBy = escapeHtml(a.resolved_by || '')
+          // APPROVALSLACK1030 B: a decision taken in Slack gets a readable label; the raw value stays beside it.
+          const rawBy = a.resolved_by || ''
+          const byLabel = rawBy.startsWith('slack_reply:') ? t('approvals.by.slack_reply')
+            : rawBy.startsWith('slack_reaction:') ? t('approvals.by.slack_reaction') : ''
+          const resolvedBy = byLabel ? `${escapeHtml(byLabel)} <span style="opacity:0.7">(${escapeHtml(rawBy)})</span>` : escapeHtml(rawBy)
           if (!a.resolved_at) return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}</span>`
           const resolvedDate = new Date(a.resolved_at * 1000)
           const requestedDate = a.requested_at ? new Date(a.requested_at * 1000) : null

@@ -1184,6 +1184,8 @@ window._i18n.hu = {
   'approvals.col.actions':       'Döntés',
   'approvals.btn.approve':       'Jóváhagyás',
   'approvals.btn.reject':        'Elutasítás',
+  'approvals.by.slack_reply':    'Slack-válasz (a szerver olvasta)',
+  'approvals.by.slack_reaction': 'Slack-reakció (a szerver olvasta)',
   'approvals.status.pending':    'Várakozó',
   'approvals.status.approved':   'Jóváhagyott',
   'approvals.status.rejected':   'Elutasított',

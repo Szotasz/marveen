@@ -1736,6 +1736,19 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   // Dani 66059: the sweeper rotates by the last check, so old unanswered requests cannot starve a newer one.
   try { db.exec('ALTER TABLE approval_slack_posts ADD COLUMN last_checked_ms INTEGER') } catch { /* already exists */ }
+  // APPROVALSLACK1030 B (the owner's decision of 11-04): the owner's typed reply decides too, read by the server.
+  // content_basis: what the DM showed (envelope / server_filed / description); the reaction decides only on the first
+  // two (#2452's rule), the reply on all three. reaction_mode / reply_mode: which decision this post was offered (a row
+  // from before this change was a reaction post). decided_by_ts: the owner message that decided, unique per channel, so
+  // one owner message decides one request. binding: thread / next_message. notice_ts: the server's own thread notice,
+  // the only non-owner message the thread may hold before the owner's reply.
+  for (const col of [
+    'content_basis TEXT', 'reaction_mode INTEGER NOT NULL DEFAULT 1', 'reply_mode INTEGER NOT NULL DEFAULT 0',
+    'decided_by_ts TEXT', 'binding TEXT', 'notice_ts TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_slack_posts_decided_by ON approval_slack_posts(channel, decided_by_ts) WHERE decided_by_ts IS NOT NULL')
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -7523,13 +7536,23 @@ export interface ApprovalSlackPostRow {
   decided_at: number | null
   decision: string | null
   last_checked_ms: number | null
+  content_basis: string | null
+  reaction_mode: number
+  reply_mode: number
+  decided_by_ts: string | null
+  binding: string | null
+  notice_ts: string | null
 }
 
-export function recordApprovalSlackPost(p: { approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string }): boolean {
+export function recordApprovalSlackPost(p: {
+  approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string
+  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean
+}): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000)).changes > 0
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000),
+    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0).changes > 0
 }
 
 /**
@@ -7556,10 +7579,41 @@ export function markApprovalSlackPostChecked(approvalId: string, atMs: number = 
   db.prepare('UPDATE approval_slack_posts SET last_checked_ms = ? WHERE approval_id = ?').run(atMs, approvalId)
 }
 
-/** Closes the row ONCE: false when it was already decided (a later reaction change does not reopen anything). */
-export function markApprovalSlackPostDecided(approvalId: string, decision: string): boolean {
-  return db.prepare('UPDATE approval_slack_posts SET decided_at = ?, decision = ? WHERE approval_id = ? AND decided_at IS NULL')
-    .run(Math.floor(Date.now() / 1000), decision, approvalId).changes > 0
+/** The server's own thread notice on [approvalId]'s post (the one non-owner message the thread may hold). */
+export function setApprovalSlackNotice(approvalId: string, ts: string): void {
+  db.prepare('UPDATE approval_slack_posts SET notice_ts = ? WHERE approval_id = ? AND notice_ts IS NULL').run(ts, approvalId)
+}
+
+export type SlackDecisionOutcome = 'recorded' | 'already_decided' | 'reply_already_used'
+
+/**
+ * One decision from Slack, in ONE transaction (APPROVALSLACK1030 B, egm M7): the post row closes once, with the owner
+ * message that decided (unique per channel: one owner message, one decision); then the request is resolved, and an
+ * approval only while it is still pending and not past its timeout (the Slack reads before this were async). The
+ * second return value says whether the request itself changed.
+ */
+export function decideApprovalFromSlack(p: {
+  approvalId: string; decision: string; status: 'approved' | 'rejected'; resolvedBy: string
+  decidedByTs?: string | null; binding?: string | null
+}): { outcome: SlackDecisionOutcome; changed: boolean } {
+  const now = Math.floor(Date.now() / 1000)
+  try {
+    return db.transaction(() => {
+      const closed = db.prepare(`
+        UPDATE approval_slack_posts SET decided_at = ?, decision = ?, decided_by_ts = ?, binding = ?
+        WHERE approval_id = ? AND decided_at IS NULL
+      `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
+      if (!closed) return { outcome: 'already_decided' as const, changed: false }
+      const changed = db.prepare(`
+        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
+        WHERE id = ? AND status = 'pending' AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
+      `).run(p.status, now, p.resolvedBy, p.approvalId, p.status, now).changes > 0
+      return { outcome: 'recorded' as const, changed }
+    })()
+  } catch (err) {
+    if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'reply_already_used', changed: false }
+    throw err
+  }
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

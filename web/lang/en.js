@@ -849,6 +849,8 @@ window._i18n.en = {
   'approvals.col.actions':       'Decision',
   'approvals.btn.approve':       'Approve',
   'approvals.btn.reject':        'Reject',
+  'approvals.by.slack_reply':    'Slack reply (read by the server)',
+  'approvals.by.slack_reaction': 'Slack reaction (read by the server)',
   'approvals.status.pending':    'Pending',
   'approvals.status.approved':   'Approved',
   'approvals.status.rejected':   'Rejected',

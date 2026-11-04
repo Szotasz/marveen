@@ -16,7 +16,7 @@ import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
-import { reactionRoute, reactionsOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
+import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
@@ -235,7 +235,8 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
   void (async () => {
     // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
     // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
-    if (!informative && reactionsOn(reactionDeps.setting)) {
+    // APPROVALSLACK1030 B: with APPROVAL_SLACK_REPLIES on, the same one-message path, and the owner's typed reply decides.
+    if (!informative && (reactionsOn(reactionDeps.setting) || repliesOn(reactionDeps.setting))) {
       const expires = approval.timeout_at ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }) : 'nincs'
       const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl())
       if (route.ok && await postReactionPrompt(approval, route)) return
@@ -382,11 +383,12 @@ export function fileServerApproval(params: {
   return approval
 }
 
-/** APPROVALSLACK1030 (2): the owner's Slack reactions, read by the server (idle while the switch is off). */
+/** APPROVALSLACK1030 (2) and B: the owner's Slack reactions and typed replies, read by the server (idle while both switches are off). */
 export function startApprovalReactionSweeper(): NodeJS.Timeout {
   return startApprovalSlackSweeper({
     setting: reactionDeps.setting,
     token: reactionDeps.token,
+    pageUrl: approvalsPageUrl(),
     alert: (t) => { void sendOwnerSlackDm(t).catch(() => {}) },
   })
 }
