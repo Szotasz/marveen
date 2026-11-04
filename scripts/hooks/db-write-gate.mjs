@@ -251,6 +251,13 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // entries (TGINREPLAYGATE1104) resolved into this list: CHANNEL_STATE_FILES names both the current and the
   // rotated file, under every state root, not only agents/<name>/.claude/channels/telegram.
   ...channelStateTargets(),
+  // ...and the two Telegram state directories above the evidence log, as targets only (not their contents)
+  // (TGINREPLAYGATE1104, #2512 review): a directory changer aimed at one of them (`cp x telegram/`, `cp -r d/.
+  // telegram/`, rsync, `tar -C`, `rm -rf`) lands on the log without naming it, and a pattern has no ancestor.
+  // A write naming another file inside them is denied only if CHANNEL_STATE_FILES lists that name (access.json it
+  // does; a look-alike like inbound-evidence.jsonl.bak does not).
+  { rel: 'agents/*/.claude/channels/telegram', pattern: true },
+  { rel: 'agents/*/.claude/channels', pattern: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -1787,7 +1794,7 @@ export const SUBAGENT_FILE_GATE_MSG =
   'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
   'sem a Claude Code plugin-fajat (~/.claude/plugins, a telepites plugins/ mappaja, ~/marveen-local-plugins, a config-direk plugins/ mappaja es registry-jei) es a kozos ~/.claude/agents, skills, hooks fat, ' +
   'a `claude plugin` paranccsal sem (csak list, validate, marketplace list, --help), es `--plugin-dir`-rel sem (PLUGINCODEWRITE1104; plugin-deploy a fo agensen at); ' +
-  'sem barmely agens Telegram inbound-evidence naplojat (agents/<nev>/.claude/channels/telegram/inbound-evidence.jsonl es .1; TGINREPLAYGATE1104: a pluginja irja, nem eszkozhivas); ' +
+  'sem barmely agens Telegram inbound-evidence naplojat (agents/<nev>/.claude/channels/telegram/inbound-evidence.jsonl es .1, es a folotte allo telegram/ es channels/ konyvtarat celzo parancsot; TGINREPLAYGATE1104: a pluginja irja, nem eszkozhivas); ' +
   'ha a cwd egy ilyen fan belul van, minden nem-olvaso parancs tilt: elobb lepj ki onnan. ' +
   'amit ez a kapu NEM lat (limit): egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +

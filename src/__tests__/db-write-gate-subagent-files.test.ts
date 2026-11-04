@@ -57,7 +57,9 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
         'inbox-draining-*.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json', 'bot.pid', 'coordinator.pid',
         // SLACKOUTDM1007: the Slack plugin's persisted allowFrom DMs and their atomic-write temporary name
         'delivered-dms.json', 'delivered-dms.json.tmp.*',
-        'progress', 'approved'].map((f) => `${b}/*/${f}`))])
+        'progress', 'approved'].map((f) => `${b}/*/${f}`)),
+      // TGINREPLAYGATE1104: the Telegram state directories above the evidence log, as targets only
+      'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
@@ -142,8 +144,22 @@ describe('the Telegram inbound-evidence logs, as a sub-agent: every write denied
   ])('Bash: %s', (command) => {
     expect(sub(command, agentDir)).toEqual(SUB)
   })
+  // A pattern has no ancestor, so without the two directory entries each of these reached the log unnamed (measured on
+  // the gate before them: all passed).
+  it.each([
+    'cp /tmp/inbound-evidence.jsonl .claude/channels/telegram/',
+    'cp -r /tmp/prep/. ../qwen/.claude/channels/telegram/',
+    'rsync -a /tmp/prep/ .claude/channels/telegram/',
+    'tar -xf /tmp/p.tar -C .claude/channels/telegram',
+    'rm -rf .claude/channels/telegram',
+    'mv /tmp/prep/channels .claude/channels',
+  ])('Bash, a directory changer aimed at telegram/ or channels/: %s', (command) => {
+    expect(sub(command, agentDir)).toEqual(SUB)
+  })
   it('a read passes; access.json is denied (CHANSTATEWRITE1104 trust file), a look-alike name and a worktree\'s copy stay free; the main agent writes the log (control)', () => {
     expect(sub('tail -n 5 .claude/channels/telegram/inbound-evidence.jsonl', agentDir).deny).toBe(false)
+    expect(sub('ls -la .claude/channels/telegram/', agentDir).deny).toBe(false)
+    expect(sub('echo {} > .claude/channels/telegram/access.json', agentDir)).toEqual(SUB)
     expect(subFile('Write', join(tg('samu'), 'access.json'), agentDir)).toEqual(SUB)
     expect(subFile('Write', join(tg('samu'), 'inbound-evidence.jsonl.bak'), agentDir)).toEqual({ deny: false })
     expect(subFile('Write', join(wt, 'agents', 'samu', '.claude', 'channels', 'telegram', 'inbound-evidence.jsonl'))).toEqual({ deny: false })
