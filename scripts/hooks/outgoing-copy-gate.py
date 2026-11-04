@@ -1902,7 +1902,7 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
             # 69345: code the interpreter runs at START-UP, before the script (a .pth line, sitecustomize,
             # usercustomize in a writable site-packages), is not visible to the walk; only -I with -S (or -E -s -S)
             # turns it off, so without them the old rule holds (the approval gate names the fix: draft_isolation_hint).
-            if not _address_run_judgeable(rest, module, script, cwd, cmd_words):
+            if not _address_run_judgeable(rest, module, script, cwd, cmd_words, toks[0]):
                 return True
             return _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script)
         if module:
@@ -2076,12 +2076,38 @@ def _py_isolated(rest) -> bool:
     return ("I" in letters and "S" in letters) or {"E", "s", "S"} <= letters
 
 
-def _address_run_judgeable(rest, module, script, cwd, cmd_words) -> bool:
+# Bence 69412 / Samu 69415: the walk is only meaningful for the real interpreter. A program merely NAMED python3 (an
+# absolute or relative path, a PATH change in the command, a shell function, alias or hash entry of that name) is
+# whatever it is, so the address rule holds for it. Accepted: a bare python/python3[.x] with no such change, or an
+# absolute path in a system bin directory. Stated limit: a PATH or alias set in a shell profile, and a same-named
+# program put into a writable system bin directory, are not visible in the command.
+_PY_BARE_INTERPRETER = re.compile(r"^python(?:3(?:\.\d+)?)?$")
+_PY_SYSTEM_INTERPRETER = re.compile(r"^/(?:usr/bin|usr/local/bin|opt/homebrew/bin)/python(?:3(?:\.\d+)?)?$")
+_PY_NAME_REBOUND = re.compile(r"\bpython[\w.]*\s*\(\s*\)|\bfunction\s+python|\balias\b|\bhash\b|\benable\b")
+# The tokenizer splits `python3() { ...; }` at the parentheses, so a function definition is found on the raw
+# command and handed on as this marker word.
+_PY_FUNC_DEF_RAW = re.compile(r"\bpython[\w.]*\s*\(\s*\)|\bfunction\s+python")
+_PY_REBOUND_MARK = "__python_name_rebound__"
+
+
+def _py_interpreter_is_real(prog_word, cmd_words) -> bool:
+    # a PATH change anywhere in the command (a prefix, export, env PATH=, PATH+=), or env -P (macOS: another search path)
+    if any(re.match(r"^PATH\+?=", w) for w in cmd_words):
+        return False
+    if "env" in cmd_words and any(w.startswith("-P") for w in cmd_words):
+        return False
+    if _PY_REBOUND_MARK in cmd_words or _PY_NAME_REBOUND.search(" ".join(cmd_words)):
+        return False
+    return bool(_PY_BARE_INTERPRETER.match(prog_word) or _PY_SYSTEM_INTERPRETER.match(prog_word))
+
+
+def _address_run_judgeable(rest, module, script, cwd, cmd_words, prog_word="python3") -> bool:
     """A python run with an address may be judged by its script's content (the walk) only in these shapes."""
     return not (module or script is None or _UNDECIDABLE_PATH.search(script)
                 or _relative_under_undecidable_cd(script, cwd, cmd_words)
                 or any(re.match(r"^PYTHON\w*=", w) for w in cmd_words)
-                or not _py_isolated(rest))
+                or not _py_isolated(rest)
+                or not _py_interpreter_is_real(prog_word, cmd_words))
 
 
 def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
@@ -2093,7 +2119,7 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
         segments = _segments_tokens(cmd)
     except ValueError:
         return False
-    cmd_words = [w for toks in segments for w in toks]
+    cmd_words = [w for toks in segments for w in toks] + ([_PY_REBOUND_MARK] if _PY_FUNC_DEF_RAW.search(cmd) else [])
     for toks in segments:
         for h in _command_heads(toks):
             if not h or not _PYTHON.match(_basename(h[0])):
@@ -2103,7 +2129,7 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
                 continue
             module = _python_module(rest)
             script = None if module else _python_script_operand(rest)[0]
-            if not _address_run_judgeable(["-I", "-S"] + list(rest), module, script, cwd, cmd_words):
+            if not _address_run_judgeable(["-I", "-S"] + list(rest), module, script, cwd, cmd_words, h[0]):
                 continue
             if not _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script):
                 return True
@@ -2123,6 +2149,8 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         cmd_words += ["cd", d]
     if _SUBST_CD.search(cmd):
         cmd_words += ["cd", _SUBST_MARK]
+    if _PY_FUNC_DEF_RAW.search(cmd):
+        cmd_words.append(_PY_REBOUND_MARK)
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 
