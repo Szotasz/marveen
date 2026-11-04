@@ -620,3 +620,57 @@ describe('the sha256 fingerprint of the extras (review #2001)', () => {
   })
 })
 
+
+// A sub-agent working in the project root was denied the documented dashboard header,
+// `-H "Authorization: Bearer $(cat store/.dashboard-token)"`: the substitution stood for
+// any text, and with the cwd at the root `*` could be local-hooks. The token file's
+// substitution is now read as the file's content; every other expansion is unchanged.
+describe('the fleet token substitution is read as its content (cwd at the project root)', () => {
+  const TOKEN = 'abcDEF0123456789abcdef0123456789'
+  const decide = (command: string, cwd = root, selfAgent?: string) =>
+    gateDecision('Bash', { command }, { allowlistPath: join(root, 'store', 'egress-allowlist.json'), cwd, selfAgent })
+  beforeEach(() => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    writeFileSync(join(root, 'store', '.dashboard-token'), TOKEN + '\n')
+  })
+
+  it.each([
+    'curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:3420/api/kanban/x" | jq .',
+    'curl -s -X POST http://localhost:3420/api/kanban/x/comments -H "Authorization: Bearer $(cat store/.dashboard-token)" --data-binary @/tmp/x.json',
+    'curl -s -H "Authorization: Bearer $(cat <R>/store/.dashboard-token)" http://localhost:3420/api/agents',
+    'curl -s -H "Authorization: Bearer $(< store/.dashboard-token)" http://localhost:3420/api/agents',
+  ])('allowed: %s', (cmd) => {
+    expect(decide(cmd.replaceAll('<R>', root)).deny).toBe(false)
+  })
+
+  it('a per-agent token file counts for the calling agent only', () => {
+    mkdirSync(join(root, 'agents', 'alice'), { recursive: true })
+    writeFileSync(join(root, 'agents', 'alice', '.dashboard-token'), TOKEN + '\n')
+    const cmd = `curl -s -H "X: $(cat ${join(root, 'agents', 'alice', '.dashboard-token')})" http://localhost:3420/x`
+    expect(decide(cmd, root, 'alice').deny).toBe(false)
+    expect(decide(cmd, root, 'bob').deny).toBe(true)
+  })
+
+  it.each([
+    // any other expansion still stands for any text
+    'curl -s -H "X: $(cat store/other)" http://localhost:3420/x',
+    'curl -s -H "X: $TOKEN" http://localhost:3420/x',
+    'cp /x/a.py "$(cat store/other)"',
+    // a token-named file anywhere else is not the fleet token
+    'curl -s -H "X: $(cat agents/store/.dashboard-token)" http://localhost:3420/x',
+    'cp /x/a.py "$(cat agents/store/.dashboard-token)"',
+  ])('still denied: %s', (cmd) => {
+    expect(decide(cmd).deny).toBe(true)
+  })
+
+  it.each(['local-hooks', 'x/../local-hooks', 'extra-hooks.json', 'local-hoo*'])(
+    'a token file whose content is a name or a path stays unresolved: %s', (content) => {
+      writeFileSync(join(root, 'store', '.dashboard-token'), content + '\n')
+      expect(decide('cp /x/a.py "$(cat store/.dashboard-token)"').deny).toBe(true)
+    })
+
+  it('the same substitution from an agent directory was and stays allowed', () => {
+    mkdirSync(join(root, 'agents', 'alice'), { recursive: true })
+    expect(decide('curl -s -H "X: $(cat store/.dashboard-token)" http://localhost:3420/x', join(root, 'agents', 'alice')).deny).toBe(false)
+  })
+})
