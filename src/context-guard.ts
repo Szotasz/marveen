@@ -1436,3 +1436,30 @@ function handoffRequest(
     },
   }
 }
+
+/** OWNERGATE3-1104 (review, Samu 69602): which fields of a context-guard change make the guard WEAKER, comparing the
+ *  normalized config before and after the change. The shared access token (every sub-agent can read it) may only
+ *  strengthen a guard (the main agent arms other agents' guards with it); any weakening needs the owner, on any
+ *  agent, so a sub-agent cannot switch off or loosen another agent's guard. Weaker means:
+ *   - a switch going from on to off: enabled, saturationRestart, idleFlushEnabled, dailyHandoffEnabled;
+ *   - a number going up (the guard acts later, waits longer or holds longer): actPct, hardPct, cooldownMinutes,
+ *     handoffTimeoutMinutes, idleFlushTokens, idleMinutes, heavyJobDeferMaxMinutes;
+ *   - limitTokens changing in any way except to a smaller explicit number (null means "infer from the model", which
+ *     may be a larger window, so clearing it is treated as weakening);
+ *   - dailyHandoffTime moved or cleared once set (a moved time can postpone the restart; setting it from null arms).
+ *  A reset to the shipped defaults is not special: the default enabled is false, so a reset can switch a guard off. */
+export function contextGuardWeakenings(before: ContextGuardConfig, after: ContextGuardConfig): string[] {
+  const out: string[] = []
+  for (const k of ['enabled', 'saturationRestart', 'idleFlushEnabled', 'dailyHandoffEnabled'] as const) {
+    if (before[k] === true && after[k] !== true) out.push(k)
+  }
+  for (const k of ['actPct', 'hardPct', 'cooldownMinutes', 'handoffTimeoutMinutes', 'idleFlushTokens', 'idleMinutes', 'heavyJobDeferMaxMinutes'] as const) {
+    if (after[k] > before[k]) out.push(k)
+  }
+  if (after.limitTokens !== before.limitTokens) {
+    const smaller = before.limitTokens !== null && after.limitTokens !== null && after.limitTokens < before.limitTokens
+    if (!smaller) out.push('limitTokens')
+  }
+  if (before.dailyHandoffTime !== null && after.dailyHandoffTime !== before.dailyHandoffTime) out.push('dailyHandoffTime')
+  return out
+}

@@ -143,7 +143,7 @@ import { activityState, type ActivityState } from '../pane-liveness.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS, agentPutOwnerFields } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, mergeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
+import { readContextGuardConfig, mergeContextGuardConfig, previewContextGuardMerge, seedContextGuardForNewAgent } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
@@ -151,7 +151,7 @@ import type { ContextGuardConfig } from '../../context-guard.js'
 // the interface is added to its default too, so the accepted-key set cannot
 // drift away from what normalize*Config() actually reads.
 import { DEFAULT_AUTO_RESTART, LEGACY_AUTO_RESTART_FIELDS } from '../../auto-restart.js'
-import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
+import { DEFAULT_CONTEXT_GUARD, contextGuardWeakenings } from '../../context-guard.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
@@ -1986,6 +1986,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const cgFields = checkConfigPutFields(data, Object.keys(DEFAULT_CONTEXT_GUARD))
     if (!cgFields.ok) {
       json(res, { error: cgFields.message, rejected: cgFields.rejected, known: Object.keys(DEFAULT_CONTEXT_GUARD) }, 400)
+      return true
+    }
+    // OWNERGATE3-1104 (review, Samu 69602): a direction gate. The shared token may only STRENGTHEN a guard (the main
+    // agent arms other agents' guards with it, skill agent-cold-restart-guard-arming); any weakening (a switch off, a
+    // threshold or a wait raised, see contextGuardWeakenings) needs the owner, on any agent, before anything is written.
+    const { current: cgBefore, merged: cgAfter } = previewContextGuardMerge(name, data)
+    const weakened = contextGuardWeakenings(cgBefore, cgAfter)
+    if (weakened.length > 0 && !mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, `Weakening an agent's context guard (${weakened.join(', ')}) needs the dashboard login (an owner session); the access token can only strengthen it.`, { fields: weakened })
       return true
     }
     setStoreWriteActor('dashboard')

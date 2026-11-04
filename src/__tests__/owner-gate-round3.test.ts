@@ -6,7 +6,7 @@
 // OpenRouter model list. Those need the owner (mayActAsOwner): the browser login, the token with the owner's session
 // cookie, or the Bridge's full key with that cookie. Before the first dashboard login exists the bare token still
 // passes (the customer first-run path), measured here for onboarding identity. The GETs stay open, and so does
-// PUT /api/agents/:name/context-guard (a main-agent skill flips it with the shared token; the lead decides).
+// PUT /api/agents/:name/context-guard: a direction gate (review, Samu 69602): the token may strengthen, weakening needs the owner.
 // A refused call writes NOTHING (measured on the bytes) and reaches no tmux, no `claude` and no cp.
 //
 // Side effects that would leave the process are mocked: node:child_process (execFile and spawn: no tmux, no `claude
@@ -388,7 +388,7 @@ describe('controls: what stays open to the bare token', () => {
     expect((await hit(tryHandleAgents, 'GET', `/api/agents/${AGENT}/context-guard`, TOKEN)).status).toBe(200)
     expect((await hit(tryHandleAgents, 'GET', '/api/openrouter/manual', TOKEN)).status).toBe(200)
   })
-  it('PUT context-guard is NOT owner-gated (a main-agent skill flips it with the shared token): an unknown key is 400, nothing written', async () => {
+  it('PUT context-guard: an unknown key is 400 before the direction gate, nothing written (strengthening stays on the token, see below)', async () => {
     const before = state()
     const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}/context-guard`, TOKEN, { og3Unknown: 1 })
     expect(refusedByOwnerGate(r)).toBe(false)
@@ -406,5 +406,101 @@ describe('OWNERGATE3-1104: catalog uninstall of a real item', () => {
       expect(refusedByOwnerGate(r), id).toBe(true)
     }
     expect(execFileMock).not.toHaveBeenCalled()
+  })
+})
+
+// Review (Samu 69602, Dani 69599): PUT context-guard is a DIRECTION gate. The shared token may only strengthen a
+// guard (the main agent arms other agents' guards with it); every weakening needs the owner, on any agent.
+const { contextGuardWeakenings, DEFAULT_CONTEXT_GUARD: CG_DEFAULT } = await import('../context-guard.js')
+// The in-memory test DB back to "no dashboard login yet", the same reset the first-run block above uses.
+const resetOwnersForTest = () => { getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users'); _clearSessionCacheForTest() }
+describe('OWNERGATE3-1104: contextGuardWeakenings (pure)', () => {
+  const armed = { ...CG_DEFAULT, enabled: true, idleFlushEnabled: true, dailyHandoffEnabled: true, dailyHandoffTime: '03:00', limitTokens: 500_000 }
+  it('switches going off are weakenings; going on are not', () => {
+    expect(contextGuardWeakenings(armed, { ...armed, enabled: false, saturationRestart: false, idleFlushEnabled: false, dailyHandoffEnabled: false }).sort())
+      .toEqual(['dailyHandoffEnabled', 'enabled', 'idleFlushEnabled', 'saturationRestart'])
+    expect(contextGuardWeakenings({ ...armed, enabled: false }, armed)).toEqual([])
+  })
+  it('a number going up is a weakening; going down is not', () => {
+    const up = { ...armed, actPct: 0.95, hardPct: 0.99, cooldownMinutes: 60, handoffTimeoutMinutes: 60, idleFlushTokens: 900_000, idleMinutes: 60, heavyJobDeferMaxMinutes: 120 }
+    expect(contextGuardWeakenings(armed, up).sort()).toEqual(['actPct', 'cooldownMinutes', 'handoffTimeoutMinutes', 'hardPct', 'heavyJobDeferMaxMinutes', 'idleFlushTokens', 'idleMinutes'])
+    expect(contextGuardWeakenings(up, armed)).toEqual([])
+  })
+  it('limitTokens: only a smaller explicit number is not a weakening; clearing or raising it is', () => {
+    expect(contextGuardWeakenings(armed, { ...armed, limitTokens: 300_000 })).toEqual([])
+    expect(contextGuardWeakenings(armed, { ...armed, limitTokens: 900_000 })).toEqual(['limitTokens'])
+    expect(contextGuardWeakenings(armed, { ...armed, limitTokens: null })).toEqual(['limitTokens'])
+    expect(contextGuardWeakenings({ ...armed, limitTokens: null }, { ...armed, limitTokens: 300_000 })).toEqual(['limitTokens'])
+  })
+  it('dailyHandoffTime: setting it from null arms (not weakening); moving or clearing it is', () => {
+    expect(contextGuardWeakenings({ ...armed, dailyHandoffTime: null }, armed)).toEqual([])
+    expect(contextGuardWeakenings(armed, { ...armed, dailyHandoffTime: '23:00' })).toEqual(['dailyHandoffTime'])
+    expect(contextGuardWeakenings(armed, { ...armed, dailyHandoffTime: null })).toEqual(['dailyHandoffTime'])
+  })
+  it('a reset to the shipped defaults over an armed guard is a weakening (the default enabled is false)', () => {
+    expect(contextGuardWeakenings(armed, { ...CG_DEFAULT })).toContain('enabled')
+  })
+})
+
+describe('OWNERGATE3-1104: PUT context-guard on the route', () => {
+  const ARMED = { enabled: true, saturationRestart: true, actPct: 0.9, hardPct: 0.97, cooldownMinutes: 15 }
+  const seed = (cfg: Record<string, unknown>) => {
+    mkdirSync(STORE_ROOT, { recursive: true })
+    writeFileSync(CONTEXT_GUARD_FILE, JSON.stringify({ [AGENT]: { ...CG_DEFAULT, ...cfg } }, null, 2))
+  }
+  const fileNow = () => readFileSync(CONTEXT_GUARD_FILE, 'utf-8')
+  const put = (auth: Auth, body: unknown, headers: Record<string, string> = {}) => hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}/context-guard`, auth, body, headers)
+
+  for (const [label, body, field] of [
+    ['enabled off', { enabled: false }, 'enabled'],
+    ['saturationRestart off', { saturationRestart: false }, 'saturationRestart'],
+    ['actPct raised', { actPct: 0.95 }, 'actPct'],
+    ['cooldown raised', { cooldownMinutes: 600 }, 'cooldownMinutes'],
+  ] as const) {
+    it(`bare token, weakening (${label}): 403, the field is named, the store is byte for byte unchanged`, async () => {
+      seed(ARMED)
+      const before = fileNow()
+      const r = await put(TOKEN, body)
+      expect(refusedByOwnerGate(r)).toBe(true)
+      expect(r.body.fields).toContain(field)
+      expect(fileNow()).toBe(before)
+    })
+  }
+  it('bare token, strengthening (enabled on, actPct lowered): 200 and written (the arming skill path)', async () => {
+    seed({ enabled: false })
+    const r = await put(TOKEN, { enabled: true, actPct: 0.85 })
+    expect(r.status).toBe(200)
+    const stored = JSON.parse(fileNow())[AGENT]
+    expect(stored.enabled).toBe(true)
+    expect(stored.actPct).toBe(0.85)
+  })
+  it('bare token, the same values again (no change): not refused', async () => {
+    seed(ARMED)
+    expect(refusedByOwnerGate(await put(TOKEN, { enabled: true }))).toBe(false)
+  })
+  it('the owner (session, or token + owner cookie) may weaken: 200 and written', async () => {
+    seed(ARMED)
+    expect((await put(SESSION, { enabled: false })).status).toBe(200)
+    expect(JSON.parse(fileNow())[AGENT].enabled).toBe(false)
+    seed(ARMED)
+    expect((await put(TOKEN, { saturationRestart: false }, ownerCookie())).status).toBe(200)
+    expect(JSON.parse(fileNow())[AGENT].saturationRestart).toBe(false)
+  })
+  it('a sub-agent token with the owner cookie may not weaken', async () => {
+    seed(ARMED)
+    const before = fileNow()
+    expect(refusedByOwnerGate(await put(SUBAGENT, { enabled: false }, ownerCookie()))).toBe(true)
+    expect(fileNow()).toBe(before)
+  })
+  it('zero users: weakening with the bare token is 403 setup_required; strengthening still goes through', async () => {
+    resetOwnersForTest()
+    seed(ARMED)
+    const before = fileNow()
+    const r = await put(TOKEN, { enabled: false })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.setup_required).toBe(true)
+    expect(fileNow()).toBe(before)
+    seed({ enabled: false })
+    expect((await put(TOKEN, { enabled: true })).status).toBe(200)
   })
 })
