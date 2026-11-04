@@ -32,7 +32,7 @@ beforeEach(() => {
 })
 
 describe('getBoardSummary', () => {
-  it('lists cards closed in the window under the agent that closed them', () => {
+  it('lists cards closed in the window under their assignee', () => {
     createKanbanCard({ id: 'c1', title: 'Recent', assignee: 'dex' })
     createKanbanCard({ id: 'c2', title: 'Old', assignee: 'dex' })
     createKanbanCard({ id: 'c3', title: 'By main', assignee: 'Orin' })
@@ -49,6 +49,18 @@ describe('getBoardSummary', () => {
     // The bot name folds into the main agent id.
     expect(s.agents.find((a) => a.agent === 'orin')!.closed.map((c) => c.id)).toEqual(['c3'])
     expect(s.agents.some((a) => a.agent === 'Orin')).toBe(false)
+  })
+
+  it('attributes a close to the assignee, with the moving actor as closed_by', () => {
+    createKanbanCard({ id: 'w1', title: 'Geri work', assignee: 'geri' })
+    createKanbanCard({ id: 'w2', title: 'Unassigned', assignee: '' })
+    event('w1', 'testing', 'done', 'dex', NOW - 600) // dex merges and closes geri's card
+    event('w2', 'in_progress', 'done', 'dex', NOW - 500) // no assignee: falls back to the actor
+    const s = getBoardSummary({ ...OPTS, since: NOW - DAY })
+    const geri = s.agents.find((a) => a.agent === 'geri')!
+    expect(geri.closed.map((c) => c.id)).toEqual(['w1'])
+    expect(geri.closed[0].closed_by).toBe('dex')
+    expect(s.agents.find((a) => a.agent === 'dex')!.closed.map((c) => c.id)).toEqual(['w2'])
   })
 
   it('the owner closing a card is not an agent row', () => {

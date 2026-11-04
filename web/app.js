@@ -1015,14 +1015,19 @@ async function renderKanbanSummary() {
     for (const c of chips) row.appendChild(c)
     body.appendChild(row)
   }
+  const moreMarker = (n) => {
+    const more = document.createElement('span')
+    more.className = 'kanban-summary-more'
+    more.textContent = t('kanban.summary.more', { n })
+    return more
+  }
+  // Per-agent chip cap per kind: a long stuck list (hundreds of chips) would
+  // make the strip several screens tall on a phone. The totals line still
+  // counts everything; the rest is one "+N" marker, like the owner list.
+  const AGENT_CHIP_CAP = 12
   if (ownerWaiting.count > 0) {
     const chips = ownerWaiting.cards.map((c) => cardChip(c))
-    if (ownerWaiting.count > ownerWaiting.cards.length) {
-      const more = document.createElement('span')
-      more.className = 'kanban-summary-more'
-      more.textContent = t('kanban.summary.more', { n: ownerWaiting.count - ownerWaiting.cards.length })
-      chips.push(more)
-    }
+    if (ownerWaiting.count > ownerWaiting.cards.length) chips.push(moreMarker(ownerWaiting.count - ownerWaiting.cards.length))
     line(t('kanban.summary.owner'), chips)
   }
   for (const a of agents) {
@@ -1032,18 +1037,24 @@ async function renderKanbanSummary() {
       lab.className = 'kanban-summary-kind'
       lab.textContent = t('kanban.summary.closed')
       chips.push(lab)
-      for (const c of a.closed) {
+      for (const c of a.closed.slice(0, AGENT_CHIP_CAP)) {
         const chip = cardChip(c, c.evidence ? '✓' : '')
-        if (c.evidence) chip.title = `${c.title}\n${t('kanban.summary.evidence')}: ${c.evidence}`
+        const tip = [c.title]
+        // The row is the assignee; who moved it to done goes in the tooltip.
+        if (c.closed_by && c.closed_by !== a.agent) tip.push(t('kanban.summary.closed_by', { actor: c.closed_by }))
+        if (c.evidence) tip.push(`${t('kanban.summary.evidence')}: ${c.evidence}`)
+        chip.title = tip.join('\n')
         chips.push(chip)
       }
+      if (a.closed.length > AGENT_CHIP_CAP) chips.push(moreMarker(a.closed.length - AGENT_CHIP_CAP))
     }
     if (a.stuck.length) {
       const lab = document.createElement('span')
       lab.className = 'kanban-summary-kind kanban-summary-kind-stuck'
       lab.textContent = t('kanban.summary.stuck')
       chips.push(lab)
-      for (const c of a.stuck) chips.push(cardChip(c, t('kanban.summary.idle_days', { n: c.idle_days })))
+      for (const c of a.stuck.slice(0, AGENT_CHIP_CAP)) chips.push(cardChip(c, t('kanban.summary.idle_days', { n: c.idle_days })))
+      if (a.stuck.length > AGENT_CHIP_CAP) chips.push(moreMarker(a.stuck.length - AGENT_CHIP_CAP))
     }
     line(a.agent, chips)
   }

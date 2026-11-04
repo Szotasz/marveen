@@ -276,6 +276,7 @@ window._i18n.hu = {
   'kanban.summary.idle_days': '{n} napja',
   'kanban.summary.evidence': 'Ellenőrizve',
   'kanban.summary.more': 'és még {n}',
+  'kanban.summary.closed_by': 'lezárta: {actor}',
   'kanban.blocker.remove_btn': 'Blokkoló eltávolítása',
   'kanban.blocker.open_hint': 'Kártya megnyitása',
   'kanban.blocker.card_badge': '⛔ blokkolva',

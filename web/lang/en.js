@@ -276,6 +276,7 @@ window._i18n.en = {
   'kanban.summary.idle_days': '{n}d idle',
   'kanban.summary.evidence': 'Checked',
   'kanban.summary.more': 'and {n} more',
+  'kanban.summary.closed_by': 'moved to done by {actor}',
   'kanban.blocker.remove_btn': 'Remove blocker',
   'kanban.blocker.open_hint': 'Open card',
   'kanban.blocker.card_badge': '⛔ blocked',

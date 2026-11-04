@@ -4515,7 +4515,9 @@ export interface BoardSummaryCardRef {
 
 export interface BoardSummaryAgent {
   agent: string
-  closed: Array<BoardSummaryCardRef & { closed_at: number; evidence: string | null }>
+  // closed_by: who moved the card to done (the event actor, folded), shown in
+  // the tooltip; the row itself is the card's assignee (see getBoardSummary).
+  closed: Array<BoardSummaryCardRef & { closed_at: number; closed_by: string | null; evidence: string | null }>
   stuck: Array<BoardSummaryCardRef & { status: KanbanCard['status']; idle_days: number }>
 }
 
@@ -4566,10 +4568,16 @@ export function getBoardSummary(opts: {
   const latestClose = new Map<string, (typeof closedRows)[number]>()
   for (const r of closedRows) latestClose.set(r.id, r)
   for (const r of latestClose.values()) {
-    // Who closed it: the actor when it names somebody, else the assignee.
-    const agent = fold(r.actor) ?? fold(r.assignee)
+    // Whose work it was: the card's assignee, not the actor of the move. On an
+    // install where one agent does the merges/closes, attributing by actor
+    // would put almost every close under that one agent and hide who did the
+    // work. The actor is kept as closed_by for the tooltip; it is the row only
+    // when the card has no assignee.
+    const agent = fold(r.assignee) ?? fold(r.actor)
     if (!agent || agent === owner) continue
-    row(agent).closed.push({ id: r.id, seq: r.seq, title: r.title, closed_at: r.closed_at, evidence: r.evidence })
+    row(agent).closed.push({
+      id: r.id, seq: r.seq, title: r.title, closed_at: r.closed_at, closed_by: fold(r.actor), evidence: r.evidence,
+    })
   }
   const stuck = getStuckKanbanCards({ plannedDays: 7, activeDays: 3, creatorCommentWindowSec: 600 }).stuck
   for (const s of stuck) {

@@ -782,12 +782,6 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // KANBANSTUCKURES916: replaces the kanban-audit skill's inline "status ==
-  // in_progress" detector (structurally near-always empty on this board) with
-  // a real "started, then went idle" measurement across all non-done statuses.
-  // See getStuckKanbanCards in db.ts for the "started"/"last_activity"
-  // definitions. `examined: 0` gets its own `empty_reason` -- the skill's
-  // job is to report "could not measure" instead of a reassuring false zero.
   // Card ed3c8caf (#569): per-agent board summary for the morning look.
   // hours (default 24, max 168) sets how far back "closed" reaches.
   if (path === '/api/kanban/summary' && method === 'GET') {
@@ -801,6 +795,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // KANBANSTUCKURES916: replaces the kanban-audit skill's inline "status ==
+  // in_progress" detector (structurally near-always empty on this board) with
+  // a real "started, then went idle" measurement across all non-done statuses.
+  // See getStuckKanbanCards in db.ts for the "started"/"last_activity"
+  // definitions. `examined: 0` gets its own `empty_reason` -- the skill's
+  // job is to report "could not measure" instead of a reassuring false zero.
   if (path === '/api/kanban/stuck' && method === 'GET') {
     const plannedDaysRaw = url.searchParams.get('planned_days') ?? '7'
     const activeDaysRaw = url.searchParams.get('active_days') ?? '3'
