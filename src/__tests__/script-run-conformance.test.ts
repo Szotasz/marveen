@@ -1,7 +1,9 @@
 // JSCDSEND1104 (Samu 69478): the two mail gates' SCRIPT-RUN judgement (outgoing-copy-gate.py :: script_run_sends and
 // email-send-gate.mjs :: scriptRunSends) on one shared table, scripts/hooks/script-run-cases.json. The fixture files
-// are written into a fresh directory, every case runs from it through BOTH implementations, and both must equal
-// `expected`: a divergence between the two copies fails here, not in production. Nothing is executed.
+// are written into a fresh directory, and every case runs from it through BOTH implementations. Each row holds two
+// verdicts (Samu 69623): `main` for the main agent's approval gate (python), `sub` for the sub-agent gate (JS). The
+// input reading is shared; the two differ only where a fail-closed branch meets an unaddressed run. A divergence from
+// the table fails here, not in production. Nothing is executed.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -13,7 +15,7 @@ import { scriptRunSends } from '../../scripts/email-send-gate.mjs'
 const ROOT = join(__dirname, '..', '..')
 const GATE_PY = join(ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py')
 const TABLE = JSON.parse(readFileSync(join(ROOT, 'scripts', 'hooks', 'script-run-cases.json'), 'utf-8')) as {
-  files: Record<string, string>; executable: string[]; cases: Array<{ name: string; cmd: string; expected: boolean }>
+  files: Record<string, string>; executable: string[]; cases: Array<{ name: string; cmd: string; main: boolean; sub: boolean }>
 }
 
 let dir = ''
@@ -36,16 +38,22 @@ print(json.dumps([g.script_run_sends(c, inp["cwd"]) for c in inp["cmds"]]))
 })
 afterAll(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
-describe('script-run conformance: both mail gates agree with the shared table on every case', () => {
+describe('script-run conformance: both mail gates match their column of the shared table on every case', () => {
   TABLE.cases.forEach((c, i) => {
-    it(`${c.name}: ${c.cmd} -> ${c.expected}`, () => {
-      expect(scriptRunSends(c.cmd, dir), `JS verdict for: ${c.cmd}`).toBe(c.expected)
-      expect(py[i], `python verdict for: ${c.cmd}`).toBe(c.expected)
+    it(`${c.name}: ${c.cmd} -> main ${c.main}, sub ${c.sub}`, () => {
+      expect(scriptRunSends(c.cmd, dir), `JS (sub-agent gate) verdict for: ${c.cmd}`).toBe(c.sub)
+      expect(py[i], `python (main agent gate) verdict for: ${c.cmd}`).toBe(c.main)
     })
   })
 
-  it('the table is non-trivial in both directions', () => {
-    expect(TABLE.cases.filter((c) => c.expected).length).toBeGreaterThan(10)
-    expect(TABLE.cases.filter((c) => !c.expected).length).toBeGreaterThan(5)
+  it('the table is non-trivial in both directions, and the two columns differ only by the stated rule', () => {
+    for (const col of ['main', 'sub'] as const) {
+      expect(TABLE.cases.filter((c) => c[col]).length).toBeGreaterThan(10)
+      expect(TABLE.cases.filter((c) => !c[col]).length).toBeGreaterThan(5)
+    }
+    // the sub-agent gate is never stricter than the main agent's: a row the sub gate denies, the main gate asks about
+    expect(TABLE.cases.filter((c) => c.sub && !c.main).map((c) => c.cmd)).toEqual([])
+    // and the columns do differ (the unaddressed fail-closed rows)
+    expect(TABLE.cases.filter((c) => c.main && !c.sub).length).toBeGreaterThan(5)
   })
 })

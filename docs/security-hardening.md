@@ -804,11 +804,13 @@ and the main agent's `email_send` approval gate keeps its current reach.
   `env -C dir`, `sudo -D dir`, `pushd dir`) is resolved under `dir` too. When
   the run is addressed (`--to`/`--cc`/`--bcc` or an e-mail address in the
   command), an undecidable `cd` (also `cd $(...)`), path or `-m`, and a missing
-  script are a send; without an address they are not, so a developer's
-  `cd $WT && python3 -m pytest` passes. A readable script that sends is a send
-  either way. Both gates' script-run judgement runs on one shared table
-  (`scripts/hooks/script-run-cases.json`), so the main agent's approval gate
-  follows the same rule.
+  script are a send on this gate; without an address they are not, so a
+  developer's `cd $WT && python3 -m pytest` passes. A readable script that
+  sends is a send either way. The main agent's approval gate keeps those
+  branches fail-closed on every run (a false positive there is an approval
+  request, not a denial). Both gates' script-run judgement runs on one shared
+  table (`scripts/hooks/script-run-cases.json`), which holds both verdicts per
+  row.
 
 # Autonomy levels: a raise takes the owner
 

@@ -93,8 +93,7 @@ try:
         (f"env -C{D}/evil python3 send.py", True, "env -CDIR"),
         (f"env -i -C {D}/evil python3 send.py", True, "env -i -C DIR"),
         ("env -C ../evil python3 send.py", True, "env -C with a relative DIR"),
-        ("env -C $X python3 send.py a@x.example", True, "env -C with an undecidable DIR, addressed"),
-        ("env -C $X python3 send.py", False, "env -C with an undecidable DIR, no address (JSCDSEND1104, Samu 69538)"),
+        ("env -C $X python3 send.py", True, "env -C with an undecidable DIR"),
         # Bence 69517: -a takes a value; a unique prefix of --chdir works like the full name
         (f"env -a x -C {D}/evil python3 send.py", True, "env -a ARG -C DIR"),
         (f"env --c={D}/evil python3 send.py", True, "env --c=DIR (prefix of --chdir)"),

@@ -461,6 +461,9 @@ const WRAPPERS = new Map([
   ['chrt', ['TPD', ['sched-runtime', 'sched-period', 'sched-deadline'], 1]],
   ['caffeinate', ['tw', [], 0]],
 ])
+// JSCDSEND1104 (Bence 69588, Samu 69591): the homebrew g-prefixed GNU launchers read as their pair (see the python twin)
+const G_PREFIXED = ['env', 'timeout', 'nohup', 'nice', 'stdbuf']
+for (const n of G_PREFIXED) WRAPPERS.set('g' + n, WRAPPERS.get(n))
 const HEAD_DEPTH = 8
 
 // MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
@@ -598,7 +601,7 @@ function commandHeads(toksIn, d = 0) {
   if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
-  if (w === 'env') return envHeads(toks, d)
+  if (w === 'env' || w === 'genv') return envHeads(toks, d)
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
@@ -1144,7 +1147,7 @@ function shebangKind(text) {
   const m = /^#!\s*(\S+)([^\n]*)/.exec(text ?? '')
   if (!m) return null
   let prog = basename(m[1])
-  if (prog === 'env') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
+  if (prog === 'env' || prog === 'genv') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
   if (PYTHON.test(prog)) return 'py'
   if (NODEISH.test(prog) && prog !== 'npx') return 'node'
   return null
@@ -1286,11 +1289,14 @@ function pythonModule(rest) {
   }
   return null
 }
-// JSCDSEND1104 (Samu 69538, Bence 69536): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc
-// (any value) or an e-mail address anywhere in it. The fail-closed branches (an undecidable cd, -m or script path, a
-// missing script) are a send only then. Without an address, a script the gate cannot read is no send (a developer's
-// `cd $WT && python3 -m pytest`, a script written and run in one command); a READABLE sender still is, as it takes the
-// address from inside. The python twin has the same rule.
+// JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
+// value) or an e-mail address anywhere in it. This gate (a hard deny) calls the fail-closed branches (an undecidable cd,
+// -m or script path, a missing or unreadable script) a send ONLY on an addressed run: without an address, a script the
+// gate cannot read is no send (a developer's `cd $WT && python3 -m pytest`, a script written and run in one command).
+// A READABLE sender is a send either way, as it takes the address from inside. The main agent's approval gate (the
+// python twin) keeps the fail-closed branches on every run (its _FAIL_CLOSED_NEEDS_ADDRESS is false): this is the one
+// place the two gates differ, and script-run-cases.json holds both verdicts per row (main / sub).
+const FAIL_CLOSED_NEEDS_ADDRESS = true
 const EMAIL_IN_WORD = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
 function runIsAddressed(rest, cmdWords) {
   return [...rest, ...cmdWords].some((w) => ADDRESS_FLAG.test(w) || EMAIL_IN_WORD.test(w))
@@ -1318,7 +1324,8 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   }
   let script
   let kind
-  const addressed = runIsAddressed(rest, cmdWords)
+  // the fail-closed branches below fire when `addressed` (see FAIL_CLOSED_NEEDS_ADDRESS)
+  const addressed = !FAIL_CLOSED_NEEDS_ADDRESS || runIsAddressed(rest, cmdWords)
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
@@ -1427,6 +1434,7 @@ function longName(t, names) {
 }
 const CHDIR_SPECS = new Map([
   ['env', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
+  ['genv', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
   ['sudo', ['ughpCUrtDRT', 'D', SUDO_LONG_OPTIONS, SUDO_LONG_VALUES]],
 ])
 
@@ -1442,7 +1450,7 @@ function envChdirDirs(words, d = 0) {
     while (j < words.length) {
       const t = words[j]
       if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
-      if (basename(words[i]) === 'env') {
+      if (basename(words[i]) === 'env' || basename(words[i]) === 'genv') {
         const split = envSplitValue(t, words, j)
         if (split) {
           // Bence 69552: env parses the options at the start of the -S value (and the words after it) again

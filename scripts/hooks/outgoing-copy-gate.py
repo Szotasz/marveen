@@ -549,6 +549,11 @@ _WRAPPERS = {
     "chrt": ("TPD", ("sched-runtime", "sched-period", "sched-deadline"), 1),  # then the priority, then the command
     "caffeinate": ("tw", (), 0),
 }
+# JSCDSEND1104 (Bence 69588, Samu 69591): the homebrew coreutils install the GNU launchers with a g prefix (genv,
+# gtimeout, gnohup, gnice, gstdbuf); each reads as its pair. (chroot is no wrapper here, so gchroot has no pair.)
+_G_PREFIXED = ("env", "timeout", "nohup", "nice", "stdbuf")
+for _n in _G_PREFIXED:
+    _WRAPPERS["g" + _n] = _WRAPPERS[_n]
 _HEAD_DEPTH = 8
 
 # MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
@@ -667,7 +672,7 @@ def _command_heads(toks, _d: int = 0):
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
-    if w == "env":
+    if w in ("env", "genv"):
         return _env_heads(toks, _d)
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
@@ -781,7 +786,7 @@ def _env_chdir_dirs(words, _d=0):
             t = words[j]
             if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
                 break
-            if _basename(w) == "env":
+            if _basename(w) in ("env", "genv"):
                 split = _env_split_value(t, words, j)
                 if split is not None:
                     # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
@@ -833,7 +838,7 @@ _ENV_LONG_NOVALUE = ("ignore-environment", "null", "debug", "list-signal-handlin
 # included, cannot be stepped over safely: the command behind it is undecidable, which counts as a send.
 _ENV_SHORT_VALUE = "uCSPaLU"
 _ENV_LONG_VALUE = ("unset", "chdir", "split-string", "argv0")
-_CHDIR_SPECS["env"] = (_ENV_SHORT_VALUE, "C", _ENV_LONG_OPTIONS, _ENV_LONG_VALUE)
+_CHDIR_SPECS["env"] = _CHDIR_SPECS["genv"] = (_ENV_SHORT_VALUE, "C", _ENV_LONG_OPTIONS, _ENV_LONG_VALUE)
 
 
 def _env_heads(toks, _d):
@@ -1482,7 +1487,7 @@ def _shebang_kind(text):
     if not m:
         return None
     prog = _basename(m.group(1))
-    if prog == "env":
+    if prog in ("env", "genv"):
         prog = _basename(_shebang_env_program(m.group(2).split()))
     if _PYTHON.match(prog):
         return "py"
@@ -1637,11 +1642,15 @@ def _python_module(rest):
     return None
 
 
-# JSCDSEND1104 (Samu 69538, Bence 69536): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc
-# (any value) or an e-mail address anywhere in it. The fail-closed branches (an undecidable cd, -m or script path, a
-# missing script) are a send only then. Without an address, a script the gate cannot read is no send (a developer's
-# `cd $WT && python3 -m pytest`, a script written and run in one command); a READABLE sender still is, as it takes the
-# address from inside. The JS twin (email-send-gate.mjs) has the same rule; script-run-cases.json binds the two.
+# JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
+# value) or an e-mail address anywhere in it. The two gates differ HERE, and only here:
+#   - the sub-agent gate (email-send-gate.mjs, a hard deny) calls the fail-closed branches (an undecidable cd, -m or
+#     script path, a missing or unreadable script) a send only on an addressed run, or a developer's
+#     `cd $WT && python3 -m pytest` would be refused;
+#   - this gate (the main agent's approval gate) keeps them fail-closed on every run: it guards the owner's real mail,
+#     a script can carry the address inside, and the cost of a false positive is an approval request, not a denial.
+# A READABLE sender is a send on both. script-run-cases.json holds both expected verdicts per row (main / sub).
+_FAIL_CLOSED_NEEDS_ADDRESS = False
 _EMAIL_IN_WORD = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 
 
@@ -1677,7 +1686,8 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
             if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
                 return True
         return False
-    addressed = _run_is_addressed(rest, cmd_words)
+    # the fail-closed branches below fire when `addressed`: on this gate always (see _FAIL_CLOSED_NEEDS_ADDRESS)
+    addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _run_is_addressed(rest, cmd_words)
     if _PYTHON.match(prog):
         if _address_flag_given(rest):  # also under -m / -c, where no file is named
             return True

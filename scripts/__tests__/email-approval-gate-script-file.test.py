@@ -172,12 +172,10 @@ try:
         (f"node {D}/harmless.mjs", D, False, "harmless node script"),
         (f"node {D}/main.mjs", D, True, "a local helper sends"),
         (f"node {D}/big.mjs", D, True, "a file over the read limit"),
-        (f"node {D}/missing.mjs b@example.test", D, True, "a missing script, addressed, is a send (fail-closed)"),
-        (f"node {D}/missing.mjs", D, False, "a missing script without an address (JSCDSEND1104, Samu 69538)"),
+        (f"node {D}/missing.mjs", D, True, "a missing script is a send (fail-closed)"),
         ("node graph-send.mjs", D, True, "relative script under cwd"),
-        ("node graph-send.mjs b@example.test", "/", True, "relative script found nowhere, addressed (fail-closed)"),
-        ("node harmless.mjs b@example.test", "/", True, "harmless script found nowhere, addressed (fail-closed)"),
-        ("node harmless.mjs", "/", False, "harmless script found nowhere, no address"),
+        ("node graph-send.mjs", "/", True, "relative script found nowhere (fail-closed)"),
+        ("node harmless.mjs", "/", True, "harmless script found nowhere (fail-closed)"),
         (f"cd {D} && node harmless.mjs", "/", False, "harmless script found through the cd target"),
         (f"cd {D} && node graph-send.mjs", "/", True, "sending script found through the cd target"),
         (f"cd {D}/sub && node harmless.mjs", D, True, "a harmless file under cwd does not hide the sending one in the cd target"),
@@ -186,15 +184,12 @@ try:
         ("npx vitest run", D, False, "npx with another package"),
         ("bun test", D, False, "bun test is no script"),
         ("node --version", D, False, "no script operand"),
-        ("node $SCRIPT b@example.test", D, True, "undecidable operand, addressed (fail-closed)"),
-        ("node $SCRIPT", D, False, "undecidable operand, no address"),
+        ("node $SCRIPT", D, True, "undecidable operand (fail-closed)"),
         (f'bash -c "node {D}/graph-send.mjs"', D, True, "shell -c recursion"),
         (f"python3 {D}/plain.py --to b@example.test", D, True, "an address after --to makes any script run a send"),
         (f"python3 {D}/plain.py", D, False, "the same script without an address"),
-        (f"{D}/missing-direct.py b@example.test", D, True, "a directly run .py file that cannot be read, addressed (fail-closed)"),
-        (f"{D}/missing-direct.py", D, False, "a directly run .py file that cannot be read, no address"),
-        ("cd $DEST && node job.mjs b@example.test", D, True, "cd to a variable, addressed: fail-closed"),
-        ("cd $DEST && node job.mjs", D, False, "cd to a variable, no address"),
+        (f"{D}/missing-direct.py", D, True, "a directly run .py file that cannot be read (fail-closed)"),
+        ("cd $DEST && node job.mjs", D, True, "cd to a variable: fail-closed"),
         ("cd a && cd b && node job.mjs", D, True, "chained relative cd"),
         ("cd -- a/b && node job.mjs", D, True, "cd -- DIR"),
         ("cd sub && ./task", D, True, "direct run: each candidate judged with its own kind"),
@@ -209,10 +204,8 @@ try:
         ("npx harmless-report --to qa@example.test", D, False, "npx with another package and an address"),
         (f"npx tsx {D}/harmless.mjs --to qa@example.test", D, True, "npx runner with an address"),
         ("cd $DEST && node --version", D, False, "no script operand under a variable cd"),
-        ('cd "$DEST" && python3 -m r2pkg b@example.test', D, True, "python -m after a variable cd, addressed: fail-closed"),
-        ('cd "$DEST" && python3 -m r2pkg', D, False, "python -m after a variable cd, no address"),
-        ('cd "$DEST" && ./r2task b@example.test', D, True, "an extensionless file after a variable cd, addressed: fail-closed"),
-        ('cd "$DEST" && ./r2task', D, False, "an extensionless file after a variable cd, no address"),
+        ('cd "$DEST" && python3 -m r2pkg', D, True, "python -m after a variable cd: fail-closed"),
+        ('cd "$DEST" && ./r2task', D, True, "an extensionless file after a variable cd: fail-closed"),
         ("cd -- -P && node r2job.mjs", D, True, "cd -- ends the options: -P is the directory"),
         ("node r2link/main.mjs", D, True, "a symlinked entry with five imports: the real-path helpers are read"),
         ("python3 -m r2rel", D, True, "python -m with a package-relative helper"),
@@ -227,8 +220,7 @@ try:
         ("node r3typedefault.mjs", D, True, "a value import named type loads the module"),
     ]
     if can_lock:
-        cases.append((f"node {D}/locked.mjs b@example.test", D, True, "an unreadable script, addressed (fail-closed)"))
-        cases.append((f"node {D}/locked.mjs", D, False, "an unreadable script, no address"))
+        cases.append((f"node {D}/locked.mjs", D, True, "an unreadable script (fail-closed)"))
     else:
         print("  [SKIP] unreadable script: running as root")
     for cmd, cwd, want, what in cases:

@@ -2143,6 +2143,46 @@
       "name": "MAINGATENLCOMMENT1104 (Bence 69701): a # right after the ) of a $(...) is part of the word",
       "cmd": "echo $(echo a)#x; sendmail a@b.hu",
       "expected": true
+    },
+    {
+      "name": "JSCDSEND1104 (Bence 69588): genv, the homebrew GNU env, in front of a sender",
+      "cmd": "genv mail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: gtimeout DURATION in front of a sender",
+      "cmd": "gtimeout 10 mail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: gnohup in front of a sender",
+      "cmd": "gnohup mail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: gnice -n N in front of a sender",
+      "cmd": "gnice -n 5 mail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: gstdbuf -o0 in front of a sender",
+      "cmd": "gstdbuf -o0 mail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: genv by its absolute homebrew path",
+      "cmd": "/opt/homebrew/bin/genv mail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: genv -S with a sender in the value",
+      "cmd": "genv -S \"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "JSCDSEND1104: control, gtimeout in front of a non-sender",
+      "cmd": "gtimeout 10 ls",
+      "expected": false
     }
   ]
 }
