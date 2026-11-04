@@ -6,7 +6,8 @@
 //   POST /api/claude-plans/login/cancel
 //   GET  /api/claude-plans/login/status -> {active, phase, error, url}
 //
-// Every route takes the owner (mayActAsOwnerOrFirstRun): this mints a credential
+// Every route takes the owner (mayActAsOwnerOrFirstRun while the target plan has no credential yet, else
+// mayActAsOwner): this mints a credential
 // that runs the whole fleet on a subscription, so the shared bearer token alone
 // is not enough once a dashboard login exists. One more owner credential is let
 // in here, and only here (SETUPTOKENHU1023, owner decision): a full-scope device
@@ -22,17 +23,20 @@
 //
 // The token never appears in a response, an error or a log line: the only
 // place it goes is the sink below, and from there the vault.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
-import { readClaudePlans, validatePlan, tokenSecretIdFor } from '../claude-plans.js'
+import { readClaudePlans, validatePlan, tokenSecretIdFor, CLAUDE_PLANS_PATH } from '../claude-plans.js'
+import { PROJECT_ROOT } from '../../config.js'
 import { liveProbeAuth, type AuthProbeResult } from '../claude-credentials-guard.js'
 import {
   SetupTokenLogin, launchSetupTokenRelay, DEFAULT_LOGIN_TIMEOUTS,
   type LaunchResult, type LoginErrorCode, type LoginTimeouts,
 } from '../setup-token-login.js'
 import { commitNewPlan } from './claude-plans.js'
-import { mayActAsOwnerOrFirstRun, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { getDeviceKey } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
@@ -111,13 +115,55 @@ function isPairedBridgeKey(auth: RouteContext['auth']): boolean {
   return key !== null && key.scope === 'full' && typeof key.installId === 'string' && key.installId.length > 0
 }
 
+// The file vault.ts keeps its entries in (its VAULT_PATH, not exported: tests replace vault.js with a stub). Read
+// here for an entry's presence only; nothing is decrypted.
+const VAULT_FILE = join(PROJECT_ROOT, 'store', 'vault.json')
+
+// OWNERGATE4-1104 (review, Samu 69637): the condition of the 'claude-plans-login' first-run pass. True only when
+// the target plan id (null or empty: no target, nothing to protect) has no credential yet: no entry with that id in
+// store/claude-plans.json (read raw, so an entry the registry would drop as invalid still counts) and no vault entry
+// under its token secret id (tokenSecretIdFor, the id commitNewPlan writes). Fail closed: a plans file or vault that
+// exists but cannot be read, is not JSON or is not the expected shape counts as holding the credential (an empty
+// file holds nothing, as both readers treat it).
+function planHasNoCredentialYet(planId: string | null): boolean {
+  if (!planId) return true
+  for (const [file, list] of [[CLAUDE_PLANS_PATH, (v: unknown) => v], [VAULT_FILE, (v: unknown) => (v as { entries?: unknown } | null)?.entries]] as const) {
+    let raw: string
+    try {
+      raw = readFileSync(file, 'utf-8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      return false
+    }
+    if (!raw.trim()) continue
+    let entries: unknown
+    try { entries = list(JSON.parse(raw)) } catch { return false }
+    if (!Array.isArray(entries)) return false
+    const id = file === VAULT_FILE ? tokenSecretIdFor(planId) : planId
+    if (entries.some((e) => !e || typeof e !== 'object' || (e as { id?: unknown }).id === id)) return false
+  }
+  return true
+}
+
 export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
   if (!path.startsWith('/api/claude-plans/login/')) return false
 
   // OWNERGATE4-1104: the first Claude login of a fresh install runs before any dashboard login (FIRST_RUN_PATHS).
-  if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'claude-plans-login') && !isPairedBridgeKey(ctx.auth)) {
-    json(res, OWNER_SESSION_REQUIRED, 403)
+  // OWNERGATE4-1104 (review, Samu 69637): the first-run pass only while THE TARGET plan has no credential yet
+  // (planHasNoCredentialYet). The target is the id in the start body (read here, before the gate, so the condition
+  // can be evaluated; the start branch below reuses it), and for code, status and cancel the plan of the login in
+  // progress (none: nothing to protect). A plan that exists is the owner gate, and the paired Bridge key.
+  let startBody: Record<string, unknown> | null = null
+  let target: string | null = active?.fields.id ?? null
+  const isStart = path === '/api/claude-plans/login/start' && method === 'POST'
+  if (isStart) {
+    startBody = await readJson(ctx)
+    target = typeof startBody?.id === 'string' ? startBody.id.trim() : null
+  }
+  const firstLogin = planHasNoCredentialYet(target)
+  if (!(firstLogin ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'claude-plans-login') : mayActAsOwner(ctx.auth, req)) && !isPairedBridgeKey(ctx.auth)) {
+    refuseOwner(res, OWNER_SESSION_REQUIRED.error)
     return true
   }
 
@@ -131,8 +177,8 @@ export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<bool
     return true
   }
 
-  if (path === '/api/claude-plans/login/start' && method === 'POST') {
-    const body = await readJson(ctx)
+  if (isStart) {
+    const body = startBody
     if (!body) { json(res, { error: 'Invalid JSON' }, 400); return true }
     if (active?.login.isActive()) {
       json(res, { error: 'Another login is already in progress. Cancel it first.', code: 'busy' }, 409)

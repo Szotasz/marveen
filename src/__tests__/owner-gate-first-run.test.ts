@@ -11,22 +11,36 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 
 const T = vi.hoisted(() => ({ root: '' }))
+// The throwaway root is made by the node:os mock (the first factory to run: the config mock imports node:os).
 vi.mock('../config.js', async (orig) => {
-  const { mkdtempSync: mk } = await import('node:fs')
-  const { tmpdir: td } = await import('node:os')
+  await import('node:os')
   const { join: j } = await import('node:path')
-  T.root = mk(j(td(), 'og4-first-run-'))
   return { ...(await orig<typeof import('../config.js')>()), PROJECT_ROOT: T.root, STORE_DIR: j(T.root, 'store'), MAIN_AGENT_ID: 'og4-main', TELEGRAM_BOT_TOKEN: '' }
+})
+// The home dir is the throwaway root's home/: onboarding reads ~/.claude/.credentials.json and the main agent's
+// legacy channel dir sits under ~/.claude/channels; neither may be the host's.
+vi.mock('node:os', async (orig) => {
+  const a = await orig<typeof import('node:os')>()
+  const { mkdtempSync: mk } = await import('node:fs')
+  const { join: j } = await import('node:path')
+  if (!T.root) T.root = mk(j(a.tmpdir(), 'og4-first-run-'))
+  const homedir = () => `${T.root}/home`
+  return { ...a, homedir, default: { ...a, homedir } }
 })
 vi.mock('../web/telegram.js', async (orig) => ({ ...(await orig<typeof import('../web/telegram.js')>()), sendTelegramMessage: vi.fn(async () => null) }))
 vi.mock('../web/vault.js', async (orig) => ({
   ...(await orig<typeof import('../web/vault.js')>()),
   setSecret: vi.fn(), deleteSecret: vi.fn(), getSecret: vi.fn(() => null),
+}))
+// The claude-auth route live-probes a token with a real `claude -p` once past its gate. Never from a test: a probe
+// that proves the token dead, so even a gate regression persists nothing.
+vi.mock('../web/claude-credentials-guard.js', async (orig) => ({
+  ...(await orig<typeof import('../web/claude-credentials-guard.js')>()),
+  liveProbeAuth: vi.fn(async () => 'auth-rejected' as const),
 }))
 vi.mock('../web/channel-monitor.js', async (orig) => ({
   ...(await orig<typeof import('../web/channel-monitor.js')>()),
@@ -38,6 +52,8 @@ vi.mock('../web/agent-process.js', async (orig) => ({
   stopAgentProcess: vi.fn(async () => ({ ok: true })),
   startAgentProcess: vi.fn(async () => ({ ok: true })),
   isAgentRunning: () => false,
+  // claudeAuthPresent's last leg asks tmux about the running channels session: never the host's tmux here.
+  sessionExistsOnHost: () => false,
 }))
 const h = vi.hoisted(() => ({
   imports: 0, exports: 0, operatorWrites: 0, unfreezes: 0, settingWrites: 0,
@@ -81,6 +97,7 @@ const { tryHandleOperatorAccess } = await import('../web/routes/operator-access.
 const { tryHandleFederation } = await import('../web/routes/federation.js')
 const { _setFederationStoreDirForTest, reloadFederationForTest, getFederationConfig } = await import('../web/federation/config.js')
 const { logger } = await import('../logger.js')
+const { CLI_VERSION_OVERRIDE_ENV } = await import('../web/claude-cli-version.js')
 type Auth = import('../web/routes/types.js').RouteContext['auth']
 
 afterAll(() => { rmSync(T.root, { recursive: true, force: true }) })
@@ -110,6 +127,15 @@ async function hit(handler: Handler, method: string, path: string, auth: Auth, b
 }
 const refused = (r: { status: number; body: any }) => r.status === 403 && r.body?.code === 'owner_session_required'
 
+// On macOS claudeAuthPresent asks the host's login Keychain (presence only), which answers from the host's own Claude
+// login. The claude-auth cases run as linux, so the answer comes only from the throwaway files.
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
+async function asLinux<R>(fn: () => Promise<R>): Promise<R> {
+  Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' })
+  try { return await fn() } finally { Object.defineProperty(process, 'platform', realPlatform) }
+}
+const onboardingOnLinux: Handler = (ctx) => asLinux(() => tryHandleOnboarding(ctx))
+
 beforeEach(() => {
   initDatabase(':memory:')
   _clearSessionCacheForTest()
@@ -137,7 +163,7 @@ const FIRST_RUN_ROUTES: Array<{ why: string; handler: Handler; method: string; p
     expect: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('Code is required') } },
   { why: 'onboarding-identity', handler: tryHandleOnboarding, method: 'POST', path: '/api/onboarding/identity', body: {},
     expect: (r) => { expect(r.status).toBe(400); expect(r.body.reason).toBe('missing') } },
-  { why: 'onboarding-claude-auth', handler: tryHandleOnboarding, method: 'POST', path: '/api/onboarding/claude-auth', body: {},
+  { why: 'onboarding-claude-auth', handler: onboardingOnLinux, method: 'POST', path: '/api/onboarding/claude-auth', body: {},
     expect: (r) => { expect(r.status).toBe(400); expect(r.body.reason).toBe('missing') } },
   { why: 'claude-plans-login', handler: tryHandleClaudePlansLogin, method: 'GET', path: '/api/claude-plans/login/status',
     expect: (r) => { expect(r.status).toBe(200); expect(r.body.active).toBe(false) } },
@@ -310,6 +336,224 @@ describe('the predicate: a sub-agent token never passes, the bare token passes o
       expect([why, mayActAsOwnerOrFirstRun(TOKEN, undefined, why)]).toEqual([why, false])
       expect([why, mayActAsOwnerOrFirstRun(FULL_KEY, undefined, why)]).toEqual([why, false])
       expect([why, mayActAsOwnerOrFirstRun(SESSION, undefined, why)]).toEqual([why, true])
+    }
+  })
+})
+
+// --- OWNERGATE4-1104 (review, Samu 69637): three first-run paths only while the thing they write is still empty ------
+const bytes = (p: string) => (existsSync(p) ? readFileSync(p).toString('base64') : '<absent>')
+const ownerRefusal = (r: { status: number; body: any }, setup: boolean) => {
+  expect(r.status, JSON.stringify(r.body)).toBe(403)
+  expect(r.body.code).toBe('owner_session_required')
+  expect(r.body.setup_required).toBe(setup ? true : undefined)
+}
+// A file the dashboard process cannot read (fail closed). Restored before the next case.
+function unreadable(p: string): () => void {
+  chmodSync(p, 0o000)
+  return () => chmodSync(p, 0o600)
+}
+
+describe("'channel-setup': only while that agent's that channel is unconfigured", () => {
+  const TG_ENV = join(TG_DIR, '.env')
+  const TG_ACCESS = join(TG_DIR, 'access.json')
+  const setup = (auth: Auth, body: unknown = { botToken: '999:new-bot' }, path = `/api/agents/${AGENT}/channels/telegram`) =>
+    hit(tryHandleAgents, 'POST', path, auth, body)
+
+  it('empty channel (no .env, access.json without a sender): the bare token passes the gate', async () => {
+    const r = await setup(TOKEN, {})
+    expect(refused(r)).toBe(false)
+    expect(r.body.error).toBe('botToken is required')
+  })
+  it('a bot token already in the .env: 403 setup_required, .env and access.json byte for byte unchanged (new and legacy route)', async () => {
+    writeFileSync(TG_ENV, 'TELEGRAM_BOT_TOKEN=111:owner-bot\n', { mode: 0o600 })
+    const before = [bytes(TG_ENV), bytes(TG_ACCESS)]
+    ownerRefusal(await setup(TOKEN), true)
+    ownerRefusal(await setup(TOKEN, undefined, `/api/agents/${AGENT}/telegram`), true)
+    expect([bytes(TG_ENV), bytes(TG_ACCESS)]).toEqual(before)
+  })
+  it('an approved sender (access.json allowFrom, or an approved/ marker) without a .env: 403, unchanged', async () => {
+    writeFileSync(TG_ACCESS, JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['4242'], groups: {}, pending: {} }))
+    let before = bytes(TG_ACCESS)
+    ownerRefusal(await setup(TOKEN), true)
+    expect(bytes(TG_ACCESS)).toBe(before)
+    expect(existsSync(TG_ENV)).toBe(false)
+    writeFileSync(TG_ACCESS, JSON.stringify({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} }))
+    mkdirSync(join(TG_DIR, 'approved'), { recursive: true })
+    writeFileSync(join(TG_DIR, 'approved', '4242'), '')
+    before = bytes(TG_ACCESS)
+    ownerRefusal(await setup(TOKEN), true)
+    expect(bytes(TG_ACCESS)).toBe(before)
+  })
+  it('another channel of the same agent stays open while this one is configured (per channel)', async () => {
+    writeFileSync(TG_ENV, 'TELEGRAM_BOT_TOKEN=111:owner-bot\n', { mode: 0o600 })
+    const r = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/channels/slack`, TOKEN, {})
+    expect(r.body.error).toBe('botToken is required')
+  })
+  it("the main agent's channel (its own dir resolution): empty passes, configured is 403 and unchanged", async () => {
+    const mainDir = join(T.root, 'main-slack-state')
+    const saved = process.env.SLACK_STATE_DIR
+    process.env.SLACK_STATE_DIR = mainDir
+    try {
+      const main = (body: unknown) => hit(tryHandleAgents, 'POST', '/api/agents/og4-main/channels/slack', TOKEN, body)
+      expect((await main({})).body.error).toBe('botToken is required')
+      mkdirSync(mainDir, { recursive: true })
+      writeFileSync(join(mainDir, '.env'), 'SLACK_BOT_TOKEN=xoxb-owner\nSLACK_APP_TOKEN=xapp-owner\n', { mode: 0o600 })
+      const before = bytes(join(mainDir, '.env'))
+      ownerRefusal(await main({ botToken: 'xoxb-mallory', appToken: 'xapp-mallory' }), true)
+      expect(bytes(join(mainDir, '.env'))).toBe(before)
+      expect(existsSync(join(mainDir, 'access.json'))).toBe(false)
+    } finally {
+      if (saved === undefined) delete process.env.SLACK_STATE_DIR; else process.env.SLACK_STATE_DIR = saved
+      rmSync(mainDir, { recursive: true, force: true })
+    }
+  })
+  it('with a dashboard user it is strict even on an empty channel: the bare token 403 (no setup_required), the session passes', async () => {
+    createDashboardUser('owner', 'x'.repeat(60))
+    ownerRefusal(await setup(TOKEN), false)
+    expect(existsSync(TG_ENV)).toBe(false)
+    expect((await setup(SESSION, {})).body.error).toBe('botToken is required')
+  })
+  it('fail closed: a malformed access.json, or a .env that cannot be read, counts as configured', async () => {
+    writeFileSync(TG_ACCESS, '{ not json')
+    ownerRefusal(await setup(TOKEN), true)
+    expect(readFileSync(TG_ACCESS, 'utf-8')).toBe('{ not json')
+    writeFileSync(TG_ACCESS, JSON.stringify({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} }))
+    writeFileSync(TG_ENV, '', { mode: 0o600 })
+    expect((await setup(TOKEN, {})).body.error).toBe('botToken is required')
+    const restore = unreadable(TG_ENV)
+    try {
+      ownerRefusal(await setup(TOKEN), true)
+    } finally { restore() }
+    expect(readFileSync(TG_ENV, 'utf-8')).toBe('')
+  })
+})
+
+describe("'onboarding-claude-auth': only while no Claude credential is stored yet", () => {
+  const ENV = join(T.root, '.env')
+  const FLEET = join(T.root, 'store', '.claude-oauth-token')
+  const HOME_CREDS = join(T.root, 'home', '.claude', '.credentials.json')
+  const NEW = { token: 'sk-ant-oat01-' + 'n'.repeat(40) }
+  const auth = (a: Auth, body: unknown = NEW) => asLinux(() => hit(tryHandleOnboarding, 'POST', '/api/onboarding/claude-auth', a, body))
+  beforeEach(() => {
+    for (const f of [ENV, FLEET, HOME_CREDS]) rmSync(f, { force: true })
+    mkdirSync(join(T.root, 'home', '.claude'), { recursive: true })
+  })
+  const snapshot = () => [bytes(ENV), bytes(FLEET), bytes(HOME_CREDS)]
+
+  it('nothing stored: the bare token passes the gate', async () => {
+    const r = await auth(TOKEN, {})
+    expect(refused(r)).toBe(false)
+    expect(r.body.reason).toBe('missing')
+  })
+  const SEEDS: Array<[string, () => void]> = [
+    ['.env CLAUDE_CODE_OAUTH_TOKEN', () => writeFileSync(ENV, 'BOT_NAME=x\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-owner\n', { mode: 0o600 })],
+    ['.env ANTHROPIC_API_KEY', () => writeFileSync(ENV, 'ANTHROPIC_API_KEY=sk-ant-api-owner\n', { mode: 0o600 })],
+    ['the fleet token file', () => writeFileSync(FLEET, 'sk-ant-oat01-owner\n', { mode: 0o600 })],
+    ['~/.claude/.credentials.json', () => writeFileSync(HOME_CREDS, JSON.stringify({ claudeAiOauth: { accessToken: 'owner' } }), { mode: 0o600 })],
+  ]
+  for (const [label, seed] of SEEDS) {
+    it(`a credential in ${label}: 403 setup_required, every credential file byte for byte unchanged`, async () => {
+      seed()
+      const before = snapshot()
+      ownerRefusal(await auth(TOKEN), true)
+      ownerRefusal(await auth(TOKEN, { apiKey: 'sk-ant-api-mallory' }), true)
+      expect(snapshot()).toEqual(before)
+    })
+  }
+  it('with a dashboard user it is strict even with nothing stored: the bare token 403 (no setup_required), the session passes', async () => {
+    createDashboardUser('owner', 'x'.repeat(60))
+    ownerRefusal(await auth(TOKEN), false)
+    expect(snapshot()).toEqual(['<absent>', '<absent>', '<absent>'])
+    expect((await auth(SESSION, {})).body.reason).toBe('missing')
+  })
+  it('fail closed: an unreadable fleet token file or .env, or a credentials.json that is not JSON, counts as stored', async () => {
+    writeFileSync(HOME_CREDS, '{ not json')
+    ownerRefusal(await auth(TOKEN), true)
+    rmSync(HOME_CREDS)
+    for (const f of [FLEET, ENV]) {
+      writeFileSync(f, '', { mode: 0o600 })
+      const restore = unreadable(f)
+      try {
+        ownerRefusal(await auth(TOKEN), true)
+      } finally { restore() }
+      expect(readFileSync(f, 'utf-8')).toBe('')
+      rmSync(f)
+    }
+    expect(existsSync(FLEET)).toBe(false)
+  })
+})
+
+describe("'claude-plans-login': only while the target plan has no credential yet", () => {
+  const PLANS = join(T.root, 'store', 'claude-plans.json')
+  const VAULT = join(T.root, 'store', 'vault.json')
+  const PLAN = { id: 'og4plan', label: 'Owner Max', planType: 'personal', channelsAllowed: true, tokenSecretId: 'claude-plan-token-og4plan' }
+  // Missing label: a start that passes the gate stops at the field check (400 invalid-plan), before any login starts.
+  const start = (a: Auth, id = 'og4plan') => hit(tryHandleClaudePlansLogin, 'POST', '/api/claude-plans/login/start', a, { id, planType: 'personal', channelsAllowed: true })
+  beforeEach(() => { rmSync(PLANS, { force: true }); rmSync(VAULT, { force: true }) })
+
+  it('no such plan: the bare token passes the gate', async () => {
+    const r = await start(TOKEN)
+    expect(refused(r)).toBe(false)
+    expect(r.body.code).toBe('invalid-plan')
+  })
+  it('the target plan is registered: 403 setup_required (was 409 id-taken), the registry byte for byte unchanged', async () => {
+    writeFileSync(PLANS, JSON.stringify([PLAN], null, 2) + '\n')
+    const before = bytes(PLANS)
+    ownerRefusal(await start(TOKEN), true)
+    expect(bytes(PLANS)).toBe(before)
+  })
+  it('only a vault token under the target id (no registry row): 403, the vault unchanged', async () => {
+    writeFileSync(VAULT, JSON.stringify({ entries: [{ id: 'claude-plan-token-og4plan', label: 'x', encrypted: 'e', createdAt: 'c', updatedAt: 'u' }] }), { mode: 0o600 })
+    const before = bytes(VAULT)
+    ownerRefusal(await start(TOKEN), true)
+    expect(bytes(VAULT)).toBe(before)
+  })
+  it('per target: another, new plan id still passes while og4plan exists', async () => {
+    writeFileSync(PLANS, JSON.stringify([PLAN]))
+    expect((await start(TOKEN, 'og4other')).body.code).toBe('invalid-plan')
+  })
+  it('with a dashboard user it is strict even for a new id: the bare token 403 (no setup_required), the session passes', async () => {
+    createDashboardUser('owner', 'x'.repeat(60))
+    ownerRefusal(await start(TOKEN), false)
+    expect((await start(SESSION)).body.code).toBe('invalid-plan')
+  })
+  it('fail closed: a malformed registry, a malformed vault, or an unreadable registry counts as holding the credential', async () => {
+    writeFileSync(PLANS, '[ not json')
+    ownerRefusal(await start(TOKEN), true)
+    expect(readFileSync(PLANS, 'utf-8')).toBe('[ not json')
+    rmSync(PLANS)
+    writeFileSync(VAULT, '{"entries": 7}')
+    ownerRefusal(await start(TOKEN), true)
+    rmSync(VAULT)
+    writeFileSync(PLANS, '[]')
+    const restore = unreadable(PLANS)
+    try {
+      ownerRefusal(await start(TOKEN), true)
+    } finally { restore() }
+  })
+})
+
+describe("'agent-create' (first-run without a condition) cannot overwrite an EXISTING agent", () => {
+  function tree(dir: string): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const e of readdirSync(dir, { withFileTypes: true, recursive: true })) {
+      if (e.isFile()) { const p = join(e.parentPath, e.name); out[p] = readFileSync(p).toString('base64') }
+    }
+    return out
+  }
+  it('zero users + bare token + the name of an existing agent dir: 409, its files unchanged', async () => {
+    const saved = process.env[CLI_VERSION_OVERRIDE_ENV]
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '' // unmeasured CLI: no probe of a real claude binary, nothing refused
+    try {
+      const before = tree(AGENT_DIR)
+      for (const name of [AGENT, 'OG4Agent']) {
+        const r = await hit(tryHandleAgents, 'POST', '/api/agents', TOKEN, { name, description: 'mallory', model: 'claude-opus-5' })
+        expect(r.status, JSON.stringify(r.body)).toBe(409)
+        expect(r.body.error).toBe('Agent already exists')
+      }
+      expect(tree(AGENT_DIR)).toEqual(before)
+    } finally {
+      if (saved === undefined) delete process.env[CLI_VERSION_OVERRIDE_ENV]; else process.env[CLI_VERSION_OVERRIDE_ENV] = saved
     }
   })
 })

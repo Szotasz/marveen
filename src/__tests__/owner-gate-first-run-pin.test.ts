@@ -100,9 +100,21 @@ describe('OWNERGATE4-1104: the first-run callers are pinned', () => {
     expect(agents).toContain("firstPairing ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'first-pairing') : mayActAsOwner(ctx.auth, req)")
   })
 
-  it('the plan login keeps its paired-Bridge-key alternative', () => {
+  it('the plan login keeps its paired-Bridge-key alternative (and its "target plan has no credential" condition)', () => {
     const src = readFileSync(join(SRC, 'web', 'routes', 'claude-plans-login.ts'), 'utf-8')
-    expect(src).toContain("!mayActAsOwnerOrFirstRun(ctx.auth, req, 'claude-plans-login') && !isPairedBridgeKey(ctx.auth)")
+    expect(src).toContain("(firstLogin ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'claude-plans-login') : mayActAsOwner(ctx.auth, req)) && !isPairedBridgeKey(ctx.auth)")
+  })
+
+  // OWNERGATE4-1104 (review, Samu 69637): three more paths are open only while the thing they write is still empty.
+  it('channel setup, the Claude credential and the plan login keep their "still empty" condition at the call site', () => {
+    const agents = readFileSync(join(SRC, 'web', 'routes', 'agents.ts'), 'utf-8')
+    expect(agents).toContain('const firstSetup = channelIsUnconfigured(setupChDir)')
+    expect(agents).toContain("firstSetup ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'channel-setup') : mayActAsOwner(ctx.auth, req)")
+    const onboarding = readFileSync(join(SRC, 'web', 'routes', 'onboarding.ts'), 'utf-8')
+    expect(onboarding).toContain('const firstCredential = await noClaudeCredentialYet()')
+    expect(onboarding).toContain("firstCredential ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'onboarding-claude-auth') : mayActAsOwner(ctx.auth, req)")
+    const plans = readFileSync(join(SRC, 'web', 'routes', 'claude-plans-login.ts'), 'utf-8')
+    expect(plans).toContain('const firstLogin = planHasNoCredentialYet(target)')
   })
 
   it('mayIssueCredentials and mayActAsOwnerStrict are not exported, and nothing in src calls them', () => {

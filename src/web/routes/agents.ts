@@ -490,6 +490,23 @@ function channelHasNoApprovedSender(chDir: string): boolean {
   return true
 }
 
+// OWNERGATE4-1104 (review, Samu 69637): whether a channel is still unconfigured, i.e. its next setup is the first
+// one (onboarding step 2 on a fresh install). True only when the channel dir's .env holds no setting (missing, or
+// only blank and # comment lines) AND the channel has no approved sender (channelHasNoApprovedSender). Any KEY=value
+// line counts as configured, not only the provider's token key: setup writes nothing else there, and a narrower
+// reading could only reopen the path. Fail closed: a .env that exists but cannot be read, and an access.json that
+// cannot be read or is not a JSON object, count as configured, so the strict gate applies.
+function channelIsUnconfigured(chDir: string): boolean {
+  let env = ''
+  try {
+    env = readFileSync(join(chDir, '.env'), 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false
+  }
+  if (env.split('\n').some((line) => { const t = line.trim(); return t.length > 0 && !t.startsWith('#') })) return false
+  return channelHasNoApprovedSender(chDir)
+}
+
 function extractBotId(token: string): string | null {
   const colon = token.indexOf(':')
   if (colon < 1) return null
@@ -1571,8 +1588,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // OWNERGATE2-1104: writes the channel .env (bot token) and access.json (allowFrom, owner), i.e. who may talk to
     // the agent; the main agent's channel too. The first-run setup keeps the token (customer install;
     // OWNERGATE4-1104, FIRST_RUN_PATHS 'channel-setup').
-    if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'channel-setup')) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Setting up an agent\'s channel needs the dashboard login (an owner session).' }, 403)
+    // OWNERGATE4-1104 (review, Samu 69637): only while THIS agent's THIS channel is still unconfigured (no setting in
+    // its .env, no approved sender; the same dir the write below uses, the main agent's via channelStateDir(provider)).
+    // Once set up, a second setup is the owner gate: the bare shared token cannot overwrite the bot or the access list.
+    const setupChDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+    const firstSetup = channelIsUnconfigured(setupChDir)
+    if (!(firstSetup ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'channel-setup') : mayActAsOwner(ctx.auth, req))) {
+      refuseOwner(res, 'Setting up an agent\'s channel needs the dashboard login (an owner session).')
       return true
     }
 

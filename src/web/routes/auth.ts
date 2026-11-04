@@ -175,13 +175,18 @@ function bridgeOwnerAudited(auth: RouteContext['auth'], req?: http.IncomingMessa
  *  every call and its reason to this list, so a new first-run caller cannot appear without editing it.
  *   - 'agent-create': POST /api/agents. The customer install creates its first agent in the onboarding wizard.
  *   - 'channel-setup': POST /api/agents/:name/channels/:provider (and the legacy /telegram). Onboarding step 2: the
- *     bot token and the owner's chat id, so the owner can reach the agent at all.
+ *     bot token and the owner's chat id, so the owner can reach the agent at all. ONLY while that agent's that channel
+ *     is unconfigured (the call site checks channelIsUnconfigured: no setting in its .env and no approved sender;
+ *     unreadable counts as configured); re-setting a configured channel is strict.
  *   - 'first-pairing': the channel pairing approve, ONLY while the channel has no approved sender yet (the call site
  *     checks channelHasNoApprovedSender). Onboarding step 3: the owner pairs themself; a second sender is strict.
  *   - 'onboarding-identity': POST /api/onboarding/identity. The wizard's first step (owner and agent names).
  *   - 'onboarding-claude-auth': POST /api/onboarding/claude-auth. The wizard stores the Claude credential the fleet
- *     runs on; nothing works before it.
+ *     runs on; nothing works before it. ONLY while no Claude credential is stored yet (the call site checks
+ *     noClaudeCredentialYet: none where claudeAuthPresent looks, none of its files unreadable); replacing one is strict.
  *   - 'claude-plans-login': the plan login (routes/claude-plans-login.ts). The first Claude login of the install.
+ *     ONLY while the target plan (the start body's id; for the later steps the login in progress) has no credential
+ *     yet (the call site checks planHasNoCredentialYet: no registry entry, no vault token; unreadable counts as one).
  *   - 'first-login': POST /api/auth/users. Creating the FIRST dashboard login; without this path a login could
  *     never be created from the dashboard, and every refuseOwner answer sends the user here.
  *   - 'first-device': POST /api/security/bridge-enroll and POST /api/auth/device-keys (mint). Pairing the owner's
