@@ -445,7 +445,8 @@ const WRAPPERS = new Map([
   ['time', ['fo', ['format', 'output'], 0]],
   ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
     'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
-  ['env', ['uCS', ['unset', 'chdir', 'split-string'], 0]],
+  // ENVOPTHEAD1104: env is read by envHeads (a structural parser); the entry keeps env a wrapper for the depth bound
+  ['env', ['uCSPaLU', ['unset', 'chdir', 'split-string', 'argv0'], 0]],
   ['nohup', ['', [], 0]],
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
@@ -454,6 +455,11 @@ const WRAPPERS = new Map([
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
+  // ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program (see the python twin)
+  ['stdbuf', ['ioe', ['input', 'output', 'error'], 0]],
+  ['ionice', ['cnpPu', ['class', 'classdata', 'pid', 'pgid', 'uid'], 0]],
+  ['chrt', ['TPD', ['sched-runtime', 'sched-period', 'sched-deadline'], 1]],
+  ['caffeinate', ['tw', [], 0]],
 ])
 const HEAD_DEPTH = 8
 
@@ -526,6 +532,63 @@ function launcherHeads(toks, spec, d) {
   return heads.flatMap((h) => commandHeads(h, d + 1))
 }
 
+// ENVOPTHEAD1104: `env -S STRING` splits STRING into words and runs them (the words after it appended), so the
+// real command is inside the value; see the python twin. A value that does not split counts as a send (null).
+function envSplitHeads(value, rest, d) {
+  let segs
+  try { segs = segmentsTokens(value) } catch { return [null] }
+  if (!segs || !segs.length) segs = [[]]
+  segs[segs.length - 1] = [...segs[segs.length - 1], ...rest]
+  // Bence 69552: GNU env parses the options at the START of the split words too; the first segment goes back
+  // through env's own option parser (see the python twin)
+  return segs.flatMap((s, k) => commandHeads(k === 0 ? ['env', ...s] : s, d + 1))
+}
+
+// Samu 69521: env's options read STRUCTURALLY (see the python twin): the known no-value ones are stepped over, a
+// known value option takes its value (exact or a unique long prefix), anything else is undecidable (null: a send).
+const ENV_SHORT_NOVALUE = 'i0v'
+const ENV_LONG_NOVALUE = ['ignore-environment', 'null', 'debug', 'list-signal-handling', 'help', 'version', 'block-signal',
+  'default-signal', 'ignore-signal']
+const ENV_SHORT_VALUE = 'uCSPaLU'
+const ENV_LONG_VALUE = ['unset', 'chdir', 'split-string', 'argv0']
+function envHeads(toks, d) {
+  let i = 1
+  while (i < toks.length) {
+    const t = toks[i]
+    if (ENV_ASSIGN.test(t)) { while (i < toks.length && ENV_ASSIGN.test(toks[i])) i++; break } // NAME=VALUE ends the options
+    if (t === '--') { i++; break }
+    if (t === '-') { i++; continue } // the old spelling of -i
+    if (t.startsWith('--')) {
+      const name = envLongName(t)
+      if (name === 'split-string') {
+        const eq = t.indexOf('=')
+        return eq >= 0 ? envSplitHeads(t.slice(eq + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+      }
+      if (ENV_LONG_VALUE.includes(name)) { i += t.includes('=') ? 1 : 2; continue }
+      if (ENV_LONG_NOVALUE.includes(name)) { i++; continue }
+      return [null]
+    }
+    if (t.startsWith('-')) {
+      let step = 1
+      for (let x = 1; x < t.length; x++) {
+        const ch = t[x]
+        if (ENV_SHORT_NOVALUE.includes(ch)) continue
+        if (ENV_SHORT_VALUE.includes(ch)) {
+          const joined = x < t.length - 1
+          if (ch === 'S') return joined ? envSplitHeads(t.slice(x + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+          step = joined ? 1 : 2
+          break
+        }
+        return [null]
+      }
+      i += step
+      continue
+    }
+    break
+  }
+  return commandHeads(toks.slice(i), d + 1)
+}
+
 function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
@@ -535,6 +598,7 @@ function commandHeads(toksIn, d = 0) {
   if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
+  if (w === 'env') return envHeads(toks, d)
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
@@ -1008,12 +1072,19 @@ function addressFlagGiven(rest) {
   return false
 }
 
+// ENVOPTHEAD1104: the program an `env` #! line runs; -u, -C and -P take a value, NAME=VALUE is skipped.
+// Bence 69552: a #! line's env words go through the same env option parser as a command line's (see the python twin)
+function shebangEnvProgram(words) {
+  const progs = commandHeads(['env', ...words.filter(Boolean)]).filter((h) => h && h.length).map((h) => basename(h[0]))
+  return progs.find((p) => PYTHON.test(p) || (NODEISH.test(p) && p !== 'npx')) ?? progs[0] ?? ''
+}
+
 // 'py' | 'node' | null from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`).
 function shebangKind(text) {
   const m = /^#!\s*(\S+)([^\n]*)/.exec(text ?? '')
   if (!m) return null
   let prog = basename(m[1])
-  if (prog === 'env') prog = basename(m[2].trim().split(/\s+/).find((w) => w && !w.startsWith('-') && !w.includes('=')) ?? '')
+  if (prog === 'env') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
   if (PYTHON.test(prog)) return 'py'
   if (NODEISH.test(prog) && prog !== 'npx') return 'node'
   return null
@@ -1194,7 +1265,81 @@ export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScript
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
-  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth)))
+  return segments.some((toks) => {
+    // ENVOPTHEAD1104 (Bence 69475): `env -C DIR` runs its command in DIR, so a relative script is read there too; a
+    // DIR that cannot be known (a variable, `-`, `~user`) makes an interpreter or script run behind it a send.
+    const dirs = envChdirDirs(toks)
+    const heads = commandHeads(toks)
+    // an undecidable DIR: an interpreter or script run behind it is a send (this twin does not call a missing script
+    // a send, so the directory cannot simply be read as one that does not exist)
+    if (dirs.some((d) => UNDECIDABLE_CHDIR.test(d))
+      && heads.some((h) => h && h.length && (PYTHON.test(basename(h[0])) || NODEISH.test(basename(h[0])) || h[0].includes('/')))) return true
+    const bases = [cwd, ...dirs.map((d) => (d === '~' || d.startsWith('~/') ? join(homedir(), d.slice(1)) : isAbsolute(d) ? d : join(cwd, d)))]
+    return heads.some((h) => bases.some((b) => headRunsSenderScript(h, b, readScript, depth)))
+  })
+}
+
+const UNDECIDABLE_CHDIR = /^-$|^~[^/]|[*?[{$`]/
+
+// Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
+const ENV_LONG_OPTIONS = ['argv0', 'block-signal', 'chdir', 'debug', 'default-signal', 'ignore-environment', 'ignore-signal',
+  'list-signal-handling', 'null', 'split-string', 'unset', 'help', 'version']
+function envLongName(t) {
+  if (!t.startsWith('--') || t === '--') return null
+  const word = t.slice(2).split('=')[0]
+  if (ENV_LONG_OPTIONS.includes(word)) return word
+  const hits = ENV_LONG_OPTIONS.filter((o) => word && o.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+
+// ENVOPTHEAD1104: the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also in a cluster) runs in.
+// (value, index after it) when the env word t at j is -S / --split-string (also a prefix or a cluster); else null
+function envSplitValue(t, words, j) {
+  if (t.startsWith('--')) {
+    if (envLongName(t) !== 'split-string') return null
+    const eq = t.indexOf('=')
+    return eq >= 0 ? [t.slice(eq + 1), j + 1] : [words[j + 1] ?? '', j + 2]
+  }
+  if (t.startsWith('-')) {
+    let k = -1
+    for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
+    if (k > 0 && t[k] === 'S') return k < t.length - 1 ? [t.slice(k + 1), j + 1] : [words[j + 1] ?? '', j + 2]
+  }
+  return null
+}
+
+function envChdirDirs(words, d = 0) {
+  const out = []
+  for (let i = 0; i < words.length; i++) {
+    if (basename(words[i]) !== 'env') continue
+    let j = i + 1
+    while (j < words.length) {
+      const t = words[j]
+      if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
+      const split = envSplitValue(t, words, j)
+      if (split) {
+        // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+        let splitWords = []
+        try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
+        if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
+        break
+      }
+      const long = envLongName(t)
+      if (t === '-C' || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
+      if (long === 'chdir') out.push(t.slice(t.indexOf('=') + 1))
+      else if (long && !t.includes('=') && ['unset', 'split-string', 'argv0'].includes(long)) j++ // its value
+      else if (t.startsWith('-') && !t.startsWith('--')) {
+        let k = -1
+        for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
+        if (k > 0 && t[k] === 'C') {
+          if (k < t.length - 1) out.push(t.slice(k + 1))
+          else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }
+        } else if (k === t.length - 1) j++
+      }
+      j++
+    }
+  }
+  return out
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of

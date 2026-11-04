@@ -509,7 +509,8 @@ _WRAPPERS = {
     "time": ("fo", ("format", "output"), 0),
     "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
                              "role", "type", "chdir", "chroot", "command-timeout"), 0),
-    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    # ENVOPTHEAD1104: env is read by _env_heads (a structural parser); the entry keeps env a wrapper for the depth bound
+    "env": ("uCSPaLU", ("unset", "chdir", "split-string", "argv0"), 0),
     "nohup": ("", (), 0),
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
@@ -521,6 +522,12 @@ _WRAPPERS = {
     # first count found all sat inside quoted remote (ssh) command strings or heredoc
     # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
     "setsid": ("", (), 0),
+    # ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program, so the command behind
+    # them was never judged (measured on develop: all four were no send in front of a real sender).
+    "stdbuf": ("ioe", ("input", "output", "error"), 0),
+    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid"), 0),
+    "chrt": ("TPD", ("sched-runtime", "sched-period", "sched-deadline"), 1),  # then the priority, then the command
+    "caffeinate": ("tw", (), 0),
 }
 _HEAD_DEPTH = 8
 
@@ -640,6 +647,8 @@ def _command_heads(toks, _d: int = 0):
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    if w == "env":
+        return _env_heads(toks, _d)
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
         return _launcher_heads(toks, launcher, _d)
@@ -672,6 +681,172 @@ def _command_heads(toks, _d: int = 0):
     heads = []
     for s in starts:
         heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
+# Bence 69517: GNU env reads a long option by any unique prefix (getopt_long): `--c=DIR` is --chdir, `--spl=` is
+# --split-string. Its long options, as of coreutils 9.x.
+_ENV_LONG_OPTIONS = ("argv0", "block-signal", "chdir", "debug", "default-signal", "ignore-environment", "ignore-signal",
+                     "list-signal-handling", "null", "split-string", "unset", "help", "version")
+
+
+def _env_long_name(t):
+    """The env long option a `--word[=value]` names, by exact name or unique prefix; else None."""
+    if not t.startswith("--") or t == "--":
+        return None
+    word = t[2:].split("=", 1)[0]
+    if word in _ENV_LONG_OPTIONS:
+        return word
+    hits = [o for o in _ENV_LONG_OPTIONS if word and o.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _env_split_value(t, words, j):
+    """(value, index after it) when the env word `t` at `j` is -S / --split-string (also a prefix or a cluster)."""
+    if t.startswith("--"):
+        if _env_long_name(t) != "split-string":
+            return None
+        if "=" in t:
+            return t.split("=", 1)[1], j + 1
+        return (words[j + 1] if j + 1 < len(words) else ""), j + 2
+    if t.startswith("-"):
+        k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
+        if k > 0 and t[k] == "S":
+            if k < len(t) - 1:
+                return t[k + 1:], j + 1
+            return (words[j + 1] if j + 1 < len(words) else ""), j + 2
+    return None
+
+
+def _env_chdir_dirs(words, _d=0):
+    """ENVOPTHEAD1104 (Bence 69475): the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also
+    inside a cluster) runs its command in. A relative script there is resolved under DIR, not the cwd: they are handed
+    to the cd logic as `cd DIR` words, which also makes an undecidable DIR a send."""
+    out = []
+    for i, w in enumerate(words):
+        if _basename(w) != "env":
+            continue
+        j = i + 1
+        while j < len(words):
+            t = words[j]
+            if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
+                break
+            split = _env_split_value(t, words, j)
+            if split is not None:
+                # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+                value, after = split
+                try:
+                    split_words = [x for seg in _segments_tokens(value) for x in seg]
+                except ValueError:
+                    split_words = []  # an unsplittable value is already a send by _env_split_heads
+                if _d < _HEAD_DEPTH:
+                    out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
+                break
+            if t == "-C" or (t.startswith("--") and "=" not in t and _env_long_name(t) == "chdir"):
+                if j + 1 < len(words):
+                    out.append(words[j + 1])
+                j += 2
+                continue
+            if t.startswith("--") and "=" in t and _env_long_name(t) == "chdir":
+                out.append(t.split("=", 1)[1])
+            elif t.startswith("--") and "=" not in t and _env_long_name(t) in ("unset", "split-string", "argv0"):
+                j += 1  # its value
+            elif t.startswith("-") and not t.startswith("--"):
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
+                if k > 0 and t[k] == "C":
+                    if k < len(t) - 1:
+                        out.append(t[k + 1:])
+                    elif j + 1 < len(words):
+                        out.append(words[j + 1])
+                        j += 1
+                elif k == len(t) - 1:
+                    j += 1  # the value of -u / -P / -S
+            j += 1
+    return out
+
+
+def _with_env_chdir(cmd_words):
+    words = list(cmd_words)
+    for d in _env_chdir_dirs(cmd_words):
+        words += ["cd", d]
+    return words
+
+
+# Samu 69521: env's options are read STRUCTURALLY, not by a list of the dangerous ones. The GNU coreutils and the
+# BSD/macOS env man pages: these take no value (and the three signal options only an attached `=SIG`) ...
+_ENV_SHORT_NOVALUE = "i0v"
+_ENV_LONG_NOVALUE = ("ignore-environment", "null", "debug", "list-signal-handling", "help", "version", "block-signal",
+                     "default-signal", "ignore-signal")
+# ... and these take one (-L/-U: macOS env's login class / user). Any other option, a future env version's new one
+# included, cannot be stepped over safely: the command behind it is undecidable, which counts as a send.
+_ENV_SHORT_VALUE = "uCSPaLU"
+_ENV_LONG_VALUE = ("unset", "chdir", "split-string", "argv0")
+
+
+def _env_heads(toks, _d):
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if _ENV_ASSIGN.match(t):
+            # NAME=VALUE ends the options (GNU env stops at the first non-option): the rest is more of them, then the command
+            while i < len(toks) and _ENV_ASSIGN.match(toks[i]):
+                i += 1
+            break
+        if t == "--":
+            i += 1
+            break
+        if t == "-":  # the old spelling of -i
+            i += 1
+            continue
+        if t.startswith("--"):
+            name = _env_long_name(t)
+            if name == "split-string":
+                value, after = (t.split("=", 1)[1], i + 1) if "=" in t else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                return _env_split_heads(value, toks[after:], _d)
+            if name in _ENV_LONG_VALUE:
+                i += 1 if "=" in t else 2
+                continue
+            if name in _ENV_LONG_NOVALUE:
+                i += 1
+                continue
+            return [None]
+        if t.startswith("-"):
+            step = 1
+            for x in range(1, len(t)):
+                ch = t[x]
+                if ch in _ENV_SHORT_NOVALUE:
+                    continue
+                if ch in _ENV_SHORT_VALUE:
+                    joined = x < len(t) - 1
+                    if ch == "S":
+                        value, after = (t[x + 1:], i + 1) if joined else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                        return _env_split_heads(value, toks[after:], _d)
+                    step = 1 if joined else 2
+                    break
+                return [None]
+            i += step
+            continue
+        break
+    return _command_heads(toks[i:], _d + 1)
+
+
+def _env_split_heads(value, rest, _d):
+    """ENVOPTHEAD1104: `env -S STRING` splits STRING into words and runs them (the words after it appended), so the
+    real command is inside the value. It was skipped as an option value, and `env -S "python3 send.py --to a@x"`
+    was no send. The value is split by this module's own tokenizer; one that does not split counts as a send."""
+    try:
+        segs = _segments_tokens(value)
+    except ValueError:
+        return [None]
+    if not segs:
+        segs = [[]]
+    segs[-1] = list(segs[-1]) + list(rest)
+    # Bence 69552: GNU env parses the options at the START of the split words too (`env -S "-C DIR python3 send.py"`
+    # runs python3 in DIR, measured with genv 9.10), so the first segment goes back through env's own option parser,
+    # as if it were `env <words> <rest>`, not with its first word taken as the program.
+    heads = []
+    for k, s in enumerate(segs):
+        heads += _command_heads((["env"] + list(s)) if k == 0 else s, _d + 1)
     return heads
 
 
@@ -1236,6 +1411,14 @@ def _address_flag_given(rest) -> bool:
     return False
 
 
+def _shebang_env_program(words):
+    """The program an `env` #! line runs. ENVOPTHEAD1104 (Bence 69552): the line's words go through the same env
+    option parser as a command line's (a value option, a long prefix, -S with options at its start), so
+    `#!/usr/bin/env -S -a x python3` and `-S --c /tmp python3` are python3. An undecidable line names no program."""
+    progs = [_basename(h[0]) for h in _command_heads(["env"] + list(words)) if h]
+    return next((p for p in progs if _PYTHON.match(p) or (_NODEISH.match(p) and p != "npx")), progs[0] if progs else "")
+
+
 def _shebang_kind(text):
     """'py' | 'node' | None from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`)."""
     m = re.match(r"#!\s*(\S+)([^\n]*)", text or "")
@@ -1243,7 +1426,7 @@ def _shebang_kind(text):
         return None
     prog = _basename(m.group(1))
     if prog == "env":
-        prog = _basename(next((w for w in m.group(2).split() if not w.startswith("-") and "=" not in w), ""))
+        prog = _basename(_shebang_env_program(m.group(2).split()))
     if _PYTHON.match(prog):
         return "py"
     if _NODEISH.match(prog) and prog != "npx":
@@ -1489,7 +1672,7 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         segments = _segments_tokens(cmd)
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
-    cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
+    cmd_words = _with_env_chdir(list(_cd_words) + [w for toks in segments for w in toks])
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 

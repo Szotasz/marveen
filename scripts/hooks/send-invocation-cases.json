@@ -1888,6 +1888,211 @@
       "name": "MAILGATEAPIB1027 a grep for mail stays no send",
       "cmd": "grep -rn 'mail -s' scripts/",
       "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -P takes a value (macOS/BSD search path)",
+      "cmd": "env -P /usr/local/bin python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -P before sendmail",
+      "cmd": "env -P /opt/homebrew/bin sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -S splits its value into the command",
+      "cmd": "env -S \"python3 send.py --to a@example.com\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -S joined value",
+      "cmd": "env -S'sendmail a@b.hu'",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --split-string=",
+      "cmd": "env --split-string=\"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --split-string value",
+      "cmd": "env --split-string \"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -iS cluster",
+      "cmd": "env -iS \"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -S value with the words after it appended",
+      "cmd": "env -S \"python3 send.py\" --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, env -P before a non-sender",
+      "cmd": "env -P /usr/local/bin ls -la",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, env -S with a non-sender",
+      "cmd": "env -S \"echo hi\"",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: stdbuf -o0 before the sender",
+      "cmd": "stdbuf -o0 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: stdbuf --output=0 before sendmail",
+      "cmd": "stdbuf --output=0 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: ionice -c 3 before the sender",
+      "cmd": "ionice -c 3 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: chrt -r 1 before sendmail",
+      "cmd": "chrt -r 1 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: chrt 1 before the sender",
+      "cmd": "chrt 1 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: caffeinate -i before sendmail",
+      "cmd": "caffeinate -i sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: caffeinate -t 60 before the sender",
+      "cmd": "caffeinate -t 60 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, stdbuf before a non-sender",
+      "cmd": "stdbuf -o0 ls -la",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69517): env -a ARG before sendmail",
+      "cmd": "env -a x sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -a ARG before the sender",
+      "cmd": "env -a x python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -ia ARG cluster",
+      "cmd": "env -ia x sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --argv0=ARG",
+      "cmd": "env --argv0=x sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --split= (a unique prefix of --split-string)",
+      "cmd": "env --split=\"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --spl STRING (a unique prefix)",
+      "cmd": "env --spl \"python3 send.py --to a@example.com\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, env -a ARG before a non-sender",
+      "cmd": "env -a x ls",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Samu 69535): an unknown env option is undecidable: a send",
+      "cmd": "env --zzz python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: an unknown short env option, before a non-sender too",
+      "cmd": "env -Z ls",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: an ambiguous long prefix is undecidable",
+      "cmd": "env --d sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: macOS env -U USER takes a value",
+      "cmd": "env -U bob sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, known no-value options before a non-sender",
+      "cmd": "env -i0v --null ls",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, a NAME=VALUE ends the options (GNU): -C is the program",
+      "cmd": "env A=1 -C x ls",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, an optional =SIG argument",
+      "cmd": "env --default-signal=TERM ls",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: an unknown long env option is undecidable even before a non-sender",
+      "cmd": "env --zzz ls",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, macOS env -U USER takes a value: the program is ls",
+      "cmd": "env -U bob ls",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, after NAME=VALUE an option-looking word is the program (-i), not an option",
+      "cmd": "env A=1 -i sendmail a@b.hu",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): -C DIR at the start of the -S value, then a sender",
+      "cmd": "env -S \"-C /tmp sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): --chdir=DIR at the start of the -S value",
+      "cmd": "env -S \"--chdir=/tmp sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): -u NAME at the start of the -S value",
+      "cmd": "env -S \"-u X sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): -a ARG at the start of the -S value",
+      "cmd": "env -S \"-a x sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): an unknown option at the start of the -S value is undecidable",
+      "cmd": "env -S \"--zzz ls\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104 (Bence 69552): control, -C DIR at the start of the -S value before a non-sender",
+      "cmd": "env -S \"-C /tmp ls\"",
+      "expected": false
     }
   ]
 }

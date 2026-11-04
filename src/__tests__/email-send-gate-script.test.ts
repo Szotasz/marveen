@@ -390,3 +390,62 @@ describe('python -m a local module, and node DIR (MAILGATEDIRZIP1027)', () => {
     }
   })
 })
+
+describe('env value options in front of the sender (ENVOPTHEAD1104)', () => {
+  it('a #! line env -P/-u/-C DIR python3 is read as python3; env -P / -S in the command line run the sender', () => {
+    const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
+    const cwd = workdir({
+      p_sender: '#!/usr/bin/env -P /usr/bin python3\n' + SMTP,
+      u_sender: '#!/usr/bin/env -u FOO python3\n' + SMTP,
+      c_sender: '#!/usr/bin/env -C /tmp python3\n' + SMTP,
+      'send.py': SMTP,
+      harmless: '#!/usr/bin/env -P /usr/bin python3\nprint(1)\n',
+    })
+    for (const f of ['p_sender', 'u_sender', 'c_sender', 'harmless']) chmodSync(join(cwd, f), 0o755)
+    for (const cmd of ['./p_sender', './u_sender', './c_sender', 'env -P /tmp/x python3 send.py', 'env -S "python3 send.py"']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+    expect(scriptRunSends('./harmless', cwd)).toBe(false)
+  })
+})
+
+describe('env -C and the launchers in front of the sender (ENVOPTHEAD1104, Bence 69475/69481)', () => {
+  it('env -C DIR resolves the relative script under DIR; stdbuf / ionice / chrt / caffeinate run the command behind them', () => {
+    const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
+    const cwd = workdir({ 'send.py': 'print(1)\n' })
+    mkdirSync(join(cwd, 'evil'))
+    writeFileSync(join(cwd, 'evil', 'send.py'), SMTP)
+    writeFileSync(join(cwd, 'sender.py'), SMTP)
+    for (const cmd of [`env -C ${cwd}/evil python3 send.py`, `env --chdir=${cwd}/evil python3 send.py`,
+      `env --chdir ${cwd}/evil python3 send.py`, `env -C${cwd}/evil python3 send.py`, 'env -C evil python3 send.py',
+      'env -C $X python3 send.py', `env -a x -C ${cwd}/evil python3 send.py`, `env --c=${cwd}/evil python3 send.py`,
+      `env --chd ${cwd}/evil python3 send.py`, 'stdbuf -o0 python3 sender.py', 'ionice -c 3 python3 sender.py',
+      'chrt -r 1 python3 sender.py', 'caffeinate -i python3 sender.py']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+    expect(scriptRunSends('python3 send.py', cwd)).toBe(false)
+    expect(scriptRunSends(`env -C ${cwd} python3 send.py`, cwd)).toBe(false)
+  })
+
+  it('GNU env parses the options at the start of an -S value too, on the command line and on a #! line (Bence 69552)', () => {
+    const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
+    const cwd = workdir({
+      'send.py': 'print(1)\n',
+      sa: '#!/usr/bin/env -S -a x python3\n' + SMTP,
+      sc: '#!/usr/bin/env -S --c /tmp python3\n' + SMTP,
+      su: '#!/usr/bin/env -S -u X python3\n' + SMTP,
+      si: '#!/usr/bin/env -S -i python3\n' + SMTP,
+    })
+    for (const f of ['sa', 'sc', 'su', 'si']) chmodSync(join(cwd, f), 0o755)
+    mkdirSync(join(cwd, 'evil'))
+    writeFileSync(join(cwd, 'evil', 'send.py'), SMTP)
+    for (const cmd of [`env -S "-C ${cwd}/evil python3 send.py"`, `env -S "--chdir=${cwd}/evil python3 send.py"`,
+      `env -S "-u X python3 ${cwd}/evil/send.py"`, `env -S "-a x python3 ${cwd}/evil/send.py"`,
+      `env -S "--c ${cwd}/evil" python3 send.py`, `env -S "-S '-C ${cwd}/evil python3 send.py'"`,
+      `env --split-string="-C ${cwd}/evil python3 send.py"`,
+      './sa', './sc', './su', './si']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+    expect(scriptRunSends(`env -S "-C ${cwd} python3 send.py"`, cwd)).toBe(false)
+  })
+})
