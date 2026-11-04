@@ -110,7 +110,7 @@
     {"name": "addressed by a bare address: a cd $(...) (the cwd's harmless tool.py is not where it runs)", "cmd": "cd $(git rev-parse --show-toplevel) && python3 tool.py a@example.invalid", "main": true, "sub": true},
     {"name": "genv in front of the sender (a homebrew GNU launcher)", "cmd": "genv python3 send.py", "main": true, "sub": true},
     {"name": "genv by its absolute path", "cmd": "/opt/homebrew/bin/genv python3 send.py", "main": true, "sub": true},
-    {"name": "genv -C DIR", "cmd": "genv -C evil python3 send.py", "main": true, "sub": true},
+    {"name": "genv -C DIR (the cwd's plain.py is harmless, the one in DIR sends)", "cmd": "genv -C evil python3 plain.py", "main": true, "sub": true},
     {"name": "gtimeout in front of the sender", "cmd": "gtimeout 10 python3 send.py", "main": true, "sub": true},
     {"name": "gnohup in front of the sender", "cmd": "gnohup python3 send.py", "main": true, "sub": true},
     {"name": "gnice -n 5 in front of the sender", "cmd": "gnice -n 5 python3 send.py", "main": true, "sub": true},
