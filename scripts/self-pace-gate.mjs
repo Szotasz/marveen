@@ -500,7 +500,7 @@ const MAX_ASSIGNMENT_VARIANTS = 8
 // literal to (NAME -> every literal value it gets), the real project root and store dir
 // (from the allowlist path, so tests can pass a temp root), and the working directory
 // the hook reports (payload cwd), which literal cd segments then move.
-export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = null, selfAgent = undefined) {
+export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = null) {
   const assigns = new Map()
   for (const seg of segs) {
     const words = shellWords(seg)
@@ -520,30 +520,7 @@ export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, c
   // root/store are compared as pathKey()s (real, on-disk case, every nameForms() form):
   // see realDeep and sameKey.
   const start = cwd ? resolve(String(cwd)) : null
-  return { assigns, root: pathKey(resolve(store, '..')), rootPath: resolve(store, '..'), selfAgent, store: pathKey(store), cwd: start, cwds: [start] }
-}
-
-// `$(cat <token file>)` is the fleet's documented header form, and its output is no
-// unknown: the gate reads the file itself and puts its CONTENT in the substitution's
-// place, so the glob reading below judges the text bash will see. Without this, with
-// the cwd at the project root, the substitution stood for any text (`*`, relative to
-// the root, could be local-hooks), and every dashboard call written the documented
-// way was denied. Only the token files acceptedTokenFile names, resolved against the
-// known cwd (a relative `store/.dashboard-token` counts only where it IS the root's;
-// an unknown cwd resolves nothing), and only a content that is one plain name: no `/`,
-// no `.`, no glob character, and not itself a protected name. Any other substitution
-// stays unresolved.
-const TOKEN_CAT_SUBST_RX = /\$\(\s*(?:cat\s+|<\s*)([\w./@+-]+)\s*\)/g
-const INERT_TOKEN_RX = /^[A-Za-z0-9_-]+$/
-function resolveTokenSubst(text, ctx) {
-  if (!ctx?.rootPath) return text
-  return text.replace(TOKEN_CAT_SUBST_RX, (full, path) => {
-    const abs = path.startsWith('/') ? path : ctx.cwd ? join(ctx.cwd, path) : null
-    if (!abs || !acceptedTokenFile(resolve(abs), { projectRoot: ctx.rootPath, selfAgent: ctx.selfAgent })) return full
-    let content
-    try { content = readFileSync(resolve(abs), 'utf-8').trim() } catch { return full }
-    return INERT_TOKEN_RX.test(content) && !mentionsProtectedName(` ${content}`) ? content : full
-  })
+  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: start, cwds: [start] }
 }
 
 // The working directory after one segment: a literal `cd DIR` / `pushd DIR` moves it,
@@ -598,9 +575,24 @@ export function protectedMention(text, ctx) {
 // as a mention.
 const DIR_WRITERS = new Set(['cp', 'mv', 'ln', 'install', 'rsync', 'tar', 'bsdtar', 'gtar', 'unzip', 'cpio', 'patch', 'ditto', '7z', '7za'])
 
+// A curl header argument, `-H "Name: value"`, is a header, never a path, so what its
+// value expands to cannot name a protected file. The fleet's documented dashboard call,
+// `-H "Authorization: Bearer $(cat store/.dashboard-token)"`, was denied from the project
+// root: the substitution stood for any text, and there `*` could be local-hooks. The
+// argument POSITION decides, not the file's content (reading the content at gate time
+// races a command that rewrites the file before its own substitution runs, review on
+// #2495). Only a double-quoted value that opens with a fixed header name, and whose
+// expansions are plain variables or a `$(cat PATH)` / `$(< PATH)` read: a substitution
+// that runs anything else keeps the whole argument unresolved.
+const CURL_HEADER_ARG_RX = /(^|\s)(?:-H|--header)(?:\s+|=)"[A-Za-z][\w-]*:(?:[^"`$\\]|\$\(\s*(?:cat\s+|<\s*)[\w./@+-]+\s*\)|\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*)*"(?=\s|$)/g
+function inertCurlHeaders(src) {
+  const first = src.trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? ''
+  return first.replace(/^.*\//, '') === 'curl' ? src.replace(CURL_HEADER_ARG_RX, '$1-H HEADER') : src
+}
+
 // A glob, brace or unresolved word that can expand onto a protected name.
 function protectedPatternWord(text, ctx) {
-  const src = resolveTokenSubst(String(text), ctx).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, '')
+  const src = inertCurlHeaders(String(text).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, ''))
   // An unresolved expansion is read as any text. One that STARTS a word may be an
   // absolute path, so that word has no known parent directory.
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
@@ -3218,7 +3210,7 @@ function decide(toolName, toolInput, opts = {}) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
-    const protectedCtx = protectedContext(naiveSegs, opts.allowlistPath, opts.cwd, opts.selfAgent)
+    const protectedCtx = protectedContext(naiveSegs, opts.allowlistPath, opts.cwd)
     for (const seg of naiveSegs) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
