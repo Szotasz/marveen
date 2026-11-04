@@ -535,34 +535,15 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_DISCORD" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      # Safe JSON merge (same shape as ensure-managed-channels-enabled.sh):
-      # tmp file + copymode + os.replace, so no interruption can leave a
-      # truncated managed-settings behind. And an org-policy file is NEVER
-      # rebuilt from scratch: on a parse failure we say so and leave it
-      # untouched -- a {} fallback would silently drop the OTHER channels'
-      # allowlist entries, muting them host-wide.
-      if sudo python3 - "$MANAGED_FILE" <<'DISCORDMERGEPY'
-import json, os, shutil, sys
-p = sys.argv[1]
-try:
-    d = json.load(open(p))
-except Exception as e:
-    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(d, dict):
-    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
-    sys.exit(1)
-plugins = d.get('allowedChannelPlugins', [])
-entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
-if entry not in plugins:
-    plugins.append(entry)
-d['allowedChannelPlugins'] = plugins
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-shutil.copymode(p, tmp)
-os.replace(tmp, p)
-DISCORDMERGEPY
+      # Merge only, the file is never created here: the shared writer
+      # (MANAGEDSETTINGSWRITE1103, scripts/lib/managed-settings-write.py).
+      # An org-policy file is NEVER rebuilt from scratch: one that is not a
+      # valid JSON object is left untouched and the call fails, because a {}
+      # fallback would silently drop the OTHER channels' allowlist entries,
+      # muting them host-wide. Every other key and the file mode stay; the
+      # write goes through a fresh mkstemp file and os.replace.
+      if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" \
+        --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
       else
@@ -616,42 +597,19 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_ALL" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      # Safe JSON merge (same shape as the Discord branch / #1306): tmp file +
-      # copymode + os.replace, so no interruption can leave a truncated
-      # managed-settings behind. And an org-policy file is NEVER rebuilt from
-      # scratch: on a parse failure we say so and leave it untouched -- the old
+      # Additive merge through the shared writer (MANAGEDSETTINGSWRITE1103,
+      # scripts/lib/managed-settings-write.py; same call as the Discord branch).
+      # An org-policy file is NEVER rebuilt from scratch: one that is not a
+      # valid JSON object is left untouched and the call fails -- the old
       # empty-object fallback silently dropped every OTHER managed key
-      # (channelsEnabled, other allowlists) host-wide. The old shape also
-      # piped through `sudo tee`, which TRUNCATES the file even when the merge
-      # process fails -- a failed merge left an EMPTY org-policy file behind.
-      if sudo python3 - "$MANAGED_FILE" <<'SLACKMERGEPY'
-import json, os, shutil, sys
-p = sys.argv[1]
-required = [
-    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
-    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
-]
-try:
-    d = json.load(open(p))
-except Exception as e:
-    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(d, dict):
-    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
-    sys.exit(1)
-plugins = d.get('allowedChannelPlugins', [])
-for entry in required:
-    if not any(p2.get('plugin') == entry['plugin'] and p2.get('marketplace') == entry['marketplace'] for p2 in plugins):
-        plugins.append(entry)
-d['allowedChannelPlugins'] = plugins
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-shutil.copymode(p, tmp)
-os.replace(tmp, p)
-SLACKMERGEPY
+      # (channelsEnabled, other allowlists) host-wide, and the older `sudo tee`
+      # shape TRUNCATED the file even when the merge failed. Every other key and
+      # the file mode stay; the write goes through a fresh mkstemp file.
+      if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" \
+        --add-plugin slack-channel@marveen-marketplace \
+        --add-plugin telegram@claude-plugins-official \
+        --add-plugin teams@marveen-marketplace \
+        --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
       else
@@ -665,28 +623,18 @@ SLACKMERGEPY
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
     sudo mkdir -p "$MANAGED_DIR"
-    # Fresh file: still tmp + os.replace, so an interrupted install can never
-    # leave a truncated/empty org-policy file that a later run would then
-    # refuse to touch (the merge above declines unparseable files by design).
-    if sudo python3 - "$MANAGED_FILE" <<'SLACKCREATEPY'
-import json, os, sys
-p = sys.argv[1]
-required = [
-    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
-    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
-]
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps({'allowedChannelPlugins': required}, indent=2) + "\n")
-# A fresh tmp inherits the caller's umask; under `umask 077` that leaves a
-# root-owned 0600 policy the unprivileged session cannot read, so the channel
-# policy silently never takes effect (the exact trap documented in
-# scripts/ensure-managed-channels-enabled.sh) -- pin the world-readable mode.
-os.chmod(tmp, 0o644)
-os.replace(tmp, p)
-SLACKCREATEPY
+    # Fresh file through the same shared writer (--create): a fresh mkstemp file
+    # and os.replace, so an interrupted install can never leave a truncated or
+    # empty org-policy file that a later run would then refuse to touch (the
+    # merge above declines unparseable files by design). A new file gets 0644
+    # whatever the umask: under `umask 077` a root-owned 0600 policy is one the
+    # unprivileged session cannot read, so it silently never takes effect. If a
+    # file appeared meanwhile, --create merges into it instead of replacing it.
+    if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" --create \
+      --add-plugin slack-channel@marveen-marketplace \
+      --add-plugin telegram@claude-plugins-official \
+      --add-plugin teams@marveen-marketplace \
+      --add-plugin discord@claude-plugins-official
     then
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
     else
