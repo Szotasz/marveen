@@ -145,6 +145,10 @@ jobs:
       # LINUXINSTPREREQ1104: install-linux.sh never goes on with a Node.js older than v20 (the
       # distro fallback and the post-check). Hermetic: the real block with stubbed node/apt/curl/sudo.
       - run: bash scripts/__tests__/install-linux-node-recheck.test.sh
+      # LINUXINSTPREREQ1104 PR2: the non-admin pre-check and --admin-prereq (the real block,
+      # stubbed id/sudo/python3). The container pair (install-linux-admin-prereq.container.sh)
+      # needs docker and the network, so it is run by hand, not here.
+      - run: bash scripts/__tests__/install-linux-admin-prereq.test.sh
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
