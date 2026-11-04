@@ -1822,11 +1822,12 @@ def spaced_en_dashes(prose: str) -> int:
 # NOT silent: every run appends a loud line to the gate log, because a
 # protection whose absence is invisible only protects until someone touches
 # the tree. File shape: {"bad_name_patterns": ["<python-regex>", ...]}
-_LOCAL_RULES = os.environ.get(
-    "OUTGOING_COPY_GATE_RULES",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                 "store", "outgoing-copy-gate-rules.json"),
-)
+# Always the install's own file (ENVRELAXGATE1104): the hook runs in the checked
+# agent's environment, so no environment variable may hand it other rules. A test
+# runs the hook from a tmp install (<tmp>/scripts linked to the repo's; abspath,
+# not realpath, keeps <tmp> as the root).
+_LOCAL_RULES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                            "store", "outgoing-copy-gate-rules.json")
 
 _GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
 

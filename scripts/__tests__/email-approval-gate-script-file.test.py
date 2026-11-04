@@ -292,8 +292,7 @@ try:
     store = make_store(D, level=2)
 
     def run_gate(command):
-        env = dict(os.environ,
-                   OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+        env = dict(os.environ)
         payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": D}
         p = subprocess.run([sys.executable, gate_for(store, GATE)], input=json.dumps(payload).encode(),
                            capture_output=True, env=env)

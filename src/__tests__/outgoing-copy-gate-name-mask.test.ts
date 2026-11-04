@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
+import { copyGateInstall } from './helpers/copy-gate-install.js'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -30,8 +31,8 @@ const GATE = join(ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py')
 let RULES = ''
 
 beforeAll(() => {
-  // The gate log is derived from the rules file's directory, so a temp dir also
-  // keeps this test from appending to the install's real gate log.
+  // The gate reads its rules (and writes its log) only in its own install, so the
+  // hook is loaded from a tmp install linked to this rules file (copyGateInstall).
   const dir = mkdtempSync(join(tmpdir(), 'copy-gate-name-'))
   RULES = join(dir, 'outgoing-copy-gate-rules.json')
   writeFileSync(RULES, JSON.stringify({
@@ -44,10 +45,10 @@ beforeAll(() => {
 function nameProblems(text: string): string[] {
   const out = execFileSync('python3', ['-c', `
 import importlib.util, json, sys
-spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE)})
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(copyGateInstall(RULES).hook)})
 g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
 print(json.dumps([p for p in g.audit(sys.argv[1]) if "HELYTELEN NEV" in p]))
-`, text], { encoding: 'utf-8', env: { ...process.env, OUTGOING_COPY_GATE_RULES: RULES } })
+`, text], { encoding: 'utf-8', env: { ...process.env } })
   return JSON.parse(out.trim())
 }
 

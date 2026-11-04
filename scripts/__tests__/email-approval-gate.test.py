@@ -143,8 +143,7 @@ def make_daily_log_stub(received):
 
 def run_gate(store, payload, extra_env=None, gate=GATE):
     gate = gate_for(store, gate)
-    env = dict(os.environ,
-               OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+    env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
     proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
@@ -321,7 +320,7 @@ with tempfile.TemporaryDirectory() as td:
     # Marveen's #1149 review: this gate AUTHORIZES, so unlike the copy gate it
     # must fail closed on an unparseable payload too -- the docstring and the
     # code now state the same contract.
-    env = dict(os.environ, OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+    env = dict(os.environ)
     proc = subprocess.run([sys.executable, gate_for(store, GATE)], input=b"this is not json",
                           capture_output=True, env=env)
     check("fail-closed: unparseable stdin -> DENIED (exit 2, never 0/1)",

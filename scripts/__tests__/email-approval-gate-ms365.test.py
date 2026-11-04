@@ -113,8 +113,7 @@ def owner_store(root, level, owner=OWNER):
 
 def run_gate(store, payload, gate=GATE):
     gate = gate_for(store, gate)
-    env = dict(os.environ,
-               OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+    env = dict(os.environ)
     proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
                           capture_output=True, env=env)
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
