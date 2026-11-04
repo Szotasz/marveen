@@ -255,7 +255,8 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // (TGINREPLAYGATE1104, #2512 review): a directory changer aimed at one of them (`cp x telegram/`, `cp -r d/.
   // telegram/`, rsync, `tar -C`, `rm -rf`) lands on the log without naming it, and a pattern has no ancestor.
   // A write naming another file inside them is denied only if CHANNEL_STATE_FILES lists that name (access.json it
-  // does; a look-alike like inbound-evidence.jsonl.bak does not).
+  // does; a look-alike like inbound-evidence.jsonl.bak does not). Not seen (the content-copy limit of claudeDirCopyIn):
+  // an archive extracted, or a directory's content copied, into the agent directory itself.
   { rel: 'agents/*/.claude/channels/telegram', pattern: true },
   { rel: 'agents/*/.claude/channels', pattern: true },
 ]
