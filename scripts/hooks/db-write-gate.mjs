@@ -251,12 +251,14 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // entries (TGINREPLAYGATE1104) resolved into this list: CHANNEL_STATE_FILES names both the current and the
   // rotated file, under every state root, not only agents/<name>/.claude/channels/telegram.
   ...channelStateTargets(),
-  // ...and the two Telegram state directories above the evidence log, as targets only (not their contents)
-  // (TGINREPLAYGATE1104, #2512 review): a directory changer aimed at one of them (`cp x telegram/`, `cp -r d/.
-  // telegram/`, rsync, `tar -C`, `rm -rf`) lands on the log without naming it, and a pattern has no ancestor.
-  // A write naming another file inside them is denied only if CHANNEL_STATE_FILES lists that name (access.json it
-  // does; a look-alike like inbound-evidence.jsonl.bak does not). Not seen (the content-copy limit of claudeDirCopyIn):
-  // an archive extracted, or a directory's content copied, into the agent directory itself.
+  // ...and the two Telegram state directories above the evidence log, as targets only (not their contents, no `dir`)
+  // (TGINREPLAYGATE1104, #2512 review): classifyWord gives a pattern no 'ancestor', so without the entries a
+  // directory changer aimed at one of them (`rm -rf telegram/`, a `mv` of or onto channels/, `cp x telegram/`,
+  // `cp -r d/. telegram/`, rsync, `tar -C`) would take, replace or land on the log unnamed; a copy, rsync or
+  // extraction into them is judged by its landing as well (CPDESTDIR1104). A write naming another file inside them
+  // is denied only if CHANNEL_STATE_FILES lists that name (access.json it does; a look-alike like
+  // inbound-evidence.jsonl.bak does not). Not seen (the content-copy limit of claudeDirCopyIn): an archive extracted,
+  // or a directory's content copied, into the agent directory itself.
   { rel: 'agents/*/.claude/channels/telegram', pattern: true },
   { rel: 'agents/*/.claude/channels', pattern: true },
 ]

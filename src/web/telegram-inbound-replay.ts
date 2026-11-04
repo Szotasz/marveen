@@ -33,8 +33,8 @@
  * can write a line into it, and that line reaches the agent framed as a channel
  * message. The sub-agent write gate (scripts/hooks/db-write-gate.mjs) denies
  * the command forms it recognises on the log, but that is a text brake, not an
- * OS boundary: an archive extracted, or a directory's content copied, into the
- * agent's own directory passes it. TELEGRAM_INBOUND_REPLAY_ENABLED is therefore
+ * OS boundary: a script file written earlier, or a path an interpreter puts
+ * together at run time, passes it. TELEGRAM_INBOUND_REPLAY_ENABLED is therefore
  * '0' until the owner turns it on.
  */
 

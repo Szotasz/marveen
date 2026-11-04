@@ -144,8 +144,9 @@ describe('the Telegram inbound-evidence logs, as a sub-agent: every write denied
   ])('Bash: %s', (command) => {
     expect(sub(command, agentDir)).toEqual(SUB)
   })
-  // A pattern has no ancestor, so without the two directory entries each of these reached the log unnamed (measured on
-  // the gate before them: all passed).
+  // classifyWord gives a pattern no ancestor, so without the two directory entries each of these reached the log unnamed
+  // (measured on the gate before them: all passed). Since CPDESTDIR1104 the cp, rsync and tar -C forms are also judged
+  // by their landing; rm -rf and mv still pass without the entries (measured).
   it.each([
     'cp /tmp/inbound-evidence.jsonl .claude/channels/telegram/',
     'cp -r /tmp/prep/. ../qwen/.claude/channels/telegram/',
