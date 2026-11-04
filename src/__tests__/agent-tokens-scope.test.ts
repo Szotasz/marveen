@@ -651,7 +651,10 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
       mainBody: {}, mainStatus: 400 },
     { what: 'device-key minting', method: 'POST', path: '/api/auth/device-keys', agentBody: { name: 'lopott-kulcs' }, mainBody: { name: 'fo-kulcs' }, mainStatus: 201 },
     { what: 'bridge enrollment (mints a key)', method: 'POST', path: '/api/security/bridge-enroll', agentBody: { key_line: 'ssh-ed25519 AAAA x', name: 'lopott' }, mainBody: {}, mainStatus: 400 },
-    { what: 'terminal-input toggle', method: 'POST', path: '/api/terminal-input', agentBody: { enabled: true }, mainBody: {}, mainStatus: 400 },
+    // OWNERGATE3-1104: the main token passes the scope gate and reaches the handler, whose strict owner gate then
+    // refuses it: this table runs before any dashboard login exists, and the toggle never takes the first-run branch
+    // (403 owner_session_required + setup_required, not the scope rule).
+    { what: 'terminal-input toggle', method: 'POST', path: '/api/terminal-input', agentBody: { enabled: true }, mainBody: {}, mainStatus: 403 },
     // LAST on purpose: once a dashboard user exists, the bare main token no
     // longer issues credentials or approves, so every main-token call above
     // runs while there is still no login.
@@ -669,6 +672,8 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
       expect(String(a.json.error)).toContain('via /api/messages')
       const m = await call(b.method, b.path, MAIN_TOKEN, b.mainBody)
       expect(m.status, JSON.stringify(m.json)).toBe(b.mainStatus)
+      // The main token always gets past the scope gate: a 403 here is the handler's own owner gate, never this rule.
+      expect(m.json?.rule).toBeUndefined()
     })
   }
 
