@@ -376,11 +376,14 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
 // any word that names a target segment, a glob or an expansion. Inside a
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
-const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
+export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
   'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
   // PLUGINCODEWRITE1104 (E3): a bare plugin-tree name from its parent (`cd ~/.claude && rm -rf plugins`)
-  'plugins', 'marveen-local-plugins', 'gromzo'])
+  'plugins', 'marveen-local-plugins', 'gromzo',
+  // CPDESTDIR1104 (Dani B2, Samu 69132): the same for the start-loaded trees a session reads (`cd ~/.claude && rm -rf
+  // skills` named no path-like word and passed)
+  'rules', 'skills', 'agents', 'commands', 'output-styles'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
@@ -430,16 +433,26 @@ export function reShellsText(text) {
   })
 }
 
-// A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
-function patternExact(key, t) {
-  // every nameForms() form of the key against the same form of the pattern (the real path, its case folds)
+// A pattern entry against a resolved path key (CPDESTDIR1104, Dani B1): 'exact' when every segment matches (`*`
+// matches one non-empty segment), 'under' when the entry is a directory and the key lies below a match, 'ancestor'
+// when the key is a strict prefix of the pattern (a directory on the way to a match), else null. Every nameForms()
+// form of the key is read against the same form of the pattern (the real path, its case folds).
+export function patternRel(key, t) {
+  let best = null
   for (let i = 0; i < key.length; i++) {
     const K = normalizePathSegments(key[i])
     const T = normalizePathSegments(t.key[i] ?? t.key[0])
-    if (K.length === T.length && T.every((seg, x) => seg === '*' ? K[x] !== '' : seg === K[x])) return true
+    const n = Math.min(K.length, T.length)
+    let ok = true
+    for (let x = 0; x < n && ok; x++) ok = T[x] === '*' ? K[x] !== '' : T[x] === K[x]
+    if (!ok) continue
+    if (K.length === T.length) return 'exact'
+    if (K.length > T.length) { if (t.dir) return 'under'; continue }
+    best = 'ancestor'
   }
-  return false
+  return best
 }
+function patternExact(key, t) { return patternRel(key, t) === 'exact' }
 function cpOnlyReadsProtected(words, ctx) {
   const vals = words.slice(1).map((w) => w.value)
   const operands = []
@@ -559,7 +572,8 @@ export function classifyWord(word, ctx) {
   let best = null
   for (const t of list) {
     if (t.pattern) {
-      if (patternExact(key, t)) return 'exact'
+      const r = patternRel(key, t)
+      if (r === 'exact' || r === 'under') return r
       continue
     }
     if (sameKey(key, t.key)) return 'exact'
@@ -590,6 +604,33 @@ const INTERPRETERS = new Set(['python', 'python3', 'node', 'bash', 'sh', 'zsh'])
 // contains a protected path, they reach it without naming it.
 const DIR_CHANGERS = new Set(['rm', 'rmdir', 'mv', 'cp', 'rsync', 'ln', 'install', 'tar', 'bsdtar', 'gtar', 'unzip',
   'cpio', 'patch', 'ditto', '7z', '7za', 'chmod', 'chown', 'chflags', 'find'])
+
+// CPDESTDIR1104: the programs whose landing place is judged always (see landingDenied), and the extracting programs'
+// target-directory flags.
+const COPIERS = new Set(['cp', 'mv', 'install', 'ln', 'rsync', 'ditto'])
+const COPIER_WORD_RX = /(?:^|[\s;&|(/`"'])(?:cp|mv|install|ln|rsync|ditto)(?=\s|$)/
+const EXTRACT_DIR_FLAGS = { tar: ['-C', '--directory', '--cd'], bsdtar: ['-C', '--directory', '--cd'], gtar: ['-C', '--directory', '--cd'],
+  unzip: ['-d'], cpio: ['-D', '--directory'], patch: ['-d', '--directory'], '7z': ['-o'], '7za': ['-o'] }
+// The target directory an extracting program writes into (null when it names none, or does not extract). Joined
+// (`-Cdir`, `--directory=dir`, 7z's `-odir`) and separate (`-C dir`) forms.
+function extractTargetDir(vals, name) {
+  if (['tar', 'bsdtar', 'gtar'].includes(name)) {
+    const extract = vals.some((v) => v === '--extract' || v === '--get' || (!v.startsWith('--') && /^-?[A-Za-z]*x/.test(v)))
+    if (!extract) return null
+  }
+  if (name === 'cpio' && !vals.some((v) => /^-[A-Za-z]*i/.test(v) || v === '--extract')) return null
+  if ((name === '7z' || name === '7za') && !['x', 'e'].includes(vals[0])) return null
+  let dir = null
+  for (let i = 0; i < vals.length; i++) {
+    const v = vals[i]
+    for (const f of EXTRACT_DIR_FLAGS[name]) {
+      if (v === f && f !== '-o') dir = vals[i + 1] ?? null
+      else if (f.startsWith('--') && v.startsWith(f + '=')) dir = v.slice(f.length + 1)
+      else if (!f.startsWith('--') && v.startsWith(f) && v.length > f.length) dir = v.slice(f.length)
+    }
+  }
+  return dir
+}
 
 // A directory named .claude copied or moved INTO an agent directory (ENVRELAXGATE1104): `cp -r /tmp/x/.claude .` in
 // agents/<name> lands on its .claude/settings.json without naming it, and agents/<name> itself is not an ancestor (every
@@ -898,12 +939,13 @@ export function installFileDeny(command, opts = {}) {
   const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd),
     // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
     reShell: reShellsText(cmd) }
-  const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
+  const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir
+    && (t.pattern ? ['exact', 'under'].includes(patternRel(pathKey(cwd), t)) : underKey(pathKey(cwd), t.key)))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
   // and no program in it writes into the cwd on its own
   // (a .claude source, or a dot-glob that may be one, goes on to the segments: claudeDirCopyIn)
-  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd)) return false
+  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
   // the git environment that redirects a remote or points git at another repo or work tree, anywhere in a git command
   if (GIT_WORD_RX.test(cmd) && GIT_ENV_RX.test(cmd)) return 'git'
   // the cwd is the install root, a directory on the way to a protected path, or
@@ -912,7 +954,70 @@ export function installFileDeny(command, opts = {}) {
   const cwdReaches = (cwd) => {
     if (!cwd) return false
     const key = pathKey(cwd)
-    return (underKey(key, rootKey) || belowHome(key)) && list.some((t) => underKey(t.key, key) || (t.dir && underKey(key, t.key)))
+    // CPDESTDIR1104: a pattern entry too (a directory on the way to another agent's .mcp.json, or inside a pattern dir)
+    return (underKey(key, rootKey) || belowHome(key)) && list.some((t) => {
+      if (!t.pattern) return underKey(t.key, key) || (t.dir && underKey(key, t.key))
+      const r = patternRel(key, t)
+      return r === 'ancestor' || (t.dir && (r === 'exact' || r === 'under'))
+    })
+  }
+  // CPDESTDIR1104 (Dani 69118, Samu 69122): where a copy, move, link or install LANDS is judged always, not only after
+  // a protected word was found. A destination that is a directory names no file, so `cp x/.mcp.json ../other/` found
+  // nothing and passed. Each source's landing (destination + its basename) and the destination itself go through
+  // classifyWord; a directory source copied recursively, or a content copy (`src/`, `src/.`, ditto), counts as
+  // landing ON its target directory, which is judged like a cwd: denied when a protected path is inside or below it.
+  // An extracting program's target directory (tar -C, unzip -d, cpio -D, patch -d, 7z -o) is judged the same way.
+  const landingDenied = (words, name) => {
+    const vals = words.slice(1).map((w) => w.value)
+    const absOf = (v) => (v.startsWith('/') || v === '~' || v.startsWith('~/') ? resolve(expandHome(v === '~' ? '~/' : v)) : resolve(ctx.cwd ?? process.cwd(), v))
+    if (EXTRACT_DIR_FLAGS[name]) {
+      const dir = extractTargetDir(vals, name)
+      return dir != null && cwdReaches(absOf(dir))
+    }
+    if (!COPIERS.has(name)) return false
+    let target = null
+    let opts = true
+    let recursive = name === 'mv' || name === 'rsync' || name === 'ditto'
+    const operands = []
+    for (let i = 0; i < vals.length; i++) {
+      const v = vals[i]
+      if (opts && v === '--') { opts = false; continue }
+      if (opts && v.startsWith('--') && v.length > 2) {
+        if (v.startsWith('--target-directory=')) target = v.slice('--target-directory='.length)
+        else if (v === '--target-directory') target = vals[++i] ?? null
+        else if (v === '--recursive' || v === '--archive') recursive = true
+        continue
+      }
+      if (opts && v.startsWith('-') && v.length > 1) {
+        if (name !== 'rsync' && /^-[A-Za-z]*t$/.test(v)) target = vals[++i] ?? null // rsync -t keeps times
+        else if (name !== 'rsync' && /^-[A-Za-z]*t./.test(v)) target = v.slice(v.indexOf('t') + 1)
+        if (/^-[A-Za-z]*[rRa]/.test(v)) recursive = true
+        continue
+      }
+      operands.push(v)
+    }
+    let dest
+    let srcs
+    if (target != null) { dest = target; srcs = operands }
+    else if (operands.length >= 2) { dest = operands[operands.length - 1]; srcs = operands.slice(0, -1) }
+    else if (operands.length === 1 && name === 'ln') { dest = '.'; srcs = operands }
+    else return false
+    if (['exact', 'under', 'unresolved'].includes(classifyWord(dest, ctx))) return true
+    const destAbs = absOf(dest)
+    let destIsDir = false
+    try { destIsDir = statSync(destAbs).isDirectory() } catch { /* a new name: the copy takes it */ }
+    for (const src of srcs) {
+      const content = name === 'ditto' || /\/\.?$/.test(src) || src === '.'
+      const base = basename(src.replace(/\/+\.?$/, ''))
+      const land = content ? destAbs : destIsDir || /\/$/.test(dest) || srcs.length > 1 ? join(destAbs, base) : destAbs
+      if (land !== destAbs && ['exact', 'under', 'unresolved'].includes(classifyWord(land, ctx))) return true
+      let srcIsDir = content
+      if (!srcIsDir && recursive && name !== 'ln') {
+        try { srcIsDir = statSync(absOf(src)).isDirectory() } catch { srcIsDir = GLOB_CHAR_RX.test(src) || /\$/.test(src) }
+      }
+      if (srcIsDir && cwdReaches(land)) return true
+    }
+    return false
   }
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
@@ -973,6 +1078,7 @@ export function installFileDeny(command, opts = {}) {
       const git = gitWords(words)
       if (git && gitDecision(git, ctx) === 'deny') return 'git'
       if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
+      if (landingDenied(words, commandName(words))) return true
     }
     return false
   }
@@ -1010,6 +1116,7 @@ export function installFileDeny(command, opts = {}) {
       if (g === 'deny') return 'git'
       if (g === 'allow') continue
     }
+    if (words && words.length && !usesTainted && landingDenied(words, name)) return true
     if (!rawHits.length && !usesTainted) {
       if (words && words.length && writesIntoCwd(words, name) && cwdReaches(ctx.cwd)) return true
       moveCwd(own, seg, ctx)
@@ -1173,7 +1280,8 @@ function mcpVerdict(m, opts) {
     for (const base of bases) {
       const ctx = { root: opts.root ?? INSTALL_ROOT, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null }
       const key = pathKey(base)
-      if (!installTargets(ctx.root, ctx.subAgent, ctx.projectDir, ctx.configDir).list.some((t) => t.dir && !t.pattern && underKey(key, t.key))) continue
+      if (!installTargets(ctx.root, ctx.subAgent, ctx.projectDir, ctx.configDir).list.some((t) => t.dir
+        && (t.pattern ? ['exact', 'under'].includes(patternRel(key, t)) : underKey(key, t.key)))) continue
       for (const b of m.bare) {
         const r = fileToolDeny({ file_path: b }, { ...opts, cwd: base })
         if (r === 'db') return 'db'
