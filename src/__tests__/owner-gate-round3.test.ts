@@ -353,6 +353,23 @@ describe('OWNERGATE3-1104: first-run branch (zero dashboard users), measured', (
     const r = await hit(tryHandleOnboarding as Handler, 'POST', '/api/onboarding/identity', SUBAGENT, { agentName: 'Evil', ownerName: 'Attacker' })
     expect(refusedByOwnerGate(r)).toBe(true)
   })
+  // Every other OWNERGATE3-1104 route takes the strict gate (#2520 review): before the first login the bare token is
+  // refused, the 403 says to create a login (setup_required), and nothing changes or runs.
+  for (const c of CASES.filter((x) => x.path !== '/api/onboarding/identity')) {
+    it(`${c.label}: zero users + bare token -> 403 setup_required, nothing changes`, async () => {
+      const before = state()
+      const r = await hit(c.handler, c.method, c.path, TOKEN, c.body)
+      expect(refusedByOwnerGate(r)).toBe(true)
+      expect(r.body.setup_required).toBe(true)
+      expect(state()).toEqual(before)
+      noChildProcess()
+    })
+  }
+  it('terminal input ON: zero users + bare token -> 403 setup_required', async () => {
+    const r = await hit(tryHandleAgentTerminal, 'POST', '/api/terminal-input', TOKEN, { enabled: true })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.setup_required).toBe(true)
+  })
 })
 
 describe('controls: what stays open to the bare token', () => {

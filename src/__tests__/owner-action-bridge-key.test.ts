@@ -194,7 +194,7 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
   it('the non-issuing owner actions take the Bridge key beside the cookie', () => {
-    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 2], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
+    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 1], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, 0])
     }
   })
@@ -212,7 +212,9 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
   })
   it('OWNERGATE2-1104: the agent, channel, plan, provider and connector gates take the strict predicate; only agent create, channel setup and a channel\'s first pairing approve keep the first-run branch', () => {
     // agents.ts mayActAsOwner: POST /api/agents, channel setup, and approve while the channel has no approved sender.
-    for (const [f, loose, strict] of [['agents.ts', 3, 14], ['connectors.ts', 0, 8], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1]] as const) {
+    // OWNERGATE3-1104: agents.ts +4 strict (auto-restart, voice-config, OpenRouter manual, auth/init); agent-terminal.ts 3
+    // (terminal-input, keys, login); skills.ts 1 strict (assign) beside its older mayActAsOwner (the skill decision).
+    for (const [f, loose, strict] of [['agents.ts', 3, 18], ['connectors.ts', 0, 8], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1], ['agent-terminal.ts', 0, 3], ['skills.ts', 1, 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerStrict'), count(f, 'mayIssueCredentials')]).toEqual([f, loose, strict, 0])
     }
     expect(src('agents.ts')).toContain('firstPairing ? mayActAsOwner(ctx.auth, req) : mayActAsOwnerStrict(ctx.auth, req)')

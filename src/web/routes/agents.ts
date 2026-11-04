@@ -916,8 +916,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (path === '/api/openrouter/manual' && method === 'POST') {
     // OWNERGATE3-1104: rewrites the curated manual OpenRouter model list, which every agent's model dropdown offers
     // (and so which paid models the fleet can be switched to); owner-only, before the body is read.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the curated OpenRouter model list needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing the curated OpenRouter model list needs the dashboard login (an owner session).')
       return true
     }
     if (getSecret('openrouter-fleet-key') === null) {
@@ -1944,8 +1944,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // OWNERGATE3-1104: writes store/auto-restart.json, which decides when the runner restarts this agent (the main
     // agent included), and in 'fresh' mode drops its conversation; owner-only, before the body is read. No machine
     // caller: the runner reads the store in-process, and no script or skill PUTs here.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing an agent\'s auto-restart schedule needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing an agent\'s auto-restart schedule needs the dashboard login (an owner session).')
       return true
     }
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
@@ -2474,8 +2474,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(authInitMatch[1])
     // OWNERGATE3-1104: types /login into the agent's tmux pane and returns the login URL scraped from it, i.e. lets
     // the caller bind the agent to a Claude account of their choosing; owner-only, before any lookup or tmux call.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Starting an agent\'s Claude login needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Starting an agent\'s Claude login needs the dashboard login (an owner session).')
       return true
     }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
@@ -3042,8 +3042,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(voiceConfigMatch[1])
     // OWNERGATE3-1104: writes the agent's voice config (reply as text or voice, which voice model, whether inbound
     // voice is transcribed), i.e. how the agent talks to the owner's channel; owner-only, before the body is read.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing an agent\'s voice settings needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing an agent\'s voice settings needs the dashboard login (an owner session).')
       return true
     }
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }

@@ -18,7 +18,7 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName } from '../sanitize.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED, mayActAsOwnerStrict, refuseOwner } from './auth.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -538,8 +538,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // OWNERGATE3-1104: copies a global skill into the named agents' own .claude/skills AND removes that skill's
     // directory from every other agent (rmSync), with no quarantine or approval queue on this route; owner-only,
     // before any lookup, the body, the copy or a removal.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Assigning a skill to agents needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Assigning a skill to agents needs the dashboard login (an owner session).')
       return true
     }
     const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
