@@ -440,10 +440,19 @@ def _basename(tok: str) -> str:
 
 def _mask_subshell_markers(cmd: str) -> str:
     """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
-    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom)."""
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
+
+    MAINGATENLCOMMENT1104: a shell comment is dropped HERE, as bash does: an unquoted `#` at the start of a word, up
+    to the newline (the newline itself still becomes `;`). shlex's own comment handling is off (_segments_tokens):
+    after this mask there is no newline left, so a shlex comment ran to the end of the command and swallowed the next
+    line's send; an apostrophe inside a comment flipped this mask into quote mode; and shlex starts a comment at a `#`
+    inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
+    stripShellComments (whitespace and ;&|())."""
     out = []
     q = None  # None | "'" | '"'
     i, n = 0, len(cmd)
+    parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
+    subst_close_at = -1
     while i < n:
         ch = cmd[i]
         if q:
@@ -456,10 +465,20 @@ def _mask_subshell_markers(cmd: str) -> str:
             q = ch; out.append(ch); i += 1; continue
         if ch == "\\" and i + 1 < n:
             out.append(cmd[i:i + 2]); i += 2; continue
+        # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
         if ch == "\n" or ch == "`":
             out.append(";"); i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s")
             out.append(";"); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
         out.append(ch); i += 1
     return "".join(out)
 
@@ -470,6 +489,7 @@ def _segments_tokens(cmd: str):
     lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
+    lex.commenters = ""  # MAINGATENLCOMMENT1104: the mask drops comments as bash does; shlex's would not
     segments, cur = [], []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
