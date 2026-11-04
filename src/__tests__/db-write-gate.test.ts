@@ -221,11 +221,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // APPROVALSLACK1030, Samu 66026: NOTIFY_SLACK_TARGET there names where the owner's approval requests go.
     'store/config-overrides.json',
     // Dani 66036: the owner Slack target last announced.
-    'store/.owner-slack-target']
+    'store/.owner-slack-target',
+    // NETTARGETENV1104, Dani 68849: the network-target origins recorded at the last boot.
+    'store/.net-target-hosts.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json'])
   })
