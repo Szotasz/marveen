@@ -108,7 +108,8 @@ function channelStateTargets() {
 // spans removed, has no bare-glob word left (a backslash-escaped `\*` counts as unquoted, an unterminated quote fails
 // closed); the whole command names no program that runs text as shell code again (reShellsText: a quoted `tee *`
 // handed to `bash -c`, `eval`, an interpreter, `xargs`, `find -exec` or sqlite3's `.shell` is globbed after all, Dani's
-// review of 7ae2931af); and the word is read from the caller's OWN project dir (another sub-agent's cd into the home
+// review of 7ae2931af; since INSTRFILES1104 A the python and node families only when the command shows a shell call,
+// see DATA_INTERPRETERS); and the word is read from the caller's OWN project dir (another sub-agent's cd into the home
 // gets no skip at all). An absolute or ~ glob, a partial one (`C*`), the name itself and an unquoted `tee *` / `> *` /
 // `sed -i ... *` all still match. Stated limit: a program name put together at run time is beyond a text brake.
 const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.claude', dir: true }, { sub: '.mcp.json' },
@@ -498,14 +499,71 @@ export function unquotedBareGlob(text) {
 export const RESHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'ash', 'busybox',
   'eval', 'source', 'python', 'pypy', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh',
   'osascript', 'awk', 'gawk', 'mawk', 'nawk', 'xargs', 'find', 'watch', 'script', 'parallel', 'make'])
+// INSTRFILES1104 A (Samu 69747 (a), Bence 69765): the python and node families run their own language, not shell code:
+// a quoted glob handed to them, their inline code (-c, -e/-p) and a heredoc body they read are data, and no shell
+// expands a glob in them. They count as re-shelling only when the command shows a call that hands text to a shell
+// (os.system, subprocess, child_process, execSync, shell=True, ...): then the strict reading stays (Dani's review of
+// 7ae2931af: `python3 -c "import os; os.system('tee *')"` is a glob after all). The other interpreters (perl, ruby,
+// php, lua, awk, ...) keep the strict reading whatever their code says (fail closed).
+const DATA_INTERPRETERS = new Set(['python', 'pypy', 'node', 'nodejs', 'deno', 'bun'])
+const SHELL_CALL_RX = /\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)\b|\bsubprocess\b|\bpty\s*\.\s*spawn\b|\bcommands\s*\.|\bplatform\s*\.\s*popen\b|\bchild_process\b|\b(?:execSync|execFileSync|spawnSync|execFile|execa)\b|\b(?:exec|spawn|fork)\s*\(|\bshell\s*=\s*True\b|\bshell\s*:\s*true\b|\bDeno\s*\.\s*(?:run|Command)\b|\bBun\s*\.\s*(?:spawn|spawnSync|\$)|\$`|\bzx\b/
+// ...and the signs of a HIDDEN call (Samu 69768, Dani 69775): a name built at run time can reach a shell without any of
+// the words above, so these count as a shell call too (fail closed): __import__, importlib, builtins, ctypes, the
+// builtin getattr/eval/exec/compile called as a builtin (`re.compile(` is a module's method and is not one),
+// new Function / vm.run*, process.binding/dlopen, and a require() or import() whose argument is no string literal.
+const HIDDEN_CALL_RX = /\b__import__\b|\bimportlib\b|\bbuiltins\b|\bctypes\b|(?<![.\w$])(?:getattr|eval|exec|compile)\s*\(|\bnew\s+Function\b|(?<![.\w$])Function\s*\(|\bvm\s*\.\s*run\w*|\brunIn(?:This|New)?Context\b|\bcompileFunction\b|['"`](?:node:)?vm['"`]|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))|(?<![.\w$])import\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))/
 export function reShellsText(text) {
   const src = String(text ?? '')
   if (/(?:^|[;&|(]\s*)\.\s/.test(src) || /\.(?:shell|system)\b/i.test(src)) return true
+  const shellCall = SHELL_CALL_RX.test(src) || HIDDEN_CALL_RX.test(src)
   return src.split(/[\s;&|<>()`'"=,{}$]+/).some((w) => {
     if (/^-(?:exec|execdir|ok|okdir)$/i.test(w)) return true
     const name = (w.split('/').pop() ?? '').toLowerCase().replace(/[\d.]+$/, '')
+    if (DATA_INTERPRETERS.has(name)) return shellCall
     return RESHELL_NAMES.has(name)
   })
+}
+
+// INSTRFILES1104 A: the text a glob reading sees when no program in the command re-runs text as shell code
+// (reShellsText false). The shell never expands a glob inside quotes, nor in a heredoc body (a body is data for the
+// program it feeds), so their glob characters are literal: they are replaced by `_`, and the word is then read as the
+// literal name it is. Fail closed, the text is returned unchanged: an unterminated quote, a "..." span or a body holding
+// a command substitution or a backtick (it runs, and its globs expand). A word of glob characters only (`*`, `./*`) is
+// left as it is: whether a quoted one may skip a noBareGlob entry stays the #2514 rule (bareGlobQuoted, the caller's
+// own project dir only); this literal reading is for the other glob words (`/**`, `*/`, `x[0]`) of quoted code and data.
+const GLOB_CHARS_G = /[*?[{]/g
+const literalWords = (span) => span.replace(/[^\s;&|<>()'"`=,:{}]+/g, (tok) => (/^(?:\.\/)*[*?]+$/.test(tok) ? tok : tok.replace(GLOB_CHARS_G, '_')))
+export function literalQuotedGlobs(text) {
+  const s = String(text ?? '')
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === '\\') { out += s.slice(i, i + 2); i++; continue }
+    if (c === "'" || (c === '$' && s[i + 1] === "'")) {
+      let j = c === '$' ? i + 2 : i + 1
+      while (j < s.length && s[j] !== "'") j += c === '$' && s[j] === '\\' ? 2 : 1
+      if (j >= s.length) return s
+      out += literalWords(s.slice(i, j + 1))
+      i = j
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1
+      if (j >= s.length) return s
+      const span = s.slice(i, j + 1)
+      if (/\$\(|`/.test(span)) return s
+      out += literalWords(span)
+      i = j
+      continue
+    }
+    out += c
+  }
+  return out
+}
+export function literalHeredocBody(body) {
+  const b = String(body ?? '')
+  return /\$\(|`/.test(b) ? b : literalWords(b)
 }
 
 // A pattern entry against a resolved path key (CPDESTDIR1104, Dani B1): 'exact' when every segment matches (`*`
@@ -785,10 +843,25 @@ function isDirectory(p) {
   try { return statSync(p).isDirectory() } catch { return false }
 }
 
+// INSTRFILES1104 A (Dani 69753 SHOULD 3, Samu 69755): a cd joined to the next command by ";", "||" or a newline may
+// fail, and the next commands then run in the OLD directory. The old one is kept as ctx.altCwd, and the segment checks
+// that read the cwd are run on both (the stricter decides). A later cd moves both; when they meet, the second is
+// dropped. ctx.cwd keeps its meaning for the git rule (null: unknown, read as the install).
 function moveCwd(own, seg, ctx) {
+  const before = ctx.cwd
+  const altBefore = ctx.altCwd ?? null
   cwdAfterSegment(own, ctx)
   const first = shellWords(String(own ?? '').trim())?.[0]?.value
-  if (ctx.cwd && seg.sep !== '&&' && (first === 'cd' || first === 'pushd') && !isDirectory(ctx.cwd)) ctx.cwd = null
+  const isCd = first === 'cd' || first === 'pushd'
+  if (altBefore) {
+    const a = { ...ctx, cwd: altBefore }
+    cwdAfterSegment(own, a)
+    ctx.altCwd = a.cwd && !(ctx.cwd && sameKey(pathKey(a.cwd), pathKey(ctx.cwd))) ? a.cwd : null
+  }
+  if (isCd && seg.sep !== '&&') {
+    if (before && !(ctx.cwd && sameKey(pathKey(before), pathKey(ctx.cwd)))) ctx.altCwd = before
+    if (ctx.cwd && !isDirectory(ctx.cwd)) ctx.cwd = null
+  }
 }
 
 // The main checkout this repo dir belongs to: the nearest directory up from it that has a .git entry.
@@ -1160,21 +1233,35 @@ export function installFileDeny(command, opts = {}) {
     return false
   }
   const tainted = new Set()
+  // INSTRFILES1104 A: a check run at the cwd and, after a cd that may have failed (moveCwd), at the old directory too
+  const atAlt = (fn) => {
+    if (!ctx.altCwd) return undefined
+    const c = ctx.cwd
+    const d = ctx.cwdInsideDir
+    ctx.cwd = ctx.altCwd
+    ctx.cwdInsideDir = insideDir(ctx.cwd)
+    try { return fn() } finally { ctx.cwd = c; ctx.cwdInsideDir = d }
+  }
+  const both = (fn) => fn() || atAlt(fn)
+  const hitsBoth = (text) => [...hitsIn(text, ctx), ...(atAlt(() => hitsIn(text, ctx)) ?? [])]
   // A subshell's cd ends with it: the cwd before its "(" comes back after its ")".
   const cwdStack = []
   let closing = 0
   for (const seg of segs) {
-    for (; closing > 0; closing--) if (cwdStack.length) ctx.cwd = cwdStack.pop()
+    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd] = cwdStack.pop()
     const sub = subshellParts(seg.own)
-    for (let k = 0; k < sub.opens; k++) cwdStack.push(ctx.cwd)
+    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null])
     closing = sub.closes
     const own = sub.body
-    const view = { ...seg, own, text: [own, ...seg.bodies].join('\n') }
+    // INSTRFILES1104 A: with no re-shelling program in the command, quoted spans and heredoc bodies hold no glob
+    const bodies = ctx.reShell ? seg.bodies : seg.bodies.map(literalHeredocBody)
+    const ownText = ctx.reShell ? own : literalQuotedGlobs(own)
+    const view = { ...seg, own, bodies, text: [ownText, ...bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
     // WORKERCFGDIR1104: the segment's own text (a heredoc body is never globbed) and the whole command (re-shelling)
     // decide the noBareGlob skip
     ctx.bareGlobQuoted = ctx.reShell === false && !unquotedBareGlob(own)
-    const rawHits = hitsIn(view.text, ctx)
+    const rawHits = hitsBoth(view.text)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
     // A segment the word reader still cannot split (a case pattern, an arithmetic group): its git commands are read
@@ -1186,16 +1273,16 @@ export function installFileDeny(command, opts = {}) {
       }
     }
     const name = words ? commandName(words) : ''
-    if (words && words.length && DIR_CHANGERS.has(name) && claudeDirCopyIn(words, ctx)) return true
+    if (words && words.length && DIR_CHANGERS.has(name) && both(() => claudeDirCopyIn(words, ctx))) return true
     const git = words && gitWords(words)
     if (git) {
       const g = gitDecision(git, ctx)
       if (g === 'deny') return 'git'
       if (g === 'allow') continue
     }
-    if (words && words.length && !usesTainted && landingDenied(words, name)) return true
+    if (words && words.length && !usesTainted && both(() => landingDenied(words, name))) return true
     if (!rawHits.length && !usesTainted) {
-      if (words && words.length && writesIntoCwd(words, name) && cwdReaches(ctx.cwd)) return true
+      if (words && words.length && writesIntoCwd(words, name) && (cwdReaches(ctx.cwd) || (!!ctx.altCwd && cwdReaches(ctx.altCwd)))) return true
       moveCwd(own, seg, ctx)
       continue
     }
@@ -1203,20 +1290,20 @@ export function installFileDeny(command, opts = {}) {
     // an output redirect onto a protected path (or onto a word built at run time)
     for (const r of words.redirects) {
       if (r.value === '/dev/null') continue
-      if (['exact', 'under', 'unresolved'].includes(classifyWord(r.value, ctx))) return true
+      if (both(() => ['exact', 'under', 'unresolved'].includes(classifyWord(r.value, ctx)))) return true
       if (usesTainted && /\$/.test(r.value)) return true
     }
     // a heredoc body that names a protected path, written to a file that the same command then runs or feeds (a
     // script); a message or comment file that only mentions the path passes (Marveen 56653)
     const fileTargets = words.redirects.map((t) => t.value).filter((v) => v !== '/dev/null')
-    if (seg.bodies.length && seg.bodies.some((b) => hitsIn(b, ctx).length) && laterRuns(segs, segs.indexOf(seg), fileTargets)) return true
+    if (bodies.length && bodies.some((b) => hitsBoth(b).length) && laterRuns(segs, segs.indexOf(seg), fileTargets)) return true
     // an assignment carries the path to a later word (`F=<path>; cp x $F`): the
     // name is tainted, and a later segment that uses it is judged as naming it
     if (words.every((w) => ASSIGN_RX.test(w.value)) || /^(?:export|local|declare|readonly|typeset)$/.test(words[0].value)) {
       for (const w of words) { const m = ASSIGN_RX.exec(w.value); if (m) tainted.add(m[1]) }
       continue
     }
-    const hits = hitsIn(dataResidue(view, words, name, { surface: 'security' }), ctx)
+    const hits = hitsBoth(dataResidue(view, words, name, { surface: 'security' }))
     if (!hits.length && !usesTainted) { moveCwd(own, seg, ctx); continue } // only message data names it
     if (READERS.has(name) || isReadOnlyFsCommand(words, name)) {
       // ...but not as the file list of a pipe into a program that acts on it (xargs rm)
