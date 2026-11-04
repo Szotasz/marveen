@@ -116,6 +116,12 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
     const other = run('python3 other.py')
     expect(other.status).toBe(0)
     expect(other.stdout).toBe('')
+    // JSCDSEND1104 (Samu 69516): a missing script is denied, and the message says the script must exist at run time
+    const missing = run('python3 missing.py')
+    expect(missing.status).toBe(0)
+    const reason = JSON.parse(missing.stdout).hookSpecificOutput.permissionDecisionReason as string
+    expect(reason).toContain('NEM LETEZIK')
+    expect(reason).toContain('literalis uttal')
   })
 })
 

@@ -860,6 +860,19 @@ export function wrapperDepthHit(cmd) {
   return heads.some((h) => h === null) && !heads.some((h) => h !== null && headIsSend(h, 0))
 }
 
+// JSCDSEND1104 (Samu 69516): a script run counts as a send when the script (found under the cwd or a cd / env -C
+// target) imports a mail library or names a mail API, and ALSO when it cannot be read: a missing script, an
+// undecidable path or cd. Then the way out of a false denial is a script that exists at run time, named so the gate
+// can find it.
+export function buildScriptSendMsg(botName, ownerName) {
+  return (
+    'TILTVA (governance hard-gate): a futtatott szkript levelet kuldhet, vagy a kapu nem tudja elolvasni. ' +
+    'Kuldesnek szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy ' +
+    'cd / env -C celkonyvtara nem dontheto el. Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, ' +
+    'es literalis uttal (vagy literalis cd utan) futtasd. ' + buildGateMsg(botName, ownerName)
+  )
+}
+
 export function buildWrapperDepthMsg() {
   return (
     'TILTVA (governance hard-gate): a parancs valodi fejet nem latom. ' +
@@ -1356,7 +1369,6 @@ function envLongName(t) {
   return hits.length === 1 ? hits[0] : null
 }
 
-// ENVOPTHEAD1104: the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also in a cluster) runs in.
 // (value, index after it) when the env word t at j is -S / --split-string (also a prefix or a cluster); else null
 function envSplitValue(t, words, j) {
   if (t.startsWith('--')) {
@@ -1372,30 +1384,54 @@ function envSplitValue(t, words, j) {
   return null
 }
 
+// JSCDSEND1104: sudo -D/--chdir DIR, the same class as env -C; see the python twin.
+const SUDO_LONG_OPTIONS = ['askpass', 'auth-type', 'background', 'bell', 'chdir', 'chroot', 'close-from', 'command-timeout',
+  'edit', 'group', 'help', 'host', 'list', 'login', 'non-interactive', 'other-user', 'preserve-env', 'preserve-groups',
+  'prompt', 'remove-timestamp', 'reset-timestamp', 'role', 'set-home', 'shell', 'type', 'user', 'validate', 'version']
+const SUDO_LONG_VALUES = ['auth-type', 'chdir', 'chroot', 'close-from', 'command-timeout', 'group', 'host', 'other-user',
+  'prompt', 'role', 'type', 'user']
+function longName(t, names) {
+  if (!t.startsWith('--') || t === '--') return null
+  const word = t.slice(2).split('=')[0]
+  if (names.includes(word)) return word
+  const hits = names.filter((o) => word && o.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+const CHDIR_SPECS = new Map([
+  ['env', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
+  ['sudo', ['ughpCUrtDRT', 'D', SUDO_LONG_OPTIONS, SUDO_LONG_VALUES]],
+])
+
+// ENVOPTHEAD1104 / JSCDSEND1104: the directories `env -C DIR` and `sudo -D DIR` (also `--chdir DIR`, `--chdir=DIR`,
+// joined, in a cluster, by a unique prefix, and for env also inside an -S value) run their command in.
 function envChdirDirs(words, d = 0) {
   const out = []
   for (let i = 0; i < words.length; i++) {
-    if (basename(words[i]) !== 'env') continue
+    const spec = CHDIR_SPECS.get(basename(words[i]))
+    if (!spec) continue
+    const [shortVal, chdirCh, longNames, longVals] = spec
     let j = i + 1
     while (j < words.length) {
       const t = words[j]
       if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
-      const split = envSplitValue(t, words, j)
-      if (split) {
-        // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
-        let splitWords = []
-        try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
-        if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
-        break
+      if (basename(words[i]) === 'env') {
+        const split = envSplitValue(t, words, j)
+        if (split) {
+          // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+          let splitWords = []
+          try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
+          if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
+          break
+        }
       }
-      const long = envLongName(t)
-      if (t === '-C' || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
+      const long = t.startsWith('--') ? longName(t, longNames) : null
+      if (t === '-' + chdirCh || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
       if (long === 'chdir') out.push(t.slice(t.indexOf('=') + 1))
-      else if (long && !t.includes('=') && ['unset', 'split-string', 'argv0'].includes(long)) j++ // its value
+      else if (long && !t.includes('=') && longVals.includes(long)) j++ // its value
       else if (t.startsWith('-') && !t.startsWith('--')) {
         let k = -1
-        for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
-        if (k > 0 && t[k] === 'C') {
+        for (let x = 1; x < t.length; x++) if (shortVal.includes(t[x])) { k = x; break }
+        if (k > 0 && t[k] === chdirCh) {
           if (k < t.length - 1) out.push(t.slice(k + 1))
           else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }
         } else if (k === t.length - 1) j++
@@ -2104,6 +2140,7 @@ if (isInvokedDirectly()) {
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
+    if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and

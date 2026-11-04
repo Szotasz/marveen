@@ -738,49 +738,81 @@ def _env_split_value(t, words, j):
     return None
 
 
+# JSCDSEND1104: sudo -D/--chdir DIR runs the command in DIR, like env -C (Bence 69517; sudo needs runcwd in sudoers
+# to allow it, so it is rare, but the class is the same). sudo's long options, read by unique prefix as getopt_long.
+_SUDO_LONG_OPTIONS = ("askpass", "auth-type", "background", "bell", "chdir", "chroot", "close-from", "command-timeout",
+                      "edit", "group", "help", "host", "list", "login", "non-interactive", "other-user",
+                      "preserve-env", "preserve-groups", "prompt", "remove-timestamp", "reset-timestamp", "role",
+                      "set-home", "shell", "type", "user", "validate", "version")
+_SUDO_LONG_VALUES = ("auth-type", "chdir", "chroot", "close-from", "command-timeout", "group", "host", "other-user",
+                     "prompt", "role", "type", "user")
+
+
+def _long_name(t, names):
+    if not t.startswith("--") or t == "--":
+        return None
+    word = t[2:].split("=", 1)[0]
+    if word in names:
+        return word
+    hits = [o for o in names if word and o.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# program -> (short options that take a value, the short chdir letter, long option names, long ones with a value).
+# env's entry is added below _ENV_SHORT_VALUE / _ENV_LONG_VALUE, so both readers share one list.
+_CHDIR_SPECS = {
+    "sudo": ("ughpCUrtDRT", "D", _SUDO_LONG_OPTIONS, _SUDO_LONG_VALUES),
+}
+
+
 def _env_chdir_dirs(words, _d=0):
-    """ENVOPTHEAD1104 (Bence 69475): the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also
-    inside a cluster) runs its command in. A relative script there is resolved under DIR, not the cwd: they are handed
-    to the cd logic as `cd DIR` words, which also makes an undecidable DIR a send."""
+    """ENVOPTHEAD1104 (Bence 69475) / JSCDSEND1104: the directories `env -C DIR` (`--chdir DIR`, `--chdir=DIR`,
+    `-CDIR`, a cluster, a unique prefix, and inside an -S value, Bence 69552) and `sudo -D DIR` (the same forms) run
+    their command in. A relative script there is resolved under DIR, not the cwd: they are handed to the cd logic as
+    `cd DIR` words, which also makes an undecidable DIR a send."""
     out = []
     for i, w in enumerate(words):
-        if _basename(w) != "env":
+        spec = _CHDIR_SPECS.get(_basename(w))
+        if spec is None:
             continue
+        short_val, chdir_ch, long_names, long_vals = spec
         j = i + 1
         while j < len(words):
             t = words[j]
             if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
                 break
-            split = _env_split_value(t, words, j)
-            if split is not None:
-                # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
-                value, after = split
-                try:
-                    split_words = [x for seg in _segments_tokens(value) for x in seg]
-                except ValueError:
-                    split_words = []  # an unsplittable value is already a send by _env_split_heads
-                if _d < _HEAD_DEPTH:
-                    out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
-                break
-            if t == "-C" or (t.startswith("--") and "=" not in t and _env_long_name(t) == "chdir"):
+            if _basename(w) == "env":
+                split = _env_split_value(t, words, j)
+                if split is not None:
+                    # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+                    value, after = split
+                    try:
+                        split_words = [x for seg in _segments_tokens(value) for x in seg]
+                    except ValueError:
+                        split_words = []  # an unsplittable value is already a send by _env_split_heads
+                    if _d < _HEAD_DEPTH:
+                        out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
+                    break
+            long = _long_name(t, long_names) if t.startswith("--") else None
+            if t == "-" + chdir_ch or (long == "chdir" and "=" not in t):
                 if j + 1 < len(words):
                     out.append(words[j + 1])
                 j += 2
                 continue
-            if t.startswith("--") and "=" in t and _env_long_name(t) == "chdir":
+            if long == "chdir":
                 out.append(t.split("=", 1)[1])
-            elif t.startswith("--") and "=" not in t and _env_long_name(t) in ("unset", "split-string", "argv0"):
+            elif long in long_vals and "=" not in t:
                 j += 1  # its value
             elif t.startswith("-") and not t.startswith("--"):
-                k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
-                if k > 0 and t[k] == "C":
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+                if k > 0 and t[k] == chdir_ch:
                     if k < len(t) - 1:
                         out.append(t[k + 1:])
                     elif j + 1 < len(words):
                         out.append(words[j + 1])
                         j += 1
                 elif k == len(t) - 1:
-                    j += 1  # the value of -u / -P / -S
+                    j += 1  # the value of another value option
             j += 1
     return out
 
@@ -801,6 +833,7 @@ _ENV_LONG_NOVALUE = ("ignore-environment", "null", "debug", "list-signal-handlin
 # included, cannot be stepped over safely: the command behind it is undecidable, which counts as a send.
 _ENV_SHORT_VALUE = "uCSPaLU"
 _ENV_LONG_VALUE = ("unset", "chdir", "split-string", "argv0")
+_CHDIR_SPECS["env"] = (_ENV_SHORT_VALUE, "C", _ENV_LONG_OPTIONS, _ENV_LONG_VALUE)
 
 
 def _env_heads(toks, _d):
