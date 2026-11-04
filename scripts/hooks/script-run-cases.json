@@ -126,7 +126,8 @@
     {"name": "Samu 69648: a prefix assignment is not the cd's variable (D=x cd $D expands the outer D)", "cmd": "D=evil cd $D && python3 tool.py", "main": true, "sub": false},
     {"name": "Samu 69648: an address in a comment is no recipient", "cmd": "cd $WT && python3 -m pytest -k \"not mail\" # ask a@example.com", "main": true, "sub": false},
     {"name": "Samu 69648: control, a --to in a comment after a harmless script", "cmd": "python3 plain.py # --to a@example.com", "main": false, "sub": false},
-    {"name": "Samu 69648: a quoted # is text, not a comment: the --to after it still addresses the run", "cmd": "cd $WT && python3 tool.py \"#1\" --to a@example.com", "main": true, "sub": true},
-    {"name": "Samu 69648: a # inside a word is no comment", "cmd": "cd $WT && python3 tool.py x#y a@example.com", "main": true, "sub": true}
+    {"name": "Samu 69648: a quoted # is text, not a comment: the --to after it still addresses the run", "cmd": "cd $WT && python3 tool.py \"x #1\" --to a@example.com", "main": true, "sub": true},
+    {"name": "Samu 69648: a # inside a word is no comment", "cmd": "cd $WT && python3 tool.py x#y a@example.com", "main": true, "sub": true},
+    {"name": "Samu 69648: a prefix assignment (D=x cmd) does not set the shell's D for a later cd $D", "cmd": "D=evil cd /tmp; cd $D && python3 plain.py", "main": true, "sub": false}
   ]
 }
