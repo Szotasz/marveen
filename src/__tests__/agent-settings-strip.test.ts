@@ -12,10 +12,13 @@ const sandbox = vi.hoisted(() => {
   const fs = require('node:fs') as typeof import('node:fs')
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const path = require('node:path') as typeof import('node:path')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const os = require('node:os') as typeof import('node:os')
   const realRoot = path.resolve(__dirname, '..', '..')
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-strip-'))
+  // NOT under os.tmpdir(): on Linux that is /tmp, and isUnsafeHookCommand rightly refuses every hook command with a
+  // /tmp/ path, so the scaffold would inject no gate at all and the gate assertions below would fail for the wrong
+  // reason (#2497 CI, run 41826116808; macOS's /var/folders hid it). node_modules/.cache is untracked and not transient.
+  const cacheDir = path.join(realRoot, 'node_modules', '.cache')
+  fs.mkdirSync(cacheDir, { recursive: true })
+  const root = fs.mkdtempSync(path.join(cacheDir, 'settings-strip-'))
   for (const d of ['templates', 'scripts', 'src']) fs.symlinkSync(path.join(realRoot, d), path.join(root, d))
   fs.mkdirSync(path.join(root, 'agents'))
   fs.mkdirSync(path.join(root, 'store'))
