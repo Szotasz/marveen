@@ -134,6 +134,13 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // The real path is compared, so the symlink route lands here. ~/.claude/projects (memory files) is not touched.
   { home: '.claude/settings.json' },
   { home: '.claude/settings.local.json' },
+  // The MAIN agent's isolated config dir (MAIN_AGENT_ISOLATED_CONFIG, Samu 68206/68210): its settings.json (env,
+  // permissions, enabledPlugins, extraKnownMarketplaces, hooks) and a settings.local.json created there are loaded at
+  // the main agent's next start, and so are its plugin registries (plugins/*.json) and its state. Every REAL file in it
+  // is the main agent's; a sub-agent writes none of them. Its symlinked entries (projects, skills, agents, hooks, the
+  // plugin cache...) resolve into ~/.claude, and the real path is compared, so they are judged where they land, not
+  // here. The whole directory, as a directory: one entry covers a file Claude Code adds there tomorrow.
+  { rel: '.channels-config', dir: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -848,7 +855,8 @@ export const SUBAGENT_FILE_GATE_MSG =
   '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
   'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
   'store/.fleet-memgate-observe fajlt, sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
-  '(ott elnek a kapu-hookjaid): letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
+  '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, plugins/*.json): ' +
+  'letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
 
