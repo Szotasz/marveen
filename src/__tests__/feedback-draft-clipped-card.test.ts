@@ -39,9 +39,18 @@ vi.mock('../notify.js', async (orig) => ({
 
 import { dismissFeedbackDraftModalIfPresent, FEEDBACK_HOLD_OWNER_AFTER_MS, decideFeedbackHoldEscalation } from '../web/agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
-import { feedbackDraftDismissPlan, stripGhostSuggestion } from '../pane-state.js'
+import { feedbackDraftDismissPlan, stripGhostSuggestion, detectsFeedbackDraftModal, detectPaneState } from '../pane-state.js'
 
-const CLIPPED = readFileSync(join(__dirname, 'fixtures/pane/feedback-draft-card-clipped-2.1.312.txt'), 'utf8')
+const fixture = (name: string) => readFileSync(join(__dirname, `fixtures/pane/feedback-draft-card-${name}.txt`), 'utf8')
+const CLIPPED = fixture('clipped-2.1.312')
+// Measured 2026-11-04 on Claude Code 2.1.318 (throwaway session, keys sent by
+// hand): the empty unclipped card (200x60 pane, transcript rows above the card
+// trimmed), and both layouts with text in the prompt, where the card swaps its
+// option line for "clear text to review, send, or dismiss".
+const UNCLIPPED_318 = fixture('unclipped-2.1.318')
+const UNCLIPPED_TYPED_318 = fixture('unclipped-typed-2.1.318')
+const CLIPPED_TYPED_318 = fixture('clipped-typed-2.1.318')
+const typedAs = (frame: string, text: string) => frame.replace('❯ a reply', `❯ ${text}`)
 const plain = (colored: string) => colored.replace(/\x1b\[[0-9;]*m/g, '')
 const withTyped = (text: string) => CLIPPED.replace(/❯[\u00a0 ]?(\n?)$/, `❯ ${text}$1`)
 const SEP = '─'.repeat(80)
@@ -76,6 +85,33 @@ describe('feedbackDraftDismissPlan on a card that clips the input box', () => {
   it('a rule followed by something other than the prompt is not a box', () => {
     const p = CLIPPED.replace(/❯[\u00a0 ]?(\n?)$/, 'not a prompt$1')
     expect(feedbackDraftDismissPlan(plain(p), stripGhostSuggestion(p), true)).toEqual({ act: 'none' })
+  })
+})
+
+describe('the measured 2.1.318 frames', () => {
+  it('an empty unclipped card gets the same single "0", never Down (Down left it up, measured)', () => {
+    expect(detectPaneState(plain(UNCLIPPED_318))).toBe('idle')
+    for (const main of [true, false]) {
+      expect(feedbackDraftDismissPlan(plain(UNCLIPPED_318), stripGhostSuggestion(UNCLIPPED_318), main)).toEqual({ act: 'keys', keys: ['0'] })
+    }
+  })
+  it('with text in the prompt the card is still seen, by its "clear text to ..." option line', () => {
+    for (const f of [UNCLIPPED_TYPED_318, CLIPPED_TYPED_318]) {
+      expect(plain(f)).toMatch(/│ clear text to review, send, or dismiss/)
+      expect(detectsFeedbackDraftModal(plain(f))).toBe(true)
+    }
+  })
+  it('typed text holds in both layouts; a lone leftover "0" holds on the main session and is cleared on a sub-agent', () => {
+    for (const f of [UNCLIPPED_TYPED_318, CLIPPED_TYPED_318]) {
+      expect(feedbackDraftDismissPlan(plain(f), stripGhostSuggestion(f), true)).toEqual({ act: 'hold', reason: 'input-occupied' })
+      const zero = typedAs(f, '0')
+      expect(feedbackDraftDismissPlan(plain(zero), stripGhostSuggestion(zero), true)).toEqual({ act: 'hold', reason: 'input-occupied' })
+    }
+    const zero = typedAs(UNCLIPPED_TYPED_318, '0')
+    expect(feedbackDraftDismissPlan(plain(zero), stripGhostSuggestion(zero), false)).toEqual({ act: 'keys', keys: ['C-u', '0'] })
+    // The clipped box is never cleared: its rows below the capture are unseen.
+    const clippedZero = typedAs(CLIPPED_TYPED_318, '0')
+    expect(feedbackDraftDismissPlan(plain(clippedZero), stripGhostSuggestion(clippedZero), false)).toEqual({ act: 'hold', reason: 'input-occupied' })
   })
 })
 
@@ -129,6 +165,53 @@ describe('a hold that never ends reaches the owner once', () => {
     vi.advanceTimersByTime(FEEDBACK_HOLD_OWNER_AFTER_MS)
     await run(held)
     expect(notify.calls).toHaveLength(2)
+    expect(sent).toEqual([])
+  })
+
+  const runFor = (session: string) => async (frame: string) => {
+    panes.queue = [frame]
+    const p = dismissFeedbackDraftModalIfPresent(session)
+    await vi.runAllTimersAsync()
+    await p
+  }
+
+  it('a keystroke plan between two holds starts a new episode: the first hold\'s start never pages', async () => {
+    const run = runFor('agent-hold-reset')
+    const held = withTyped('a reply the owner is writing')
+    await run(held)
+    vi.advanceTimersByTime(FEEDBACK_HOLD_OWNER_AFTER_MS - 60_000)
+    await run(CLIPPED)
+    expect(sent).toEqual([['0']])
+    await run(held)
+    vi.advanceTimersByTime(2 * 60_000)
+    await run(held)
+    expect(notify.calls).toHaveLength(0)
+    vi.advanceTimersByTime(FEEDBACK_HOLD_OWNER_AFTER_MS)
+    await run(held)
+    expect(notify.calls).toHaveLength(1)
+  })
+
+  it('a lone "0" left in a clipped main box (2.1.318 frame) pages once, and the page says to clear it first', async () => {
+    const run = runFor(MAIN_CHANNELS_SESSION)
+    const zero = typedAs(CLIPPED_TYPED_318, '0')
+    await run(zero)
+    vi.advanceTimersByTime(FEEDBACK_HOLD_OWNER_AFTER_MS)
+    await run(zero)
+    await run(zero)
+    expect(notify.calls).toHaveLength(1)
+    expect(notify.calls[0]).toContain('csak egy 0 áll, előbb Ctrl-U')
+    expect(sent).toEqual([])
+  })
+
+  it('text in an unclipped main box (2.1.318 frame) reads as a parked line: no feedback page, the MAIN_PARKED ladder owns it', async () => {
+    expect(detectPaneState(plain(UNCLIPPED_TYPED_318))).toBe('typing')
+    const run = runFor(MAIN_CHANNELS_SESSION)
+    await run(CLEAR_PANE) // a fresh episode: the case above left this session's record notified
+    await run(UNCLIPPED_TYPED_318)
+    vi.advanceTimersByTime(FEEDBACK_HOLD_OWNER_AFTER_MS * 2)
+    await run(UNCLIPPED_TYPED_318)
+    await run(UNCLIPPED_TYPED_318)
+    expect(notify.calls).toHaveLength(0)
     expect(sent).toEqual([])
   })
 })
