@@ -431,7 +431,9 @@ def quota_text(sd):
         log(sd, f"usage-collect.py not found at {USAGE_SCRIPT}")
         return USAGE_MISSING_REPLY
     try:
-        out = subprocess.run(["python3", USAGE_SCRIPT, "--json"], capture_output=True, text=True, timeout=budget(20, 0.5)).stdout
+        # SITEPKGPLANT1104 (Bence 69833): the child python is isolated like the hook (usage-collect.py imports the
+        # standard library only)
+        out = subprocess.run(["python3", "-I", "-S", USAGE_SCRIPT, "--json"], capture_output=True, text=True, timeout=budget(20, 0.5)).stdout
         return format_usage(json.loads(out))
     except Exception as e:
         log(sd, f"usage-collect failed: {type(e).__name__}")
@@ -558,8 +560,9 @@ def spawn_deferred(sd, payload, body, chat_id, main_session, message_id=None, th
         # stdio MUST NOT be inherited: Claude Code waits for the hook's pipes
         # to close, so an inherited stdout would hold the turn open for the
         # watcher's whole life -- the very busy state this is waiting out.
+        # SITEPKGPLANT1104: the deferred watcher is the same hook, started again: isolated like its first run.
         subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__), "--deferred"],
+            [sys.executable, "-I", "-S", os.path.abspath(__file__), "--deferred"],
             env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
         )

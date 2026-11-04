@@ -59,6 +59,23 @@ describe('SITEPKGPLANT1104: python hooks run isolated', () => {
     expect(loose).toEqual([])
   })
 
+  it('every child python a scripts/hooks python file starts is isolated (Bence 69833: usage-collect; the deferred respawn)', () => {
+    const dir = join(PROJECT_ROOT, 'scripts', 'hooks')
+    const loose: string[] = []
+    let launches = 0
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.py'))) {
+      const src = read(join('scripts', 'hooks', f))
+      // a subprocess call whose argv list starts with python3 or sys.executable (a parser table is no launch)
+      for (const m of src.matchAll(/subprocess\.\w+\(\s*\[\s*(?:["']python3["']|sys\.executable)\s*,\s*([^,\]]+),\s*([^,\]]+)/g)) {
+        launches++
+        const [a, b] = [m[1].trim(), m[2].trim()]
+        if (!(/^["']-I["']$/.test(a) && /^["']-S["']$/.test(b))) loose.push(`${f}: ${m[0].replace(/\s+/g, ' ').slice(0, 100)}`)
+      }
+    }
+    expect(launches).toBeGreaterThanOrEqual(2)
+    expect(loose).toEqual([])
+  })
+
   it('an existing install: the old command is upgraded in place, not added beside it', () => {
     // a real script path: the upgrade skips a command whose script does not exist (isUnsafeHookCommand)
     const s = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
