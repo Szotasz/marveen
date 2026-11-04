@@ -199,6 +199,13 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
   it.each([
     'sqlite3 ../../store/claudeclaw.db "SELECT count(*) FROM kanban_cards"',
     'sqlite3 x.db "SELECT * FROM t"',
+    // GATEQUOTEDSQL1104: a "(...d...)" elsewhere in the command is not a zsh dot qualifier (the old test was
+    // case-insensitive and needed no glob before the parenthesis, so these read-only queries were denied).
+    'supabase db query "select left(t.id::text,8) szal from t join lateral (select * from dm_messages d where d.thread_id=t.id) m on true" > dm.out',
+    'python3 -c "open(sys.argv[1],encoding=\'utf-8\').read()" x.md; sqlite3 -readonly x.db "SELECT count(*) FROM t"',
+    'psql "$DB" -c "select f(XD), * from t"',
+    // a lower-case d qualifier (order by depth) is not the dot qualifier: zsh qualifiers are case-sensitive
+    'cp /tmp/x.txt *(od[1])',
   ])('passes: %s', (command) => {
     expect(bash(command, own())).toEqual({ deny: false })
   })
@@ -211,6 +218,11 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
     'cp /tmp/evil.json *(D)',
     'cp /tmp/evil.json ?mcp.json(D)',
     'cp /tmp/evil.json *mcp.json(D)',
+    // GATEQUOTEDSQL1104: the qualifier forms that still count (a D among other qualifiers, the #q form, a bracket glob)
+    'cp /tmp/evil.json *(.D)',
+    'cp /tmp/evil.json *(#qD)',
+    'cp /tmp/evil.json [.]mcp.json(D)',
+    'echo "(id)" > x.txt; cp /tmp/evil.json *(D)',
     'setopt GLOB__DOTS; cp /tmp/evil.json *',
     'setopt g_l_o_b_d_o_t_s; cp /tmp/evil.json *',
     'shopt -s DotGlob; cp /tmp/evil.json *',

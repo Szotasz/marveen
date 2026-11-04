@@ -393,8 +393,15 @@ const GLOB_CHAR_RX = /[*?[{]/
 // shells read them (underscores and case ignored). A false hit only brings back the strict reading.
 // Stated limit: such a setting switched on in the user's shell rc is not visible here.
 // Only the Bash path sets shellGlob; a file tool's path or an MCP argument is never read this way.
-const DOTGLOB_RX = /dotglob|globdots|globignore|fignore|\([^)\s]*D[^)\s]*\)/i
-const namesDotglob = (cmd) => DOTGLOB_RX.test(cmd.replace(/_/g, ''))
+// GATEQUOTEDSQL1104: the zsh qualifier is matched as zsh reads it, not case-insensitively over the whole command. The
+// old `/\([^)\s]*D[^)\s]*\)/i` fired on ANY "(...d...)" without a space: a quoted `left(t.id::text,8)` or a Python
+// `open(p,encoding='utf-8')` turned the strict reading on, and the `*` of a quoted `select *` / `count(*)` in the same
+// command then reached the caller's own .mcp.json, so a read-only query was denied (measured on 11-04 replays). The
+// qualifier that lets a glob match leading-dot names is an upper-case D inside parentheses that END a word holding a
+// glob character (`*(D)`, `?mcp.json(.D)`, `**/*(#qD)`); the option names keep the shells' case and underscore rules.
+const DOTGLOB_OPTION_RX = /dotglob|globdots|globignore|fignore/i
+const ZSH_DOT_QUALIFIER_RX = /[*?\]][^\s'"()]*\((?:#q)?[^)\s]*D[^)\s]*\)/
+const namesDotglob = (cmd) => DOTGLOB_OPTION_RX.test(cmd.replace(/_/g, '')) || ZSH_DOT_QUALIFIER_RX.test(cmd)
 
 // Does a shell segment hold an UNQUOTED bare-glob word (`*`, `?`, `./*`)? The text outside '...' and "..." spans (a
 // backslash inside double quotes escapes the next character) is split into words; backslashes outside quotes are
