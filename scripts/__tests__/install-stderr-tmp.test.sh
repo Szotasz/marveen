@@ -91,10 +91,13 @@ for script in install-macos.sh install-linux.sh; do
   done
   out="$(DASH_TOKEN='' /bin/bash -c ". '$REPO/install-lang.sh'; . '$TMP/dash.sh'" 2>&1)"
   assert_not_contains "$script no token: no server-log pointer" "$out" "szerver log"
+  # script(1) gives the child its own pty, but on macOS it needs an OPEN stdin itself: with stdin
+  # closed (a headless runner) it fails and these two cases went red outside CI (Geri 69540;
+  # reproduced: closed stdin -> 2 FAIL, /dev/null -> green). So its stdin is /dev/null, always.
   if [ "$(uname -s)" = Darwin ]; then
-    out="$(DASH_TOKEN=deadbeefcafe0123 script -q /dev/null /bin/bash -c ". '$REPO/install-lang.sh'; . '$TMP/dash.sh'" 2>&1)"
+    out="$(DASH_TOKEN=deadbeefcafe0123 script -q /dev/null /bin/bash -c ". '$REPO/install-lang.sh'; . '$TMP/dash.sh'" </dev/null 2>&1)"
   else
-    out="$(DASH_TOKEN=deadbeefcafe0123 script -qec "/bin/bash -c \". '$REPO/install-lang.sh'; . '$TMP/dash.sh'\"" /dev/null 2>&1)"
+    out="$(DASH_TOKEN=deadbeefcafe0123 script -qec "/bin/bash -c \". '$REPO/install-lang.sh'; . '$TMP/dash.sh'\"" /dev/null </dev/null 2>&1)"
   fi
   assert_contains "$script on a terminal: the token URL" "$out" "?token=deadbeefcafe0123"
 done
