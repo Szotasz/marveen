@@ -197,8 +197,8 @@ def _trace(reason, **fields):
 # environment or this agent's own channel dir (a sub-agent's paired person is
 # not the install's owner, owner_chat._state_dir):
 #   1. an explicit owner id decides ALONE when set: Slack SLACK_OWNER_USER_ID
-#      (a registry setting: the overrides file, then .env, as settings-store
-#      reads it), Telegram a positive ALLOWED_CHAT_ID (a DM chat id is the
+#      (a registry setting, overrides-only: the overrides file alone, as
+#      settings-store reads it; ENVRELAXGATE1104), Telegram a positive ALLOWED_CHAT_ID (a DM chat id is the
 #      user id);
 #   2. else the main install's sole DM-allowlist entry (owner_chat._from_access);
 #   3. else nobody is the owner.
@@ -213,8 +213,15 @@ def _owner_install_dir():
     return os.environ.get("LEDGER_OWNER_INSTALL_DIR") or ledger_lib._install_dir()
 
 
+# ENVRELAXGATE1104 step 2: the registry's overrides-only keys read here. Every change of SLACK_OWNER_USER_ID loosens
+# it (its registry `loosens`), so a .env line can never tighten it and never counts: the override alone decides, and a
+# blank override means "not set", never a fall-through to .env. ALLOWED_CHAT_ID is no registry key: it keeps the .env.
+OVERRIDES_ONLY_KEYS = frozenset({"SLACK_OWNER_USER_ID"})
+
+
 def _setting(install_dir, key):
-    """A registry key as settings-store resolves it: the override, then .env."""
+    """A registry key as settings-store resolves it: the override, then .env (never .env for OVERRIDES_ONLY_KEYS)."""
+    overrides_only = key in OVERRIDES_ONLY_KEYS
     try:
         with open(os.path.join(install_dir, "store", OVERRIDES_NAME), encoding="utf-8") as fh:
             ov = json.load(fh)
@@ -223,6 +230,8 @@ def _setting(install_dir, key):
             return str(v).strip()
     except (OSError, ValueError):
         pass
+    if overrides_only:
+        return None
     v = owner_chat._read_env_value(os.path.join(install_dir, ".env"), key)
     return v.strip() if isinstance(v, str) and v.strip() else None
 

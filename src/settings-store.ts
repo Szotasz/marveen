@@ -3,10 +3,16 @@ import { join } from 'node:path'
 import { STORE_DIR } from './config.js'
 import { readEnvFile } from './env.js'
 import { atomicWriteFileSync } from './web/atomic-write.js'
-import { getSettingDefinition, validateSettingValue, type SettingDefinition } from './config-registry.js'
+import {
+  SETTINGS_REGISTRY, envValueTightens, getSettingDefinition, isOverridesOnly, validateSettingValue, type SettingDefinition,
+} from './config-registry.js'
 
 // Writable override layer for registry-backed settings. Resolution order for
 // any registered key is: config-overrides.json > .env > registry default.
+// An OVERRIDES-ONLY key (isOverridesOnly: a security control) takes its .env
+// line only when that line tightens the default (ENVRELAXGATE1104 step 2): the
+// .env can be written without the dashboard's owner check. Its override still
+// applies either way, a loosening one too: that is the owner's own decision.
 // Writes are atomic (tmp file + rename, via atomicWriteFileSync) so a crash
 // mid-write can never leave a half-written or zero-byte overrides file. A
 // directory watch keeps the in-memory cache in sync if the file is edited
@@ -68,13 +74,25 @@ function ensureWatching(): void {
   try {
     mkdirSync(STORE_DIR, { recursive: true })
     watcher = watch(STORE_DIR, { persistent: false }, (_event, filename) => {
-      if (filename === 'config-overrides.json') cache = loadFromDisk()
+      if (filename !== 'config-overrides.json') return
+      cache = loadFromDisk()
+      for (const listener of reloadListeners) {
+        try { listener() } catch { /* a listener never breaks the reload */ }
+      }
     })
   } catch {
     // Best-effort: if the platform/FS doesn't support watching the
     // directory, the cache simply stays as of the last read/write from this
     // process -- still correct for the common single-process case.
   }
+}
+
+// Called after the watch reloaded config-overrides.json from disk (an edit outside this process). The dashboard's
+// overrides-health check listens here, so an overrides file that turns unreadable is reported when it happens.
+const reloadListeners: Array<() => void> = []
+export function onOverridesReload(listener: () => void): void {
+  reloadListeners.push(listener)
+  ensureWatching()
 }
 
 export function getOverrides(): Record<string, string | number> {
@@ -102,9 +120,38 @@ export function getEffectiveSettingSource(key: string): { value: string | number
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
   if (key in cache) return { value: coerce(def, cache[key]), source: 'override' }
-  const envValue = readEnvFile([key])[key]
+  const envValue = envLayer(def, key).value
   if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
   return { value: def.default, source: 'default' }
+}
+
+// The .env layer for one key. An overrides-only key's line counts only when it tightens the default; a loosening
+// line is IGNORED, and getIgnoredEnvKeys names it (the name only, never the value).
+function envLayer(def: SettingDefinition, key: string): { value?: string; ignored: boolean } {
+  const envValue = readEnvFile([key])[key]
+  if (envValue === undefined) return { ignored: false }
+  if (isOverridesOnly(def) && !envValueTightens(def, envValue)) return { ignored: true }
+  return { value: envValue, ignored: false }
+}
+
+// Is this key's .env line ignored by the overrides-only rule? For the Settings page marker (envIgnored).
+export function isEnvValueIgnored(key: string): boolean {
+  const def = getSettingDefinition(key)
+  if (!def) throw new Error(`Unknown setting key: ${key}`)
+  return envLayer(def, key).ignored
+}
+
+// Every overrides-only key whose .env line the rule ignores, in registry order. NAMES only: the values may be
+// secrets or routing targets, and this list goes to the boot log, the update output and the Settings page.
+export function getIgnoredEnvKeys(): string[] {
+  const keys = SETTINGS_REGISTRY.filter(isOverridesOnly).map((d) => d.key)
+  const env = readEnvFile(keys)
+  return keys.filter((key) => env[key] !== undefined && !envValueTightens(getSettingDefinition(key)!, env[key]))
+}
+
+// The overrides-only keys, in registry order: what an unreadable overrides file can drop to the default.
+export function getOverridesOnlyKeys(): string[] {
+  return SETTINGS_REGISTRY.filter(isOverridesOnly).map((d) => d.key)
 }
 
 // What would answer for this key WITHOUT its override: .env, then the registry
@@ -114,7 +161,7 @@ export function getEffectiveSettingSource(key: string): { value: string | number
 export function getSettingFallback(key: string): { value: string | number; source: Exclude<SettingSource, 'override'> } {
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
-  const envValue = readEnvFile([key])[key]
+  const envValue = envLayer(def, key).value
   if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
   return { value: def.default, source: 'default' }
 }

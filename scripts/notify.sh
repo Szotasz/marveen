@@ -74,8 +74,9 @@ case "$SESS" in
     ;;
 esac
 
-# SLACKATALLAS1006: Slack first, when NOTIFY_SLACK_TARGET is set (settings or
-# .env). The sender's own Slack bot posts; the helper falls back to the main
+# SLACKATALLAS1006: Slack first, when NOTIFY_SLACK_TARGET is set (the Settings
+# page; a .env line no longer counts, ENVRELAXGATE1104: the helper reads it
+# through the settings store). The sender's own Slack bot posts; the helper falls back to the main
 # bot with the sender's name. Telegram still goes out unless NOTIFY_TELEGRAM=0
 # AND the Slack send succeeded -- a Slack failure never loses the message.
 # No target configured -> exit 2 from the helper, Telegram exactly as before.

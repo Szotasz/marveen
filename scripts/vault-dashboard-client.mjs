@@ -62,7 +62,10 @@ export function claimedAgentName(cwd = process.cwd()) {
 }
 
 // The server's rule (src/web/vault-acl.ts vaultAclMode): the environment saying 'enforce', or the setting in the
-// registry's order -- the Settings page value, else the .env line, else 'audit'.
+// registry's order -- the Settings page value, else the .env line, else 'audit'. VAULT_ACL_MODE is overrides-only
+// (ENVRELAXGATE1104 step 2: a .env line may only tighten it), and this order already obeys that: the only values are
+// 'enforce' and the default 'audit', so a .env line can make it 'enforce' (a tightening) and nothing looser. Kept in
+// step with settings-store by src/__tests__/settings-overrides-only.test.ts.
 export function vaultAclMode(root) {
   if ((process.env.VAULT_ACL_MODE || '').trim() === 'enforce') return 'enforce'
   const override = overrideSetting(root, 'VAULT_ACL_MODE')

@@ -90,6 +90,26 @@ export interface SettingDefinition {
    * control constrains could switch it off for itself (BASHSANDBOX1022 security review).
    */
   loosens?: (oldValue: string, newValue: string) => boolean
+  /**
+   * Optional: the key is OVERRIDES-ONLY (ENVRELAXGATE1104 step 2). Its value comes from the owner's override, else
+   * the registry default; a `.env` line counts only when it TIGHTENS (`loosens(default, envValue)` is false). The
+   * `.env` is a file a process can write without the dashboard's owner check, so it must never loosen a control.
+   * Every key with `loosens`, and every `module: 'security'` key, is overrides-only without this flag (isOverridesOnly).
+   */
+  overridesOnly?: boolean
+}
+
+// ENVRELAXGATE1104 step 2: the keys whose `.env` value may only tighten. A `loosens` function marks a security
+// control, and the `security` module holds them by definition; the explicit flag covers a control with no loosens.
+export function isOverridesOnly(def: SettingDefinition): boolean {
+  return def.overridesOnly === true || typeof def.loosens === 'function' || def.module === 'security'
+}
+
+// Does this `.env` value count for an overrides-only key? Only when it does not loosen the registry default. A key
+// with no `loosens` function cannot tell a tightening from a loosening, so its `.env` value never counts.
+export function envValueTightens(def: SettingDefinition, envValue: string): boolean {
+  if (typeof def.loosens !== 'function') return false
+  return !def.loosens(String(def.default), envValue)
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -827,6 +847,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // Switching it ON removes the curl/wget denies: a loosening (ENVRELAXGATE1104 step 2, EGM M4).
+    loosens: (oldValue: string, newValue: string) => !['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && ['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
   },
   {
     key: 'BASH_SANDBOX_AGENTS',

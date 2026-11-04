@@ -633,7 +633,9 @@ working directory), and what the allowlist said.
 `VAULT_ACL_MODE` (Settings, audit module) decides what the allowlist
 (`store/vault-acl.json`, `{ "<secret-id>": ["agent", ...] }`) does. The dashboard and the scripts read it the same way:
 the Settings page value, else the `.env` line, else `audit`; a `VAULT_ACL_MODE=enforce` in the process environment also
-enforces and cannot be undone from the Settings page. Each side reads only its own process environment, so set the
+enforces and cannot be undone from the Settings page. The `.env` line counts only when it tightens (`enforce`): like
+every security key, VAULT_ACL_MODE is overrides-only (ENVRELAXGATE1104), and loosening it is the Settings page's,
+behind the owner login. Each side reads only its own process environment, so set the
 mode on the Settings page or in `.env`, where the dashboard and the scripts both see it. A change takes effect on the
 next read, without a restart:
 
