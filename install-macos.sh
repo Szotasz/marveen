@@ -1474,6 +1474,9 @@ DASHBOARD_PLIST="com.${SERVICE_ID}.dashboard"
 CHANNELS_PLIST="com.${SERVICE_ID}.channels"
 
 # Dashboard service
+# ISSUE2490 (b1): TERM and LANG exactly as the channels plist below. After a reboot either job can be the one that
+# creates the tmux server (the dashboard's worker session often wins, agent-worker.ts), and the server's global
+# environment is its creator's: without these the whole fleet ran in a server with no TERM and no LANG.
 cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1502,6 +1505,10 @@ cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
     <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+    <key>LANG</key>
+    <string>${LANG:-en_US.UTF-8}</string>
   </dict>
   <key>SoftResourceLimits</key>
   <dict>
