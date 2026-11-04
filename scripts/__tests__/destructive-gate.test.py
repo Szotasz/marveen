@@ -719,6 +719,8 @@ for name, cmd in [
     ("parallel -j4 gzip ::: a", "parallel -j4 gzip ::: a.txt"),
     ("xargs -I{} cp", "xargs -I{} cp {} /tmp/"),
     ("env X=1 grep -c 'mintaszoveg'", "env FOO=1 grep -c '" + RM + " -rf /' f"),
+    # A -c a grep-e: a mintaja proza marad, a hitelesito-ut csak EMLITVE van benne.
+    ("env X=1 grep -c '.ssh-ut emlitese'", "env FOO=1 grep -c 'see ~/.ssh/id_rsa here' notes.txt"),
     ("flock LOCK -c 'make test'", "flock /tmp/l -c 'make test'"),
     ("emlites idezojelben", "echo \"flock -c '" + RM + " -rf /'\""),
 ]:
