@@ -70,10 +70,10 @@ RECENT_LIMIT = 20
 def db_path():
     # Hooks live in <install>/scripts/hooks/; the ledger is <install>/store/.
     # Resolve from THIS file's location so it is correct regardless of the
-    # session's cwd. Test override: LEDGER_DB_PATH.
-    override = os.environ.get("LEDGER_DB_PATH")
-    if override:
-        return override
+    # session's cwd. No environment override (ENVRELAXGATE1104): the replay
+    # puts these rows into the agent's context with their sender roles, so the
+    # agent's own environment must not choose the DB. A test runs the hooks from
+    # a tmp install (<tmp>/scripts linked to the repo's; abspath keeps <tmp>).
     here = os.path.dirname(os.path.abspath(__file__))
     install = os.path.dirname(os.path.dirname(here))
     return os.path.join(install, "store", "claudeclaw.db")

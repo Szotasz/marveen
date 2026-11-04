@@ -9,7 +9,7 @@
 // any holder of the shared token can still send the main agent's name.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -193,7 +193,6 @@ describe('POST /api/approvals with owner_approved_message_id', () => {
 // file, the real hook reads it.
 describe('email-approval-gate accepts a chat-approved row', () => {
   const ROOT = join(__dirname, '..', '..')
-  const GATE = join(ROOT, 'scripts', 'hooks', 'email-approval-gate.py')
   let td: string
   let store: string
 
@@ -201,6 +200,9 @@ describe('email-approval-gate accepts a chat-approved row', () => {
     td = mkdtempSync(join(tmpdir(), 'chat-approved-'))
     store = join(td, 'store')
     mkdirSync(store, { recursive: true })
+    // ENVRELAXGATE1104: the gate reads only its own install's store, so it runs from this tmp install
+    // (<td>/scripts -> the repo's scripts/; the gate takes its root from abspath, not realpath).
+    symlinkSync(join(ROOT, 'scripts'), join(td, 'scripts'))
     writeFileSync(join(store, 'autonomy-config.json'), JSON.stringify({
       version: 1,
       categories: [{ key: 'email_send', label: 'Email', level: 2, locked: false }],
@@ -219,13 +221,11 @@ describe('email-approval-gate accepts a chat-approved row', () => {
       tool_name: 'mcp__server-gmail-autoauth-mcp__send_email',
       tool_input: { to: ['a@b.hu'], subject, body: 'Kedves Ügyfelünk! Törzs.' },
     }
-    return spawnSync('python3', [GATE], {
+    return spawnSync('python3', [join(td, 'scripts', 'hooks', 'email-approval-gate.py')], {
       input: JSON.stringify(payload),
       encoding: 'utf-8',
       env: {
         ...process.env,
-        EMAIL_APPROVAL_GATE_STORE: store,
-        EMAIL_APPROVAL_WINDOW_S: '1800',
         OUTGOING_COPY_GATE_RULES: join(store, 'no-rules.json'),
       },
       timeout: 60_000,

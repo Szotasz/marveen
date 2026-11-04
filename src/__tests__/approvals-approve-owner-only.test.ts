@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -42,14 +42,17 @@ type Auth = { kind: 'token' | 'session' | 'device'; agent?: string; user?: strin
 const TOKEN: Auth = { kind: 'token', agent: 'soma' }
 const OWNER: Auth = { kind: 'session', user: 'owner' }
 
-const GATE = join(process.cwd(), 'scripts', 'hooks', 'email-approval-gate.py')
+// ENVRELAXGATE1104: the gate reads only its own install's store, so it runs from the tmp install
+// (<td>/scripts -> the repo's scripts/; the gate takes its root from abspath, not realpath).
+symlinkSync(join(process.cwd(), 'scripts'), join(td, 'scripts'))
+const GATE = join(td, 'scripts', 'hooks', 'email-approval-gate.py')
 let letterNo = 0
 function letter(to = 'idegen@pelda.hu') {
   letterNo++
   return { tool_name: 'mcp__claude_ai_Gmail__send_message', tool_input: { to: [to], subject: `Teszt ${letterNo}`, body: `Kedves Ügyfelünk! Ez a(z) ${letterNo}. mérés.` } }
 }
 function gate(payload: unknown) {
-  const r = spawnSync('python3', [GATE], { input: JSON.stringify(payload), env: { ...process.env, EMAIL_APPROVAL_GATE_STORE: store, OUTGOING_COPY_GATE_RULES: join(store, 'no-rules.json') }, encoding: 'utf-8' })
+  const r = spawnSync('python3', [GATE], { input: JSON.stringify(payload), env: { ...process.env, OUTGOING_COPY_GATE_RULES: join(store, 'no-rules.json') }, encoding: 'utf-8' })
   return { code: r.status, err: r.stderr }
 }
 // The gate's first deny names the anchor an approval must carry for exactly this letter.

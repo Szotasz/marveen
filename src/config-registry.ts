@@ -634,6 +634,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: false,
+    // Where the owner's deliverables go: any change re-routes them, so it is overrides-only and a .env line never
+    // counts (ENVRELAXGATE1104 follow-up, Samu 68119).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   // --- Heartbeat module (hot-reload via settings-store) ---
   {
@@ -964,6 +967,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // Where the main agent's scheduled results go: any change re-routes them, so it is overrides-only and a .env line
+    // never counts (ENVRELAXGATE1104 follow-up, Samu 68119).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'MAIN_AGENT_CONFIG_DIR',

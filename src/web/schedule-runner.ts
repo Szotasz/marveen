@@ -1126,7 +1126,8 @@ export function groupOrChannelTargets(raw: unknown): string[] {
 // had no way to say otherwise. Two knobs, neither of which touches sub-agents
 // unless a task names it explicitly:
 //   - task-config.json `channelProvider`: this task delivers on that provider;
-//   - SCHEDULED_DELIVERY_CHANNEL="<provider>:<chat id>" in the install .env:
+//   - SCHEDULED_DELIVERY_CHANNEL="<provider>:<chat id>" on the Settings page
+//     (overrides-only since ENVRELAXGATE1104: a .env line no longer counts):
 //     the default for the MAIN agent's tasks that pin nothing themselves.
 //
 // Precedence for a scheduled task's delivery target:
@@ -1183,10 +1184,10 @@ const warnedDeliveryDefaults = new Set<string>()
 /**
  * The install's SCHEDULED_DELIVERY_CHANNEL, read fresh on every call: from
  * process.env (an operator or test override), else the settings store
- * (Beallitasok override > install .env > registry default ''). NOT process.env
- * alone: the dashboard runs under launchd and NONE of the .env keys reach its
- * process.env (measured 2026-09-20, see rolloutFlag in batch-inject.ts), so a
- * process.env-only setting would be unreachable through "put it in .env". A
+ * (Beallitasok override > registry default ''; overrides-only since
+ * ENVRELAXGATE1104, so an install .env line does not count). process.env is the
+ * dashboard's own launch environment (launchd: NONE of the .env keys reach it,
+ * measured 2026-09-20, see rolloutFlag in batch-inject.ts). A
  * set but unusable value is warned about once per value and ignored.
  */
 export function readScheduledDeliveryDefault(

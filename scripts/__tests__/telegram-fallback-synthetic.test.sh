@@ -23,8 +23,10 @@
 # The ordering check records, at the moment of the ledger write, whether the pending entry or
 # marker still exists.
 #
-# Hermetic: Bot API traffic goes to a local stub (TELEGRAM_API_BASE), the ledger is a sandbox
-# SQLite file (LEDGER_DB_PATH), each case has its own state dir, nothing touches tmux.
+# Hermetic: Bot API traffic goes to a local stub (TELEGRAM_API_BASE), each case has its own state
+# dir with its own tmp install (<sd>/inst, scripts/ linked to this repo's), so the ledger is that
+# install's store/claudeclaw.db (no environment variable picks it since ENVRELAXGATE1104); nothing
+# touches tmux.
 
 set -u
 
@@ -34,8 +36,9 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi; }
 
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-STOP_HOOK="${STOP_HOOK_BIN:-$INSTALL_DIR/scripts/hooks/telegram_progress_clear.py}"
-WATCHDOG="${WATCHDOG_BIN:-$INSTALL_DIR/scripts/hooks/telegram_progress_watchdog.py}"
+# The hooks run from each case's tmp install unless a negative control names a mutated copy.
+stop_hook() { printf '%s\n' "${STOP_HOOK_BIN:-$1/inst/scripts/hooks/telegram_progress_clear.py}"; }
+watchdog_hook() { printf '%s\n' "${WATCHDOG_BIN:-$1/inst/scripts/hooks/telegram_progress_watchdog.py}"; }
 export MARVEEN_ROOT="$INSTALL_DIR"
 
 TMP="$(mktemp -d)"
@@ -83,7 +86,8 @@ LINE_REAL='{"type":"assistant","message":{"role":"assistant","model":"claude-opu
 # both files 20 minutes old (so the watchdog's backstop fires), and an empty sandbox ledger.
 mkstate() { # name line
   local sd="$TMP/$1"
-  mkdir -p "$sd/progress"
+  mkdir -p "$sd/progress" "$sd/inst/store"
+  ln -s "$INSTALL_DIR/scripts" "$sd/inst/scripts"
   echo "TELEGRAM_BOT_TOKEN=stub-token" > "$sd/.env"
   printf '%s\n' "$2" > "$sd/transcript.jsonl"
   python3 - "$sd" <<'PYEOF'
@@ -95,7 +99,7 @@ json.dump([{"chat_id": "111", "message_id": 5, "src_mid": "5",
 t = time.time() - 20 * 60
 for f in (p, os.path.join(sd, "transcript.jsonl")):
     os.utime(f, (t, t))
-sqlite3.connect(os.path.join(sd, "ledger.db")).close()
+sqlite3.connect(os.path.join(sd, "inst", "store", "claudeclaw.db")).close()
 PYEOF
   echo "$sd"
 }
@@ -105,7 +109,7 @@ PYEOF
 run_stop() { # state dir
   : > "$REQLOG"
   printf '{"session_id":"sid1","transcript_path":"%s","stop_hook_active":true}' "$1/transcript.jsonl" \
-    | TELEGRAM_STATE_DIR="$1" LEDGER_DB_PATH="$1/ledger.db" python3 "$TMP/run_stop.py" "$STOP_HOOK" "$1" >/dev/null 2>&1
+    | TELEGRAM_STATE_DIR="$1" python3 "$TMP/run_stop.py" "$(stop_hook "$1")" "$1" >/dev/null 2>&1
 }
 
 # The Stop-hook runner lives in a file: its stdin is the hook payload.
@@ -126,7 +130,7 @@ PYEOF
 
 run_watchdog() { # state dir
   : > "$REQLOG"
-  LEDGER_DB_PATH="$1/ledger.db" python3 - "$WATCHDOG" "$1" <<'PYEOF' >/dev/null 2>&1
+  MARVEEN_ROOT="$1/inst" python3 - "$(watchdog_hook "$1")" "$1" <<'PYEOF' >/dev/null 2>&1
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("wd", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
@@ -179,19 +183,19 @@ for path in stop watchdog; do
   assert_eq "$path (a) limit line: no sendMessage" "0" "$(count sendMessage)"
   assert_eq "$path (a) limit line: placeholder edited to the outage text" "1" "$(outage_edits)"
   assert_eq "$path (a) limit line: placeholder stays (no delete)" "0" "$(count deleteMessage)"
-  assert_eq "$path (a) limit line: no ledger row" "0" "$(ledger_all "$sd/ledger.db")"
+  assert_eq "$path (a) limit line: no ledger row" "0" "$(ledger_all "$sd/inst/store/claudeclaw.db")"
 
   sd="$(mkstate "$path-b" "$LINE_NORESP")"; run "$sd"
   assert_eq "$path (b) 'No response requested.': no sendMessage" "0" "$(count sendMessage)"
   assert_eq "$path (b) 'No response requested.': no outage edit" "0" "$(outage_edits)"
-  assert_eq "$path (b) 'No response requested.': no ledger row" "0" "$(ledger_all "$sd/ledger.db")"
+  assert_eq "$path (b) 'No response requested.': no ledger row" "0" "$(ledger_all "$sd/inst/store/claudeclaw.db")"
 
   sd="$(mkstate "$path-c" "$LINE_REAL")"; run "$sd"
   assert_eq "$path (c) real reply starting 'API error': sent once" "1" "$(count sendMessage)"
   assert_eq "$path (c) real reply: the sent text is the reply" "1" "$(grep '^sendMessage ' "$REQLOG" | grep -c 'upstream rate limit' || true)"
   assert_eq "$path (c) real reply: no outage edit" "0" "$(outage_edits)"
-  assert_eq "$path (c) real reply: one outbound ledger row" "1" "$(ledger_all "$sd/ledger.db")"
-  assert_eq "$path (c) real reply: the row carries the path's prefix" "1" "$(ledger_rows "$sd/ledger.db" "$PREFIX")"
+  assert_eq "$path (c) real reply: one outbound ledger row" "1" "$(ledger_all "$sd/inst/store/claudeclaw.db")"
+  assert_eq "$path (c) real reply: the row carries the path's prefix" "1" "$(ledger_rows "$sd/inst/store/claudeclaw.db" "$PREFIX")"
   assert_eq "$path (c) real reply: ledger written after the pending state is gone" "pending-gone" "$(cat "$sd/ledger-order" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 done
 

@@ -20,6 +20,30 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
 GATE = os.path.join(HOOKS, "email-approval-gate.py")
 
+
+def gate_for(store, gate):
+    """ENVRELAXGATE1104: the gate reads only <its own install>/store (and the
+    .env next to it), never a store named by the environment. So:
+      - the real gate runs from the tmp install that owns `store`: <root>/scripts
+        is linked to this repo's scripts/ (the gate takes its root from abspath,
+        not realpath, so <root> stays the root);
+      - a disposable copy (copy_hook_tree) gets its store/ and .env linked to
+        the ones of `store`, re-pointed on every run."""
+    root = os.path.dirname(os.path.abspath(store))
+    if gate == GATE:
+        link = os.path.join(root, "scripts")
+        if not os.path.lexists(link):
+            os.symlink(os.path.dirname(HOOKS), link)
+        return os.path.join(link, "hooks", "email-approval-gate.py")
+    copy_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(gate))))
+    for name, target in (("store", os.path.abspath(store)), (".env", os.path.join(root, ".env"))):
+        p = os.path.join(copy_root, name)
+        if os.path.islink(p):
+            os.unlink(p)
+        if os.path.exists(target) and not os.path.exists(p):
+            os.symlink(target, p)
+    return gate
+
 failed = []
 
 
@@ -268,10 +292,10 @@ try:
     store = make_store(D, level=2)
 
     def run_gate(command):
-        env = dict(os.environ, EMAIL_APPROVAL_GATE_STORE=store,
+        env = dict(os.environ,
                    OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
         payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": D}
-        p = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+        p = subprocess.run([sys.executable, gate_for(store, GATE)], input=json.dumps(payload).encode(),
                            capture_output=True, env=env)
         return p.returncode, p.stderr.decode()
 
