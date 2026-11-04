@@ -604,7 +604,9 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   // skipDangerousModePermissionPrompt: suppress the "Bypass Permissions mode"
   // first-run warning so the headless worker (launched with
   // --dangerously-skip-permissions) reaches its prompt without a blocking modal.
-  writeFileSync(settingsPath, JSON.stringify(withWorkerGates({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }), null, 2) + '\n')
+  // WORKERMCPSEND1104 part 2: the kept mail server's non-reading tools denied by name; disableAllHooks and env dropped.
+  const mailServers = existsSync(join(homedir(), '.claude.json')) ? workerMailServerNames() : []
+  writeFileSync(settingsPath, JSON.stringify(withWorkerGates(withWorkerMailDeny({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }, mailServers)), null, 2) + '\n')
 
   // Subscription auth: materialise the host login JSON as .credentials.json AND
   // clear the stale path-hashed Keychain entry that would shadow it (see the
@@ -734,6 +736,63 @@ export function buildWorkerClaudeJson(
   for (const k of homeKeys) projects[k] = { ...trusted }
   parsed.projects = projects
   return { droppedUser, droppedProject: dropped }
+}
+
+// WORKERMCPSEND1104 part 2: the kept mail server's tools, classified. A worker may only READ mail (the heartbeat's
+// search); every other tool of the server is denied by name in the worker's own settings. Deny binds in bypass mode,
+// an allow cannot carve out of a deny, so a per-tool deny list is the documented form; a test pins the server's
+// measured tool list against these two sets, and an unknown tool name fails it (fail-closed classification).
+export const WORKER_MAIL_READ_TOOLS: readonly string[] = ['search_emails', 'read_email', 'list_email_labels', 'list_filters', 'get_filter']
+export const WORKER_MAIL_DENIED_TOOLS: readonly string[] = [
+  'send_email', 'draft_email', 'modify_email', 'batch_modify_emails', 'delete_email', 'batch_delete_emails',
+  'create_label', 'update_label', 'delete_label', 'get_or_create_label',
+  'create_filter', 'create_filter_from_template', 'delete_filter', 'download_attachment',
+]
+
+/** 'read' or 'deny' for a known mail-server tool; 'unknown' otherwise (a test fails on it). */
+export function classifyWorkerMailTool(tool: string): 'read' | 'deny' | 'unknown' {
+  if (WORKER_MAIL_READ_TOOLS.includes(tool)) return 'read'
+  if (WORKER_MAIL_DENIED_TOOLS.includes(tool)) return 'deny'
+  return 'unknown'
+}
+
+/** The server segment of an MCP tool name as Claude Code builds it: characters other than [A-Za-z0-9_-] become `_`. */
+export function mcpServerSegment(server: string): string {
+  return server.replace(/[^A-Za-z0-9_-]/g, '_')
+}
+
+// The keys a worker's settings.json must not carry: disableAllHooks switches its gates off, env rewrites the
+// environment of the worker and of every MCP server it starts (NODE_OPTIONS, npm_config_*). The same two keys the
+// agent scaffold drops on spawn (#2497); here ensureWorkerCwd drops them on every worker start.
+export const WORKER_SETTINGS_STRIPPED_KEYS: readonly string[] = ['disableAllHooks', 'env']
+
+/**
+ * The worker settings with the stripped keys gone and permissions.deny carrying one entry per denied mail tool of each
+ * kept mail server. Earlier entries of that shape are replaced, never duplicated; every other deny entry is kept.
+ * Pure (returns a new object).
+ */
+export function withWorkerMailDeny(settings: WorkerSettings, mailServers: string[]): WorkerSettings {
+  const out: WorkerSettings = { ...settings }
+  for (const k of WORKER_SETTINGS_STRIPPED_KEYS) delete out[k]
+  const perms = (out.permissions && typeof out.permissions === 'object' && !Array.isArray(out.permissions)
+    ? { ...(out.permissions as Record<string, unknown>) }
+    : {}) as Record<string, unknown>
+  const isOurs = (e: unknown) => typeof e === 'string' && /^mcp__.+__(.+)$/.test(e) && WORKER_MAIL_DENIED_TOOLS.includes(e.replace(/^mcp__.+__/, ''))
+  const prev = Array.isArray(perms.deny) ? (perms.deny as unknown[]).filter((e) => !isOurs(e)) : []
+  const ours = mailServers.flatMap((srv) => WORKER_MAIL_DENIED_TOOLS.map((t) => `mcp__${mcpServerSegment(srv)}__${t}`))
+  perms.deny = [...prev, ...ours]
+  out.permissions = perms
+  return out
+}
+
+/** The names of the mail servers a worker keeps, from the host's ~/.claude.json (none on any read error). */
+export function workerMailServerNames(hostClaudeJson: string = join(homedir(), '.claude.json'), npxPath: string | null = tryResolveFromPath('npx')): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(hostClaudeJson, 'utf-8')) as { projects?: Record<string, { mcpServers?: unknown }> }
+    return Object.keys(filterWorkerMcpServers(parsed.projects?.[PROJECT_ROOT]?.mcpServers, npxPath).kept)
+  } catch {
+    return []
+  }
 }
 
 export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
