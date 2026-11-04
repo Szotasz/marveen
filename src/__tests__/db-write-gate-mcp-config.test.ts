@@ -193,3 +193,23 @@ describe('the hook end to end: CLAUDE_PROJECT_DIR and CLAUDE_CONFIG_DIR are read
 it('the deny message names the npx form the CLI rule does not see (Samu 68172)', () => {
   expect(SUBAGENT_FILE_GATE_MSG).toContain('npx @anthropic-ai/claude-code')
 })
+
+describe('a bare glob in the sub-agent\'s own directory follows the shell dotfile rule (worker-gates count(*), #2497)', () => {
+  const own = () => ({ subAgent: true, projectDir: agent, configDir: join(agent, '.claude-config') })
+  it.each([
+    'sqlite3 ../../store/claudeclaw.db "SELECT count(*) FROM kanban_cards"',
+    'sqlite3 x.db "SELECT * FROM t"',
+  ])('passes: %s', (command) => {
+    expect(bash(command, own())).toEqual({ deny: false })
+  })
+  it.each([
+    'cp /tmp/evil.json .mcp.json',
+    'cp /tmp/evil.json .mcp*',
+    'shopt -s dotglob; cp /tmp/evil.json *',
+    'setopt globdots; sqlite3 x.db "SELECT count(*) FROM t"',
+    'GLOBIGNORE=x; cp /tmp/evil.json *',
+    'cp /tmp/evil.json *(D)',
+  ])('still denied (a dot segment, or a dotglob mode named in the command): %s', (command) => {
+    expect(bash(command, own()).deny).toBe(true)
+  })
+})
