@@ -128,6 +128,17 @@
     {"name": "Samu 69648: control, a --to in a comment after a harmless script", "cmd": "python3 plain.py # --to a@example.com", "main": false, "sub": false},
     {"name": "Samu 69648: a quoted # is text, not a comment: the --to after it still addresses the run", "cmd": "cd $WT && python3 tool.py \"x #1\" --to a@example.com", "main": true, "sub": true},
     {"name": "Samu 69648: a # inside a word is no comment", "cmd": "cd $WT && python3 tool.py x#y a@example.com", "main": true, "sub": true},
-    {"name": "Samu 69648: a prefix assignment (D=x cmd) does not set the shell's D for a later cd $D", "cmd": "D=evil cd /tmp; cd $D && python3 plain.py", "main": true, "sub": false}
+    {"name": "Samu 69648: a prefix assignment (D=x cmd) does not set the shell's D for a later cd $D", "cmd": "D=evil cd /tmp; cd $D && python3 plain.py", "main": true, "sub": false},
+    {"name": "Samu 69682 (Bence 69680): an assignment from a nested substitution, then grep: nothing runs a script", "cmd": "H=\"$(cd \"$(git rev-parse --git-common-dir)\" && pwd)/hooks/post-checkout\"; grep -c x \"$H\"", "main": false, "sub": false},
+    {"name": "Samu 69682: control, the same assignment without the path tail", "cmd": "H=\"$(cd \"$(git rev-parse --git-common-dir)\" && pwd)\"; echo \"$H\"", "main": false, "sub": false},
+    {"name": "Samu 69682: cd \"$(dirname LITERAL)\" is a literal cd: the script there is read (it sends)", "cmd": "cd \"$(dirname evil/send.py)\" && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69682: cd $(dirname LITERAL) unquoted", "cmd": "cd $(dirname evil/send.py) && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69682: cd \"$(dirname LITERAL)\" into a dir without a sender: no send on either gate (a literal cd)", "cmd": "cd \"$(dirname pkgclean/__main__.py)\" && python3 plain.py", "main": false, "sub": false},
+    {"name": "Samu 69682: dirname of a realpath of a literal", "cmd": "cd \"$(dirname \"$(realpath evil/send.py)\")\" && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69682: cd \"$(dirname \"$0\")\" is an outside variable: the main gate asks, the sub-agent gate passes", "cmd": "cd \"$(dirname \"$0\")\" && python3 tool.py", "main": true, "sub": false},
+    {"name": "Samu 69682: dirname of a realpath of $0, the same", "cmd": "cd \"$(dirname \"$(realpath \"$0\")\")\" && python3 tool.py", "main": true, "sub": false},
+    {"name": "Samu 69682: a substitution with options is not resolved: still a command-substitution cd", "cmd": "cd \"$(dirname -z evil/send.py)\" && python3 tool.py", "main": true, "sub": true},
+    {"name": "Samu 69682: basename of a literal", "cmd": "cd \"$(basename /x/evil)\" && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69682: dirname of a realpath into a dir without a sender: a literal cd, no send", "cmd": "cd \"$(dirname \"$(realpath pkgclean/__main__.py)\")\" && python3 plain.py", "main": false, "sub": false}
   ]
 }

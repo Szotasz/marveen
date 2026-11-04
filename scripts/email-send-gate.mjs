@@ -1344,6 +1344,8 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
     if (prog === 'npx' && script === null) return false
     if (addressFlagGiven(rest)) return true
     kind = 'node'
+  } else if (substArtefact(toks[0])) {
+    return false // Samu 69682: a piece of a cut command substitution, not a file that runs
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
     // a directly executed file: its #! line picks the interpreter, else its extension; every candidate on its own
     const extKind = /\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null
@@ -1386,6 +1388,57 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
 const SUBST_CD = /(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)/
 // the undecidable cd word handed on for it; also what tells headRunsSenderScript a substitution cd was seen
 const SUBST_MARK = '$CMD_SUBST_CD'
+
+// Samu 69682 (1): the tokenizer does not nest quotes inside a command substitution, so `H="$(cd "$(...)" && pwd)/x"`
+// comes out in pieces, and ` && pwd)/x` stood at a segment's head like a file run by path. A head that starts with
+// whitespace, or has more `)` than `(`, is such a piece: no file runs under that name. The python twin agrees.
+function substArtefact(t) {
+  if (/^\s/.test(t)) return true
+  let open = 0, close = 0
+  for (const ch of t) { if (ch === '(') open++; else if (ch === ')') close++ }
+  return close > open
+}
+
+// Samu 69682 (2): substitutions whose value is known from a literal path are resolved on the raw command before it is
+// tokenized: $(dirname P), $(basename P), $(realpath P), P a literal (quoted or not), nested too. A cd after one is a
+// literal cd. With a variable argument ("$0", $VAR, ${VAR}) the substitution becomes an outside variable: the cd is
+// undecidable, but no command-substitution mark (a script's own `cd "$(dirname "$0")"` must not be a deny). Any other
+// substitution, or one with options, stays as it is.
+const DET_SUBST = /\$\(\s*(dirname|basename|realpath)\s+(?:"([^"$`\\]*)"|'([^']*)'|([^\s$`'"()|;&<>*?[\]{}\\]+)|("?)(\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*|[0-9]))\5)\s*\)/
+const OUTSIDE_PATH_VAR = '$GATE_OUTSIDE_PATH'
+const SAFE_LITERAL = /^[^\s$`'"()|;&<>*?[\]{}\\]+$/
+function detSubstValue(fn, p, cwd) {
+  if (fn === 'dirname') {
+    const s = p.replace(/\/+$/, '') || '/'
+    if (s === '/') return '/'
+    const i = s.lastIndexOf('/')
+    if (i < 0) return '.'
+    return s.slice(0, i).replace(/\/+$/, '') || '/'
+  }
+  if (fn === 'basename') {
+    const s = p.replace(/\/+$/, '')
+    return s === '' ? '/' : s.split('/').pop()
+  }
+  const abs = isAbsolute(p) ? p : (typeof cwd === 'string' && isAbsolute(cwd) ? join(cwd, p) : null)
+  if (abs === null) return null
+  try { return realpathSync(abs) } catch { return resolve(abs) }
+}
+function resolveDeterministicSubst(cmd, cwd) {
+  let s = cmd
+  for (let n = 0; n < 16; n++) {
+    const m = DET_SUBST.exec(s)
+    if (!m) break
+    let v
+    if (m[6] !== undefined) v = OUTSIDE_PATH_VAR
+    else {
+      const p = m[2] ?? m[3] ?? m[4]
+      v = p === OUTSIDE_PATH_VAR ? OUTSIDE_PATH_VAR : detSubstValue(m[1], p, cwd)
+      if (v === null || !(v === OUTSIDE_PATH_VAR || SAFE_LITERAL.test(v))) break
+    }
+    s = s.slice(0, m.index) + v + s.slice(m.index + m[0].length)
+  }
+  return s
+}
 
 // Samu 69648 (2): a shell comment is no recipient and runs nothing. The python twin's shlex drops an unquoted `#...`;
 // this tokenizer kept it, so `cd $WT && python3 -m pytest # ask a@x.hu` was an addressed run here only. Dropped as bash
@@ -1441,7 +1494,8 @@ function assignedCdDirs(segments) {
   return out
 }
 
-export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
+export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
+  const cmd = resolveDeterministicSubst(cmdIn, cwd)
   let segments
   try {
     segments = segmentsTokens(stripShellComments(cmd.replace(HEREDOC_RE, '$1')))

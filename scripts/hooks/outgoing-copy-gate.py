@@ -1708,6 +1708,8 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if _address_flag_given(rest):
             return True
         kind = "node"
+    elif _subst_artefact(toks[0]):
+        return False  # Samu 69682: a piece of a cut command substitution, not a file that runs
     elif _SCRIPT_FILE.search(toks[0]) or "/" in toks[0]:
         # a directly executed file: its #! line picks the interpreter, else its extension
         # MAILGATESCRIPT1027 R1: every candidate is judged on its own, with its own kind
@@ -1762,6 +1764,57 @@ _SUBST_CD = re.compile(r"""(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;
 _SUBST_MARK = "$CMD_SUBST_CD"  # the undecidable cd word handed on for it
 
 
+def _subst_artefact(t) -> bool:
+    """Samu 69682 (1): a head that starts with whitespace, or has more `)` than `(`, is a piece of a command
+    substitution the tokenizer cut (`H="$(cd "$(...)" && pwd)/x"`), not a file run by path. The JS twin agrees."""
+    return bool(re.match(r"\s", t)) or t.count(")") > t.count("(")
+
+
+# Samu 69682 (2): $(dirname P) / $(basename P) / $(realpath P) with a literal P are resolved on the raw command before
+# tokenizing (nested too); with a variable argument the substitution becomes an outside variable. See the JS twin.
+_DET_SUBST = re.compile(r"""\$\(\s*(dirname|basename|realpath)\s+(?:"([^"$`\\]*)"|'([^']*)'|([^\s$`'"()|;&<>*?\[\]{}\\]+)|("?)(\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*|[0-9]))\5)\s*\)""")
+_OUTSIDE_PATH_VAR = "$GATE_OUTSIDE_PATH"
+_SAFE_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\]+$""")
+
+
+def _det_subst_value(fn, p, cwd):
+    if fn == "dirname":
+        s = p.rstrip("/") or "/"
+        if s == "/":
+            return "/"
+        i = s.rfind("/")
+        if i < 0:
+            return "."
+        return s[:i].rstrip("/") or "/"
+    if fn == "basename":
+        s = p.rstrip("/")
+        return "/" if s == "" else s.split("/")[-1]
+    if os.path.isabs(p):
+        ab = p
+    elif isinstance(cwd, str) and os.path.isabs(cwd):
+        ab = os.path.join(cwd, p)
+    else:
+        return None
+    return os.path.realpath(ab) if os.path.exists(ab) else os.path.normpath(ab)
+
+
+def _resolve_deterministic_subst(cmd, cwd):
+    s = cmd
+    for _ in range(16):
+        m = _DET_SUBST.search(s)
+        if not m:
+            break
+        if m.group(6) is not None:
+            v = _OUTSIDE_PATH_VAR
+        else:
+            p = next(g for g in (m.group(2), m.group(3), m.group(4)) if g is not None)
+            v = _OUTSIDE_PATH_VAR if p == _OUTSIDE_PATH_VAR else _det_subst_value(m.group(1), p, cwd)
+            if v is None or not (v == _OUTSIDE_PATH_VAR or _SAFE_LITERAL.match(v)):
+                break
+        s = s[:m.start()] + v + s[m.end():]
+    return s
+
+
 _VAR_REF = re.compile(r"^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$")
 
 
@@ -1793,6 +1846,7 @@ def _assigned_cd_dirs(segments):
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    cmd = _resolve_deterministic_subst(cmd, cwd)
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
