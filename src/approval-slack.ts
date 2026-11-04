@@ -11,6 +11,19 @@
  * What is checked at decision time, all required: the snapshot owner id reacted; that account is not a bot, not an app
  * user, not deleted; the message is still the one the server posted (same ts, sender = our bot, never edited, the text
  * sha256 unchanged). A ✅ and a ❌ together, or any mismatch, is a REJECTION with an alert, never an approval.
+ *
+ * APPROVALSLACK1030 B (the owner's decision of 11-04, Samu 67693): the owner's TYPED reply decides as well, read by the
+ * server the same way; no agent is in the chain. For the owner nothing changes: the request arrives, they write "mehet".
+ * Which request a reply belongs to, without an id or a button:
+ *   - a reply in the request's THREAD belongs to it, if no message from anyone but the owner (the server's own notice
+ *     aside) stands in the thread before the owner's last message;
+ *   - a reply outside a thread belongs to the request only if it is the FIRST message after it in the DM (the owner's
+ *     run of messages right after the request); any message by anyone else in between, and there is no binding.
+ * So a "mehet" given to another question is never an approval (egm-design B1). The owner's LAST message of that place
+ * decides, and only 30 s after it was written ("mehet", then "nem, várj" is not an approval). The words, after NFC and
+ * whitespace folding, with only a trailing "." or "!" dropped: mehet / jóváhagyom approve, nem / elutasítom reject;
+ * anything else ("mehet?", "igen", formatting) decides nothing. An edited owner message decides nothing (a notice asks
+ * for a new one).
  */
 import { createHash } from 'node:crypto'
 
@@ -29,6 +42,11 @@ export interface ApprovalSlackPost {
   textSha256: string
   ownerUserId: string
   botUserId: string
+  /** Offered decisions (a row from before B was a reaction post). */
+  reactionMode?: boolean
+  replyMode?: boolean
+  /** The server's own thread notice (asked for a new message after an edit), skipped by the thread rule. */
+  noticeTs?: string | null
 }
 
 export const sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')
@@ -68,10 +86,80 @@ Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false;
   return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(posted), ownerUserId, botUserId } }
 }
 
+export type Binding = 'thread' | 'next_message'
+
 export type Verdict =
   | { kind: 'none' }
-  | { kind: 'approved' | 'rejected'; userId: string }
+  | { kind: 'approved' | 'rejected'; userId: string; via?: { binding: Binding; ts: string } }
   | { kind: 'refused'; reason: string }
+  | { kind: 'notice'; reason: 'owner_edited' }
+
+export const APPROVE_WORDS: ReadonlySet<string> = new Set(['mehet', 'jóváhagyom'])
+export const REJECT_WORDS: ReadonlySet<string> = new Set(['nem', 'elutasítom'])
+/** A typed decision counts only this long after it was written, and only if it is still the owner's last word there. */
+export const REPLY_SETTLE_S = 30
+
+/** The decision a typed reply carries, or null: NFC, whitespace folded, only a trailing "." / "!" dropped. */
+export function replyWord(text: unknown): 'approved' | 'rejected' | null {
+  if (typeof text !== 'string') return null
+  const t = text.normalize('NFC').replace(/\s+/gu, ' ').trim().replace(/[.!]+$/u, '').trim().toLocaleLowerCase('hu-HU')
+  if (APPROVE_WORDS.has(t)) return 'approved'
+  if (REJECT_WORDS.has(t)) return 'rejected'
+  return null
+}
+
+/** Slack ts order ("1700000000.000100"), numerically, never as strings of different length. */
+export function tsCompare(a: string, b: string): number {
+  const [as, au = '0'] = a.split('.'); const [bs, bu = '0'] = b.split('.')
+  const d = Number(as) - Number(bs)
+  return d !== 0 ? Math.sign(d) : Math.sign(Number(au.padEnd(6, '0')) - Number(bu.padEnd(6, '0')))
+}
+
+type Msg = Record<string, unknown>
+
+/** A plain message the owner typed: their user id, no subtype, no bot or app behind it. */
+function byOwner(m: Msg, owner: string): boolean {
+  return m.user === owner && m.subtype === undefined && m.bot_id === undefined && m.app_id === undefined
+}
+
+/** What the owner's deciding message [d] gives now. */
+function fromDeciding(d: Msg, post: ApprovalSlackPost, binding: Binding, nowS: number): Verdict {
+  if (d.edited !== undefined) return { kind: 'notice', reason: 'owner_edited' }
+  const word = replyWord(d.text)
+  if (!word || typeof d.ts !== 'string') return { kind: 'none' }
+  if (Number(d.ts) > nowS - REPLY_SETTLE_S) return { kind: 'none' }
+  return { kind: word, userId: post.ownerUserId, via: { binding, ts: d.ts } }
+}
+
+/**
+ * The owner's typed reply to [post] ([parent] is the request message as just read), or 'none'. The thread first: if the
+ * owner wrote there at all, the thread decides (or nothing does); otherwise the owner's run right after the request.
+ */
+async function replySignal(call: SlackCall, post: ApprovalSlackPost, parent: Msg, nowS: number): Promise<Verdict> {
+  if (Number(parent.reply_count ?? 0) > 0) {
+    const r = await call('conversations.replies', { channel: post.channel, ts: post.ts, limit: 200 })
+    if (r.ok === true && r.has_more !== true) {
+      const thread = ((r.messages as Msg[] | undefined) ?? [])
+        .filter((m) => typeof m.ts === 'string' && tsCompare(m.ts, post.ts) > 0 && m.ts !== post.noticeTs)
+        .sort((a, b) => tsCompare(String(a.ts), String(b.ts)))
+      const owners = thread.filter((m) => byOwner(m, post.ownerUserId))
+      if (owners.length > 0) {
+        const last = owners[owners.length - 1]
+        const interjected = thread.some((m) => !byOwner(m, post.ownerUserId) && tsCompare(String(m.ts), String(last.ts)) < 0)
+        return interjected ? { kind: 'none' } : fromDeciding(last, post, 'thread', nowS)
+      }
+    }
+  }
+  const h = await call('conversations.history', { channel: post.channel, oldest: post.ts, inclusive: false, limit: 100 })
+  if (h.ok !== true || h.has_more === true) return { kind: 'none' }
+  const after = ((h.messages as Msg[] | undefined) ?? [])
+    .filter((m) => typeof m.ts === 'string' && tsCompare(m.ts, post.ts) > 0)
+    .sort((a, b) => tsCompare(String(a.ts), String(b.ts)))
+  let run = 0
+  while (run < after.length && byOwner(after[run], post.ownerUserId)) run++
+  if (run === 0) return { kind: 'none' }
+  return fromDeciding(after[run - 1], post, 'next_message', nowS)
+}
 
 /** Who reacted with what, from the message object itself (its `reactions`: name and users). */
 function reactorsOf(m: Record<string, unknown>): Map<string, string[]> {
@@ -88,16 +176,22 @@ function reactorsOf(m: Record<string, unknown>): Map<string, string[]> {
  * already asks for (im:history); reactions.get would need reactions:read, which the install's scope list does not
  * name (install-macos.sh, channel-provider.ts).
  */
-export async function checkPost(call: SlackCall, post: ApprovalSlackPost): Promise<Verdict> {
+export async function checkPost(call: SlackCall, post: ApprovalSlackPost, nowS: number = Date.now() / 1000): Promise<Verdict> {
   const h = await call('conversations.history', { channel: post.channel, latest: post.ts, oldest: post.ts, inclusive: true, limit: 1 })
   if (h.ok !== true) return { kind: 'none' }
   const m = (h.messages as Array<Record<string, unknown>> | undefined)?.[0]
   if (!m || m.ts !== post.ts) return { kind: 'refused', reason: 'message_missing' }
-  const reactors = reactorsOf(m)
-  const yes = (reactors.get(APPROVE_REACTION) ?? []).includes(post.ownerUserId)
-  const no = (reactors.get(REJECT_REACTION) ?? []).includes(post.ownerUserId)
-  if (!yes && !no) return { kind: 'none' }
-  if (yes && no) return { kind: 'refused', reason: 'both_reactions' }
+  let v: Verdict = { kind: 'none' }
+  if (post.reactionMode !== false) {
+    const reactors = reactorsOf(m)
+    const yes = (reactors.get(APPROVE_REACTION) ?? []).includes(post.ownerUserId)
+    const no = (reactors.get(REJECT_REACTION) ?? []).includes(post.ownerUserId)
+    if (yes && no) return { kind: 'refused', reason: 'both_reactions' }
+    if (yes || no) v = { kind: yes ? 'approved' : 'rejected', userId: post.ownerUserId }
+  }
+  if (v.kind === 'none' && post.replyMode === true) v = await replySignal(call, post, m, nowS)
+  if (v.kind !== 'approved' && v.kind !== 'rejected') return v
+  // The request message must still be the one the server posted, whichever signal decided.
   if (m.edited !== undefined) return { kind: 'refused', reason: 'message_edited' }
   if (m.user !== post.botUserId) return { kind: 'refused', reason: 'message_sender' }
   if (typeof m.text !== 'string' || sha256(m.text) !== post.textSha256) return { kind: 'refused', reason: 'message_changed' }
@@ -105,7 +199,7 @@ export async function checkPost(call: SlackCall, post: ApprovalSlackPost): Promi
   const user = info.user as { id?: unknown; is_bot?: unknown; is_app_user?: unknown; deleted?: unknown } | undefined
   if (info.ok !== true || !user || user.id !== post.ownerUserId) return { kind: 'refused', reason: 'owner_unknown' }
   if (user.is_bot === true || user.is_app_user === true || user.deleted === true) return { kind: 'refused', reason: 'owner_not_human' }
-  return { kind: yes ? 'approved' : 'rejected', userId: post.ownerUserId }
+  return v
 }
 
 /** How many pending requests one sweep asks about at most (Dani 65920 (6)); the rest wait for the next round. */

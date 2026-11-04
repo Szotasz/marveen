@@ -920,6 +920,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
+    key: 'APPROVAL_SLACK_REPLIES',
+    type: 'string',
+    default: 'off',
+    description: 'Slack-válaszos jóváhagyás (APPROVALSLACK1030 B): bekapcsolva (on) a jóváhagyás-kérés a gazda Slack-DM-jébe EGY üzenetként megy, és a gazda beírt "mehet" (jóváhagy) vagy "nem" (elutasít) válaszát a szerver maga olvassa el: a kérés szálában, vagy közvetlenül a kérés után, ha közben senki más nem írt. Csak kifejezett SLACK_OWNER_USER_ID mellett. Leírás-alapú kérésnél a gazda a kérő ügynök leírását hagyja jóvá (vállalt kockázat). Az állandó kategóriák, a data_delete és a boríték nélküli levél a dashboardon marad. Alapból KI; a bekapcsolás a gazda döntése.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    // Switching it ON opens one more way to approve: that needs the owner's session (Samu 67693: the owner's own step).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
     key: 'SCHEDULED_DELIVERY_CHANNEL',
     type: 'string',
     default: '',
