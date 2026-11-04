@@ -18,6 +18,11 @@
 
 Development happens in a git worktree; the worktree's own copies of these files are not protected.
 
+For a sub-agent only, it also denies a write of the files listed in `SUBAGENT_PROTECTED_INSTALL_PATHS` in the hook
+(ENVRELAXGATE1104 and its follow-ups), among them every agent's Telegram inbound-evidence log
+(`agents/<name>/.claude/channels/telegram/inbound-evidence.jsonl` and its rotated `.1`, TGINREPLAYGATE1104): the
+inbound replay (`TELEGRAM_INBOUND_REPLAY_ENABLED`, off by default) re-delivers its lines framed as channel messages.
+
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. The
 owner's approval becomes trustworthy only once GROMZODONTES1030 (F1-F3) moves the decision to the mxd store.

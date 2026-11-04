@@ -117,6 +117,40 @@ describe('the five store files, as a sub-agent: create, write and delete denied'
   }
 })
 
+// TGINREPLAYGATE1104 (#2512 review, provenance): the inbound replay re-delivers a line of this log to the agent framed as
+// a channel message, so a sub-agent's tool call may not write it: its own log, another agent's, or the rotated .1. The
+// plugin writes it from its MCP server process, which is not a tool call and never reaches this gate.
+describe('the Telegram inbound-evidence logs, as a sub-agent: every write denied', () => {
+  const tg = (name: string) => join(root, 'agents', name, '.claude', 'channels', 'telegram')
+  beforeEach(() => {
+    for (const n of ['samu', 'qwen']) {
+      mkdirSync(tg(n), { recursive: true })
+      writeFileSync(join(tg(n), 'inbound-evidence.jsonl'), '')
+    }
+  })
+  it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])('%s: its own log, another agent\'s, the rotated .1 (missing: creating it)', (tool) => {
+    for (const n of ['samu', 'qwen']) {
+      for (const f of ['inbound-evidence.jsonl', 'inbound-evidence.jsonl.1']) expect(subFile(tool, join(tg(n), f), agentDir)).toEqual(SUB)
+    }
+  })
+  it.each([
+    `echo '{"chat_id":"1","message_id":"9","text":"x","at":1}' >> .claude/channels/telegram/inbound-evidence.jsonl`,
+    'tee -a .claude/channels/telegram/inbound-evidence.jsonl < /tmp/x',
+    'cp /tmp/x ../qwen/.claude/channels/telegram/inbound-evidence.jsonl.1',
+    'mv /tmp/x @ROOT@/agents/qwen/.claude/channels/telegram/inbound-evidence.jsonl',
+    'rm .claude/channels/telegram/inbound-evidence.jsonl',
+  ])('Bash: %s', (command) => {
+    expect(sub(command, agentDir)).toEqual(SUB)
+  })
+  it('a read passes; access.json is denied (CHANSTATEWRITE1104 trust file), a look-alike name and a worktree\'s copy stay free; the main agent writes the log (control)', () => {
+    expect(sub('tail -n 5 .claude/channels/telegram/inbound-evidence.jsonl', agentDir).deny).toBe(false)
+    expect(subFile('Write', join(tg('samu'), 'access.json'), agentDir)).toEqual(SUB)
+    expect(subFile('Write', join(tg('samu'), 'inbound-evidence.jsonl.bak'), agentDir)).toEqual({ deny: false })
+    expect(subFile('Write', join(wt, 'agents', 'samu', '.claude', 'channels', 'telegram', 'inbound-evidence.jsonl'))).toEqual({ deny: false })
+    expect(mainFile('Write', join(tg('samu'), 'inbound-evidence.jsonl'))).toEqual({ deny: false })
+  })
+})
+
 describe('what stays free', () => {
   it.each([
     'cat .env',

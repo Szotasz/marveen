@@ -27,6 +27,14 @@
  * Fail closed everywhere: an unreadable allowlist, a symlinked or foreign-owned
  * state file, a missing transcript dir or a transcript that has not been written
  * since the message ("blind") never causes a replay. Message text is never logged.
+ *
+ * The limit, and why the setting is off by default. The evidence log is written
+ * by the agent's own OS user, so another agent or a script under the same user
+ * can write a line into it, and that line reaches the agent framed as a channel
+ * message. The sub-agent write gate (scripts/hooks/db-write-gate.mjs) denies a
+ * sub-agent's tool call on the log, but that is a text brake, not an OS
+ * boundary. TELEGRAM_INBOUND_REPLAY_ENABLED is therefore '0' until the owner
+ * turns it on.
  */
 
 import { lstatSync, readFileSync } from 'node:fs'
