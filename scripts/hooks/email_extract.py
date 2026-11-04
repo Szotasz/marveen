@@ -20,6 +20,10 @@ collect_bash_body / collect_mcp_body moved here VERBATIM from
 outgoing-copy-gate.py (behavior-neutral; parity proven byte-for-byte against a
 golden captured from the pre-move code -- scripts/__tests__/email-extract-parity.test.py).
 """
+# EMAILGATEPY39-1104: the hooks run under the PATH's python3, which is 3.9 on a Mac without Homebrew python. A
+# `str | None` annotation is evaluated at def time before 3.10 and raised a TypeError on import, so the approval gate
+# denied every send and the credential gate every call. Deferred annotations keep them plain strings.
+from __future__ import annotations
 import hashlib
 import html
 import json
