@@ -812,8 +812,10 @@ export function fileToolDeny(toolInput, opts = {}) {
 // `claude mcp add|add-json|add-from-claude-desktop|remove` (ENVRELAXMCPCFG1104, Dani 68088, Samu 68092): the CLI
 // writes an MCP server list itself, so no path appears in the command. A sub-agent may not run it, for any --scope;
 // the main agent may. The invocation is found by the child-claude guard's own parser (a `claude` at a segment's start,
-// after env assignments and wrappers); one started from a script, or as `npx @anthropic-ai/claude-code`, is not seen
-// (stated limit, as for that guard).
+// after env assignments and wrappers). Not seen (stated limit, Dani 68129): a `claude` not at a segment's start --
+// started from a script, inside `bash -c`/`sh -c`, through `xargs`, as `$(which claude)` or from a variable
+// (`C=claude; $C`) -- or as `npx @anthropic-ai/claude-code`. The same class holds for the other text gates; the
+// shell-code recursion is separate, wider work.
 const CLAUDE_MCP_WRITE_SUBS = new Set(['add', 'add-json', 'add-from-claude-desktop', 'remove'])
 export function claudeMcpListWrite(command) {
   return claudeInvocations(String(command ?? '')).some((args) => {
@@ -893,7 +895,7 @@ export const SUBAGENT_FILE_GATE_MSG =
   'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
   'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
   'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
-  'amit ez a kapu NEM lat (limit): egy plugin sajat szerverlistajat (a plugin-mappa .mcp.json-ja, plugin.json mcpServers) es egy szkriptbol inditott claude-ot. ' +
+  'amit ez a kapu NEM lat (limit): egy plugin sajat szerverlistajat (a plugin-mappa .mcp.json-ja, plugin.json mcpServers) es egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
