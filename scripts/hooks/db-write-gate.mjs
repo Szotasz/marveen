@@ -92,6 +92,9 @@ export const PROTECTED_INSTALL_PATHS = [
   { rel: 'store/config-overrides.json' },
   // The owner Slack target last announced (Dani 66036): the drift check compares against it.
   { rel: 'store/.owner-slack-target' },
+  // The network-target origins recorded at the last boot (NETTARGETENV1104, Dani 68849): the drift check compares
+  // against it, so a pre-written or deleted record would hide a target change.
+  { rel: 'store/.net-target-hosts.json' },
   // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
   // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
   { rel: '.git/config' },
@@ -330,7 +333,7 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
+  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
   // PLUGINCODEWRITE1104 (E3): a bare plugin-tree name from its parent (`cd ~/.claude && rm -rf plugins`)
   'plugins', 'marveen-local-plugins', 'gromzo'])
@@ -1153,7 +1156,7 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat, ' +
+  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target es store/.net-target-hosts.json fajljat, ' +
   'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +

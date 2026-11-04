@@ -88,11 +88,13 @@ describe('route: any change of a target needs the owner', () => {
   })
 })
 
-describe('net-target notice: the owner is told once when a target host changed', () => {
+describe('net-target notice: the owner is told once when a target origin changed or is first seen off its default', () => {
+  const DEF = { OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)', AGENT_API_ORIGIN: '(nincs)' }
   function harness(prev: Record<string, string> | null, now: Record<string, string>) {
     const rec = { stored: prev, notices: [] as string[], sent: true as unknown }
     const deps = {
       current: () => now,
+      defaults: () => DEF,
       read: () => rec.stored,
       write: (r: Record<string, string>) => { rec.stored = r },
       notify: async (t: string) => { rec.notices.push(t); return rec.sent },
@@ -100,45 +102,97 @@ describe('net-target notice: the owner is told once when a target host changed',
     return { rec, deps }
   }
 
-  it('hostOf keeps the host only: no path, query or user:password; empty and invalid are named', () => {
-    expect(notice.hostOf('https://user:secret@api.example.test:8443/x/y?token=abc')).toBe('api.example.test:8443')
-    expect(notice.hostOf('')).toBe('(nincs)')
-    expect(notice.hostOf('not a url')).toBe('(érvénytelen)')
+  it('originOf keeps scheme + host + port only: no path, query or user:password; empty and invalid are named', () => {
+    expect(notice.originOf('https://user:secret@api.example.test:8443/x/y?token=abc')).toBe('https://api.example.test:8443')
+    expect(notice.originOf('http://localhost:11434/api')).toBe('http://localhost:11434')
+    expect(notice.originOf('')).toBe('(nincs)')
+    expect(notice.originOf('not a url')).toBe('(érvénytelen)')
+    expect(notice.originOf('localhost:11434')).toBe('(érvénytelen)')
   })
 
-  it('the first sight only records', async () => {
-    const { rec, deps } = harness(null, { OLLAMA_URL: 'localhost:11434' })
+  it('the registry defaults, as origins: the shipped OLLAMA_URL, empty for the rest', () => {
+    expect(notice.defaultOrigins()).toEqual({
+      DASHBOARD_PUBLIC_URL: '(nincs)', AGENT_API_ORIGIN: '(nincs)', OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)', AGENT_LOCAL_BASE_URL: '(nincs)',
+    })
+  })
+
+  it('the first sight at the default only records (and logs)', async () => {
+    const { rec, deps } = harness(null, { OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)' })
     expect(await notice.noticeNetTargetDrift(deps)).toEqual([])
     expect(rec.notices).toEqual([])
-    expect(rec.stored).toEqual({ OLLAMA_URL: 'localhost:11434' })
+    expect(rec.stored).toEqual({ OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)' })
   })
 
-  it('a changed host: ONE notice with the key and both hosts, then silence', async () => {
-    const { rec, deps } = harness({ OLLAMA_URL: 'localhost:11434', EMBED_URL: '(nincs)' }, { OLLAMA_URL: 'evil.test:11434', EMBED_URL: '(nincs)' })
+  it('the first sight OFF the default: ONE notice marked as a first record, recorded after delivery', async () => {
+    const { rec, deps } = harness(null, { OLLAMA_URL: 'http://localhost:11434', EMBED_URL: 'https://embed.evil.test' })
+    rec.sent = false
+    expect(await notice.noticeNetTargetDrift(deps)).toEqual(['EMBED_URL'])
+    expect(rec.stored).toBeNull()
+    rec.sent = true
+    expect(await notice.noticeNetTargetDrift(deps)).toEqual(['EMBED_URL'])
+    expect(rec.notices).toHaveLength(2)
+    expect(rec.notices[1]).toContain('EMBED_URL: https://embed.evil.test (első rögzítés, nem alapérték)')
+    expect(rec.notices[1]).not.toContain('OLLAMA_URL')
+    expect(rec.stored).toEqual({ OLLAMA_URL: 'http://localhost:11434', EMBED_URL: 'https://embed.evil.test' })
+    expect(await notice.noticeNetTargetDrift(deps)).toEqual([])
+    expect(rec.notices).toHaveLength(2)
+  })
+
+  it('a deleted record is a first sight again: an off-default target is told, not silently re-baselined', async () => {
+    const { rec, deps } = harness({ EMBED_URL: 'https://embed.evil.test' }, { EMBED_URL: 'https://embed.evil.test' })
+    expect(await notice.noticeNetTargetDrift(deps)).toEqual([])
+    rec.stored = null
+    expect(await notice.noticeNetTargetDrift(deps)).toEqual(['EMBED_URL'])
+    expect(rec.notices).toHaveLength(1)
+  })
+
+  it('a changed host: ONE notice with the key and both origins, then silence', async () => {
+    const { rec, deps } = harness({ OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)' }, { OLLAMA_URL: 'http://evil.test:11434', EMBED_URL: '(nincs)' })
     expect(await notice.noticeNetTargetDrift(deps)).toEqual(['OLLAMA_URL'])
     expect(rec.notices).toHaveLength(1)
-    expect(rec.notices[0]).toContain('OLLAMA_URL: localhost:11434 -> evil.test:11434')
+    expect(rec.notices[0]).toContain('OLLAMA_URL: http://localhost:11434 -> http://evil.test:11434')
     expect(rec.notices[0]).not.toContain('EMBED_URL')
     expect(await notice.noticeNetTargetDrift(deps)).toEqual([])
     expect(rec.notices).toHaveLength(1)
   })
 
+  it('a scheme step (https -> http) and a port change on the same host are told; a path change is not', async () => {
+    const was = notice.originOf('https://api.example.test/v1')
+    for (const to of ['http://api.example.test/v1', 'https://api.example.test:8443/v1']) {
+      const { rec, deps } = harness({ AGENT_API_ORIGIN: was }, { AGENT_API_ORIGIN: notice.originOf(to) })
+      expect(await notice.noticeNetTargetDrift(deps)).toEqual(['AGENT_API_ORIGIN'])
+      expect(rec.notices).toHaveLength(1)
+    }
+    const { rec, deps } = harness({ AGENT_API_ORIGIN: was }, { AGENT_API_ORIGIN: notice.originOf('https://api.example.test/v2/other?x=1') })
+    expect(await notice.noticeNetTargetDrift(deps)).toEqual([])
+    expect(rec.notices).toEqual([])
+  })
+
   it('an undelivered notice is not recorded, so the next boot tells again', async () => {
-    const { rec, deps } = harness({ AGENT_API_ORIGIN: '(nincs)' }, { AGENT_API_ORIGIN: 'other.test' })
+    const { rec, deps } = harness({ AGENT_API_ORIGIN: '(nincs)' }, { AGENT_API_ORIGIN: 'https://other.test' })
     rec.sent = false
     await notice.noticeNetTargetDrift(deps)
     expect(rec.stored).toEqual({ AGENT_API_ORIGIN: '(nincs)' })
     rec.sent = true
     await notice.noticeNetTargetDrift(deps)
     expect(rec.notices).toHaveLength(2)
-    expect(rec.stored).toEqual({ AGENT_API_ORIGIN: 'other.test' })
+    expect(rec.stored).toEqual({ AGENT_API_ORIGIN: 'https://other.test' })
   })
 
-  it('a key new to the record is only recorded, never reported', async () => {
-    const { rec, deps } = harness({ OLLAMA_URL: 'localhost:11434' }, { OLLAMA_URL: 'localhost:11434', EMBED_URL: 'x.test' })
-    expect(await notice.noticeNetTargetDrift(deps)).toEqual([])
-    expect(rec.notices).toEqual([])
-    expect(rec.stored).toEqual({ OLLAMA_URL: 'localhost:11434', EMBED_URL: 'x.test' })
+  it('a key new to the record: recorded silently at its default, told when off it', async () => {
+    const a = harness({ OLLAMA_URL: 'http://localhost:11434' }, { OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)' })
+    expect(await notice.noticeNetTargetDrift(a.deps)).toEqual([])
+    expect(a.rec.notices).toEqual([])
+    expect(a.rec.stored).toEqual({ OLLAMA_URL: 'http://localhost:11434', EMBED_URL: '(nincs)' })
+    const b = harness({ OLLAMA_URL: 'http://localhost:11434' }, { OLLAMA_URL: 'http://localhost:11434', EMBED_URL: 'https://x.test' })
+    expect(await notice.noticeNetTargetDrift(b.deps)).toEqual(['EMBED_URL'])
+    expect(b.rec.notices[0]).toContain('EMBED_URL: https://x.test (első rögzítés, nem alapérték)')
+  })
+
+  it('the record file is on the db-write-gate protected list', async () => {
+    // @ts-expect-error -- plain .mjs hook script, no types
+    const gate = await import('../../scripts/hooks/db-write-gate.mjs')
+    expect(gate.PROTECTED_INSTALL_PATHS.map((t: { rel?: string }) => t.rel)).toContain('store/.net-target-hosts.json')
   })
 
   it('the boot starts the check', async () => {
