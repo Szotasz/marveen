@@ -445,9 +445,8 @@ const WRAPPERS = new Map([
   ['time', ['fo', ['format', 'output'], 0]],
   ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
     'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
-  // ENVOPTHEAD1104: -P (macOS/BSD env: another search path) takes a value; -S / --split-string: envSplitHeads
-  // Bence 69517: -a / --argv0 (GNU env 9.x) takes a value too
-  ['env', ['uCSPa', ['unset', 'chdir', 'split-string', 'argv0'], 0]],
+  // ENVOPTHEAD1104: env is read by envHeads (a structural parser); the entry keeps env a wrapper for the depth bound
+  ['env', ['uCSPaLU', ['unset', 'chdir', 'split-string', 'argv0'], 0]],
   ['nohup', ['', [], 0]],
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
@@ -543,6 +542,51 @@ function envSplitHeads(value, rest, d) {
   return segs.flatMap((s) => commandHeads(s, d + 1))
 }
 
+// Samu 69521: env's options read STRUCTURALLY (see the python twin): the known no-value ones are stepped over, a
+// known value option takes its value (exact or a unique long prefix), anything else is undecidable (null: a send).
+const ENV_SHORT_NOVALUE = 'i0v'
+const ENV_LONG_NOVALUE = ['ignore-environment', 'null', 'debug', 'list-signal-handling', 'help', 'version', 'block-signal',
+  'default-signal', 'ignore-signal']
+const ENV_SHORT_VALUE = 'uCSPaLU'
+const ENV_LONG_VALUE = ['unset', 'chdir', 'split-string', 'argv0']
+function envHeads(toks, d) {
+  let i = 1
+  while (i < toks.length) {
+    const t = toks[i]
+    if (ENV_ASSIGN.test(t)) { while (i < toks.length && ENV_ASSIGN.test(toks[i])) i++; break } // NAME=VALUE ends the options
+    if (t === '--') { i++; break }
+    if (t === '-') { i++; continue } // the old spelling of -i
+    if (t.startsWith('--')) {
+      const name = envLongName(t)
+      if (name === 'split-string') {
+        const eq = t.indexOf('=')
+        return eq >= 0 ? envSplitHeads(t.slice(eq + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+      }
+      if (ENV_LONG_VALUE.includes(name)) { i += t.includes('=') ? 1 : 2; continue }
+      if (ENV_LONG_NOVALUE.includes(name)) { i++; continue }
+      return [null]
+    }
+    if (t.startsWith('-')) {
+      let step = 1
+      for (let x = 1; x < t.length; x++) {
+        const ch = t[x]
+        if (ENV_SHORT_NOVALUE.includes(ch)) continue
+        if (ENV_SHORT_VALUE.includes(ch)) {
+          const joined = x < t.length - 1
+          if (ch === 'S') return joined ? envSplitHeads(t.slice(x + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+          step = joined ? 1 : 2
+          break
+        }
+        return [null]
+      }
+      i += step
+      continue
+    }
+    break
+  }
+  return commandHeads(toks.slice(i), d + 1)
+}
+
 function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
@@ -552,6 +596,7 @@ function commandHeads(toksIn, d = 0) {
   if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
+  if (w === 'env') return envHeads(toks, d)
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
@@ -563,11 +608,6 @@ function commandHeads(toksIn, d = 0) {
     const t = toks[i]
     if (t === '--') { i++; break }
     if (t.startsWith('--')) {
-      if (w === 'env' && envLongName(t) === 'split-string') {
-        const eq = t.indexOf('=')
-        return eq >= 0 ? envSplitHeads(t.slice(eq + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
-      }
-      if (w === 'env' && !t.includes('=') && longVal.includes(envLongName(t))) { i += 2; continue } // `--un NAME`, `--chd DIR`
       if (!t.includes('=') && longVal.includes(t.slice(2))) { i += 2; continue }
       if (!t.includes('=')) starts.push(i + 2)
       i++
@@ -577,9 +617,6 @@ function commandHeads(toksIn, d = 0) {
       if (w === 'command' && (t.includes('v') || t.includes('V'))) return []
       let k = -1
       for (let j = 1; j < t.length; j++) if (shortVal.includes(t[j])) { k = j; break }
-      if (w === 'env' && k > 0 && t[k] === 'S') {
-        return k < t.length - 1 ? envSplitHeads(t.slice(k + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
-      }
       i += k === t.length - 1 ? 2 : 1
       continue
     }

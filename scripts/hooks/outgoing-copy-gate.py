@@ -509,10 +509,8 @@ _WRAPPERS = {
     "time": ("fo", ("format", "output"), 0),
     "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
                              "role", "type", "chdir", "chroot", "command-timeout"), 0),
-    # ENVOPTHEAD1104: -P (macOS/BSD env: another search path) takes a value too; without it the value read as the
-    # program, so `env -P /x python3 send.py --to a@x` was no send. -S / --split-string: _env_split_heads.
-    # Bence 69517: -a / --argv0 (GNU env 9.x) takes a value too
-    "env": ("uCSPa", ("unset", "chdir", "split-string", "argv0"), 0),
+    # ENVOPTHEAD1104: env is read by _env_heads (a structural parser); the entry keeps env a wrapper for the depth bound
+    "env": ("uCSPaLU", ("unset", "chdir", "split-string", "argv0"), 0),
     "nohup": ("", (), 0),
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
@@ -649,6 +647,8 @@ def _command_heads(toks, _d: int = 0):
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    if w == "env":
+        return _env_heads(toks, _d)
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
         return _launcher_heads(toks, launcher, _d)
@@ -663,12 +663,6 @@ def _command_heads(toks, _d: int = 0):
             i += 1
             break
         if t.startswith("--"):
-            if w == "env" and _env_long_name(t) == "split-string":
-                value, after = (t.split("=", 1)[1], i + 1) if "=" in t else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
-                return _env_split_heads(value, toks[after:], _d)
-            if w == "env" and "=" not in t and _env_long_name(t) in long_val:
-                i += 2  # an abbreviated long option that takes a value (`--un NAME`, `--chd DIR`)
-                continue
             if "=" not in t and t[2:] in long_val:
                 i += 2
                 continue
@@ -680,9 +674,6 @@ def _command_heads(toks, _d: int = 0):
             if w == "command" and ("v" in t or "V" in t):
                 return []
             k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
-            if w == "env" and k > 0 and t[k] == "S":
-                value, after = (t[k + 1:], i + 1) if k < len(t) - 1 else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
-                return _env_split_heads(value, toks[after:], _d)
             i += 2 if k == len(t) - 1 else 1
             continue
         break
@@ -751,6 +742,64 @@ def _with_env_chdir(cmd_words):
     for d in _env_chdir_dirs(cmd_words):
         words += ["cd", d]
     return words
+
+
+# Samu 69521: env's options are read STRUCTURALLY, not by a list of the dangerous ones. The GNU coreutils and the
+# BSD/macOS env man pages: these take no value (and the three signal options only an attached `=SIG`) ...
+_ENV_SHORT_NOVALUE = "i0v"
+_ENV_LONG_NOVALUE = ("ignore-environment", "null", "debug", "list-signal-handling", "help", "version", "block-signal",
+                     "default-signal", "ignore-signal")
+# ... and these take one (-L/-U: macOS env's login class / user). Any other option, a future env version's new one
+# included, cannot be stepped over safely: the command behind it is undecidable, which counts as a send.
+_ENV_SHORT_VALUE = "uCSPaLU"
+_ENV_LONG_VALUE = ("unset", "chdir", "split-string", "argv0")
+
+
+def _env_heads(toks, _d):
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if _ENV_ASSIGN.match(t):
+            # NAME=VALUE ends the options (GNU env stops at the first non-option): the rest is more of them, then the command
+            while i < len(toks) and _ENV_ASSIGN.match(toks[i]):
+                i += 1
+            break
+        if t == "--":
+            i += 1
+            break
+        if t == "-":  # the old spelling of -i
+            i += 1
+            continue
+        if t.startswith("--"):
+            name = _env_long_name(t)
+            if name == "split-string":
+                value, after = (t.split("=", 1)[1], i + 1) if "=" in t else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                return _env_split_heads(value, toks[after:], _d)
+            if name in _ENV_LONG_VALUE:
+                i += 1 if "=" in t else 2
+                continue
+            if name in _ENV_LONG_NOVALUE:
+                i += 1
+                continue
+            return [None]
+        if t.startswith("-"):
+            step = 1
+            for x in range(1, len(t)):
+                ch = t[x]
+                if ch in _ENV_SHORT_NOVALUE:
+                    continue
+                if ch in _ENV_SHORT_VALUE:
+                    joined = x < len(t) - 1
+                    if ch == "S":
+                        value, after = (t[x + 1:], i + 1) if joined else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                        return _env_split_heads(value, toks[after:], _d)
+                    step = 1 if joined else 2
+                    break
+                return [None]
+            i += step
+            continue
+        break
+    return _command_heads(toks[i:], _d + 1)
 
 
 def _env_split_heads(value, rest, _d):
