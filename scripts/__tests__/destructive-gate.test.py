@@ -676,6 +676,61 @@ with tempfile.TemporaryDirectory() as td:
         gate.PROJECT_ROOT = _orig_root
 
 
+# ---- marveen #2482 (ISSUE2482GATE1103): a burkolok kapcsoloi es operandusai -------------------
+# Merve 2026-11-04-en a develop 0ae732db-n: az alabbi 18 burkolt torles a regi atlepesen
+# ATMENT (a kapu egy kapcsolo-erteket, a flock lock-fajljat vagy a chroot gyokeret vette
+# "parancsnak", vagy a burkolo parancssztringjet prozakent kiuritette). Mindnek blokkolnia kell.
+TGT = " -rf /tmp/x"
+for name, cmd in [
+    ("ionice -c idle", "ionice -c idle " + RM + TGT),
+    ("ionice --class idle", "ionice --class idle " + RM + TGT),
+    ("stdbuf -o L (kulon szo)", "stdbuf -o L " + RM + TGT),
+    ("stdbuf --output L", "stdbuf --output L " + RM + TGT),
+    ("timeout --signal KILL 5", "timeout --signal KILL 5 " + RM + TGT),
+    ("flock LOCK", "flock /tmp/l " + RM + TGT),
+    ("flock -w 5 LOCK", "flock -w 5 /tmp/l " + RM + TGT),
+    ("chroot /", "chroot / " + RM + TGT),
+    ("chroot --userspec=u:g /", "chroot --userspec=u:g / " + RM + TGT),
+    ("env -u FOO", "env -u FOO " + RM + TGT),
+    ("env -C /tmp", "env -C /tmp " + RM + TGT),
+    ("env -S 'parancs'", "env -S '" + RM + TGT + "'"),
+    ("time -p", "time -p " + RM + TGT),
+    ("time -f %e", "time -f %e " + RM + TGT),
+    ("command -p", "command -p " + RM + TGT),
+    ("exec -a nev", "exec -a nev " + RM + TGT),
+    ("flock -c 'parancs' LOCK", "flock -c '" + RM + TGT + "' /tmp/l"),
+    ("flock LOCK -c 'parancs'", "flock /tmp/l -c '" + RM + TGT + "'"),
+    ("watch 'parancs' (shell-sztring)", "watch -n 2 '" + RM + TGT + "'"),
+    ("xargs -i (opcionalis ertek, nem nyeli a parancsot)", "ls | xargs -i " + RM + TGT),
+]:
+    check("#2482 burkolt torles blokkolva: " + name, blocks(cmd))
+
+# A masik irany: ugyanezek a burkolok ARTALMATLAN parancs elott, es a parancssztring csak
+# akkor a burkoloe, ha kozvetlenul hozza tartozik (`env X=1 grep -c '...'` -c-je a grep-e).
+for name, cmd in [
+    ("timeout --foreground 5 ls", "timeout --foreground 5 ls"),
+    ("flock -n LOCK make", "flock -n /tmp/l make"),
+    ("ionice -c3 nice -n 19 tar", "ionice -c3 nice -n 19 tar czf x.tgz d"),
+    ("stdbuf -oL tail", "stdbuf -oL tail -f log"),
+    ("env -i PATH=/bin ls", "env -i PATH=/bin ls"),
+    ("time -p npm test", "time -p npm test"),
+    ("command -v (nem futtat)", "command -v rm"),
+    ("watch 'ls -la'", "watch -n 2 'ls -la'"),
+    ("parallel -j4 gzip ::: a", "parallel -j4 gzip ::: a.txt"),
+    ("xargs -I{} cp", "xargs -I{} cp {} /tmp/"),
+    ("env X=1 grep -c 'mintaszoveg'", "env FOO=1 grep -c '" + RM + " -rf /' f"),
+    ("flock LOCK -c 'make test'", "flock /tmp/l -c 'make test'"),
+    ("emlites idezojelben", "echo \"flock -c '" + RM + " -rf /'\""),
+]:
+    check("#2482 artalmatlan burkolt parancs atengedve: " + name, not blocks(cmd))
+
+# Fail-closed: ismeretlen burkolo-kapcsolonal a kapu nem talalgat, hanem blokkol, es a
+# tul hosszu burkolo-lanc sem lesz "nincs parancs" (a regi range(12) kimerulese None-t adott).
+check("#2482 ismeretlen burkolo-kapcsolo: blokk", blocks("timeout --nemletezo 5 ls"))
+check("#2482 tul hosszu burkolo-lanc: blokk", blocks("nohup " * 20 + RM + TGT))
+check("#2482 rovid lanc tovabbra is atlathato", blocks("nohup nice -n 5 timeout 5 " + RM + TGT))
+
+
 print()
 if failed:
     print("%d FAILED: %s" % (len(failed), failed), file=sys.stderr)

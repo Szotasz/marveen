@@ -58,6 +58,9 @@ jobs:
       # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
       # only runs by hand rots (the #1316 class), so its tests run here too.
       - run: python3 scripts/__tests__/egress-drift-scan.test.py
+      # marveen #2482: the destructive gate's wrapper handling (and its whole regression set)
+      # ran only by hand; a gate test that is not in CI rots.
+      - run: python3 scripts/__tests__/destructive-gate.test.py
       # INSTALLDIRTYTREE1103: the install-drift repair restores files on customer
       # machines (update.sh, the dashboard, the Bridge repair step), so its
       # restore/leave rules run here, including a real conflicted stash pop.
