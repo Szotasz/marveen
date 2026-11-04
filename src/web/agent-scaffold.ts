@@ -1243,7 +1243,44 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
   // Install-local extras LAST, so they land after every built-in gate.
   injectExtraHookEntries(name, existing, extraHooksPath)
+  // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
+  // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
+  // live fleet) stays. The gate hooks themselves are put back by the inject* calls above.
+  stripLooseningKeys(existing, name, 'settings.json')
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+  sanitizeAgentLocalSettings(name)
+}
+
+// Top-level Claude settings keys that turn the agent's gate hooks off (disableAllHooks) or hand them another
+// environment (env: PATH, NODE_OPTIONS and the like reach every hook command). Only the dashboard writes an agent's
+// settings; the db-write-gate keeps the agents out of both files, and this drops what got in before.
+export const AGENT_SETTINGS_STRIPPED_KEYS = ['disableAllHooks', 'env'] as const
+
+function stripLooseningKeys(settings: Record<string, unknown>, name: string, file: string): string[] {
+  const dropped = AGENT_SETTINGS_STRIPPED_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(settings, k))
+  for (const k of dropped) delete settings[k]
+  if (dropped.length) logger.warn({ agent: name, file, dropped }, 'agent settings: hook-loosening keys dropped on spawn')
+  return dropped
+}
+
+/**
+ * The agent's .claude/settings.local.json, which Claude Code merges over settings.json: the same keys are dropped. The
+ * file is NEVER deleted; one that holds none of them is not rewritten; one that does not parse as an object is left as
+ * it is (logged), since rewriting it would lose what it holds.
+ */
+export function sanitizeAgentLocalSettings(name: string): 'absent' | 'clean' | 'stripped' | 'unparseable' {
+  const p = join(agentDir(name), '.claude', 'settings.local.json')
+  if (!existsSync(p)) return 'absent'
+  let parsed: unknown
+  try { parsed = JSON.parse(readFileSync(p, 'utf-8')) } catch { parsed = undefined }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    logger.warn({ agent: name }, 'agent settings.local.json does not parse as an object: left untouched')
+    return 'unparseable'
+  }
+  const obj = parsed as Record<string, unknown>
+  if (!stripLooseningKeys(obj, name, 'settings.local.json').length) return 'clean'
+  atomicWriteFileSync(p, JSON.stringify(obj, null, 2))
+  return 'stripped'
 }
 
 // Install-local extra hook entries (store/extra-hooks.json), see

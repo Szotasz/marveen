@@ -27,6 +27,7 @@ import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY } from './hook-registration-guard.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { injectDbWriteGate, injectEmailSendGate, pythonHookCommand, isUnsafeHookCommand, EMAIL_GATE_MATCHER } from './agent-scaffold.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -480,6 +481,57 @@ export function withFleetFreezeGate(settings: WorkerSettings): WorkerSettings {
   return { ...settings, hooks: { ...hooks, PreToolUse: preToolUse } }
 }
 
+// ENVRELAXGATE1104 (Samu 67818, Marveen 67806). Lives here, not in agent-scaffold.ts: these entries reach the two
+// workers ONLY, never a sub-agent (sub-agents keep the email-send-gate's hard deny). The two workers (marveen-worker, marveen-worker-fast) run the main
+// agent's runAgent prompts (heartbeat, daily digest, second review, schedule prompts) on untrusted text, with Bash and
+// Write, in their own CLAUDE_CONFIG_DIR. The main agent's tracked project settings never reach them (their cwd is
+// outside the install), so only the fleet-freeze gate ran there. This puts the outgoing-copy gate on them the way the
+// main agent carries it, on Bash and the email tools. EMAIL_GATE_MATCHER already starts with `Bash|`, so ONE entry
+// covers both (two entries would run the gate twice on every Bash call). The Telegram/Discord copy entries are left
+// out: the worker has every channel plugin disabled. The command is absolute (the tracked file's $CLAUDE_PROJECT_DIR
+// form would point into the worker's own home there). The send side is the sub-agents' hard email-send-gate (see
+// withWorkerGates), not the main agent's approval gate.
+export const WORKER_MAIL_GATE_MATCHER = EMAIL_GATE_MATCHER
+
+function injectWorkerMailGate(existing: Record<string, unknown>, script: string): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', script))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    // same dedupe discipline as injectTelegramCopyGate: only this script under this matcher is replaced
+    ...prev.filter((e) => !(JSON.stringify(e).includes(script) && (e as { matcher?: unknown })?.matcher === WORKER_MAIL_GATE_MATCHER)),
+    { matcher: WORKER_MAIL_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] },
+  ]
+}
+
+export function injectWorkerCopyGate(existing: Record<string, unknown>): void {
+  injectWorkerMailGate(existing, 'outgoing-copy-gate.py')
+}
+
+/**
+ * ENVRELAXGATE1104 (Samu 67818, 67900): the worker's gates, written into its own settings on every boot. The
+ * fleet-freeze gate stays FIRST; then the db-write-gate and the email-send-gate (both the sub-agents' own generators)
+ * and the outgoing-copy gate on Bash and the email tools. The email-send-gate is the sub-agents' HARD one, not the
+ * main agent's approval gate (Dani 67895, least privilege): a worker has no legitimate send, a send is always refused,
+ * a draft is held to the recipient ledger, and no approval request would appear under the main agent's name. Every
+ * other entry is kept, and none is duplicated.
+ *
+ * The worker's hook has CLAUDE_PROJECT_DIR = its own home (ctx.home, outside the install), so the db-write-gate takes
+ * it for a sub-agent: its sub-agent list applies (the install .env, the gate-rule files, the shared ~/.claude
+ * settings, its own config dir's settings). That is right: it works on untrusted text.
+ */
+export function withWorkerGates(settings: WorkerSettings): WorkerSettings {
+  const out = withFleetFreezeGate(settings)
+  injectDbWriteGate(out)
+  injectEmailSendGate(out)
+  injectWorkerCopyGate(out)
+  return out
+}
+
 /**
  * Build (idempotently) the worker's isolated cwd + CLAUDE_CONFIG_DIR:
  *  - empty project .mcp.json (defense in depth);
@@ -551,7 +603,7 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   // skipDangerousModePermissionPrompt: suppress the "Bypass Permissions mode"
   // first-run warning so the headless worker (launched with
   // --dangerously-skip-permissions) reaches its prompt without a blocking modal.
-  writeFileSync(settingsPath, JSON.stringify(withFleetFreezeGate({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }), null, 2) + '\n')
+  writeFileSync(settingsPath, JSON.stringify(withWorkerGates({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }), null, 2) + '\n')
 
   // Subscription auth: materialise the host login JSON as .credentials.json AND
   // clear the stale path-hashed Keychain entry that would shadow it (see the
