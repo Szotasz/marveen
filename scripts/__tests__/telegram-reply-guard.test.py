@@ -353,14 +353,21 @@ def main():
     db = fresh_db()
     lib = load_lib(db)
     capture = os.path.join(HOOKS, "ledger-capture.py")
+    # LEDGERROLELABEL1104: the capture logs only a sender on the channel's own DM
+    # allowlist, so the envelope names its sender and a fixture state dir pairs it.
     envelope = (
         '<channel source="plugin:discord:discord" chat_id="900000000000000001" '
-        'message_id="3001" user="stylnet" ts="2026-09-07T07:02:03.110Z">'
+        'message_id="3001" user="stylnet" user_id="900000000000000001" ts="2026-09-07T07:02:03.110Z">'
         "ez mi is?</channel>"
     )
+    discord_state = os.path.join(os.path.dirname(db), "discord-state")
+    os.makedirs(discord_state, exist_ok=True)
+    with open(os.path.join(discord_state, "access.json"), "w") as fh:
+        json.dump({"dmPolicy": "allowlist", "allowFrom": ["900000000000000001"], "groups": {}}, fh)
     env = dict(os.environ)
     env["LEDGER_DB_PATH"] = db
     env["MARVEEN_AGENT_ID"] = AGENT
+    env["DISCORD_STATE_DIR"] = discord_state
     subprocess.run([sys.executable, capture],
                    input=json.dumps({"cwd": os.path.dirname(db), "prompt": envelope}),
                    capture_output=True, text=True, env=env, timeout=20)
