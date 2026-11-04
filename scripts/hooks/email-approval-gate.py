@@ -1101,6 +1101,9 @@ def names_own_sender(cmd: str, cwd) -> bool:
     try:
         lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
+        # MAINGATENLCOMMENT1104: shlex starts a comment at a `#` inside a word and runs it to the end of the line, so
+        # `echo a#b; python3 scripts/send.py` hid the sender's name; this check only denies, so every word is kept.
+        lexer.commenters = ""
         words = list(lexer)
     except ValueError:
         words = cmd.split()

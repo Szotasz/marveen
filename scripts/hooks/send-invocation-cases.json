@@ -2093,6 +2093,51 @@
       "name": "ENVOPTHEAD1104 (Bence 69552): control, -C DIR at the start of the -S value before a non-sender",
       "cmd": "env -S \"-C /tmp ls\"",
       "expected": false
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: a comment on the line before does not hide the send on the next line",
+      "cmd": "echo hi # note\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: an apostrophe inside the comment does not flip the quote state",
+      "cmd": "echo hi # don't\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: a # inside a word is no comment (the send after it on the same line)",
+      "cmd": "echo a#b; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: a # inside a word, the send on the next line",
+      "cmd": "echo a#b\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: a quoted # is text",
+      "cmd": "echo \"x # y\"; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: an escaped # is text",
+      "cmd": "echo x \\# y; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: a heredoc body with a # line, then the send",
+      "cmd": "cat > x.txt <<'EOF'\n# body\nEOF\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: a URL fragment before the send",
+      "cmd": "curl -s https://example.com/#top; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104: control, a comment that only names a sender",
+      "cmd": "echo hi # sendmail a@b.hu is not run",
+      "expected": false
     }
   ]
 }
