@@ -3784,8 +3784,38 @@ async function readActionReply(res) {
   return { ok: res.ok, status: res.status, body: body && typeof body === 'object' ? body : {} }
 }
 
+// OWNERGATE2-1104: a strict owner gate refused and no dashboard login exists yet (setup_required: true). Signing in
+// cannot help then, so the text says to CREATE the login first, and the create-login form is opened for it.
 function ownerSessionText(body) {
-  return body && body.code === 'owner_session_required' ? t('common.owner_session_required') : ''
+  if (!body || body.code !== 'owner_session_required') return ''
+  if (body.setup_required === true) {
+    openCreateLoginSettings()
+    return t('common.owner_login_setup_required')
+  }
+  return t('common.owner_session_required')
+}
+
+// OWNERGATE2-1104: opens the create-login form (renderCreateLoginForm), which lives only in the Dashboard login card on
+// Settings, the Security tab: the same way the setup banner's button gets there. Open modals close through their own
+// guard first (unsaved input asks; a modal kept open keeps the user where they are). The onboarding overlay is only
+// hidden for this page load, never dismissed, so it comes back on the next load once the login exists.
+let createLoginOpening = false
+async function openCreateLoginSettings() {
+  if (createLoginOpening) return
+  createLoginOpening = true
+  try {
+    for (const ov of document.querySelectorAll('.modal-overlay.active')) {
+      if (ov.id === 'onboardingOverlay') { ov.classList.remove('active'); ov.hidden = true; document.body.style.overflow = ''; continue }
+      await requestOverlayClose(ov)
+      if (ov.classList.contains('active')) return
+    }
+    try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'security') } catch { /* storage blocked */ }
+    if (typeof switchPage === 'function') switchPage('settings')
+    const link = document.querySelector('.sb-link[data-page="settings"]')
+    if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
+  } finally {
+    createLoginOpening = false
+  }
 }
 
 function refusalReason(res, body) {
@@ -15131,7 +15161,8 @@ function wireOnboarding(step) {
           showSudoModal(d.sudoCommand, () => botBtn.click())
           return
         }
-        if (!res.ok) { botBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        // OWNERGATE2-1104: an owner refusal is said in the page language (ownerSessionText); setup_required also opens the create-login form.
+        if (!res.ok) { botBtn.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
         // The server restarts the channels session so the new bot token goes
         // live. Do NOT advance on a timer: the restart response is a dispatch
         // receipt, and the cold start is ~minutes. Wait for the MEASURED
@@ -15201,7 +15232,9 @@ function wireOnboarding(step) {
           try {
             const res = await fetch(`/api/agents/${encodeURIComponent(onboardingAgentId || mainAgentId())}/channels/${onboardingChannelProvider}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: b.dataset.code }) })
             const d = await res.json().catch(() => ({}))
-            if (!res.ok) { b.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+            // OWNERGATE2-1104: only the channel's FIRST pairing keeps the token before a login exists; a later one is refused
+            // with setup_required, which ownerSessionText says in the page language and answers by opening the create-login form.
+            if (!res.ok) { b.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
             onbMsg(t('onboarding.step3.approved'))
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
@@ -16505,13 +16538,8 @@ function wireAuthBanner() {
     try { localStorage.setItem(AUTH_BANNER_DISMISS_KEY, '1') } catch { /* storage blocked */ }
     banner.hidden = true
   })
-  if (go) go.addEventListener('click', () => {
-    // Land on the Security tab, where the auth card lives now.
-    try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'security') } catch { /* storage blocked */ }
-    if (typeof switchPage === 'function') switchPage('settings')
-    const link = document.querySelector('.sb-link[data-page="settings"]')
-    if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
-  })
+  // Land on the Security tab, where the auth card lives now (openCreateLoginSettings, shared with the 403 setup_required path).
+  if (go) go.addEventListener('click', () => { openCreateLoginSettings() })
 }
 
 document.addEventListener('DOMContentLoaded', () => {

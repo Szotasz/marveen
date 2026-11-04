@@ -16,7 +16,7 @@
 import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { readBody, json } from '../http-helpers.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwnerStrict, refuseOwner } from './auth.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -192,8 +192,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   if (path === '/api/claude-plans' && method === 'POST') {
     // OWNERGATE2-1104: writes a new plan into store/claude-plans.json and its token into the vault, which decides
     // which Claude subscription agents run on. The gate sits here, not in commitNewPlan (the login flow has its own).
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Adding a Claude plan needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Adding a Claude plan needs the dashboard login (an owner session).')
       return true
     }
     let body: unknown
@@ -480,8 +480,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   if (idMatch && method === 'PUT') {
     // OWNERGATE2-1104: rewrites a plan in store/claude-plans.json (its configDir or token, the credential agents
     // on that plan run with) and the vault, so it is owner-only.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing a Claude plan needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing a Claude plan needs the dashboard login (an owner session).')
       return true
     }
     let body: unknown
@@ -554,8 +554,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   if (idMatch && method === 'DELETE') {
     // OWNERGATE2-1104: removes a plan from store/claude-plans.json and its token from the vault; agents on it lose
     // their credential, so it is owner-only.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Removing a Claude plan needs the dashboard login (an owner session).' }, 403)
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Removing a Claude plan needs the dashboard login (an owner session).')
       return true
     }
     const current = readClaudePlans()

@@ -3,11 +3,13 @@
 // channel, grant someone the right to message an agent (pairing approve, invites, Slack channel requests), read the
 // live invite tokens, revoke an invite or deny a channel request (every channel-access write, tech lead decision),
 // delete an agent, add a connector (`claude mcp add`) or assign one into an agent's .mcp.json. Those need the owner
-// (mayActAsOwner): the
+// (mayActAsOwnerStrict): the
 // browser login, the token with the owner's session cookie, or the Bridge's full key with that cookie. Before the
-// first dashboard login exists the bare token still passes (the customer first-run path), measured here for agent
-// create and channel setup. Rotate and probe stay token-callable (the rotation heartbeat uses them). A refused call
-// writes NOTHING, measured on the bytes.
+// first dashboard login exists the bare token still passes ONLY agent create, channel setup and a channel's FIRST
+// pairing approve (the customer first-run path, mayActAsOwner); every other gate refuses it then with setup_required
+// (review finding, tech lead decision), measured here route by route. The connector routes that run code on the host
+// (GitHub repo install/update/remove, external project paths, MCP catalog install) are gated the same way. Rotate and
+// probe stay token-callable (the rotation heartbeat uses them). A refused call writes NOTHING, measured on the bytes.
 //
 // Side effects that would leave the process are mocked: the vault (no real secret store), the main/sub-agent
 // restarts and the running check (no tmux), execFile (no `claude mcp add`), the usage probe (no network). store/claude-plans*.json of this checkout are saved and
@@ -65,6 +67,23 @@ vi.mock('../settings-store.js', async (orig) => {
     },
   }
 })
+// OWNERGATE2-1104: the connector routes that clone, install or register code on the host. The helpers are mocked:
+// a call that slipped past the gate is counted, never run (no git, no npm, no settings-file write).
+const installGitHubRepo = vi.fn(async () => ({ repo: { name: 'og2repo' } }))
+const removeGitHubRepo = vi.fn(() => ({ ok: true }))
+const updateGitHubRepo = vi.fn(() => ({ ok: true }))
+const addExternalProjectPath = vi.fn(() => ({ paths: ['/og2'] }))
+const removeExternalProjectPath = vi.fn(() => [] as string[])
+vi.mock('../web/dashboard-settings.js', async (orig) => ({
+  ...(await orig<typeof import('../web/dashboard-settings.js')>()),
+  installGitHubRepo: (...a: unknown[]) => (installGitHubRepo as any)(...a),
+  removeGitHubRepo: (...a: unknown[]) => (removeGitHubRepo as any)(...a),
+  updateGitHubRepo: (...a: unknown[]) => (updateGitHubRepo as any)(...a),
+  addExternalProjectPath: (...a: unknown[]) => (addExternalProjectPath as any)(...a),
+  removeExternalProjectPath: (...a: unknown[]) => (removeExternalProjectPath as any)(...a),
+  getExternalProjectPaths: () => ['/og2'],
+  getGitHubRepos: () => [],
+}))
 const probePlanUsage = vi.fn(async () => ({ ok: false as const, error: 'network' as const, message: 'mocked' }))
 vi.mock('../claude-plan-usage-probe.js', async (orig) => ({
   ...(await orig<typeof import('../claude-plan-usage-probe.js')>()),
@@ -182,6 +201,7 @@ beforeEach(() => {
   probePlanUsage.mockClear()
   execFileMock.mockClear()
   stopAgentProcess.mockClear()
+  for (const m of [installGitHubRepo, removeGitHubRepo, updateGitHubRepo, addExternalProjectPath, removeExternalProjectPath]) m.mockClear()
 })
 afterAll(() => {
   for (const d of [DIR, PEER_DIR]) rmSync(d, { recursive: true, force: true })
@@ -196,6 +216,9 @@ afterAll(() => {
 // --- the gated routes -------------------------------------------------------------------------------------------
 type Case = {
   label: string
+  // OWNERGATE2-1104: true only for the routes that keep the first-run branch (agent create, channel setup). Every other
+  // case is refused before the first login too, with setup_required.
+  firstRunOpen?: true
   handler: Handler
   method: string
   path: () => string
@@ -225,7 +248,7 @@ const CASES: Case[] = [
   {
     // A body that stops at the name check right after the gate: rawModel is given (no CLI probe for the default),
     // no name -> 400 before the CLI gate and the scaffold.
-    label: 'POST /api/agents', handler: tryHandleAgents, method: 'POST', path: () => '/api/agents',
+    firstRunOpen: true, label: 'POST /api/agents', handler: tryHandleAgents, method: 'POST', path: () => '/api/agents',
     body: { model: 'claude-opus-5', description: 'x' },
     snapshot: () => ({ ...agentFiles(), exists: existsSync(join(PROJECT_ROOT, 'agents')) }),
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('Name is required') },
@@ -243,13 +266,13 @@ const CASES: Case[] = [
   },
   {
     // botToken missing -> 400 before any network token check.
-    label: 'POST /api/agents/:name/channels/telegram (setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/channels/telegram`,
+    firstRunOpen: true, label: 'POST /api/agents/:name/channels/telegram (setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/channels/telegram`,
     body: { allowFrom: ['999'] },
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('botToken is required') },
   },
   {
-    label: 'POST /api/agents/:name/telegram (legacy setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/telegram`,
+    firstRunOpen: true, label: 'POST /api/agents/:name/telegram (legacy setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/telegram`,
     body: { allowFrom: ['999'] },
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('botToken is required') },
@@ -342,6 +365,45 @@ const CASES: Case[] = [
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(200); expect(JSON.parse(read(join(DIR, '.mcp.json'))!).mcpServers[CONN]).toEqual({ command: 'true' }) },
   },
+  // OWNERGATE2-1104, the new gates: the snapshot counts the mocked helper calls (and the vault writes), so a refused
+  // call that reached the clone, the npm install, the settings write or `claude mcp add` shows up as a changed snapshot.
+  {
+    label: 'POST /api/connectors/github-repos', handler: tryHandleConnectors, method: 'POST', path: () => '/api/connectors/github-repos',
+    body: { url: 'https://github.com/og2/og2repo', env: { OG2_KEY: 'v' }, runScripts: true },
+    snapshot: () => ({ install: installGitHubRepo.mock.calls.length, vault: vaultSecrets.size, spawned: execFileMock.mock.calls.length }),
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(installGitHubRepo).toHaveBeenCalledTimes(1) },
+  },
+  {
+    label: 'DELETE /api/connectors/github-repos/:name', handler: tryHandleConnectors, method: 'DELETE', path: () => '/api/connectors/github-repos/og2repo',
+    snapshot: () => ({ remove: removeGitHubRepo.mock.calls.length }),
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(removeGitHubRepo).toHaveBeenCalledWith('og2repo') },
+  },
+  {
+    label: 'PATCH /api/connectors/github-repos/:name', handler: tryHandleConnectors, method: 'PATCH', path: () => '/api/connectors/github-repos/og2repo',
+    body: { runScripts: true },
+    snapshot: () => ({ update: updateGitHubRepo.mock.calls.length }),
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(updateGitHubRepo).toHaveBeenCalledTimes(1) },
+  },
+  {
+    label: 'POST /api/connectors/external-paths', handler: tryHandleConnectors, method: 'POST', path: () => '/api/connectors/external-paths',
+    body: { path: '/og2' },
+    snapshot: () => ({ add: addExternalProjectPath.mock.calls.length }),
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(addExternalProjectPath).toHaveBeenCalledWith('/og2') },
+  },
+  {
+    label: 'DELETE /api/connectors/external-paths', handler: tryHandleConnectors, method: 'DELETE', path: () => '/api/connectors/external-paths',
+    body: { path: '/og2' },
+    snapshot: () => ({ remove: removeExternalProjectPath.mock.calls.length }),
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(removeExternalProjectPath).toHaveBeenCalledWith('/og2') },
+  },
+  {
+    // The gate runs before the catalog lookup, so an id that is not in the catalog measures it without reaching
+    // `claude mcp add`: the owner lanes get the 404 that follows the gate. A real id with the bare token is below.
+    label: 'POST /api/mcp-catalog/:id/install', handler: tryHandleConnectors, method: 'POST', path: () => '/api/mcp-catalog/og2-not-in-catalog/install',
+    body: {},
+    snapshot: () => ({ spawned: execFileMock.mock.calls.length }),
+    ownerCheck: (r) => { expect(r.status).toBe(404); expect(execFileMock).not.toHaveBeenCalled() },
+  },
 ]
 
 describe('OWNERGATE2-1104: the bare shared token is refused and nothing changes', () => {
@@ -392,7 +454,101 @@ describe('OWNERGATE2-1104: the main agent shares the channel handlers, and the g
   })
 })
 
-describe('OWNERGATE2-1104: first-run branch (zero dashboard users), measured', () => {
+describe('OWNERGATE2-1104: first-run (zero dashboard users), every gated route', () => {
+  beforeEach(() => {
+    getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
+    _clearSessionCacheForTest()
+  })
+  for (const c of CASES) {
+    it(`${c.label}: ${c.firstRunOpen ? 'the bare token passes the owner gate (first-run branch)' : '403 setup_required, nothing changes'}`, async () => {
+      const path = c.path()
+      const before = c.snapshot()
+      const r = await hit(c.handler, c.method, path, TOKEN, c.body)
+      if (c.firstRunOpen) {
+        expect(refusedByOwnerGate(r)).toBe(false)
+        return
+      }
+      expect(refusedByOwnerGate(r)).toBe(true)
+      expect(r.body.setup_required).toBe(true)
+      expect(r.body.error).toMatch(/no dashboard login exists yet/)
+      expect(c.snapshot()).toEqual(before)
+    })
+  }
+  it('with a dashboard login present the refusal carries no setup_required and keeps the route text (control)', async () => {
+    createDashboardUser('owner2', 'x'.repeat(60))
+    const r = await hit(tryHandleAgents, 'DELETE', `/api/agents/${AGENT}`, TOKEN)
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.setup_required).toBeUndefined()
+    expect(r.body.error).toBe('Deleting an agent needs the dashboard login (an owner session).')
+  })
+})
+
+describe('OWNERGATE2-1104: pairing approve keeps the first-run branch for a channel\'s FIRST pairing only', () => {
+  const accessPath = join(TG_DIR, 'access.json')
+  const seedFirstPairing = () => {
+    writeFileSync(accessPath, JSON.stringify({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: { FIRST1: { senderId: '501', chatId: '501' } } }, null, 2))
+    rmSync(join(TG_DIR, 'approved'), { recursive: true, force: true })
+  }
+  const zeroUsers = () => { getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users'); _clearSessionCacheForTest() }
+  for (const route of ['channels/telegram/approve', 'telegram/approve']) {
+    it(`${route}: zero users, the first approve passes with the bare token; the second is 403 setup_required and access.json is unchanged`, async () => {
+      zeroUsers()
+      seedFirstPairing()
+      const first = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/${route}`, TOKEN, { code: 'FIRST1' })
+      expect(refusedByOwnerGate(first)).toBe(false)
+      expect(first.status).toBe(200)
+      expect(JSON.parse(read(accessPath)!).allowFrom).toEqual(['501'])
+      expect(existsSync(join(TG_DIR, 'approved', '501'))).toBe(true)
+      // A second sender asks to pair: the channel already has its owner, so the token is no longer enough.
+      const access = JSON.parse(read(accessPath)!)
+      access.pending = { SECOND: { senderId: '666', chatId: '666' } }
+      writeFileSync(accessPath, JSON.stringify(access, null, 2))
+      const before = read(accessPath)
+      const second = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/${route}`, TOKEN, { code: 'SECOND' })
+      expect(refusedByOwnerGate(second)).toBe(true)
+      expect(second.body.setup_required).toBe(true)
+      expect(read(accessPath)).toBe(before)
+      expect(existsSync(join(TG_DIR, 'approved', '666'))).toBe(false)
+    })
+  }
+  it('zero users: an approved/ marker alone (allowFrom empty) still counts as an owner', async () => {
+    zeroUsers()
+    seedFirstPairing()
+    mkdirSync(join(TG_DIR, 'approved'), { recursive: true })
+    writeFileSync(join(TG_DIR, 'approved', '501'), '501')
+    const before = read(accessPath)
+    const r = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/channels/telegram/approve`, TOKEN, { code: 'FIRST1' })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.setup_required).toBe(true)
+    expect(read(accessPath)).toBe(before)
+  })
+  it('zero users: an unreadable access.json counts as having an owner (fail closed)', async () => {
+    zeroUsers()
+    writeFileSync(accessPath, '{not json')
+    const r = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/channels/telegram/approve`, TOKEN, { code: 'X' })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(read(accessPath)).toBe('{not json')
+  })
+  it('zero users: a sub-agent token is refused even on the first pairing', async () => {
+    zeroUsers()
+    seedFirstPairing()
+    const before = read(accessPath)
+    expect(refusedByOwnerGate(await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/channels/telegram/approve`, SUBAGENT, { code: 'FIRST1' }))).toBe(true)
+    expect(read(accessPath)).toBe(before)
+  })
+  it('a dashboard login exists: the first pairing is strict too (bare token 403, no setup_required); the owner cookie passes', async () => {
+    seedFirstPairing()
+    const before = read(accessPath)
+    const r = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/channels/telegram/approve`, TOKEN, { code: 'FIRST1' })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.setup_required).toBeUndefined()
+    expect(read(accessPath)).toBe(before)
+    const ok = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/channels/telegram/approve`, TOKEN, { code: 'FIRST1' }, ownerCookie())
+    expect(ok.status).toBe(200)
+  })
+})
+
+describe('OWNERGATE2-1104: first-run branch details (zero dashboard users)', () => {
   beforeEach(() => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
     _clearSessionCacheForTest()
@@ -465,6 +621,25 @@ describe('controls: what stays token-callable', () => {
       const r = await hit(tryHandleAgents, 'GET', p, TOKEN)
       expect(r.status, p).toBe(200)
     }
+  })
+  it('the GETs beside the new connector gates stay open for the bare token', async () => {
+    expect((await hit(tryHandleConnectors, 'GET', '/api/connectors/external-paths', TOKEN)).status).toBe(200)
+    expect((await hit(tryHandleConnectors, 'GET', '/api/connectors/github-repos', TOKEN)).status).toBe(200)
+    expect((await hit(tryHandleConnectors, 'GET', '/api/mcp-catalog', TOKEN)).status).toBe(200)
+  })
+  it('POST /api/connectors/github-repos with the bare token: no clone, no npm, no vault write (OWNERGATE2-1104)', async () => {
+    const r = await hit(tryHandleConnectors, 'POST', '/api/connectors/github-repos', TOKEN, { url: 'https://github.com/og2/og2repo', env: { OG2_KEY: 'v' }, runScripts: true })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(installGitHubRepo).not.toHaveBeenCalled()
+    expect(execFileMock).not.toHaveBeenCalled()
+    expect([...vaultSecrets.keys()].some((k) => k.startsWith('github-env-'))).toBe(false)
+  })
+  it('POST /api/mcp-catalog/:id/install of a real catalog item with the bare token: refused, `claude mcp add` never spawned', async () => {
+    for (const id of ['notion', 'filesystem']) {
+      const r = await hit(tryHandleConnectors, 'POST', `/api/mcp-catalog/${id}/install`, TOKEN, {})
+      expect(refusedByOwnerGate(r), id).toBe(true)
+    }
+    expect(execFileMock).not.toHaveBeenCalled()
   })
   it('POST /api/connectors with a full stdio body and the bare token: refused, and `claude mcp add` is never spawned', async () => {
     const r = await hit(tryHandleConnectors, 'POST', '/api/connectors', TOKEN, { name: 'og2conn', type: 'stdio', command: 'touch', args: '/tmp/og2-should-not-exist' })

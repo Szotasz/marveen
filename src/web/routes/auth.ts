@@ -171,11 +171,31 @@ export function ownerCookieSession(req?: http.IncomingMessage): string | null {
  *  Each pass through the key branch is one audit line naming the owner. */
 export function mayActAsOwner(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
   if (mayIssueCredentials(auth, req)) return true
+  return bridgeOwnerAudited(auth, req)
+}
+
+/** The device-key branch both owner gates share: a FULL key with a valid owner session cookie beside it, and on a
+ *  pass the one audit line naming the owner. Kept in one place so mayActAsOwner and mayActAsOwnerStrict write the
+ *  same line. */
+function bridgeOwnerAudited(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
   if (auth?.kind !== 'device' || auth.scope !== 'full') return false
   const owner = ownerCookieSession(req)
   if (owner === null) return false
   logger.info({ owner, auth: 'device', device: auth.device, method: req?.method, path: req?.url?.split('?')[0] }, 'owner action on a Bridge key: the owner session beside it')
   return true
+}
+
+/** OWNERGATE2-1104 (review finding, Samu): mayActAsOwner WITHOUT the first-run branch. mayIssueCredentials lets the
+ *  bare shared token act as the owner while no dashboard login exists, and every sub-agent can read that token, so on
+ *  an install without a login every owner-gated route was open to the whole fleet. This gate needs the owner's proof
+ *  on every request: a session principal; the shared token (never a sub-agent's own token) only with a valid owner
+ *  session cookie beside it; a FULL device key only with that cookie (the same audited branch as mayActAsOwner). So
+ *  before the first login it refuses everything (refuseOwner then says to create one). Only agent creation and channel
+ *  setup keep mayActAsOwner and its first-run branch: a fresh customer install needs them before any login exists. */
+export function mayActAsOwnerStrict(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  if (auth?.kind === 'session') return true
+  if (auth?.kind === 'token') return !auth.tokenAgent && ownerCookieSession(req) !== null
+  return bridgeOwnerAudited(auth, req)
 }
 
 export const CLI_RECOVERY_ONLY = {
@@ -186,6 +206,25 @@ export const CLI_RECOVERY_ONLY = {
 export const OWNER_SESSION_REQUIRED = {
   error: 'This needs the dashboard login (an owner session). The access token can do it only before the first login exists; on the machine itself, npm run dashboard-user is the break-glass.',
   code: 'owner_session_required',
+}
+
+/** OWNERGATE2-1104: the error text when a strict owner gate refuses and no dashboard login exists yet. Then no
+ *  request can carry the owner's proof, so the per-route text ("needs the dashboard login") would send the user to a
+ *  login that is not there: the login has to be created first. */
+export const OWNER_LOGIN_SETUP_REQUIRED_ERROR = 'This needs the dashboard login (an owner session), and no dashboard login exists yet. Create one first: Settings, Security, dashboard login. Then sign in and try again.'
+
+/** OWNERGATE2-1104: the 403 a strict owner gate (mayActAsOwnerStrict) answers with. Always code owner_session_required,
+ *  so every client that keys on the code keeps working; the per-route error text unless no dashboard login exists, in
+ *  which case setup_required: true and OWNER_LOGIN_SETUP_REQUIRED_ERROR say to create one first. `extra` carries
+ *  route-specific fields (e.g. `fields`). */
+export function refuseOwner(res: http.ServerResponse, msg: string = OWNER_SESSION_REQUIRED.error, extra: Record<string, unknown> = {}): void {
+  const setup = countDashboardUsers(true) === 0
+  json(res, {
+    ...OWNER_SESSION_REQUIRED,
+    error: msg,
+    ...extra,
+    ...(setup ? { setup_required: true, error: OWNER_LOGIN_SETUP_REQUIRED_ERROR } : {}),
+  }, 403)
 }
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
