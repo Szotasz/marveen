@@ -88,12 +88,14 @@ describe('readScheduledDeliveryDefault: a set but bad value is warned about and 
     expect(def?.requiresRestart).toBe(false)
   })
 
-  it('the default reader reads the install .env (launchd: the .env never reaches process.env)', () => {
+  it('the default reader IGNORES an install .env line: the target is overrides-only (ENVRELAXGATE1104)', () => {
+    // Any change re-routes the main agent's scheduled results, so only the owner's Settings override counts; the
+    // dashboard names an ignored .env line in its boot log, the update output and the Settings page.
     const before = process.env.SCHEDULED_DELIVERY_CHANNEL
     delete process.env.SCHEDULED_DELIVERY_CHANNEL
     ENV_FILE_VALUE = 'slack:DENVFILE1'
     try {
-      expect(readScheduledDeliveryDefault()).toEqual({ provider: 'slack', chatId: 'DENVFILE1' })
+      expect(readScheduledDeliveryDefault()).toBeNull()
       ENV_FILE_VALUE = undefined
       expect(readScheduledDeliveryDefault()).toBeNull()
     } finally {

@@ -40,7 +40,7 @@ What is checked, in this order:
      A missing or unreadable config is level 2, as in the hook.
 
 Every path is this project's own (<root>/store/...): the hook's test-only
-environment overrides (EMAIL_APPROVAL_GATE_STORE, EMAIL_APPROVAL_WINDOW_S)
+environment overrides (neither the store path nor the window has one since ENVRELAXGATE1104)
 do not apply here, because a sender runs in the agent's own shell, where
 `VAR=... python3 send.py` would otherwise point the check at a config nobody
 curated. Any failure inside the check refuses (fail-closed).
@@ -71,7 +71,7 @@ def _gate():
     mod.CONFIG_PATH = os.path.join(STORE, "autonomy-config.json")
     mod.STANDING_PATH = os.path.join(STORE, "email-standing-recipients.json")
     mod.STANDING_LOG = os.path.join(STORE, "email-standing-sends.log")
-    mod.WINDOW_S, mod._WINDOW_ERR = DEFAULT_WINDOW_S, None
+    mod.WINDOW_S = DEFAULT_WINDOW_S
     # The daily-log notice of a standing send reads WEB_PORT / MAIN_AGENT_ID;
     # the hook takes them from the process environment first, where a
     # `WEB_PORT=1 python3 ...` prefix would silently send the owner's notice

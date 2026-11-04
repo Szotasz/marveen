@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -154,11 +154,13 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     writeFileSync(join(store, 'autonomy-config.json'), JSON.stringify({
       version: 1, categories: [{ key: 'email_send', label: 'Email', level: 2, locked: false }],
     }))
-    const run = (tool: string) => spawnSync('python3', [join(ROOT, 'scripts', 'hooks', 'email-approval-gate.py')], {
+    // ENVRELAXGATE1104: the gate reads only its own install's store: run it from this tmp install.
+    symlinkSync(join(ROOT, 'scripts'), join(td, 'scripts'))
+    const run = (tool: string) => spawnSync('python3', [join(td, 'scripts', 'hooks', 'email-approval-gate.py')], {
       input: JSON.stringify({ tool_name: `mcp__harder-mail__${tool}`,
         tool_input: { account: 'ceges', to: ['a@b.hu'], subject: 'Targy', body: 'Szia!' } }),
       encoding: 'utf-8',
-      env: { ...process.env, EMAIL_APPROVAL_GATE_STORE: store },
+      env: { ...process.env },
     })
     expect(run('create_draft').status).toBe(0)
     const send = run('send_mail')

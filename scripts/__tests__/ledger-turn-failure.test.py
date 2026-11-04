@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Test the StopFailure hook (scripts/hooks/ledger-turn-failure.py).
 
-Drives the hook as a subprocess against an isolated ledger DB (LEDGER_DB_PATH);
-the failures file lands next to it. Run:  python3 <thisfile>
+Drives the hook as a subprocess from a tmp install (<tmp>/scripts linked to the
+repo's), so its ledger DB is <tmp>/store/claudeclaw.db and the failures file lands
+next to it. Since ENVRELAXGATE1104 no environment variable picks the ledger DB. Run:  python3 <thisfile>
 Exit 0 = all pass; non-zero = a failure.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -13,8 +15,30 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
-HOOK = os.path.join(HOOKS, "ledger-turn-failure.py")
 sys.path.insert(0, HOOKS)
+
+
+def install(tmp):
+    """<tmp> as an install: store/ plus scripts/ linked to the repo's (the hooks
+    take their root from abspath, not realpath). Returns its hooks dir."""
+    os.makedirs(os.path.join(tmp, "store"), exist_ok=True)
+    link = os.path.join(tmp, "scripts")
+    if not os.path.lexists(link):
+        os.symlink(os.path.dirname(HOOKS), link)
+    return os.path.join(link, "hooks")
+
+
+def hook(tmp):
+    return os.path.join(install(tmp), "ledger-turn-failure.py")
+
+
+def lib(tmp):
+    """ledger_lib loaded from the tmp install, so its DB is <tmp>/store/claudeclaw.db."""
+    spec = importlib.util.spec_from_file_location("ledger_lib_" + os.path.basename(tmp),
+                                                  os.path.join(install(tmp), "ledger_lib.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 failed = []
 
@@ -27,19 +51,19 @@ def check(name, ok):
 
 def run(tmp, payload, notify=None):
     env = dict(os.environ)
-    env["LEDGER_DB_PATH"] = os.path.join(tmp, "claudeclaw.db")
+    env.pop("LEDGER_DB_PATH", None)
     env["MARVEEN_AGENT_ID"] = "tester"
     if notify is None:
         env.pop("LEDGER_TURN_FAILURE_NOTIFY", None)
     else:
         env["LEDGER_TURN_FAILURE_NOTIFY"] = notify
     env["LEDGER_TURN_FAILURE_NOTIFY_CMD"] = os.path.join(tmp, "fake-notify.sh")
-    return subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
+    return subprocess.run([sys.executable, hook(tmp)], input=json.dumps(payload),
                           capture_output=True, text=True, env=env, timeout=30)
 
 
 def rows(tmp):
-    p = os.path.join(tmp, "ledger-turn-failures.jsonl")
+    p = os.path.join(tmp, "store", "ledger-turn-failures.jsonl")
     if not os.path.exists(p):
         return []
     with open(p) as f:
@@ -55,8 +79,7 @@ def notified(tmp):
 
 
 def setup(tmp, answered):
-    os.environ["LEDGER_DB_PATH"] = os.path.join(tmp, "claudeclaw.db")
-    import ledger_lib
+    ledger_lib = lib(tmp)
     ledger_lib.log_inbound("tester", "42", "827", "a question", "2026-09-22T10:28:49Z")
     if answered:
         ledger_lib.log_outbound("tester", "42", "the answer", message_id="828")
@@ -99,10 +122,20 @@ with tempfile.TemporaryDirectory() as tmp:
 
 with tempfile.TemporaryDirectory() as tmp:
     setup(tmp, answered=False)
-    env = dict(os.environ, LEDGER_DB_PATH=os.path.join(tmp, "claudeclaw.db"))
-    r = subprocess.run([sys.executable, HOOK], input="not json",
+    env = dict(os.environ)
+    r = subprocess.run([sys.executable, hook(tmp)], input="not json",
                        capture_output=True, text=True, env=env, timeout=30)
     check("garbage payload: exit 0, no row", r.returncode == 0 and rows(tmp) == [])
+
+# ENVRELAXGATE1104: a ledger DB named in the environment is not used.
+with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as elsewhere:
+    setup(tmp, answered=False)
+    open_db = os.path.join(elsewhere, "claudeclaw.db")
+    r = subprocess.run([sys.executable, hook(tmp)], input=json.dumps(FAIL), capture_output=True, text=True,
+                       env=dict(os.environ, LEDGER_DB_PATH=open_db, MARVEEN_AGENT_ID="tester"), timeout=30)
+    check("ENVRELAXGATE1104: LEDGER_DB_PATH in the environment is ignored (the install DB answers)",
+          r.returncode == 0 and len(rows(tmp)) == 1 and not os.path.exists(open_db)
+          and not os.path.exists(os.path.join(elsewhere, "ledger-turn-failures.jsonl")))
 
 if failed:
     print(f"FAIL: {len(failed)} check(s): {failed}", file=sys.stderr)

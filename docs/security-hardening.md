@@ -420,8 +420,8 @@ python3 scripts/approval-consume.py --id <approval id> --content-hash <anchor> \
 ```
 
 `POST /api/approvals/<id>/consume` is one conditional write (approved,
-`email_send`, unconsumed, the same anchor, inside `EMAIL_APPROVAL_WINDOW_S`,
-1800 s like the gate). Of two attempts exactly one gets 200; the other gets
+`email_send`, unconsumed, the same anchor, inside the fixed 1800 s window,
+the same as the gate's; no environment variable changes it). Of two attempts exactly one gets 200; the other gets
 409 with a reason (`already_consumed`, `not_approved`, `hash_mismatch`,
 `expired`, `wrong_category`). The row records the consumer and the Message-Id
 the tool generated up front (`consumed_by`, `consumed_ref`), and every call,
@@ -470,7 +470,7 @@ key reads as level 1):
   so a script never reads the request as done. A retry gets the same open
   request back instead of a new one.
 - The approval is consumed once, inside the same window as an email approval
-  (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval). An edit to the memory
+  (a fixed 1800 s from the approval). An edit to the memory
   after the approval changes the anchor, and the approval no longer deletes it.
 - The anchor is the memory id plus its content version. A row deleted and later
   restored with the same id and the same content (a DB restore, a re-import)

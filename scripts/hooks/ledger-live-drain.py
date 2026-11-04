@@ -43,7 +43,7 @@ GRACE_SECONDS = 60
 
 def _statefile(agent_id):
     """Last-surfaced-id marker, kept beside the ledger DB so it is isolated in
-    tests (LEDGER_DB_PATH override) and lands in store/ in production."""
+    tests (a tmp install) and lands in store/ in production."""
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(agent_id))
     return os.path.join(os.path.dirname(ledger_lib.db_path()), f".ledger-drain-{safe}")
 

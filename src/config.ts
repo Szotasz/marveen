@@ -171,8 +171,9 @@ export const OWNER_NAME_PLACEHOLDER = 'Owner'
 export const OWNER_NAME = env['OWNER_NAME'] ?? OWNER_NAME_PLACEHOLDER
 // Shared Google Drive folder ID the fleet writes deliverables into. Empty by
 // default (distribution-safe: no owner-specific folder is baked into a fresh
-// install's generated agent CLAUDE.md); set OWNER_DRIVE_FOLDER in .env to wire
-// the default shared drive for this install.
+// install's generated agent CLAUDE.md). The generator reads the setting through
+// the settings store (agent-scaffold.ts), where it is overrides-only: set it on
+// the Settings page, a .env line no longer counts (ENVRELAXGATE1104).
 export const OWNER_DRIVE_FOLDER = env['OWNER_DRIVE_FOLDER'] ?? ''
 export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 

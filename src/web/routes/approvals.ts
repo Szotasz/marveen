@@ -77,12 +77,14 @@ export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowM
 }
 
 // f2c5edb0: the window inside which an approved letter may still be consumed,
-// counted from resolved_at. The SAME variable and default as the gate
-// (EMAIL_APPROVAL_WINDOW_S, 1800 s in scripts/hooks/email-approval-gate.py), so
-// the two consume paths agree on when an approval has gone stale.
-export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
-  const v = Number.parseInt(env.EMAIL_APPROVAL_WINDOW_S ?? '', 10)
-  return Number.isFinite(v) && v > 0 ? v : 1800
+// counted from resolved_at. The SAME fixed value as the gate (APPROVAL_WINDOW_S
+// in scripts/hooks/email-approval-gate.py; a test pins the two), so the two
+// consume paths agree on when an approval has gone stale. No environment
+// override on either side (ENVRELAXGATE1104): the hook cannot see the
+// dashboard's launch environment, so an override here would split the two.
+export const APPROVAL_WINDOW_S = 1800
+export function approvalWindowSeconds(): number {
+  return APPROVAL_WINDOW_S
 }
 
 // The consumer names the sending tool in the audit trail. Printable only (no

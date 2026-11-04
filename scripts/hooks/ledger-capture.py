@@ -209,8 +209,11 @@ OVERRIDES_NAME = "config-overrides.json"  # read only, never written here
 
 
 def _owner_install_dir():
-    # LEDGER_OWNER_INSTALL_DIR is a test seam only: the main install's dir.
-    return os.environ.get("LEDGER_OWNER_INSTALL_DIR") or ledger_lib._install_dir()
+    # The main install is the one this hook lives in, never an environment path
+    # (ENVRELAXGATE1104: the hook runs in the captured agent's own environment,
+    # and the owner it reads decides which rows are labeled the owner's). A test
+    # runs the hook from a tmp install whose scripts/ links to the repo's.
+    return ledger_lib._install_dir()
 
 
 # ENVRELAXGATE1104 step 2: the registry's overrides-only keys read here. Every change of SLACK_OWNER_USER_ID loosens

@@ -37,7 +37,7 @@ DETAIL_CHARS = 500
 
 
 def failures_path():
-    # Next to the ledger DB, so a test's LEDGER_DB_PATH isolates this file too.
+    # Next to the ledger DB, so a test's tmp install isolates this file too.
     return os.path.join(os.path.dirname(ledger_lib.db_path()), FAILURES_FILE)
 
 

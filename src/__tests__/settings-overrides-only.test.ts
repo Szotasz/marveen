@@ -66,6 +66,8 @@ describe('registry: which keys are overrides-only', () => {
     for (const def of withLoosens) expect(registry.isOverridesOnly(def), def.key).toBe(true)
     expect(withLoosens.map((d) => d.key)).toContain('BASH_EGRESS_HOST_ALLOW')
     expect(withLoosens.map((d) => d.key)).toContain('NOTIFY_SLACK_ALERT_TARGET')
+    expect(withLoosens.map((d) => d.key)).toContain('OWNER_DRIVE_FOLDER')
+    expect(withLoosens.map((d) => d.key)).toContain('SCHEDULED_DELIVERY_CHANNEL')
   })
 
   it('BASH_EGRESS_HOST_ALLOW: switching it on loosens, switching it off does not', () => {
@@ -92,6 +94,10 @@ describe('store: override > .env (only if it tightens) > default', () => {
     envFile.BASH_EGRESS_HOST_ALLOW = '1'
     envFile.SLACK_OWNER_USER_ID = 'U0SOMEONE'
     envFile.NOTIFY_SLACK_ALERT_TARGET = 'D0ALERTSELSEWHERE'
+    envFile.OWNER_DRIVE_FOLDER = 'FOLDERELSEWHERE'
+    envFile.SCHEDULED_DELIVERY_CHANNEL = 'slack:D0ELSEWHERE'
+    expect(store.getEffectiveSettingSource('OWNER_DRIVE_FOLDER')).toEqual({ value: '', source: 'default' })
+    expect(store.getEffectiveSettingSource('SCHEDULED_DELIVERY_CHANNEL')).toEqual({ value: '', source: 'default' })
     expect(store.getEffectiveSettingSource('NOTIFY_SLACK_ALERT_TARGET')).toEqual({ value: '', source: 'default' })
     expect(store.getEffectiveSettingSource('NOTIFY_SLACK_TARGET')).toEqual({ value: '', source: 'default' })
     expect(store.getEffectiveSettingSource('APPROVAL_SLACK_REACTIONS')).toEqual({ value: 'off', source: 'default' })

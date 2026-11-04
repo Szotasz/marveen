@@ -130,18 +130,23 @@ os.environ.pop("MARVEEN_AGENT_ID", None)
 # ---------------------------------------------------------------------------
 # End-to-end through the REAL outbound hook: same incident shape, but the row
 # that lands in the (temp) ledger DB is what gets asserted -- not the resolver
-# in isolation. LEDGER_DB_PATH keeps this off the live store.
+# in isolation. The hook runs from a tmp install (<tmp>/scripts linked to the
+# repo's), so its DB is <tmp>/store/claudeclaw.db, off the live store; no
+# environment variable picks the DB since ENVRELAXGATE1104.
 # ---------------------------------------------------------------------------
 import json
 import sqlite3
 import subprocess
 import tempfile
 
-HOOK = os.path.join(HOOKS, "ledger-outbound.py")
 with tempfile.TemporaryDirectory() as tmp:
-    db = os.path.join(tmp, "ledger.db")
-    env = dict(os.environ, LEDGER_DB_PATH=db, MAIN_AGENT_ID="mainagent")
+    os.makedirs(os.path.join(tmp, "store"))
+    os.symlink(os.path.dirname(HOOKS), os.path.join(tmp, "scripts"))
+    HOOK = os.path.join(tmp, "scripts", "hooks", "ledger-outbound.py")
+    db = os.path.join(tmp, "store", "claudeclaw.db")
+    env = dict(os.environ, MAIN_AGENT_ID="mainagent")
     env.pop("MARVEEN_AGENT_ID", None)
+    env.pop("LEDGER_DB_PATH", None)
 
     def run_hook(transcript, cwd):
         payload = {
@@ -153,11 +158,14 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["python3", HOOK], input=json.dumps(payload).encode(),
                        env=env, timeout=30, check=False)
 
+    # the same three shapes, rooted at the tmp install the hook now runs from
     HOME_FLEET_TRANSCRIPT = os.path.join(os.path.expanduser("~"), ".claude", "projects",
-                                         INSTALL.replace(os.sep, "-") + "-agents-iris", "s.jsonl")
-    run_hook(MAIN_TRANSCRIPT, os.path.join(INSTALL, "agents", "iris", "workspace"))
-    run_hook(SUB_TRANSCRIPT, os.path.join(INSTALL, "agents", "iris"))
-    run_hook(HOME_FLEET_TRANSCRIPT, os.path.join(INSTALL, "store"))
+                                         tmp.replace(os.sep, "-") + "-agents-iris", "s.jsonl")
+    run_hook(os.path.join(tmp, ".channels-config", "projects", "x", "sess.jsonl"),
+             os.path.join(tmp, "agents", "iris", "workspace"))
+    run_hook(os.path.join(tmp, "agents", "iris", ".claude-config", "projects", "x", "s.jsonl"),
+             os.path.join(tmp, "agents", "iris"))
+    run_hook(HOME_FLEET_TRANSCRIPT, os.path.join(tmp, "store"))
     rows = sqlite3.connect(db).execute(
         "SELECT agent_id FROM conversation_log WHERE direction='out' ORDER BY id").fetchall()
     got_ids = [r[0] for r in rows]
