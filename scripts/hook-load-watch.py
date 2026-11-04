@@ -214,7 +214,27 @@ FILE_LIT = re.compile(r"""["']([A-Za-z0-9_./@+-]*[A-Za-z0-9_@+-]\.(?:py|mjs|cjs|
 PY_JOIN = re.compile(r"\bos\.path\.join\(")
 JS_LOAD = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(["'])(\.\.?/[A-Za-z0-9_./@+-]*[A-Za-z0-9_@+-]\.(?:mjs|cjs|js))\1""")
 
-STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
+def _stdlib_names():
+    """The standard library's top-level module names. EMAILGATEPY39-1104: sys.stdlib_module_names is 3.10+; on 3.9 the
+    set was empty and every `import sys` read as a missing local dependency. There: the built-in modules plus what the
+    interpreter's own stdlib directory holds (site-packages left out)."""
+    names = getattr(sys, "stdlib_module_names", None)
+    if names:
+        return frozenset(names)
+    import pkgutil
+    import sysconfig
+    out = set(sys.builtin_module_names)
+    for key in ("stdlib", "platstdlib"):
+        d = sysconfig.get_paths().get(key)
+        if d and os.path.isdir(d):
+            out.update(m.name for m in pkgutil.iter_modules([d]))
+            dyn = os.path.join(d, "lib-dynload")
+            if os.path.isdir(dyn):
+                out.update(m.name for m in pkgutil.iter_modules([dyn]))
+    return frozenset(out)
+
+
+STDLIB = _stdlib_names()
 PY_IMPORT_PROBE = ("import importlib.util, os, sys\n"
                    "p = sys.argv[1]\n"
                    "sys.path.insert(0, os.path.dirname(p))\n"

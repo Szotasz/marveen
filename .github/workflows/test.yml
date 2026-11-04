@@ -182,3 +182,29 @@ jobs:
       # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
       # SKIP where the runner has no systemd user manager or its MemoryMax is not in effect.
       - run: python3 scripts/__tests__/heavy-job-gate.test.py
+
+  # EMAILGATEPY39-1104: the hooks run under the PATH's python3, which is 3.9 on a Mac without Homebrew python
+  # (/usr/bin/python3 from the command line tools). A 3.10-only form in a hook dependency broke the approval and
+  # credential gates there (fail-closed: every send, and with the credential gate every Bash call, was denied), and
+  # nothing here ran a 3.9 interpreter. This job runs the hook scripts' syntax check and the gate tests on 3.9.
+  hooks-python39:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Hook scripts compile under Python 3.9
+        run: |
+          set -e
+          python3 --version
+          python3 -m py_compile scripts/hooks/*.py scripts/lib/*.py scripts/hook-load-watch.py
+      - name: Gate tests under Python 3.9
+        run: |
+          set -e
+          for t in scripts/__tests__/credential-gate.test.py scripts/__tests__/hook-load-watch.test.py \
+                   scripts/__tests__/mail-api-send-cases.test.py \
+                   scripts/__tests__/email-approval-gate*.test.py scripts/__tests__/outgoing-copy-gate*.test.py; do
+            echo "== $t"
+            python3 "$t"
+          done
