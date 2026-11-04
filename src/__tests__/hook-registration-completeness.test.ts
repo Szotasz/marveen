@@ -56,6 +56,8 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 // name -> why it is allowed to be unregistered. Keep every reason concrete;
 // "misc" entries defeat the lint.
 const EXEMPT: Record<string, string> = {
+  'mcp-file-targets.mjs':
+    'shared library (MCPWRITEGATE1104): names the local paths of an MCP tool call, imported by db-write-gate.mjs and self-pace-gate.mjs; not itself a hook',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'command_prompt.py':

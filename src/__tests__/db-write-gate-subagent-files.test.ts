@@ -44,7 +44,8 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
   // .channels-config/.claude.json is covered by the .channels-config directory entry (#2503), not listed twice.
   expect(SUBAGENT_PROTECTED_INSTALL_PATHS.map((t: { rel?: string; home?: string }) => t.rel ?? `~/${t.home}`))
     .toEqual(['.env', ...STORE_FILES.map((f) => `store/${f}`), '~/.claude/settings.json', '~/.claude/settings.local.json', '.channels-config',
-      'agents/*/.mcp.json', 'agents/*/.claude-config/.claude.json', '.mcp.json', '~/.claude.json'])
+      'agents/*/.mcp.json', 'agents/*/.claude-config/.claude.json', 'agents/*/.claude-config/.marveen-mcp-inherited.json',
+      '.mcp.json', '~/.claude.json'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {

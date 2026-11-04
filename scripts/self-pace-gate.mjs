@@ -35,6 +35,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { mcpFileTargets } from './hooks/mcp-file-targets.mjs'
 
 // The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
 const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
@@ -3181,9 +3182,50 @@ export function tmuxInjectsPane(words) {
   return false
 }
 
+// --- MCP tools (MCPWRITEGATE1104) -------------------------------------------------------------------------------
+// An MCP tool reaches local paths through its own arguments (hooks/mcp-file-targets.mjs names them, by the TOOL's
+// name, never the server's). Each path is judged by this gate's own native Write branch, so a protected name added
+// there is covered here without a second list. A mover's path, and a directory a file lands in under a name the call
+// does not fix, is also denied when it IS, or is above, a directory this gate guards: the store, local-hooks/, a
+// scheduled-tasks directory, a Claude config directory (where the self-schedule store lives). A relative path is
+// measured against the payload cwd AND the project dir (an MCP server resolves it against its own start cwd).
+// This gate runs for sub-agents only; the 'other' class (read, send) is judged as a file (D1, Samu 68033).
+function mcpDirDeny(raw, base, opts) {
+  const w = String(raw)
+  const abs = resolve(base, w === '~' || w.startsWith('~/') ? expandHome(w === '~' ? '~/' : w) : w)
+  const key = pathKey(abs)
+  const allowlistPath = opts.allowlistPath ?? DEFAULT_ALLOWLIST_PATH
+  const localHooks = join(dirname(allowlistPath), '..', 'local-hooks')
+  const guarded = [opts.storeDir ?? DEFAULT_STORE_DIR, dirname(allowlistPath), localHooks, join(homedir(), '.claude')]
+  for (const g of guarded) {
+    const gk = pathKey(g)
+    if (sameKey(key, gk) || underKey(gk, key)) return true
+  }
+  if (underKey(key, pathKey(localHooks))) return true
+  return nameForms(abs).some((f) => SCHEDULE_DIR_PATH_RX.test(f) || STORE_PARENTS.includes(basename(f)))
+}
+
+function mcpDecide(name, toolInput, opts) {
+  const m = mcpFileTargets(name, toolInput)
+  if (!m) return { deny: false }
+  if (m.cls !== 'other' && (m.missingPath || m.truncated)) return { deny: true, reason: 'mcp-path' }
+  const cwd = opts.cwd ? resolve(String(opts.cwd)) : process.cwd()
+  const bases = [...new Set([cwd, opts.projectDir ? resolve(String(opts.projectDir)) : null].filter(Boolean))]
+  for (const t of m.targets) {
+    for (const base of bases) {
+      const v = decide('Write', { file_path: t.path }, { ...opts, cwd: base })
+      if (v.deny) return { deny: true, reason: v.reason ? `mcp-${v.reason}` : 'mcp-schedule' }
+      // a mover's paths come marked dir (mcp-file-targets.mjs)
+      if (m.cls !== 'other' && t.dir && mcpDirDeny(t.path, base, opts)) return { deny: true, reason: 'mcp-dir' }
+    }
+  }
+  return { deny: false }
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
+  if (/^mcp__/i.test(name)) return mcpDecide(name, toolInput, opts)
   // Native file tools writing the self-schedule store would bypass any Bash regex.
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
@@ -3310,6 +3352,13 @@ const ALLOWLIST_GATE_MSG =
   'sub-agens hookjai): ha kell egy, kerd a fo agenst. ' +
   'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
+const MCP_GATE_MSG =
+  'MCP-eszkoz ut-argumentuma TILTOTT (MCPWRITEGATE1104, sub-agensre): a hivas egy utja az utemezo store-t, a ' +
+  'scheduled-tasks/ vagy egy Claude config-konyvtarat, az egress-allowlistet, a local-hooks/-t vagy egy vedett store-fajlt ' +
+  'eri el (irva, mozgatva, vagy ismeretlen nevu fajlt teve bele), vagy egy ismert fajl-iro MCP-eszkoz ut nelkul a szerver ' +
+  'alapertelmezett helyere irna. Adj meg kifejezett, a munkakonyvtaradon beluli celutat es egyszeru fajlnevet; ha vedett ' +
+  'fajl kell, kerd a fo agenst.'
+
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
   'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
@@ -3399,12 +3448,16 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
   }
   try {
     const selfAgent = selfAgentFromProjectDir(process.env.CLAUDE_PROJECT_DIR)
-    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent })
+    // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
+    const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
+    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated) allow()
+    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent, projectDir: process.env.CLAUDE_PROJECT_DIR || null })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
         : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
-        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG : GATE_MSG)
+        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
+        : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG : GATE_MSG)
     }
     allow()
   } catch (err) {

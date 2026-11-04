@@ -70,6 +70,7 @@ import {
   underKey,
 } from '../self-pace-gate.mjs'
 import { claudeInvocations } from './child-claude-channel-guard.mjs'
+import { mcpFileTargets } from './mcp-file-targets.mjs'
 
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -157,6 +158,9 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // them. Its backups/ copies are not listed (stated limit).
   { rel: 'agents/*/.mcp.json', pattern: true },
   { rel: 'agents/*/.claude-config/.claude.json', pattern: true },
+  // ...and its record of which of those servers came from the shared config (MCPWRITEGATE1104 D4): dropping a name
+  // from it would keep a server the reconcile is about to take back out
+  { rel: 'agents/*/.claude-config/.marveen-mcp-inherited.json', pattern: true },
   { rel: '.mcp.json' },
   { home: '.claude.json' },
 ]
@@ -190,7 +194,7 @@ function callerSettingsEntries(projectDir, configDir) {
   if (configDir) {
     const dir = resolve(String(configDir))
     // ...and its user-scope MCP servers in the config dir's .claude.json (ENVRELAXMCPCFG1104)
-    for (const f of ['settings.json', 'settings.local.json', '.claude.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
+    for (const f of ['settings.json', 'settings.local.json', '.claude.json', '.marveen-mcp-inherited.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
   }
   return out
 }
@@ -838,8 +842,75 @@ export function claudeMcpListWrite(command) {
   })
 }
 
+// --- MCP tools (MCPWRITEGATE1104) -------------------------------------------------------------------------------
+// An MCP tool reaches local paths through its own arguments (mcp-file-targets.mjs names them). Each one is judged on
+// this gate's own engine:
+//   a written file              -- as the native Write branch judges its file_path (fileToolDeny);
+//   a mover's path, or a directory a file lands in under a name the call does not fix
+//                               -- also when it is a protected path's ANCESTOR (a whole tree moves; an unnamed file
+//                                  can land on a protected name). Unlike classifyWord's own ancestor rule, this one
+//                                  is not limited to the install root: ~/.gitconfig and ~/.claude.json count too.
+// A relative path is measured against the payload cwd AND the project dir: an MCP server resolves it against the cwd
+// it was started in, which the Bash tool's `cd` does not move. Either one landing on a protected path denies.
+// The 'other' class (read, send) is judged for a SUB-AGENT only, and only as a file (D1, Samu 68033).
+
+// Is `raw`, as a directory or a moved tree, a protected path, inside one, or above one?
+function dirTargetDeny(raw, opts) {
+  if (nameForms(raw).some((f) => DB_FILE_NAME_RX.test(f))) return 'db'
+  const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : process.cwd(), subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null }
+  const c = classifyWord(raw, ctx)
+  if (c) return 'install-file' // exact, under, unresolved, or an ancestor inside the root
+  const w = String(raw)
+  const abs = resolve(ctx.cwd, w === '~' || w.startsWith('~/') ? expandHome(w === '~' ? '~/' : w) : w)
+  const key = pathKey(abs)
+  const { list } = installTargets(ctx.root, ctx.subAgent, ctx.projectDir, ctx.configDir)
+  for (const t of list) {
+    if (t.pattern) {
+      // agents/*/x: the directory is the pattern's parent or above it (one `*` per segment)
+      for (let i = 0; i < key.length; i++) {
+        const K = normalizePathSegments(key[i])
+        const T = normalizePathSegments(t.key[i] ?? t.key[0])
+        if (K.length < T.length && K.every((seg, x) => T[x] === '*' ? seg !== '' : T[x] === seg)) return 'install-file'
+      }
+      continue
+    }
+    if (sameKey(key, t.key) || underKey(t.key, key)) return 'install-file'
+  }
+  return null
+}
+
+function mcpVerdict(m, opts) {
+  const cwd = opts.cwd ? resolve(String(opts.cwd)) : process.cwd()
+  const bases = [...new Set([cwd, opts.projectDir ? resolve(String(opts.projectDir)) : null].filter(Boolean))]
+  let worst = null
+  for (const t of m.targets) {
+    for (const base of bases) {
+      const o = { ...opts, cwd: base }
+      const r = m.cls === 'other' ? fileToolDeny({ file_path: t.path }, o)
+        : t.dir ? dirTargetDeny(t.path, o) // a mover's paths come marked dir (mcp-file-targets.mjs)
+        : fileToolDeny({ file_path: t.path }, o)
+      if (r === 'db') return 'db'
+      if (r) worst = r
+    }
+  }
+  return worst
+}
+
+export function mcpDecision(toolName, toolInput, opts = {}) {
+  const m = mcpFileTargets(toolName, toolInput)
+  if (!m) return null
+  if (m.cls !== 'other' && (m.missingPath || m.truncated)) return { deny: true, reason: 'mcp-path' }
+  if (m.cls === 'other' && opts.subAgent !== true) return { deny: false }
+  const r = mcpVerdict(m, opts)
+  if (!r) return { deny: false }
+  if (r === 'db') return { deny: true, reason: 'db' }
+  if (opts.subAgent === true && !mcpVerdict(m, { ...opts, subAgent: false })) return { deny: true, reason: 'mcp-subagent-file' }
+  return { deny: true, reason: 'mcp-install-file' }
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
+  if (/^mcp__/i.test(name)) return mcpDecision(name, toolInput, opts) ?? { deny: false }
   // A deny that only the sub-agent list gives gets its own message (ENVRELAXGATE1104).
   const subOnly = () => opts.subAgent === true
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
@@ -913,6 +984,15 @@ export const SUBAGENT_FILE_GATE_MSG =
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
+
+// MCPWRITEGATE1104: an MCP tool's path argument is judged like a native file tool's file_path.
+export const MCP_PREFIX_MSG =
+  'MCP-eszkoz (MCPWRITEGATE1104): a hivas egy ut-argumentuma vedett utat er el (iras, mozgatas, vagy egy konyvtar, ' +
+  'amibe ismeretlen nevu fajl kerulne). Ugyanaz a szabaly, mint a nativ Write-ra: '
+export const MCP_PATH_GATE_MSG =
+  'MCP-iro eszkoz ut nelkul TILTOTT (MCPWRITEGATE1104): egy ismert fajl-iro MCP-eszkoz ut-argumentum nelkul a szerver ' +
+  'alapertelmezett helyere irna, amit ez a kapu nem lat (vagy a hivas bemenete tul nagy/tul melyen beagyazott, hogy vegigolvassa). ' +
+  'Adj meg kifejezett, a munkakonyvtaradon beluli celutat (pl. savePath, save_to, localPath), es egyszeru fajlnevet.' + LIMIT_MSG
 
 // The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
 export const RESCUE_DOC = 'docs/db-write-gate.md'
@@ -1000,6 +1080,9 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
     allow()
   }
   try {
+    // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
+    const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
+    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated) allow()
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input,
       {
         cwd: payload?.cwd,
@@ -1011,7 +1094,10 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG
-        : verdict.reason === 'subagent-file' ? SUBAGENT_FILE_GATE_MSG : DB_GATE_MSG)
+        : verdict.reason === 'subagent-file' ? SUBAGENT_FILE_GATE_MSG
+        : verdict.reason === 'mcp-install-file' ? MCP_PREFIX_MSG + INSTALL_FILE_GATE_MSG
+        : verdict.reason === 'mcp-subagent-file' ? MCP_PREFIX_MSG + SUBAGENT_FILE_GATE_MSG
+        : verdict.reason === 'mcp-path' ? MCP_PATH_GATE_MSG : DB_GATE_MSG)
     }
     allow()
   } catch (err) {
