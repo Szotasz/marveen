@@ -6,7 +6,7 @@
 // paths; HOME points at a temp dir for every test, so nothing here touches the real home directory.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, workerConfigEntries } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, workerConfigEntries, unquotedBareGlob } from '../../scripts/hooks/db-write-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -112,11 +112,50 @@ describe('another sub-agent may not write the project-scope files in a worker\'s
     expect(bash('cd ~/.marveen-worker && echo x | tee *')).toEqual(SUB)
     expect(bash(`cd ${join(home, '.marveen-worker-fast')}; echo x | tee ./*`)).toEqual(SUB)
   })
-  it('the worker itself, from its home: a quoted count(*) read passes (a bare relative glob skips CLAUDE*.md)', () => {
-    const wh = join(home, '.marveen-worker')
-    const as = { root, cwd: wh, subAgent: true, projectDir: wh, configDir: join(wh, '.claude-config') }
-    expect(gateDecision('Bash', { command: 'sqlite3 -readonly /x/y.db "SELECT count(*) FROM t"' }, as)).toEqual(FREE)
-    expect(gateDecision('Bash', { command: 'echo x > CLAUDE.md' }, as)).toEqual(SUB)
+  it('after a cd into the home, a QUOTED bare glob (a literal) passes: the skip follows quoting, not the cwd', () => {
+    writeFileSync(join(home, '.marveen-worker', 'CLAUDE.md'), 'x')
+    expect(bash('cd ~/.marveen-worker && sqlite3 -readonly /x/y.db "SELECT count(*) FROM t"')).toEqual(FREE)
+    expect(bash('cd ~/.marveen-worker && echo x | tee *')).toEqual(SUB)
+  })
+  // Dani's follow-up review of 95ec2efad: the skip is bound to quoting. The worker in its own home, with a CLAUDE.md
+  // there (a bare glob expands only existing names).
+  describe('the worker itself, from its home: only a QUOTED bare glob skips CLAUDE*.md', () => {
+    const wh = () => join(home, '.marveen-worker')
+    const as = () => ({ root, cwd: wh(), subAgent: true, projectDir: wh(), configDir: join(wh(), '.claude-config') })
+    const run = (command: string) => gateDecision('Bash', { command }, as())
+    beforeEach(() => { writeFileSync(join(wh(), 'CLAUDE.md'), 'x') })
+    it.each([
+      'sqlite3 -readonly /x/y.db "SELECT count(*) FROM t"',
+      "sqlite3 -readonly /x/y.db 'SELECT count(*) FROM t'",
+      'sqlite3 -readonly /x/y.db "SELECT \\"a\\", count(*) FROM t"',
+      'echo x | tee "*"',
+      "echo x | tee './*'",
+      'cat *',
+      'grep -l foo *',
+    ])('free: %s', (c) => { expect(run(c)).toEqual(FREE) })
+    it.each([
+      'echo x | tee *',
+      'echo x > *',
+      'sed -i s/a/b/ *',
+      'cp /etc/hosts *',
+      'mv x *',
+      'rm *',
+      'echo x | tee ./*',
+      'echo x | tee \\*',
+      'echo x | tee "a" *',
+      'sqlite3 /x/y.db "SELECT 1" && echo x | tee *',
+      'echo x > CLAUDE.md',
+    ])('denied: %s', (c) => { expect(run(c).deny).toBe(true) })
+  })
+  it('unquotedBareGlob: quoted spans removed, escapes and unterminated quotes fail closed', () => {
+    expect(unquotedBareGlob('sqlite3 db "SELECT count(*) FROM t"')).toBe(false)
+    expect(unquotedBareGlob("sqlite3 db 'SELECT count(*) FROM t'")).toBe(false)
+    expect(unquotedBareGlob('echo "a\\"*" x')).toBe(false)
+    expect(unquotedBareGlob('tee *')).toBe(true)
+    expect(unquotedBareGlob('tee ./*')).toBe(true)
+    expect(unquotedBareGlob('tee \\*')).toBe(true)
+    expect(unquotedBareGlob('tee "x *')).toBe(true)
+    expect(unquotedBareGlob('tee x*')).toBe(false)
   })
 })
 

@@ -83,10 +83,13 @@ export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..
 // The two CLAUDE*.md names are the first protected names without a leading dot that a caller reaches from its own cwd
 // (the worker's cwd IS its home): the words are split on quotes and parentheses (fail closed), so the `*` of a quoted
 // `count(*)` is a bare relative glob there, and without `noBareGlob` the worker's own `sqlite3 -readonly db "SELECT
-// count(*) ..."` was denied (worker-gates.test.ts). A RELATIVE word made of glob characters only, read from the
-// caller's own project dir, does not match them; an absolute or ~ glob (`tee ~/.marveen-worker/*`), a partial one
-// (`C*`), the name itself, and a bare glob after a cd into the home (another sub-agent) still do. Stated limit: the
-// worker's own `tee *` from its home.
+// count(*) ..."` was denied (worker-gates.test.ts). The skip is bound to QUOTING (Dani, #2514 follow-up review): the
+// shell never expands a glob inside quotes, so a quoted `*` is a literal whatever the command, while an UNQUOTED bare
+// `*` expands to every existing non-dot name whatever the command (read vs write is a weaker proxy: sqlite3 writes too).
+// A word of glob characters only skips these two entries when ALL of this holds: the segment's text, with its quoted
+// spans removed, has no bare-glob word left (a backslash-escaped `\*` counts as unquoted, an unterminated quote fails
+// closed). An absolute or ~ glob, a partial one (`C*`), the name itself, and an unquoted `tee *` / `> *` /
+// `sed -i ... *` from any cwd (the worker's own home, another sub-agent's cd into it) all still match.
 const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.claude', dir: true }, { sub: '.mcp.json' },
   { sub: 'CLAUDE.md', noBareGlob: true }, { sub: 'CLAUDE.local.md', noBareGlob: true }]
 function workerHomeTargets(homeRel) {
@@ -384,6 +387,24 @@ const GLOB_CHAR_RX = /[*?[{]/
 const DOTGLOB_RX = /dotglob|globdots|globignore|fignore|\([^)\s]*D[^)\s]*\)/i
 const namesDotglob = (cmd) => DOTGLOB_RX.test(cmd.replace(/_/g, ''))
 
+// Does a shell segment hold an UNQUOTED bare-glob word (`*`, `?`, `./*`)? The text outside '...' and "..." spans (a
+// backslash inside double quotes escapes the next character) is split into words; backslashes outside quotes are
+// dropped first, so an escaped `\*` counts as a bare glob (fail closed). An unterminated quote: the whole text is read.
+export function unquotedBareGlob(text) {
+  const src = String(text ?? '')
+  let out = ''
+  let q = null
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (q === "'") { if (c === "'") q = null; continue }
+    if (q === '"') { if (c === '\\') { i++; continue } if (c === '"') q = null; continue }
+    if (c === "'" || c === '"') { q = c; out += ' '; continue }
+    out += c
+  }
+  const plain = (q === null ? out : src).replace(/\\/g, '')
+  return plain.split(/[\s;&|<>()`=,{}]+/).some((w) => /^(?:\.\/)*[*?]+$/.test(w))
+}
+
 // A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
 function patternExact(key, t) {
   // every nameForms() form of the key against the same form of the pattern (the real path, its case folds)
@@ -482,10 +503,10 @@ export function classifyWord(word, ctx) {
       if (!abs) continue
       const W = normalizePathSegments(abs)
       // WORKERCFGDIR1104: a word of glob characters only (`*`, `./*`: relative by construction, an absolute or ~ word has
-      // a named segment), read from the caller's OWN project dir, skips a noBareGlob entry; after a cd elsewhere
-      // (another sub-agent into a worker's home) it does not
-      const bareRel = e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
-        && !!ctx.cwd && !!ctx.projectDir && sameKey(pathKey(resolve(ctx.cwd)), pathKey(resolve(String(ctx.projectDir))))
+      // a named segment) skips a noBareGlob entry only when its segment's every bare glob was quoted (ctx.bareGlobQuoted,
+      // set per segment; unset = not proven, no skip). Such a `*` is a literal the shell never expands, so it reaches no
+      // file from any cwd: the skip needs no tie to the caller's project dir.
+      const bareRel = ctx.bareGlobQuoted === true && e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
       for (const t of list) {
         if (bareRel && t.noBareGlob) continue
         for (const T of t.segs) {
@@ -939,6 +960,8 @@ export function installFileDeny(command, opts = {}) {
     const own = sub.body
     const view = { ...seg, own, text: [own, ...seg.bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
+    // WORKERCFGDIR1104: the segment's own text (a heredoc body is never globbed) decides the noBareGlob skip
+    ctx.bareGlobQuoted = !unquotedBareGlob(own)
     const rawHits = hitsIn(view.text, ctx)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
     const words = shellWords(own)
