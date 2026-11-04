@@ -39,7 +39,7 @@ import { channelStateDir } from '../channel-provider.js'
 import { buildHandoffContent } from '../channel-coordinator.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { createAgentMessage, hasAgentMessageContaining } from '../db.js'
-import { agentDir, listAgentNames } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentRunAsUser } from './agent-config.js'
 import { isAgentRunning, resolveAgentProvider } from './agent-process.js'
 import { transcriptDirsFor as intakeTranscriptDirsFor } from './channel-intake-monitor.js'
 import { EVIDENCE_FILE } from './write-evidence.js'
@@ -82,6 +82,7 @@ export interface ReplayDeps {
   listAgents: () => string[]
   isTelegramAgent: (name: string) => boolean
   isRunning: (name: string) => boolean
+  runsAsOtherUser: (name: string) => boolean
   stateDirFor: (name: string) => string
   transcriptDirsFor: (name: string) => string[]
   alreadyReplayed: (agent: string, e: EvidenceEntry) => boolean
@@ -189,11 +190,13 @@ export async function scanTranscripts(dirs: string[], entries: EvidenceEntry[]):
   }
 
   // null = the read failed; cached so each file is read at most once per call.
-  const contents = new Map<string, string | null>()
-  async function contentOf(path: string): Promise<string | null> {
+  // Kept as raw bytes: the needle is ASCII, and decoding a live transcript
+  // (tens of MB) to a string would block the event loop for hundreds of ms.
+  const contents = new Map<string, Buffer | null>()
+  async function contentOf(path: string): Promise<Buffer | null> {
     if (contents.has(path)) return contents.get(path) ?? null
-    let text: string | null
-    try { text = await readFile(path, 'utf-8') } catch { text = null }
+    let text: Buffer | null
+    try { text = await readFile(path) } catch { text = null }
     contents.set(path, text)
     return text
   }
@@ -251,6 +254,7 @@ function resolveDeps(over?: Partial<ReplayDeps>): ReplayDeps {
     // channelProvider in its agent-config.json runs on the install's provider.
     isTelegramAgent: name => resolveAgentProvider(name) === 'telegram',
     isRunning: name => isAgentRunning(name),
+    runsAsOtherUser: name => readAgentRunAsUser(name) != null,
     stateDirFor: name => channelStateDir('telegram', agentDir(name)),
     transcriptDirsFor: name => intakeTranscriptDirsFor(name, PROJECT_ROOT),
     alreadyReplayed: (agent, e) => hasAgentMessageContaining(
@@ -278,6 +282,10 @@ export async function replayMissedInbound(deps?: Partial<ReplayDeps>): Promise<R
     if (agent === MAIN_AGENT_ID) continue
     try {
       if (!d.isTelegramAgent(agent) || !d.isRunning(agent)) continue
+      // An agent under its own OS user can write its state dir; a symlinked
+      // evidence log or access.json would make us replay another agent's
+      // messages to it. Not covered until the reads check the file owner.
+      if (d.runsAsOtherUser(agent)) continue
       const stateDir = d.stateDirFor(agent)
       const fresh = readEvidence(stateDir).filter(e =>
         now - e.at <= REPLAY_LOOKBACK_MS
