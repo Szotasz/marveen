@@ -223,6 +223,11 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
     'cp /tmp/evil.json *(#qD)',
     'cp /tmp/evil.json [.]mcp.json(D)',
     'echo "(id)" > x.txt; cp /tmp/evil.json *(D)',
+    // a quoted or escaped literal part between the glob and the qualifier: zsh still applies (D), so these expand to
+    // the leading-dot .mcp.json (measured in zsh 5.9); the literal part names no protected path by itself
+    "cp /tmp/evil.json *'json'(D)",
+    'cp /tmp/evil.json *"json"(D)',
+    'cp /tmp/evil.json *\\json(D)',
     'setopt GLOB__DOTS; cp /tmp/evil.json *',
     'setopt g_l_o_b_d_o_t_s; cp /tmp/evil.json *',
     'shopt -s DotGlob; cp /tmp/evil.json *',

@@ -399,8 +399,10 @@ const GLOB_CHAR_RX = /[*?[{]/
 // command then reached the caller's own .mcp.json, so a read-only query was denied (measured on 11-04 replays). The
 // qualifier that lets a glob match leading-dot names is an upper-case D inside parentheses that END a word holding a
 // glob character (`*(D)`, `?mcp.json(.D)`, `**/*(#qD)`); the option names keep the shells' case and underscore rules.
+// Between the glob character and the qualifier a quoted or backslash-escaped literal part is allowed, as zsh allows it
+// (measured in zsh 5.9: `*'.mcp.json'(D)`, `*".mcp.json"(D)` and `*\.mcp.json(D)` all expand to `.mcp.json`).
 const DOTGLOB_OPTION_RX = /dotglob|globdots|globignore|fignore/i
-const ZSH_DOT_QUALIFIER_RX = /[*?\]][^\s'"()]*\((?:#q)?[^)\s]*D[^)\s]*\)/
+const ZSH_DOT_QUALIFIER_RX = /[*?\]][^\s()]*\((?:#q)?[^)\s]*D[^)\s]*\)/
 const namesDotglob = (cmd) => DOTGLOB_OPTION_RX.test(cmd.replace(/_/g, '')) || ZSH_DOT_QUALIFIER_RX.test(cmd)
 
 // Does a shell segment hold an UNQUOTED bare-glob word (`*`, `?`, `./*`)? The text outside '...' and "..." spans (a
