@@ -23,8 +23,8 @@
 //
 // The token never appears in a response, an error or a log line: the only
 // place it goes is the sink below, and from there the vault.
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
@@ -133,7 +133,9 @@ function noPlanExistsYet(): boolean {
     try {
       raw = readFileSync(file, 'utf-8')
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      // A missing file in an existing store dir is a fresh install: nothing there yet. A missing DIR is not that
+      // state (the path drifted, or the store is gone), so it counts as holding a plan: fail closed (Samu 69720).
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT' && existsSync(dirname(file))) continue
       return false
     }
     if (!raw.trim()) continue

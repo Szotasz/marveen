@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const T = vi.hoisted(() => ({ root: '' }))
@@ -527,6 +527,28 @@ describe("'claude-plans-login': only while the install has no plan at all yet (S
     ownerRefusal(await start(TOKEN), false)
     expect((await start(SESSION)).body.code).toBe('invalid-plan')
   })
+  // Review (Samu 69720): a missing store DIR is not the fresh-install state (that is a missing file in an existing
+  // store), it is a drifted path or a vanished store; and an unreadable vault file holds something. Both count as
+  // holding a plan: the first-run path stays closed.
+  it('fail closed: the store dir itself missing counts as holding a plan (403 setup_required)', async () => {
+    const store = join(T.root, 'store')
+    const aside = join(T.root, 'store-aside-og4')
+    renameSync(store, aside)
+    try {
+      ownerRefusal(await start(TOKEN), true)
+    } finally { renameSync(aside, store) }
+  })
+  it('fail closed: an unreadable vault file counts as holding a plan', async () => {
+    writeFileSync(VAULT, JSON.stringify({ entries: [] }), { mode: 0o600 })
+    const restore = unreadable(VAULT)
+    try {
+      ownerRefusal(await start(TOKEN), true)
+    } finally { restore() }
+  })
+  it('control: an existing store dir without either file is the fresh install, the bare token passes', async () => {
+    expect((await start(TOKEN)).body.code).toBe('invalid-plan')
+  })
+
   it('fail closed: a malformed registry, a malformed vault, or an unreadable registry counts as holding the credential', async () => {
     writeFileSync(PLANS, '[ not json')
     ownerRefusal(await start(TOKEN), true)
