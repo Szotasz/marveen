@@ -228,10 +228,13 @@ const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
 // (ENVRELAXMCPCFG1104) and every non-reader command with one was denied: `sqlite3 db "SELECT count(*) ..."`
-// (worker-gates.test.ts). Fail closed: a command that names dotglob / globdots / GLOBIGNORE or a zsh `D` glob
-// qualifier keeps the old reading. Stated limit: GLOB_DOTS switched on in the user's shell rc is not visible here.
+// (worker-gates.test.ts). Fail closed: a command that names any shell setting that lets a glob match leading-dot
+// names, or a zsh glob qualifier on any pattern, keeps the old, strict reading. Option names are read the way the
+// shells read them (underscores and case ignored). A false hit only brings back the strict reading.
+// Stated limit: such a setting switched on in the user's shell rc is not visible here.
 // Only the Bash path sets shellGlob; a file tool's path or an MCP argument is never read this way.
-const DOTGLOB_RX = /dotglob|glob_?dots|GLOBIGNORE|\*\([^)\s]*D[^)\s]*\)/i
+const DOTGLOB_RX = /dotglob|globdots|globignore|fignore|\([^)\s]*D[^)\s]*\)/i
+const namesDotglob = (cmd) => DOTGLOB_RX.test(cmd.replace(/_/g, ''))
 
 // A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
 function patternExact(key, t) {
@@ -654,7 +657,7 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: DOTGLOB_RX.test(cmd) }
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd) }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,

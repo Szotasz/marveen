@@ -209,6 +209,13 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
     'setopt globdots; sqlite3 x.db "SELECT count(*) FROM t"',
     'GLOBIGNORE=x; cp /tmp/evil.json *',
     'cp /tmp/evil.json *(D)',
+    'cp /tmp/evil.json ?mcp.json(D)',
+    'cp /tmp/evil.json *mcp.json(D)',
+    'setopt GLOB__DOTS; cp /tmp/evil.json *',
+    'setopt g_l_o_b_d_o_t_s; cp /tmp/evil.json *',
+    'shopt -s DotGlob; cp /tmp/evil.json *',
+    'FIGNORE=x; cp /tmp/evil.json *',
+    'ksh -c "FIGNORE=; cp /tmp/evil.json *"',
   ])('still denied (a dot segment, or a dotglob mode named in the command): %s', (command) => {
     expect(bash(command, own()).deny).toBe(true)
   })
