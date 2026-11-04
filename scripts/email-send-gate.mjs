@@ -867,9 +867,10 @@ export function wrapperDepthHit(cmd) {
 export function buildScriptSendMsg(botName, ownerName) {
   return (
     'TILTVA (governance hard-gate): a futtatott szkript levelet kuldhet, vagy a kapu nem tudja elolvasni. ' +
-    'Kuldesnek szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy ' +
-    'cd / env -C celkonyvtara nem dontheto el. Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, ' +
-    'es literalis uttal (vagy literalis cd utan) futtasd. ' + buildGateMsg(botName, ownerName)
+    'Cimzettet vivo futasnal (--to/--cc/--bcc vagy e-mail-cim a parancsban) kuldesnek szamit az is, ha a szkript a ' +
+    'futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy cd / env -C celkonyvtara nem dontheto el. ' +
+    'Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, es literalis uttal (vagy literalis cd utan) ' +
+    'futtasd. ' + buildGateMsg(botName, ownerName)
   )
 }
 
@@ -1064,13 +1065,17 @@ function cdBases(cwd, cmdWords) {
   let undecidable = false
   let i = 0
   while (i < cmdWords.length) {
-    if (cmdWords[i] !== 'cd') { i++; continue }
+    const word = cmdWords[i]
+    if (word !== 'cd' && word !== 'pushd') { i++; continue }
     i++
-    while (i < cmdWords.length && CD_OPTIONS.has(cmdWords[i])) i++
+    // Samu 69538: pushd DIR changes the directory like cd (its -n is stepped over: a DIR read as a target only adds a
+    // candidate); pushd +N / -N rotates the stack, which cannot be known here
+    while (i < cmdWords.length && (CD_OPTIONS.has(cmdWords[i]) || (word === 'pushd' && cmdWords[i] === '-n'))) i++
     if (i < cmdWords.length && cmdWords[i] === '--') i++ // `--` ends the options: the next word is DIR
     const d = i < cmdWords.length ? cmdWords[i] : null
     const tilde = d !== null && (d === '~' || d.startsWith('~/'))
-    if (!d || d === '-' || (d.startsWith('~') && !tilde) || UNDECIDABLE_PATH.test(d)) { undecidable = true; cur = null; continue }
+    if (!d || d === '-' || (d.startsWith('~') && !tilde) || UNDECIDABLE_PATH.test(d)
+      || (word === 'pushd' && /^[+-]\d+$/.test(d))) { undecidable = true; cur = null; continue }
     let next
     if (tilde) next = join(homedir(), d.slice(1))
     else if (isAbsolute(d)) next = d
@@ -1281,11 +1286,21 @@ function pythonModule(rest) {
   }
   return null
 }
-function pythonModuleSends(module, cwd, readScript, cmdWords = []) {
+// JSCDSEND1104 (Samu 69538, Bence 69536): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc
+// (any value) or an e-mail address anywhere in it. The fail-closed branches (an undecidable cd, -m or script path, a
+// missing script) are a send only then. Without an address, a script the gate cannot read is no send (a developer's
+// `cd $WT && python3 -m pytest`, a script written and run in one command); a READABLE sender still is, as it takes the
+// address from inside. The python twin has the same rule.
+const EMAIL_IN_WORD = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
+function runIsAddressed(rest, cmdWords) {
+  return [...rest, ...cmdWords].some((w) => ADDRESS_FLAG.test(w) || EMAIL_IN_WORD.test(w))
+}
+
+function pythonModuleSends(module, cwd, readScript, cmdWords = [], addressed = false) {
   if (!/^[\w.]+$/.test(module)) return false
   const rel = module.split('.').join('/')
   const { bases, undecidable } = cdBases(cwd, cmdWords)
-  if (undecidable) return true // JSCDSEND1104: a cd that cannot be resolved: fail-closed, as the python twin
+  if (undecidable && addressed) return true // JSCDSEND1104: a cd that cannot be resolved: fail-closed when addressed
   const paths = bases.flatMap((b) => [resolve(b, rel + '.py'), resolve(b, rel, '__main__.py')])
   return judgeCandidates(paths, 'py', readScript).sends
 }
@@ -1303,10 +1318,11 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   }
   let script
   let kind
+  const addressed = runIsAddressed(rest, cmdWords)
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
-    if (module) return pythonModuleSends(module, cwd, readScript, cmdWords)
+    if (module) return pythonModuleSends(module, cwd, readScript, cmdWords, addressed)
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {
@@ -1318,7 +1334,7 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
     // a directly executed file: its #! line picks the interpreter, else its extension; every candidate on its own
     const extKind = /\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null
-    if (relativeUnderUndecidableCd(toks[0], cwd, cmdWords)) return true
+    if (addressed && relativeUnderUndecidableCd(toks[0], cwd, cmdWords)) return true
     const addr = addressFlagGiven(rest)
     let readable = false
     for (const path of resolveScriptPaths(toks[0], cwd, cmdWords)) {
@@ -1332,17 +1348,29 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
     }
     if (readable) return false
     if (!extKind) return false // no candidate with a kind is readable: a #! line cannot be known, the extension gives none
-    return true // the kind is known and no candidate is readable: fail-closed (JSCDSEND1104, as the python twin)
+    return addressed // the kind is known and no candidate is readable: fail-closed when addressed (JSCDSEND1104)
   } else {
     return false
   }
   if (script === null) return false
-  if (UNDECIDABLE_PATH.test(script)) return true // what runs is undecidable here: fail-closed
-  if (relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
-  const { readable, sends } = judgeCandidates(resolveScriptPaths(script, cwd, cmdWords), kind, readScript)
+  if (UNDECIDABLE_PATH.test(script)) return addressed // what runs is undecidable here: fail-closed when addressed
+  if (addressed && relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
+  let paths = resolveScriptPaths(script, cwd, cmdWords)
+  if (prog === 'node' && !/\.[^/]*$/.test(basename(script))) {
+    // Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+    if (addressed && paths.some((p) => readScript(p + '.node', SHEBANG_READ_LIMIT) !== null)) return true
+    paths = paths.flatMap((p) => [p, p + '.js', p + '.json'])
+  }
+  const { readable, sends } = judgeCandidates(paths, kind, readScript)
   if (readable) return sends
-  return SCRIPT_FILE.test(script) || script.includes('/') // JSCDSEND1104: a missing script is a send; `bun test` is not
+  // JSCDSEND1104: a missing script is a send when addressed; `bun test` is not
+  return addressed && (SCRIPT_FILE.test(script) || script.includes('/'))
 }
+
+// Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
+// backtick cd reach cdBases as a bare `cd` (and the next segment's first word looked like its DIR). Read on the raw
+// command: such a cd or pushd is an undecidable cd.
+const SUBST_CD = /(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)/
 
 export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
   let segments
@@ -1354,7 +1382,7 @@ export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScript
   // JSCDSEND1104: every word of the command, so a `cd DIR` before the run is seen; ENVOPTHEAD1104 (Bence 69475):
   // `env -C DIR` runs its command in DIR, handed on as a `cd DIR` word (an undecidable DIR then makes it a send).
   const flat = [...cdWords, ...segments.flat()]
-  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d])]
+  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...(SUBST_CD.test(cmd) ? ['cd', '$SUBST'] : [])]
   return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
 }
 

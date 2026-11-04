@@ -116,12 +116,16 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
     const other = run('python3 other.py')
     expect(other.status).toBe(0)
     expect(other.stdout).toBe('')
-    // JSCDSEND1104 (Samu 69516): a missing script is denied, and the message says the script must exist at run time
-    const missing = run('python3 missing.py')
+    // JSCDSEND1104 (Samu 69516/69538): an ADDRESSED run of a missing script is denied, and the message says the
+    // script must exist at run time; without an address it passes
+    const missing = run('python3 missing.py --to a@example.invalid')
     expect(missing.status).toBe(0)
     const reason = JSON.parse(missing.stdout).hookSpecificOutput.permissionDecisionReason as string
     expect(reason).toContain('NEM LETEZIK')
     expect(reason).toContain('literalis uttal')
+    const unaddressed = run('python3 missing.py')
+    expect(unaddressed.status).toBe(0)
+    expect(unaddressed.stdout).toBe('')
   })
 })
 
@@ -417,7 +421,7 @@ describe('env value options in front of the sender (ENVOPTHEAD1104)', () => {
 })
 
 describe('a cd before the run, and a missing script (JSCDSEND1104, Bence 69475)', () => {
-  it('the script is resolved under every literal cd target too; an undecidable cd or a missing script is a send', () => {
+  it('the script is resolved under every literal cd target too; an addressed undecidable cd or missing script is a send', () => {
     const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
     const cwd = workdir({ 'send.py': 'print(1)\n' })
     mkdirSync(join(cwd, 'evil'))
@@ -426,13 +430,17 @@ describe('a cd before the run, and a missing script (JSCDSEND1104, Bence 69475)'
     writeFileSync(join(cwd, 'evil', 'pkg', '__init__.py'), '')
     writeFileSync(join(cwd, 'evil', 'pkg', 'main.py'), SMTP)
     for (const cmd of [`cd ${cwd}/evil && python3 send.py`, 'cd evil && python3 send.py', 'cd evil; python3 send.py',
-      'cd -- evil && python3 send.py', 'cd -P evil && python3 send.py', 'cd $DEST && python3 send.py',
-      'cd evil && python3 -m pkg.main', 'cd $DEST && python3 -m pkg.main', 'cd evil && ./send.py',
-      'python3 missing.py', 'python3 $S', 'node missing.mjs']) {
+      'cd -- evil && python3 send.py', 'cd -P evil && python3 send.py', 'cd $DEST && python3 send.py a@example.invalid',
+      'cd evil && python3 -m pkg.main', 'cd $DEST && python3 -m pkg.main a@example.invalid', 'cd evil && ./send.py',
+      'python3 missing.py a@example.invalid', 'python3 $S a@example.invalid', 'node missing.mjs a@example.invalid',
+      'pushd evil && python3 send.py', 'cd $(pwd)/x && python3 send.py a@example.invalid']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }
-    // controls: the cwd's own harmless script, a cd into a dir without a sender, a non-script run
-    for (const cmd of ['python3 send.py', `cd ${cwd} && python3 send.py`, 'cd evil && ls', 'bun test', 'node --version']) {
+    // controls: the cwd's own harmless script, a cd into a dir without a sender, a non-script run; and (Samu 69538)
+    // the fail-closed forms without an address
+    for (const cmd of ['python3 send.py', `cd ${cwd} && python3 send.py`, 'cd evil && ls', 'bun test', 'node --version',
+      'cd $DEST && python3 send.py', 'cd $DEST && python3 -m pkg.main', 'python3 missing.py', 'python3 $S',
+      'node missing.mjs', 'cd $(pwd)/x && python3 send.py']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
     }
   })
@@ -447,7 +455,7 @@ describe('env -C and the launchers in front of the sender (ENVOPTHEAD1104, Bence
     writeFileSync(join(cwd, 'sender.py'), SMTP)
     for (const cmd of [`env -C ${cwd}/evil python3 send.py`, `env --chdir=${cwd}/evil python3 send.py`,
       `env --chdir ${cwd}/evil python3 send.py`, `env -C${cwd}/evil python3 send.py`, 'env -C evil python3 send.py',
-      'env -C $X python3 send.py', `env -a x -C ${cwd}/evil python3 send.py`, `env --c=${cwd}/evil python3 send.py`,
+      'env -C $X python3 send.py a@example.invalid', `env -a x -C ${cwd}/evil python3 send.py`, `env --c=${cwd}/evil python3 send.py`,
       `env --chd ${cwd}/evil python3 send.py`, 'stdbuf -o0 python3 sender.py', 'ionice -c 3 python3 sender.py',
       'chrt -r 1 python3 sender.py', 'caffeinate -i python3 sender.py']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)

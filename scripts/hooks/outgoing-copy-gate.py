@@ -1374,17 +1374,21 @@ def _cd_bases(cwd, cmd_words):
     undecidable = False
     i = 0
     while i < len(cmd_words):
-        if cmd_words[i] != "cd":
+        word = cmd_words[i]
+        if word not in ("cd", "pushd"):
             i += 1
             continue
         i += 1
-        while i < len(cmd_words) and cmd_words[i] in _CD_OPTIONS:
+        # Samu 69538: pushd DIR changes the directory like cd (its -n is stepped over: a DIR read as a target only adds a
+        # candidate); pushd +N / -N rotates the stack, which cannot be known here
+        while i < len(cmd_words) and (cmd_words[i] in _CD_OPTIONS or (word == "pushd" and cmd_words[i] == "-n")):
             i += 1
         if i < len(cmd_words) and cmd_words[i] == "--":
             i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
         d = cmd_words[i] if i < len(cmd_words) else None
         tilde = d is not None and (d == "~" or d.startswith("~/"))
-        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)):
+        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)
+                or (word == "pushd" and re.match(r"^[+-]\d+$", d))):
             undecidable = True
             cur = None
             continue
@@ -1633,15 +1637,27 @@ def _python_module(rest):
     return None
 
 
-def _python_module_sends(module, cwd, cmd_words, read_script) -> bool:
+# JSCDSEND1104 (Samu 69538, Bence 69536): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc
+# (any value) or an e-mail address anywhere in it. The fail-closed branches (an undecidable cd, -m or script path, a
+# missing script) are a send only then. Without an address, a script the gate cannot read is no send (a developer's
+# `cd $WT && python3 -m pytest`, a script written and run in one command); a READABLE sender still is, as it takes the
+# address from inside. The JS twin (email-send-gate.mjs) has the same rule; script-run-cases.json binds the two.
+_EMAIL_IN_WORD = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+
+
+def _run_is_addressed(rest, cmd_words) -> bool:
+    return any(_ADDRESS_FLAG.match(w) or _EMAIL_IN_WORD.search(w) for w in list(rest) + list(cmd_words))
+
+
+def _python_module_sends(module, cwd, cmd_words, read_script, addressed=False) -> bool:
     """MAILGATESCRIPT1027 R1: `python -m MOD` runs MOD.py or MOD/__main__.py under cwd or a cd target. An
     installed module cannot be read here, so with no readable candidate it is not a send."""
     if not re.match(r"^[\w.]+$", module):
         return False
     rel = module.replace(".", "/")
     bases, undecidable = _cd_bases(cwd, cmd_words)
-    if undecidable:
-        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed
+    if undecidable and addressed:
+        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed when addressed (JSCDSEND1104)
     paths = []
     for base in bases:
         paths += [os.path.normpath(os.path.join(base, rel + ".py")),
@@ -1661,12 +1677,13 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
             if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
                 return True
         return False
+    addressed = _run_is_addressed(rest, cmd_words)
     if _PYTHON.match(prog):
         if _address_flag_given(rest):  # also under -m / -c, where no file is named
             return True
         module = _python_module(rest)
         if module:
-            return _python_module_sends(module, cwd, cmd_words, read_script)
+            return _python_module_sends(module, cwd, cmd_words, read_script, addressed)
         script = _python_script_operand(rest)[0]
         kind = "py"
     elif _NODEISH.match(prog):
@@ -1682,7 +1699,7 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         # MAILGATESCRIPT1027 R1: every candidate is judged on its own, with its own kind
         paths = _resolve_script_paths(toks[0], cwd, cmd_words)
         ext_kind = "py" if re.search(r"\.py$", toks[0], re.I) else "node" if _SCRIPT_FILE.search(toks[0]) else None
-        if _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
+        if addressed and _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
             return True
         addr = _address_flag_given(rest)
         readable = False
@@ -1703,19 +1720,31 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if not ext_kind:
             # no candidate with a kind is readable: a #! line cannot be known, the extension gives none
             return False
-        return True  # the kind is known and no candidate is readable: fail-closed
+        return addressed  # the kind is known and no candidate is readable: fail-closed when addressed
     else:
         return False
     if script is None:
         return False
     if _UNDECIDABLE_PATH.search(script):
-        return True  # what runs is undecidable here: fail-closed
-    if _relative_under_undecidable_cd(script, cwd, cmd_words):
+        return addressed  # what runs is undecidable here: fail-closed when addressed
+    if addressed and _relative_under_undecidable_cd(script, cwd, cmd_words):
         return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
-    readable, verdict = _judge_candidates(_resolve_script_paths(script, cwd, cmd_words), kind, read_script)
+    paths = _resolve_script_paths(script, cwd, cmd_words)
+    if prog == "node" and not re.search(r"\.[^/]*$", _basename(script)):
+        # Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+        if addressed and any(read_script(p + ".node", _SHEBANG_READ_LIMIT) is not None for p in paths):
+            return True
+        paths = [c for p in paths for c in (p, p + ".js", p + ".json")]
+    readable, verdict = _judge_candidates(paths, kind, read_script)
     if readable:
         return verdict
-    return bool(_SCRIPT_FILE.search(script) or "/" in script)  # a missing script is a send; `bun test` is not
+    # a missing script is a send when addressed; `bun test` is not
+    return addressed and bool(_SCRIPT_FILE.search(script) or "/" in script)
+
+
+# Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
+# backtick cd reach _cd_bases as a bare `cd`. Read on the raw command: such a cd or pushd is an undecidable cd.
+_SUBST_CD = re.compile(r"""(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)""")
 
 
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
@@ -1726,6 +1755,8 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
     cmd_words = _with_env_chdir(list(_cd_words) + [w for toks in segments for w in toks])
+    if _SUBST_CD.search(cmd):
+        cmd_words += ["cd", "$SUBST"]
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 
