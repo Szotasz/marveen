@@ -5493,8 +5493,13 @@ async function toggleCuratedModel(id, name, checked) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, name, checked }),
     })
-    if (!res.ok) throw new Error('save failed')
-    const data = await res.json()
+    // OWNERGATE3-1104: the server may refuse (403 owner_session_required); say why before the rollback below.
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+      throw new Error('save failed')
+    }
+    const data = reply.body
     openrouterCurated = new Set((Array.isArray(data.models) ? data.models : []).map(m => m.id))
     // Repopulate the dropdown "kézi" optgroups without disturbing selections.
     loadAvailableModels()
@@ -5801,9 +5806,10 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
     })
-    if (!res.ok) throw new Error()
-    const body = await res.json()
-    if (currentAgent) currentAgent.autoRestart = body.autoRestart
+    // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
+    const reply = await readActionReply(res)
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
+    if (currentAgent) currentAgent.autoRestart = reply.body.autoRestart
     showToast(t('agents.toast.auto_restart_saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -5961,7 +5967,9 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ responseMode: modeEl.value, voiceModel: modelEl.value }),
     })
-    if (!r.ok) throw new Error()
+    // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
+    const reply = await readActionReply(r)
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) })); return }
     showToast('Hangbeállítás mentve')
   } catch { showToast('Hiba a mentés során') }
 })
@@ -6096,8 +6104,13 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     })
-    const data = await res.json()
-    if (data.ok && data.authUrl) {
+    // OWNERGATE3-1104: a refusal (403 owner_session_required) is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body
+    if (!reply.ok) {
+      errorDiv.textContent = refusalReason(res, data)
+      errorDiv.hidden = false
+    } else if (data.ok && data.authUrl) {
       const urlEl = document.getElementById('authFlowUrl')
       urlEl.href = safeHref(data.authUrl) || '#'
       urlEl.textContent = data.authUrl
@@ -9421,8 +9434,10 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ env: envData }),
     })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // OWNERGATE3-1104: a refusal (403 owner_session_required) is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body
+    if (!reply.ok) throw new Error(refusalReason(res, data))
     closeModal(catalogInstallOverlay)
     showToast(data.message || t('connectors.toast.installed'))
     // Reload both views
@@ -9447,8 +9462,10 @@ async function catalogUninstall(item) {
   if (!confirmed) return
   try {
     const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // OWNERGATE3-1104: an owner-session refusal is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body || {}
+    if (!reply.ok) throw new Error(refusalReason(res, reply.body))
     showToast(data.message || t('connectors.toast.removed'))
     loadCatalog()
     loadConnectors()
@@ -15077,7 +15094,8 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentName, ownerName }) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { idBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        // OWNERGATE3-1104: an owner-session refusal is shown in the page language (ownerSessionText).
+        if (!res.ok) { idBtn.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
         // The name is live in the .env now -- repaint the chrome from
         // /api/marveen so the sidebar/title reflect it immediately, and
         // surface the automatic channels restart (same pattern as the
@@ -19969,7 +19987,8 @@ async function handleAgentLogin(agentName, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phase }),
     })
-    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status) }
+    // OWNERGATE3-1104: an owner-session refusal is shown in the page language (refusalReason).
+    if (!res.ok) { const reply = await readActionReply(res); throw new Error(refusalReason(res, reply.body)) }
     if (phase === 'start') {
       btn.dataset.phase = 'confirm'
       btn.textContent = t('agents.auth.btn_confirm')
@@ -19997,6 +20016,8 @@ let terminalFit = null
 // server enforces the same gate independently (fail-closed). Owner flips it via
 // the checkbox in the modal header (POST /api/terminal-input).
 let terminalInputEnabled = false
+// When the last refused-keystroke toast was shown (OWNERGATE3-1104), to show at most one every 5 s.
+let terminalKeysRefusalToastAt = 0
 
 function syncTerminalInputToggleUI() {
   const cb = document.getElementById('terminalInputToggle')
@@ -20110,9 +20131,18 @@ function openTerminalModal(agentName) {
     }
     const special = ESC_TO_SPECIAL[data]
     const body = special ? { special } : { keys: data }
+    // OWNERGATE3-1104: a refused keystroke (403 owner_session_required, or the toggle OFF on the server) was dropped
+    // silently; say why, at most once every 5 s, so typing does not stack a toast per key.
     fetch(`/api/agents/${encodeURIComponent(agentName)}/keys`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    }).then(async (r) => {
+      if (r.ok) return
+      const reply = await readActionReply(r)
+      const now = Date.now()
+      if (now - terminalKeysRefusalToastAt < 5000) return
+      terminalKeysRefusalToastAt = now
+      showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }))
     }).catch(() => {})
   })
 
@@ -20138,13 +20168,22 @@ document.getElementById('terminalClose')?.addEventListener('click', () => {
 // state, POST it, then reconcile with the server's authoritative response.
 document.getElementById('terminalInputToggle')?.addEventListener('change', (e) => {
   const desired = e.target.checked === true
+  // OWNERGATE3-1104: the server may refuse (403 owner_session_required). Show why, and re-read the real state from
+  // GET: a refused OFF leaves the switch ON on the server, so the UI must not show it as off.
   fetch('/api/terminal-input', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: desired }),
   })
-    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-    .then(d => {
-      terminalInputEnabled = d.enabled === true
+    .then(async r => {
+      const reply = await readActionReply(r)
+      if (!reply.ok) {
+        showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }))
+        const cur = await fetch('/api/terminal-input').then(g => (g.ok ? g.json() : null)).catch(() => null)
+        terminalInputEnabled = cur ? cur.enabled === true : false
+        syncTerminalInputToggleUI()
+        return
+      }
+      terminalInputEnabled = reply.body.enabled === true
       syncTerminalInputToggleUI()
       showToast(terminalInputEnabled ? 'Terminal input enabled (audit-logged)' : 'Terminal input disabled')
     })

@@ -143,7 +143,7 @@ import { activityState, type ActivityState } from '../pane-liveness.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS, agentPutOwnerFields } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, mergeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
+import { readContextGuardConfig, mergeContextGuardConfig, previewContextGuardMerge, seedContextGuardForNewAgent } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
@@ -151,7 +151,7 @@ import type { ContextGuardConfig } from '../../context-guard.js'
 // the interface is added to its default too, so the accepted-key set cannot
 // drift away from what normalize*Config() actually reads.
 import { DEFAULT_AUTO_RESTART, LEGACY_AUTO_RESTART_FIELDS } from '../../auto-restart.js'
-import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
+import { DEFAULT_CONTEXT_GUARD, contextGuardTokenRefusals } from '../../context-guard.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
@@ -914,6 +914,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
   if (path === '/api/openrouter/manual' && method === 'POST') {
+    // OWNERGATE3-1104: rewrites the curated manual OpenRouter model list, which every agent's model dropdown offers
+    // (and so which paid models the fleet can be switched to); owner-only, before the body is read.
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing the curated OpenRouter model list needs the dashboard login (an owner session).')
+      return true
+    }
     if (getSecret('openrouter-fleet-key') === null) {
       json(res, { error: 'OpenRouter not configured' }, 403)
       return true
@@ -1935,6 +1941,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const autoRestartMatch = path.match(/^\/api\/agents\/([^/]+)\/auto-restart$/)
   if (autoRestartMatch && method === 'PUT') {
     const name = decodeURIComponent(autoRestartMatch[1])
+    // OWNERGATE3-1104: writes store/auto-restart.json, which decides when the runner restarts this agent (the main
+    // agent included), and in 'fresh' mode drops its conversation; owner-only, before the body is read. No machine
+    // caller: the runner reads the store in-process, and no script or skill PUTs here.
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing an agent\'s auto-restart schedule needs the dashboard login (an owner session).')
+      return true
+    }
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     let data: unknown
@@ -1973,6 +1986,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const cgFields = checkConfigPutFields(data, Object.keys(DEFAULT_CONTEXT_GUARD))
     if (!cgFields.ok) {
       json(res, { error: cgFields.message, rejected: cgFields.rejected, known: Object.keys(DEFAULT_CONTEXT_GUARD) }, 400)
+      return true
+    }
+    // OWNERGATE3-1104 (review, Samu 69602): a direction gate. The shared token may only STRENGTHEN a guard (the main
+    // agent arms other agents' guards with it, skill agent-cold-restart-guard-arming); any weakening (a switch off, a
+    // threshold or a wait raised, see contextGuardWeakenings) needs the owner, on any agent, before anything is written.
+    // Review (Dani 69657): strengthening is bounded too, see contextGuardTokenRefusals: with the token a switch may
+    // only turn on and any other field may only go back to its shipped default (and never weaken).
+    const { current: cgBefore, merged: cgAfter } = previewContextGuardMerge(name, data)
+    const tokenRefused = contextGuardTokenRefusals(cgBefore, cgAfter)
+    if (tokenRefused.length > 0 && !mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, `Changing ${tokenRefused.join(', ')} of an agent's context guard this way needs the dashboard login (an owner session); the access token can only turn the guard's switches on and restore the shipped defaults.`, { fields: tokenRefused })
       return true
     }
     setStoreWriteActor('dashboard')
@@ -2459,6 +2483,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const authInitMatch = path.match(/^\/api\/agents\/([^/]+)\/auth\/init$/)
   if (authInitMatch && method === 'POST') {
     const name = decodeURIComponent(authInitMatch[1])
+    // OWNERGATE3-1104: types /login into the agent's tmux pane and returns the login URL scraped from it, i.e. lets
+    // the caller bind the agent to a Claude account of their choosing; owner-only, before any lookup or tmux call.
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Starting an agent\'s Claude login needs the dashboard login (an owner session).')
+      return true
+    }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
     const session = agentSessionName(name)
@@ -3021,6 +3051,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string, transcribeInbound?: boolean }
   if (voiceConfigMatch && method === 'PUT') {
     const name = decodeURIComponent(voiceConfigMatch[1])
+    // OWNERGATE3-1104: writes the agent's voice config (reply as text or voice, which voice model, whether inbound
+    // voice is transcribed), i.e. how the agent talks to the owner's channel; owner-only, before the body is read.
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Changing an agent\'s voice settings needs the dashboard login (an owner session).')
+      return true
+    }
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     let data: { responseMode?: string; voiceModel?: string; transcribeInbound?: unknown }

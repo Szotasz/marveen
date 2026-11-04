@@ -200,7 +200,7 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
   })
   it('credential issuance takes it too (PR-2); mayIssueCredentials is left only inside mayActAsOwner', () => {
     // auth.ts: users list/create/delete, key mint, and key revoke on every lane (DEVKEYREVOKETOKEN1104)
-    for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 1], ['claude-plans-login.ts', 1]] as const) {
+    for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 2], ['claude-plans-login.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, f === 'auth.ts' ? 1 : 0])
     }
   })
@@ -212,7 +212,9 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
   })
   it('OWNERGATE2-1104: the agent, channel, plan, provider and connector gates take the strict predicate; only agent create, channel setup and a channel\'s first pairing approve keep the first-run branch', () => {
     // agents.ts mayActAsOwner: POST /api/agents, channel setup, and approve while the channel has no approved sender.
-    for (const [f, loose, strict] of [['agents.ts', 3, 14], ['connectors.ts', 0, 8], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1]] as const) {
+    // OWNERGATE3-1104: agents.ts +4 strict (auto-restart, voice-config, OpenRouter manual, auth/init); agent-terminal.ts 3
+    // (terminal-input, keys, login); skills.ts 1 strict (assign) beside its older mayActAsOwner (the skill decision).
+    for (const [f, loose, strict] of [['agents.ts', 3, 19], ['connectors.ts', 0, 9], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1], ['agent-terminal.ts', 0, 3], ['skills.ts', 1, 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerStrict'), count(f, 'mayIssueCredentials')]).toEqual([f, loose, strict, 0])
     }
     expect(src('agents.ts')).toContain('firstPairing ? mayActAsOwner(ctx.auth, req) : mayActAsOwnerStrict(ctx.auth, req)')

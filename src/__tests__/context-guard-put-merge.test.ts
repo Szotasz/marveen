@@ -46,7 +46,8 @@ async function putGuard(name: string, body: unknown): Promise<{ status: number; 
     ;(req as unknown as EventEmitter).emit('end')
   })
   const handled = await tryHandleAgents(
-    { req, res, path: url.pathname, method: 'PUT', url } as unknown as RouteContext,
+    // The owner's browser login: weakening a guard needs the owner (OWNERGATE3-1104 review); this file is about the merge.
+    { req, res, path: url.pathname, method: 'PUT', url, auth: { kind: 'session' } } as unknown as RouteContext,
     join(SANDBOX, 'web'),
   )
   expect(handled).toBe(true)
