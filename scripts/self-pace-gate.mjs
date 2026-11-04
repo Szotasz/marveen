@@ -575,9 +575,24 @@ export function protectedMention(text, ctx) {
 // as a mention.
 const DIR_WRITERS = new Set(['cp', 'mv', 'ln', 'install', 'rsync', 'tar', 'bsdtar', 'gtar', 'unzip', 'cpio', 'patch', 'ditto', '7z', '7za'])
 
+// A curl header argument, `-H "Name: value"`, is a header, never a path, so what its
+// value expands to cannot name a protected file. The fleet's documented dashboard call,
+// `-H "Authorization: Bearer $(cat store/.dashboard-token)"`, was denied from the project
+// root: the substitution stood for any text, and there `*` could be local-hooks. The
+// argument POSITION decides, not the file's content (reading the content at gate time
+// races a command that rewrites the file before its own substitution runs, review on
+// #2495). Only a double-quoted value that opens with a fixed header name, and whose
+// expansions are plain variables or a `$(cat PATH)` / `$(< PATH)` read: a substitution
+// that runs anything else keeps the whole argument unresolved.
+const CURL_HEADER_ARG_RX = /(^|\s)(?:-H|--header)(?:\s+|=)"[A-Za-z][\w-]*:(?:[^"`$\\]|\$\(\s*(?:cat\s+|<\s*)[\w./@+-]+\s*\)|\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*)*"(?=\s|$)/g
+function inertCurlHeaders(src) {
+  const first = src.trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? ''
+  return first.replace(/^.*\//, '') === 'curl' ? src.replace(CURL_HEADER_ARG_RX, '$1-H HEADER') : src
+}
+
 // A glob, brace or unresolved word that can expand onto a protected name.
 function protectedPatternWord(text, ctx) {
-  const src = String(text).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, '')
+  const src = inertCurlHeaders(String(text).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, ''))
   // An unresolved expansion is read as any text. One that STARTS a word may be an
   // absolute path, so that word has no known parent directory.
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
