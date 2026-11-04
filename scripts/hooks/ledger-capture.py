@@ -35,6 +35,119 @@ CHANNEL_RX = re.compile(
     re.DOTALL,
 )
 
+# --- the sender gate (LEDGERROLELABEL1104 (a), Samu 67664) --------------------
+#
+# The replay hands every inbound row back to a fresh session AS THE OWNER'S
+# WORDS (ledger-replay.py: who = owner). So a row may only be written for a
+# sender the channel itself trusts as its owner: the agent's own DM allowlist
+# (the top-level allowFrom of the plugin's access.json, which pairing fills).
+# Measured 2026-11-04: the Discord bootstrap (discord-group-bootstrap.ts) opts a
+# server channel in with requireMention:false and allowFrom:[] -- every member's
+# every message is delivered -- and a Slack channel opted in without --allow is
+# the same. Without this gate any member's text came back as the owner's.
+#
+# EVERY opening tag in the prompt counts, the ones inside a message body too
+# (the sender-role gate's rule): Claude Code does not escape "<" in a channel
+# body (measured: raw tag-like "<" in 14 of 292 Slack bodies), so a member can
+# write a whole forged envelope naming the owner's id. Such a forgery sits
+# behind the member's own real tag, which fails the gate, so one failing tag
+# drops the WHOLE prompt: a forged owner envelope can only tighten, never loosen.
+#
+# Fail-CLOSED wherever the owner cannot be decided (Samu 67664): no readable
+# access.json, an empty allowFrom (which the plugins read as "everyone"), a
+# provider without a known sender attribute, an unparseable or repeated
+# attribute, a sender the channel marks unverified.
+CHANNEL_TAG_RE = re.compile(r"<channel\s+([^>]*)>")
+ATTR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
+ATTRS_FULL_RE = re.compile(r'(?:[A-Za-z_][A-Za-z0-9_]*="[^"]*"\s*)*')
+
+# The envelope attribute that carries the sender id, per provider (the last
+# source segment: plugin:slack-channel:slack -> slack), as each plugin writes it.
+SENDER_KEY = {"telegram": "user_id", "discord": "user_id", "slack": "user_id", "teams": "aad_object_id"}
+
+# Where each plugin reads its access.json, copied from the plugin itself:
+#   telegram server.ts: TELEGRAM_STATE_DIR ?? ~/.claude/channels/telegram
+#   discord  server.ts: DISCORD_STATE_DIR ?? ~/.claude/channels/discord
+#   slack    server.ts: SLACK_STATE_DIR || ~/.claude/channels/slack
+#   teams    config.ts: TEAMS_PLUGIN_STATE_DIR || TEAMS_STATE_DIR || ~/.claude/channels/teams
+# "??" keeps a set-but-empty variable, "||" skips it: the hook must read the
+# file the plugin reads, nothing else.
+_STATE_DIR_RULE = {
+    "telegram": (("TELEGRAM_STATE_DIR",), True),
+    "discord": (("DISCORD_STATE_DIR",), True),
+    "slack": (("SLACK_STATE_DIR",), False),
+    "teams": (("TEAMS_PLUGIN_STATE_DIR", "TEAMS_STATE_DIR"), False),
+}
+
+
+def _state_dir(provider):
+    names, keep_empty = _STATE_DIR_RULE[provider]
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and (keep_empty or value != ""):
+            return value
+    return os.path.join(os.path.expanduser("~"), ".claude", "channels", provider)
+
+
+def _norm(provider, sender_id):
+    # Teams object ids are GUIDs, paired in lower case (pairing/pair.ts).
+    return sender_id.lower() if provider == "teams" else sender_id
+
+
+def _allowlist(provider, cache):
+    """The provider's DM allowlist as a set, or None when it cannot decide an
+    owner (no readable file, no list, an empty list, a non-string entry)."""
+    if provider in cache:
+        return cache[provider]
+    allowed = None
+    try:
+        with open(os.path.join(_state_dir(provider), "access.json"), encoding="utf-8") as fh:
+            raw = json.load(fh)
+        entries = raw.get("allowFrom") if isinstance(raw, dict) else None
+        if isinstance(entries, list) and entries and all(isinstance(e, str) and e for e in entries):
+            allowed = {_norm(provider, e) for e in entries}
+    except (OSError, ValueError):
+        allowed = None
+    cache[provider] = allowed
+    return allowed
+
+
+def _prompt_refusal(prompt):
+    """None when every envelope in the prompt is from its channel's owner, else
+    the reason (a fixed token, never the sender id or any text)."""
+    cache = {}
+    for match in CHANNEL_TAG_RE.finditer(prompt):
+        raw = match.group(1).strip()
+        if not ATTRS_FULL_RE.fullmatch(raw):
+            return "unparseable-envelope"
+        pairs = ATTR_RE.findall(raw)
+        attrs = dict(pairs)
+        if len(attrs) != len(pairs):
+            return "repeated-attribute"
+        source = attrs.get("source", "")
+        if not re.fullmatch(r"plugin:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+", source):
+            return "bad-source"
+        provider = source.rsplit(":", 1)[-1]
+        if "verified" in attrs and attrs["verified"] != "true":
+            return "sender-unverified"
+        if provider == "gromzo":
+            # The Gromzo plugin writes the role itself; only its verified owner counts.
+            if attrs.get("sender_role") != "owner" or attrs.get("verified") != "true":
+                return "sender-not-owner"
+            continue
+        key = SENDER_KEY.get(provider)
+        if key is None:
+            return "unknown-provider"
+        sender = attrs.get(key)
+        if not sender:
+            return "sender-missing"
+        allowed = _allowlist(provider, cache)
+        if allowed is None:
+            return "owner-undecidable"
+        if _norm(provider, sender) not in allowed:
+            return "sender-not-allowlisted"
+    return None
+
 
 def _trace(reason, **fields):
     """One line, and ONLY when the hook ran and stored nothing.
@@ -73,7 +186,8 @@ def _trace(reason, **fields):
 
 
 def _attr(attrs, name):
-    m = re.search(name + r'="([^"]*)"', attrs)
+    # A whole attribute name only: "user_id" must not match "reply_to_user_id".
+    m = re.search(r'(?:^|\s)' + re.escape(name) + r'="([^"]*)"', attrs)
     return m.group(1) if m else None
 
 
@@ -86,6 +200,12 @@ def main():
     agent_id = ledger_lib.agent_id_from_payload(payload)
     prompt = payload.get("prompt") or ""
     matched = stored = skipped = failed = 0
+    refusal = _prompt_refusal(prompt)
+    if refusal is not None:
+        # Nothing from this prompt goes in (see the sender gate above).
+        _trace("sender-gate", agent=agent_id, why=refusal,
+               envelopes=len(CHANNEL_TAG_RE.findall(prompt)))
+        sys.exit(0)
     for m in CHANNEL_RX.finditer(prompt):
         matched += 1
         source, attrs, text = m.group(1), m.group(2), m.group(3)
