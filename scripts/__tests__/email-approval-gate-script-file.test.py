@@ -186,7 +186,8 @@ try:
         ("node --version", D, False, "no script operand"),
         ("node $SCRIPT", D, True, "undecidable operand (fail-closed)"),
         (f'bash -c "node {D}/graph-send.mjs"', D, True, "shell -c recursion"),
-        (f"python3 {D}/plain.py --to b@example.test", D, True, "an address after --to makes any script run a send"),
+        # COPYGATEDRAFTFP1104: an address no longer makes a fully visible, stdlib-only script a send (see below)
+        (f"python3 {D}/plain.py --to b@example.test", D, False, "an address on a stdlib-only script that does not send"),
         (f"python3 {D}/plain.py", D, False, "the same script without an address"),
         (f"{D}/missing-direct.py", D, True, "a directly run .py file that cannot be read (fail-closed)"),
         ("cd $DEST && node job.mjs", D, True, "cd to a variable: fail-closed"),
@@ -288,6 +289,104 @@ try:
         got = ocg.script_run_sends(cmd, D)
         check(f"MAILGATEDIRZIP1027 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 
+    # COPYGATEDRAFTFP1104 (Samu 69301): a python script run with --to/--cc/--bcc is judged by its content only when
+    # everything it can run is visible: its imports, through its local helpers, are the standard library or local files.
+    os.makedirs(os.path.join(D, "cg"), exist_ok=True)
+    os.makedirs(os.path.join(D, "cg/shadow"), exist_ok=True)
+    os.makedirs(os.path.join(D, "cg/deep"), exist_ok=True)
+    DRAFT = ("import argparse, imaplib, os, re, time\n"
+             "from email.message import EmailMessage\n"
+             "from email.utils import formatdate\n"
+             "# a comment may name subprocess or smtplib: it runs nothing\n"
+             "PAT = re.compile(r'x')\n"
+             "p = argparse.ArgumentParser(); p.add_argument('--to'); a = p.parse_args()\n"
+             "m = EmailMessage(); m['To'] = a.to; m['Date'] = formatdate(); m.set_content('x')\n"
+             "c = imaplib.IMAP4_SSL(os.environ.get('IMAP_HOST', 'imap.example.invalid'))\n"
+             "c.append('Drafts', '\\\\Draft', imaplib.Time2Internaldate(time.time()), m.as_bytes())\n")
+    put("cg/draft.py", DRAFT)
+    put("cg/drafthelp.py", "import argparse\nfrom cghelper import build\nbuild()\n")
+    put("cg/cghelper.py", "import imaplib\ndef build():\n    return imaplib.IMAP4_SSL\n")
+    put("cg/smtpto.py", "import argparse, smtplib\ns = smtplib.SMTP('x'); s.sendmail('a', ['b'], 'c')\n")
+    put("cg/pkgsend.py", "import argparse\nfrom acme_mail import deliver\ndeliver('x')\n")
+    put("cg/helpsend.py", "from cgmailer import go\ngo()\n")
+    put("cg/cgmailer.py", "import smtplib\ndef go():\n    smtplib.SMTP('x')\n")
+    put("cg/helpproc.py", "from cgproc import go\ngo()\n")
+    put("cg/cgproc.py", "import subprocess\ndef go():\n    subprocess.run(['true'])\n")
+    put("cg/helppkg.py", "import cgpkghelper\n")
+    put("cg/cgpkghelper.py", "import requests\n")
+    put("cg/shadow/draft.py", "import imaplib\n")
+    put("cg/shadow/imaplib.py", "import smtplib\n")
+    put("cg/deep/d0.py", "import d1\n")
+    for n in range(1, 7):
+        put(f"cg/deep/d{n}.py", f"import d{n + 1}\n" if n < 6 else "print(1)\n")
+    put("cg/wide.py", "".join(f"import w{n}\n" for n in range(30)))
+    for n in range(30):
+        put(f"cg/w{n}.py", "print(1)\n")
+    # every branch of Samu 69301 point 1, one script each, all with an address: DENY
+    unfollowed = {
+        "dyn_importlib": "import importlib\nimportlib.import_module('x')\n",
+        "dyn_dunder": "m = __import__('json')\n",
+        "dyn_runpy": "import runpy\nrunpy.run_path('x.py')\n",
+        "dyn_exec": "exec(open('x.py').read())\n",
+        "dyn_eval": "eval('1')\n",
+        "dyn_compile": "c = compile('1', 'x', 'eval')\n",
+        "proc_subprocess": "import subprocess\nsubprocess.run(['x'])\n",
+        "proc_os_system": "import os\nos.system('x')\n",
+        "proc_os_popen": "import os\nos.popen('x')\n",
+        "proc_os_exec": "import os\nos.execv('/bin/x', ['x'])\n",
+        "proc_from_os": "from os import system\nsystem('x')\n",
+        "proc_os_alias": "import os as o\no.system('x')\n",
+        "net_socket": "import socket\nsocket.create_connection(('x', 25))\n",
+        "net_ssl": "import ssl\nssl.create_default_context()\n",
+        "net_urllib": "import urllib.request\nurllib.request.urlopen('x')\n",
+        "net_http": "import http.client\n",
+        "c_half": "import _socket\n",
+        "pickle": "import pickle\npickle.loads(b'x')\n",
+        "sys_path": "import sys\nsys.path.insert(0, '/x')\nimport imaplib\n",
+        "getattr": "import os\ngetattr(os, 'sys' + 'tem')('x')\n",
+        "continuation": "import imaplib, \\\n    smtplib\n",
+    }
+    for name, body in unfollowed.items():
+        put(f"cg/u_{name}.py", body)  # u_: a fixture named like a stdlib module would import itself
+    for cmd, want, what in [
+        ("python3 draft.py --to a@example.test --subject s", False, "an IMAP draft writer with --to (the customer case)"),
+        ("python3 draft.py --to=a@example.test", False, "the same with --to="),
+        ("python3 draft.py --cc a@example.test --bcc b@example.test", False, "the same with --cc/--bcc"),
+        ("python3 drafthelp.py --to a@example.test", False, "a local helper that only uses imaplib"),
+        ("python3 smtpto.py --to a@example.test", True, "smtplib sendmail with an address"),
+        ("python3 smtpto.py", True, "smtplib sendmail without an address"),
+        ("python3 pkgsend.py --to a@example.test", True, "an installed package may send: the address rule holds"),
+        ("python3 pkgsend.py", False, "the same without an address (as before)"),
+        ("python3 helpsend.py --to a@example.test", True, "a local helper imports smtplib"),
+        ("python3 helpproc.py --to a@example.test", True, "a local helper starts a process"),
+        ("python3 helppkg.py --to a@example.test", True, "a local helper imports an installed package"),
+        ("python3 shadow/draft.py --to a@example.test", True, "a local imaplib.py shadows the stdlib and sends"),
+        ("python3 deep/d0.py --to a@example.test", True, "the helper chain is deeper than the walk"),
+        ("python3 wide.py --to a@example.test", True, "more helpers than the file budget"),
+        ("python3 nothere.py --to a@example.test", True, "a missing script with an address"),
+        ("PYTHONPATH=/x python3 draft.py --to a@example.test", True, "a PYTHON* setting can change what an import loads"),
+        ("python3 -c 'print(1)' --to a@example.test", True, "a code string with an address"),
+        ("python3 -m draft --to a@example.test", True, "a module run with an address"),
+        ("python3 $S --to a@example.test", True, "an undecidable script with an address"),
+    ] + [(f"python3 u_{n}.py --to a@example.test", True, f"unfollowed code ({n})") for n in unfollowed]:
+        got = ocg.script_run_sends(cmd, os.path.join(D, "cg"))
+        check(f"COPYGATEDRAFTFP1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
+
+    # Python before 3.10: no sys.stdlib_module_names, so no import can be classed and the address rule holds
+    class _NoStdlibSys:
+        def __getattr__(self, name):
+            if name == "stdlib_module_names":
+                raise AttributeError(name)
+            return getattr(sys, name)
+    real_sys = ocg.sys
+    ocg.sys = _NoStdlibSys()
+    try:
+        got = ocg.script_run_sends("python3 draft.py --to a@example.test", os.path.join(D, "cg"))
+    finally:
+        ocg.sys = real_sys
+    check("COPYGATEDRAFTFP1104 without sys.stdlib_module_names the draft writer with an address stays a send",
+          got is True, f"got {got}")
+
     # end to end through the hook process, level 2, no approval
     store = make_store(D, level=2)
 
@@ -303,6 +402,23 @@ try:
           code == 2, f"exit={code} err={err[:200]!r}")
     code, err = run_gate(f"node {D}/harmless.mjs")
     check("MAILGATESCRIPT1027 hook: a harmless script passes", code == 0, f"exit={code} err={err[:200]!r}")
+    # COPYGATEDRAFTFP1104 end to end: the draft writer with an address passes the hook, the sender does not
+    code, err = run_gate(f"cd {D}/cg && python3 draft.py --to a@example.test")
+    check("COPYGATEDRAFTFP1104 hook: the IMAP draft writer with --to passes", code == 0, f"exit={code} err={err[:300]!r}")
+    code, err = run_gate(f"cd {D}/cg && python3 pkgsend.py --to a@example.test")
+    check("COPYGATEDRAFTFP1104 hook: an installed-package sender with --to is DENIED", code == 2,
+          f"exit={code} err={err[:200]!r}")
+    # the same hook under a Python without sys.stdlib_module_names: still a send (the approval gate itself does not
+    # load there today, its email_extract dependency needs 3.10, so it is fail-closed before the copy gate is asked)
+    old_py = next((x for x in ("/usr/bin/python3",) if os.path.exists(x)), None)
+    if old_py and subprocess.run([old_py, "-c", "import sys; sys.exit(0 if sys.version_info < (3, 10) else 1)"]).returncode == 0:
+        payload = {"tool_name": "Bash", "tool_input": {"command": f"cd {D}/cg && python3 draft.py --to a@example.test"}, "cwd": D}
+        p = subprocess.run([old_py, gate_for(store, GATE)], input=json.dumps(payload).encode(), capture_output=True)
+        err = p.stderr.decode()
+        check("COPYGATEDRAFTFP1104 hook under Python < 3.10: the draft writer with an address stays denied",
+              p.returncode == 2, f"exit={p.returncode} err={err[:300]!r}")
+    else:
+        print("  [SKIP] no Python < 3.10 at /usr/bin/python3")
 finally:
     if os.path.isdir(D):
         shutil.rmtree(D, ignore_errors=True)
