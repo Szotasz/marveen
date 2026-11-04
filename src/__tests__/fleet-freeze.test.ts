@@ -1,6 +1,6 @@
 // KILLSWITCH1022: the fleet freeze ("piros gomb"). Switching it on is open to any
 // dashboard credential (an agent may pull the brake); lifting it takes the owner,
-// through the SAME predicate as issuing credentials (mayIssueCredentials, #2163).
+// through the owner gate (mayActAsOwner, #2163; OWNERGATE4-1104: also before the first login).
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -139,10 +139,14 @@ describe('lifting it: the owner only, the #2163 predicate', () => {
     expect(isFleetFrozen()).toBe(false)
   })
 
-  it('before the first login exists the token is the one owner credential there is', async () => {
+  // OWNERGATE4-1104: unfreeze is no first-run path; an agent could otherwise lift the brake on an install without a login.
+  it('before the first login exists the token cannot lift it either: 403 setup_required, still frozen', async () => {
     await freeze(TOKEN)
-    expect((await unfreeze(TOKEN)).status).toBe(200)
-    expect(isFleetFrozen()).toBe(false)
+    const r = await unfreeze(TOKEN)
+    expect(r.status).toBe(403)
+    expect(r.json.code).toBe('owner_session_required')
+    expect(r.json.setup_required).toBe(true)
+    expect(isFleetFrozen()).toBe(true)
   })
 })
 

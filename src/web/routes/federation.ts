@@ -50,7 +50,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 export const FEDERATION_VERSION = 1
@@ -295,17 +295,18 @@ function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
 // so adding a peer, writing the full document (it carries the inbound tokens),
 // rotating and revealing a token, editing a peer (it re-points its outbound
 // token) and switching federation on are credential issuance, the same as a device
-// key (routes/auth.ts, DEVKEYMINT1022): once a dashboard login exists they take
-// the owner's session. On the machine itself store/federation.json stays editable.
+// key (routes/auth.ts, DEVKEYMINT1022): they take the owner's session, also before
+// the first dashboard login exists (OWNERGATE4-1104: refuseOwner then answers
+// setup_required). On the machine itself store/federation.json stays editable.
 const FED_OWNER_SESSION_REQUIRED = {
   ...OWNER_SESSION_REQUIRED,
-  error: 'Adding a peer or issuing, rotating or revealing its inbound token needs the dashboard login (an owner session). The access token can do it only before the first login exists; on the machine itself, store/federation.json stays editable.',
+  error: 'Adding a peer or issuing, rotating or revealing its inbound token needs the dashboard login (an owner session). On the machine itself, store/federation.json stays editable.',
 }
 
 function refuseUnlessOwner(ctx: RouteContext): boolean {
   if (mayActAsOwner(ctx.auth, ctx.req)) return false
   logger.warn({ fed: true, path: ctx.path, method: ctx.method, kind: ctx.auth?.kind }, 'federation: credential issuance refused (owner session required)')
-  json(ctx.res, FED_OWNER_SESSION_REQUIRED, 403)
+  refuseOwner(ctx.res, FED_OWNER_SESSION_REQUIRED.error)
   return true
 }
 

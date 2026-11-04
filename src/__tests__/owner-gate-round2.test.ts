@@ -3,10 +3,10 @@
 // channel, grant someone the right to message an agent (pairing approve, invites, Slack channel requests), read the
 // live invite tokens, revoke an invite or deny a channel request (every channel-access write, tech lead decision),
 // delete an agent, add a connector (`claude mcp add`) or assign one into an agent's .mcp.json. Those need the owner
-// (mayActAsOwnerStrict): the
+// (mayActAsOwner; OWNERGATE4-1104 merged mayActAsOwnerStrict into it): the
 // browser login, the token with the owner's session cookie, or the Bridge's full key with that cookie. Before the
 // first dashboard login exists the bare token still passes ONLY agent create, channel setup and a channel's FIRST
-// pairing approve (the customer first-run path, mayActAsOwner); every other gate refuses it then with setup_required
+// pairing approve (the customer first-run path, mayActAsOwnerOrFirstRun); every other gate refuses it then with setup_required
 // (review finding, tech lead decision), measured here route by route. The connector routes that run code on the host
 // (GitHub repo install/update/remove, external project paths, MCP catalog install) are gated the same way. Rotate and
 // probe stay token-callable (the rotation heartbeat uses them). A refused call writes NOTHING, measured on the bytes.
@@ -218,7 +218,7 @@ type Case = {
   label: string
   // OWNERGATE2-1104: true only for the routes that keep the first-run branch (agent create, channel setup). Every other
   // case is refused before the first login too, with setup_required.
-  firstRunOpen?: true
+  firstRunOpen?: boolean
   handler: Handler
   method: string
   path: () => string
@@ -266,13 +266,17 @@ const CASES: Case[] = [
   },
   {
     // botToken missing -> 400 before any network token check.
-    firstRunOpen: true, label: 'POST /api/agents/:name/channels/telegram (setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/channels/telegram`,
+    // OWNERGATE4-1104 (review, Samu 69637): this fixture's Telegram channel is already configured (bot token +
+    // access.json), so the first-run setup is closed here; the still-empty case lives in owner-gate-first-run.test.ts.
+    firstRunOpen: false, label: 'POST /api/agents/:name/channels/telegram (setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/channels/telegram`,
     body: { allowFrom: ['999'] },
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('botToken is required') },
   },
   {
-    firstRunOpen: true, label: 'POST /api/agents/:name/telegram (legacy setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/telegram`,
+    // OWNERGATE4-1104 (review, Samu 69637): this fixture's Telegram channel is already configured (bot token +
+    // access.json), so the first-run setup is closed here; the still-empty case lives in owner-gate-first-run.test.ts.
+    firstRunOpen: false, label: 'POST /api/agents/:name/telegram (legacy setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/telegram`,
     body: { allowFrom: ['999'] },
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('botToken is required') },

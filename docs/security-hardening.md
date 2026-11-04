@@ -436,9 +436,9 @@ because the earlier attempt may already have gone out.
 
 Approving a request (`PATCH /api/approvals/<id>` with `status=approved`, and the born-approved
 `POST /api/approvals` with `owner_approved_message_id`) goes through the same predicate as issuing
-credentials (`mayIssueCredentials`, #2163): the owner's dashboard session, also when the browser
-sends the stored access token alongside it; the bare token only before the first dashboard login
-exists. The shared token, which every agent holds, can still file a request and resolve it as
+credentials (`mayActAsOwner`, #2163): the owner's dashboard session, also when the browser
+sends the stored access token alongside it; the bare token never, not even before the first dashboard
+login exists (OWNERGATE4-1104: the 403 then carries `setup_required: true`). The shared token, which every agent holds, can still file a request and resolve it as
 `rejected` or `timeout` (that only cancels it), but no longer approve one: measured before, with it
 any agent made its own letter approved and the email gate let it through (kanban 80d0e3c6). A
 device key is not an owner session, whatever its scope.
@@ -735,9 +735,8 @@ token should reach:
   key and every secret, encrypted with a password the CALLER chose, so the
   caller can open it.
 
-Once a dashboard login exists, both take the owner's session
-(`mayIssueCredentials`, the predicate of the credential-issuing routes since
-DEVKEYMINT1022), checked before the body is read or anything is exported; any
+Both take the owner's session, also before the first dashboard login exists
+(`mayActAsOwner`, the owner gate since DEVKEYMINT1022; OWNERGATE4-1104), checked before the body is read or anything is exported; any
 other caller gets 403 `owner_session_required`. A full device key is refused
 too. The dry run (no `apply`, writes nothing) and the export without a vault
 password (no secret; it refuses rather than leak one) stay on the token. On a
@@ -819,7 +818,7 @@ to its `maxLevel` with the fleet's one shared dashboard token, so any agent
 could set `email_send` to 3, and at 3 the mail approval gate
 (`scripts/hooks/email-approval-gate.py`) lets every send through. Once a
 dashboard login exists, a raise takes the owner's session
-(`mayIssueCredentials`); any other caller, a full device key included, gets
+(`mayActAsOwner`; OWNERGATE4-1104: also before the first login); any other caller, a full device key included, gets
 403 `owner_session_required` and nothing is written. Lowering and setting the
 same level stay on the token: they only narrow what an agent may do. A current
 level that is not a number counts as a raise. On a fresh install with no

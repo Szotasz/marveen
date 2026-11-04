@@ -8,9 +8,9 @@
 //   3. the same born-approved POST for STANDING_CATEGORY (email_standing_recipient) -> every later
 //      letter to that address went out with no approval at all.
 // Approving (the born-approved POST and PATCH status=approved) now goes through the predicate that
-// guards issuing credentials (mayIssueCredentials, #2163): the owner's session, also when the
-// browser sends the stored token alongside it (so the owner approving from the dashboard gets no
-// 403); the bare token only before the first dashboard login exists. Reject and timeout stay open
+// guards owner actions (mayActAsOwner, #2163): the owner's session, also when the browser sends
+// the stored token alongside it (so the owner approving from the dashboard gets no 403); the bare
+// token never, not even before the first dashboard login exists (OWNERGATE4-1104). Reject and timeout stay open
 // to the token: with them an agent can only cancel a request, never gain a right.
 import { describe, it, expect, vi, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
@@ -185,10 +185,15 @@ describe('standing-recipient activation (STANDING_CATEGORY)', () => {
 })
 
 describe('before the first dashboard login exists', () => {
-  it('the token is the one credential there is: it may approve (first-run, as for issuing credentials)', async () => {
+  // OWNERGATE4-1104: approving is no first-run path: every sub-agent holds the token and could approve its own request.
+  it('the token may NOT approve: 403 owner_session_required + setup_required, the row stays pending', async () => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
     _clearSessionCacheForTest()
     const own = await post({ agent_id: 'soma', category: 'email_send', action_description: 'first-run' }, TOKEN)
-    expect((await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN)).status).toBe(200)
+    const r = await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN)
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('owner_session_required')
+    expect(r.body.setup_required).toBe(true)
+    expect(getApproval(own.body.id)?.status).toBe('pending')
   })
 })

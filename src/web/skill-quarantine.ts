@@ -47,9 +47,9 @@
 //     have their own paths;
 //   - editing a LIVE skill's SKILL.md through PUT /api/skills/:name;
 //   - who approves: since kanban 2c72e07c the approve and reject routes take
-//     the owner's session (mayIssueCredentials, the #2163 predicate), not the
-//     shared dashboard token every agent holds; the bare token only before the
-//     first dashboard login exists. That makes "only a human approves" hold as
+//     the owner's session (mayActAsOwner, the #2163 predicate), not the
+//     shared dashboard token every agent holds; not even before the first
+//     dashboard login exists (OWNERGATE4-1104). That makes "only a human approves" hold as
 //     far as the dashboard can tell a human apart; an agent able to hijack the
 //     owner's browser session is outside it (per-agent identity, #1985).
 

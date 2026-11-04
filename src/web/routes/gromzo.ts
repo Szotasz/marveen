@@ -13,9 +13,9 @@
 //   (GROMZOAGENTPICK1101; the rules are in ../gromzo-agents.ts. All four: the owner's session only.)
 //
 // Who may ask for the QR: ONLY the owner's dashboard session. This is stricter than
-// issuing a device key (routes/auth.ts mayIssueCredentials, DEVKEYMINT1022), which
-// lets the shared token in before the first dashboard login exists. Here that
-// first-run branch is closed on purpose (Dani's review of #2365): the shared bearer
+// issuing a device key (routes/auth.ts mayActAsOwnerOrFirstRun 'first-device', DEVKEYMINT1022),
+// which lets the shared token mint the first key before the first dashboard login exists. Here
+// that first-run branch is closed on purpose (Dani's review of #2365): the shared bearer
 // is held by every fleet agent, and the first owner_invite claims the owner's chat
 // seat on the controller once. On a fresh install the owner first sets up the
 // dashboard login, then asks for the QR.

@@ -16533,8 +16533,10 @@ function renderTokenModePanel(body, status) {
   body.appendChild(btn)
 }
 
-// Dismissible setup banner: shown only when the operator is authed via the token
-// and has not yet created a browser login. Dismissal persists per browser.
+// Dismissible setup banner: shown only when no browser login exists yet and this window can create one: the
+// access token, or (OWNERGATE4-1104) the full device key the first device pairing gave this window (the Bridge). The
+// status carries owner_session only for a full key, never for an operator key, so that is the full-key test here.
+// Dismissal persists per browser.
 const AUTH_BANNER_DISMISS_KEY = 'marveen.auth-banner-dismissed'
 
 async function initAuthBanner() {
@@ -16543,7 +16545,8 @@ async function initAuthBanner() {
   let dismissed = false
   try { dismissed = localStorage.getItem(AUTH_BANNER_DISMISS_KEY) === '1' } catch { /* storage blocked */ }
   const status = await fetchAuthStatus()
-  const show = !!status && status.authenticated && status.method === 'token' && status.setup_required && !dismissed
+  const canCreate = !!status && (status.method === 'token' || (status.method === 'device' && 'owner_session' in status))
+  const show = !!status && status.authenticated && canCreate && status.setup_required && !dismissed
   banner.hidden = !show
 }
 

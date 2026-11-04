@@ -174,7 +174,7 @@ Mit csinál bekapcsolva (`AGENT_TOKENS=1`, `.env` vagy a Beállítások oldal; a
 | ugyanott, `AGENT_IDENTITY_BINDINGS` | minden azonosság, amit a kérés állít (`from`, `agent_id`, `author`, `actor`, `updated_by`, út-beli ágensnév, a szerkesztett sor gazdája) a token ágense kell legyen; a tulajdonosi mezők (`owner_approved_message_id`, `for_agent`, kanban `force`) tiltottak. 403 `agent-identity-binding`. |
 | `PUT /api/messages/:id` | saját tokennel csak a NEKI címzett, nyitott üzenet zárható, és ezt maga az UPDATE köti ki (`closeMessageAsRecipient`). |
 | vault | saját tokennel titkot csak a `store/vault-acl.json` szerint lehet olvasni, a `VAULT_ACL_MODE` értékétől függetlenül; üres fájl = egyetlen érték sem. SSH-azonosító és vault-alerőforrás soha. |
-| `mayIssueCredentials` | a saját token sosem tulajdonos, akkor sem, ha még nincs dashboard-felhasználó. |
+| `mayActAsOwnerOrFirstRun` | a saját token sosem tulajdonos, akkor sem, ha még nincs dashboard-felhasználó (a `mayActAsOwner` pedig login előtt a közös tokent sem engedi). |
 
 Kikapcsolva (alapértelmezés): semmi nem jön létre és egyetlen CLAUDE.md sem változik. Token
 fájl híján a feloldó sosem talál, így a csak közös tokenes telepítés pontosan úgy működik, mint

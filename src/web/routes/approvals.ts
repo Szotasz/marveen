@@ -18,7 +18,7 @@ import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
 import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -27,13 +27,13 @@ import type { RouteContext } from './types.js'
 // the real email-approval-gate then let its letter through; through STANDING_CATEGORY the same
 // row made every later letter to an address approval-free. The self-declared agent_id and
 // resolved_by checks below stay, but they were never what stopped this.
-// Who counts as the owner is the predicate that guards issuing credentials (mayIssueCredentials,
-// #2163): the owner's session, also when the browser sends the stored token alongside it; the
-// bare token only before the first dashboard login exists.
+// Who counts as the owner is the owner gate (mayActAsOwner, #2163): the owner's session, also when
+// the browser sends the stored token alongside it; the bare token never, not even before the first
+// dashboard login exists (OWNERGATE4-1104: every agent holds it, and could approve its own request).
+// With no login yet, refuseOwner answers setup_required and says to create one.
 const OWNER_ONLY = {
   ...OWNER_SESSION_REQUIRED,
-  error: 'Approving needs the dashboard login (an owner session); the shared dashboard token can file, reject or time out a request, not approve one. ' +
-    'The token alone approves only before the first login exists.',
+  error: 'Approving needs the dashboard login (an owner session); the shared dashboard token can file, reject or time out a request, not approve one.',
 }
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -549,7 +549,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
       if (!mayActAsOwner(ctx.auth, req)) {
         logger.warn({ agent_id, category, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'born-approved approval refused: no owner session')
-        json(res, OWNER_ONLY, 403)
+        refuseOwner(res, OWNER_ONLY.error)
         return true
       }
       if (agent_id.trim() !== MAIN_AGENT_ID) {
@@ -721,7 +721,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // an agent that cancels a request gains nothing by it.
     if (status === 'approved' && !mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: idMatch[1], resolved_by, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'approval approve refused: no owner session')
-      json(res, OWNER_ONLY, 403)
+      refuseOwner(res, OWNER_ONLY.error)
       return true
     }
 

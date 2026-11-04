@@ -81,7 +81,7 @@ const {
   ensureAgentToken, createAgentTokenResolver, dashboardTokenPathFor, matchAgentToken, helperTokenEnv,
   migrateAgentClaudeMdTokenRefs, revertAgentClaudeMdTokenRefs, syncAgentTokenOnStart, loadAgentTokens, agentTokenPath, mainTokenPath,
 } = await import('../web/agent-tokens.js')
-const { mayIssueCredentials } = await import('../web/routes/auth.js')
+const { mayActAsOwner, mayActAsOwnerOrFirstRun, FIRST_RUN_PATHS } = await import('../web/routes/auth.js')
 const { vaultReadRefused, principalOf } = await import('../web/vault-acl.js')
 const { tryHandleSchedules } = await import('../web/routes/schedules.js')
 const { tryHandleMessages } = await import('../web/routes/messages.js')
@@ -149,12 +149,15 @@ describe('isScheduleWrite / agentScopeDenial (pure policy)', () => {
     expect(d?.body.error).toBe(`only the main agent writes schedules; send the request to ${MAIN_AGENT_ID} via /api/messages`)
     expect(agentScopeDenial({ kind: 'token', agent: AGENT, tokenAgent: AGENT }, '/api/schedules', 'GET', MAIN_AGENT_ID)).toBeNull()
   })
-  it('a sub-agent token is never the owner: mayIssueCredentials is false for it, unchanged for the shared token', () => {
-    // no dashboard user exists yet in this DB, so the bare shared token IS the owner credential
+  it('a sub-agent token is never the owner: no first-run path passes it, the shared token passes the first-run ones only', () => {
+    // OWNERGATE4-1104: mayIssueCredentials is gone; the bare shared token passes only the closed first-run list.
     expect(listDashboardUsers()).toHaveLength(0)
-    expect(mayIssueCredentials({ kind: 'token' })).toBe(true)
-    expect(mayIssueCredentials({ kind: 'token', agent: AGENT })).toBe(true)
-    expect(mayIssueCredentials({ kind: 'token', agent: AGENT, tokenAgent: AGENT })).toBe(false)
+    expect(mayActAsOwner({ kind: 'token' })).toBe(false)
+    for (const why of FIRST_RUN_PATHS) {
+      expect(mayActAsOwnerOrFirstRun({ kind: 'token' }, undefined, why), why).toBe(true)
+      expect(mayActAsOwnerOrFirstRun({ kind: 'token', agent: AGENT }, undefined, why), why).toBe(true)
+      expect(mayActAsOwnerOrFirstRun({ kind: 'token', agent: AGENT, tokenAgent: AGENT }, undefined, why), why).toBe(false)
+    }
   })
 })
 
@@ -622,11 +625,10 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
     expect(k.json.ok).toBe(true)
   })
 
-  // Runs BEFORE the dashboard-user creation below (the last bypass case): with no
-  // login yet, the bare main token is the owner credential (mayIssueCredentials),
-  // so the main lane still creates a born-approved row, and the agent token is
-  // still refused by the binding.
-  it('approvals: before any dashboard user exists, the main token creates a born-approved row; the agent token cannot', async () => {
+  // Runs BEFORE the dashboard-user creation below (the last bypass case). OWNERGATE4-1104: with no login yet the
+  // bare main token is no longer the owner for approvals (not a first-run path): it is refused with setup_required,
+  // and the agent token is still refused by the binding.
+  it('approvals: before any dashboard user exists, neither the main token nor the agent token creates a born-approved row', async () => {
     expect(listDashboardUsers()).toHaveLength(0)
     const hash = 'b'.repeat(64)
     const agent = await call('POST', '/api/approvals', agentTok, {
@@ -637,8 +639,9 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
     const main = await call('POST', '/api/approvals', MAIN_TOKEN, {
       agent_id: MAIN_AGENT_ID, category: 'email_send', action_description: 'x', content_hash: hash, owner_approved_message_id: 3,
     })
-    expect(main.status, JSON.stringify(main.json)).toBe(201)
-    expect(main.json.status).toBe('approved')
+    expect(main.status, JSON.stringify(main.json)).toBe(403)
+    expect(main.json.code).toBe('owner_session_required')
+    expect(main.json.setup_required).toBe(true)
   })
 
   // The denylist draft's bypasses. Each must be 403 'agent-token-scope' for a
@@ -646,11 +649,14 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
   // main-token calls use bodies that stop at the handler's own validation, or
   // write only the in-memory DB).
   const bypasses: Array<{ what: string; method: string; path: string; agentBody: unknown; mainBody: unknown; mainStatus: number }> = [
+    // OWNERGATE4-1104: an applied import is no first-run path, so the main token reaches the handler and its owner
+    // gate refuses it before any login exists (403 owner_session_required, not the scope rule).
     { what: 'fleet import writes the schedule store', method: 'POST', path: '/api/fleet/import?apply=true',
       agentBody: { schemaVersion: 1, agents: [], scheduledTasks: [{ dirName: 'letezo', skillMd: 'x', config: {} }] },
-      mainBody: {}, mainStatus: 400 },
-    { what: 'device-key minting', method: 'POST', path: '/api/auth/device-keys', agentBody: { name: 'lopott-kulcs' }, mainBody: { name: 'fo-kulcs' }, mainStatus: 201 },
+      mainBody: {}, mainStatus: 403 },
+    // OWNERGATE4-1104: enrollment BEFORE minting, since the first-device path is open only while no key was ever issued.
     { what: 'bridge enrollment (mints a key)', method: 'POST', path: '/api/security/bridge-enroll', agentBody: { key_line: 'ssh-ed25519 AAAA x', name: 'lopott' }, mainBody: {}, mainStatus: 400 },
+    { what: 'device-key minting', method: 'POST', path: '/api/auth/device-keys', agentBody: { name: 'lopott-kulcs' }, mainBody: { name: 'fo-kulcs' }, mainStatus: 201 },
     // OWNERGATE3-1104: the main token passes the scope gate and reaches the handler, whose strict owner gate then
     // refuses it: this table runs before any dashboard login exists, and the toggle never takes the first-run branch
     // (403 owner_session_required + setup_required, not the scope rule).

@@ -1,9 +1,9 @@
 // BASHSANDBOX1022 security review of #2149: a sandboxed agent reaches the dashboard on localhost with
 // the shared fleet token, so through POST /api/settings it could take itself off BASH_SANDBOX_AGENTS.
 // A setting whose registry entry says a change LOOSENS it accepts that change only from the owner,
-// through the predicate that guards issuing credentials (mayIssueCredentials, #2163): the owner's
-// session, also when the browser sends the stored token alongside it; the bare token only before the
-// first dashboard login exists. Tightening (adding an agent) stays open to every caller.
+// through the owner gate (mayActAsOwner, #2163): the owner's session, also when the browser sends
+// the stored token alongside it; the bare token never, not even before the first dashboard login
+// exists (OWNERGATE4-1104). Tightening (adding an agent) stays open to every caller.
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 
 const settings = new Map<string, string>()
@@ -81,10 +81,15 @@ describe('BASH_SANDBOX_AGENTS: the shared token may tighten it, never loosen it'
     expect((await call('DELETE', '/api/settings/BASH_SANDBOX_AGENTS', undefined, { kind: 'session', user: 'owner' })).status).toBe(200)
   })
 
-  it('before the first dashboard login exists, the token is the one credential there is: it may loosen', async () => {
+  // OWNERGATE4-1104: flipped; loosening a security setting is no first-run path.
+  it('before the first dashboard login exists, the token may NOT loosen: 403 setup_required, the value stays', async () => {
     getDb().exec('DELETE FROM dashboard_users')
     settings.set('BASH_SANDBOX_AGENTS', 'soma')
-    expect((await set('', { kind: 'token' })).status).toBe(200)
+    const r = await set('', { kind: 'token' })
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('owner_session_required')
+    expect(r.body.setup_required).toBe(true)
+    expect(settings.get('BASH_SANDBOX_AGENTS')).toBe('soma')
   })
 
   it('the loosens rule: removal loosens, reordering, spacing and case do not', () => {
