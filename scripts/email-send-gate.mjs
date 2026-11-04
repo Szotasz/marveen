@@ -455,6 +455,11 @@ const WRAPPERS = new Map([
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
+  // ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program (see the python twin)
+  ['stdbuf', ['ioe', ['input', 'output', 'error'], 0]],
+  ['ionice', ['cnpPu', ['class', 'classdata', 'pid', 'pgid', 'uid'], 0]],
+  ['chrt', ['TPD', ['sched-runtime', 'sched-period', 'sched-deadline'], 1]],
+  ['caffeinate', ['tw', [], 0]],
 ])
 const HEAD_DEPTH = 8
 
@@ -1223,7 +1228,45 @@ export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScript
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
-  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth)))
+  return segments.some((toks) => {
+    // ENVOPTHEAD1104 (Bence 69475): `env -C DIR` runs its command in DIR, so a relative script is read there too; a
+    // DIR that cannot be known (a variable, `-`, `~user`) makes an interpreter or script run behind it a send.
+    const dirs = envChdirDirs(toks)
+    const heads = commandHeads(toks)
+    // an undecidable DIR: an interpreter or script run behind it is a send (this twin does not call a missing script
+    // a send, so the directory cannot simply be read as one that does not exist)
+    if (dirs.some((d) => UNDECIDABLE_CHDIR.test(d))
+      && heads.some((h) => h && h.length && (PYTHON.test(basename(h[0])) || NODEISH.test(basename(h[0])) || h[0].includes('/')))) return true
+    const bases = [cwd, ...dirs.map((d) => (d === '~' || d.startsWith('~/') ? join(homedir(), d.slice(1)) : isAbsolute(d) ? d : join(cwd, d)))]
+    return heads.some((h) => bases.some((b) => headRunsSenderScript(h, b, readScript, depth)))
+  })
+}
+
+const UNDECIDABLE_CHDIR = /^-$|^~[^/]|[*?[{$`]/
+
+// ENVOPTHEAD1104: the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also in a cluster) runs in.
+function envChdirDirs(words) {
+  const out = []
+  for (let i = 0; i < words.length; i++) {
+    if (basename(words[i]) !== 'env') continue
+    let j = i + 1
+    while (j < words.length) {
+      const t = words[j]
+      if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
+      if (t === '-C' || t === '--chdir') { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
+      if (t.startsWith('--chdir=')) out.push(t.slice(8))
+      else if (t.startsWith('-') && !t.startsWith('--')) {
+        let k = -1
+        for (let x = 1; x < t.length; x++) if ('uCSP'.includes(t[x])) { k = x; break }
+        if (k > 0 && t[k] === 'C') {
+          if (k < t.length - 1) out.push(t.slice(k + 1))
+          else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }
+        } else if (k === t.length - 1) j++
+      }
+      j++
+    }
+  }
+  return out
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of

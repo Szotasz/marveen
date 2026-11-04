@@ -34,6 +34,13 @@ try:
         fh.write('import smtplib\nsmtplib.SMTP("x").sendmail("a", ["b"], "c")\n')
     with open(os.path.join(D, "plain.py"), "w") as fh:
         fh.write("print('x')\n")
+    # Bence 69475: a real sender in another directory, and a harmless send.py decoy in the cwd
+    os.makedirs(os.path.join(D, "evil"), exist_ok=True)
+    with open(os.path.join(D, "evil", "send.py"), "w") as fh:
+        fh.write('import smtplib\nsmtplib.SMTP("x").sendmail("a", ["b"], "c")\n')
+    os.makedirs(os.path.join(D, "decoy"), exist_ok=True)
+    with open(os.path.join(D, "decoy", "send.py"), "w") as fh:
+        fh.write("print('x')\n")
     for name, line in (("sender", "#!/usr/bin/env -P /usr/bin python3"), ("sender-u", "#!/usr/bin/env -u FOO python3"),
                        ("sender-c", "#!/usr/bin/env -C /tmp python3"), ("harmless", "#!/usr/bin/env -P /usr/bin python3")):
         body = "print('x')\n" if name == "harmless" else 'import smtplib\nsmtplib.SMTP("x")\n'
@@ -56,8 +63,33 @@ try:
         ('env -S "python3 plain.py"', False, "control: env -S with a script that does not send"),
         ("./harmless", False, "control: the same #! line on a script that does not send"),
         ("env -P /usr/local/bin ls", False, "control: env -P before a non-sender"),
+        # Bence 69481: launchers whose value options hid the command behind them
+        ("stdbuf -o0 python3 send.py", True, "stdbuf -o0"),
+        ("stdbuf -o 0 python3 send.py", True, "stdbuf -o 0"),
+        ("stdbuf --output=0 python3 send.py", True, "stdbuf --output=0"),
+        ("ionice -c 3 python3 send.py", True, "ionice -c 3"),
+        ("ionice -c3 -n 7 python3 send.py", True, "ionice -c3 -n 7"),
+        ("chrt -r 1 python3 send.py", True, "chrt -r 1 (a priority before the command)"),
+        ("chrt 1 python3 send.py", True, "chrt 1"),
+        ("caffeinate -i python3 send.py", True, "caffeinate -i"),
+        ("caffeinate -t 60 python3 send.py", True, "caffeinate -t 60"),
+        ("stdbuf -o0 python3 plain.py", False, "control: stdbuf before a script that does not send"),
     ]:
         got = ocg.script_run_sends(cmd, D)
+        check(f"ENVOPTHEAD1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
+    # Bence 69475: env -C DIR runs the command in DIR; the relative script is the one there, not the cwd's decoy
+    C = os.path.join(D, "decoy")
+    for cmd, want, what in [
+        (f"env -C {D}/evil python3 send.py", True, "env -C DIR"),
+        (f"env --chdir={D}/evil python3 send.py", True, "env --chdir=DIR"),
+        (f"env --chdir {D}/evil python3 send.py", True, "env --chdir DIR"),
+        (f"env -C{D}/evil python3 send.py", True, "env -CDIR"),
+        (f"env -i -C {D}/evil python3 send.py", True, "env -i -C DIR"),
+        ("env -C ../evil python3 send.py", True, "env -C with a relative DIR"),
+        ("env -C $X python3 send.py", True, "env -C with an undecidable DIR"),
+        (f"env -C {D}/decoy python3 send.py", False, "control: env -C into a dir whose script does not send"),
+    ]:
+        got = ocg.script_run_sends(cmd, C)
         check(f"ENVOPTHEAD1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 finally:
     shutil.rmtree(D, ignore_errors=True)

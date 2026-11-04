@@ -408,3 +408,21 @@ describe('env value options in front of the sender (ENVOPTHEAD1104)', () => {
     expect(scriptRunSends('./harmless', cwd)).toBe(false)
   })
 })
+
+describe('env -C and the launchers in front of the sender (ENVOPTHEAD1104, Bence 69475/69481)', () => {
+  it('env -C DIR resolves the relative script under DIR; stdbuf / ionice / chrt / caffeinate run the command behind them', () => {
+    const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
+    const cwd = workdir({ 'send.py': 'print(1)\n' })
+    mkdirSync(join(cwd, 'evil'))
+    writeFileSync(join(cwd, 'evil', 'send.py'), SMTP)
+    writeFileSync(join(cwd, 'sender.py'), SMTP)
+    for (const cmd of [`env -C ${cwd}/evil python3 send.py`, `env --chdir=${cwd}/evil python3 send.py`,
+      `env --chdir ${cwd}/evil python3 send.py`, `env -C${cwd}/evil python3 send.py`, 'env -C evil python3 send.py',
+      'env -C $X python3 send.py', 'stdbuf -o0 python3 sender.py', 'ionice -c 3 python3 sender.py',
+      'chrt -r 1 python3 sender.py', 'caffeinate -i python3 sender.py']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+    expect(scriptRunSends('python3 send.py', cwd)).toBe(false)
+    expect(scriptRunSends(`env -C ${cwd} python3 send.py`, cwd)).toBe(false)
+  })
+})

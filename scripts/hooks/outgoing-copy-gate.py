@@ -523,6 +523,12 @@ _WRAPPERS = {
     # first count found all sat inside quoted remote (ssh) command strings or heredoc
     # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
     "setsid": ("", (), 0),
+    # ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program, so the command behind
+    # them was never judged (measured on develop: all four were no send in front of a real sender).
+    "stdbuf": ("ioe", ("input", "output", "error"), 0),
+    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid"), 0),
+    "chrt": ("TPD", ("sched-runtime", "sched-period", "sched-deadline"), 1),  # then the priority, then the command
+    "caffeinate": ("tw", (), 0),
 }
 _HEAD_DEPTH = 8
 
@@ -681,6 +687,47 @@ def _command_heads(toks, _d: int = 0):
     for s in starts:
         heads += _command_heads(toks[s + positionals:], _d + 1)
     return heads
+
+
+def _env_chdir_dirs(words):
+    """ENVOPTHEAD1104 (Bence 69475): the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also
+    inside a cluster) runs its command in. A relative script there is resolved under DIR, not the cwd: they are handed
+    to the cd logic as `cd DIR` words, which also makes an undecidable DIR a send."""
+    out = []
+    for i, w in enumerate(words):
+        if _basename(w) != "env":
+            continue
+        j = i + 1
+        while j < len(words):
+            t = words[j]
+            if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
+                break
+            if t in ("-C", "--chdir"):
+                if j + 1 < len(words):
+                    out.append(words[j + 1])
+                j += 2
+                continue
+            if t.startswith("--chdir="):
+                out.append(t.split("=", 1)[1])
+            elif t.startswith("-") and not t.startswith("--"):
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in "uCSP"), -1)
+                if k > 0 and t[k] == "C":
+                    if k < len(t) - 1:
+                        out.append(t[k + 1:])
+                    elif j + 1 < len(words):
+                        out.append(words[j + 1])
+                        j += 1
+                elif k == len(t) - 1:
+                    j += 1  # the value of -u / -P / -S
+            j += 1
+    return out
+
+
+def _with_env_chdir(cmd_words):
+    words = list(cmd_words)
+    for d in _env_chdir_dirs(cmd_words):
+        words += ["cd", d]
+    return words
 
 
 def _env_split_heads(value, rest, _d):
@@ -1530,7 +1577,7 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         segments = _segments_tokens(cmd)
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
-    cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
+    cmd_words = _with_env_chdir(list(_cd_words) + [w for toks in segments for w in toks])
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 

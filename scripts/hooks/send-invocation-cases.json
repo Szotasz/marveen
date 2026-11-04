@@ -1938,6 +1938,46 @@
       "name": "ENVOPTHEAD1104: control, env -S with a non-sender",
       "cmd": "env -S \"echo hi\"",
       "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: stdbuf -o0 before the sender",
+      "cmd": "stdbuf -o0 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: stdbuf --output=0 before sendmail",
+      "cmd": "stdbuf --output=0 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: ionice -c 3 before the sender",
+      "cmd": "ionice -c 3 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: chrt -r 1 before sendmail",
+      "cmd": "chrt -r 1 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: chrt 1 before the sender",
+      "cmd": "chrt 1 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: caffeinate -i before sendmail",
+      "cmd": "caffeinate -i sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: caffeinate -t 60 before the sender",
+      "cmd": "caffeinate -t 60 python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, stdbuf before a non-sender",
+      "cmd": "stdbuf -o0 ls -la",
+      "expected": false
     }
   ]
 }
