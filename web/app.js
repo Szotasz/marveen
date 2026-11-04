@@ -3398,8 +3398,28 @@ function attachOverlayCloseGuard(overlay, check = () => confirmUnsavedInputClose
   })
 }
 
-// Wizard open
-addBtn.addEventListener('click', () => {
+// OWNERGATE2-1104: creating an agent (POST /api/agents, then the PUT of its CLAUDE.md/SOUL.md) needs the owner. The
+// public status says whether this window can act as the owner: no login set up yet (the token is the owner then), a
+// browser login, or the owner's session cookie beside the token or the Bridge key. An unknown answer opens the
+// wizard anyway; the server's own gate still decides.
+async function canActAsOwnerNow() {
+  try {
+    const r = await fetch('/api/auth/status', { cache: 'no-store' })
+    if (!r.ok) return true
+    const s = await r.json()
+    return Boolean(s && (s.setup_required || s.method === 'session' || s.owner_session === true))
+  } catch {
+    return true
+  }
+}
+
+// Wizard open: without the owner, the login comes first, so no create starts that the server would refuse halfway.
+addBtn.addEventListener('click', async () => {
+  if (!(await canActAsOwnerNow())) {
+    showToast(t('common.owner_session_required'))
+    if (typeof window.mvShowLogin === 'function') window.mvShowLogin({ cancellable: true })
+    return
+  }
   resetWizard()
   openModal(agentWizardOverlay)
   setTimeout(() => agentName.focus(), 200)
@@ -6836,7 +6856,10 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
   })
   if (!confirmed) return
   try {
-    await fetch(`${channelApiBase()}`, { method: 'DELETE' })
+    // OWNERGATE2-1104: the server may refuse (403 owner_session_required); a refusal is never shown as done.
+    const res = await fetch(`${channelApiBase()}`, { method: 'DELETE' })
+    const reply = await readActionReply(res)
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
     showToast(t('channel.toast.disconnected', { provider: provLabel }))
     await openAgentDetail(currentAgent.name)
     loadAgents()
@@ -17302,8 +17325,18 @@ async function switchToClaudePlan(plan) {
 
 async function deleteClaudePlan(id) {
   if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
-  await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
-  if (claudePlanFormEditing?.id === id) resetClaudePlanForm()
+  // OWNERGATE2-1104: the server may refuse (403 owner_session_required); show why instead of a silent no-op.
+  try {
+    const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+    } else if (claudePlanFormEditing?.id === id) {
+      resetClaudePlanForm()
+    }
+  } catch {
+    showToast(t('common.not_done', { msg: t('common.error') }))
+  }
   await loadClaudePlansList()
 }
 

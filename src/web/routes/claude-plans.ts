@@ -16,6 +16,7 @@
 import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { readBody, json } from '../http-helpers.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -189,6 +190,12 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
 
   // Create a new plan.
   if (path === '/api/claude-plans' && method === 'POST') {
+    // OWNERGATE2-1104: writes a new plan into store/claude-plans.json and its token into the vault, which decides
+    // which Claude subscription agents run on. The gate sits here, not in commitNewPlan (the login flow has its own).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Adding a Claude plan needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -446,7 +453,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
 
     const usage = usageFromProbe(result)
     logger.info(
-      { id: planId, ok: result.ok, error: result.ok ? undefined : result.error, httpStatus: result.httpStatus },
+      { id: planId, caller: ctx.auth?.kind ?? 'none', ok: result.ok, error: result.ok ? undefined : result.error, httpStatus: result.httpStatus },
       'Claude plan usage probed',
     )
     const payload = {
@@ -471,6 +478,12 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // a differing id in the body is discarded, so this can never rename a plan
   // into colliding with a different existing entry.
   if (idMatch && method === 'PUT') {
+    // OWNERGATE2-1104: rewrites a plan in store/claude-plans.json (its configDir or token, the credential agents
+    // on that plan run with) and the vault, so it is owner-only.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing a Claude plan needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -539,6 +552,12 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // simply starts reporting planUnresolved afterwards (resolveAgentConfigDir
   // already handles that) -- deleting here does not touch any agent config.
   if (idMatch && method === 'DELETE') {
+    // OWNERGATE2-1104: removes a plan from store/claude-plans.json and its token from the vault; agents on it lose
+    // their credential, so it is owner-only.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Removing a Claude plan needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const current = readClaudePlans()
     const removed = current.find((p) => p.id === idMatch[1])
     const next = current.filter((p) => p.id !== idMatch[1])

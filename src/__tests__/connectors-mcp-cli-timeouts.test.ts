@@ -102,7 +102,8 @@ async function call(method: string, path: string, body?: unknown) {
   let out = ''
   const res = { setHeader() {}, writeHead(s: number) { status = s }, end(b?: string) { out = b ?? '' } }
   const url = new URL('http://localhost' + path)
-  await tryHandleConnectors({ req, res, path: url.pathname, method, url } as any)
+  // The owner's browser login: adding a connector needs the owner (OWNERGATE2-1104); this file is about the CLI.
+  await tryHandleConnectors({ req, res, path: url.pathname, method, url, auth: { kind: 'session' } } as any)
   return { status, json: out ? JSON.parse(out) : null }
 }
 

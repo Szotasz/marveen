@@ -166,13 +166,13 @@ describe('the related agent endpoints', () => {
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}/remote`, SESSION, { host: '', workdir: '' }))).toBe(false)
   })
 
-  it('POST /import?overwrite=1: the token is refused before the bundle is read; without overwrite the gate does not apply', async () => {
+  it('POST /import: the token is refused before the bundle is read, with or without overwrite (OWNERGATE2-1104)', async () => {
     const before = snapshot()
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}&overwrite=1`, TOKEN, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' }))).toBe(true)
     expect(snapshot()).toEqual(before)
-    // Control: the same garbage without overwrite reaches the importer (a 400 for the bundle, not the owner gate).
+    // OWNERGATE2-1104 changed this control: importing a NEW agent is owner-only too, so the token is refused here as well.
     const plain = await hit(tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}-new`, TOKEN, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' })
-    expect(refusedByOwnerGate(plain)).toBe(false)
+    expect(refusedByOwnerGate(plain)).toBe(true)
     // And the session passes the overwrite gate (then the same bundle error).
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}&overwrite=1`, SESSION, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' }))).toBe(false)
   })

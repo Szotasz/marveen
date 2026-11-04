@@ -14,6 +14,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
@@ -437,6 +438,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/connectors' && method === 'POST') {
+    // OWNERGATE2-1104: runs `claude mcp add` (user or project scope) with a caller-given stdio command, i.e. a
+    // command every agent on that scope will launch; owner-only, before the body is read and before any spawn.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Adding a connector needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       name: string
@@ -569,6 +576,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   const connectorAssignMatch = path.match(/^\/api\/connectors\/(.+)\/assign$/)
   if (connectorAssignMatch && method === 'POST') {
+    // OWNERGATE2-1104: writes agents/<name>/.mcp.json (which MCP servers, and so which commands, an agent runs),
+    // the same file PUT /api/agents/:name gates as mcpJson; without this the assign was a way around that gate.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Assigning a connector to agents needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const connectorName = decodeURIComponent(connectorAssignMatch[1])
     const body = await readBody(req)
     const { agents: rawTargetAgents, allAgents: rawVisibleAgents } = JSON.parse(body.toString()) as { agents: string[], allAgents?: string[] }

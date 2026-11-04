@@ -38,7 +38,8 @@ async function call(path: string, method: string, body?: unknown): Promise<{ sta
     ? { headers: {} }
     : Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { headers: {} })
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url } as unknown as Ctx
+  // The owner's browser login: these routes need the owner (OWNERGATE2-1104); the gate itself is owner-gate-round2.test.ts.
+  const ctx = { req, res, path: url.pathname, method, url, auth: { kind: 'session' } } as unknown as Ctx
   expect(await tryHandleAgents(ctx, join(SANDBOX, 'web'))).toBe(true)
   return out
 }
