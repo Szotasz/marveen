@@ -735,6 +735,13 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const id = decodeURIComponent(catalogInstallMatch[1])
+    // OWNERGATE3-1104: runs `claude mcp add --scope user` for a catalog entry (mcp-catalog.local.json included,
+    // whose command any earlier owner add put there), i.e. a server every agent on the user scope will launch, and
+    // vaults the env values from the body; owner-only, before the catalog read, the body and any spawn.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Installing a connector from the catalog needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     try {
       const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)

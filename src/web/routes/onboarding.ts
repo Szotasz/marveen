@@ -317,6 +317,14 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // no-implicit-restart-of-a-working-fleet behaviour and reports
   // restartNeeded instead.
   if (path === '/api/onboarding/identity' && method === 'POST') {
+    // OWNERGATE3-1104: writes OWNER_NAME / BOT_NAME / BRAND_NAME into .env and renames the owner and the agent inside
+    // the main agent's CLAUDE.md and SOUL.md (who the agent believes its owner is), and may restart the channels
+    // session; owner-only, before the body is read. The first-run wizard runs before the first dashboard login
+    // exists, and there the bare token still passes (mayActAsOwner's first-run branch), as for claude-auth below.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the owner and agent names needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     let body: { agentName?: string; ownerName?: string } = {}
     const raw = await readBodyOrRefuse(req, res)
     if (!raw) return true

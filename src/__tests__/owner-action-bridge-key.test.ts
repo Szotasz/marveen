@@ -194,13 +194,13 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
   it('the non-issuing owner actions take the Bridge key beside the cookie', () => {
-    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 1], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
+    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 2], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, 0])
     }
   })
   it('credential issuance takes it too (PR-2); mayIssueCredentials is left only inside mayActAsOwner', () => {
     // auth.ts: users list/create/delete, key mint, and key revoke on every lane (DEVKEYREVOKETOKEN1104)
-    for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 1], ['claude-plans-login.ts', 1]] as const) {
+    for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 2], ['claude-plans-login.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, f === 'auth.ts' ? 1 : 0])
     }
   })

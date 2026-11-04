@@ -535,6 +535,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const globalSkillAssignMatch = path.match(/^\/api\/skills\/([^/]+)\/assign$/)
   if (globalSkillAssignMatch && method === 'POST') {
     const skillName = decodeURIComponent(globalSkillAssignMatch[1])
+    // OWNERGATE3-1104: copies a global skill into the named agents' own .claude/skills AND removes that skill's
+    // directory from every other agent (rmSync), with no quarantine or approval queue on this route; owner-only,
+    // before any lookup, the body, the copy or a removal.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Assigning a skill to agents needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
     const globalSkillDir = join(GLOBAL_SKILLS_DIR, skillName)
 
