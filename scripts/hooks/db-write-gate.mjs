@@ -69,6 +69,7 @@ import {
   splitSegments,
   underKey,
 } from '../self-pace-gate.mjs'
+import { claudeInvocations } from './child-claude-channel-guard.mjs'
 
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -141,6 +142,23 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // plugin cache...) resolve into ~/.claude, and the real path is compared, so they are judged where they land, not
   // here. The whole directory, as a directory: one entry covers a file Claude Code adds there tomorrow.
   { rel: '.channels-config', dir: true },
+  // The MCP server lists (ENVRELAXMCPCFG1104, Samu 68033/68034): a stdio server written into one of them runs as a
+  // command at the agent's next start, outside every PreToolUse gate, and the dashboard's reconcile only ever ADDS
+  // servers, so the entry would stay. A sub-agent writes none of them; the main agent and the dashboard do (fleet MCP
+  // setup), so this is the sub-agent list:
+  //   agents/*/.mcp.json                   -- an agent's project-scope servers (its own and another's)
+  //   agents/*/.claude-config/.claude.json -- an agent's isolated user-scope servers (mcpServers, projects[].mcpServers)
+  //   .mcp.json                            -- the install's project-scope servers (tracked: a worktree's own copy is
+  //                                           another root and stays free)
+  //   .channels-config/.claude.json        -- the main agent's isolated user config (MAIN_AGENT_ISOLATED_CONFIG):
+  //                                           covered by the .channels-config directory entry above (#2503)
+  //   ~/.claude.json                       -- the shared user config: the reconcile copies servers FROM it
+  // Claude Code's own writes of .claude.json (its state, on every session) are not tool calls: this gate never sees
+  // them. Its backups/ copies are not listed (stated limit).
+  { rel: 'agents/*/.mcp.json', pattern: true },
+  { rel: 'agents/*/.claude-config/.claude.json', pattern: true },
+  { rel: '.mcp.json' },
+  { home: '.claude.json' },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -166,11 +184,13 @@ function callerSettingsEntries(projectDir, configDir) {
   const out = []
   if (projectDir) {
     const dir = resolve(String(projectDir))
-    for (const rel of ['.claude/settings.json', '.claude/settings.local.json']) out.push({ rel, abs: resolve(dir, rel), caller: true })
+    // ...and its project-scope MCP servers (ENVRELAXMCPCFG1104)
+    for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) out.push({ rel, abs: resolve(dir, rel), caller: true })
   }
   if (configDir) {
     const dir = resolve(String(configDir))
-    for (const f of ['settings.json', 'settings.local.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
+    // ...and its user-scope MCP servers in the config dir's .claude.json (ENVRELAXMCPCFG1104)
+    for (const f of ['settings.json', 'settings.local.json', '.claude.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
   }
   return out
 }
@@ -205,6 +225,16 @@ const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'h
   'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe'])
 const GLOB_CHAR_RX = /[*?[{]/
+// A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
+// zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
+// (ENVRELAXMCPCFG1104) and every non-reader command with one was denied: `sqlite3 db "SELECT count(*) ..."`
+// (worker-gates.test.ts). Fail closed: a command that names any shell setting that lets a glob match leading-dot
+// names, or a zsh glob qualifier on any pattern, keeps the old, strict reading. Option names are read the way the
+// shells read them (underscores and case ignored). A false hit only brings back the strict reading.
+// Stated limit: such a setting switched on in the user's shell rc is not visible here.
+// Only the Bash path sets shellGlob; a file tool's path or an MCP argument is never read this way.
+const DOTGLOB_RX = /dotglob|globdots|globignore|fignore|\([^)\s]*D[^)\s]*\)/i
+const namesDotglob = (cmd) => DOTGLOB_RX.test(cmd.replace(/_/g, ''))
 
 // A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
 function patternExact(key, t) {
@@ -271,7 +301,11 @@ export function classifyWord(word, ctx) {
         for (const T of t.segs) {
           const n = Math.min(W.length, T.length)
           let ok = true
-          for (let i = 0; i < n && ok; i++) ok = T[i] === '*' && t.pattern ? W[i] !== '' : nameForms(W[i]).some((f) => globMatchesName(f, T[i]))
+          const dotRule = ctx.shellGlob === true && ctx.dotglob !== true
+          for (let i = 0; i < n && ok; i++) {
+            ok = T[i] === '*' && t.pattern ? W[i] !== ''
+              : nameForms(W[i]).some((f) => globMatchesName(f, T[i]) && !(dotRule && T[i].startsWith('.') && !f.startsWith('.')))
+          }
           if (!ok) continue
           if (W.length === T.length) return 'exact'
           if (W.length > T.length) { if (t.dir) return 'under'; continue }
@@ -623,7 +657,7 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null }
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd) }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
@@ -789,6 +823,21 @@ export function fileToolDeny(toolInput, opts = {}) {
   return c === 'exact' || c === 'under' || c === 'unresolved' ? 'install-file' : null
 }
 
+// `claude mcp add|add-json|add-from-claude-desktop|remove` (ENVRELAXMCPCFG1104, Dani 68088, Samu 68092): the CLI
+// writes an MCP server list itself, so no path appears in the command. A sub-agent may not run it, for any --scope;
+// the main agent may. The invocation is found by the child-claude guard's own parser (a `claude` at a segment's start,
+// after env assignments and wrappers). Not seen (stated limit, Dani 68129): a `claude` not at a segment's start --
+// started from a script, inside `bash -c`/`sh -c`, through `xargs`, as `$(which claude)` or from a variable
+// (`C=claude; $C`) -- or as `npx @anthropic-ai/claude-code`. The same class holds for the other text gates; the
+// shell-code recursion is separate, wider work.
+const CLAUDE_MCP_WRITE_SUBS = new Set(['add', 'add-json', 'add-from-claude-desktop', 'remove'])
+export function claudeMcpListWrite(command) {
+  return claudeInvocations(String(command ?? '')).some((args) => {
+    const i = args.indexOf('mcp')
+    return i >= 0 && CLAUDE_MCP_WRITE_SUBS.has(args[i + 1])
+  })
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   // A deny that only the sub-agent list gives gets its own message (ENVRELAXGATE1104).
@@ -800,6 +849,7 @@ function decide(toolName, toolInput, opts = {}) {
   }
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
+    if (subOnly() && claudeMcpListWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     const file = installFileDeny(command, opts)
     if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
@@ -855,8 +905,12 @@ export const SUBAGENT_FILE_GATE_MSG =
   '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
   'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
   'store/.fleet-memgate-observe fajlt, sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
-  '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, plugins/*.json): ' +
-  'letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
+  '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, .claude.json, plugins/*.json), ' +
+  'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
+  'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
+  'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
+  'amit ez a kapu NEM lat (limit): egy plugin sajat szerverlistajat (a plugin-mappa .mcp.json-ja, plugin.json mcpServers) es egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
+  'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
 
