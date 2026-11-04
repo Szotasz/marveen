@@ -362,7 +362,10 @@ def _script_arg_ranges(text):
 
 # marveen #2482: a burkolok PARANCSSZTRINGJE is futo kod, nem proza. `flock FILE -c '...'`,
 # `env -S '...'`, es a `watch` / `parallel` maradek szavai (shell-sztringkent futnak).
-_WRAP_CMDSTR_FLAG_RE = re.compile(r'(?<![\w-])(?:-c|--command|-S|--split-string)(?:=|[ \t]+)(?=[\'"])')
+# A rovid alak OSSZEIRVA is (flock -c'...', env -S"...", egy rovid-kapcsolo-csoport vegen is),
+# a hosszu alak = jellel vagy kulon szoban (Samu review, #2484).
+_WRAP_CMDSTR_FLAG_RE = re.compile(
+    r'(?<![\w-])(?:-[A-Za-z0-9]*[cS](?:[ \t]+)?|(?:--command|--split-string)(?:=|[ \t]+))(?=[\'"])')
 _WRAP_CMDSTR_HEAD_RE = re.compile(r'(?<![\w-])(?:[^\s;|&]*/)?(?:flock|env)[ \t]')
 _WRAP_SHELL_RE = re.compile(r'(?<![\w-])(?:[^\s;|&]*/)?(?:watch|parallel)[ \t]')
 
@@ -675,10 +678,18 @@ def _parse_wrapper(toks, i, base, scripts):
         if j >= len(toks):
             return None
         j += 1
-    if base == 'flock' and j < len(toks) and toks[j][0] in ('-c', '--command'):
-        if j + 1 < len(toks):
-            scripts.append(toks[j + 1][0])
-        return None
+    if base == 'flock' and j < len(toks):
+        t = toks[j][0]
+        if t in ('-c', '--command'):
+            if j + 1 < len(toks):
+                scripts.append(toks[j + 1][0])
+            return None
+        if t.startswith('--command='):          # flock FILE --command='...'
+            scripts.append(t[len('--command='):])
+            return None
+        if t.startswith('-c') and len(t) > 2:   # flock FILE -c'...' (osszeirva)
+            scripts.append(t[2:])
+            return None
     if j >= len(toks):
         return None
     if spec.get('shell') and not (base == 'watch' and any(

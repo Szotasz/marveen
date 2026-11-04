@@ -702,6 +702,12 @@ for name, cmd in [
     ("flock LOCK -c 'parancs'", "flock /tmp/l -c '" + RM + TGT + "'"),
     ("watch 'parancs' (shell-sztring)", "watch -n 2 '" + RM + TGT + "'"),
     ("xargs -i (opcionalis ertek, nem nyeli a parancsot)", "ls | xargs -i " + RM + TGT),
+    # Samu review (#2484): a parancssztring-kapcsolo OSSZEIRVA es hosszu alakban is.
+    ("env -S\"...\" (osszeirva)", 'env -S"' + RM + TGT + '"'),
+    ("env -S'...' (osszeirva)", "env -S'" + RM + TGT + "'"),
+    ("flock -c\"...\" (osszeirva)", 'flock -c"' + RM + TGT + '" /tmp/l'),
+    ("env --split-string=\"...\"", 'env --split-string="' + RM + TGT + '"'),
+    ("flock --command='...'", "flock /tmp/l --command='" + RM + TGT + "'"),
 ]:
     check("#2482 burkolt torles blokkolva: " + name, blocks(cmd))
 
@@ -723,6 +729,7 @@ for name, cmd in [
     ("env X=1 grep -c '.ssh-ut emlitese'", "env FOO=1 grep -c 'see ~/.ssh/id_rsa here' notes.txt"),
     ("flock LOCK -c 'make test'", "flock /tmp/l -c 'make test'"),
     ("emlites idezojelben", "echo \"flock -c '" + RM + " -rf /'\""),
+    ("env -S\"ls -la\" (osszeirva, artalmatlan)", 'env -S"ls -la"'),
 ]:
     check("#2482 artalmatlan burkolt parancs atengedve: " + name, not blocks(cmd))
 
