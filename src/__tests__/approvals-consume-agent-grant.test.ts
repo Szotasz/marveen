@@ -30,8 +30,9 @@ vi.mock('../web/telegram.js', async (importOriginal) => {
   return { ...real, sendTelegramMessage: vi.fn(async () => null) }
 })
 
-import { initDatabase, getApproval, listApprovals } from '../db.js'
-import { gateRequest } from '../web/auth-gate.js'
+import { initDatabase, getApproval, listApprovals, createDashboardUser } from '../db.js'
+import { gateRequest, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
+import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { agentTokenPath, createAgentTokenResolver, ensureAgentToken, syncAgentTokenOnStart } from '../web/agent-tokens.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -49,7 +50,12 @@ type Out = { status: number; body: any }
 
 function mkReq(token: string, body: unknown): http.IncomingMessage {
   const r = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
-  ;(r as unknown as { headers: Record<string, string> }).headers = { authorization: `Bearer ${token}` }
+  // OWNERGATE4-1104: approving takes the owner even before the first login, so the main lane's calls carry the owner's
+  // session cookie beside the token (the owner's browser); without it the born-approved POST and the approve PATCH are 403.
+  ;(r as unknown as { headers: Record<string, string> }).headers = {
+    authorization: `Bearer ${token}`,
+    ...(token === MAIN_TOKEN && ownerCookie ? { cookie: `${SESSION_COOKIE_NAME}=${ownerCookie}` } : {}),
+  }
   return r
 }
 
@@ -110,7 +116,13 @@ function expectNotGranted(r: Out, agent: string): void {
   expect(r.body.error).toContain(`not granted to the calling agent '${agent}'`)
 }
 
-beforeEach(() => { initDatabase(':memory:') })
+let ownerCookie = ''
+beforeEach(() => {
+  initDatabase(':memory:')
+  _clearSessionCacheForTest()
+  const owner = createDashboardUser('owner', 'x'.repeat(60))
+  ownerCookie = createSession({ userId: owner.id, username: 'owner' })
+})
 
 describe('POST /api/approvals/:id/consume with a sub-agent token', () => {
   it('the granted sub-agent consumes its row once (200), the replay is 409 already_consumed', async () => {

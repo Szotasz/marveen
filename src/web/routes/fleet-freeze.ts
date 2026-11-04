@@ -7,12 +7,11 @@
 // Switching ON is open to every dashboard credential, an agent's token included:
 // an agent that sees something going wrong may pull the brake itself, and a
 // brake pulled by mistake costs a minute of the owner's time. Lifting it is the
-// owner's: the SAME predicate that guards issuing credentials (mayIssueCredentials,
-// routes/auth.ts, DEVKEYMINT1022), so an agent that went astray, or text that
-// talked one into it, cannot unfreeze itself with the shared token. Before the
-// first dashboard login exists the token is the only owner credential there is,
-// and that predicate lets it through; the CLI-free way out is still deleting
-// store/fleet-freeze.json on the machine.
+// owner's: the owner gate (mayActAsOwner, routes/auth.ts, DEVKEYMINT1022), so an
+// agent that went astray, or text that talked one into it, cannot unfreeze itself
+// with the shared token. Not even before the first dashboard login exists
+// (OWNERGATE4-1104: refuseOwner then says to create one); the CLI-free way out is
+// still deleting store/fleet-freeze.json on the machine.
 import { MAIN_AGENT_ID } from '../../config.js'
 import { logConfigChange } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -24,7 +23,7 @@ import {
   type FleetFreezeMode, type FleetFreezeState,
 } from '../fleet-freeze.js'
 import { json, readBody } from '../http-helpers.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 4 * 1024
@@ -128,7 +127,7 @@ export async function tryHandleFleetFreeze(ctx: RouteContext): Promise<boolean> 
 
   if (path === '/api/fleet/unfreeze' && method === 'POST') {
     if (!mayActAsOwner(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+      refuseOwner(res, 'Lifting the fleet freeze needs the dashboard login (an owner session).')
       return true
     }
     const prev = clearFleetFreeze()

@@ -9,7 +9,7 @@ import {
   type AuthHeaderType,
 } from '../custom-providers.js'
 import type { RouteContext } from './types.js'
-import { mayActAsOwnerStrict, refuseOwner } from './auth.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 
 // GET/POST/DELETE /api/custom-providers
 // Owner-only: federation callers cannot manage custom providers.
@@ -34,7 +34,7 @@ export async function tryHandleCustomProviders(ctx: RouteContext): Promise<boole
   // OLLAMA_URL setting, #2513), so adding, replacing or removing one needs the owner, not the shared access token.
   // Reading the list stays as it was.
   const writes = (path === '/api/custom-providers' && method === 'POST') || (/^\/api\/custom-providers\/[^/]+$/.test(path) && method === 'DELETE')
-  if (writes && !mayActAsOwnerStrict(ctx.auth, req)) {
+  if (writes && !mayActAsOwner(ctx.auth, req)) {
     refuseOwner(res, 'Adding, changing or removing a custom provider needs the dashboard login (an owner session).')
     return true
   }

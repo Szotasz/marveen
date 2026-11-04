@@ -1,7 +1,7 @@
 // FLEETIMPORTGATE1022 (4): once a dashboard login exists, raising an autonomy level takes the
 // owner's session. The fleet's one shared token reaches POST /api/autonomy from every agent, and
 // email_send at 3 lets the mail approval gate wave every send through. Lowering (and setting
-// the same level) stays on the token; the token keeps everything for the first-run setup.
+// the same level) stays on the token. OWNERGATE4-1104: before the first login the token no longer raises either.
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -76,10 +76,15 @@ beforeEach(() => {
   seed()
 })
 
-describe('first-run setup (no dashboard user yet): the token still raises', () => {
-  it('raises email_send to 3', async () => {
-    expect((await setLevel(TOKEN_AUTH, 'email_send', 3)).status).toBe(200)
-    expect(levelOf('email_send')).toBe(3)
+describe('first-run setup (no dashboard user yet): the token cannot raise either', () => {
+  // OWNERGATE4-1104: raising a level is no first-run path; refuseOwner says to create the login first.
+  it('a raise of email_send to 3 is refused with setup_required and nothing is written', async () => {
+    const r = await setLevel(TOKEN_AUTH, 'email_send', 3)
+    expect(r.status).toBe(403)
+    expect(r.json().code).toBe('owner_session_required')
+    expect(r.json().setup_required).toBe(true)
+    expect(levelOf('email_send')).toBe(2)
+    expect(h.writes).toBe(0)
   })
 })
 

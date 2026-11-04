@@ -19,7 +19,7 @@ import {
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwnerOrFirstRun, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
 import type { RouteContext } from './types.js'
 
@@ -320,8 +320,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // OWNERGATE3-1104: writes OWNER_NAME / BOT_NAME / BRAND_NAME into .env and renames the owner and the agent inside
     // the main agent's CLAUDE.md and SOUL.md (who the agent believes its owner is), and may restart the channels
     // session; owner-only, before the body is read. The first-run wizard runs before the first dashboard login
-    // exists, and there the bare token still passes (mayActAsOwner's first-run branch), as for claude-auth below.
-    if (!mayActAsOwner(ctx.auth, req)) {
+    // exists, and there the bare token still passes (the first-run setup, OWNERGATE4-1104, FIRST_RUN_PATHS
+    // 'onboarding-identity'), as for claude-auth below.
+    if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'onboarding-identity')) {
       json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the owner and agent names needs the dashboard login (an owner session).' }, 403)
       return true
     }
@@ -400,8 +401,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/onboarding/claude-auth' && method === 'POST') {
     // It replaces the credential the whole fleet runs on, so the shared
     // dashboard token alone is not enough once a dashboard login exists
-    // (the first-run wizard runs before that, and is unaffected).
-    if (!mayActAsOwner(ctx.auth, req)) {
+    // (the first-run wizard runs before that, and is unaffected: OWNERGATE4-1104, FIRST_RUN_PATHS
+    // 'onboarding-claude-auth').
+    if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'onboarding-claude-auth')) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }

@@ -1,7 +1,7 @@
 // SETUPTOKENWIZ1022: the /api/claude-plans/login/* routes. The relay is a fake
 // (setup-token-login.test.ts and setup-token-pty-relay.test.ts cover it), the
 // live probe is a stub, the vault an in-memory Map; the owner gate is the REAL
-// mayIssueCredentials over an in-memory database.
+// owner gate (mayActAsOwnerOrFirstRun 'claude-plans-login', OWNERGATE4-1104) over an in-memory database.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -119,7 +119,7 @@ function noTokenAnywhere() {
   expect(JSON.stringify(logged)).not.toContain(CODE.code)
 }
 
-describe('owner gate (mayIssueCredentials)', () => {
+describe('owner gate (mayActAsOwnerOrFirstRun)', () => {
   it('with a dashboard login, the shared token gets 403 on every login route and nothing starts', async () => {
     await addOwner()
     for (const [m, p, b] of [

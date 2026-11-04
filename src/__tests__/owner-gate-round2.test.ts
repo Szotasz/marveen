@@ -3,10 +3,10 @@
 // channel, grant someone the right to message an agent (pairing approve, invites, Slack channel requests), read the
 // live invite tokens, revoke an invite or deny a channel request (every channel-access write, tech lead decision),
 // delete an agent, add a connector (`claude mcp add`) or assign one into an agent's .mcp.json. Those need the owner
-// (mayActAsOwnerStrict): the
+// (mayActAsOwner; OWNERGATE4-1104 merged mayActAsOwnerStrict into it): the
 // browser login, the token with the owner's session cookie, or the Bridge's full key with that cookie. Before the
 // first dashboard login exists the bare token still passes ONLY agent create, channel setup and a channel's FIRST
-// pairing approve (the customer first-run path, mayActAsOwner); every other gate refuses it then with setup_required
+// pairing approve (the customer first-run path, mayActAsOwnerOrFirstRun); every other gate refuses it then with setup_required
 // (review finding, tech lead decision), measured here route by route. The connector routes that run code on the host
 // (GitHub repo install/update/remove, external project paths, MCP catalog install) are gated the same way. Rotate and
 // probe stay token-callable (the rotation heartbeat uses them). A refused call writes NOTHING, measured on the bytes.

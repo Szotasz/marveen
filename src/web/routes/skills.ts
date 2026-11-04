@@ -18,7 +18,7 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName } from '../sanitize.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED, mayActAsOwnerStrict, refuseOwner } from './auth.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -281,13 +281,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (pendingActionMatch && method === 'POST') {
     // The decision on a quarantined skill is the owner's, never the shared token every agent holds
     // (an agent could otherwise put its own quarantined skill live, fleet-wide). The same predicate
-    // as issuing credentials (mayIssueCredentials, #2163): the owner's session, also when the
-    // browser sends the stored token alongside it; the bare token only before the first dashboard
-    // login exists. Reject is held to the same bar, so an agent cannot discard what is waiting for
-    // the owner's review either.
+    // as issuing credentials (mayActAsOwner, #2163): the owner's session, also when the browser
+    // sends the stored token alongside it; the bare token never, not even before the first dashboard
+    // login exists (OWNERGATE4-1104). Reject is held to the same bar, so an agent cannot discard what
+    // is waiting for the owner's review either.
     if (!mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: pendingActionMatch[1], action: pendingActionMatch[2], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Pending skill decision refused: no owner session')
-      json(res, OWNER_SESSION_REQUIRED, 403)
+      refuseOwner(res, 'Deciding on a quarantined skill needs the dashboard login (an owner session).')
       return true
     }
     const id = decodeURIComponent(pendingActionMatch[1])
@@ -538,7 +538,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // OWNERGATE3-1104: copies a global skill into the named agents' own .claude/skills AND removes that skill's
     // directory from every other agent (rmSync), with no quarantine or approval queue on this route; owner-only,
     // before any lookup, the body, the copy or a removal.
-    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+    if (!mayActAsOwner(ctx.auth, req)) {
       refuseOwner(res, 'Assigning a skill to agents needs the dashboard login (an owner session).')
       return true
     }

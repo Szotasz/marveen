@@ -8,7 +8,7 @@ import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
 import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
-import { mayActAsOwnerStrict, refuseOwner } from './auth.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 import { exactTmuxTarget } from '../../tmux-target.js'
 
 // Per-agent dashboard terminal: live pane stream (SSE), keystroke injection,
@@ -133,7 +133,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // pane; owner-only, before the body is read. Turning it OFF is gated too: no machine caller turns it off
       // (none in scripts/, src/, the skills or the UI beyond the owner's own toggle), and an open OFF would let the
       // shared token silently cut the owner's terminal mid-session.
-      if (!mayActAsOwnerStrict(ctx.auth, ctx.req)) {
+      if (!mayActAsOwner(ctx.auth, ctx.req)) {
         refuseOwner(res, 'Turning terminal input on or off needs the dashboard login (an owner session).')
         return true
       }
@@ -247,7 +247,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     // OWNERGATE3-1104: types arbitrary input into an agent's tmux pane, i.e. full control of that agent; the
     // toggle below is a second switch, not an identity check (while it is ON, the shared token every sub-agent can
     // read would pass it). Owner-only, before the toggle, the target lookup, the body and any tmux call.
-    if (!mayActAsOwnerStrict(ctx.auth, ctx.req)) {
+    if (!mayActAsOwner(ctx.auth, ctx.req)) {
       logger.warn({ name, remote, xff, ua, auth: ctx.auth?.kind ?? 'none' }, 'agent-terminal: KEYS INJECTION REFUSED (no owner session)')
       refuseOwner(res, 'Typing into an agent\'s terminal needs the dashboard login (an owner session).')
       return true
@@ -308,7 +308,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     const name = decodeURIComponent(loginMatch[1])
     // OWNERGATE3-1104: types the scripted /login sequence into the agent's pane and confirms it, i.e. starts a new
     // Claude login for that agent (whose account it then runs on); owner-only, before the target lookup and any tmux.
-    if (!mayActAsOwnerStrict(ctx.auth, ctx.req)) {
+    if (!mayActAsOwner(ctx.auth, ctx.req)) {
       refuseOwner(res, 'Starting an agent\'s Claude login needs the dashboard login (an owner session).')
       return true
     }

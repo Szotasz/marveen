@@ -11,7 +11,8 @@
 // owner's recovery path is the machine-local CLI, npm run dashboard-user --
 // reset-password <username> (DEVKEYMINT1022).
 // Once a user exists, issuing credentials and adding or removing users take the
-// owner's session instead (mayIssueCredentials, DEVKEYMINT1022).
+// owner's session instead (mayActAsOwner, DEVKEYMINT1022; the first login and the first
+// device stay on the first-run setup, mayActAsOwnerOrFirstRun, OWNERGATE4-1104).
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -46,6 +47,7 @@ import {
 } from '../login-throttle.js'
 import {
   createDeviceKey,
+  deviceKeyEverIssued,
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
@@ -133,50 +135,33 @@ export function bridgeOwner(auth: RouteContext['auth'], req?: http.IncomingMessa
   return auth?.kind === 'device' && auth.scope === 'full' && ownerCookieSession(req) !== null
 }
 
-// DEVKEYMINT1022: issuing a credential (a device key, a Bridge pairing) and adding
-// or removing a dashboard user GRANT access, and the bearer token cannot tell the
-// owner apart from anything else that holds it. So once a dashboard login exists,
-// these take the owner's session. The token keeps them only for the first-run
-// setup (no user yet), where it is the one credential there is. The machine-local
-// CLI (npm run dashboard-user, npm run remote-enroll) stays the break-glass.
-// Counted with the disabled users too: a disabled account still means a login was
-// set up, so it must not reopen the first-run path.
-// A logged-in owner whose browser also keeps the access token sends both: the
-// gate resolves the bearer first, so the session cookie is checked here as well.
-export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
-  if (auth?.kind === 'session') return true
-  if (auth?.kind !== 'token') return false
-  // A sub-agent's own token is never the owner, not even before the first
-  // login exists: that bare-token rule is about the SHARED token.
-  if (auth.tokenAgent) return false
-  if (countDashboardUsers(true) === 0) return true
-  return ownerCookieSession(req) !== null
-}
-
 /** The owner's password-login session riding on this request as its cookie: its user name, or null. The ONE place
- *  the cookie branch is decided (BRIDGEPWLOGIN1101, Dani 65623 (a)): isOwnerSession (gromzo.ts), mayIssueCredentials
- *  and mayActAsOwner all read it, so expiry, idle limit and logout (resolveSession) are the same for every gate. */
+ *  the cookie branch is decided (BRIDGEPWLOGIN1101, Dani 65623 (a)): isOwnerSession (gromzo.ts), mayActAsOwner and
+ *  mayActAsOwnerOrFirstRun all read it, so expiry, idle limit and logout (resolveSession) are the same for every gate. */
 export function ownerCookieSession(req?: http.IncomingMessage): string | null {
   const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
   if (!cookie) return null
   return resolveSession(cookie)?.username ?? null
 }
 
-/** BRIDGEPWLOGIN1101 (Dani 65623): every owner action, credential issuance included since PR-2 (device keys,
- *  users, Bridge enrolment, operator access, the fleet's Claude credential, plan login). mayIssueCredentials, plus a
- *  FULL device key sent alongside a valid owner session cookie: the Bridge, whose webview sends its key on every call
- *  while the owner signed in with the password inside it. The cookie is the owner's proof; the key adds nothing and
- *  must not hide it. A bare device key never passes, not even before the first login exists (the first-run branch
- *  stays in mayIssueCredentials, for the shared token only); never an operator key, a peer or a sub-agent token.
- *  Each pass through the key branch is one audit line naming the owner. */
+/** OWNERGATE4-1104: the owner gate of every owner action. It needs the owner's proof on every request: a session
+ *  principal; the shared token (never a sub-agent's own token) only with a valid owner session cookie beside it (a
+ *  logged-in owner whose browser also keeps the access token sends both, and the gate resolves the bearer first); a
+ *  FULL device key only with that cookie (the Bridge, whose webview sends its key on every call while the owner signed
+ *  in with the password inside it; the cookie is the proof, the key adds nothing; one audit line naming the owner).
+ *  Never a bare device key, an operator key, a peer or a sub-agent token.
+ *  There is NO first-run branch here: the shared token is readable by every sub-agent, so letting it act as the owner
+ *  while no dashboard login exists opened every owner gate to the whole fleet on an install without a login. Before
+ *  the first login it refuses everything (refuseOwner then says to create one), except the closed list of paths a
+ *  fresh install needs, which call mayActAsOwnerOrFirstRun instead. */
 export function mayActAsOwner(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
-  if (mayIssueCredentials(auth, req)) return true
+  if (auth?.kind === 'session') return true
+  if (auth?.kind === 'token') return !auth.tokenAgent && ownerCookieSession(req) !== null
   return bridgeOwnerAudited(auth, req)
 }
 
-/** The device-key branch both owner gates share: a FULL key with a valid owner session cookie beside it, and on a
- *  pass the one audit line naming the owner. Kept in one place so mayActAsOwner and mayActAsOwnerStrict write the
- *  same line. */
+/** The device-key branch of the owner gate: a FULL key with a valid owner session cookie beside it, and on a pass the
+ *  one audit line naming the owner. */
 function bridgeOwnerAudited(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
   if (auth?.kind !== 'device' || auth.scope !== 'full') return false
   const owner = ownerCookieSession(req)
@@ -185,17 +170,65 @@ function bridgeOwnerAudited(auth: RouteContext['auth'], req?: http.IncomingMessa
   return true
 }
 
-/** OWNERGATE2-1104 (review finding, Samu): mayActAsOwner WITHOUT the first-run branch. mayIssueCredentials lets the
- *  bare shared token act as the owner while no dashboard login exists, and every sub-agent can read that token, so on
- *  an install without a login every owner-gated route was open to the whole fleet. This gate needs the owner's proof
- *  on every request: a session principal; the shared token (never a sub-agent's own token) only with a valid owner
- *  session cookie beside it; a FULL device key only with that cookie (the same audited branch as mayActAsOwner). So
- *  before the first login it refuses everything (refuseOwner then says to create one). Only agent creation and channel
- *  setup keep mayActAsOwner and its first-run branch: a fresh customer install needs them before any login exists. */
-export function mayActAsOwnerStrict(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
-  if (auth?.kind === 'session') return true
-  if (auth?.kind === 'token') return !auth.tokenAgent && ownerCookieSession(req) !== null
-  return bridgeOwnerAudited(auth, req)
+/** OWNERGATE4-1104: the closed list of paths a fresh install needs before any dashboard login exists, and why each is
+ *  on it. Only these may call mayActAsOwnerOrFirstRun; a source-scan test (owner-gate-first-run-pin.test.ts) pins
+ *  every call and its reason to this list, so a new first-run caller cannot appear without editing it.
+ *   - 'agent-create': POST /api/agents. The customer install creates its first agent in the onboarding wizard.
+ *   - 'channel-setup': POST /api/agents/:name/channels/:provider (and the legacy /telegram). Onboarding step 2: the
+ *     bot token and the owner's chat id, so the owner can reach the agent at all.
+ *   - 'first-pairing': the channel pairing approve, ONLY while the channel has no approved sender yet (the call site
+ *     checks channelHasNoApprovedSender). Onboarding step 3: the owner pairs themself; a second sender is strict.
+ *   - 'onboarding-identity': POST /api/onboarding/identity. The wizard's first step (owner and agent names).
+ *   - 'onboarding-claude-auth': POST /api/onboarding/claude-auth. The wizard stores the Claude credential the fleet
+ *     runs on; nothing works before it.
+ *   - 'claude-plans-login': the plan login (routes/claude-plans-login.ts). The first Claude login of the install.
+ *   - 'first-login': POST /api/auth/users. Creating the FIRST dashboard login; without this path a login could
+ *     never be created from the dashboard, and every refuseOwner answer sends the user here.
+ *   - 'first-device': POST /api/security/bridge-enroll and POST /api/auth/device-keys (mint). Pairing the owner's
+ *     first device (the Bridge); only while no device key was ever issued on this install (deviceKeyEverIssued). */
+export const FIRST_RUN_PATHS = [
+  'agent-create',
+  'channel-setup',
+  'first-pairing',
+  'onboarding-identity',
+  'onboarding-claude-auth',
+  'claude-plans-login',
+  'first-login',
+  'first-device',
+] as const
+
+export type FirstRunPath = (typeof FIRST_RUN_PATHS)[number]
+
+/** OWNERGATE4-1104: the shared token as the owner while no dashboard login exists. Only the shared token (never a
+ *  sub-agent's own token), only with zero dashboard users (counted with the disabled ones: a disabled account still
+ *  means a login was set up, so it must not reopen this path). Its single caller is mayActAsOwnerOrFirstRun. */
+function firstRunSharedToken(auth: RouteContext['auth']): boolean {
+  if (auth?.kind !== 'token' || auth.tokenAgent) return false
+  return countDashboardUsers(true) === 0
+}
+
+/** OWNERGATE4-1104: mayActAsOwner, plus the first-run setup for the closed list of paths in FIRST_RUN_PATHS.
+ *  Why first-run exists: on a fresh customer install no dashboard login exists yet, so no request can carry the
+ *  owner's proof, and the shared token is the one credential there is. The onboarding wizard (identity, Claude
+ *  credential, first agent, its channel, the owner's pairing), creating the first login and pairing the first device
+ *  must work then. Everything else waits for the login (mayActAsOwner, refuseOwner says to create one).
+ *  Passes when mayActAsOwner passes; or when the caller is the shared token (kind 'token', not a sub-agent's token)
+ *  and no dashboard user exists. For 'first-device' additionally no device key may ever have been issued on this
+ *  install (revoked and expired ones count: a key that existed means a device was already paired; fail closed).
+ *  For 'first-login' also a FULL device key while no dashboard user exists: the window the first device pairing
+ *  opened (the Bridge) holds that key and no token, and it is where the dashboard offers to create the login. The
+ *  key could only be issued by the first-device path or by the owner, so it adds nothing the token cannot already do
+ *  here. Each first-run pass writes one audit line { why, path, method } (no credential in it). */
+export function mayActAsOwnerOrFirstRun(auth: RouteContext['auth'], req: http.IncomingMessage | undefined, why: FirstRunPath): boolean {
+  if (mayActAsOwner(auth, req)) return true
+  let firstRun = firstRunSharedToken(auth)
+  if (!firstRun && why === 'first-login') {
+    firstRun = auth?.kind === 'device' && auth.scope === 'full' && countDashboardUsers(true) === 0
+  }
+  if (firstRun && why === 'first-device' && deviceKeyEverIssued()) firstRun = false
+  if (!firstRun) return false
+  logger.info({ why, path: req?.url?.split('?')[0], method: req?.method, auth: auth?.kind }, 'owner action on the first-run setup: no dashboard login exists yet')
+  return true
 }
 
 export const CLI_RECOVERY_ONLY = {
@@ -213,7 +246,7 @@ export const OWNER_SESSION_REQUIRED = {
  *  login that is not there: the login has to be created first. */
 export const OWNER_LOGIN_SETUP_REQUIRED_ERROR = 'This needs the dashboard login (an owner session), and no dashboard login exists yet. Create one first: Settings, Security, dashboard login. Then sign in and try again.'
 
-/** OWNERGATE2-1104: the 403 a strict owner gate (mayActAsOwnerStrict) answers with. Always code owner_session_required,
+/** OWNERGATE2-1104: the 403 an owner gate (mayActAsOwner) answers with. Always code owner_session_required,
  *  so every client that keys on the code keeps working; the per-route error text unless no dashboard login exists, in
  *  which case setup_required: true and OWNER_LOGIN_SETUP_REQUIRED_ERROR say to create one first. `extra` carries
  *  route-specific fields (e.g. `fields`). */
@@ -402,10 +435,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    // The usernames are the first half of a password guess, so once a login
-    // exists the list takes the owner's session too (DEVKEYFOLLOW1022).
+    // The usernames are the first half of a password guess, so the list takes the owner's session too
+    // (DEVKEYFOLLOW1022). OWNERGATE4-1104: before the first login there is no user to list, and refuseOwner says so.
     if (!mayActAsOwner(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+      refuseOwner(res, 'Listing the dashboard logins needs the dashboard login (an owner session).')
       return true
     }
     json(res, { users: listDashboardUsers() })
@@ -413,11 +446,14 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
-    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
+    // OWNERGATE4-1104: before the first login a FULL device key may create it (the Bridge window the first pairing
+    // opened holds no token); the kind check lets it through to the owner gate, which decides ('first-login').
+    const firstLoginKey = auth?.kind === 'device' && auth.scope === 'full' && countDashboardUsers(true) === 0
+    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req) && !firstLoginKey) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (!mayActAsOwner(auth, req)) {
+    if (!mayActAsOwnerOrFirstRun(auth, req, 'first-login')) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
@@ -465,8 +501,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (!mayActAsOwner(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+    // OWNERGATE4-1104: before the first login the shared token mints only the FIRST device key ('first-device').
+    if (!mayActAsOwnerOrFirstRun(auth, req, 'first-device')) {
+      refuseOwner(res, 'Issuing a device key needs the dashboard login (an owner session).')
       return true
     }
     let body: Record<string, unknown>
@@ -520,11 +557,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Every lane passes the owner gate (DEVKEYREVOKETOKEN1104). Revoking a key can lock the owner out of their own
     // Bridge (and drops its SSH line), so the shared access token alone is not enough once a dashboard login exists:
     // every sub-agent can read that token. The browser login (session), the token with the owner's session cookie
-    // beside it, and the Bridge's full key with that cookie pass; before the first login the token still does (the
-    // first-run branch in mayIssueCredentials). On the device lane it also writes the audit line naming the owner
-    // (Dani 65912 (2)).
+    // beside it, and the Bridge's full key with that cookie pass; before the first login nothing does
+    // (OWNERGATE4-1104, refuseOwner says to create the login). On the device lane it also writes the audit line
+    // naming the owner (Dani 65912 (2)).
     if (!mayActAsOwner(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+      refuseOwner(res, 'Revoking a device key needs the dashboard login (an owner session).')
       return true
     }
     const id = Number(deviceKeyMatch[1])
@@ -559,7 +596,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (!mayActAsOwner(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+      refuseOwner(res, 'Removing a dashboard login needs the dashboard login (an owner session).')
       return true
     }
     const username = decodeURIComponent(delMatch[1]!)

@@ -2,7 +2,7 @@
 // (CLAUDE.md, SOUL.md), what it runs (.mcp.json), where its prompt goes (customProvider, custom providers), which login
 // it runs under (authMode, apiKey, claudePlan), its memory boundary, its security profile, where it runs (remote) or
 // replace it wholesale (import with overwrite). Those need the owner: the browser login, the token with the owner's
-// session cookie beside it, or the Bridge's full key with that cookie (mayActAsOwnerStrict since OWNERGATE2-1104: no first-run branch). model and
+// session cookie beside it, or the Bridge's full key with that cookie (mayActAsOwner, strict since OWNERGATE2-1104 / OWNERGATE4-1104: no first-run branch). model and
 // modelProfile stay token-writable (Samu 69185). A refused call writes NOTHING, measured on the bytes.
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'

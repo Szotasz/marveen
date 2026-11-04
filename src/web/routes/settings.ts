@@ -8,22 +8,22 @@ import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import { noticeTargetDrift } from '../../notify.js'
 import { announceSlackOwnerChange } from '../../notify.js'
 
 // A change the registry marks as loosening a security control (SettingDefinition.loosens) needs the
 // owner. The shared fleet token is held by every agent, so it cannot be told apart from the agent
-// the control constrains. Who counts as the owner is the predicate that guards issuing credentials
-// (mayIssueCredentials, #2163): the owner's session, also when the browser sends the stored token
-// alongside it; the bare token only before the first dashboard login exists.
+// the control constrains. Who counts as the owner is the owner gate (mayActAsOwner, #2163): the
+// owner's session, also when the browser sends the stored token alongside it; the bare token never,
+// not even before the first dashboard login exists (OWNERGATE4-1104: refuseOwner then answers
+// setup_required and says to create one).
 function ownerCredential(ctx: RouteContext): boolean {
   return mayActAsOwner(ctx.auth, ctx.req)
 }
 const LOOSEN_FORBIDDEN = {
   ...OWNER_SESSION_REQUIRED,
-  error: 'This change loosens a security control: it needs the dashboard login (an owner session), not the shared token. ' +
-    'The token alone can do it only before the first login exists.',
+  error: 'This change loosens a security control: it needs the dashboard login (an owner session), not the shared token.',
 }
 
 const OWNER_GATED_FORBIDDEN = {
@@ -98,12 +98,12 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
 
       if (def.loosens?.(String(getEffectiveSettingValue(key)), String(validation.value)) && !ownerCredential(ctx)) {
-        json(res, LOOSEN_FORBIDDEN, 403)
+        refuseOwner(res, LOOSEN_FORBIDDEN.error)
         return true
       }
       // NETTARGETENV1104: a target key needs the owner for ANY change, tightening or not.
       if (def.ownerGated && !ownerCredential(ctx)) {
-        json(res, OWNER_GATED_FORBIDDEN, 403)
+        refuseOwner(res, OWNER_GATED_FORBIDDEN.error)
         return true
       }
 
@@ -168,11 +168,11 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
 
       if (def.loosens?.(String(getEffectiveSettingValue(key)), String(getSettingFallback(key).value)) && !ownerCredential(ctx)) {
-        json(res, LOOSEN_FORBIDDEN, 403)
+        refuseOwner(res, LOOSEN_FORBIDDEN.error)
         return true
       }
       if (def.ownerGated && !ownerCredential(ctx)) {
-        json(res, OWNER_GATED_FORBIDDEN, 403)
+        refuseOwner(res, OWNER_GATED_FORBIDDEN.error)
         return true
       }
       setStoreWriteActor(actor)

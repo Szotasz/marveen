@@ -1,6 +1,7 @@
 // BRIDGEPWLOGIN1101 PR-1 (Samu 65617, Dani 65623): an owner action that issues no credential takes a FULL device key
 // (the Bridge) sent alongside a valid owner session cookie. The cookie is the owner's proof; the key must not hide it.
-// Credential issuance stays on mayIssueCredentials (its own PR). Real resolveAuth, real sessions, real device keys.
+// Credential issuance followed in PR-2; OWNERGATE4-1104 removed mayIssueCredentials and made mayActAsOwner the one strict
+// owner gate (first-run setup only through mayActAsOwnerOrFirstRun). Real resolveAuth, real sessions, real device keys.
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -18,7 +19,8 @@ vi.mock('../config.js', async (orig) => {
 })
 import { initDatabase, getDb, getDashboardUser, getRecentConfigChanges } from '../db.js'
 import { resolveAuth, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { bridgeOwner, mayActAsOwner, mayActAsOwnerStrict, mayIssueCredentials, ownerCookieSession, tryHandleAuth } from '../web/routes/auth.js'
+import * as authModule from '../web/routes/auth.js'
+import { bridgeOwner, FIRST_RUN_PATHS, mayActAsOwner, mayActAsOwnerOrFirstRun, ownerCookieSession, tryHandleAuth } from '../web/routes/auth.js'
 import { isOwnerSession } from '../web/routes/gromzo.js'
 import { tryHandleSkills } from '../web/routes/skills.js'
 import { tryHandleFleetFreeze } from '../web/routes/fleet-freeze.js'
@@ -108,18 +110,24 @@ describe('the predicate (the five-case matrix, Samu 65617, and Dani 65623 (c))',
     expect(mayActAsOwner({ kind: 'token' }, reqWith({}))).toBe(false)
   })
 
-  it('B6: before the first login a bare full key is still refused (the first-run branch is the shared token only)', () => {
+  // OWNERGATE4-1104: flipped; before the first login the bare token is no longer the owner either (mayActAsOwner), and
+  // the first-run setup takes a bare full key only for creating the first login (the Bridge window holds no token).
+  it('B6: before the first login a bare full key and the bare token are refused by mayActAsOwner; the key passes only first-login', () => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
     _clearSessionCacheForTest()
     const req = reqWith({ authorization: `Bearer ${keyOf()}` })
-    expect(mayActAsOwner(authOf(req), req)).toBe(false)
-    expect(mayActAsOwner({ kind: 'token' }, req)).toBe(true)
+    const auth = authOf(req)
+    expect(mayActAsOwner(auth, req)).toBe(false)
+    expect(mayActAsOwner({ kind: 'token' }, req)).toBe(false)
+    for (const why of FIRST_RUN_PATHS) expect([why, mayActAsOwnerOrFirstRun(auth, req, why)]).toEqual([why, why === 'first-login'])
   })
 
-  it('B7: mayIssueCredentials itself still refuses a key with a cookie (the key branch lives in mayActAsOwner only); isOwnerSession reads the same cookie branch', () => {
+  // OWNERGATE4-1104: mayIssueCredentials is gone (one owner gate now), so B7 pins its absence instead of its refusal.
+  it('B7: mayIssueCredentials is no longer exported; isOwnerSession reads the same cookie branch', () => {
     const req = reqWith({ authorization: `Bearer ${keyOf()}`, cookie: cookieHeader() })
     const auth = authOf(req)
-    expect(mayIssueCredentials(auth, req)).toBe(false)
+    expect('mayIssueCredentials' in authModule).toBe(false)
+    expect('mayActAsOwnerStrict' in authModule).toBe(false)
     expect(isOwnerSession(auth, req)).toBe(true)
     expect(ownerCookieSession(req)).toBe('owner')
     revokeSession(cookie)
@@ -149,28 +157,28 @@ describe('the predicate (the five-case matrix, Samu 65617, and Dani 65623 (c))',
   })
 })
 
-// OWNERGATE2-1104 (review finding): mayActAsOwner without the first-run branch. Real resolveAuth, real sessions, real
-// device keys, the same matrix as above plus the zero-users row that mayActAsOwner lets through.
-describe('mayActAsOwnerStrict', () => {
+// OWNERGATE2-1104 (review finding): the owner gate without the first-run branch. OWNERGATE4-1104: that is mayActAsOwner
+// itself now (mayActAsOwnerStrict is gone); the zero-users row passes only mayActAsOwnerOrFirstRun.
+describe('mayActAsOwner (strict since OWNERGATE4-1104)', () => {
   const zeroUsers = () => { getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users'); _clearSessionCacheForTest() }
   it('a session principal is the owner', () => {
-    expect(mayActAsOwnerStrict({ kind: 'session', user: 'owner' } as RouteContext['auth'], reqWith({}))).toBe(true)
+    expect(mayActAsOwner({ kind: 'session', user: 'owner' } as RouteContext['auth'], reqWith({}))).toBe(true)
   })
-  it('the shared token without a cookie is refused, also with zero dashboard users (where mayActAsOwner lets it through)', () => {
-    expect(mayActAsOwnerStrict({ kind: 'token' }, reqWith({}))).toBe(false)
+  it('the shared token without a cookie is refused, also with zero dashboard users (where only mayActAsOwnerOrFirstRun lets it through)', () => {
+    expect(mayActAsOwner({ kind: 'token' }, reqWith({}))).toBe(false)
     zeroUsers()
-    expect(mayActAsOwnerStrict({ kind: 'token' }, reqWith({}))).toBe(false)
-    expect(mayActAsOwner({ kind: 'token' }, reqWith({}))).toBe(true)
+    expect(mayActAsOwner({ kind: 'token' }, reqWith({}))).toBe(false)
+    expect(mayActAsOwnerOrFirstRun({ kind: 'token' }, reqWith({}), 'agent-create')).toBe(true)
   })
   it('the shared token with the owner cookie is the owner; a sub-agent token with it is not', () => {
     const req = reqWith({ cookie: cookieHeader() })
-    expect(mayActAsOwnerStrict({ kind: 'token' }, req)).toBe(true)
-    expect(mayActAsOwnerStrict({ kind: 'token', agent: 'zara', tokenAgent: 'zara' }, req)).toBe(false)
+    expect(mayActAsOwner({ kind: 'token' }, req)).toBe(true)
+    expect(mayActAsOwner({ kind: 'token', agent: 'zara', tokenAgent: 'zara' }, req)).toBe(false)
   })
-  it('a full key with the owner cookie is the owner, with the same audit line mayActAsOwner writes', () => {
+  it('a full key with the owner cookie is the owner, with the audit line naming the owner', () => {
     const spy = vi.spyOn(logger, 'info')
     const req = reqWith({ authorization: `Bearer ${keyOf()}`, cookie: cookieHeader() })
-    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(true)
+    expect(mayActAsOwner(authOf(req), req)).toBe(true)
     const line = spy.mock.calls.find((c) => String(c[1]).includes('owner action on a Bridge key'))
     expect(line?.[0]).toMatchObject({ owner: 'owner', auth: 'device', device: 'Bridge' })
     spy.mockRestore()
@@ -178,46 +186,47 @@ describe('mayActAsOwnerStrict', () => {
   it('a bare full key is refused (with and without dashboard users); an operator key with the cookie is refused', () => {
     const key = keyOf()
     let req = reqWith({ authorization: `Bearer ${key}` })
-    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(false)
+    expect(mayActAsOwner(authOf(req), req)).toBe(false)
     req = reqWith({ authorization: `Bearer ${keyOf('operator')}`, cookie: cookieHeader() })
-    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(false)
+    expect(mayActAsOwner(authOf(req), req)).toBe(false)
     zeroUsers()
     req = reqWith({ authorization: `Bearer ${key}` })
-    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(false)
+    expect(mayActAsOwner(authOf(req), req)).toBe(false)
   })
   it('no principal is refused', () => {
-    expect(mayActAsOwnerStrict(undefined as RouteContext['auth'], reqWith({ cookie: cookieHeader() }))).toBe(false)
+    expect(mayActAsOwner(undefined as RouteContext['auth'], reqWith({ cookie: cookieHeader() }))).toBe(false)
   })
 })
 
-describe('which call site asks which predicate (source pin, all 17 sites)', () => {
+// OWNERGATE4-1104: one owner gate (mayActAsOwner, strict) and the closed first-run list (mayActAsOwnerOrFirstRun); the
+// per-call `why` is pinned in owner-gate-first-run-pin.test.ts. These counts moved with the merge of the two predicates.
+describe('which call site asks which predicate (source pin, every route file)', () => {
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
   it('the non-issuing owner actions take the Bridge key beside the cookie', () => {
-    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 1], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
-      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, 0])
+    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 2], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
+      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerOrFirstRun')]).toEqual([f, n, 0])
     }
   })
-  it('credential issuance takes it too (PR-2); mayIssueCredentials is left only inside mayActAsOwner', () => {
-    // auth.ts: users list/create/delete, key mint, and key revoke on every lane (DEVKEYREVOKETOKEN1104)
-    for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 2], ['claude-plans-login.ts', 1]] as const) {
-      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, f === 'auth.ts' ? 1 : 0])
+  it('credential issuance: the owner gate, and the first-run setup only for the first login, the first device and the onboarding', () => {
+    // auth.ts mayActAsOwner: users list, key revoke, user delete, and the one inside mayActAsOwnerOrFirstRun;
+    // first-run: the first user and the first key mint.
+    for (const [f, n, first] of [['auth.ts', 4, 2], ['security.ts', 0, 1], ['operator-access.ts', 1, 0], ['onboarding.ts', 0, 2], ['claude-plans-login.ts', 0, 1]] as const) {
+      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerOrFirstRun')]).toEqual([f, n, first])
     }
   })
-  it('the kind gates in front of issuance let only the Bridge owner through as a device', () => {
+  it('the kind gates in front of issuance let only the Bridge owner through as a device (and a full key for the first login)', () => {
     expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\) && !bridgeOwner\(auth, req\)/g) ?? []).length).toBe(6)
     expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\)\) \{/g) ?? []).length).toBe(0)
+    expect(src('auth.ts')).toContain('!bridgeOwner(auth, req) && !firstLoginKey)')
     expect(src('security.ts')).toContain('!bridgeOwner(auth, req)')
     expect(src('operator-access.ts')).toContain('!bridgeOwner(auth, req)')
   })
-  it('OWNERGATE2-1104: the agent, channel, plan, provider and connector gates take the strict predicate; only agent create, channel setup and a channel\'s first pairing approve keep the first-run branch', () => {
-    // agents.ts mayActAsOwner: POST /api/agents, channel setup, and approve while the channel has no approved sender.
-    // OWNERGATE3-1104: agents.ts +4 strict (auto-restart, voice-config, OpenRouter manual, auth/init); agent-terminal.ts 3
-    // (terminal-input, keys, login); skills.ts 1 strict (assign) beside its older mayActAsOwner (the skill decision).
-    for (const [f, loose, strict] of [['agents.ts', 3, 19], ['connectors.ts', 0, 9], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1], ['agent-terminal.ts', 0, 3], ['skills.ts', 1, 1]] as const) {
-      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerStrict'), count(f, 'mayIssueCredentials')]).toEqual([f, loose, strict, 0])
+  it('the agent, channel, plan, provider and connector gates take the owner gate; only agent create, channel setup and a channel\'s first pairing approve take the first-run setup', () => {
+    for (const [f, owner, first] of [['agents.ts', 19, 3], ['connectors.ts', 9, 0], ['claude-plans.ts', 3, 0], ['custom-providers.ts', 1, 0], ['agent-terminal.ts', 3, 0]] as const) {
+      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerOrFirstRun')]).toEqual([f, owner, first])
     }
-    expect(src('agents.ts')).toContain('firstPairing ? mayActAsOwner(ctx.auth, req) : mayActAsOwnerStrict(ctx.auth, req)')
+    expect(src('agents.ts')).toContain("firstPairing ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'first-pairing') : mayActAsOwner(ctx.auth, req)")
   })
 })
 
@@ -360,14 +369,16 @@ describe('on the real routes', () => {
     }
   })
 
-  // Before the first login the shared token is the one credential there is (the first-run branch of
-  // mayIssueCredentials): it still revokes. Pinned so the gate does not lock a fresh install out of its own keys.
-  it('R3e: before the first dashboard login the bare token still revokes', async () => {
+  // OWNERGATE4-1104 (tech lead): flipped. Revoking is no first-run path: an agent could cut the owner off its Bridge on
+  // an install without a login. The install is not locked out: creating the first login stays open ('first-login'), and
+  // the 403 says so (setup_required).
+  it('R3e: before the first dashboard login the bare token cannot revoke: 403 setup_required, the key stays', async () => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
     _clearSessionCacheForTest()
     const target = createDeviceKey('Unpaired')
-    expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${TOKEN}` })).status).toBe(200)
-    expect(getDeviceKey(target.id)).toBeNull()
+    const r = await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${TOKEN}` })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(getDeviceKey(target.id)).not.toBeNull()
   })
 
   it('R4: dashboard users: key + cookie adds and removes one; a logged-out cookie does not', async () => {

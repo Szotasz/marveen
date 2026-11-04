@@ -23,7 +23,7 @@ Minden más hoszt kérdés nélkül tiltva van, nyers sockettel és proxy-megker
    Alapból üres, vagyis senki nincs sandboxban. A fő ágensre nem hat.
    - Ágenst felvenni bármely hívó tud.
    - LEVENNI csak a gazda tud: ugyanaz a szabály, mint a hitelesítő adatok kiadásánál
-     (`mayIssueCredentials`, #2163). A bejelentkezett gazda-session (akkor is, ha a böngésző mellette a
+     (`mayActAsOwner`, #2163). A bejelentkezett gazda-session (akkor is, ha a böngésző mellette a
      tárolt tokent is küldi) igen; a közös token egymagában nem (403), eszközkulcs sem. A sandboxolt
      ágens ugyanis a localhoston eléri a dashboardot, és ugyanazt a tokent birtokolja, amit a gazda
      UI-ja is használ; a tokenről nem dönthető el, ki a hívó. Dashboard-login nélküli telepítésen

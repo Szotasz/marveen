@@ -6,7 +6,7 @@
 //   POST /api/claude-plans/login/cancel
 //   GET  /api/claude-plans/login/status -> {active, phase, error, url}
 //
-// Every route takes the owner (mayIssueCredentials): this mints a credential
+// Every route takes the owner (mayActAsOwnerOrFirstRun): this mints a credential
 // that runs the whole fleet on a subscription, so the shared bearer token alone
 // is not enough once a dashboard login exists. One more owner credential is let
 // in here, and only here (SETUPTOKENHU1023, owner decision): a full-scope device
@@ -32,7 +32,7 @@ import {
   type LaunchResult, type LoginErrorCode, type LoginTimeouts,
 } from '../setup-token-login.js'
 import { commitNewPlan } from './claude-plans.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwnerOrFirstRun, OWNER_SESSION_REQUIRED } from './auth.js'
 import { getDeviceKey } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
@@ -115,7 +115,8 @@ export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<bool
   const { req, res, path, method } = ctx
   if (!path.startsWith('/api/claude-plans/login/')) return false
 
-  if (!mayActAsOwner(ctx.auth, req) && !isPairedBridgeKey(ctx.auth)) {
+  // OWNERGATE4-1104: the first Claude login of a fresh install runs before any dashboard login (FIRST_RUN_PATHS).
+  if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'claude-plans-login') && !isPairedBridgeKey(ctx.auth)) {
     json(res, OWNER_SESSION_REQUIRED, 403)
     return true
   }

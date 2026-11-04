@@ -15,7 +15,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5', APP_TZ: 'Europe/Budapest' }))
 // OWNERGATE2-1104: the route now imports the owner gate (routes/auth.js), whose import chain needs config exports this
 // file's minimal config mock does not have. The gate is measured in owner-gate-round2.test.ts; here the caller is the owner.
-vi.mock('../web/routes/auth.js', () => ({ mayActAsOwner: () => true, mayActAsOwnerStrict: () => true, refuseOwner: () => {}, OWNER_SESSION_REQUIRED: { error: 'owner', code: 'owner_session_required' } }))
+vi.mock('../web/routes/auth.js', () => ({ mayActAsOwner: () => true, refuseOwner: () => {}, OWNER_SESSION_REQUIRED: { error: 'owner', code: 'owner_session_required' } }))
 
 let rotationEnabled = '0'
 let fleetEnabled = false
