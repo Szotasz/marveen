@@ -63,7 +63,8 @@ async function putAgentModel(body: unknown): Promise<{ status: number; body: any
     ;(req as unknown as EventEmitter).emit('end')
   })
   const handled = await tryHandleAgents(
-    { req, res, path: url.pathname, method: 'PUT', url } as unknown as RouteContext,
+    // The owner's browser login: customProvider needs the owner (APIAGENTWRITE1104); this file is about the model id.
+    { req, res, path: url.pathname, method: 'PUT', url, auth: { kind: 'session' } } as unknown as RouteContext,
     join(PROJECT_ROOT, 'web'),
   )
   expect(handled).toBe(true)
