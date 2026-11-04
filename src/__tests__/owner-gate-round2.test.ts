@@ -218,7 +218,7 @@ type Case = {
   label: string
   // OWNERGATE2-1104: true only for the routes that keep the first-run branch (agent create, channel setup). Every other
   // case is refused before the first login too, with setup_required.
-  firstRunOpen?: true
+  firstRunOpen?: boolean
   handler: Handler
   method: string
   path: () => string
@@ -266,13 +266,17 @@ const CASES: Case[] = [
   },
   {
     // botToken missing -> 400 before any network token check.
-    firstRunOpen: true, label: 'POST /api/agents/:name/channels/telegram (setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/channels/telegram`,
+    // OWNERGATE4-1104 (review, Samu 69637): this fixture's Telegram channel is already configured (bot token +
+    // access.json), so the first-run setup is closed here; the still-empty case lives in owner-gate-first-run.test.ts.
+    firstRunOpen: false, label: 'POST /api/agents/:name/channels/telegram (setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/channels/telegram`,
     body: { allowFrom: ['999'] },
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('botToken is required') },
   },
   {
-    firstRunOpen: true, label: 'POST /api/agents/:name/telegram (legacy setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/telegram`,
+    // OWNERGATE4-1104 (review, Samu 69637): this fixture's Telegram channel is already configured (bot token +
+    // access.json), so the first-run setup is closed here; the still-empty case lives in owner-gate-first-run.test.ts.
+    firstRunOpen: false, label: 'POST /api/agents/:name/telegram (legacy setup)', handler: tryHandleAgents, method: 'POST', path: () => `/api/agents/${AGENT}/telegram`,
     body: { allowFrom: ['999'] },
     snapshot: agentFiles,
     ownerCheck: (r) => { expect(r.status).toBe(400); expect(r.body.error).toBe('botToken is required') },
