@@ -1592,18 +1592,14 @@ def _file_sends(path, text, kind, read_script) -> bool:
 # installed package, an import that cannot be parsed, code the judge cannot follow (dynamic import, exec/eval/compile,
 # getattr and friends, a dunder or private attribute, a module reached through another module's attribute:
 # `imaplib.socket`, `pathlib.os`), os and sys beyond a few plain attributes, the depth or file budget running out.
+# Exactly the imports of the draft writers (Samu 69321, Bence 69319); widening it is a gate decision, not a fix.
 _PY_DRAFT_MODULES = frozenset((
-    "imaplib", "email", "argparse", "json", "re", "datetime", "time", "calendar", "zoneinfo", "base64", "binascii",
-    "quopri", "pathlib", "textwrap", "html", "mimetypes", "uuid", "hashlib", "getpass", "string", "typing",
-    "dataclasses", "enum", "collections", "itertools", "functools", "math", "decimal", "fractions", "random",
-    "secrets", "unicodedata", "locale", "io", "csv", "codecs", "copy", "pprint", "abc", "__future__", "warnings",
-    "tomllib", "glob", "fnmatch", "shlex", "traceback", "os", "sys",
+    "imaplib", "email", "argparse", "json", "re", "datetime", "time", "base64", "pathlib", "textwrap", "html",
+    "mimetypes", "uuid", "hashlib", "getpass", "string", "os", "sys",
 ))
 # os and sys only through these attributes (a bare `os`, passed on or aliased, is not followed)
-_PY_OS_ATTRS = frozenset(("path", "environ", "getenv", "getcwd", "sep", "linesep", "makedirs", "listdir", "remove",
-                          "unlink", "rename"))
-_PY_SYS_ATTRS = frozenset(("argv", "exit", "stdin", "stdout", "stderr", "version_info", "version", "platform",
-                           "maxsize", "getdefaultencoding"))
+_PY_OS_ATTRS = frozenset(("path", "environ", "getenv", "getcwd"))
+_PY_SYS_ATTRS = frozenset(("argv", "exit", "stdin"))
 # Builtins that run code (or a pager, help()), and the reflective reaches, as bare names (`re.compile` is not `compile`)
 _PY_UNFOLLOWED_CODE = re.compile(
     r"(?<![\w.])(?:__import__|exec|eval|compile|execfile|__builtins__|getattr|setattr|delattr|globals|locals|vars"

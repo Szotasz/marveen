@@ -403,14 +403,18 @@ try:
         "type_hints": "import typing\ntyping.get_type_hints(object)\n",
         "help": "help(str)\n",
         "not_allowlisted": "import shutil\n",
+        "not_allowlisted_typing": "from typing import Optional\n",
+        "not_allowlisted_collections": "import collections\n",
+        "os_listdir": "import os\nos.listdir('.')\n",
+        "sys_stderr": "import sys\nprint('x', file=sys.stderr)\n",
     }
     for name, body in round2.items():
         put(f"cg/v_{name}.py", body)
     # the allowlist's plain forms a draft writer uses: not a send
     plain = {
         "os_plain": "from os import environ, path\nfrom os.path import join\nimport os.path\nprint(environ, path, join('a'), os.path.join('a'))\n",
-        "sys_plain": "import sys\nprint(sys.argv[1:], file=sys.stderr)\nsys.exit(0)\n",
-        "class_self": "from typing import Optional\nfrom dataclasses import dataclass\n@dataclass\nclass D:\n    x: Optional[int] = None\n    def f(self):\n        return self._x\n",
+        "sys_plain": "import sys\nbody = sys.stdin.read()\nprint(sys.argv[1:], body)\nsys.exit(0)\n",
+        "class_self": "import imaplib\nclass D:\n    def __init__(self):\n        self._c = None\n    def f(self):\n        return self._c\n",
     }
     for name, body in plain.items():
         put(f"cg/p_{name}.py", body)
