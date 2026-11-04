@@ -65,6 +65,7 @@ describe('registry: which keys are overrides-only', () => {
     expect(withLoosens.length).toBeGreaterThanOrEqual(8)
     for (const def of withLoosens) expect(registry.isOverridesOnly(def), def.key).toBe(true)
     expect(withLoosens.map((d) => d.key)).toContain('BASH_EGRESS_HOST_ALLOW')
+    expect(withLoosens.map((d) => d.key)).toContain('NOTIFY_SLACK_ALERT_TARGET')
   })
 
   it('BASH_EGRESS_HOST_ALLOW: switching it on loosens, switching it off does not', () => {
@@ -90,6 +91,8 @@ describe('store: override > .env (only if it tightens) > default', () => {
     envFile.APPROVAL_SLACK_REACTIONS = 'on'
     envFile.BASH_EGRESS_HOST_ALLOW = '1'
     envFile.SLACK_OWNER_USER_ID = 'U0SOMEONE'
+    envFile.NOTIFY_SLACK_ALERT_TARGET = 'D0ALERTSELSEWHERE'
+    expect(store.getEffectiveSettingSource('NOTIFY_SLACK_ALERT_TARGET')).toEqual({ value: '', source: 'default' })
     expect(store.getEffectiveSettingSource('NOTIFY_SLACK_TARGET')).toEqual({ value: '', source: 'default' })
     expect(store.getEffectiveSettingSource('APPROVAL_SLACK_REACTIONS')).toEqual({ value: 'off', source: 'default' })
     expect(store.getEffectiveSettingSource('BASH_EGRESS_HOST_ALLOW')).toEqual({ value: '0', source: 'default' })

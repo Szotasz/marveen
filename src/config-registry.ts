@@ -884,6 +884,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // Where every alert goes FIRST (slack-notify.mjs): any change re-routes them, like NOTIFY_SLACK_TARGET (Dani's #2500
+    // review). So it is overrides-only, and a .env line never counts.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'NOTIFY_TELEGRAM',

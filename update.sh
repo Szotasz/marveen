@@ -2309,7 +2309,7 @@ if [ -f "$_env_check_cli" ] && command -v node >/dev/null 2>&1; then
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
       echo -e "  ${ORANGE:-}⚠${NC:-} The .env line for ${_ik} is IGNORED: it would loosen a security control. Set it on the Settings page instead."
     else
-      echo -e "  ${ORANGE:-}⚠${NC:-} A .env ${_ik} sora NEM hat: egy biztonsagi kapcsolot lazitana. A Beallitasok oldalon allithato."
+      echo -e "  ${ORANGE:-}⚠${NC:-} A .env ${_ik} sora NEM hat: egy biztonsági kapcsolót lazítana. A Beállítások oldalon állítható."
     fi
   done
 fi
