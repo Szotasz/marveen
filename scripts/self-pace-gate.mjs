@@ -1592,7 +1592,9 @@ function resolveFlatSubst(cmd, opts) {
 // quotes or heredoc bodies do not split (maskInertLiterals decides that), and
 // a heredoc body is handed back to the segment whose `<<` owns it. Returns null
 // when the quoting cannot be resolved -- the caller then denies.
-const SEGMENT_SEP_RX = /\|\||&&|\|&|;;|[;|\n]|(?<![<>])&(?!>)/g
+// A `|` right after a `>` is the `>|` (noclobber-override) redirection, not a pipe (ENVRELAXGATE1104, measured: the
+// db-write-gate read `echo x >| <protected>` as `echo x >` piped into running the protected path, and let it through).
+const SEGMENT_SEP_RX = /\|\||&&|\|&|;;|[;\n]|(?<!>)\||(?<![<>])&(?!>)/g
 export function shellSegments(command, opts) {
   const src = resolveFlatSubst(resolveCatSubst(resolveLiteralHeredocSubst(String(command ?? '')), opts), opts)
     .replace(/\\\r?\n/g, ' ')
@@ -1848,9 +1850,12 @@ const READ_ONLY_FS = new Set([
 ])
 const TEXT_FILTERS = new Set(['grep', 'egrep', 'fgrep', 'head', 'tail', 'wc', 'cut', 'tr', 'nl', 'cat', 'uniq', 'column', 'sort', 'sed'])
 const FIND_ACTION_RX = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/
-// sed: only -n/-E/-r and line-range print/delete scripts (`1,60p`, `$d`) -- no
-// `w file`, no `e command`, no -i.
-const SED_SCRIPT_RX = /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?[pd];?)+$/
+// sed: only -n/-E/-r and print/delete scripts -- a line range (`1,60p`, `$d`), a /regex/ address (`/^X=/p`), or a
+// substitution printing its result (`s/^WEB_PORT=//p`, the seed skills' port read, ENVRELAXGATE1104) with only the
+// g/p/I/i/number flags -- no `w file`, no `e command`, no second command, no -i.
+const SED_ADDR = String.raw`(?:\d+|\$|/(?:[^/\\\n]|\\.)*/)`
+const SED_PART = String.raw`(?:[^/\\\n]|\\.)*`
+const SED_SCRIPT_RX = new RegExp(String.raw`^(?:(?:${SED_ADDR}(?:,${SED_ADDR})?)?(?:[pd]|s/${SED_PART}/${SED_PART}/[gpIi0-9]*);?)+$`)
 function sedIsPrintOnly(words) {
   let script = 0
   for (const w of words.slice(1)) {

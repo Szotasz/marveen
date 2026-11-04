@@ -100,16 +100,45 @@ export const PROTECTED_INSTALL_PATHS = [
   { home: '.gitconfig' },
   { home: 'git/config', xdg: true },
 ]
+// ENVRELAXGATE1104 (Dani's inventory 67751 and plan v2, Samu 67732/67752/67763): files whose ONE write turns a gate off or
+// gives an agent a right, for a SUB-AGENT only. The main agent writes the install .env legitimately (self-rename), so
+// these are not in the common list above; the same real-path engine measures them, so a worktree's own copy (another
+// root) stays free, and a read (`sed -n`, `grep`, `cat`, the seed skills' `PORT="$(sed -n ... .env)"`) passes.
+//   .env                                -- SUDO_AGENTS (agentMaySudo reads it on every spawn: sudo at the next respawn),
+//                                          MAIN_AGENT_ID (who the governance gates exempt), and the hooks' relaxing switches
+//   store/provenance-gate-rules.json    -- "enabled": false switches the provenance gate off (missing today: creating it)
+//   store/outgoing-copy-gate-rules.json -- no_name_rule: true drops the name check silently; deleting it fails open
+//   store/credential-gate.json          -- mode: warn turns the credential gate into a warning (missing today)
+//   store/egress-measure-hosts.json     -- a host there lets curl -q GET/HEAD through (bash-egress-parser.mjs)
+//   store/.fleet-memgate-observe        -- its presence puts the fleet memory gate into observe-only (fleet-memory-gate.sh)
+export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
+  { rel: '.env' },
+  { rel: 'store/provenance-gate-rules.json' },
+  { rel: 'store/outgoing-copy-gate-rules.json' },
+  { rel: 'store/credential-gate.json' },
+  { rel: 'store/egress-measure-hosts.json' },
+  { rel: 'store/.fleet-memgate-observe' },
+]
+
+// Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
+// agents/<name>. Anything that is not exactly the install root counts as a sub-agent, an unset project dir too
+// (fail-closed: the main agent's hook always has it).
+export function isSubAgentCaller(projectDir, root = INSTALL_ROOT) {
+  if (!projectDir) return true
+  return !sameKey(pathKey(resolve(String(projectDir))), pathKey(resolve(root)))
+}
+
 // The database file, by NAME anywhere (as the Bash rule reads it).
 const DB_FILE_NAME_RX = /(?:^|\/)claudeclaw\.db(?:-wal|-shm|-journal)?$/i
 
 const targetCache = new Map()
-export function installTargets(root = INSTALL_ROOT) {
+export function installTargets(root = INSTALL_ROOT, subAgent = false) {
   const k = resolve(root)
-  if (!targetCache.has(k)) {
-    targetCache.set(k, {
+  const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}`
+  if (!targetCache.has(ck)) {
+    targetCache.set(ck, {
       rootKey: pathKey(k),
-      list: PROTECTED_INSTALL_PATHS.map((t) => {
+      list: (subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS] : PROTECTED_INSTALL_PATHS).map((t) => {
         const abs = t.home == null ? resolve(k, t.rel)
           : t.xdg ? resolve(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), t.home) : resolve(homedir(), t.home)
         const key = pathKey(abs)
@@ -119,7 +148,7 @@ export function installTargets(root = INSTALL_ROOT) {
       }),
     })
   }
-  return targetCache.get(k)
+  return targetCache.get(ck)
 }
 
 // Which words are resolved at all: anything path-like (a slash, a dotted name,
@@ -128,7 +157,8 @@ export function installTargets(root = INSTALL_ROOT) {
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~'])
+  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
+  '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe'])
 const GLOB_CHAR_RX = /[*?[{]/
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
@@ -160,7 +190,7 @@ function isCandidate(word, ctx) {
 // 'unresolved': an expansion this gate cannot resolve, followed by a protected
 // path's tail (`$WT/.claude/settings.json`): read as that path (fail closed).
 export function classifyWord(word, ctx) {
-  const { list, rootKey } = installTargets(ctx.root)
+  const { list, rootKey } = installTargets(ctx.root, ctx.subAgent === true)
   let w = String(word)
   if (w === '~' || w.startsWith('~/')) w = expandHome(w === '~' ? '~/' : w)
   if (UNRESOLVED_RX.test(w)) {
@@ -513,8 +543,8 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null }
-  const insideDir = (cwd) => !!cwd && installTargets(ctx0.root).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true }
+  const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
   // and no program in it writes into the cwd on its own
@@ -523,7 +553,7 @@ export function installFileDeny(command, opts = {}) {
   if (GIT_WORD_RX.test(cmd) && GIT_ENV_RX.test(cmd)) return 'git'
   // the cwd is the install root, a directory on the way to a protected path, or
   // inside a protected directory: an implicit writer there reaches it
-  const { list, rootKey } = installTargets(ctx.root)
+  const { list, rootKey } = installTargets(ctx.root, ctx.subAgent)
   const cwdReaches = (cwd) => {
     if (!cwd) return false
     const key = pathKey(cwd)
@@ -672,21 +702,25 @@ export function fileToolDeny(toolInput, opts = {}) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return null
   if (nameForms(raw).some((f) => DB_FILE_NAME_RX.test(f))) return 'db'
-  const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : process.cwd() }
+  const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : process.cwd(), subAgent: opts.subAgent === true }
   const c = classifyWord(raw, ctx)
   return c === 'exact' || c === 'under' || c === 'unresolved' ? 'install-file' : null
 }
 
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
+  // A deny that only the sub-agent list gives gets its own message (ENVRELAXGATE1104).
+  const subOnly = () => opts.subAgent === true
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const r = fileToolDeny(toolInput, opts)
+    if (r === 'install-file' && subOnly() && !fileToolDeny(toolInput, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     return r ? { deny: true, reason: r } : { deny: false }
   }
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     const file = installFileDeny(command, opts)
+    if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
   }
   return { deny: false }
@@ -732,6 +766,14 @@ export const INSTALL_FILE_GATE_MSG =
   'idezese nem bonthato fel (idezojeles parancs-behelyettesites) ES vedett utat emlit, tiltom. Egy fajlba irt szoveg, ' +
   'ami csak EMLITI a vedett utat (uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). ' +
   'Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
+
+export const SUBAGENT_FILE_GATE_MSG =
+  'Telepites .env / kapu-szabalyfajl irasa TILTOTT (ENVRELAXGATE1104, sub-agensre). NEM irhatod a futo telepites ' +
+  '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
+  'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
+  'store/.fleet-memgate-observe fajlt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
+  'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
+  '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
 
 // The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
 export const RESCUE_DOC = 'docs/db-write-gate.md'
@@ -819,9 +861,13 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
     allow()
   }
   try {
-    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
+    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input,
+      { cwd: payload?.cwd, subAgent: isSubAgentCaller(process.env.CLAUDE_PROJECT_DIR) })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
-    if (verdict.deny) deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG : DB_GATE_MSG)
+    if (verdict.deny) {
+      deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG
+        : verdict.reason === 'subagent-file' ? SUBAGENT_FILE_GATE_MSG : DB_GATE_MSG)
+    }
     allow()
   } catch (err) {
     deny(FAIL_CLOSED_MSG(err?.message ?? err))
