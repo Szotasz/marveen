@@ -483,7 +483,7 @@ describe("'onboarding-claude-auth': only while no Claude credential is stored ye
   })
 })
 
-describe("'claude-plans-login': only while the target plan has no credential yet", () => {
+describe("'claude-plans-login': only while the install has no plan at all yet (Samu 69693)", () => {
   const PLANS = join(T.root, 'store', 'claude-plans.json')
   const VAULT = join(T.root, 'store', 'vault.json')
   const PLAN = { id: 'og4plan', label: 'Owner Max', planType: 'personal', channelsAllowed: true, tokenSecretId: 'claude-plan-token-og4plan' }
@@ -508,9 +508,19 @@ describe("'claude-plans-login': only while the target plan has no credential yet
     ownerRefusal(await start(TOKEN), true)
     expect(bytes(VAULT)).toBe(before)
   })
-  it('per target: another, new plan id still passes while og4plan exists', async () => {
+  it('a plan exists: a NEW plan id is refused too (403 setup_required), nothing is created (a new plan could be the rotate target)', async () => {
     writeFileSync(PLANS, JSON.stringify([PLAN]))
-    expect((await start(TOKEN, 'og4other')).body.code).toBe('invalid-plan')
+    const before = bytes(PLANS)
+    ownerRefusal(await start(TOKEN, 'og4other'), true)
+    expect(bytes(PLANS)).toBe(before)
+  })
+  it('a plan token in the vault under ANOTHER id (no registry row): the first-run is closed for every id', async () => {
+    writeFileSync(VAULT, JSON.stringify({ entries: [{ id: 'claude-plan-token-somebody', label: 'x', encrypted: 'e', createdAt: 'c', updatedAt: 'u' }] }), { mode: 0o600 })
+    ownerRefusal(await start(TOKEN, 'og4plan'), true)
+  })
+  it('control: a vault entry that is not a plan token does not count as a plan, the bare token passes', async () => {
+    writeFileSync(VAULT, JSON.stringify({ entries: [{ id: 'GOOGLE_API', label: 'x', encrypted: 'e', createdAt: 'c', updatedAt: 'u' }] }), { mode: 0o600 })
+    expect((await start(TOKEN)).body.code).toBe('invalid-plan')
   })
   it('with a dashboard user it is strict even for a new id: the bare token 403 (no setup_required), the session passes', async () => {
     createDashboardUser('owner', 'x'.repeat(60))

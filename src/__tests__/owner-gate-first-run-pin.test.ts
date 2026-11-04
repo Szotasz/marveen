@@ -114,7 +114,7 @@ describe('OWNERGATE4-1104: the first-run callers are pinned', () => {
     expect(onboarding).toContain('const firstCredential = await noClaudeCredentialYet()')
     expect(onboarding).toContain("firstCredential ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'onboarding-claude-auth') : mayActAsOwner(ctx.auth, req)")
     const plans = readFileSync(join(SRC, 'web', 'routes', 'claude-plans-login.ts'), 'utf-8')
-    expect(plans).toContain('const firstLogin = planHasNoCredentialYet(target)')
+    expect(plans).toContain('const firstLogin = noPlanExistsYet()')
   })
 
   it('mayIssueCredentials and mayActAsOwnerStrict are not exported, and nothing in src calls them', () => {

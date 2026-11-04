@@ -185,8 +185,8 @@ function bridgeOwnerAudited(auth: RouteContext['auth'], req?: http.IncomingMessa
  *     runs on; nothing works before it. ONLY while no Claude credential is stored yet (the call site checks
  *     noClaudeCredentialYet: none where claudeAuthPresent looks, none of its files unreadable); replacing one is strict.
  *   - 'claude-plans-login': the plan login (routes/claude-plans-login.ts). The first Claude login of the install.
- *     ONLY while the target plan (the start body's id; for the later steps the login in progress) has no credential
- *     yet (the call site checks planHasNoCredentialYet: no registry entry, no vault token; unreadable counts as one).
+ *     ONLY while the install has no plan at all yet, the first plan (the call site checks noPlanExistsYet: no registry
+ *     entry, no plan token in the vault; unreadable counts as one). A further plan could be the rotate target.
  *   - 'first-login': POST /api/auth/users. Creating the FIRST dashboard login; without this path a login could
  *     never be created from the dashboard, and every refuseOwner answer sends the user here.
  *   - 'first-device': POST /api/security/bridge-enroll and POST /api/auth/device-keys (mint). Pairing the owner's
