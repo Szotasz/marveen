@@ -68,7 +68,8 @@ describe('another sub-agent may not write a worker\'s config dir', () => {
     symlinkSync(cfg(), join(agent, 'innocent'))
     expect(write(join(agent, 'innocent', 'settings.json'))).toEqual(SUB)
   })
-  it('the parent home is not listed: a file next to the config dir stays free', () => {
+  it('the rest of the home stays free: scratch/ (the worker\'s answers) and a plain file', () => {
+    expect(write(join(home, '.marveen-worker', 'scratch', 'req.out'))).toEqual(FREE)
     expect(write(join(home, '.marveen-worker', 'notes.txt'))).toEqual(FREE)
   })
   it('a symlinked entry is judged where it lands: projects -> ~/.claude/projects stays free', () => {
@@ -83,19 +84,62 @@ describe('another sub-agent may not write a worker\'s config dir', () => {
   })
 })
 
+// Dani 68889: the home is the worker's cwd and a trusted project, so its project-scope files load at the start too.
+describe('another sub-agent may not write the project-scope files in a worker\'s home', () => {
+  it.each(['.marveen-worker', '.marveen-worker-fast'])('%s: .claude/ (settings, settings.local, a new file)', (w) => {
+    for (const f of ['settings.json', 'settings.local.json', 'new.json']) expect(write(join(home, w, '.claude', f))).toEqual(SUB)
+    expect(bash(`mkdir -p ${join(home, w, '.claude')} && echo x > ${join(home, w, '.claude', 'settings.json')}`)).toEqual(SUB)
+  })
+  it.each(['.marveen-worker', '.marveen-worker-fast'])('%s: .mcp.json', (w) => {
+    expect(write(join(home, w, '.mcp.json'))).toEqual(SUB)
+    expect(bash(`echo '{}' > ${join(home, w, '.mcp.json')}`)).toEqual(SUB)
+  })
+  it.each(['.marveen-worker', '.marveen-worker-fast'])('%s: CLAUDE.md', (w) => {
+    expect(write(join(home, w, 'CLAUDE.md'))).toEqual(SUB)
+    expect(bash(`echo x >> ${join(home, w, 'CLAUDE.md')}`)).toEqual(SUB)
+  })
+  it.each(['.marveen-worker', '.marveen-worker-fast'])('%s: CLAUDE.local.md', (w) => {
+    expect(write(join(home, w, 'CLAUDE.local.md'))).toEqual(SUB)
+    expect(bash(`cp /etc/hosts ${join(home, w, 'CLAUDE.local.md')}`)).toEqual(SUB)
+  })
+  it('the main agent is not on the sub-agent list', () => {
+    expect(write(join(home, '.marveen-worker', 'CLAUDE.md'), false)).toEqual(FREE)
+  })
+  it('a glob reaching CLAUDE.md is denied: absolute, ~, partial, and a bare one after a cd into the home', () => {
+    expect(bash(`echo x | tee ${join(home, '.marveen-worker')}/*`)).toEqual(SUB)
+    expect(bash('echo x | tee ~/.marveen-worker-fast/*')).toEqual(SUB)
+    expect(bash(`cp /etc/hosts ${join(home, '.marveen-worker')}/C*`)).toEqual(SUB)
+    expect(bash('cd ~/.marveen-worker && echo x | tee *')).toEqual(SUB)
+    expect(bash(`cd ${join(home, '.marveen-worker-fast')}; echo x | tee ./*`)).toEqual(SUB)
+  })
+  it('the worker itself, from its home: a quoted count(*) read passes (a bare relative glob skips CLAUDE*.md)', () => {
+    const wh = join(home, '.marveen-worker')
+    const as = { root, cwd: wh, subAgent: true, projectDir: wh, configDir: join(wh, '.claude-config') }
+    expect(gateDecision('Bash', { command: 'sqlite3 -readonly /x/y.db "SELECT count(*) FROM t"' }, as)).toEqual(FREE)
+    expect(gateDecision('Bash', { command: 'echo x > CLAUDE.md' }, as)).toEqual(SUB)
+  })
+})
+
 describe('a renamed install (MAIN_AGENT_ID): its workers\' homes, per call', () => {
   it('from the .env: both dirs denied, the default homes still are', () => {
     writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=gromzo\n')
-    expect(workerConfigEntries(root).map((e: { rel: string }) => e.rel)).toEqual(['.gromzo-worker/.claude-config', '.gromzo-worker-fast/.claude-config'])
+    expect(workerConfigEntries(root).map((e: { rel: string }) => e.rel)).toEqual(['', '-fast'].flatMap((v) =>
+      ['.claude-config', '.claude', '.mcp.json', 'CLAUDE.md', 'CLAUDE.local.md'].map((f) => `.gromzo-worker${v}/${f}`)))
     expect(write(join(home, '.gromzo-worker', '.claude-config', 'settings.json'))).toEqual(SUB)
     expect(write(join(home, '.gromzo-worker-fast', '.claude-config', '.claude.json'))).toEqual(SUB)
+    for (const f of [join('.claude', 'settings.json'), '.mcp.json', 'CLAUDE.md', 'CLAUDE.local.md']) {
+      expect(write(join(home, '.gromzo-worker', f))).toEqual(SUB)
+      expect(write(join(home, '.gromzo-worker-fast', f))).toEqual(SUB)
+    }
+    expect(write(join(home, '.gromzo-worker', 'scratch', 'req.out'))).toEqual(FREE)
     expect(write(join(cfg(), 'settings.json'))).toEqual(SUB)
   })
   it('the overrides file wins over the .env', () => {
     writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=gromzo\n')
     mkdirSync(join(root, 'store'), { recursive: true })
     writeFileSync(join(root, 'store', 'config-overrides.json'), JSON.stringify({ MAIN_AGENT_ID: 'boti' }))
-    expect(workerConfigEntries(root).map((e: { rel: string }) => e.rel)).toEqual(['.boti-worker/.claude-config', '.boti-worker-fast/.claude-config'])
+    expect(workerConfigEntries(root).map((e: { rel: string }) => e.rel)).toContain('.boti-worker/.claude-config')
+    expect(workerConfigEntries(root).map((e: { rel: string }) => e.rel)).not.toContain('.gromzo-worker/.claude-config')
   })
   it('no id, the default id, or an id that is not a plain name adds nothing', () => {
     expect(workerConfigEntries(root)).toEqual([])

@@ -75,6 +75,24 @@ import { mcpFileTargets } from './mcp-file-targets.mjs'
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
+// What a background worker loads at its start, under its home (WORKERCFGDIR1104, Dani 68629/68889): its config dir
+// (settings.json, .claude.json, worker-mcp.json, .credentials.json, ...), and, since the home is its cwd and a trusted
+// project (.claude.json projects[home].hasTrustDialogAccepted), the project-scope files there too: .claude/ (settings,
+// settings.local), .mcp.json (the dashboard writes it only when missing, so a planted server would stay), CLAUDE.md and
+// CLAUDE.local.md. scratch/, where the worker writes its answers, stays free, and so does the rest of the home.
+// The two CLAUDE*.md names are the first protected names without a leading dot that a caller reaches from its own cwd
+// (the worker's cwd IS its home): the words are split on quotes and parentheses (fail closed), so the `*` of a quoted
+// `count(*)` is a bare relative glob there, and without `noBareGlob` the worker's own `sqlite3 -readonly db "SELECT
+// count(*) ..."` was denied (worker-gates.test.ts). A RELATIVE word made of glob characters only, read from the
+// caller's own project dir, does not match them; an absolute or ~ glob (`tee ~/.marveen-worker/*`), a partial one
+// (`C*`), the name itself, and a bare glob after a cd into the home (another sub-agent) still do. Stated limit: the
+// worker's own `tee *` from its home.
+const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.claude', dir: true }, { sub: '.mcp.json' },
+  { sub: 'CLAUDE.md', noBareGlob: true }, { sub: 'CLAUDE.local.md', noBareGlob: true }]
+function workerHomeTargets(homeRel) {
+  return WORKER_HOME_TARGETS.map((t) => ({ home: `${homeRel}/${t.sub}`, ...(t.dir ? { dir: true } : {}), ...(t.noBareGlob ? { noBareGlob: true } : {}) }))
+}
+
 // The install's own gate wiring and autonomy levels (Dani 56081 point 5, Samu 56090).
 export const PROTECTED_INSTALL_PATHS = [
   { rel: '.claude/settings.json' },
@@ -181,16 +199,16 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { home: '.claude/hooks', dir: true },
   { rel: 'agents/*/.claude-config/plugins/installed_plugins.json', pattern: true },
   { rel: 'agents/*/.claude-config/plugins/known_marketplaces.json', pattern: true },
-  // The two background workers' config dirs, whole (WORKERCFGDIR1104, Dani 68629, Samu 68631): settings.json (hooks,
-  // permissions), .claude.json, worker-mcp.json, .credentials.json and the rest are loaded at the worker's next start.
-  // The worker itself already may not write its own settings and server lists (callerSettingsEntries); another
-  // sub-agent could, and a hooks entry in settings.json would stay (worker-mcp.json is rewritten on every start). The
-  // dashboard provisions these files, never a sub-agent's tool call. As with .channels-config: the whole directory
-  // covers a file added there later, and its symlinked entries (projects, skills, plugins, ...) resolve into ~/.claude
-  // and are judged where they land. This replaces #2505's two plugins entries, which it contains. The default id's
-  // homes are listed here; a renamed install's (MAIN_AGENT_ID) are added per call by workerConfigEntries.
-  { home: '.marveen-worker/.claude-config', dir: true },
-  { home: '.marveen-worker-fast/.claude-config', dir: true },
+  // The two background workers' start-up files (WORKERCFGDIR1104, Dani 68629/68889, Samu 68631): WORKER_HOME_TARGETS
+  // under each home. The worker itself already may not write its own settings and server lists
+  // (callerSettingsEntries); another sub-agent could, and a hooks entry would stay (worker-mcp.json is rewritten on
+  // every start). The dashboard provisions these files, never a sub-agent's tool call. As with .channels-config: a
+  // whole directory covers a file added there later, and its symlinked entries (projects, skills, plugins, ...) resolve
+  // into ~/.claude and are judged where they land. The config dir replaces #2505's two plugins entries, which it
+  // contains. The default id's homes are listed here; a renamed install's (MAIN_AGENT_ID) are added per call by
+  // workerConfigEntries.
+  ...workerHomeTargets('.marveen-worker'),
+  ...workerHomeTargets('.marveen-worker-fast'),
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -309,7 +327,7 @@ export function dynamicPluginEntries(root, projectDir, src = dynamicSources(root
   return out
 }
 
-// The workers' config dirs of a renamed install (WORKERCFGDIR1104): their home is ~/.<MAIN_AGENT_ID>-worker{,-fast}
+// The workers' start-up files of a renamed install (WORKERCFGDIR1104): their home is ~/.<MAIN_AGENT_ID>-worker{,-fast}
 // (agent-worker.ts workerHomeFor), with MAIN_AGENT_ID read from the install like the other settings here (overrides,
 // then .env; both files' mtimes are in the cache key). Only a plain id (letters, digits, _ and -) is used; the default
 // id adds nothing (the static entries cover it). A MARVEEN_WORKER_DIR{,_FAST} set only in the dashboard's process
@@ -318,10 +336,8 @@ const WORKER_ID_RX = /^[A-Za-z0-9_-]{1,64}$/
 export function workerConfigEntries(root) {
   const id = installSetting(root, 'MAIN_AGENT_ID')
   if (!id || !WORKER_ID_RX.test(id) || id === 'marveen') return []
-  return ['', '-fast'].map((v) => {
-    const rel = `.${id}-worker${v}/.claude-config`
-    return { rel, abs: join(homedir(), rel), dir: true }
-  })
+  return ['', '-fast'].flatMap((v) => workerHomeTargets(`.${id}-worker${v}`))
+    .map((t) => ({ rel: t.home, abs: join(homedir(), t.home), ...(t.dir ? { dir: true } : {}), ...(t.noBareGlob ? { noBareGlob: true } : {}) }))
 }
 
 const targetCache = new Map()
@@ -465,7 +481,13 @@ export function classifyWord(word, ctx) {
       const abs = e.startsWith('/') ? e : (ctx.cwd ? resolve(ctx.cwd, e) : null)
       if (!abs) continue
       const W = normalizePathSegments(abs)
+      // WORKERCFGDIR1104: a word of glob characters only (`*`, `./*`: relative by construction, an absolute or ~ word has
+      // a named segment), read from the caller's OWN project dir, skips a noBareGlob entry; after a cd elsewhere
+      // (another sub-agent into a worker's home) it does not
+      const bareRel = e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
+        && !!ctx.cwd && !!ctx.projectDir && sameKey(pathKey(resolve(ctx.cwd)), pathKey(resolve(String(ctx.projectDir))))
       for (const t of list) {
+        if (bareRel && t.noBareGlob) continue
         for (const T of t.segs) {
           const n = Math.min(W.length, T.length)
           let ok = true

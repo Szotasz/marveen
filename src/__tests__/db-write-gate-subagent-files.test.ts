@@ -49,8 +49,8 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
       // PLUGINCODEWRITE1104: the plugin trees and the shared user-level trees
       '~/.claude/plugins', 'plugins', '~/marveen-local-plugins', '~/.claude/agents', '~/.claude/skills', '~/.claude/hooks',
       'agents/*/.claude-config/plugins/installed_plugins.json', 'agents/*/.claude-config/plugins/known_marketplaces.json',
-      // WORKERCFGDIR1104: the two workers' config dirs, whole (they contain #2505's plugins entries)
-      '~/.marveen-worker/.claude-config', '~/.marveen-worker-fast/.claude-config'])
+      // WORKERCFGDIR1104: the two workers' start-up files (the config dirs contain #2505's plugins entries)
+      ...['.marveen-worker', '.marveen-worker-fast'].flatMap((w) => ['.claude-config', '.claude', '.mcp.json', 'CLAUDE.md', 'CLAUDE.local.md'].map((f) => `~/${w}/${f}`))])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
