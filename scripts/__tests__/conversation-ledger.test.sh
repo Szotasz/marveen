@@ -1046,7 +1046,16 @@ own = (f'<channel source="plugin:gromzo-channel:gromzo" sender_role="owner" veri
 # A team message carries no key (v1): it must stay out of the ledger.
 team = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague" verified="true" room_kind="channel" '
         'sender_name="Kiss Anna" reply_to="0123456789abcdef">\n<untrusted source="gromzo" reason="a colleague, not the owner">\nhello\n</untrusted>\n</channel>')
-print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": own + "\n" + team}))
+print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": own}))
+PYEOF
+# The keyless team message comes in its own prompt: a prompt that mixes the
+# owner's and a colleague's envelope is dropped whole by the sender gate
+# (LEDGERROLELABEL1104, #2488), so this case stays the same under both.
+python3 - <<'PYEOF' | run_hook ledger-capture.py "$DB_G"
+import json
+team = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague" verified="true" room_kind="channel" '
+        'sender_name="Kiss Anna" reply_to="0123456789abcdef">\n<untrusted source="gromzo" reason="a colleague, not the owner">\nhello\n</untrusted>\n</channel>')
+print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": team}))
 PYEOF
 assert_eq "gromzo inbound: the owner DM captured under its gz key" "$GZ_CHAT" \
     "$(db_scalar "$DB_G" "SELECT chat_id FROM conversation_log WHERE direction='in'")"
