@@ -1,16 +1,11 @@
-// Card ca046c9a (#570) -- two things about the hot-memory listing.
-//
-// 1. With no agent filter, the dashboard tier tab used to filter AFTER the
-//    50-row limit had already cut the list. Measured 2026-10-17 on the owner
-//    store: the Hot tab showed 6 of 115 hot memories (warm 18/365, cold 16/703).
-//    The tier now goes into the query, so the tab shows the tier's own rows.
-// 2. Nothing moves a hot memory down on its own. stale_days=N lists only the
-//    rows with no write for N days, and the stats count them.
+// Card ca046c9a (#570): nothing moves a hot memory down on its own.
+// stale_days=N lists only the rows with no write for N days, and the stats
+// count them. (The tier-filter half of the original PR went in as #2035,
+// with its own test in memory-tier-listing.test.ts.)
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
-import { initDatabase, getDb, saveAgentMemory, getMemoriesForChat, getMemoryStats } from '../db.js'
+import { initDatabase, getDb, saveAgentMemory, getMemoryStats, getAgentMemories } from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
-import { ALLOWED_CHAT_ID } from '../config.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 function fakeCtx(pathAndQuery: string, method = 'GET') {
@@ -28,7 +23,7 @@ function fakeCtx(pathAndQuery: string, method = 'GET') {
 
 const DAY = 86400
 const HOT_ROWS = 8
-const COLD_ROWS = 60 // more than the 50-row page, all accessed more recently
+const COLD_ROWS = 10 // other-tier rows the stale filter must not pick up
 
 function backdate(id: number, days: number, field: 'created_at' | 'updated_at' = 'created_at') {
   const t = Math.floor(Date.now() / 1000) - days * DAY
@@ -50,29 +45,6 @@ function seed() {
   getDb().prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000) - DAY, hotIds[HOT_ROWS - 1])
   for (let i = 0; i < COLD_ROWS; i++) saveAgentMemory('agent-a', `cold ${i}`, 'cold')
 }
-
-describe('tier listing without an agent filter', () => {
-  beforeEach(() => { initDatabase(':memory:'); seed() })
-
-  it('the seed is not vacuous: an unfiltered first page holds no hot row', () => {
-    const page = getMemoriesForChat(ALLOWED_CHAT_ID, 50)
-    expect(page.filter(m => m.category === 'hot')).toHaveLength(0)
-  })
-
-  it('returns every hot row on the Hot tab', async () => {
-    const { ctx, out } = fakeCtx('/api/memories?tier=hot&limit=50')
-    expect(await tryHandleMemories(ctx)).toBe(true)
-    expect(out.body).toHaveLength(HOT_ROWS)
-    expect(out.body.every((m: any) => m.category === 'hot')).toBe(true)
-  })
-
-  it('still honours the limit inside the tier', async () => {
-    const { ctx, out } = fakeCtx('/api/memories?tier=cold&limit=50')
-    await tryHandleMemories(ctx)
-    expect(out.body).toHaveLength(50)
-    expect(out.body.every((m: any) => m.category === 'cold')).toBe(true)
-  })
-})
 
 describe('stale_days', () => {
   beforeEach(() => { initDatabase(':memory:'); seed() })
@@ -105,5 +77,27 @@ describe('stale_days', () => {
     const s = getMemoryStats()
     expect(s.staleHotDays).toBe(7)
     expect(s.staleHot).toBe(HOT_ROWS / 2)
+  })
+
+  it('a retracted stale row is neither listed nor counted', async () => {
+    getDb().prepare('UPDATE memories SET retracted_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), hotIds[0])
+    const { ctx, out } = fakeCtx('/api/memories?tier=hot&stale_days=7')
+    await tryHandleMemories(ctx)
+    expect(out.body.map((m: any) => m.id)).not.toContain(hotIds[0])
+    expect(out.body).toHaveLength(HOT_ROWS / 2 - 1)
+    expect(getMemoryStats().staleHot).toBe(HOT_ROWS / 2 - 1)
+  })
+
+  // Review of 8552bac0: the staleBefore part of the getAgentMemories cache key
+  // had no test. Within the cache TTL, the unfiltered page must not be served
+  // as the stale one (or the other way round).
+  it('the cache does not serve the unfiltered page as the stale one', () => {
+    const cutoff = Math.floor(Date.now() / 1000) - 7 * DAY
+    const all = getAgentMemories('agent-b', 50, 'hot', 0)
+    const stale = getAgentMemories('agent-b', 50, 'hot', 0, undefined, cutoff)
+    const allAgain = getAgentMemories('agent-b', 50, 'hot', 0)
+    expect(all).toHaveLength(HOT_ROWS / 2)
+    expect(stale.map(m => m.id).sort()).toEqual(hotIds.slice(0, HOT_ROWS / 2).filter((_, i) => i % 2 === 0).sort())
+    expect(allAgain).toHaveLength(HOT_ROWS / 2)
   })
 })

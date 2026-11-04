@@ -462,6 +462,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // SQL OFFSET would page over a DIFFERENT ranking than page 1 returned.
     // Reject the combination loudly instead of dropping offset silently --
     // silently dropping the parameter is the class of bug #947 is about.
+    if (offset > 0 && q) {
+      json(res, { error: 'offset is not supported together with q (search results are relevance-ranked, not a stable page order)' }, 400)
+      return true
+    }
     // stale_days (card ca046c9a, #570): listing-only, like offset -- a
     // relevance-ranked search filtered by age would page over a different set.
     const staleRaw = url.searchParams.get('stale_days')
@@ -477,10 +481,6 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         return true
       }
       staleBefore = Math.floor(Date.now() / 1000) - Math.round(staleDays * 86400)
-    }
-    if (offset > 0 && q) {
-      json(res, { error: 'offset is not supported together with q (search results are relevance-ranked, not a stable page order)' }, 400)
-      return true
     }
 
     // Card f90928e3: date= / since= / until= narrow the search to a created_at

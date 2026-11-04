@@ -2530,8 +2530,9 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   for (const r of tierRows) byTier[r.category] = r.c
   // Card ca046c9a (#570): hot rows with no write for HOT_STALE_DAYS. Nothing
   // moves a hot memory down on its own, so the count is the to-do list.
+  // Retracted rows are left out, as the listing leaves them out.
   const staleHot = (db.prepare(
-    "SELECT COUNT(*) as c FROM memories WHERE category = 'hot' AND COALESCE(updated_at, created_at) < ?"
+    "SELECT COUNT(*) as c FROM memories WHERE category = 'hot' AND retracted_at IS NULL AND COALESCE(updated_at, created_at) < ?"
   ).get(Math.floor(Date.now() / 1000) - HOT_STALE_DAYS * 86400) as {c:number}).c
   return { total, byAgent, byTier, withEmbedding, staleHot, staleHotDays: HOT_STALE_DAYS }
 }
