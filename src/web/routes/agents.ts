@@ -151,7 +151,7 @@ import type { ContextGuardConfig } from '../../context-guard.js'
 // the interface is added to its default too, so the accepted-key set cannot
 // drift away from what normalize*Config() actually reads.
 import { DEFAULT_AUTO_RESTART, LEGACY_AUTO_RESTART_FIELDS } from '../../auto-restart.js'
-import { DEFAULT_CONTEXT_GUARD, contextGuardWeakenings } from '../../context-guard.js'
+import { DEFAULT_CONTEXT_GUARD, contextGuardTokenRefusals } from '../../context-guard.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
@@ -1991,10 +1991,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // OWNERGATE3-1104 (review, Samu 69602): a direction gate. The shared token may only STRENGTHEN a guard (the main
     // agent arms other agents' guards with it, skill agent-cold-restart-guard-arming); any weakening (a switch off, a
     // threshold or a wait raised, see contextGuardWeakenings) needs the owner, on any agent, before anything is written.
+    // Review (Dani 69657): strengthening is bounded too, see contextGuardTokenRefusals: with the token a switch may
+    // only turn on and any other field may only go back to its shipped default (and never weaken).
     const { current: cgBefore, merged: cgAfter } = previewContextGuardMerge(name, data)
-    const weakened = contextGuardWeakenings(cgBefore, cgAfter)
-    if (weakened.length > 0 && !mayActAsOwnerStrict(ctx.auth, req)) {
-      refuseOwner(res, `Weakening an agent's context guard (${weakened.join(', ')}) needs the dashboard login (an owner session); the access token can only strengthen it.`, { fields: weakened })
+    const tokenRefused = contextGuardTokenRefusals(cgBefore, cgAfter)
+    if (tokenRefused.length > 0 && !mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, `Changing ${tokenRefused.join(', ')} of an agent's context guard this way needs the dashboard login (an owner session); the access token can only turn the guard's switches on and restore the shipped defaults.`, { fields: tokenRefused })
       return true
     }
     setStoreWriteActor('dashboard')

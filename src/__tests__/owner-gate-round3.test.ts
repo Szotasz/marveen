@@ -466,13 +466,21 @@ describe('OWNERGATE3-1104: PUT context-guard on the route', () => {
       expect(fileNow()).toBe(before)
     })
   }
-  it('bare token, strengthening (enabled on, actPct lowered): 200 and written (the arming skill path)', async () => {
+  it('bare token, the arming skill shape (enabled on, the shipped defaults): 200 and written', async () => {
     seed({ enabled: false })
-    const r = await put(TOKEN, { enabled: true, actPct: 0.85 })
+    const r = await put(TOKEN, { enabled: true, actPct: CG_DEFAULT.actPct, hardPct: CG_DEFAULT.hardPct, cooldownMinutes: CG_DEFAULT.cooldownMinutes })
     expect(r.status).toBe(200)
     const stored = JSON.parse(fileNow())[AGENT]
     expect(stored.enabled).toBe(true)
-    expect(stored.actPct).toBe(0.85)
+    expect(stored.actPct).toBe(CG_DEFAULT.actPct)
+  })
+  it('bare token, a non-default "stronger" value (actPct lowered to 0.85): 403, unchanged (review, Dani 69657)', async () => {
+    seed({ enabled: false })
+    const before = fileNow()
+    const r = await put(TOKEN, { enabled: true, actPct: 0.85 })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.fields).toEqual(['actPct'])
+    expect(fileNow()).toBe(before)
   })
   it('bare token, the same values again (no change): not refused', async () => {
     seed(ARMED)
@@ -502,5 +510,42 @@ describe('OWNERGATE3-1104: PUT context-guard on the route', () => {
     expect(fileNow()).toBe(before)
     seed({ enabled: false })
     expect((await put(TOKEN, { enabled: true })).status).toBe(200)
+  })
+})
+
+// Review (Dani 69657): unbounded strengthening is an availability attack (continuous handoff and restart). With the
+// token a switch may only turn on and any other field may only go back to its shipped default.
+const { contextGuardTokenRefusals, CONTEXT_GUARD_FIELD_KIND } = await import('../context-guard.js')
+const { MAIN_AGENT_ID: MAIN_ID } = await import('../config.js')
+describe('OWNERGATE3-1104: the token may strengthen only up to the shipped defaults (Dani 69657)', () => {
+  it('every DEFAULT_CONTEXT_GUARD key is classified (a new key cannot fall outside the gate silently)', () => {
+    expect(Object.keys(CONTEXT_GUARD_FIELD_KIND).sort()).toEqual(Object.keys(CG_DEFAULT).sort())
+  })
+  it('pure: the extreme "stronger" values are refused for the token; switches on and defaults back are not', () => {
+    const off = { ...CG_DEFAULT, enabled: false, idleFlushEnabled: false }
+    const extreme = { ...off, enabled: true, saturationRestart: true, actPct: 0.01, hardPct: 0.01, cooldownMinutes: 0.01, handoffTimeoutMinutes: 0.01, idleMinutes: 0.01, idleFlushEnabled: true, idleFlushTokens: 10_000 }
+    expect(contextGuardTokenRefusals(off, extreme).sort()).toEqual(['actPct', 'cooldownMinutes', 'handoffTimeoutMinutes', 'hardPct', 'idleFlushTokens', 'idleMinutes'])
+    expect(contextGuardTokenRefusals(off, { ...off, enabled: true, idleFlushEnabled: true })).toEqual([])
+    // A lowered threshold going BACK to the default is a weakening: the owner's.
+    expect(contextGuardTokenRefusals({ ...CG_DEFAULT, actPct: 0.5 }, { ...CG_DEFAULT })).toEqual(['actPct'])
+    // A raised wait going back to the default is a strengthening to the default: the token's.
+    expect(contextGuardTokenRefusals({ ...CG_DEFAULT, cooldownMinutes: 120 }, { ...CG_DEFAULT })).toEqual([])
+  })
+  const EXTREME = { enabled: true, saturationRestart: true, actPct: 0.01, hardPct: 0.01, cooldownMinutes: 0.01, handoffTimeoutMinutes: 0.01, idleMinutes: 0.01, idleFlushEnabled: true, idleFlushTokens: 10_000 }
+  for (const [who, target] of [['a peer agent', AGENT], ['the main agent', MAIN_ID]] as const) {
+    it(`route, ${who}: the bare token with the extreme values is 403 and the store is byte for byte unchanged`, async () => {
+      mkdirSync(STORE_ROOT, { recursive: true })
+      writeFileSync(CONTEXT_GUARD_FILE, JSON.stringify({ [target]: { ...CG_DEFAULT, enabled: false } }, null, 2))
+      const before = readFileSync(CONTEXT_GUARD_FILE, 'utf-8')
+      const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${target}/context-guard`, TOKEN, EXTREME)
+      expect(refusedByOwnerGate(r)).toBe(true)
+      expect(readFileSync(CONTEXT_GUARD_FILE, 'utf-8')).toBe(before)
+    })
+  }
+  it('route: the owner may set a non-default value (session): 200 and written', async () => {
+    mkdirSync(STORE_ROOT, { recursive: true })
+    writeFileSync(CONTEXT_GUARD_FILE, JSON.stringify({ [AGENT]: { ...CG_DEFAULT } }, null, 2))
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}/context-guard`, SESSION, { actPct: 0.8 })).status).toBe(200)
+    expect(JSON.parse(readFileSync(CONTEXT_GUARD_FILE, 'utf-8'))[AGENT].actPct).toBe(0.8)
   })
 })
