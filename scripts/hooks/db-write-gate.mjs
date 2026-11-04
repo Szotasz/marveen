@@ -163,6 +163,27 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'agents/*/.claude-config/.marveen-mcp-inherited.json', pattern: true },
   { rel: '.mcp.json' },
   { home: '.claude.json' },
+  // The Claude Code plugin trees and the shared user-level trees every session loads (PLUGINCODEWRITE1104, Samu
+  // 68214/68229/68247): a sub-agent writes none of them; the main agent, the dashboard (skill propose), the launcher
+  // (channels.sh patches, update.sh plugin refresh, ensureGromzoMarketplace) and Claude Code itself do, none of them by
+  // a sub-agent's tool call. Each agent's config dir links cache/data/marketplaces/agents/skills/hooks here, and the
+  // real path is compared, so the symlink route lands on these entries.
+  //   ~/.claude/plugins            -- the plugin code (cache, marketplaces), data, and the shared registries
+  //   <root>/plugins               -- the install's own plugin code (state observer, worksource MCP server, ...)
+  //   ~/marveen-local-plugins      -- the gromzo directory marketplace: its plugin RUNS from there (installPath)
+  //   ~/.claude/agents|skills|hooks -- subagent types, skills, hook scripts every session can load
+  //   agents/*/.claude-config/plugins/{installed_plugins,known_marketplaces}.json -- each agent's own registries
+  //   the two workers' config dirs' plugins
+  { home: '.claude/plugins', dir: true },
+  { rel: 'plugins', dir: true },
+  { home: 'marveen-local-plugins', dir: true },
+  { home: '.claude/agents', dir: true },
+  { home: '.claude/skills', dir: true },
+  { home: '.claude/hooks', dir: true },
+  { rel: 'agents/*/.claude-config/plugins/installed_plugins.json', pattern: true },
+  { rel: 'agents/*/.claude-config/plugins/known_marketplaces.json', pattern: true },
+  { home: '.marveen-worker/.claude-config/plugins', dir: true },
+  { home: '.marveen-worker-fast/.claude-config/plugins', dir: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -195,6 +216,88 @@ function callerSettingsEntries(projectDir, configDir) {
     const dir = resolve(String(configDir))
     // ...and its user-scope MCP servers in the config dir's .claude.json (ENVRELAXMCPCFG1104)
     for (const f of ['settings.json', 'settings.local.json', '.claude.json', '.marveen-mcp-inherited.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
+    // ...and its plugins tree (PLUGINCODEWRITE1104)
+    out.push({ rel: `${basename(dir)}/plugins`, abs: join(dir, 'plugins'), dir: true, caller: true })
+  }
+  return out
+}
+
+// --- plugin code loaded from outside the cache, and the other config roots (PLUGINCODEWRITE1104) -----------------
+// Claude Code loads a directory-marketplace plugin from where installed_plugins.json's installPath points (the gromzo
+// plugin runs from ~/marveen-local-plugins, gromzo-marketplace.ts), and a config root other than the agents' (the
+// main agent's MAIN_AGENT_CONFIG_DIR, a plan's configDir) has a plugins tree of its own. Read here, per hook call:
+//   registries: ~/.claude/plugins and <root>/.channels-config/plugins (installed_plugins.json installPath,
+//               known_marketplaces.json source.path of a directory/file marketplace, installLocation), and the same
+//               files under each other config root;
+//   other roots: MAIN_AGENT_CONFIG_DIR (store/config-overrides.json, then .env) and store/claude-plans.json configDir.
+// Every path must be absolute after ~ expansion. Left out (one bad registry entry must not deny everything): /, /tmp,
+// /private/tmp, $TMPDIR, and any path that is or contains $HOME, ~/.claude, the install root, its agents/ or the
+// caller's project dir. A path already under ~/.claude/plugins is covered by that entry. At most DYN_CAP paths.
+// A missing or unparseable file adds nothing: these files are on the sub-agent list themselves.
+const DYN_CAP = 200
+function readJsonFile(p) { try { return JSON.parse(readFileSync(p, 'utf-8')) } catch { return null } }
+function installSetting(root, key) {
+  const ov = readJsonFile(join(root, 'store', 'config-overrides.json'))
+  if (ov && typeof ov === 'object' && typeof ov[key] === 'string' && ov[key].trim()) return ov[key].trim()
+  try {
+    const m = readFileSync(join(root, '.env'), 'utf-8').match(new RegExp('^' + key + '=(.*)$', 'm'))
+    if (m && m[1].trim()) return m[1].trim().replace(/^['"]|['"]$/g, '')
+  } catch { /* no .env */ }
+  return null
+}
+function mtimeOf(p) { try { return String(statSync(p).mtimeMs) } catch { return '-' } }
+function dynamicSources(root) {
+  const h = homedir()
+  const otherRoots = []
+  const mainCfg = installSetting(root, 'MAIN_AGENT_CONFIG_DIR')
+  if (mainCfg) otherRoots.push(mainCfg)
+  const plans = readJsonFile(join(root, 'store', 'claude-plans.json'))
+  if (Array.isArray(plans)) for (const pl of plans) if (pl && typeof pl.configDir === 'string' && pl.configDir.trim()) otherRoots.push(pl.configDir.trim())
+  const regDirs = [join(h, '.claude', 'plugins'), join(root, '.channels-config', 'plugins'), ...otherRoots.map((d) => join(expandHome(d), 'plugins'))]
+  const files = [join(root, 'store', 'config-overrides.json'), join(root, '.env'), join(root, 'store', 'claude-plans.json'),
+    ...regDirs.flatMap((d) => [join(d, 'installed_plugins.json'), join(d, 'known_marketplaces.json')])]
+  return { otherRoots, regDirs, sig: files.map(mtimeOf).join(',') }
+}
+export function dynamicPluginEntries(root, projectDir, src = dynamicSources(root)) {
+  const raw = []
+  for (const r of src.otherRoots) raw.push(join(expandHome(r), 'plugins'))
+  for (const d of src.regDirs) {
+    const inst = readJsonFile(join(d, 'installed_plugins.json'))
+    const plugins = inst && typeof inst === 'object' ? (inst.plugins ?? inst) : null
+    if (plugins && typeof plugins === 'object') {
+      for (const v of Object.values(plugins)) for (const e of Array.isArray(v) ? v : [v]) if (e && typeof e.installPath === 'string') raw.push(e.installPath)
+    }
+    const known = readJsonFile(join(d, 'known_marketplaces.json'))
+    if (known && typeof known === 'object') {
+      for (const m of Object.values(known)) {
+        if (!m || typeof m !== 'object') continue
+        const sp = m.source && typeof m.source === 'object' ? m.source : null
+        if (sp && typeof sp.path === 'string' && (sp.source === 'directory' || sp.source === 'file')) raw.push(sp.source === 'file' ? dirname(sp.path) : sp.path)
+        if (typeof m.installLocation === 'string') raw.push(m.installLocation)
+      }
+    }
+  }
+  const h = homedir()
+  const tmp = process.env.TMPDIR ? resolve(process.env.TMPDIR) : null
+  const keep = (abs) => {
+    const key = pathKey(abs)
+    if (['/', '/tmp', '/private/tmp', tmp].filter(Boolean).some((x) => sameKey(key, pathKey(x)))) return false
+    for (const guard of [h, join(h, '.claude'), resolve(root), join(resolve(root), 'agents'), projectDir ? resolve(String(projectDir)) : null]) {
+      if (guard && underKey(pathKey(guard), key)) return false // equals or contains it
+    }
+    if (underKey(key, pathKey(join(h, '.claude', 'plugins')))) return false // covered by that entry
+    return true
+  }
+  const out = []
+  const seen = new Set()
+  for (const p of raw) {
+    const e = expandHome(String(p).trim())
+    if (!e.startsWith('/')) continue
+    const abs = resolve(e).replace(/\/+$/, '') || '/'
+    if (seen.has(abs) || !keep(abs)) continue
+    seen.add(abs)
+    out.push({ rel: abs.split('/').filter(Boolean).slice(-2).join('/'), abs, dir: true, dyn: true })
+    if (out.length >= DYN_CAP) break
   }
   return out
 }
@@ -202,9 +305,10 @@ function callerSettingsEntries(projectDir, configDir) {
 const targetCache = new Map()
 export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir = null, configDir = null) {
   const k = resolve(root)
-  const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}`
+  const dyn = subAgent ? dynamicSources(k) : null
+  const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}\u0000${dyn ? dyn.sig : ''}\u0000${subAgent ? homedir() : ''}`
   if (!targetCache.has(ck)) {
-    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir)] : PROTECTED_INSTALL_PATHS
+    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...dynamicPluginEntries(k, projectDir, dyn)] : PROTECTED_INSTALL_PATHS
     targetCache.set(ck, {
       rootKey: pathKey(k),
       list: entries.map((t) => {
@@ -227,7 +331,9 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
 const PATH_LIKE_RX = /\/|\.\w|^~/
 const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
   'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
-  '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe'])
+  '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
+  // PLUGINCODEWRITE1104 (E3): a bare plugin-tree name from its parent (`cd ~/.claude && rm -rf plugins`)
+  'plugins', 'marveen-local-plugins', 'gromzo'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
@@ -250,15 +356,51 @@ function patternExact(key, t) {
   }
   return false
 }
+function cpOnlyReadsProtected(words, ctx) {
+  const vals = words.slice(1).map((w) => w.value)
+  const operands = []
+  let opts = true
+  for (const v of vals) {
+    if (opts && v === '--') { opts = false; continue }
+    if (opts && v.startsWith('-')) {
+      if (/^-[A-Za-z]*[lst]/.test(v) || /^--(?:link|symbolic-link|target-directory)/.test(v)) return false
+      continue
+    }
+    operands.push(v)
+  }
+  if (operands.length < 2) return false
+  const dest = operands[operands.length - 1]
+  const d = classifyWord(dest, ctx)
+  if (d == null) return true
+  if (d !== 'ancestor') return false
+  // a destination ABOVE a protected path (`cp x .` in one's own agent dir): each copy's own landing place must be free
+  // (`cp ~/.claude/settings.json .claude/` would land on the agent's own settings)
+  const destAbs = dest.startsWith('/') ? dest : resolve(ctx.cwd ?? process.cwd(), expandHome(dest))
+  return operands.slice(0, -1).every((src) => classifyWord(join(destAbs, basename(src.replace(/\/+$/, ''))), ctx) == null)
+}
+
+// Strictly below $HOME ($HOME itself is not: `rsync x/ ~/` and `cd ~ && tar -xf` stay a stated limit, Samu 68214 D3).
+function belowHome(key) {
+  const hk = pathKey(homedir())
+  return underKey(key, hk) && !sameKey(key, hk)
+}
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
 // Every path-like word of a text: split on shell and code punctuation, in every
 // spelling scheduleSurfaceVariants reads (quotes removed, escapes decoded, string
 // concatenation glued). Once with , and {} as separators (code: open('x','w')),
 // once without (a brace-expansion word stays whole).
-function pathWords(text) {
+function expandCallerVars(text, ctx = {}) {
+  let src = String(text)
+  if (ctx.configDir) src = src.replace(/\$\{CLAUDE_CONFIG_DIR\}|\$CLAUDE_CONFIG_DIR(?!\w)/g, String(ctx.configDir))
+  if (ctx.projectDir) src = src.replace(/\$\{CLAUDE_PROJECT_DIR\}|\$CLAUDE_PROJECT_DIR(?!\w)/g, String(ctx.projectDir))
+  return src
+}
+function pathWords(text, ctx = {}) {
   const out = new Set()
-  const src = String(text ?? '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  // PLUGINCODEWRITE1104 (E4): the caller's own CLAUDE_CONFIG_DIR / CLAUDE_PROJECT_DIR are known (the hook's opts), so
+  // `$CLAUDE_CONFIG_DIR/settings.json` is read as that path, not as an unresolved word (it passed before: #2494's gap)
+  const src = expandCallerVars(String(text ?? '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir()), ctx)
   for (const v of scheduleSurfaceVariants(src)) {
     for (const t of v.split(/[\s;&|<>()'"`=,:{}]+/)) if (t) out.add(t)
     for (const t of v.split(/[\s;&|<>()'"`=]+/)) if (t) out.add(t)
@@ -281,7 +423,7 @@ function isCandidate(word, ctx) {
 // path's tail (`$WT/.claude/settings.json`): read as that path (fail closed).
 export function classifyWord(word, ctx) {
   const { list, rootKey } = installTargets(ctx.root, ctx.subAgent === true, ctx.projectDir, ctx.configDir)
-  let w = String(word)
+  let w = expandCallerVars(String(word), ctx) // E4, here too: a redirect target reaches classifyWord directly
   if (w === '~' || w.startsWith('~/')) w = expandHome(w === '~' ? '~/' : w)
   if (UNRESOLVED_RX.test(w)) {
     const tail = ('/' + w.split(UNRESOLVED_RX).pop()).replace(/\/+/g, '/').replace(/\/$/, '')
@@ -331,14 +473,15 @@ export function classifyWord(word, ctx) {
     }
     if (sameKey(key, t.key)) return 'exact'
     if (t.dir && underKey(key, t.key)) return 'under'
-    if (underKey(t.key, key) && underKey(key, rootKey)) best = 'ancestor'
+    // PLUGINCODEWRITE1104 (E2): also strictly below $HOME, so moving or extracting into ~/.claude reaches ~/.claude/plugins
+    if (underKey(t.key, key) && (underKey(key, rootKey) || belowHome(key))) best = 'ancestor'
   }
   return best
 }
 
 function hitsIn(text, ctx) {
   const hits = []
-  for (const w of pathWords(text)) {
+  for (const w of pathWords(text, ctx)) {
     if (!isCandidate(w, ctx)) continue
     const c = classifyWord(w, ctx)
     if (c) hits.push({ word: w, kind: c })
@@ -676,7 +819,7 @@ export function installFileDeny(command, opts = {}) {
   const cwdReaches = (cwd) => {
     if (!cwd) return false
     const key = pathKey(cwd)
-    return underKey(key, rootKey) && list.some((t) => underKey(t.key, key) || (t.dir && underKey(key, t.key)))
+    return (underKey(key, rootKey) || belowHome(key)) && list.some((t) => underKey(t.key, key) || (t.dir && underKey(key, t.key)))
   }
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
@@ -807,6 +950,10 @@ export function installFileDeny(command, opts = {}) {
       continue
     }
     if (name === 'git' && gitIsRead(words)) continue
+    // PLUGINCODEWRITE1104: a `cp` whose DESTINATION (its last operand) is no protected path only reads the protected
+    // sources it names (copying a shared skill into one's own directory). A link-making or target-directory flag
+    // (-l, -s, -t, --link, --symbolic-link, --target-directory) keeps the deny: the copy would share the protected file.
+    if (!usesTainted && name === 'cp' && cpOnlyReadsProtected(words, ctx)) { moveCwd(own, seg, ctx); continue }
     const hitWords = new Set(hits.map((h) => h.word))
     if (!usesTainted && isExecOf(words, name, hitWords)) continue
     if (!usesTainted && hits.every((h) => h.kind === 'ancestor') && !DIR_CHANGERS.has(name)) continue
@@ -839,6 +986,37 @@ export function claudeMcpListWrite(command) {
   return claudeInvocations(String(command ?? '')).some((args) => {
     const i = args.indexOf('mcp')
     return i >= 0 && CLAUDE_MCP_WRITE_SUBS.has(args[i + 1])
+  })
+}
+
+// `claude plugin|plugins ...` (PLUGINCODEWRITE1104, Samu 68214 D4): an ALLOWLIST, so an alias or a later subcommand is
+// denied too. A sub-agent may run only `list`, `validate`, `marketplace list` and any `-h`/`--help`; everything else
+// (install, uninstall, enable, disable, update, marketplace add/remove/update, ...) is denied, also with a throwaway
+// CLAUDE_CONFIG_DIR (the tmp dir can be a symlink onto a guarded tree in the same command: a conditional allow would
+// be a TOCTOU; the main agent runs such a probe, Samu 68247). Also a `claude` started with `--plugin-dir` or with a
+// `--settings` that names plugins or marketplaces loads code the gate never saw. Same parser and the same stated
+// limit as claudeMcpListWrite (a `claude` not at a segment's start is not seen).
+const CLAUDE_PLUGIN_READS = new Set(['list', 'validate'])
+export function claudePluginWrite(command) {
+  return claudeInvocations(String(command ?? '')).some((args) => {
+    if (args.some((a) => a === '--plugin-dir' || a.startsWith('--plugin-dir='))) return true
+    const si = args.findIndex((a) => a === '--settings' || a.startsWith('--settings='))
+    if (si >= 0) {
+      const v = args[si].startsWith('--settings=') ? args[si].slice(11) : (args[si + 1] ?? '')
+      if (/enabledPlugins|extraKnownMarketplaces|pluginDirs?/.test(v) || !v) return true
+    }
+    const i = args.findIndex((a) => a === 'plugin' || a === 'plugins')
+    if (i < 0) return false
+    const rest = args.slice(i + 1)
+    if (rest.includes('-h') || rest.includes('--help')) return false
+    const sub = rest.find((a) => !a.startsWith('-'))
+    if (!sub) return false // `claude plugin` alone prints help
+    if (CLAUDE_PLUGIN_READS.has(sub)) return false
+    if (sub === 'marketplace') {
+      const sub2 = rest.slice(rest.indexOf('marketplace') + 1).find((a) => !a.startsWith('-'))
+      return sub2 !== 'list'
+    }
+    return true
   })
 }
 
@@ -936,6 +1114,7 @@ function decide(toolName, toolInput, opts = {}) {
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
     if (subOnly() && claudeMcpListWrite(command)) return { deny: true, reason: 'subagent-file' }
+    if (subOnly() && claudePluginWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     const file = installFileDeny(command, opts)
     if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
@@ -995,7 +1174,10 @@ export const SUBAGENT_FILE_GATE_MSG =
   'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
   'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
   'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
-  'amit ez a kapu NEM lat (limit): egy plugin sajat szerverlistajat (a plugin-mappa .mcp.json-ja, plugin.json mcpServers) es egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
+  'sem a Claude Code plugin-fajat (~/.claude/plugins, a telepites plugins/ mappaja, ~/marveen-local-plugins, a config-direk plugins/ mappaja es registry-jei) es a kozos ~/.claude/agents, skills, hooks fat, ' +
+  'a `claude plugin` paranccsal sem (csak list, validate, marketplace list, --help), es `--plugin-dir`-rel sem (PLUGINCODEWRITE1104; plugin-deploy a fo agensen at); ' +
+  'ha a cwd egy ilyen fan belul van, minden nem-olvaso parancs tilt: elobb lepj ki onnan. ' +
+  'amit ez a kapu NEM lat (limit): egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG

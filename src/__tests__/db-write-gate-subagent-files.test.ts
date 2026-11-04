@@ -45,7 +45,11 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
   expect(SUBAGENT_PROTECTED_INSTALL_PATHS.map((t: { rel?: string; home?: string }) => t.rel ?? `~/${t.home}`))
     .toEqual(['.env', ...STORE_FILES.map((f) => `store/${f}`), '~/.claude/settings.json', '~/.claude/settings.local.json', '.channels-config',
       'agents/*/.mcp.json', 'agents/*/.claude-config/.claude.json', 'agents/*/.claude-config/.marveen-mcp-inherited.json',
-      '.mcp.json', '~/.claude.json'])
+      '.mcp.json', '~/.claude.json',
+      // PLUGINCODEWRITE1104: the plugin trees and the shared user-level trees
+      '~/.claude/plugins', 'plugins', '~/marveen-local-plugins', '~/.claude/agents', '~/.claude/skills', '~/.claude/hooks',
+      'agents/*/.claude-config/plugins/installed_plugins.json', 'agents/*/.claude-config/plugins/known_marketplaces.json',
+      '~/.marveen-worker/.claude-config/plugins', '~/.marveen-worker-fast/.claude-config/plugins'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
