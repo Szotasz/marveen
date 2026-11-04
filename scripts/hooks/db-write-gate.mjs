@@ -99,6 +99,16 @@ export const PROTECTED_INSTALL_PATHS = [
   // The user's git config, read by every git on the machine (Samu 56310 2): an url.*.insteadOf there redirects origin.
   { home: '.gitconfig' },
   { home: 'git/config', xdg: true },
+  // Every agent's own Claude settings (ENVRELAXGATE1104, Samu 67797): a sub-agent's gate hooks live in its
+  // agents/<name>/.claude/settings.json, so one edit there takes a gate out (or adds disableAllHooks / an env block). Only
+  // the dashboard writes them (on every spawn); no agent, the main agent included. `*` is ONE path segment (the agent's
+  // name). A pattern has NO ancestor here: agents/<name> is where every sub-agent works, and a directory changer naming
+  // its .claude directory is caught by claudeDirCopyIn below.
+  { rel: 'agents/*/.claude/settings.json', pattern: true },
+  { rel: 'agents/*/.claude/settings.local.json', pattern: true },
+  // ...and the user-level settings of its isolated CLAUDE_CONFIG_DIR (Samu 67832): a disableAllHooks there switches off
+  // every hook of that agent. Claude Code's own writes (/effort, /model) are not tool calls, so this gate never sees them.
+  { rel: 'agents/*/.claude-config/settings.json', pattern: true },
 ]
 // ENVRELAXGATE1104 (Dani's inventory 67751 and plan v2, Samu 67732/67752/67763): files whose ONE write turns a gate off or
 // gives an agent a right, for a SUB-AGENT only. The main agent writes the install .env legitimately (self-rename), so
@@ -118,12 +128,21 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/credential-gate.json' },
   { rel: 'store/egress-measure-hosts.json' },
   { rel: 'store/.fleet-memgate-observe' },
+  // The user's shared Claude settings (Dani 67840/67841): every agents/*/.claude-config/settings.local.json is a
+  // SYMLINK to ~/.claude/settings.local.json, a real file the main agent loads too, so a sub-agent writing it (through
+  // its symlink or straight) changes every session's settings. The main agent writes them legitimately: sub-agent only.
+  // The real path is compared, so the symlink route lands here. ~/.claude/projects (memory files) is not touched.
+  { home: '.claude/settings.json' },
+  { home: '.claude/settings.local.json' },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
 // agents/<name>. Anything that is not exactly the install root counts as a sub-agent, an unset project dir too
-// (fail-closed: the main agent's hook always has it).
-export function isSubAgentCaller(projectDir, root = INSTALL_ROOT) {
+// (fail-closed: the main agent's hook always has it). A second signal (Dani 67822): a CLAUDE_CONFIG_DIR under the
+// install's agents/ is a sub-agent's isolated config, which a child `claude` it starts from the install root inherits;
+// the main agent's config is ~/.claude or <root>/.channels-config, never under agents/. `env -i` drops it (stated limit).
+export function isSubAgentCaller(projectDir, root = INSTALL_ROOT, configDir = null) {
+  if (configDir && underKey(pathKey(resolve(String(configDir))), pathKey(join(resolve(root), 'agents')))) return true
   if (!projectDir) return true
   return !sameKey(pathKey(resolve(String(projectDir))), pathKey(resolve(root)))
 }
@@ -131,15 +150,34 @@ export function isSubAgentCaller(projectDir, root = INSTALL_ROOT) {
 // The database file, by NAME anywhere (as the Bash rule reads it).
 const DB_FILE_NAME_RX = /(?:^|\/)claudeclaw\.db(?:-wal|-shm|-journal)?$/i
 
+// The CALLER's own Claude settings, wherever they are (Samu 67803, 67832): a sub-agent's gate hooks live in
+// <CLAUDE_PROJECT_DIR>/.claude/settings.json, and its user-level settings in <CLAUDE_CONFIG_DIR>/settings.json (unset:
+// ~/.claude/settings.json, which then is the sub-agent's). Under the install's agents/ the common patterns cover the
+// first two already; these entries also cover a caller outside it (the two workers: their config dir is
+// ~/.marveen-worker{,-fast}/.claude-config). Sub-agent list only.
+function callerSettingsEntries(projectDir, configDir) {
+  const out = []
+  if (projectDir) {
+    const dir = resolve(String(projectDir))
+    for (const rel of ['.claude/settings.json', '.claude/settings.local.json']) out.push({ rel, abs: resolve(dir, rel), caller: true })
+  }
+  if (configDir) {
+    const dir = resolve(String(configDir))
+    for (const f of ['settings.json', 'settings.local.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
+  }
+  return out
+}
+
 const targetCache = new Map()
-export function installTargets(root = INSTALL_ROOT, subAgent = false) {
+export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir = null, configDir = null) {
   const k = resolve(root)
-  const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}`
+  const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}`
   if (!targetCache.has(ck)) {
+    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir)] : PROTECTED_INSTALL_PATHS
     targetCache.set(ck, {
       rootKey: pathKey(k),
-      list: (subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS] : PROTECTED_INSTALL_PATHS).map((t) => {
-        const abs = t.home == null ? resolve(k, t.rel)
+      list: entries.map((t) => {
+        const abs = t.abs ? t.abs : t.home == null ? resolve(k, t.rel)
           : t.xdg ? resolve(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), t.home) : resolve(homedir(), t.home)
         const key = pathKey(abs)
         // the lexical and the real spelling, segment by segment, for glob words
@@ -160,6 +198,17 @@ const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'h
   'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe'])
 const GLOB_CHAR_RX = /[*?[{]/
+
+// A pattern entry against a resolved path key: 'exact' when every segment matches (`*` matches one segment), else null.
+function patternExact(key, t) {
+  // every nameForms() form of the key against the same form of the pattern (the real path, its case folds)
+  for (let i = 0; i < key.length; i++) {
+    const K = normalizePathSegments(key[i])
+    const T = normalizePathSegments(t.key[i] ?? t.key[0])
+    if (K.length === T.length && T.every((seg, x) => seg === '*' ? K[x] !== '' : seg === K[x])) return true
+  }
+  return false
+}
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
 // Every path-like word of a text: split on shell and code punctuation, in every
@@ -190,7 +239,7 @@ function isCandidate(word, ctx) {
 // 'unresolved': an expansion this gate cannot resolve, followed by a protected
 // path's tail (`$WT/.claude/settings.json`): read as that path (fail closed).
 export function classifyWord(word, ctx) {
-  const { list, rootKey } = installTargets(ctx.root, ctx.subAgent === true)
+  const { list, rootKey } = installTargets(ctx.root, ctx.subAgent === true, ctx.projectDir, ctx.configDir)
   let w = String(word)
   if (w === '~' || w.startsWith('~/')) w = expandHome(w === '~' ? '~/' : w)
   if (UNRESOLVED_RX.test(w)) {
@@ -215,10 +264,11 @@ export function classifyWord(word, ctx) {
         for (const T of t.segs) {
           const n = Math.min(W.length, T.length)
           let ok = true
-          for (let i = 0; i < n && ok; i++) ok = nameForms(W[i]).some((f) => globMatchesName(f, T[i]))
+          for (let i = 0; i < n && ok; i++) ok = T[i] === '*' && t.pattern ? W[i] !== '' : nameForms(W[i]).some((f) => globMatchesName(f, T[i]))
           if (!ok) continue
           if (W.length === T.length) return 'exact'
           if (W.length > T.length) { if (t.dir) return 'under'; continue }
+          if (t.pattern) continue // no ancestor (see the entry)
           best = 'ancestor'
         }
       }
@@ -230,6 +280,10 @@ export function classifyWord(word, ctx) {
   const key = pathKey(abs)
   let best = null
   for (const t of list) {
+    if (t.pattern) {
+      if (patternExact(key, t)) return 'exact'
+      continue
+    }
     if (sameKey(key, t.key)) return 'exact'
     if (t.dir && underKey(key, t.key)) return 'under'
     if (underKey(t.key, key) && underKey(key, rootKey)) best = 'ancestor'
@@ -257,6 +311,25 @@ const INTERPRETERS = new Set(['python', 'python3', 'node', 'bash', 'sh', 'zsh'])
 // contains a protected path, they reach it without naming it.
 const DIR_CHANGERS = new Set(['rm', 'rmdir', 'mv', 'cp', 'rsync', 'ln', 'install', 'tar', 'bsdtar', 'gtar', 'unzip',
   'cpio', 'patch', 'ditto', '7z', '7za', 'chmod', 'chown', 'chflags', 'find'])
+
+// A directory named .claude copied or moved INTO an agent directory (ENVRELAXGATE1104): `cp -r /tmp/x/.claude .` in
+// agents/<name> lands on its .claude/settings.json without naming it, and agents/<name> itself is not an ancestor (every
+// sub-agent works there). So: a directory changer with a source word whose last part is (or globs onto) .claude, and the
+// cwd or a word under the install's agents/. A content copy (`cp -r x/. .`, an archive) is not seen: stated limit.
+const CLAUDE_DIR_WORD_RX = /\.claude(?:-config)?(?![\w-])|(?:^|[\s/'"])\.[^\s/'"]*[*?[]/i
+function claudeDirCopyIn(words, ctx) {
+  const vals = words.slice(1).map((w) => w.value).filter((v) => v && !v.startsWith('-'))
+  const named = vals.some((v) => {
+    const last = normalizePathSegments(v).filter(Boolean).pop() ?? ''
+    return nameForms(last).some((f) => f === '.claude' || f === '.claude-config'
+      || (f.startsWith('.') && GLOB_CHAR_RX.test(f) && (globMatchesName(f, '.claude') || globMatchesName(f, '.claude-config'))))
+  })
+  if (!named) return false
+  const agentsKey = pathKey(join(ctx.root, 'agents'))
+  const inAgents = (p) => !!p && underKey(pathKey(p), agentsKey)
+  if (inAgents(ctx.cwd)) return true
+  return vals.some((v) => inAgents(v.startsWith('/') || v === '~' || v.startsWith('~/') ? expandHome(v === '~' ? '~/' : v) : (ctx.cwd ? resolve(ctx.cwd, v) : null)))
+}
 
 // Programs that write into the CWD when no target directory is named: an
 // archive extracted, a patch applied (Dani 56276 2a). The names they create
@@ -543,17 +616,18 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true }
-  const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null }
+  const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
   // and no program in it writes into the cwd on its own
-  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd)) return false
+  // (a .claude source, or a dot-glob that may be one, goes on to the segments: claudeDirCopyIn)
+  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd)) return false
   // the git environment that redirects a remote or points git at another repo or work tree, anywhere in a git command
   if (GIT_WORD_RX.test(cmd) && GIT_ENV_RX.test(cmd)) return 'git'
   // the cwd is the install root, a directory on the way to a protected path, or
   // inside a protected directory: an implicit writer there reaches it
-  const { list, rootKey } = installTargets(ctx.root, ctx.subAgent)
+  const { list, rootKey } = installTargets(ctx.root, ctx.subAgent, ctx.projectDir, ctx.configDir)
   const cwdReaches = (cwd) => {
     if (!cwd) return false
     const key = pathKey(cwd)
@@ -645,6 +719,7 @@ export function installFileDeny(command, opts = {}) {
       }
     }
     const name = words ? commandName(words) : ''
+    if (words && words.length && DIR_CHANGERS.has(name) && claudeDirCopyIn(words, ctx)) return true
     const git = words && gitWords(words)
     if (git) {
       const g = gitDecision(git, ctx)
@@ -702,7 +777,7 @@ export function fileToolDeny(toolInput, opts = {}) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return null
   if (nameForms(raw).some((f) => DB_FILE_NAME_RX.test(f))) return 'db'
-  const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : process.cwd(), subAgent: opts.subAgent === true }
+  const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : process.cwd(), subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null }
   const c = classifyWord(raw, ctx)
   return c === 'exact' || c === 'under' || c === 'unresolved' ? 'install-file' : null
 }
@@ -756,7 +831,8 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
+  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat, ' +
+  'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
   'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet KOZVETLENUL futtatni is ' +
@@ -771,7 +847,8 @@ export const SUBAGENT_FILE_GATE_MSG =
   'Telepites .env / kapu-szabalyfajl irasa TILTOTT (ENVRELAXGATE1104, sub-agensre). NEM irhatod a futo telepites ' +
   '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
   'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
-  'store/.fleet-memgate-observe fajlt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
+  'store/.fleet-memgate-observe fajlt, sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
+  '(ott elnek a kapu-hookjaid): letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
 
@@ -862,7 +939,13 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
   }
   try {
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input,
-      { cwd: payload?.cwd, subAgent: isSubAgentCaller(process.env.CLAUDE_PROJECT_DIR) })
+      {
+        cwd: payload?.cwd,
+        subAgent: isSubAgentCaller(process.env.CLAUDE_PROJECT_DIR, INSTALL_ROOT, process.env.CLAUDE_CONFIG_DIR || null),
+        projectDir: process.env.CLAUDE_PROJECT_DIR || null,
+        // the caller's user-level settings live in its config dir; unset, that is ~/.claude
+        configDir: process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+      })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG
