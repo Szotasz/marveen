@@ -30,6 +30,13 @@ import owner_chat  # noqa: E402
 # Stop-hook reply guard kept blocking on an already-answered message.
 REPLY_TOOL_RX = re.compile(r"^mcp__plugin_[A-Za-z0-9_-]+__reply$")
 
+# GROMZOLEDGERIN1102: the Gromzo reply names its conversation in its RESULT, not
+# in its input (the input has reply_to / to: "owner", never a chat id). The
+# plugin (marveen-mxd plugin/gromzo-channel, withLedgerChat) adds one line
+# "chat_id: gz<20 hex>" to the result of a reply that went to the owner DM.
+GROMZO_REPLY_TOOL = "mcp__plugin_gromzo-channel_gromzo__reply"
+GROMZO_CHAT_RX = re.compile(r"(?m)^chat_id: (gz[0-9a-f]{20})$")
+
 
 def _owner_chat():
     # CHATID0: LEDGER_OWNER_CHAT keeps precedence (an explicit hook-env
@@ -123,6 +130,27 @@ def _extract_message_id(payload):
     return None
 
 
+def _gromzo_chat(payload):
+    """The ledger key a Gromzo reply's result names, or None.
+
+    The result is a content-block list ([{"type": "text", "text": "sent (1
+    part)\nchat_id: gz..."}]) or a plain string; only a whole line in the
+    plugin's exact shape counts, so no other text can name a conversation."""
+    result = payload.get("tool_response")
+    texts = []
+    if isinstance(result, str):
+        texts.append(result)
+    elif isinstance(result, list):
+        for block in result:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                texts.append(block["text"])
+    for text in texts:
+        m = GROMZO_CHAT_RX.search(text)
+        if m:
+            return m.group(1)
+    return None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -142,6 +170,13 @@ def main():
     chat_id = tool_input.get("chat_id")
     if chat_id is None:
         chat_id = tool_input.get("conversation_id")
+    # GROMZOLEDGERIN1102: for the Gromzo reply the key in its result wins over any
+    # chat_id the input carries (the reply tool takes none, so one there is the
+    # model's guess, possibly stale).
+    if tool == GROMZO_REPLY_TOOL:
+        gromzo = _gromzo_chat(payload)
+        if gromzo is not None:
+            chat_id = gromzo
     chat_id = "" if chat_id is None else str(chat_id).strip()
     if chat_id in ("", "0"):
         chat_id = _owner_chat()

@@ -314,6 +314,24 @@ def main():
     check("telegram names telegram tool", TG_TOOL in r, True)
     check("telegram does NOT name discord tool", DC_TOOL in r, False)
 
+    # 10b. GROMZOLEDGERIN1102: a Gromzo inbound (the verified owner's owner DM, the
+    # only one the plugin keys) names the Gromzo reply tool with to: "owner". It
+    # never tells the model to answer with chat_id=gz...: the Gromzo reply takes
+    # none, and in both mode a reply without its target is NOT sent (a block loop).
+    GZ_TOOL = "mcp__plugin_gromzo-channel_gromzo__reply"
+    SLACK_TOOL = "mcp__plugin_slack-channel_slack__reply"
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "gz65f616902edb4df70eba", "gze3244e20d0b3c09f6eda", "szia gromzo",
+                    "2026-11-04T06:48:17.123Z", source="plugin:gromzo-channel:gromzo")
+    for provider in ("slack", "telegram"):
+        d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": provider})
+        check(f"gromzo inbound blocks ({provider} configured)", d, "block")
+        check(f"gromzo names the gromzo tool ({provider} configured)", GZ_TOOL in r, True)
+        check(f"gromzo names to: \"owner\" ({provider} configured)", 'to: "owner"' in r, True)
+        check(f"gromzo does NOT ask for chat_id=gz ({provider} configured)", "chat_id=gz" in r, False)
+        check(f"gromzo does NOT name the configured tool ({provider})", SLACK_TOOL in r or TG_TOOL in r, False)
+
     # 11. Legacy row (source NULL, written before the column existed) -> still
     # blocks, and names the CONFIGURED channel's verified tool (Marveen 32905:
     # the #1606 provider, NOT the generic wording); with a provider whose tool is
