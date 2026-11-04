@@ -75,6 +75,21 @@ import { mcpFileTargets } from './mcp-file-targets.mjs'
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
+// CHANSTATEWRITE1104: the trust files and directories of a channel plugin's state dir, per plugin (`*`), under each
+// root. A name with a glob character matches one path segment by that glob (inbox-draining-<pid>.jsonl).
+const CHANNEL_STATE_FILES = ['access.json', '.env', 'invites.json', 'inbound-evidence.jsonl', 'inbound-evidence.jsonl.1',
+  'inbox-pending.jsonl', 'inbox-draining-*.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json',
+  'bot.pid', 'coordinator.pid']
+const CHANNEL_STATE_DIRS = ['progress', 'approved']
+function channelStateTargets() {
+  const out = []
+  for (const [kind, base] of [['home', '.claude/channels'], ['rel', '.claude/channels'], ['rel', 'agents/*/.claude/channels']]) {
+    for (const f of CHANNEL_STATE_FILES) out.push({ [kind]: `${base}/*/${f}`, pattern: true })
+    for (const d of CHANNEL_STATE_DIRS) out.push({ [kind]: `${base}/*/${d}`, pattern: true, dir: true })
+  }
+  return out
+}
+
 // What a background worker loads at its start, under its home (WORKERCFGDIR1104, Dani 68629/68889): its config dir
 // (settings.json, .claude.json, worker-mcp.json, .credentials.json, ...), and, since the home is its cwd and a trusted
 // project (.claude.json projects[home].hasTrustDialogAccepted), the project-scope files there too: .claude/ (settings,
@@ -218,6 +233,17 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // workerConfigEntries.
   ...workerHomeTargets('.marveen-worker'),
   ...workerHomeTargets('.marveen-worker-fast'),
+  // The channel plugins' trust files (CHANSTATEWRITE1104, Marveen 69167, Samu 69174/69201): what decides who is the
+  // owner or an allowed sender, what is paired or approved, which bot identity is used and what an inbound message's
+  // provenance is (measured: work/chanstate-measure.md). Under every state root a plugin uses: the shared
+  // ~/.claude/channels (every agent's .claude-config/channels and the main agent's .channels-config/channels link
+  // there, compared by real path), the install's own .claude/channels (the main agent's Telegram), and each agent's
+  // agents/<name>/.claude/channels, the caller's own included (a writable allowFrom is an owner-identity grant).
+  // Their writers are the plugin processes, the hooks, the daemons, the dashboard and the launcher, none of them a
+  // sub-agent's tool call; the plugins' own access/configure skills hard-code ~/.claude/channels, so in a sub-agent
+  // they would write the main agent's state, and denying them there is right. Left free: inbox/, sessions/,
+  // outbound-gate.log, Teams files/ and outbox/ (no trust reader measured).
+  ...channelStateTargets(),
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -383,7 +409,9 @@ export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.js
   'plugins', 'marveen-local-plugins', 'gromzo',
   // CPDESTDIR1104 (Dani B2, Samu 69132): the same for the start-loaded trees a session reads (`cd ~/.claude && rm -rf
   // skills` named no path-like word and passed)
-  'rules', 'skills', 'agents', 'commands', 'output-styles'])
+  'rules', 'skills', 'agents', 'commands', 'output-styles',
+  // CHANSTATEWRITE1104: the channel state dirs' trust directories, from their parent
+  'progress', 'approved'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
@@ -444,7 +472,8 @@ export function patternRel(key, t) {
     const T = normalizePathSegments(t.key[i] ?? t.key[0])
     const n = Math.min(K.length, T.length)
     let ok = true
-    for (let x = 0; x < n && ok; x++) ok = T[x] === '*' ? K[x] !== '' : T[x] === K[x]
+    // `*` alone: any one non-empty segment; a segment with a glob character (CHANSTATEWRITE1104): matched as a glob
+    for (let x = 0; x < n && ok; x++) ok = T[x] === '*' ? K[x] !== '' : GLOB_CHAR_RX.test(T[x]) ? K[x] !== '' && globMatchesName(T[x], K[x]) : T[x] === K[x]
     if (!ok) continue
     if (K.length === T.length) return 'exact'
     if (K.length > T.length) { if (t.dir) return 'under'; continue }
