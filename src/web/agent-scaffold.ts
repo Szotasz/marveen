@@ -235,7 +235,10 @@ export function hookCommand(scriptPath: string, args: readonly string[] = [], ho
 // is probed first and a miss exits 2, which blocks.
 export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  const invocation = gateInvocation('python3', scriptPath, args)
+  // SITEPKGPLANT1104 (1): -I -S, so no start-up code the gate did not ship runs inside it (a .pth line or
+  // sitecustomize in a writable site-packages, a user site, PYTHON* settings). The hooks import only the standard
+  // library and their own directory, which they put on sys.path themselves (measured on every hook).
+  const invocation = gateInvocation('python3 -I -S', scriptPath, args)
   return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 

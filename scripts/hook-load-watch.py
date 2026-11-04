@@ -717,7 +717,9 @@ def import_probe(path):
     if not safe:
         return syntax_probe(path, why)
     if path.endswith(".py"):
-        argv = ["python3", "-B", "-c", PY_IMPORT_PROBE, path]
+        # SITEPKGPLANT1104 (1): isolated like the hooks themselves (python3 -I -S), so a dependency that loads only
+        # from site-packages or the user site fails here as it would in the gate (the probe puts the dir on sys.path)
+        argv = ["python3", "-I", "-S", "-B", "-c", PY_IMPORT_PROBE, path]
     else:
         argv = ["node", "--input-type=module", "-e", "await import(%s)" % json.dumps(pathlib.Path(path).as_uri())]
     timeout = import_timeout()
