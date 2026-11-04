@@ -100,6 +100,10 @@
     {"name": "addressed by a bare address: an undecidable script path", "cmd": "python3 $S a@example.invalid", "expected": true},
     {"name": "addressed by a bare address: a missing node script", "cmd": "node nothere.js a@example.invalid", "expected": true},
     {"name": "control: node X where only X.node exists, no address", "cmd": "node addon", "expected": false},
-    {"name": "control: node X loads a harmless X.js", "cmd": "node scripts/build", "expected": false}
+    {"name": "control: node X loads a harmless X.js", "cmd": "node scripts/build", "expected": false},
+    {"name": "no address: a directly executed file after an undecidable cd", "cmd": "cd $WT && ./nothere.py", "expected": false},
+    {"name": "addressed: a directly executed file after an undecidable cd", "cmd": "cd $WT && ./nothere.py a@example.invalid", "expected": true},
+    {"name": "addressed: the address in an assignment before the run", "cmd": "TO=a@example.invalid; cd $WT && python3 tool.py", "expected": true},
+    {"name": "control: an address-free assignment before the run", "cmd": "TO=nobody; cd $WT && python3 tool.py", "expected": false}
   ]
 }
