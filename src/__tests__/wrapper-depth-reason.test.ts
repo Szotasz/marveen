@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyGateInstall } from './helpers/copy-gate-install.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -24,10 +25,10 @@ beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'headdepth-')) })
 afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
 
 function copyGate(cmd: string): { code: number | null; err: string } {
-  const r = spawnSync('python3', [COPY_GATE], {
+  const r = spawnSync('python3', [copyGateInstall(join(dir, 'rules.json')).hook], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: cmd }, hook_event_name: 'PreToolUse' }),
     encoding: 'utf-8',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT, OUTGOING_COPY_GATE_RULES: join(dir, 'rules.json') },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT },
   })
   return { code: r.status, err: r.stderr }
 }

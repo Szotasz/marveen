@@ -18,8 +18,8 @@ never covered. The sender sees the letter after the shell is done with it.
 What is checked, in this order:
   0. the outgoing-copy CONTENT checks of the main agent's copy gate
      (outgoing-copy-gate.py, loaded by path: the same audit(), the same
-     dictionary, the same name rules from store/outgoing-copy-gate-rules.json;
-     the hook's OUTGOING_COPY_GATE_RULES override is ignored), with the hook's
+     dictionary, the same name rules from this project's
+     store/outgoing-copy-gate-rules.json), with the hook's
      email-path policy: a problem or an INVALID rules file refuses, a missing
      or empty rules file allows with a loud warning. The hook only audits a
      command it recognises as a send, so the spellings above skipped it too.
@@ -80,21 +80,13 @@ def _gate():
     return mod
 
 
-COPY_RULES_ENV = "OUTGOING_COPY_GATE_RULES"
-
-
 def _copy_gate():
     """outgoing-copy-gate.py as a module, its name rules read from THIS
-    project's store: the hook's test-only rules override is not honoured."""
-    saved = os.environ.pop(COPY_RULES_ENV, None)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "outgoing_copy_gate_sender_check", os.path.join(_HERE, "outgoing-copy-gate.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    finally:
-        if saved is not None:
-            os.environ[COPY_RULES_ENV] = saved
+    project's store (the gate has no environment override since ENVRELAXGATE1104)."""
+    spec = importlib.util.spec_from_file_location(
+        "outgoing_copy_gate_sender_check", os.path.join(_HERE, "outgoing-copy-gate.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod
 
 

@@ -226,7 +226,6 @@ describe('email-approval-gate accepts a chat-approved row', () => {
       encoding: 'utf-8',
       env: {
         ...process.env,
-        OUTGOING_COPY_GATE_RULES: join(store, 'no-rules.json'),
       },
       timeout: 60_000,
     })

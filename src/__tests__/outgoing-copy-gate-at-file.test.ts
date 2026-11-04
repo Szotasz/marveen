@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync, execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyGateInstall } from './helpers/copy-gate-install.js'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -42,12 +43,12 @@ function file(name: string, content: string): string {
 }
 
 function gate(cmd: string, rules = join(dir, 'rules.json')): { code: number | null; err: string } {
-  const r = spawnSync('python3', [GATE], {
+  const r = spawnSync('python3', [copyGateInstall(rules).hook], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: cmd }, hook_event_name: 'PreToolUse' }),
     encoding: 'utf-8',
     // Rules path (and so the gate's log) inside the test dir: hermetic, and
     // never a write into the checkout's store/.
-    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT, OUTGOING_COPY_GATE_RULES: rules },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT },
   })
   return { code: r.status, err: r.stderr }
 }

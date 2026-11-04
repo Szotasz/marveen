@@ -52,7 +52,7 @@ function letter(to = 'idegen@pelda.hu') {
   return { tool_name: 'mcp__claude_ai_Gmail__send_message', tool_input: { to: [to], subject: `Teszt ${letterNo}`, body: `Kedves Ügyfelünk! Ez a(z) ${letterNo}. mérés.` } }
 }
 function gate(payload: unknown) {
-  const r = spawnSync('python3', [GATE], { input: JSON.stringify(payload), env: { ...process.env, OUTGOING_COPY_GATE_RULES: join(store, 'no-rules.json') }, encoding: 'utf-8' })
+  const r = spawnSync('python3', [GATE], { input: JSON.stringify(payload), env: { ...process.env }, encoding: 'utf-8' })
   return { code: r.status, err: r.stderr }
 }
 // The gate's first deny names the anchor an approval must carry for exactly this letter.
