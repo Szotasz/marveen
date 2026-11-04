@@ -4,7 +4,7 @@
 // the same exit code and output with and without -I -S; the one optional site-packages import, yaml in the
 // memory-frontmatter lib, has its own fallback, and the two verdicts matched on 4688 real memory files).
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pythonHookCommand, upgradeLegacyHookCommands } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -39,6 +39,24 @@ describe('SITEPKGPLANT1104: python hooks run isolated', () => {
 
   it('the main-agent extra settings writer runs the sender-role gate isolated', () => {
     expect(read('scripts/main-extra-plugins-settings.sh')).toContain(`'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/sender-role-gate.py" --policy '`)
+  })
+
+  it('every python3 run in a scripts/hooks shell script is isolated (Bence 69829: the scheduler preCheck, inline -c code)', () => {
+    const dir = join(PROJECT_ROOT, 'scripts', 'hooks')
+    const loose: string[] = []
+    let runs = 0
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.sh'))) {
+      read(join('scripts', 'hooks', f)).split('\n').forEach((line, i) => {
+        if (line.trim().startsWith('#')) return
+        // a run: python3 at a command position, then -c code or a .py path
+        for (const m of line.matchAll(/(?:^|[\s|;&(])python3((?: -[A-Za-z]+)*) +(?:-c\b|"?[^\s"']*\.py\b)/g)) {
+          runs++
+          if (m[1].trim() !== '-I -S') loose.push(`${f}:${i + 1}: ${line.trim().slice(0, 100)}`)
+        }
+      })
+    }
+    expect(runs).toBeGreaterThanOrEqual(4)
+    expect(loose).toEqual([])
   })
 
   it('an existing install: the old command is upgraded in place, not added beside it', () => {

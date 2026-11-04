@@ -76,7 +76,7 @@ INPUT=$(cat)
 
 # Two lines out: tool_name, then file_path. A newline inside either value cannot
 # travel this way, so the parser REFUSES it rather than silently mis-splitting.
-PARSED=$(printf '%s' "$INPUT" | python3 -c '
+PARSED=$(printf '%s' "$INPUT" | python3 -I -S -c '
 import json, sys
 
 try:
@@ -278,7 +278,7 @@ log_line "ok: $FILE_PATH ${SIZE}B -> ${NEW_SIZE}B ($RESIZER, resized=$RESIZED)"
 # quote or a backslash would otherwise emit malformed JSON, which the runtime
 # would drop -- silently, which is the failure this whole file is about.
 RESIZED="$RESIZED" RESIZER="$RESIZER" SIZE="$SIZE" NEW_SIZE="$NEW_SIZE" \
-ORIG_PATH="$ORIG_PATH" python3 -c '
+ORIG_PATH="$ORIG_PATH" python3 -I -S -c '
 import json, os, sys
 
 if os.environ["RESIZED"] == "yes":
