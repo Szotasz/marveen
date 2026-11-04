@@ -31,6 +31,9 @@ for cmd, want, what in [
     ("echo ${#x}; sendmail a@b.hu", True, "${#x} is no comment"),
     ("echo 'it''s' # c\nsendmail a@b.hu", True, "quotes before a comment"),
     ("# only a comment", False, "a command that is only a comment"),
+    ("echo $(echo a)#x; sendmail a@b.hu", True, "a # right after the ) of a $(...) is part of the word (Bence 69701)"),
+    ("echo $(echo a) #x; sendmail a@b.hu", False, "control: after a space it is a comment"),
+    ("echo $( (echo a) )#x; sendmail a@b.hu", True, "a plain ( ) nested inside the $( ): the outer ) still closes the $("),
 ]:
     got = ocg.is_send_invocation(cmd)
     check(f"{what}: {cmd!r} -> {want}", got is want, f"got {got}")

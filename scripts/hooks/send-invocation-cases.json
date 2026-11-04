@@ -2138,6 +2138,11 @@
       "name": "MAINGATENLCOMMENT1104: control, a comment that only names a sender",
       "cmd": "echo hi # sendmail a@b.hu is not run",
       "expected": false
+    },
+    {
+      "name": "MAINGATENLCOMMENT1104 (Bence 69701): a # right after the ) of a $(...) is part of the word",
+      "cmd": "echo $(echo a)#x; sendmail a@b.hu",
+      "expected": true
     }
   ]
 }
