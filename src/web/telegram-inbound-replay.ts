@@ -24,14 +24,14 @@
  * queued once for the agent, framed like a coordinator hand-off (the same
  * <channel> block the channel-coordinator builds for the main agent).
  *
- * Fail closed everywhere: an unreadable allowlist, a missing transcript dir or a
- * transcript that has not been written since the message ("blind") never causes
- * a replay. Message text is never logged.
+ * Fail closed everywhere: an unreadable allowlist, a symlinked or foreign-owned
+ * state file, a missing transcript dir or a transcript that has not been written
+ * since the message ("blind") never causes a replay. Message text is never logged.
  */
 
-import { readFileSync } from 'node:fs'
+import { lstatSync, readFileSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { isSettingOn } from '../setting-flag.js'
@@ -39,7 +39,7 @@ import { channelStateDir } from '../channel-provider.js'
 import { buildHandoffContent } from '../channel-coordinator.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { createAgentMessage, hasAgentMessageContaining } from '../db.js'
-import { agentDir, listAgentNames, readAgentRunAsUser } from './agent-config.js'
+import { agentDir, listAgentNames } from './agent-config.js'
 import { isAgentRunning, resolveAgentProvider } from './agent-process.js'
 import { transcriptDirsFor as intakeTranscriptDirsFor } from './channel-intake-monitor.js'
 import { EVIDENCE_FILE } from './write-evidence.js'
@@ -82,8 +82,9 @@ export interface ReplayDeps {
   listAgents: () => string[]
   isTelegramAgent: (name: string) => boolean
   isRunning: (name: string) => boolean
-  runsAsOtherUser: (name: string) => boolean
   stateDirFor: (name: string) => string
+  /** The state files replay reads may be trusted (stateFilesTrustedIn); false skips the agent. */
+  stateFilesTrusted: (name: string, stateDir: string) => boolean
   transcriptDirsFor: (name: string) => string[]
   alreadyReplayed: (agent: string, e: EvidenceEntry) => boolean
   enqueue: (agent: string, content: string) => number
@@ -153,6 +154,49 @@ export function allowedChatIds(stateDir: string): Set<string> | null {
   return out
 }
 
+function pathEntryExists(path: string): boolean {
+  try { lstatSync(path); return true } catch { return false }
+}
+
+/**
+ * True when `path` lies below `root` and every path component from `root`
+ * (exclusive) down to the file exists and is not a symlink; with a `uid`, each
+ * of them must also be owned by it. lstat, never stat: a symlink is refused, not
+ * followed. Checked before the reads, so a swap in between is not covered.
+ */
+export function ownedWithoutSymlinks(root: string, path: string, uid: number | null): boolean {
+  const rel = relative(root, path)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return false
+  let cur = root
+  for (const part of rel.split(sep)) {
+    cur = join(cur, part)
+    let st
+    try { st = lstatSync(cur) } catch { return false }
+    if (st.isSymbolicLink()) return false
+    if (uid !== null && st.uid !== uid) return false
+  }
+  return true
+}
+
+/**
+ * May a replay read this agent's state files? The dashboard user can read every
+ * agent's 0600 state files, an agent under its own OS user cannot read another
+ * agent's; a symlinked evidence log would replay that other agent's messages to
+ * it. So no component from the agent dir down may be a symlink, and the evidence
+ * logs (current and rotated), file and directories, must be owned by the
+ * dashboard's own user: a plugin under another OS user writes them as that user.
+ * access.json is checked for symlinks only: it only narrows which logged
+ * messages are replayed, and an install may hand it to an admin user so the
+ * agent cannot widen its own allowlist.
+ */
+export function stateFilesTrustedIn(root: string, stateDir: string, uid: number | null): boolean {
+  const evidence = [join(stateDir, EVIDENCE_FILE)]
+  const rotated = join(stateDir, `${EVIDENCE_FILE}.1`)
+  if (pathEntryExists(rotated)) evidence.push(rotated)
+  return evidence.every(p => ownedWithoutSymlinks(root, p, uid))
+    && ownedWithoutSymlinks(root, join(stateDir, 'access.json'), null)
+}
+
 /**
  * The substring a message's channel tag leaves INSIDE a transcript JSONL line,
  * where the quotes are JSON-escaped. The closing quote after the message id
@@ -161,6 +205,26 @@ export function allowedChatIds(stateDir: string): Set<string> | null {
  */
 export function transcriptKey(chatId: string, messageId: string): string {
   return `chat_id=\\"${chatId}\\" message_id=\\"${messageId}\\"`
+}
+
+const TAG_START = Buffer.from('chat_id=\\"', 'latin1')
+// The ids as parseEvidenceLines accepts them; the longest match is 61 bytes.
+const TAG_AT_START = /^chat_id=\\"(-?\d{1,20})\\" message_id=\\"(\d{1,12})\\"/
+const TAG_SLICE_BYTES = 80
+
+/**
+ * Every transcriptKey a transcript holds, in one pass over its bytes: a native
+ * indexOf per tag, then a regex over a short slice. Searching the whole file once
+ * per logged message would cost entries x bytes on the event loop (measured: 10
+ * ms per message on a 31 MB transcript, up to 89 messages per agent per minute).
+ */
+export function transcriptKeysIn(buf: Buffer): Set<string> {
+  const keys = new Set<string>()
+  for (let i = buf.indexOf(TAG_START); i !== -1; i = buf.indexOf(TAG_START, i + 1)) {
+    const m = TAG_AT_START.exec(buf.toString('latin1', i, Math.min(buf.length, i + TAG_SLICE_BYTES)))
+    if (m) keys.add(transcriptKey(m[1]!, m[2]!))
+  }
+  return keys
 }
 
 /**
@@ -189,16 +253,16 @@ export async function scanTranscripts(dirs: string[], entries: EvidenceEntry[]):
     }
   }
 
-  // null = the read failed; cached so each file is read at most once per call.
-  // Kept as raw bytes: the needle is ASCII, and decoding a live transcript
-  // (tens of MB) to a string would block the event loop for hundreds of ms.
-  const contents = new Map<string, Buffer | null>()
-  async function contentOf(path: string): Promise<Buffer | null> {
-    if (contents.has(path)) return contents.get(path) ?? null
-    let text: Buffer | null
-    try { text = await readFile(path) } catch { text = null }
-    contents.set(path, text)
-    return text
+  // null = the read failed; cached so each file is read and scanned at most
+  // once per call. Read as raw bytes: the tag is ASCII, and decoding a live
+  // transcript (tens of MB) to a string would block the event loop for hundreds of ms.
+  const keysByFile = new Map<string, Set<string> | null>()
+  async function keysOf(path: string): Promise<Set<string> | null> {
+    if (keysByFile.has(path)) return keysByFile.get(path) ?? null
+    let keys: Set<string> | null
+    try { keys = transcriptKeysIn(await readFile(path)) } catch { keys = null }
+    keysByFile.set(path, keys)
+    return keys
   }
 
   for (const e of entries) {
@@ -209,9 +273,9 @@ export async function scanTranscripts(dirs: string[], entries: EvidenceEntry[]):
     let seen = false
     let unreadable = false
     for (const f of relevant) {
-      const text = await contentOf(f.path)
-      if (text === null) { unreadable = true; continue }
-      if (text.includes(needle)) { seen = true; break }
+      const keys = await keysOf(f.path)
+      if (keys === null) { unreadable = true; continue }
+      if (keys.has(needle)) { seen = true; break }
     }
     result.set(key, seen ? 'seen' : unreadable ? 'blind' : 'missing')
   }
@@ -254,8 +318,10 @@ function resolveDeps(over?: Partial<ReplayDeps>): ReplayDeps {
     // channelProvider in its agent-config.json runs on the install's provider.
     isTelegramAgent: name => resolveAgentProvider(name) === 'telegram',
     isRunning: name => isAgentRunning(name),
-    runsAsOtherUser: name => readAgentRunAsUser(name) != null,
     stateDirFor: name => channelStateDir('telegram', agentDir(name)),
+    stateFilesTrusted: (name, stateDir) => stateFilesTrustedIn(
+      agentDir(name), stateDir, typeof process.getuid === 'function' ? process.getuid() : null,
+    ),
     transcriptDirsFor: name => intakeTranscriptDirsFor(name, PROJECT_ROOT),
     alreadyReplayed: (agent, e) => hasAgentMessageContaining(
       COORDINATOR_AGENT_ID, agent, `chat_id="${e.chatId}" message_id="${e.messageId}"`,
@@ -282,11 +348,13 @@ export async function replayMissedInbound(deps?: Partial<ReplayDeps>): Promise<R
     if (agent === MAIN_AGENT_ID) continue
     try {
       if (!d.isTelegramAgent(agent) || !d.isRunning(agent)) continue
-      // An agent under its own OS user can write its state dir; a symlinked
-      // evidence log or access.json would make us replay another agent's
-      // messages to it. Not covered until the reads check the file owner.
-      if (d.runsAsOtherUser(agent)) continue
       const stateDir = d.stateDirFor(agent)
+      // Checked on the files, not on the agent's config: an agent under its own
+      // OS user may be able to write that config too.
+      if (!d.stateFilesTrusted(agent, stateDir)) {
+        logger.debug({ agent }, 'telegram-inbound-replay: state files not trusted (symlink or other owner), agent skipped')
+        continue
+      }
       const fresh = readEvidence(stateDir).filter(e =>
         now - e.at <= REPLAY_LOOKBACK_MS
         && now - e.at >= REPLAY_GRACE_MS
@@ -336,17 +404,29 @@ export async function replayMissedInbound(deps?: Partial<ReplayDeps>): Promise<R
 
 let running = false
 
-export function startTelegramInboundReplay(): NodeJS.Timeout {
+/**
+ * Starts the ticks; the returned function stops them (the first one too, if it
+ * has not run yet). `run` is a test seam.
+ */
+export function startTelegramInboundReplay(run: () => Promise<unknown> = () => replayMissedInbound()): () => void {
   const tick = (): void => {
     // A slow tick (big transcripts) must not overlap the next one.
     if (running) return
     running = true
-    void replayMissedInbound()
+    void run()
       .catch(err => logger.debug({ err }, 'telegram-inbound-replay: tick failed'))
       .finally(() => { running = false })
   }
 
   // First tick after the boot burst; the 90s offset also keeps it off the 45s/100s ticks of the channel monitors.
-  setTimeout(tick, INITIAL_DELAY_MS)
-  return setInterval(tick, CHECK_INTERVAL_MS)
+  // The interval starts there too, so no tick comes before it.
+  let interval: NodeJS.Timeout | undefined
+  const first = setTimeout(() => {
+    tick()
+    interval = setInterval(tick, CHECK_INTERVAL_MS)
+  }, INITIAL_DELAY_MS)
+  return () => {
+    clearTimeout(first)
+    if (interval) clearInterval(interval)
+  }
 }

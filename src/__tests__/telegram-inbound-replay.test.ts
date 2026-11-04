@@ -7,12 +7,13 @@
 // not have seen it (blind), an unreadable allowlist, or a message already handled.
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { initDatabase, createAgentMessage, hasAgentMessageContaining } from '../db.js'
+import { initDatabase, createAgentMessage, hasAgentMessageContaining, getPendingMessages } from '../db.js'
+import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { EVIDENCE_FILE } from '../web/write-evidence.js'
 import {
   REPLAY_LOOKBACK_MS,
@@ -21,10 +22,14 @@ import {
   readEvidence,
   allowedChatIds,
   transcriptKey,
+  transcriptKeysIn,
+  ownedWithoutSymlinks,
+  stateFilesTrustedIn,
   scanTranscripts,
   buildReplayContent,
   replayMissedInbound,
   resetReplayState,
+  startTelegramInboundReplay,
   type EvidenceEntry,
   type ReplayDeps,
 } from '../web/telegram-inbound-replay.js'
@@ -290,6 +295,148 @@ describe('transcriptKey', () => {
   })
 })
 
+// ---- 4b. transcriptKeysIn -------------------------------------------------
+
+describe('transcriptKeysIn', () => {
+  const keysOf = (text: string): Set<string> => transcriptKeysIn(Buffer.from(text, 'utf-8'))
+
+  it('collects the key of every channel tag in a transcript, across lines and around non-ASCII text', () => {
+    const text = [transcriptLine(GROUP, '41'), transcriptLine(DM, '7', 'árvíztűrő tükörfúrógép'), transcriptLine(GROUP, '42')].join('\n') + '\n'
+    expect(keysOf(text)).toEqual(new Set([transcriptKey(GROUP, '41'), transcriptKey(DM, '7'), transcriptKey(GROUP, '42')]))
+  })
+
+  it('takes the longest ids the evidence accepts (a 61-byte tag)', () => {
+    const chat = '-12345678901234567890'
+    const msg = '123456789012'
+    expect(keysOf(transcriptLine(chat, msg) + '\n')).toEqual(new Set([transcriptKey(chat, msg)]))
+  })
+
+  it('counts a replayed block like the plugin tag, and keeps 421 apart from 42 and 4', () => {
+    const line = JSON.stringify({ type: 'user', message: { content: buildReplayContent(entry({ chatId: '-100123', messageId: '421' })) } })
+    const keys = keysOf(line)
+    expect(keys.has(transcriptKey('-100123', '421'))).toBe(true)
+    expect(keys.has(transcriptKey('-100123', '42'))).toBe(false)
+    expect(keys.has(transcriptKey('-100123', '4'))).toBe(false)
+  })
+
+  it('ignores the unescaped tag, ids outside the evidence grammar and a tag cut off at the end of the file', () => {
+    const lines = [
+      '<channel chat_id="-100123" message_id="42">',
+      String.raw`chat_id=\"123456789012345678901\" message_id=\"1\"`, // 21-digit chat
+      String.raw`chat_id=\"1\" message_id=\"1234567890123\"`, // 13-digit message
+      String.raw`chat_id=\"abc\" message_id=\"1\"`,
+      String.raw`chat_id=\"-100123\" message_id=\"42`, // the closing quote is missing
+    ]
+    expect(keysOf(lines.join('\n'))).toEqual(new Set())
+  })
+
+  it('finds a tag that starts inside a broken one', () => {
+    expect(keysOf(String.raw`chat_id=\"chat_id=\"-5\" message_id=\"6\"`)).toEqual(new Set([transcriptKey('-5', '6')]))
+  })
+
+  it('answers exactly like a substring search for the key, on a mixed transcript', () => {
+    const text = [
+      transcriptLine(GROUP, '42'), transcriptLine(GROUP, '421'), transcriptLine(DM, '4'),
+      transcriptLine('-100123', '9'), '{"type":"assistant","message":{"content":"no tag here"}}',
+    ].join('\n') + '\n'
+    const keys = keysOf(text)
+    for (const chat of [GROUP, DM, '-100123', '100123']) {
+      for (const msg of ['4', '42', '421', '2', '9', '1']) {
+        expect([chat, msg, keys.has(transcriptKey(chat, msg))]).toEqual([chat, msg, text.includes(transcriptKey(chat, msg))])
+      }
+    }
+  })
+})
+
+// ---- 4c. ownedWithoutSymlinks, stateFilesTrustedIn -------------------------
+
+describe('ownedWithoutSymlinks and stateFilesTrustedIn', () => {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null
+
+  /** <root>/agent-a/.claude/channels/telegram with an evidence log and an access.json. */
+  function stateTree(): { root: string; agent: string; state: string; evidence: string } {
+    const root = tmpRoot()
+    const agent = join(root, 'agent-a')
+    const state = join(agent, '.claude', 'channels', 'telegram')
+    mkdirSync(state, { recursive: true })
+    const evidence = join(state, EVIDENCE_FILE)
+    writeFileSync(evidence, '')
+    writeFileSync(join(state, 'access.json'), '{}')
+    return { root, agent, state, evidence }
+  }
+
+  it('is true for a plain file below the root, with and without the owner check', () => {
+    const { agent, evidence } = stateTree()
+    expect(ownedWithoutSymlinks(agent, evidence, uid)).toBe(true)
+    expect(ownedWithoutSymlinks(agent, evidence, null)).toBe(true)
+  })
+
+  it('is false for a symlinked file, even to a plain file of the same owner', () => {
+    const { root, agent, evidence } = stateTree()
+    const other = join(root, 'other-agent-evidence.jsonl')
+    writeFileSync(other, '')
+    rmSync(evidence)
+    symlinkSync(other, evidence)
+    expect(ownedWithoutSymlinks(agent, evidence, uid)).toBe(false)
+    expect(ownedWithoutSymlinks(agent, evidence, null)).toBe(false)
+  })
+
+  it('is false when a directory between the root and the file is a symlink', () => {
+    const root = tmpRoot()
+    const agent = join(root, 'agent-a')
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(join(elsewhere, 'telegram'), { recursive: true })
+    writeFileSync(join(elsewhere, 'telegram', EVIDENCE_FILE), '')
+    mkdirSync(join(agent, '.claude'), { recursive: true })
+    symlinkSync(elsewhere, join(agent, '.claude', 'channels'))
+    const path = join(agent, '.claude', 'channels', 'telegram', EVIDENCE_FILE)
+    expect(ownedWithoutSymlinks(agent, path, null)).toBe(false)
+    expect(ownedWithoutSymlinks(join(agent, '.claude', 'channels'), path, null)).toBe(true) // the root itself is not checked
+  })
+
+  it('is false outside the root, for the root itself and for a missing file', () => {
+    const { root, agent, state } = stateTree()
+    const outside = join(root, 'outside.jsonl')
+    writeFileSync(outside, '')
+    expect(ownedWithoutSymlinks(agent, outside, null)).toBe(false)
+    expect(ownedWithoutSymlinks(agent, join(agent, '..', 'outside.jsonl'), null)).toBe(false)
+    expect(ownedWithoutSymlinks(agent, agent, null)).toBe(false)
+    expect(ownedWithoutSymlinks(agent, join(state, 'missing.jsonl'), null)).toBe(false)
+  })
+
+  it.skipIf(uid === null)('is false when the owner is another user', () => {
+    const { agent, evidence } = stateTree()
+    expect(ownedWithoutSymlinks(agent, evidence, uid! + 1)).toBe(false)
+  })
+
+  it('stateFilesTrustedIn: trusts a plain state dir, with and without a rotated log', () => {
+    const { agent, state } = stateTree()
+    expect(stateFilesTrustedIn(agent, state, uid)).toBe(true)
+    writeFileSync(join(state, `${EVIDENCE_FILE}.1`), '')
+    expect(stateFilesTrustedIn(agent, state, uid)).toBe(true)
+  })
+
+  it('stateFilesTrustedIn: refuses a symlinked current log, rotated log or access.json, and a missing current log', () => {
+    const cases: ((t: ReturnType<typeof stateTree>) => void)[] = [
+      t => { rmSync(t.evidence); symlinkSync(join(t.root, 'x'), t.evidence) },
+      t => { writeFileSync(join(t.root, 'x'), ''); symlinkSync(join(t.root, 'x'), join(t.state, `${EVIDENCE_FILE}.1`)) },
+      t => { symlinkSync(join(t.root, 'missing'), join(t.state, `${EVIDENCE_FILE}.1`)) }, // dangling
+      t => { writeFileSync(join(t.root, 'a.json'), '{}'); rmSync(join(t.state, 'access.json')); symlinkSync(join(t.root, 'a.json'), join(t.state, 'access.json')) },
+      t => { rmSync(t.evidence) },
+    ]
+    for (const [i, mutate] of cases.entries()) {
+      const t = stateTree()
+      mutate(t)
+      expect([i, stateFilesTrustedIn(t.agent, t.state, uid)]).toEqual([i, false])
+    }
+  })
+
+  it.skipIf(uid === null)('stateFilesTrustedIn: refuses evidence owned by another user', () => {
+    const { agent, state } = stateTree()
+    expect(stateFilesTrustedIn(agent, state, uid! + 1)).toBe(false)
+  })
+})
+
 // ---- 5. scanTranscripts ---------------------------------------------------
 
 describe('scanTranscripts', () => {
@@ -486,8 +633,8 @@ function makeDeps(root: string, over: Partial<ReplayDeps> = {}) {
     listAgents: () => ['agent-a'],
     isTelegramAgent: () => true,
     isRunning: () => true,
-    runsAsOtherUser: () => false,
     stateDirFor: n => join(root, n, 'state'),
+    stateFilesTrusted: () => true,
     transcriptDirsFor: n => [join(root, n, 'tx')],
     alreadyReplayed: () => false,
     enqueue: (agent, content) => { enqueued.push({ agent, content }); return enqueued.length },
@@ -704,20 +851,20 @@ describe('replayMissedInbound', () => {
     expect(enqueued).toHaveLength(0)
   })
 
-  it('7g: the main agent, a non-telegram agent, a stopped agent and an agent under its own OS user are skipped; a normal one in the same list is not', async () => {
+  it('7g: the main agent, a non-telegram agent, a stopped agent and an agent with untrusted state files are skipped; a normal one in the same list is not', async () => {
     quietLogger()
     const root = tmpRoot()
     const fx: AgentFixture = {
       evidence: [lineFor('42')],
       transcripts: [{ name: 's.jsonl', content: transcriptLine(GROUP, '99') + '\n', mtimeMs: NOW - 30_000 }],
     }
-    const names = [MAIN_AGENT_ID, 'agent-nontg', 'agent-stopped', 'agent-ownuser', 'agent-a']
+    const names = [MAIN_AGENT_ID, 'agent-nontg', 'agent-stopped', 'agent-untrusted', 'agent-a']
     for (const a of names) setupAgent(root, a, fx)
     const { deps, enqueued } = makeDeps(root, {
       listAgents: () => names,
       isTelegramAgent: n => n !== 'agent-nontg',
       isRunning: n => n !== 'agent-stopped',
-      runsAsOtherUser: n => n === 'agent-ownuser',
+      stateFilesTrusted: n => n !== 'agent-untrusted',
     })
     const out = await replayMissedInbound(deps)
     expect(out).toEqual([{ agent: 'agent-a', chatId: GROUP, messageId: '42', result: 'replayed' }])
@@ -833,6 +980,26 @@ describe('replayMissedInbound', () => {
     now = NOW
     expect((await replayMissedInbound(deps)).map(o => o.result)).toEqual(['seen'])
   })
+  it('7j: with the real state-file check, an agent whose evidence log is a symlink to another agent\'s log is skipped', async () => {
+    quietLogger()
+    const root = tmpRoot()
+    const fx: AgentFixture = {
+      evidence: [lineFor('42')],
+      transcripts: [{ name: 's.jsonl', content: transcriptLine(GROUP, '99') + '\n', mtimeMs: NOW - 30_000 }],
+    }
+    setupAgent(root, 'agent-a', fx)
+    setupAgent(root, 'agent-link', fx)
+    const linked = join(root, 'agent-link', 'state', EVIDENCE_FILE)
+    rmSync(linked)
+    symlinkSync(join(root, 'agent-a', 'state', EVIDENCE_FILE), linked)
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null
+    const { deps, enqueued } = makeDeps(root, {
+      listAgents: () => ['agent-link', 'agent-a'],
+      stateFilesTrusted: (n, stateDir) => stateFilesTrustedIn(join(root, n), stateDir, uid),
+    })
+    expect(await replayMissedInbound(deps)).toEqual([{ agent: 'agent-a', chatId: GROUP, messageId: '42', result: 'replayed' }])
+    expect(enqueued.map(m => m.agent)).toEqual(['agent-a'])
+  })
 })
 
 // ---- 8. hasAgentMessageContaining ----------------------------------------
@@ -881,5 +1048,68 @@ describe('hasAgentMessageContaining', () => {
 
   it('is false for a sender and recipient with no rows at all', () => {
     expect(hasAgentMessageContaining(uniq('nobody'), uniq('nowhere'), 'x', 0)).toBe(false)
+  })
+})
+
+// ---- 9. the real queue: enqueue and alreadyReplayed ------------------------
+
+describe('replayMissedInbound with the default enqueue and alreadyReplayed', () => {
+  beforeAll(() => { initDatabase(':memory:') })
+
+  it('queues the replay block from the coordinator, finds it again after a restart, and queues nothing twice', async () => {
+    quietLogger()
+    const root = tmpRoot()
+    const agent = `agent-db-${Date.now()}`
+    const at = NOW - 60_000
+    setupAgent(root, agent, {
+      evidence: [evidenceLine(GROUP, '42', 'please check the build', at)],
+      transcripts: [{ name: 's.jsonl', content: transcriptLine(GROUP, '41') + '\n', mtimeMs: NOW - 30_000 }],
+    })
+    const { deps } = makeDeps(root, { listAgents: () => [agent] })
+    // The test doubles out: these two run against the real agent_messages table.
+    const { alreadyReplayed: _a, enqueue: _e, ...real } = deps
+
+    expect(await replayMissedInbound(real)).toEqual([{ agent, chatId: GROUP, messageId: '42', result: 'replayed' }])
+    const rows = getPendingMessages(agent)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.from_agent).toBe(COORDINATOR_AGENT_ID)
+    expect(rows[0]!.content).toBe(buildReplayContent({ chatId: GROUP, messageId: '42', text: 'please check the build', at }))
+
+    resetReplayState() // a dashboard restart forgets the settled map; the queue does not
+    expect(await replayMissedInbound(real)).toEqual([{ agent, chatId: GROUP, messageId: '42', result: 'already-replayed' }])
+    expect(getPendingMessages(agent)).toHaveLength(1)
+  })
+})
+
+// ---- 10. startTelegramInboundReplay ---------------------------------------
+
+describe('startTelegramInboundReplay', () => {
+  it('ticks first at 90 s and then every 60 s, never two at once, and stops both timers', async () => {
+    vi.useFakeTimers()
+    try {
+      let calls = 0
+      let release: (() => void) | undefined
+      const stop = startTelegramInboundReplay(() => { calls++; return new Promise<void>(r => { release = r }) })
+      await vi.advanceTimersByTimeAsync(89_999)
+      expect(calls).toBe(0) // nothing before the offset, the interval included
+      await vi.advanceTimersByTimeAsync(1)
+      expect(calls).toBe(1)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(calls).toBe(1) // the first tick still runs: skipped, not stacked
+      release!()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(calls).toBe(2)
+      release!()
+      stop()
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(calls).toBe(2)
+
+      const stopEarly = startTelegramInboundReplay(() => { calls++; return Promise.resolve() })
+      stopEarly() // before the first tick
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(calls).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
