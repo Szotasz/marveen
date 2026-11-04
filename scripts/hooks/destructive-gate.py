@@ -640,6 +640,7 @@ def _parse_wrapper(toks, i, base, scripts):
                 j += 1
                 continue
             _wrap_unknown(base, t)
+            return None           # block() mar kilepett; ide csak egy hibas block() jut
         # rovid kapcsolo(k): egyenkent, osszeirva is (-0r, -oL, -n5)
         k = 1
         consumed_next = False
@@ -667,6 +668,7 @@ def _parse_wrapper(toks, i, base, scripts):
                 k += 1
                 continue
             _wrap_unknown(base, t)
+            return None           # ld. fent
         j += 2 if consumed_next else 1
     # a parancs elotti operandusok (timeout: idotartam, flock: lock-fajl, chroot: gyoker)
     for _ in range(ops):
