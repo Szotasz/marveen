@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, readFileSync, rmSync, statSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { chmodSync, readFileSync, rmSync, statSync, writeFileSync, mkdtempSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -106,7 +106,16 @@ function runGate(opts: {
     scriptBody(SCRIPT),
   ].join('\n')
 
-  const out = execFileSync('bash', ['-c', script], { encoding: 'utf-8' }).trim()
+  // Run as a FILE, next to a `lib` that is the real scripts/lib: the script finds
+  // the shared writer (MANAGEDSETTINGSWRITE1103) relative to its own path, exactly
+  // as it does in an install, so the write below is the real writer's.
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  symlinkSync(join(ROOT, 'scripts', 'lib'), join(bin, 'lib'))
+  const scriptFile = join(bin, 'ensure-managed-channels-enabled.sh')
+  writeFileSync(scriptFile, script)
+
+  const out = execFileSync('bash', [scriptFile], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   return { out, file }
 }
 
@@ -179,6 +188,25 @@ describe('ensure-managed-channels-enabled: report what is true, not what is reac
     })
     expect(out).toContain('MARVEEN_CHANNELS_GATE=ok')
     expect(mode(file)).toBe(0o600)
+  })
+
+  it('leaves an unparseable policy file untouched and reports manual (MANAGEDSETTINGSWRITE1103)', () => {
+    // The inline merge turned a file it could not parse into {} and wrote that
+    // back as root, so a single stray byte cost the host its whole org policy,
+    // allowedChannelPlugins included, and every channel went silently mute. The
+    // file must stay byte-identical, the report must say a person is needed,
+    // and no tmp file may be left next to it.
+    const corrupt = '{ "allowedChannelPlugins": [ {"plugin":"telegram"'
+    const { out, file } = runGate({ managed: corrupt, sudo: 'root' })
+    expect(out).toContain('MARVEEN_CHANNELS_GATE=manual')
+    expect(readFileSync(file, 'utf-8')).toBe(corrupt)
+    expect(readdirSync(join(file, '..')).filter((n) => n !== 'bin')).toEqual(['managed-settings.json'])
+  })
+
+  it('leaves a non-object policy file untouched and reports manual', () => {
+    const { out, file } = runGate({ managed: '["telegram"]', sudo: 'root' })
+    expect(out).toContain('MARVEEN_CHANNELS_GATE=manual')
+    expect(readFileSync(file, 'utf-8')).toBe('["telegram"]')
   })
 
   it('still reports manual when a write is needed but cannot be made', () => {

@@ -65,6 +65,10 @@ jobs:
       # machines (update.sh, the dashboard, the Bridge repair step), so its
       # restore/leave rules run here, including a real conflicted stash pop.
       - run: python3 scripts/__tests__/install-drift-repair.test.py
+      # MANAGEDSETTINGSWRITE1103: the one writer of the machine-wide
+      # managed-settings.json runs as root on customer machines; its refusals
+      # (invalid JSON, symlinked file, planted tmp symlink, writable dir) run here.
+      - run: python3 scripts/__tests__/managed-settings-write.test.py
       # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
       # same rot argument as the line above.
       - run: python3 scripts/__tests__/dash-audit-scan.test.py
