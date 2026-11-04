@@ -390,3 +390,21 @@ describe('python -m a local module, and node DIR (MAILGATEDIRZIP1027)', () => {
     }
   })
 })
+
+describe('env value options in front of the sender (ENVOPTHEAD1104)', () => {
+  it('a #! line env -P/-u/-C DIR python3 is read as python3; env -P / -S in the command line run the sender', () => {
+    const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
+    const cwd = workdir({
+      p_sender: '#!/usr/bin/env -P /usr/bin python3\n' + SMTP,
+      u_sender: '#!/usr/bin/env -u FOO python3\n' + SMTP,
+      c_sender: '#!/usr/bin/env -C /tmp python3\n' + SMTP,
+      'send.py': SMTP,
+      harmless: '#!/usr/bin/env -P /usr/bin python3\nprint(1)\n',
+    })
+    for (const f of ['p_sender', 'u_sender', 'c_sender', 'harmless']) chmodSync(join(cwd, f), 0o755)
+    for (const cmd of ['./p_sender', './u_sender', './c_sender', 'env -P /tmp/x python3 send.py', 'env -S "python3 send.py"']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+    expect(scriptRunSends('./harmless', cwd)).toBe(false)
+  })
+})
