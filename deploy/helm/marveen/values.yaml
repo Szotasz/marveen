@@ -1,0 +1,36 @@
+image:
+  # -- Image repository. With kind, load it via `make -f deploy/Makefile load`.
+  repository: marveen
+  # -- Image tag.
+  tag: dev
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Name of an existing Secret. All its keys are injected as env vars. An
+# optional key `env` is mounted as `/config/env` and seeds the app's `.env` on
+# the very first start only (after that `store/.env` on the PVC is the source of
+# truth, because the dashboard rewrites it). Example content of the `env` key:
+# `CLAUDE_CODE_OAUTH_TOKEN=...`.
+existingSecret: ""
+
+# -- Extra plain environment variables for the container. Note that the app
+# reads its settings from `.env`, not from the process environment.
+env: {}
+
+# -- Container resource requests/limits (unset by default).
+resources: {}
+# resources:
+#   requests: { cpu: 250m, memory: 512Mi }
+#   limits: { memory: 2Gi }
+
+persistence:
+  store:
+    # -- Size of the PVC mounted at `/app/store` (database, `.env`, agents, workspace, reports, Telegram state).
+    size: 2Gi
+  claudeHome:
+    # -- Size of the PVC mounted at `/home/node/.claude` (Claude login, plugins).
+    size: 512Mi
+
+service:
+  # -- NodePort of the dashboard service. The kind config maps it to host port 3420.
+  nodePort: 30420
