@@ -279,6 +279,15 @@ _t() {
     hu:linux.apt_lock_still_prefix) echo "még mindig fogja:" ;;
     en:linux.apt_lock_freed_prefix) echo "Package manager lock released after" ;;
     hu:linux.apt_lock_freed_prefix) echo "A csomagkezelő zárolás felszabadult" ;;
+    # LINUXINSTPREREQ1104: Node.js >= 20, checked after the package step too.
+    en:linux.node_too_old) echo "Node.js is too old for Marveen (v20 or newer is needed). The installed major version:" ;;
+    hu:linux.node_too_old) echo "A Node.js túl régi a Marveenhez (legalább v20 kell). A telepített fő verzió:" ;;
+    en:linux.node_distro_too_old) echo "The nodesource repository could not be added, and this distribution's own nodejs package is too old (v20 or newer is needed), so it was not installed. Its major version:" ;;
+    hu:linux.node_distro_too_old) echo "A nodesource tárolót nem sikerült hozzáadni, a disztribúció saját nodejs csomagja pedig túl régi (legalább v20 kell), ezért nem telepítettem. A fő verziója:" ;;
+    en:linux.node_fix_lead) echo "Fix: run this (it needs internet access to deb.nodesource.com), then start the installer again:" ;;
+    hu:linux.node_fix_lead) echo "Javítás: futtasd ezt (a deb.nodesource.com elérése kell hozzá), majd indítsd újra a telepítőt:" ;;
+    en:linux.node_fix_rpm) echo "Fix: install Node.js 20 or newer (from your distribution's nodejs module stream or the nodejs.org packages), then start the installer again." ;;
+    hu:linux.node_fix_rpm) echo "Javítás: telepíts Node.js 20-at vagy újabbat (a disztribúció nodejs modul-folyamából vagy a nodejs.org csomagjaiból), majd indítsd újra a telepítőt." ;;
     en:linux.apt_lock_unknown) echo "Cannot check who holds the package-manager lock (fuser not installed) -- if it is busy, apt itself will wait up to 3 minutes." ;;
     hu:linux.apt_lock_unknown) echo "Nem tudom megnézni, ki fogja a csomagkezelő zárolást (nincs fuser) -- ha foglalt, az apt maga vár rá legfeljebb 3 percig." ;;
     en:linux.apt_lock_timeout_head) echo "The package-manager lock is STILL held after 5 minutes by:" ;;
