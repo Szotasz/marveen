@@ -1404,6 +1404,9 @@ def _cd_bases(cwd, cmd_words):
         elif cur is not None:
             new = os.path.join(cur, d)
         else:
+            # after an undecidable cd: where DIR is cannot be known, but DIR under the cwd is still one candidate
+            if cwd_abs:
+                bases.append(os.path.join(cwd, d))
             undecidable = True
             cur = None
             continue
@@ -1687,7 +1690,8 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
                 return True
         return False
     # the fail-closed branches below fire when `addressed`: on this gate always (see _FAIL_CLOSED_NEEDS_ADDRESS)
-    addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _run_is_addressed(rest, cmd_words)
+    # Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
+    addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _SUBST_MARK in cmd_words or _run_is_addressed(rest, cmd_words)
     if _PYTHON.match(prog):
         if _address_flag_given(rest):  # also under -m / -c, where no file is named
             return True
@@ -1755,6 +1759,35 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
 # Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
 # backtick cd reach _cd_bases as a bare `cd`. Read on the raw command: such a cd or pushd is an undecidable cd.
 _SUBST_CD = re.compile(r"""(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)""")
+_SUBST_MARK = "$CMD_SUBST_CD"  # the undecidable cd word handed on for it
+
+
+_VAR_REF = re.compile(r"^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$")
+
+
+def _assigned_cd_dirs(segments):
+    """Samu 69648 (3a): `D=dir; cd $D` (also `export D=dir`): the literal dirs the command itself assigns to a cd's
+    variable, handed on as more cd words. The `cd $D` stays undecidable too; a VAR set only outside is not resolved."""
+    vars_, out = {}, []
+    for toks in segments:
+        assigns = toks[1:] if toks and toks[0] == "export" else toks
+        if assigns and all(_ENV_ASSIGN.match(t) for t in assigns):
+            for t in assigns:
+                name, v = t.split("=", 1)
+                if v == "" or _UNDECIDABLE_PATH.search(v):
+                    vars_.pop(name, None)
+                else:
+                    vars_[name] = v
+            continue
+        for i in range(1, len(toks)):
+            prev = toks[i - 1]
+            if prev not in ("cd", "pushd") and not (prev == "--" and i >= 2 and toks[i - 2] in ("cd", "pushd")):
+                continue
+            m = _VAR_REF.match(toks[i])
+            v = vars_.get(m.group(1) or m.group(2)) if m else None
+            if v is not None:
+                out.append(v)
+    return out
 
 
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
@@ -1765,8 +1798,10 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
     cmd_words = _with_env_chdir(list(_cd_words) + [w for toks in segments for w in toks])
+    for d in _assigned_cd_dirs(segments):
+        cmd_words += ["cd", d]
     if _SUBST_CD.search(cmd):
-        cmd_words += ["cd", "$SUBST"]
+        cmd_words += ["cd", _SUBST_MARK]
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 

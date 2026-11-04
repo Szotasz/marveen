@@ -440,8 +440,12 @@ describe('a cd before the run, and a missing script (JSCDSEND1104, Bence 69475)'
     // the fail-closed forms without an address
     for (const cmd of ['python3 send.py', `cd ${cwd} && python3 send.py`, 'cd evil && ls', 'bun test', 'node --version',
       'cd $DEST && python3 send.py', 'cd $DEST && python3 -m pkg.main', 'python3 missing.py', 'python3 $S',
-      'node missing.mjs', 'cd $(pwd)/x && python3 send.py']) {
+      'node missing.mjs']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+    }
+    // Samu 69648 (3a): after a cd $(...) what runs is out of sight, so the fail-closed branches fire without an address
+    for (const cmd of ['cd $(pwd)/x && python3 send.py', 'cd `pwd`/x && python3 missing.py']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }
   })
 })

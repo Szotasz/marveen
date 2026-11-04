@@ -72,7 +72,7 @@
     {"name": "no address: an undecidable script path", "cmd": "python3 $S", "main": true, "sub": false},
     {"name": "no address: an undecidable cd before python -m a local module", "cmd": "cd $DEST && python3 -m pkg.main", "main": true, "sub": false},
     {"name": "no address: env -C with an undecidable DIR", "cmd": "env -C $X python3 plain.py", "main": true, "sub": false},
-    {"name": "no address: a cd $(...)", "cmd": "cd $(git rev-parse --show-toplevel) && python3 tool.py", "main": true, "sub": false},
+    {"name": "a cd $(...) without an address: a send on both (Samu 69648)", "cmd": "cd $(git rev-parse --show-toplevel) && python3 tool.py", "main": true, "sub": true},
     {"name": "no address: pushd +1", "cmd": "pushd +1 && python3 tool.py", "main": true, "sub": false},
     {"name": "addressed: an undecidable cd and python -m pytest", "cmd": "cd $WT && python3 -m pytest --to a@example.invalid", "main": true, "sub": true},
     {"name": "addressed: an undecidable cd and a script", "cmd": "cd $WT && python3 tool.py --to a@example.invalid", "main": true, "sub": true},
@@ -116,6 +116,17 @@
     {"name": "gnice -n 5 in front of the sender", "cmd": "gnice -n 5 python3 send.py", "main": true, "sub": true},
     {"name": "gstdbuf -o0 in front of the sender", "cmd": "gstdbuf -o0 python3 send.py", "main": true, "sub": true},
     {"name": "control: gtimeout in front of a harmless script", "cmd": "gtimeout 10 python3 plain.py", "main": false, "sub": false},
-    {"name": "a #! genv -S -u X python3 line (homebrew GNU env)", "cmd": "./g_sender", "main": true, "sub": true}
+    {"name": "a #! genv -S -u X python3 line (homebrew GNU env)", "cmd": "./g_sender", "main": true, "sub": true},
+    {"name": "Samu 69648: a backtick cd without an address, a send on both", "cmd": "cd `echo evil` && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69648: cd $(...) without an address before a readable harmless name", "cmd": "cd $(echo evil) && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69648: D=DIR; cd $D reads the script in DIR (it sends)", "cmd": "D=evil; cd $D && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69648: export D=DIR; cd ${D}", "cmd": "export D=evil; cd ${D} && python3 plain.py", "main": true, "sub": true},
+    {"name": "Samu 69648: D=DIR; cd $D into a dir without a sender: the main gate still asks (cd $D stays undecidable)", "cmd": "D=pkgclean; cd $D && python3 plain.py", "main": true, "sub": false},
+    {"name": "Samu 69648: a $D set only outside the command: the sub-agent gate's stated residual risk", "cmd": "cd $D && python3 plain.py", "main": true, "sub": false},
+    {"name": "Samu 69648: a prefix assignment is not the cd's variable (D=x cd $D expands the outer D)", "cmd": "D=evil cd $D && python3 tool.py", "main": true, "sub": false},
+    {"name": "Samu 69648: an address in a comment is no recipient", "cmd": "cd $WT && python3 -m pytest -k \"not mail\" # ask a@example.com", "main": true, "sub": false},
+    {"name": "Samu 69648: control, a --to in a comment after a harmless script", "cmd": "python3 plain.py # --to a@example.com", "main": false, "sub": false},
+    {"name": "Samu 69648: a quoted # is text, not a comment: the --to after it still addresses the run", "cmd": "cd $WT && python3 tool.py \"#1\" --to a@example.com", "main": true, "sub": true},
+    {"name": "Samu 69648: a # inside a word is no comment", "cmd": "cd $WT && python3 tool.py x#y a@example.com", "main": true, "sub": true}
   ]
 }

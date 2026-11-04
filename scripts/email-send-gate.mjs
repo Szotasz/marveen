@@ -870,8 +870,9 @@ export function wrapperDepthHit(cmd) {
 export function buildScriptSendMsg(botName, ownerName) {
   return (
     'TILTVA (governance hard-gate): a futtatott szkript levelet kuldhet, vagy a kapu nem tudja elolvasni. ' +
-    'Cimzettet vivo futasnal (--to/--cc/--bcc vagy e-mail-cim a parancsban) kuldesnek szamit az is, ha a szkript a ' +
-    'futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy cd / env -C celkonyvtara nem dontheto el. ' +
+    'Cimzettet vivo futasnal (--to/--cc/--bcc vagy e-mail-cim a parancsban), es egy cd $(...) utan mindig, kuldesnek ' +
+    'szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy cd / env -C ' +
+    'celkonyvtara nem dontheto el. ' +
     'Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, es literalis uttal (vagy literalis cd utan) ' +
     'futtasd. ' + buildGateMsg(botName, ownerName)
   )
@@ -1083,7 +1084,11 @@ function cdBases(cwd, cmdWords) {
     if (tilde) next = join(homedir(), d.slice(1))
     else if (isAbsolute(d)) next = d
     else if (cur !== null) next = join(cur, d)
-    else { undecidable = true; cur = null; continue }
+    else {
+      // after an undecidable cd: where DIR is cannot be known, but DIR under the cwd is still one candidate (Samu 69648)
+      if (cwdAbs) bases.push(join(cwd, d))
+      undecidable = true; cur = null; continue
+    }
     bases.push(next)
     if (!tilde && !isAbsolute(d) && cwdAbs) bases.push(join(cwd, d))
     cur = next
@@ -1325,7 +1330,8 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   let script
   let kind
   // the fail-closed branches below fire when `addressed` (see FAIL_CLOSED_NEEDS_ADDRESS)
-  const addressed = !FAIL_CLOSED_NEEDS_ADDRESS || runIsAddressed(rest, cmdWords)
+  // Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
+  const addressed = !FAIL_CLOSED_NEEDS_ADDRESS || cmdWords.includes(SUBST_MARK) || runIsAddressed(rest, cmdWords)
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
@@ -1378,18 +1384,75 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
 // backtick cd reach cdBases as a bare `cd` (and the next segment's first word looked like its DIR). Read on the raw
 // command: such a cd or pushd is an undecidable cd.
 const SUBST_CD = /(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)/
+// the undecidable cd word handed on for it; also what tells headRunsSenderScript a substitution cd was seen
+const SUBST_MARK = '$CMD_SUBST_CD'
+
+// Samu 69648 (2): a shell comment is no recipient and runs nothing. The python twin's shlex drops an unquoted `#...`;
+// this tokenizer kept it, so `cd $WT && python3 -m pytest # ask a@x.hu` was an addressed run here only. Dropped as bash
+// does: an unquoted `#` at the start of a word, up to the newline (kept, so the next line is still a command); a
+// quoted `#` is text. Run on the command after its heredoc bodies are cut (a body is data, not shell).
+function stripShellComments(cmd) {
+  let out = ''
+  let q = null
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '#' && (i === 0 || /[\s;&|()]/.test(cmd[i - 1]))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+// Samu 69648 (3a): `D=dir; cd $D` (also `export D=dir`) names a directory the command itself sets. That literal dir is
+// handed on as one more cd word, so a script there is read; the `cd $D` itself stays undecidable (the variable may be
+// set elsewhere when the assignment does not run). A VAR set only outside the command is not resolved.
+const VAR_REF = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$/
+function assignedCdDirs(segments) {
+  const vars = new Map()
+  const out = []
+  for (const toks of segments) {
+    const assigns = toks[0] === 'export' ? toks.slice(1) : toks
+    if (assigns.length && assigns.every((t) => ENV_ASSIGN.test(t))) {
+      for (const t of assigns) {
+        const eq = t.indexOf('=')
+        const v = t.slice(eq + 1)
+        if (v === '' || UNDECIDABLE_PATH.test(v)) vars.delete(t.slice(0, eq))
+        else vars.set(t.slice(0, eq), v)
+      }
+      continue
+    }
+    for (let i = 1; i < toks.length; i++) {
+      if (toks[i - 1] !== 'cd' && toks[i - 1] !== 'pushd' && !(toks[i - 1] === '--' && (toks[i - 2] === 'cd' || toks[i - 2] === 'pushd'))) continue
+      const m = VAR_REF.exec(toks[i])
+      const v = m ? vars.get(m[1] ?? m[2]) : undefined
+      if (v !== undefined) out.push(v)
+    }
+  }
+  return out
+}
 
 export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
   let segments
   try {
-    segments = segmentsTokens(cmd)
+    segments = segmentsTokens(stripShellComments(cmd.replace(HEREDOC_RE, '$1')))
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
   // JSCDSEND1104: every word of the command, so a `cd DIR` before the run is seen; ENVOPTHEAD1104 (Bence 69475):
   // `env -C DIR` runs its command in DIR, handed on as a `cd DIR` word (an undecidable DIR then makes it a send).
   const flat = [...cdWords, ...segments.flat()]
-  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...(SUBST_CD.test(cmd) ? ['cd', '$SUBST'] : [])]
+  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...assignedCdDirs(segments).flatMap((d) => ['cd', d]),
+    ...(SUBST_CD.test(cmd) ? ['cd', SUBST_MARK] : [])]
   return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
 }
 
