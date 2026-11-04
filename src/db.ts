@@ -5081,6 +5081,14 @@ export function createAgentMessage(
   }
 }
 
+// True when a row from `from` to `to`, created at or after `sinceSec` (unix seconds), contains `needle` verbatim.
+// instr() is a plain substring test, so LIKE wildcards in `needle` need no escaping.
+export function hasAgentMessageContaining(from: string, to: string, needle: string, sinceSec: number): boolean {
+  const row = db.prepare('SELECT 1 FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND created_at >= ? AND instr(content, ?) > 0 LIMIT 1')
+    .get(from, to, sinceSec, needle)
+  return row !== undefined
+}
+
 // The router's pre-delivery re-read: the CURRENT status of one row, or null if
 // the row is gone.
 //
