@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   WORKER_MAIL_DENIED_TOOLS, WORKER_MAIL_READ_TOOLS, WORKER_SETTINGS_STRIPPED_KEYS,
-  classifyWorkerMailTool, mcpServerSegment, withWorkerMailDeny, workerMailServerNames,
+  classifyWorkerMailTool, mcpServerSegment, withWorkerMailDeny, workerMailServerNames, workerMcpServers, workerMcpConfigPath,
 } from '../web/agent-worker.js'
 import { PROJECT_ROOT } from '../config.js'
 
@@ -100,6 +100,25 @@ describe('workerMailServerNames', () => {
     } } } }))
     expect(workerMailServerNames(host, null)).toEqual([SERVER])
     expect(workerMailServerNames(join(dir, 'missing.json'), null)).toEqual([])
+    // the strict MCP config's content: the kept server entry, exactly as configured, and nothing else
+    expect(Object.keys(workerMcpServers(host, null))).toEqual([SERVER])
+    expect(workerMcpServers(join(dir, 'missing.json'), null)).toEqual({})
+  })
+})
+
+// Measured 2026-11-04 (work/workermcpsend-docs.md): with --strict-mcp-config --mcp-config <file> Claude Code loads ONLY
+// the file's servers; without it, user-scope, project and ancestor .mcp.json servers came too.
+describe('the worker launches with a strict MCP config of its own', () => {
+  it('the config file lives in the worker config dir', () => {
+    expect(workerMcpConfigPath({ configDir: '/w/.claude-config' })).toBe('/w/.claude-config/worker-mcp.json')
+  })
+
+  it('ensureWorkerCwd writes the kept servers into it, and the launch line passes both flags', () => {
+    const src = readFileSync(join(ROOT, 'src', 'web', 'agent-worker.ts'), 'utf-8')
+    const ensure = src.slice(src.indexOf('export function ensureWorkerCwd'))
+    expect(ensure).toContain('const keptMcp = existsSync(join(homedir(), \'.claude.json\')) ? workerMcpServers() : {}')
+    expect(ensure).toContain('writeFileSync(workerMcpConfigPath(ctx), JSON.stringify({ mcpServers: keptMcp }')
+    expect(src).toMatch(/--dangerously-skip-permissions --model \$\{shArg\(workerModel\)\} ` \+\s*\n\s*\/\/[^\n]*\n\s*`--strict-mcp-config --mcp-config \$\{shArg\(workerMcpConfigPath\(ctx\)\)\}`/)
   })
 })
 
@@ -108,6 +127,6 @@ describe('wiring (static)', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'agent-worker.ts'), 'utf-8')
     const body = src.slice(src.indexOf('export function ensureWorkerCwd'))
     expect(body).toContain('withWorkerMailDeny({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }, mailServers)')
-    expect(body).toContain('workerMailServerNames()')
+    expect(body).toContain('const mailServers = Object.keys(keptMcp)')
   })
 })

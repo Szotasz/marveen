@@ -605,7 +605,10 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   // first-run warning so the headless worker (launched with
   // --dangerously-skip-permissions) reaches its prompt without a blocking modal.
   // WORKERMCPSEND1104 part 2: the kept mail server's non-reading tools denied by name; disableAllHooks and env dropped.
-  const mailServers = existsSync(join(homedir(), '.claude.json')) ? workerMailServerNames() : []
+  // The same kept server is the ONLY entry of the strict MCP config the worker is launched with.
+  const keptMcp = existsSync(join(homedir(), '.claude.json')) ? workerMcpServers() : {}
+  const mailServers = Object.keys(keptMcp)
+  writeFileSync(workerMcpConfigPath(ctx), JSON.stringify({ mcpServers: keptMcp }, null, 2) + '\n', { mode: 0o600 })
   writeFileSync(settingsPath, JSON.stringify(withWorkerGates(withWorkerMailDeny({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }, mailServers)), null, 2) + '\n')
 
   // Subscription auth: materialise the host login JSON as .credentials.json AND
@@ -785,14 +788,28 @@ export function withWorkerMailDeny(settings: WorkerSettings, mailServers: string
   return out
 }
 
-/** The names of the mail servers a worker keeps, from the host's ~/.claude.json (none on any read error). */
-export function workerMailServerNames(hostClaudeJson: string = join(homedir(), '.claude.json'), npxPath: string | null = tryResolveFromPath('npx')): string[] {
+/** The MCP servers a worker keeps (the allowlisted mail server), from the host's ~/.claude.json; none on any error. */
+export function workerMcpServers(hostClaudeJson: string = join(homedir(), '.claude.json'), npxPath: string | null = tryResolveFromPath('npx')): Record<string, unknown> {
   try {
     const parsed = JSON.parse(readFileSync(hostClaudeJson, 'utf-8')) as { projects?: Record<string, { mcpServers?: unknown }> }
-    return Object.keys(filterWorkerMcpServers(parsed.projects?.[PROJECT_ROOT]?.mcpServers, npxPath).kept)
+    return filterWorkerMcpServers(parsed.projects?.[PROJECT_ROOT]?.mcpServers, npxPath).kept
   } catch {
-    return []
+    return {}
   }
+}
+
+/** The names of the mail servers a worker keeps (none on any read error). */
+export function workerMailServerNames(hostClaudeJson: string = join(homedir(), '.claude.json'), npxPath: string | null = tryResolveFromPath('npx')): string[] {
+  return Object.keys(workerMcpServers(hostClaudeJson, npxPath))
+}
+
+/**
+ * WORKERMCPSEND1104 part 2 (measured 2026-11-04, work/workermcpsend-docs.md): the worker starts with
+ * --strict-mcp-config --mcp-config <this file>, which loads ONLY the servers in the file: no user-scope server, no
+ * project .mcp.json, no ancestor .mcp.json. ensureWorkerCwd writes it on every start with the kept mail server alone.
+ */
+export function workerMcpConfigPath(ctx: { configDir: string }): string {
+  return join(ctx.configDir, 'worker-mcp.json')
 }
 
 export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
@@ -907,7 +924,9 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `${ROOT_SANDBOX_ENV}; ` +
     customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
-    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)} ` +
+    // WORKERMCPSEND1104 part 2: only the servers in the worker's own MCP config, nothing from any other source.
+    `--strict-mcp-config --mcp-config ${shArg(workerMcpConfigPath(ctx))}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
