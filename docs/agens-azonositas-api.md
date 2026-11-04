@@ -164,7 +164,7 @@ került, **alapból kikapcsolva**. A 3. fejezet következtetése továbbra is á
 ellen véd, nem egy elszánt ügynök ellen. Minden ügynök ugyanazzal a UNIX-felhasználóval fut,
 és a közös `store/.dashboard-token` olvasható marad.
 
-Mit csinál bekapcsolva (`AGENT_TOKENS=1`, `.env` vagy a Beállítások oldal):
+Mit csinál bekapcsolva (`AGENT_TOKENS=1`, `.env` vagy a Beállítások oldal; a `.env` ezt a biztonsági kapcsolót csak bekapcsolni tudja, kikapcsolni csak a Beállítások oldal, gazda-belépéssel, ENVRELAXGATE1104):
 
 | Hol | Mi történik |
 |-----|-------------|

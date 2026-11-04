@@ -16589,7 +16589,18 @@ async function loadSettings() {
   try {
     const res = await fetch('/api/settings')
     if (!res.ok) throw new Error('fetch failed')
-    const { settings } = await res.json()
+    const { settings, overridesFile } = await res.json()
+
+    // ENVRELAXGATE1104 step 2: an unreadable config-overrides.json drops every saved value, a tightening one too.
+    const overridesBanner = document.getElementById('settingsOverridesBanner')
+    if (overridesBanner) overridesBanner.remove()
+    if (overridesFile && overridesFile.state === 'unreadable') {
+      const banner = document.createElement('p')
+      banner.id = 'settingsOverridesBanner'
+      banner.style.cssText = 'padding:12px 24px;color:var(--danger, var(--text));font-size:13px'
+      banner.textContent = t('settings.overrides_unreadable').replace('{cause}', String(overridesFile.cause ?? '?'))
+      tabNav.parentNode?.insertBefore(banner, tabNav)
+    }
 
     const byModule = new Map()
     for (const s of settings) {
@@ -17751,6 +17762,15 @@ function buildSettingRow(def) {
   if (def.source === 'override') metaParts.push(t('settings.meta.overridden'))
   meta.textContent = metaParts.join(' · ')
   info.appendChild(meta)
+  // ENVRELAXGATE1104 step 2: a .env line for this security key is ignored (it would loosen it). The server sends a
+  // marker only, never the .env value.
+  if (def.envIgnored) {
+    const ignored = document.createElement('div')
+    ignored.className = 'settings-row-meta settings-env-ignored'
+    ignored.style.color = 'var(--warning, var(--text-muted))'
+    ignored.textContent = t('settings.meta.env_ignored')
+    info.appendChild(ignored)
+  }
 
   row.appendChild(info)
 

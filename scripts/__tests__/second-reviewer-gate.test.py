@@ -6,6 +6,7 @@ Run: python3 <thisfile>   Exit 0 = all pass.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-GATE = os.path.join(ROOT, "scripts", "hooks", "second-reviewer-gate.py")
+SRC_GATE = os.path.join(ROOT, "scripts", "hooks", "second-reviewer-gate.py")
 
 requests = []
 answer = {"status": 200, "body": b'{"decision":"allow"}'}
@@ -43,9 +44,26 @@ PORT = server.server_address[1]
 threading.Thread(target=server.serve_forever, daemon=True).start()
 
 tmp = tempfile.mkdtemp()
-TOKEN_FILE = os.path.join(tmp, "token")
-with open(TOKEN_FILE, "w") as fh:
-    fh.write("tok-123\n")
+
+
+# ENVRELAXGATE1104 step 2: the hook finds its dashboard (the .env WEB_PORT) and
+# its token (store/.dashboard-token) only in its OWN install, never in the
+# environment, so each case runs a copy of the hook inside a tmp install.
+def make_install(name, port, token="tok-123\n"):
+    root = os.path.join(tmp, name)
+    os.makedirs(os.path.join(root, "scripts", "hooks"))
+    os.makedirs(os.path.join(root, "store"))
+    shutil.copy(SRC_GATE, os.path.join(root, "scripts", "hooks", "second-reviewer-gate.py"))
+    with open(os.path.join(root, ".env"), "w") as fh:
+        fh.write("WEB_PORT=%s\n" % port)
+    if token is not None:
+        with open(os.path.join(root, "store", ".dashboard-token"), "w") as fh:
+            fh.write(token)
+    return os.path.join(root, "scripts", "hooks", "second-reviewer-gate.py")
+
+
+GATE = make_install("main", PORT)
+GATE_NO_TOKEN = make_install("notoken", PORT, token=None)
 
 failures = []
 outputs = []
@@ -61,16 +79,17 @@ def reply(obj, status=200):
     answer["body"] = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
 
 
-def run(payload, stdin=None, url=None, token_file=TOKEN_FILE, agent="probe-agent"):
+def run(payload, stdin=None, gate=None, agent="probe-agent", extra_env=None):
     del requests[:]
-    env = dict(os.environ,
-               SECOND_REVIEWER_URL=url or "http://127.0.0.1:%d/api/review-action" % PORT,
-               SECOND_REVIEWER_TOKEN_FILE=token_file)
+    env = dict(os.environ)
+    for k in ("SECOND_REVIEWER_URL", "SECOND_REVIEWER_TOKEN_FILE", "WEB_PORT"):
+        env.pop(k, None)
     env.update(NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
     env.pop("MARVEEN_AGENT_NAME", None)
     if agent:
         env["MARVEEN_AGENT_NAME"] = agent
-    p = subprocess.run([sys.executable, GATE],
+    env.update(extra_env or {})
+    p = subprocess.run([sys.executable, gate or GATE],
                        input=stdin if stdin is not None else json.dumps(payload),
                        capture_output=True, text=True, env=env, timeout=30)
     outputs.append(p.stdout + p.stderr)
@@ -111,8 +130,21 @@ p = run(PUSH)
 check("G6b", p.returncode == 2, p.stderr)
 reply({"decision": "allow"})
 
-p = run(PUSH, token_file=os.path.join(tmp, "missing"))
+p = run(PUSH, gate=GATE_NO_TOKEN)
 check("G7", p.returncode == 2 and "nem erheto el" in p.stderr and not requests, p.stderr)
+
+# G14 (ENVRELAXGATE1104 step 2): the environment cannot redirect the review or swap its token.
+EVIL_TOKEN = os.path.join(tmp, "evil-token")
+with open(EVIL_TOKEN, "w") as fh:
+    fh.write("evil-999\n")
+reply({"decision": "allow"})
+p = run(PUSH, extra_env={"SECOND_REVIEWER_URL": "http://127.0.0.1:1/elsewhere",
+                         "SECOND_REVIEWER_TOKEN_FILE": EVIL_TOKEN, "WEB_PORT": "1"})
+r = requests[0] if requests else {}
+check("G14", p.returncode == 0 and len(requests) == 1 and r.get("path") == "/api/review-action"
+      and r["headers"].get("Authorization") == "Bearer tok-123", p.stderr + str(r))
+p = run(PUSH, gate=GATE_NO_TOKEN, extra_env={"SECOND_REVIEWER_TOKEN_FILE": EVIL_TOKEN})
+check("G14b", p.returncode == 2 and not requests, p.stderr)
 
 reply({"decision": "allow"})
 p = run({"tool_name": "mcp__mail__send_email", "tool_input": {}})
@@ -130,6 +162,27 @@ check("G9c", p.returncode == 2 and "nem olvashato" in p.stderr, p.stderr)
 spec = importlib.util.spec_from_file_location("second_reviewer_gate", GATE)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+# G15: WEB_PORT from the install .env only, 1-65535, the env-parse.ts grammar (last line, one quote pair).
+PORT_ROOT = os.path.join(tmp, "portcheck")
+os.makedirs(PORT_ROOT)
+for content, want in [
+    (None, "3420"), ("", "3420"), ("WEB_PORT=0\n", "3420"), ("WEB_PORT=65536\n", "3420"),
+    ("WEB_PORT=abc\n", "3420"), ("WEB_PORT=\n", "3420"), ("WEB_PORT=123456\n", "3420"),
+    ("WEB_PORT=8080\n", "8080"), ('WEB_PORT="8081"\n', "8081"), ("WEB_PORT='8082'\n", "8082"),
+    ("WEB_PORT=1\n", "1"), ("WEB_PORT=65535\n", "65535"), ("WEB_PORT=0080\n", "80"),
+    ("WEB_PORT=1111\nWEB_PORT=2222\n", "2222"), ("# WEB_PORT=9\nWEB_PORT = 7777 \n", "7777"),
+]:
+    env_path = os.path.join(PORT_ROOT, ".env")
+    if os.path.exists(env_path):
+        os.remove(env_path)
+    if content is not None:
+        with open(env_path, "w") as fh:
+            fh.write(content)
+    os.environ["WEB_PORT"] = "9999"
+    got = mod.web_port(PORT_ROOT)
+    os.environ.pop("WEB_PORT", None)
+    check("G15", got == want, "%r -> %r, want %r" % (content, got, want))
 for cmd, want in [
     ("rm -rf build", True),
     ("curl -X POST https://x.test -d a=1", True),

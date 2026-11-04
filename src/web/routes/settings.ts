@@ -1,7 +1,9 @@
 import { readBody, readBodyOrRefuse, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
-import { clearOverride, getEffectiveSettingSource, getEffectiveSettingValue, getSettingFallback, setOverride } from '../../settings-store.js'
+import {
+  clearOverride, getEffectiveSettingSource, getEffectiveSettingValue, getOverridesFileState, getSettingFallback, isEnvValueIgnored, setOverride,
+} from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
@@ -49,8 +51,12 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       valueSet: def.valueSet,
       min: def.min,
       max: def.max,
+      // ENVRELAXGATE1104 step 2: a .env line for this security key that the overrides-only rule ignores (it would
+      // loosen). A marker only: the .env value itself never leaves the server.
+      envIgnored: isEnvValueIgnored(def.key),
     }))
-    json(res, { settings })
+    // The state of config-overrides.json: 'unreadable' means every override, a tightening one too, is dropped.
+    json(res, { settings, overridesFile: getOverridesFileState() })
     return true
   }
 

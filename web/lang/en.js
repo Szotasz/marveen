@@ -883,6 +883,8 @@ window._i18n.en = {
   'settings.meta.format':        'Format',
   'settings.meta.default':       'Default',
   'settings.meta.overridden': 'overridden',
+  'settings.meta.env_ignored': 'Its .env value is IGNORED: this security control can only be tightened from the .env. Set it here.',
+  'settings.overrides_unreadable': 'store/config-overrides.json is unreadable ({cause}): every value saved here is dropped, tightening ones too, until the file is repaired.',
   'settings.btn.reset_default': 'Default',
   'settings.btn.reset_default_title': 'Remove the saved override. The value falls back to the one in .env, or to the shipped default if .env has none.',
   'settings.btn.reset_tab': 'Reset this tab',

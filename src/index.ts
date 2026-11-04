@@ -31,6 +31,7 @@ import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
 import { startChannelRequestWatcher, stopChannelRequestWatcher } from './web/channel-request-watcher.js'
 import { startStoreWatcher, stopStoreWatcher } from './store-watcher.js'
+import { startSettingsHealth } from './settings-health.js'
 import { AGENTS_BASE_DIR, agentDir, listAgentNames, readFileOr } from './web/agent-config.js'
 import { migrateSenderRoleGates } from './web/sender-role-gate-store.js'
 import {
@@ -625,6 +626,10 @@ async function main(): Promise<void> {
 
   // Store file audit watcher
   startStoreWatcher()
+
+  // ENVRELAXGATE1104 step 2: name the ignored .env security lines, and tell the owner (once per state change) when
+  // config-overrides.json turns unreadable.
+  startSettingsHealth()
 
   // Web dashboard
   webServer = startWebServer(WEB_PORT)

@@ -1230,6 +1230,8 @@ window._i18n.hu = {
   'settings.meta.format':        'Formátum',
   'settings.meta.default':       'Alapérték',
   'settings.meta.overridden': 'felülírva',
+  'settings.meta.env_ignored': 'A .env-ben álló értéke NEM hat: ez a biztonsági kapcsoló a .env-ből csak szigorítható. Itt állítsd be.',
+  'settings.overrides_unreadable': 'A store/config-overrides.json nem olvasható ({cause}): az itt mentett minden érték kiesik, a szigorítók is, amíg a fájl helyre nem áll.',
   'settings.btn.reset_default': 'Alapértelmezés',
   'settings.btn.reset_default_title': 'A mentett felülírás törlése. Az érték visszaáll az .env fájlban megadottra, vagy ha ott nincs, a gyári alapértelmezésre.',
   'settings.btn.reset_tab': 'Mind alapértelmezés',

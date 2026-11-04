@@ -2299,6 +2299,21 @@ else
   bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 fi
 
+# ENVRELAXGATE1104 step 2: a .env line that would LOOSEN a security key no longer counts (the .env may only tighten
+# one; loosening is the Settings page's, behind the owner login). Name each such key here, the name only, so a
+# hand-written line does not fall back to the default in silence. A warning, never a failure.
+_env_check_cli="$INSTALL_DIR/dist/settings-env-check-cli.js"
+if [ -f "$_env_check_cli" ] && command -v node >/dev/null 2>&1; then
+  _ignored_env_keys="$(node "$_env_check_cli" 2>/dev/null || true)"
+  for _ik in $_ignored_env_keys; do
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "  ${ORANGE:-}⚠${NC:-} The .env line for ${_ik} is IGNORED: it would loosen a security control. Set it on the Settings page instead."
+    else
+      echo -e "  ${ORANGE:-}⚠${NC:-} A .env ${_ik} sora NEM hat: egy biztonsági kapcsolót lazítana. A Beállítások oldalon állítható."
+    fi
+  done
+fi
+
 echo ""
 if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
   echo -e "${GREEN}✓ Update applied (${OLD_VERSION} -> ${NEW_VERSION}); restarting and health-checking...${NC}"

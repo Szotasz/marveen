@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
 import { parseLabelPalette } from './css-color.js'
 import { resolveFleetVenvDir } from './fleet-venv.js'
-import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL, getSettingDefinition, isOverridesOnly } from './config-registry.js'
 import { FIXED_RESERVED_AGENT_IDS } from './web/sanitize.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 
@@ -39,7 +39,12 @@ function readConfigOverrides(): Record<string, unknown> {
 const overrides = readConfigOverrides()
 // Effective raw value for a registry-backed key consumed at boot:
 // config-overrides.json wins, then .env. Callers apply their own default.
-function cfg(key: string): string | undefined {
+export function cfg(key: string): string | undefined {
+  // ENVRELAXGATE1104 step 2: cfg() has its own override > .env order, so an overrides-only (security) key read here
+  // would let a loosening .env line count. Such a key goes through the settings store; refusing here keeps a future
+  // boot-time reader from bypassing the rule.
+  const def = getSettingDefinition(key)
+  if (def && isOverridesOnly(def)) throw new Error(`cfg(): ${key} is overrides-only; read it through the settings store`)
   const ov = overrides[key]
   if (ov !== undefined && ov !== null && String(ov).length > 0) return String(ov)
   return env[key]
