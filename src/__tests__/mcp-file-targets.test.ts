@@ -36,7 +36,7 @@ describe('mcpFileTargets', () => {
   })
   it('every string leaf that looks like a path, at any depth, whatever its key', () => {
     const m = mcpFileTargets('mcp__any__save', { opts: { deep: { where: '/a/b.json' } }, list: ['~/c', 'plain'], uri: 'file:///d%20e/f' })
-    expect(m.targets.map((t: { path: string }) => t.path).sort()).toEqual(['/a/b.json', '/d e/f', 'plain', '~/c']) // a writer: a bare leaf too
+    expect(m.targets.map((t: { path: string }) => t.path).sort()).toEqual(['/a/b.json', '/d e/f', '~/c']) // 'plain': a bare leaf with no dot is no path
     expect(m.cls).toBe('writer')
   })
   it('a writer: every whitespace-free leaf is a relative-path candidate, a bare name too (Dani 68192 (2))', () => {
@@ -55,6 +55,10 @@ describe('mcpFileTargets', () => {
     const m = mcpFileTargets('mcp__fs__move_file', { source: 'store', destination: 'x' })
     expect(m.targets).toContainEqual({ path: 'store', dir: true })
     expect(m.targets.filter((t: { dir: boolean }) => !t.dir)).toEqual([])
+  })
+  it('a bare leaf is a path only with a dot or as a guarded directory name; a number never', () => {
+    const m = mcpFileTargets('mcp__x__update_sheet', { a: 'v12', b: '3.14', c: 'Label_1', d: 'notes.md', e: 'store', f: '-7' })
+    expect(m.targets.map((t: { path: string }) => t.path).sort()).toEqual(['notes.md', 'store'])
   })
   it('a leaf naming the dashboard DB is flagged, whatever the class', () => {
     expect(mcpFileTargets('mcp__sqlite__read_query', { db: 'store/claudeclaw.db', q: 'select 1' }).dbNamed).toBe(true)
@@ -98,9 +102,11 @@ describe('mcpFileTargets', () => {
   })
   it('the walk is bounded: too deep or too many leaves is reported, not silently cut', () => {
     let deep: Record<string, unknown> = { p: '/x' }
-    for (let i = 0; i < 10; i++) deep = { d: deep }
+    for (let i = 0; i < 40; i++) deep = { d: deep }
     expect(mcpFileTargets('mcp__x__write_a', deep).truncated).toBe(true)
-    expect(mcpFileTargets('mcp__x__write_a', { list: Array.from({ length: 300 }, (_, i) => `/p${i}`) }).truncated).toBe(true)
+    expect(mcpFileTargets('mcp__x__write_a', { list: Array.from({ length: 20001 }, (_, i) => `/p${i}`) }).truncated).toBe(true)
+    // Dani 68239: real fleet writes stay well inside the bound
+    expect(mcpFileTargets('mcp__x__write_a', { list: Array.from({ length: 300 }, (_, i) => `/p${i}`) }).truncated).toBe(false)
     expect(mcpFileTargets('mcp__x__write_a', { a: '/x' }).truncated).toBe(false)
   })
 })

@@ -99,7 +99,7 @@ describe('an UNKNOWN MCP writer: its tool-name class decides, not its server (Da
   })
   it('a known writer too deeply nested to read in full is denied, not passed', () => {
     let deep: Record<string, unknown> = { p: '/tmp/x' }
-    for (let i = 0; i < 10; i++) deep = { d: deep }
+    for (let i = 0; i < 40; i++) deep = { d: deep }
     expect(db('mcp__x__write_a', deep)).toEqual({ deny: true, reason: 'mcp-path' })
   })
 })
@@ -125,6 +125,25 @@ describe('Dani 68192: create/update/replace writers, bare names, a known mover\'
   it('(3) a known mover\'s own key, relative: a directory, on both gates', () => {
     expect(denied(db('mcp__Filesystem__move_file', { source: 'store', destination: '/tmp/s' }, atRoot()))).toBe(true)
     expect(denied(pace('mcp__Filesystem__move_file', { source: 'store', destination: '/tmp/s' }, atRoot()))).toBe(true)
+  })
+})
+
+// Dani 68239: real fleet writes with no path, at real size, must pass (the update/modify writer words made them
+// writers; the old 256-leaf / 6-deep bound denied them as mcp-path).
+describe('real-size writes with no path pass (Dani 68239)', () => {
+  const asMain = () => ({ subAgent: false, cwd: root, projectDir: root })
+  it('updateGoogleSheet with 300 rows', () => {
+    const values = Array.from({ length: 300 }, (_, i) => [`v${i}`, `${i}`, `${i}.5`])
+    expect(db('mcp__google-drive__updateGoogleSheet', { spreadsheetId: '1AbCdEf', range: 'A1:C300', values }, asMain())).toEqual({ deny: false })
+    expect(db('mcp__google-drive__updateGoogleSheet', { spreadsheetId: '1AbCdEf', range: 'A1:C300', values })).toEqual({ deny: false })
+  })
+  it('batch_modify_emails with 300 ids', () => {
+    const messageIds = Array.from({ length: 300 }, (_, i) => `18c3f${i.toString(16)}abc`)
+    expect(db('mcp__server-gmail-autoauth-mcp__batch_modify_emails', { messageIds, addLabelIds: ['Label_1'] }, asMain())).toEqual({ deny: false })
+  })
+  it('updateGoogleDoc with a 7-deep style request', () => {
+    const requests = [{ updateTextStyle: { range: { startIndex: 1, endIndex: 5 }, textStyle: { foregroundColor: { color: { rgbColor: { red: 1, green: 0, blue: 0 } } } }, fields: 'foregroundColor' } }]
+    expect(db('mcp__google-drive__updateGoogleDoc', { documentId: 'doc1', requests }, asMain())).toEqual({ deny: false })
   })
 })
 

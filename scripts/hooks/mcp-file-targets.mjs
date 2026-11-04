@@ -25,8 +25,8 @@
 // A KNOWN writer whose path argument is missing (the server would fall back to
 // a default location we cannot see) reports missingPath: the gates deny it.
 
-const MAX_DEPTH = 6
-const MAX_LEAVES = 256
+const MAX_DEPTH = 32
+const MAX_LEAVES = 20000
 
 const MOVER_WORDS = new Set(['move', 'mv', 'rename', 'copy', 'cp', 'delete', 'remove', 'rm', 'unlink', 'rmdir', 'trash'])
 const WRITER_WORDS = new Set(['write', 'edit', 'save', 'download', 'export', 'mkdir', 'append', 'put', 'patch', 'overwrite', 'touch',
@@ -87,11 +87,20 @@ function fileUriPath(s) {
 
 // A writer's or a mover's leaf with no whitespace is a candidate even with no slash (Dani 68192 (2)): a bare
 // '.mcp.json' is a path relative to the cwd. For the other class (read, send) a leaf needs a slash or a leading ~.
+//
+// A bare leaf (no slash, no ~) counts only when it can name something guarded: it has a dot (`.mcp.json`,
+// `settings.json`, `.env`), or it is the name of a guarded directory. Every candidate costs a real-path walk in each
+// gate, and a real write carries thousands of plain values (sheet cells, message ids, labels): measured 2026-11-04
+// on a 10k-cell sheet update, 3.8 s p50 / 4.5 s p95 with every bare leaf a candidate, against the gates' 5 s
+// decision deadline. A plain number is never a path.
+const BARE_GUARDED_NAMES = new Set(['store', 'scripts', 'hooks', 'plugins', 'agents', 'skills', 'local-hooks',
+  'scheduled-tasks', 'marveen-local-plugins'])
 function looksLikePath(s, cls) {
   if (!s) return false
   if (/^file:\/\//i.test(s)) return true
-  if (/\s/.test(s)) return cls !== 'other' && (s.includes('/') || s.startsWith('~'))
-  return cls !== 'other' || s.includes('/') || s.startsWith('~')
+  if (s.includes('/') || s.startsWith('~')) return cls !== 'other' || !/\s/.test(s)
+  if (cls === 'other' || /\s/.test(s) || /^[-+]?\d+(?:[.,]\d+)?$/.test(s)) return false
+  return s.includes('.') || BARE_GUARDED_NAMES.has(s.toLowerCase())
 }
 
 // Every string leaf, depth- and count-bounded (a deadline guard). Past the bound the call is reported `truncated`:
