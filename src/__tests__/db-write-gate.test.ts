@@ -779,7 +779,9 @@ describe('wiring', () => {
     const s = JSON.parse(readFileSync(join(REPO, '.claude', 'settings.json'), 'utf-8'))
     const entries = s.hooks.PreToolUse.filter((e: unknown) => JSON.stringify(e).includes('db-write-gate.mjs'))
     expect(entries).toHaveLength(1)
-    expect(entries[0].matcher).toBe('Bash|Write|Edit|MultiEdit|NotebookEdit')
+    // MCPWRITEGATE1104: every MCP tool too, anchored (a matcher with `.` is an unanchored regex)
+    expect(entries[0].matcher).toBe('^(?:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$')
+    expect(entries[0].matcher).toBe(DB_WRITE_GATE_MATCHER)
     const cmd = entries[0].hooks[0].command as string
     expect(cmd).toContain('command -v node >/dev/null 2>&1 || {')
     expect(cmd).toContain('node "$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs"')
@@ -792,7 +794,7 @@ describe('wiring', () => {
     const ptu = (s.hooks as { PreToolUse: Array<{ matcher: string, hooks: Array<{ command: string }> }> }).PreToolUse
     expect(ptu).toHaveLength(1)
     expect(ptu[0].matcher).toBe(DB_WRITE_GATE_MATCHER)
-    expect(DB_WRITE_GATE_MATCHER).toBe('Bash|Write|Edit|MultiEdit|NotebookEdit')
+    expect(DB_WRITE_GATE_MATCHER).toBe('^(?:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$')
     expect(ptu[0].hooks[0].command).toContain(join('scripts', 'hooks', 'db-write-gate.mjs'))
   })
   it('the scaffold wires it for every sub-agent and the startup migration repairs it (pinned in source)', () => {
