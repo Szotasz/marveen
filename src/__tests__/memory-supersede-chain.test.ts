@@ -1,9 +1,9 @@
-// Card f9242cd3 (#571): the "FELULIRJA <id>" chain. A full replacement links
-// both ways and the replaced row can be left out of the listing; a PARTIAL
-// reference only links (hiding the older row would lose what still stands).
+// Card f9242cd3 (#571): the free-text "FELULIRJA <id>" chain. It is read for
+// LINKS only, both directions: nothing is hidden or moved by it (review on PR
+// #2031; the explicit replacement is POST /api/memories with `supersedes`).
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
-import { initDatabase, saveAgentMemory, getMemoryById, getMemoryVersions } from '../db.js'
+import { initDatabase, saveAgentMemory, getMemoryById } from '../db.js'
 import { parseSupersedeRefs, getMemorySupersessions } from '../memory-supersede.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -41,6 +41,37 @@ describe('parseSupersedeRefs', () => {
     expect(parseSupersedeRefs(5000, 'FELULIRJA a 20:35-os allapotot')).toEqual([])
   })
 
+  it('a date is not an id', () => {
+    expect(parseSupersedeRefs(5000, 'ez felulirja a 08-01 21:36-os allapotot')).toEqual([])
+    expect(parseSupersedeRefs(5000, 'FELULIRJA a 10-17-i dontest')).toEqual([])
+  })
+
+  it('a single claim, reading or quoted piece is partial', () => {
+    expect(parseSupersedeRefs(5000, 'felulirja a 3457-es memoria kuszob-ertelmezeset')).toEqual([{ id: 3457, partial: true }])
+    expect(parseSupersedeRefs(5000, "FELULIRJA a 2485-os emlek 'a kapu mindent enged' allitasat")).toEqual([{ id: 2485, partial: true }])
+    expect(parseSupersedeRefs(5000, 'FELULIRJA a 2485-os emlek "kapu nyitva" reszet')).toEqual([{ id: 2485, partial: true }])
+    // the quote alone, with no claim/part word next to it, still makes it partial
+    expect(parseSupersedeRefs(5000, "FELULIRJA a 2485-os emlek 'kapu nyitva' sorat")).toEqual([{ id: 2485, partial: true }])
+  })
+
+  it('a quote after the colon is the new text, not a piece of the old row', () => {
+    expect(parseSupersedeRefs(5000, 'FELULIRJA 1244-et: "uj allapot" a 7. ponttal egyutt')).toEqual([{ id: 1244, partial: true }])
+    expect(parseSupersedeRefs(5000, 'FELULIRJA 1244-et: "uj allapot", kesz')).toEqual([{ id: 1244, partial: false }])
+  })
+
+  it('two markers in one text are read separately, in both orders', () => {
+    expect(parseSupersedeRefs(5000, 'FELULIRJA a 5-es emlek 2. pontjat; FELULIRJA 7-et')).toEqual([
+      { id: 5, partial: true }, { id: 7, partial: false },
+    ])
+    expect(parseSupersedeRefs(5000, 'FELULIRJA 7-et; FELULIRJA a 5-es emlek 2. pontjat')).toEqual([
+      { id: 7, partial: false }, { id: 5, partial: true },
+    ])
+  })
+
+  it('the tail stops at a line break', () => {
+    expect(parseSupersedeRefs(5000, 'FELULIRJA 1244-et\n2. pont: valami mas')).toEqual([{ id: 1244, partial: false }])
+  })
+
   it('a reference to itself or a newer row is not a replacement', () => {
     expect(parseSupersedeRefs(1169, 'FELULIRJA 1169 korabbi allapotat')).toEqual([])
     expect(parseSupersedeRefs(388, 'FELULIRJA 2026-ban ...')).toEqual([])
@@ -73,89 +104,52 @@ describe('the chain in the store and on the listing', () => {
     expect(s.refs.get(partNew)).toEqual([{ id: partOld, partial: true }])
   })
 
-  it('the listing carries both directions', async () => {
+  it('the listing carries both directions under its own names', async () => {
     const { ctx, out } = fakeCtx('/api/memories?agent=agent-a&tier=hot&limit=50')
     await tryHandleMemories(ctx)
     const byId = new Map(out.body.map((m: any) => [m.id, m]))
-    expect((byId.get(old1) as any).superseded_by).toBe(newest)
-    expect((byId.get(newer) as any).supersedes).toEqual([{ id: old1, partial: false }])
-    expect((byId.get(partOld) as any).superseded_by).toBeNull()
+    expect((byId.get(old1) as any).chain_replaced_by).toBe(newest)
+    expect((byId.get(newer) as any).chain_refs).toEqual([{ id: old1, partial: false }])
+    expect((byId.get(partOld) as any).chain_replaced_by).toBeNull()
   })
 
-  it('superseded=hide leaves out fully replaced rows, with and without an agent filter', async () => {
-    for (const qs of ['agent=agent-a&tier=hot', 'tier=hot', 'tier=warm']) {
-      const { ctx, out } = fakeCtx(`/api/memories?${qs}&superseded=hide&limit=50`)
+  it('nothing is hidden: a fully replaced row stays in the listing', async () => {
+    for (const qs of ['agent=agent-a&tier=hot', 'tier=hot']) {
+      const { ctx, out } = fakeCtx(`/api/memories?${qs}&limit=50`)
       await tryHandleMemories(ctx)
-      const ids = out.body.map((m: any) => m.id)
-      expect(ids, qs).not.toContain(old1)
-      expect(ids, qs).not.toContain(old2)
-    }
-    const { ctx, out } = fakeCtx('/api/memories?tier=hot&superseded=hide&limit=50')
-    await tryHandleMemories(ctx)
-    const ids = out.body.map((m: any) => m.id)
-    // Partial reference: the older row stays.
-    expect(ids).toContain(partOld)
-    expect(ids).toContain(newer)
-  })
-
-  it('without the parameter nothing is hidden', async () => {
-    const { ctx, out } = fakeCtx('/api/memories?tier=hot&limit=50')
-    await tryHandleMemories(ctx)
-    expect(out.body.map((m: any) => m.id)).toContain(old1)
-  })
-
-  it('a bad value and the search combination answer 400', async () => {
-    for (const qs of ['superseded=yes', 'superseded=hide&q=allapot']) {
-      const { ctx, out } = fakeCtx(`/api/memories?${qs}`)
-      await tryHandleMemories(ctx)
-      expect(out.status, qs).toBe(400)
+      expect(out.body.map((m: any) => m.id), qs).toContain(old1)
     }
   })
 
-  it('stats count the replaced rows per tier', async () => {
-    const { ctx, out } = fakeCtx('/api/memories/stats')
+  it("the row's own supersedes column (#2124) is not overwritten by the chain", async () => {
+    const { ctx: c0, out: o0 } = fakeCtx('/api/memories', 'POST', { agent_id: 'agent-a', content: 'explicit v2', category: 'hot', supersedes: [newer] })
+    await tryHandleMemories(c0)
+    expect(o0.status, JSON.stringify(o0.body)).toBe(200)
+    const explicitId = o0.body.id
+    const { ctx, out } = fakeCtx('/api/memories?agent=agent-a&tier=hot&limit=50')
     await tryHandleMemories(ctx)
-    expect(out.body.supersededByTier).toEqual({ hot: 1, warm: 1 })
+    const row = out.body.find((m: any) => m.id === explicitId)
+    expect(row.supersedes).toBe(String(newer))
+    expect(row.chain_refs).toEqual([])
   })
 })
 
-describe('write time: a full replacement moves the old hot/warm row to cold', () => {
+describe('write time: the free-text marker moves nothing', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
-  it('POST with "FELULIRJA <id>" demotes the replaced hot row, keeps a version, says so', async () => {
+  it('POST and PUT with a full "FELULIRJA <id>" leave the old row in its tier', async () => {
     const old = saveAgentMemory('agent-a', 'allapot v1', 'hot').id
     const { ctx, out } = fakeCtx('/api/memories', 'POST', { agent_id: 'agent-a', content: `FELULIRJA ${old}-et: allapot v2`, category: 'hot' })
     await tryHandleMemories(ctx)
     expect(out.status).toBe(200)
-    expect(out.body.demoted).toEqual([old])
-    expect(getMemoryById(old)?.category).toBe('cold')
-    expect(getMemoryVersions(old).length).toBeGreaterThan(0)
-  })
-
-  it('a partial reference, a shared row, a cold row and a missing row are left alone', async () => {
-    const part = saveAgentMemory('agent-a', 'harom pont', 'warm').id
-    const shared = saveAgentMemory('agent-a', 'kozos', 'shared').id
-    const cold = saveAgentMemory('agent-a', 'regi', 'cold').id
-    const content = `FELULIRJA a ${part}-es emlek 2. pontjat. FELULIRJA ${shared}-t. FELULIRJA ${cold}-t. FELULIRJA 999999-et.`
-    const { ctx, out } = fakeCtx('/api/memories', 'POST', { agent_id: 'agent-a', content, category: 'warm' })
-    await tryHandleMemories(ctx)
     expect(out.body.demoted).toBeUndefined()
-    expect(getMemoryById(part)?.category).toBe('warm')
-    expect(getMemoryById(shared)?.category).toBe('shared')
-    expect(getMemoryById(cold)?.category).toBe('cold')
-  })
-
-  it('a PUT that adds the marker demotes too; a PUT that does not change content does not', async () => {
-    const old = saveAgentMemory('agent-a', 'allapot v1', 'warm').id
-    const cur = saveAgentMemory('agent-a', 'allapot v2', 'hot').id
-    const { ctx: c1, out: o1 } = fakeCtx(`/api/memories/${cur}`, 'PUT', { tier: 'hot' })
-    await tryHandleMemories(c1)
-    expect(o1.body.demoted).toBeUndefined()
-    expect(getMemoryById(old)?.category).toBe('warm')
-    const { ctx: c2, out: o2 } = fakeCtx(`/api/memories/${cur}`, 'PUT', { content: `FELULIRJA ${old}: allapot v2` })
+    expect(getMemoryById(old)?.category).toBe('hot')
+    const warm = saveAgentMemory('agent-a', 'allapot w1', 'warm').id
+    const cur = saveAgentMemory('agent-a', 'allapot w2', 'hot').id
+    const { ctx: c2, out: o2 } = fakeCtx(`/api/memories/${cur}`, 'PUT', { content: `FELULIRJA ${warm}: allapot w2` })
     await tryHandleMemories(c2)
     expect(o2.status, JSON.stringify(o2.body)).toBe(200)
-    expect(o2.body.demoted).toEqual([old])
-    expect(getMemoryById(old)?.category).toBe('cold')
+    expect(o2.body.demoted).toBeUndefined()
+    expect(getMemoryById(warm)?.category).toBe('warm')
   })
 })

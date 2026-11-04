@@ -8457,19 +8457,6 @@ body {
 /* display:flex above would beat the hidden attribute: an empty red strip on every other tab. */
 .mem-stale-banner[hidden] { display: none; }
 /* Card f9242cd3 (#571): the FELULIRJA chain. */
-.mem-superseded-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 0 0 10px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  border: 1px dashed var(--border, rgba(127, 127, 127, 0.4));
-}
-.mem-superseded-bar button { margin-left: auto; }
-.mem-superseded-bar[hidden] { display: none; }
 .mem-chain { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 .mem-chain-chip {
   font: inherit;

@@ -2328,9 +2328,7 @@ export function decayMemories(): void {
 // staleBefore (card ca046c9a, #570): only rows whose LAST WRITE
 // (updated_at, or created_at when it was never updated) is older than this
 // unix time -- the "hot for a week and nobody touched it" view.
-// excludeIds (card f9242cd3, #571): rows replaced in full by a newer one,
-// left out of the listing (in SQL, ahead of the LIMIT, like category).
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number, excludeIds?: number[]): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2346,10 +2344,9 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // into the query for the same reason.
   const dt = tsClause('created_at', range)
   const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
-  const excl = excludeIds?.length ? ' AND id NOT IN (SELECT value FROM json_each(?))' : ''
   return db
-    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale}${excl} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(chatId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), ...(excludeIds?.length ? [JSON.stringify(excludeIds)] : []), limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -2457,7 +2454,7 @@ function scheduleEmbedding(id: number, content: string, keywords: string | undef
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange, staleBefore?: number, excludeIds?: number[]): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange, staleBefore?: number): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
@@ -2465,20 +2462,15 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   // range (card f90928e3) and the stale cut-off (card ca046c9a) are part of
   // the key for the same reason, and go into the query ahead of the LIMIT,
   // never after it.
-  // Not cached with an exclusion (card f9242cd3): the excluded set changes
-  // when ANY agent writes a superseding row, and only the writer's own keys
-  // are evicted.
-  const useCache = !excludeIds?.length
   const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}:${staleBefore ?? ''}`
-  const cached = useCache ? memoryCacheGet(key) : null
+  const cached = memoryCacheGet(key)
   if (cached) return cached
   const dt = tsClause('created_at', range)
   const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
-  const excl = excludeIds?.length ? ' AND id NOT IN (SELECT value FROM json_each(?))' : ''
   const result = db.prepare(
-    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale}${excl} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
-  ).all(agentId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), ...(excludeIds?.length ? [JSON.stringify(excludeIds)] : []), limit, offset) as Memory[]
-  if (useCache) memoryCacheSet(key, result)
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
+  memoryCacheSet(key, result)
   return result
 }
 

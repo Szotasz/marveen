@@ -9,7 +9,12 @@
 // ("a 876-os emleket ket ponton", "1120 allapot-reszet", "... 2. pontjat").
 // A partial reference is a link, never a replacement: hiding or demoting the
 // older row would lose the parts that still stand.
-import { getDb, updateMemory } from './db.js'
+//
+// The free-text marker is read for LINKS only (chips on the memory tab, both
+// directions). It never hides or moves a row: the explicit replacement is
+// POST /api/memories with `supersedes: [ids]` (#2124), which retracts the
+// older rows. Free text is too loose to act on (review on PR #2031).
+import { getDb } from './db.js'
 
 export interface SupersedeRef {
   id: number
@@ -17,11 +22,36 @@ export interface SupersedeRef {
 }
 
 // keyword, optional article, optional '#', the id. The id must not run on into
-// a time or a decimal ("FELULIRJA a 20:35-os allapotot" names a time, not row 20);
-// a colon that ends the marker ("FELULIRJA 1345: ...") is fine.
-const REF_RX = /fel[uü]l[ií]rja\s+(?:az?\s+)?#?(\d{1,7})(?!\d)(?![:.,]\d)(\S*)([^\n]{0,60})/gi
-// Words that make the reference partial when they follow the id closely.
-const PARTIAL_RX = /pont|r[eé]sz|szakasz|bekezd/i
+// a time, a decimal or a date ("FELULIRJA a 20:35-os allapotot" names a time,
+// "felulirja a 08-01 21:36-os" a date, not row 20 or row 8); a colon that ends
+// the marker ("FELULIRJA 1345: ...") is fine.
+const REF_RX = /fel[uü]l[ií]rja\s+(?:az?\s+)?#?(\d{1,7})(?!\d)(?![:.,-]\d)/gi
+// The text after the id that decides full vs partial: up to 60 characters, cut
+// at a line break or at the NEXT marker, so one reference's tail never reads
+// the next one's words (and a regex tail can no longer swallow that marker).
+const TAIL_LEN = 60
+const NEXT_MARKER_RX = /fel[uü]l[ií]rja/i
+// Words that make the reference partial when they follow the id closely: a
+// point, part, section, paragraph, or a single claim, reading or sentence.
+const PARTIAL_RX = /pont|r[eé]sz|szakasz|bekezd|[aá]ll[ií]t[aá]s|[eé]rtelmez|mondat/i
+// A quoted fragment before the first colon or semicolon ("a 2485-os emlek
+// '...' allitasat") names a piece of the row, not the whole row.
+const QUOTE_RX = /['"‘’“”„]/
+
+function refTail(content: string, from: number): string {
+  let tail = content.slice(from, from + TAIL_LEN)
+  const nl = tail.indexOf('\n')
+  if (nl >= 0) tail = tail.slice(0, nl)
+  const next = tail.search(NEXT_MARKER_RX)
+  if (next >= 0) tail = tail.slice(0, next)
+  return tail
+}
+
+function isPartial(tail: string): boolean {
+  if (PARTIAL_RX.test(tail)) return true
+  const head = tail.split(/[:;]/, 1)[0]
+  return QUOTE_RX.test(head)
+}
 
 /** The rows a memory's text says it replaces, oldest-first as written. A
  *  reference to itself or to a NEWER id is not a replacement (an in-place
@@ -33,7 +63,7 @@ export function parseSupersedeRefs(selfId: number, content: string): SupersedeRe
     const id = Number(m[1])
     if (!(id > 0) || id >= selfId || seen.has(id)) continue
     seen.add(id)
-    out.push({ id, partial: PARTIAL_RX.test(m[2] + m[3]) })
+    out.push({ id, partial: isPartial(refTail(content, m.index! + m[0].length)) })
   }
   return out
 }
@@ -67,24 +97,4 @@ export function getMemorySupersessions(): Supersessions {
     }
   }
   return { supersededBy, refs }
-}
-
-// Card f9242cd3 (#571), the owner's idea b) as written (tg 7982): "the
-// replaced old row goes to cold by itself". Done at WRITE time, for the rows
-// this memory replaces IN FULL, and only from hot or warm: a shared row stays
-// shared (moving it to cold would take it away from every other agent, a
-// different decision), a partial reference never moves anything. The move
-// goes through updateMemory, so the pre-image is versioned and the caches are
-// evicted like any other tier change; updated_by names the replacing row.
-export function demoteSupersededRows(newId: number, content: string): number[] {
-  const db = getDb()
-  const moved: number[] = []
-  for (const ref of parseSupersedeRefs(newId, content)) {
-    if (ref.partial) continue
-    const row = db.prepare('SELECT id, content, category FROM memories WHERE id = ?').get(ref.id) as
-      { id: number; content: string; category: string } | undefined
-    if (!row || (row.category !== 'hot' && row.category !== 'warm')) continue
-    if (updateMemory(row.id, row.content, 'cold', undefined, undefined, `supersede:${newId}`)) moved.push(row.id)
-  }
-  return moved
 }

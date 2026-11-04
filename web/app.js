@@ -8159,38 +8159,6 @@ document.getElementById('saveMemBtn').addEventListener('click', saveMemoryFromMo
 // the Hot tab shows that count and lets the viewer list only those.
 let memStaleInfo = { count: 0, days: 7 }
 let memStaleOnly = false
-// Card f9242cd3 (#571): rows a newer memory replaces in full ("FELULIRJA <id>")
-// are left out of the listing unless the viewer asks for them.
-let memSupersededByTier = {}
-let memShowSuperseded = false
-
-function renderMemSupersededBar() {
-  const el = document.getElementById('memSupersededBar')
-  if (!el) return
-  const q = memSearchInput.value.trim()
-  const count = memSupersededByTier[currentMemTier] || 0
-  if (q || count === 0) {
-    el.hidden = true
-    el.textContent = ''
-    return
-  }
-  el.hidden = false
-  el.textContent = ''
-  const text = document.createElement('span')
-  text.textContent = memShowSuperseded
-    ? t('memories.chain.bar_shown', { count })
-    : t('memories.chain.bar_hidden', { count })
-  const btn = document.createElement('button')
-  btn.className = 'btn-secondary btn-compact'
-  btn.id = 'memSupersededToggle'
-  btn.textContent = memShowSuperseded ? t('memories.chain.hide') : t('memories.chain.show')
-  btn.addEventListener('click', () => {
-    memShowSuperseded = !memShowSuperseded
-    loadMemories()
-  })
-  el.append(text, btn)
-}
-
 // Inline preview of a referenced memory under the chip row, toggled per id.
 async function toggleMemRefPreview(item, refId) {
   const box = item.querySelector('.mem-ref-preview')
@@ -8270,9 +8238,7 @@ async function loadMemStats() {
     const embCount = stats.withEmbedding || 0
     const embPct = stats.total > 0 ? Math.round(embCount / stats.total * 100) : 0
     memStaleInfo = { count: stats.staleHot || 0, days: stats.staleHotDays || 7 }
-    memSupersededByTier = stats.supersededByTier || {}
     renderMemStaleBanner()
-    renderMemSupersededBar()
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
@@ -8312,8 +8278,6 @@ async function loadMemories() {
   if (currentMemTier) params.set('tier', currentMemTier)
   // stale_days is listing-only on the server (400 with q), so a search wins.
   if (currentMemTier === 'hot' && memStaleOnly && !q) params.set('stale_days', String(memStaleInfo.days))
-  // superseded=hide is listing-only on the server too (400 with q).
-  if (!q && !memShowSuperseded) params.set('superseded', 'hide')
   params.set('limit', '50')
 
   try {
@@ -8327,7 +8291,6 @@ async function loadMemories() {
     // as fifty hits. The header is only set on a search (q), not on listing.
     renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
     renderMemStaleBanner()
-    renderMemSupersededBar()
     renderMemories(memories)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
@@ -8387,8 +8350,8 @@ function renderMemories(memories) {
     const agentLabel = mem.agent_id || mainAgentId()
     const ageDays = Math.floor((Date.now() / 1000 - memLastWrite(mem)) / 86400)
     const isStaleHot = tier === 'hot' && memLastWrite(mem) > 0 && ageDays >= memStaleInfo.days
-    const supersedes = Array.isArray(mem.supersedes) ? mem.supersedes : []
-    const supersededBy = mem.superseded_by || null
+    const supersedes = Array.isArray(mem.chain_refs) ? mem.chain_refs : []
+    const supersededBy = mem.chain_replaced_by || null
     // Move targets: a stale hot row may go to warm or cold; a fully replaced
     // row that is not cold yet gets the cold button.
     const moveTargets = []

@@ -483,19 +483,6 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       }
       staleBefore = Math.floor(Date.now() / 1000) - Math.round(staleDays * 86400)
     }
-    // superseded=hide (card f9242cd3, #571): leave out rows a newer memory
-    // replaces in full. Listing only, like stale_days.
-    const supersededParam = url.searchParams.get('superseded')
-    if (supersededParam !== null && supersededParam !== 'hide' && supersededParam !== 'show') {
-      json(res, { error: 'invalid superseded: must be hide or show' }, 400)
-      return true
-    }
-    if (supersededParam === 'hide' && q) {
-      json(res, { error: 'superseded=hide is not supported together with q (listing only)' }, 400)
-      return true
-    }
-    const supersessions = getMemorySupersessions()
-    const excludeIds = supersededParam === 'hide' ? [...supersessions.supersededBy.keys()] : undefined
 
     // Card f90928e3: date= / since= / until= narrow the search to a created_at
     // window. An unknown expression is a 400 with the accepted forms: a filter
@@ -565,11 +552,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           .all(pattern, pattern, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
-      // Category, date window, stale cut-off and the superseded exclusion go into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange, staleBefore, excludeIds)
+      // Category, date window and stale cut-off go into the query, not a post-filter: see getAgentMemories.
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange, staleBefore)
     } else {
       // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange, staleBefore, excludeIds)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange, staleBefore)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
@@ -585,14 +572,18 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // and defeat staleness detection.
     if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
 
+    const supersessions = getMemorySupersessions()
     const formatted = results.map(m => ({
       ...m,
       ...(keywordMatchKind ? { match_kind: keywordMatchKind } : {}),
       embedding: undefined,
-      // #571: the chain, both directions. supersedes lists full AND partial
-      // references; superseded_by is only ever a FULL replacement.
-      supersedes: supersessions.refs.get(m.id) ?? [],
-      superseded_by: supersessions.supersededBy.get(m.id) ?? null,
+      // #571: the free-text FELULIRJA chain, both directions, as LINKS only
+      // (nothing is hidden or moved by it). chain_refs lists full AND partial
+      // references; chain_replaced_by is only ever a FULL one. Own names: the
+      // row's `supersedes` column is the explicit replacement (#2124) and must
+      // not be overwritten here.
+      chain_refs: supersessions.refs.get(m.id) ?? [],
+      chain_replaced_by: supersessions.supersededBy.get(m.id) ?? null,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -787,17 +778,7 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/stats' && method === 'GET') {
-    // #571: how many fully replaced rows each tier holds (all agents), so the
-    // tab can say how many it is hiding.
-    const ids = [...getMemorySupersessions().supersededBy.keys()]
-    const supersededByTier: Record<string, number> = {}
-    if (ids.length) {
-      const rows = getDb()
-        .prepare('SELECT category, COUNT(*) AS c FROM memories WHERE id IN (SELECT value FROM json_each(?)) GROUP BY category')
-        .all(JSON.stringify(ids)) as { category: string; c: number }[]
-      for (const r of rows) supersededByTier[r.category] = r.c
-    }
-    json(res, { ...getMemoryStats(), supersededByTier })
+    json(res, getMemoryStats())
     return true
   }
 
@@ -938,10 +919,7 @@ Respond ONLY with JSON, nothing else:
     // which the if_version flow reads back.
     if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) {
       const version = memoryVersion(effectiveContent)
-      // #571: an edit that ADDS a full "FELULIRJA <id>" demotes like a new row.
-      const demoted = effectiveContent !== before.content ? demoteSupersededRows(id, effectiveContent) : []
-      const extra = demoted.length ? { demoted } : {}
-      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch), ...extra } : { ok: true, version, ...extra })
+      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch) } : { ok: true, version })
       return true
     }
     json(res, { error: 'Memory not found' }, 404)
