@@ -241,8 +241,13 @@ _t() {
     # ── Done section ──────────────────────────────────────────────────
     en:dash.token_hint) echo "  (Open once; the browser will remember the token)" ;;
     hu:dash.token_hint) echo "  (Nyisd meg egyszer, utana a bongeszo megjegyzi a tokent)" ;;
-    en:dash.no_token_hint) echo "  (The token URL can be found in the server log)" ;;
-    hu:dash.no_token_hint) echo "  (A tokenes URL-t a szerver logban talalod)" ;;
+    # INSTSTDERRTMP1104: the server prints the token URL only to a terminal
+    # (src/web.ts, non-TTY branch), so under launchd/systemd the old "server
+    # log" pointer led nowhere; the token lives in store/.dashboard-token.
+    en:dash.no_token_hint) echo "  (The access token is written to store/.dashboard-token when the dashboard first starts; open http://localhost:${WEB_PORT:-3420}/?token=<that value> once)" ;;
+    hu:dash.no_token_hint) echo "  (A belépő token a dashboard első indulásakor a store/.dashboard-token fájlba kerül; nyisd meg egyszer: http://localhost:${WEB_PORT:-3420}/?token=<a fájl tartalma>)" ;;
+    en:dash.token_file_hint) echo "  (Not a terminal, so the token is not printed. It is in store/.dashboard-token; open http://localhost:${WEB_PORT:-3420}/?token=<that value> once)" ;;
+    hu:dash.token_file_hint) echo "  (Nem terminálba fut a kimenet, ezért a tokent nem írjuk ki. A store/.dashboard-token fájlban van; nyisd meg egyszer: http://localhost:${WEB_PORT:-3420}/?token=<a fájl tartalma>)" ;;
     en:telegram.write_hint) echo "  Telegram: Write to your bot!" ;;
     hu:telegram.write_hint) echo "  Telegram: Irj a botodnak!" ;;
     en:next_steps.title) echo "  Next steps:" ;;
@@ -504,7 +509,23 @@ explain_install_error() {
     echo "$tail_txt" | grep -qiE '(^|\n)(brew|Homebrew)' && tool="Homebrew"
     echo "$tail_txt" | grep -q 'curl:' && tool="curl"
     echo -e "${ORANGE}$(_t errxl.unknown_head) ${tool}${NC}"
-    tail -n 5 "$log" 2>/dev/null | sed 's/^/    /'
+    tail -n 5 "$log" 2>/dev/null | redact_install_line | sed 's/^/    /'
     echo -e "  $(_t errxl.unknown_next)"
   fi
+}
+
+# INSTSTDERRTMP1104: the raw stderr lines above reach the screen AND whatever
+# captures stdout (the Bridge, a CI log). Mask the shapes a credential takes on
+# a command line or in an error message. A filter, not a guarantee: the real
+# protection is that secrets never reach stderr; this only keeps a slip from
+# being repeated into a second capture.
+redact_install_line() {
+  LC_ALL=C sed -E \
+    -e 's/sk-ant-[A-Za-z0-9_-]+/sk-ant-[redacted]/g' \
+    -e 's/(xox[abprs]-)[A-Za-z0-9-]+/\1[redacted]/g' \
+    -e 's/[0-9]{6,12}:[A-Za-z0-9_-]{30,}/[redacted-bot-token]/g' \
+    -e 's/([?&](token|key|secret|password)=)[^&[:space:]"]+/\1[redacted]/g' \
+    -e 's/((TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|_KEY)=)[^[:space:]"]+/\1[redacted]/g' \
+    -e 's/(Bearer )[A-Za-z0-9._~+\/=-]+/\1[redacted]/g' \
+    -e 's/[0-9a-fA-F]{40,}/[redacted-hex]/g'
 }

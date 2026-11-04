@@ -2631,12 +2631,19 @@ DASH_TOKEN=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
-if [ -n "$DASH_TOKEN" ]; then
+# INSTSTDERRTMP1104: the token URL only to a terminal, the same rule the server
+# keeps (src/web.ts). Redirected (the Bridge, a CI log, `> file`), the line would
+# leave a root-equivalent credential in whatever captured it.
+if [ -n "$DASH_TOKEN" ] && [ -t 1 ]; then
   echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
 else
+  if [ -n "$DASH_TOKEN" ]; then _hint="$(_t dash.token_file_hint)"; _k=dash.token_file_hint
+  else _hint="$(_t dash.no_token_hint)"; _k=dash.no_token_hint; fi
+  # An older install-lang.sh (standalone run) answers an unknown key with the key itself.
+  [ "$_hint" = "$_k" ] && _hint="  (store/.dashboard-token)"
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
-  echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
+  echo -e "  ${DIM}${_hint}${NC}"
 fi
 echo ""
 echo -e "  ${DIM}VPS/szerver eleres tavolrol:${NC}"
