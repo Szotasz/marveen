@@ -24,7 +24,7 @@ function hostJson(): Record<string, any> {
       [PROJECT]: {
         allowedTools: [],
         mcpServers: {
-          'server-gmail-autoauth-mcp': { type: 'stdio', command: 'npx', args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'] },
+          'server-gmail-autoauth-mcp': { type: 'stdio', command: 'npx', args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'], env: {} },
           'server-google-calendar-mcp': { type: 'stdio', command: 'npx', args: ['-y', '@cocal/google-calendar-mcp'] },
         },
       },
@@ -76,6 +76,27 @@ describe('filterWorkerMcpServers (fail-closed)', () => {
       ['-y', '--yes', '@gongrzhe/server-gmail-autoauth-mcp'],
       ['@gongrzhe/server-gmail-autoauth-mcp'],
     ]) expect(Object.keys(filterWorkerMcpServers(gmail(args)).kept), JSON.stringify(args)).toEqual(['x'])
+  })
+
+  it('Dani\'s #2499 delta: after the @ only a plain version or latest; any other npm spec drops out', () => {
+    for (const v of ['1.1.11', '1.2.3-beta.1', 'latest']) {
+      expect(Object.keys(filterWorkerMcpServers(gmail(['-y', `@gongrzhe/server-gmail-autoauth-mcp@${v}`])).kept), v).toEqual(['x'])
+    }
+    for (const v of ['npm:some-other-pkg', 'https://x.test/x.tgz', 'file:/tmp/x', 'github:someone/repo', '^1.2.3', '1.2', 'next', '']) {
+      expect(filterWorkerMcpServers(gmail(['-y', `@gongrzhe/server-gmail-autoauth-mcp@${v}`])).dropped, v).toEqual(['x'])
+    }
+  })
+
+  it('Dani\'s #2499 delta: any env key, or an unknown config key, drops the entry; an empty env stays', () => {
+    const pkg = ['-y', '@gongrzhe/server-gmail-autoauth-mcp']
+    expect(Object.keys(filterWorkerMcpServers(gmail(pkg, { env: {} })).kept)).toEqual(['x'])
+    expect(Object.keys(filterWorkerMcpServers(gmail(pkg, { type: 'stdio' })).kept)).toEqual(['x'])
+    for (const env of [{ NODE_OPTIONS: '--require /tmp/x.js' }, { npm_config_registry: 'https://x.test' }, { GMAIL_X: 'y' }]) {
+      expect(filterWorkerMcpServers(gmail(pkg, { env })).dropped, JSON.stringify(env)).toEqual(['x'])
+    }
+    for (const extra of [{ env: null }, { env: [] }, { env: 'NODE_OPTIONS=x' }, { cwd: '/tmp' }, { headers: {} }]) {
+      expect(filterWorkerMcpServers(gmail(pkg, extra)).dropped, JSON.stringify(extra)).toEqual(['x'])
+    }
   })
 
   it('the host\'s resolved npx path counts as npx; another path or command does not', () => {

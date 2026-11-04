@@ -603,14 +603,27 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
 // only READS mail (src/heartbeat.ts); no worker prompt uses any other server. A server stays only when its launch has
 // EXACTLY this shape: `npx` (or the host's resolved npx path), then only -y/--yes flags, then one of these packages
 // (an optional @version suffix allowed), and nothing after it (Dani's #2499 review: an "any argv word" match kept a
-// `sh -c ...` or another package that merely named this one). Every other server, and every non-stdio (url) server,
-// drops out. Fail-closed: an install with another mail server loses mail in the heartbeat, visibly.
+// `sh -c ...` or another package that merely named this one), a plain version or `latest` only after the @, and no
+// env key or unknown config key (the #2499 delta). Every other server, and every non-stdio (url) server, drops out. Fail-closed: an install with another mail server loses mail in the heartbeat, visibly.
 export const WORKER_MAIL_MCP_PACKAGES: readonly string[] = ['@gongrzhe/server-gmail-autoauth-mcp']
 
-function packageOfToken(token: string): string {
-  // '@scope/name@1.2.3' -> '@scope/name', 'name@1.2.3' -> 'name'
-  const at = token.lastIndexOf('@')
-  return at > 0 ? token.slice(0, at) : token
+// What may follow `<package>@`: a plain semver version or the `latest` tag. Any other npm spec after the @ (an
+// `npm:` alias, a URL, `file:`, `github:`) installs something else under the allowlisted name (Dani's #2499 delta).
+const PLAIN_VERSION_RE = /^(?:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?|latest)$/
+
+/** Is this npx argument exactly an allowlisted package, bare or with a plain @version / @latest? */
+function isAllowlistedPackageSpec(token: string): boolean {
+  return WORKER_MAIL_MCP_PACKAGES.some((pkg) =>
+    token === pkg || (token.startsWith(pkg + '@') && PLAIN_VERSION_RE.test(token.slice(pkg.length + 1))))
+}
+
+// The config keys a kept mail server may carry. An `env` with any key drops the entry: NODE_OPTIONS or
+// npm_config_* change what npx runs, and the mail server needs none (measured on this install: an empty env).
+const WORKER_MCP_CONFIG_KEYS = new Set(['type', 'command', 'args', 'env'])
+function hasOnlyPlainConfig(c: Record<string, unknown>): boolean {
+  if (!Object.keys(c).every((k) => WORKER_MCP_CONFIG_KEYS.has(k))) return false
+  if (c.env === undefined) return true
+  return !!c.env && typeof c.env === 'object' && !Array.isArray(c.env) && Object.keys(c.env as object).length === 0
 }
 
 const NPX_YES_FLAGS = new Set(['-y', '--yes'])
@@ -622,7 +635,7 @@ function isAllowlistedMailLaunch(command: string, args: unknown[], npxPath: stri
   const words = args as string[]
   let i = 0
   while (i < words.length && NPX_YES_FLAGS.has(words[i])) i++
-  return i === words.length - 1 && WORKER_MAIL_MCP_PACKAGES.includes(packageOfToken(words[i]))
+  return i === words.length - 1 && isAllowlistedPackageSpec(words[i])
 }
 
 /**
@@ -637,7 +650,7 @@ export function filterWorkerMcpServers(servers: unknown, npxPath: string | null 
     const c = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg as { type?: unknown; command?: unknown; args?: unknown; url?: unknown } : null
     const stdio = !!c && (c.type === undefined || c.type === 'stdio') && c.url === undefined && typeof c.command === 'string'
     const args = stdio ? (c!.args === undefined ? [] : c!.args) : null
-    if (stdio && Array.isArray(args) && isAllowlistedMailLaunch(c!.command as string, args, npxPath)) kept[name] = cfg
+    if (stdio && Array.isArray(args) && hasOnlyPlainConfig(c as Record<string, unknown>) && isAllowlistedMailLaunch(c!.command as string, args, npxPath)) kept[name] = cfg
     else dropped.push(name)
   }
   return { kept, dropped }
