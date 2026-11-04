@@ -40,9 +40,11 @@ const main = (command: string, cwd = root) => gateDecision('Bash', { command: co
 const subFile = (tool: string, file_path: string, cwd = root) => gateDecision(tool, { file_path, content: 'x' }, { cwd, root, subAgent: true })
 const mainFile = (tool: string, file_path: string, cwd = root) => gateDecision(tool, { file_path, content: 'x' }, { cwd, root, subAgent: false })
 
-it('the sub-agent list is exactly the plan\'s: the root .env, five store files, the shared ~/.claude settings (Dani 67841), the main agent\'s isolated config dir (Samu 68210)', () => {
+it('the sub-agent list is exactly the plan\'s: the root .env, five store files, the shared ~/.claude settings (Dani 67841), the main agent\'s isolated config dir (Samu 68210), the MCP server lists (ENVRELAXMCPCFG1104)', () => {
+  // .channels-config/.claude.json is covered by the .channels-config directory entry (#2503), not listed twice.
   expect(SUBAGENT_PROTECTED_INSTALL_PATHS.map((t: { rel?: string; home?: string }) => t.rel ?? `~/${t.home}`))
-    .toEqual(['.env', ...STORE_FILES.map((f) => `store/${f}`), '~/.claude/settings.json', '~/.claude/settings.local.json', '.channels-config'])
+    .toEqual(['.env', ...STORE_FILES.map((f) => `store/${f}`), '~/.claude/settings.json', '~/.claude/settings.local.json', '.channels-config',
+      'agents/*/.mcp.json', 'agents/*/.claude-config/.claude.json', '.mcp.json', '~/.claude.json'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {

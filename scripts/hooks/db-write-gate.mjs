@@ -141,6 +141,23 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // plugin cache...) resolve into ~/.claude, and the real path is compared, so they are judged where they land, not
   // here. The whole directory, as a directory: one entry covers a file Claude Code adds there tomorrow.
   { rel: '.channels-config', dir: true },
+  // The MCP server lists (ENVRELAXMCPCFG1104, Samu 68033/68034): a stdio server written into one of them runs as a
+  // command at the agent's next start, outside every PreToolUse gate, and the dashboard's reconcile only ever ADDS
+  // servers, so the entry would stay. A sub-agent writes none of them; the main agent and the dashboard do (fleet MCP
+  // setup), so this is the sub-agent list:
+  //   agents/*/.mcp.json                   -- an agent's project-scope servers (its own and another's)
+  //   agents/*/.claude-config/.claude.json -- an agent's isolated user-scope servers (mcpServers, projects[].mcpServers)
+  //   .mcp.json                            -- the install's project-scope servers (tracked: a worktree's own copy is
+  //                                           another root and stays free)
+  //   .channels-config/.claude.json        -- the main agent's isolated user config (MAIN_AGENT_ISOLATED_CONFIG):
+  //                                           covered by the .channels-config directory entry above (#2503)
+  //   ~/.claude.json                       -- the shared user config: the reconcile copies servers FROM it
+  // Claude Code's own writes of .claude.json (its state, on every session) are not tool calls: this gate never sees
+  // them. Its backups/ copies are not listed (stated limit).
+  { rel: 'agents/*/.mcp.json', pattern: true },
+  { rel: 'agents/*/.claude-config/.claude.json', pattern: true },
+  { rel: '.mcp.json' },
+  { home: '.claude.json' },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -166,11 +183,13 @@ function callerSettingsEntries(projectDir, configDir) {
   const out = []
   if (projectDir) {
     const dir = resolve(String(projectDir))
-    for (const rel of ['.claude/settings.json', '.claude/settings.local.json']) out.push({ rel, abs: resolve(dir, rel), caller: true })
+    // ...and its project-scope MCP servers (ENVRELAXMCPCFG1104)
+    for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) out.push({ rel, abs: resolve(dir, rel), caller: true })
   }
   if (configDir) {
     const dir = resolve(String(configDir))
-    for (const f of ['settings.json', 'settings.local.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
+    // ...and its user-scope MCP servers in the config dir's .claude.json (ENVRELAXMCPCFG1104)
+    for (const f of ['settings.json', 'settings.local.json', '.claude.json']) out.push({ rel: `${basename(dir)}/${f}`, abs: join(dir, f), caller: true })
   }
   return out
 }
@@ -855,8 +874,10 @@ export const SUBAGENT_FILE_GATE_MSG =
   '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
   'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
   'store/.fleet-memgate-observe fajlt, sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
-  '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, plugins/*.json): ' +
-  'letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
+  '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, .claude.json, plugins/*.json), ' +
+  'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
+  'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
+  'a telepites .mcp.json fajljat es a ~/.claude.json-t: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
 
