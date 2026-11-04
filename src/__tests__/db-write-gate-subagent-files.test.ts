@@ -50,7 +50,12 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
       '~/.claude/plugins', 'plugins', '~/marveen-local-plugins', '~/.claude/agents', '~/.claude/skills', '~/.claude/hooks',
       'agents/*/.claude-config/plugins/installed_plugins.json', 'agents/*/.claude-config/plugins/known_marketplaces.json',
       // WORKERCFGDIR1104: the two workers' start-up files (the config dirs contain #2505's plugins entries)
-      ...['.marveen-worker', '.marveen-worker-fast'].flatMap((w) => ['.claude-config', '.claude', '.mcp.json', 'CLAUDE.md', 'CLAUDE.local.md'].map((f) => `~/${w}/${f}`))])
+      ...['.marveen-worker', '.marveen-worker-fast'].flatMap((w) => ['.claude-config', '.claude', '.mcp.json', 'CLAUDE.md', 'CLAUDE.local.md'].map((f) => `~/${w}/${f}`)),
+      // CHANSTATEWRITE1104: the channel trust files and dirs under the three state roots
+      ...['~/.claude/channels', '.claude/channels', 'agents/*/.claude/channels'].flatMap((b) => [
+        'access.json', '.env', 'invites.json', 'inbound-evidence.jsonl', 'inbound-evidence.jsonl.1', 'inbox-pending.jsonl',
+        'inbox-draining-*.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json', 'bot.pid', 'coordinator.pid',
+        'progress', 'approved'].map((f) => `${b}/*/${f}`))])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
