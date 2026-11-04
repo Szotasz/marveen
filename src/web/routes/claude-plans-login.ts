@@ -156,10 +156,9 @@ export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<bool
   // OWNERGATE4-1104: the first Claude login of a fresh install runs before any dashboard login (FIRST_RUN_PATHS).
   // OWNERGATE4-1104 (review, Samu 69637 and 69693): the first-run pass only while the install has no plan at all yet
   // (noPlanExistsYet): the first plan's login. Once any plan exists, every further plan login is the owner gate (or
-  // the paired Bridge key). The start body is read here, before the gate; the start branch below reuses it.
-  let startBody: Record<string, unknown> | null = null
+  // the paired Bridge key). The condition needs no request field, so the start body is read after the gate, like
+  // every other owner route (review, Dani 69718).
   const isStart = path === '/api/claude-plans/login/start' && method === 'POST'
-  if (isStart) startBody = await readJson(ctx)
   const firstLogin = noPlanExistsYet()
   if (!(firstLogin ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'claude-plans-login') : mayActAsOwner(ctx.auth, req)) && !isPairedBridgeKey(ctx.auth)) {
     refuseOwner(res, OWNER_SESSION_REQUIRED.error)
@@ -177,7 +176,7 @@ export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<bool
   }
 
   if (isStart) {
-    const body = startBody
+    const body = await readJson(ctx)
     if (!body) { json(res, { error: 'Invalid JSON' }, 400); return true }
     if (active?.login.isActive()) {
       json(res, { error: 'Another login is already in progress. Cancel it first.', code: 'busy' }, 409)

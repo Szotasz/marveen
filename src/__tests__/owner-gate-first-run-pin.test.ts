@@ -89,6 +89,16 @@ describe('OWNERGATE4-1104: the first-run callers are pinned', () => {
     expect(stray).toEqual([])
   })
 
+  // Review (Dani 69718, LOW): noPlanExistsYet reads the vault from its own copy of the path (vault.ts keeps VAULT_PATH
+  // unexported, and tests stub vault.js). If the two drifted, the plan-login check would read a missing file as "no
+  // plan" and OPEN the first-run path (fail-open). So the two definitions are pinned to the same expression.
+  it('the plan-login first-run check reads the vault from the same path vault.ts writes', () => {
+    const vaultDef = /const VAULT_PATH = (join\(PROJECT_ROOT, 'store', 'vault\.json'\))/.exec(readFileSync(join(SRC, 'web', 'vault.ts'), 'utf-8'))
+    const loginDef = /const VAULT_FILE = (join\(PROJECT_ROOT, 'store', 'vault\.json'\))/.exec(readFileSync(join(SRC, 'web', 'routes', 'claude-plans-login.ts'), 'utf-8'))
+    expect(vaultDef?.[1]).toBeDefined()
+    expect(loginDef?.[1]).toBe(vaultDef?.[1])
+  })
+
   it('the set of reasons used equals FIRST_RUN_PATHS (no unused entry, no reason off the list)', () => {
     const used = new Set(Object.values(firstRunCalls()).flat())
     expect([...used].sort()).toEqual([...FIRST_RUN_PATHS].sort())
