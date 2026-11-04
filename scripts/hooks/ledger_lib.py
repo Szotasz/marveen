@@ -51,6 +51,16 @@ _MIGRATION_COLUMNS = (
     # reply tool name is derivable without a per-provider table. NULL for every
     # row written before this column existed -- consumers must fall back.
     ("source", "TEXT"),
+    # LEDGERROLELABEL1104 (b): who sent an inbound row and in what role. The replay
+    # used to hand every inbound row back as the owner's words; it now labels by
+    # sender_role ('owner' | 'paired'). sender_id is the envelope's own sender
+    # attribute (user_id; aad_object_id for Teams; NULL for Gromzo, which carries
+    # none), sender_name its display name (cleaned). NULL in all three for every
+    # row written before these columns existed -- consumers must treat that as
+    # "sender unknown", never as the owner.
+    ("sender_id", "TEXT"),
+    ("sender_name", "TEXT"),
+    ("sender_role", "TEXT"),
 )
 
 RECENT_LIMIT = 20

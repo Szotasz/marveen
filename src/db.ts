@@ -472,9 +472,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
   // keep their attachment identity so a respawned session can still download
   // and transcribe them; reply_to_message_id lets an inbound quote be
-  // retraced after the fact (df3b48a7) (mirrors _MIGRATION_COLUMNS in
-  // scripts/hooks/ledger_lib.py).
-  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id']) {
+  // retraced after the fact (df3b48a7); source names the channel (PROVIDERVAK908,
+  // it was missing here, so a DB only this path created had no source column);
+  // sender_id / sender_name / sender_role say who sent an inbound and in what
+  // role (LEDGERROLELABEL1104). Mirrors _MIGRATION_COLUMNS in
+  // scripts/hooks/ledger_lib.py, locked by conversation-ledger-schema.test.ts.
+  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role']) {
     const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
     if (!cols.some(c => c.name === col)) {
       db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)
