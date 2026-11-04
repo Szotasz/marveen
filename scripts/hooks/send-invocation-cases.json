@@ -1888,6 +1888,56 @@
       "name": "MAILGATEAPIB1027 a grep for mail stays no send",
       "cmd": "grep -rn 'mail -s' scripts/",
       "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -P takes a value (macOS/BSD search path)",
+      "cmd": "env -P /usr/local/bin python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -P before sendmail",
+      "cmd": "env -P /opt/homebrew/bin sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -S splits its value into the command",
+      "cmd": "env -S \"python3 send.py --to a@example.com\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -S joined value",
+      "cmd": "env -S'sendmail a@b.hu'",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --split-string=",
+      "cmd": "env --split-string=\"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env --split-string value",
+      "cmd": "env --split-string \"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -iS cluster",
+      "cmd": "env -iS \"sendmail a@b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: env -S value with the words after it appended",
+      "cmd": "env -S \"python3 send.py\" --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, env -P before a non-sender",
+      "cmd": "env -P /usr/local/bin ls -la",
+      "expected": false
+    },
+    {
+      "name": "ENVOPTHEAD1104: control, env -S with a non-sender",
+      "cmd": "env -S \"echo hi\"",
+      "expected": false
     }
   ]
 }

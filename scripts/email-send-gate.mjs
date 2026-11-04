@@ -445,7 +445,8 @@ const WRAPPERS = new Map([
   ['time', ['fo', ['format', 'output'], 0]],
   ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
     'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
-  ['env', ['uCS', ['unset', 'chdir', 'split-string'], 0]],
+  // ENVOPTHEAD1104: -P (macOS/BSD env: another search path) takes a value; -S / --split-string: envSplitHeads
+  ['env', ['uCSP', ['unset', 'chdir', 'split-string'], 0]],
   ['nohup', ['', [], 0]],
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
@@ -526,6 +527,16 @@ function launcherHeads(toks, spec, d) {
   return heads.flatMap((h) => commandHeads(h, d + 1))
 }
 
+// ENVOPTHEAD1104: `env -S STRING` splits STRING into words and runs them (the words after it appended), so the
+// real command is inside the value; see the python twin. A value that does not split counts as a send (null).
+function envSplitHeads(value, rest, d) {
+  let segs
+  try { segs = segmentsTokens(value) } catch { return [null] }
+  if (!segs || !segs.length) segs = [[]]
+  segs[segs.length - 1] = [...segs[segs.length - 1], ...rest]
+  return segs.flatMap((s) => commandHeads(s, d + 1))
+}
+
 function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
@@ -546,6 +557,10 @@ function commandHeads(toksIn, d = 0) {
     const t = toks[i]
     if (t === '--') { i++; break }
     if (t.startsWith('--')) {
+      if (w === 'env' && (t === '--split-string' || t.startsWith('--split-string='))) {
+        const eq = t.indexOf('=')
+        return eq >= 0 ? envSplitHeads(t.slice(eq + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+      }
       if (!t.includes('=') && longVal.includes(t.slice(2))) { i += 2; continue }
       if (!t.includes('=')) starts.push(i + 2)
       i++
@@ -555,6 +570,9 @@ function commandHeads(toksIn, d = 0) {
       if (w === 'command' && (t.includes('v') || t.includes('V'))) return []
       let k = -1
       for (let j = 1; j < t.length; j++) if (shortVal.includes(t[j])) { k = j; break }
+      if (w === 'env' && k > 0 && t[k] === 'S') {
+        return k < t.length - 1 ? envSplitHeads(t.slice(k + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+      }
       i += k === t.length - 1 ? 2 : 1
       continue
     }
@@ -1008,12 +1026,23 @@ function addressFlagGiven(rest) {
   return false
 }
 
+// ENVOPTHEAD1104: the program an `env` #! line runs; -u, -C and -P take a value, NAME=VALUE is skipped.
+function shebangEnvProgram(words) {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    if (['-u', '-C', '-P', '--unset', '--chdir'].includes(w)) { i++; continue }
+    if (!w || w.startsWith('-') || w.includes('=')) continue
+    return w
+  }
+  return ''
+}
+
 // 'py' | 'node' | null from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`).
 function shebangKind(text) {
   const m = /^#!\s*(\S+)([^\n]*)/.exec(text ?? '')
   if (!m) return null
   let prog = basename(m[1])
-  if (prog === 'env') prog = basename(m[2].trim().split(/\s+/).find((w) => w && !w.startsWith('-') && !w.includes('=')) ?? '')
+  if (prog === 'env') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
   if (PYTHON.test(prog)) return 'py'
   if (NODEISH.test(prog) && prog !== 'npx') return 'node'
   return null

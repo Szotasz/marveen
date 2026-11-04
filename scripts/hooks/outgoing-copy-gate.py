@@ -509,7 +509,9 @@ _WRAPPERS = {
     "time": ("fo", ("format", "output"), 0),
     "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
                              "role", "type", "chdir", "chroot", "command-timeout"), 0),
-    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    # ENVOPTHEAD1104: -P (macOS/BSD env: another search path) takes a value too; without it the value read as the
+    # program, so `env -P /x python3 send.py --to a@x` was no send. -S / --split-string: _env_split_heads.
+    "env": ("uCSP", ("unset", "chdir", "split-string"), 0),
     "nohup": ("", (), 0),
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
@@ -654,6 +656,9 @@ def _command_heads(toks, _d: int = 0):
             i += 1
             break
         if t.startswith("--"):
+            if w == "env" and (t == "--split-string" or t.startswith("--split-string=")):
+                value, after = (t.split("=", 1)[1], i + 1) if "=" in t else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                return _env_split_heads(value, toks[after:], _d)
             if "=" not in t and t[2:] in long_val:
                 i += 2
                 continue
@@ -665,6 +670,9 @@ def _command_heads(toks, _d: int = 0):
             if w == "command" and ("v" in t or "V" in t):
                 return []
             k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+            if w == "env" and k > 0 and t[k] == "S":
+                value, after = (t[k + 1:], i + 1) if k < len(t) - 1 else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                return _env_split_heads(value, toks[after:], _d)
             i += 2 if k == len(t) - 1 else 1
             continue
         break
@@ -672,6 +680,23 @@ def _command_heads(toks, _d: int = 0):
     heads = []
     for s in starts:
         heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
+def _env_split_heads(value, rest, _d):
+    """ENVOPTHEAD1104: `env -S STRING` splits STRING into words and runs them (the words after it appended), so the
+    real command is inside the value. It was skipped as an option value, and `env -S "python3 send.py --to a@x"`
+    was no send. The value is split by this module's own tokenizer; one that does not split counts as a send."""
+    try:
+        segs = _segments_tokens(value)
+    except ValueError:
+        return [None]
+    if not segs:
+        segs = [[]]
+    segs[-1] = list(segs[-1]) + list(rest)
+    heads = []
+    for s in segs:
+        heads += _command_heads(s, _d + 1)
     return heads
 
 
@@ -1236,6 +1261,22 @@ def _address_flag_given(rest) -> bool:
     return False
 
 
+def _shebang_env_program(words):
+    """The program an `env` #! line runs. ENVOPTHEAD1104: -u, -C and -P take a value (`#!/usr/bin/env -P /x python3`
+    named /x before); -S only splits the rest, which is already split here; NAME=VALUE is skipped."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in ("-u", "-C", "-P", "--unset", "--chdir"):
+            i += 2
+            continue
+        if w.startswith("-") or "=" in w:
+            i += 1
+            continue
+        return w
+    return ""
+
+
 def _shebang_kind(text):
     """'py' | 'node' | None from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`)."""
     m = re.match(r"#!\s*(\S+)([^\n]*)", text or "")
@@ -1243,7 +1284,7 @@ def _shebang_kind(text):
         return None
     prog = _basename(m.group(1))
     if prog == "env":
-        prog = _basename(next((w for w in m.group(2).split() if not w.startswith("-") and "=" not in w), ""))
+        prog = _basename(_shebang_env_program(m.group(2).split()))
     if _PYTHON.match(prog):
         return "py"
     if _NODEISH.match(prog) and prog != "npx":
