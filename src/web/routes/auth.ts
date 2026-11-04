@@ -478,9 +478,13 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    // A device caller (the Bridge) passes the owner gate too (Dani 65912 (2)): the same check as the kind gate, but it
-    // writes the audit line naming the session's user. The token and session lanes keep their kind gate only.
-    if (auth?.kind === 'device' && !mayActAsOwner(auth, req)) {
+    // Every lane passes the owner gate (DEVKEYREVOKETOKEN1104). Revoking a key can lock the owner out of their own
+    // Bridge (and drops its SSH line), so the shared access token alone is not enough once a dashboard login exists:
+    // every sub-agent can read that token. The browser login (session), the token with the owner's session cookie
+    // beside it, and the Bridge's full key with that cookie pass; before the first login the token still does (the
+    // first-run branch in mayIssueCredentials). On the device lane it also writes the audit line naming the owner
+    // (Dani 65912 (2)).
+    if (!mayActAsOwner(auth, req)) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }

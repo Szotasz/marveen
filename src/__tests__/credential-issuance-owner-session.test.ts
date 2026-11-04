@@ -99,10 +99,16 @@ describe('once a login exists, the token cannot issue or manage access', () => {
     expect((await pair(SESSION_AUTH)).status).toBe(400)
   })
 
-  it('listing and revoking keys stay open to the token: they grant nothing', async () => {
+  // DEVKEYREVOKETOKEN1104: revoking grants nothing, but it takes away: a revoked Bridge key locks the owner out of their
+  // own Bridge, and every sub-agent can read the shared token. Listing stays open (a read, no secret in it).
+  it('listing keys stays open to the token; revoking one needs the owner', async () => {
     const k = createDeviceKey('existing')
     expect((await call(tryHandleAuth, 'GET', '/api/auth/device-keys', TOKEN_AUTH)).status).toBe(200)
-    expect((await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${k.id}`, TOKEN_AUTH)).status).toBe(200)
+    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${k.id}`, TOKEN_AUTH)
+    expect(r.status).toBe(403)
+    expect(r.json().code).toBe('owner_session_required')
+    expect(listDeviceKeys()).toHaveLength(1)
+    expect((await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${k.id}`, SESSION_AUTH)).status).toBe(200)
     expect(listDeviceKeys()).toHaveLength(0)
   })
 

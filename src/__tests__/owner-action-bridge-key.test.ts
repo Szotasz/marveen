@@ -3,7 +3,7 @@
 // Credential issuance stays on mayIssueCredentials (its own PR). Real resolveAuth, real sessions, real device keys.
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -158,7 +158,7 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
     }
   })
   it('credential issuance takes it too (PR-2); mayIssueCredentials is left only inside mayActAsOwner', () => {
-    // auth.ts: users list/create/delete and key mint, plus the Bridge's second gate on key revoke (Dani 65912)
+    // auth.ts: users list/create/delete, key mint, and key revoke on every lane (DEVKEYREVOKETOKEN1104)
     for (const [f, n] of [['auth.ts', 5], ['security.ts', 1], ['operator-access.ts', 1], ['onboarding.ts', 1], ['claude-plans-login.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, f === 'auth.ts' ? 1 : 0])
     }
@@ -253,28 +253,71 @@ describe('on the real routes', () => {
     }
   })
 
-  // The other lane of the same audit line: a token or session caller passes the kind gate, and the actor is its auth kind
-  // (src/web/routes/auth.ts, the security.bridge_revoke line). R3b pins the device lane only.
-  it('R3c: revoking a paired key on the token or the session lane: the audit actor is the auth kind', async () => {
+  // DEVKEYREVOKETOKEN1104: the shared access token alone (every sub-agent can read it) revokes nothing once a dashboard
+  // login exists, so it cannot lock the owner out of the Bridge. The paired key's SSH line is a real authorized_keys
+  // line here, so "nothing revoked" is measured on both halves.
+  it('R3c: revoking a paired key with the bare shared token is refused (key and SSH line stay); listing stays token-only', async () => {
     const prevSsh = process.env.MARVEEN_SSH_DIR
-    process.env.MARVEEN_SSH_DIR = mkdtempSync(join(tmpdir(), 'owner-action-ssh-'))
+    const sshDir = mkdtempSync(join(tmpdir(), 'owner-action-ssh-'))
+    process.env.MARVEEN_SSH_DIR = sshDir
+    try {
+      const target = createDeviceKey('Paired-bare', { installId: 'install-r3c-bare' })
+      const authKeys = join(sshDir, 'authorized_keys')
+      const before = 'ssh-ed25519 AAAAkeep other@host\nrestrict ssh-ed25519 AAAAdrop marveen-remote:install-r3c-bare\n'
+      writeFileSync(authKeys, before, { mode: 0o600 })
+      const bare = { authorization: `Bearer ${TOKEN}` }
+      expect(refusedByOwnerGate(await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, bare))).toBe(true)
+      expect(getDeviceKey(target.id)).not.toBeNull()
+      expect(readFileSync(authKeys, 'utf-8')).toBe(before)
+      expect(getRecentConfigChanges(50).some((c) => c.key === 'security.bridge_revoke' && String(c.new_value).includes('(install-r3c-bare)'))).toBe(false)
+      // A key that does not exist is 403 too, not 404: the bare token learns nothing about which ids are live.
+      expect(refusedByOwnerGate(await hit(tryHandleAuth, 'DELETE', '/api/auth/device-keys/999999', bare))).toBe(true)
+      // Control: the list stays readable with the token (Samu 69185, 3.).
+      expect((await hit(tryHandleAuth, 'GET', '/api/auth/device-keys', bare)).status).toBe(200)
+    } finally {
+      if (prevSsh === undefined) delete process.env.MARVEEN_SSH_DIR
+      else process.env.MARVEEN_SSH_DIR = prevSsh
+    }
+  })
+
+  // The owner's lanes: the browser login, and the token with the owner's session cookie beside it (a logged-in browser
+  // that also keeps the token sends both). The audit actor is the auth kind (the security.bridge_revoke line); R3b pins
+  // the device lane.
+  it('R3d: revoking a paired key on the session lane or token + owner cookie: revoked, SSH line removed, actor is the auth kind', async () => {
+    const prevSsh = process.env.MARVEEN_SSH_DIR
+    const sshDir = mkdtempSync(join(tmpdir(), 'owner-action-ssh-'))
+    process.env.MARVEEN_SSH_DIR = sshDir
     try {
       const lanes: Array<[string, Record<string, string>]> = [
-        ['token', { authorization: `Bearer ${TOKEN}` }],
+        ['token', { authorization: `Bearer ${TOKEN}`, cookie: cookieHeader() }],
         ['session', { cookie: cookieHeader() }],
       ]
       for (const [kind, headers] of lanes) {
-        const target = createDeviceKey(`Paired-${kind}`, { installId: `install-r3c-${kind}` })
+        const installId = `install-r3d-${kind}`
+        const target = createDeviceKey(`Paired-${kind}`, { installId })
+        const authKeys = join(sshDir, 'authorized_keys')
+        writeFileSync(authKeys, `ssh-ed25519 AAAAkeep other@host\nrestrict ssh-ed25519 AAAAdrop marveen-remote:${installId}\n`, { mode: 0o600 })
         const r = await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, headers)
         expect(r.status).toBe(200)
         expect(getDeviceKey(target.id)).toBeNull()
-        const row = getRecentConfigChanges(20).find((c) => c.key === 'security.bridge_revoke' && String(c.new_value).includes(`(install-r3c-${kind})`))
+        expect(readFileSync(authKeys, 'utf-8')).toBe('ssh-ed25519 AAAAkeep other@host\n')
+        const row = getRecentConfigChanges(20).find((c) => c.key === 'security.bridge_revoke' && String(c.new_value).includes(`(${installId})`))
         expect(row?.actor).toBe(kind)
       }
     } finally {
       if (prevSsh === undefined) delete process.env.MARVEEN_SSH_DIR
       else process.env.MARVEEN_SSH_DIR = prevSsh
     }
+  })
+
+  // Before the first login the shared token is the one credential there is (the first-run branch of
+  // mayIssueCredentials): it still revokes. Pinned so the gate does not lock a fresh install out of its own keys.
+  it('R3e: before the first dashboard login the bare token still revokes', async () => {
+    getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
+    _clearSessionCacheForTest()
+    const target = createDeviceKey('Unpaired')
+    expect((await hit(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${target.id}`, { authorization: `Bearer ${TOKEN}` })).status).toBe(200)
+    expect(getDeviceKey(target.id)).toBeNull()
   })
 
   it('R4: dashboard users: key + cookie adds and removes one; a logged-out cookie does not', async () => {
