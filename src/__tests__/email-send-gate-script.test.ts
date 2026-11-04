@@ -77,6 +77,8 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
     const cwd = workdir({
       'prober.py': TELETHON_SCRIPT,
       'kreta_heti.py': 'print("weekly page")\n',
+      // JSCDSEND1104: a missing script is a send now (as in the python twin), so this control names a real file
+      'ncore.py': 'print("search")\n',
       'plain.mjs': 'console.log(1)\n',
       'notes.txt': 'smtplib is mentioned here, but this is no script',
     })
@@ -85,7 +87,6 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
       // a Telegram chat id after --to is no address
       'python3 kreta_heti.py --to 8224042443',
       'python3 ncore.py search "x" --top 40 --json',
-      'python3 missing.py',
       'node plain.mjs',
       'cat notes.txt',
       'grep -rn smtplib scripts/',
@@ -103,7 +104,7 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
   })
 
   it('the hook entrypoint resolves the script against the payload cwd', () => {
-    const cwd = workdir({ 'helden_send.py': SMTP_SCRIPT })
+    const cwd = workdir({ 'helden_send.py': SMTP_SCRIPT, 'other.py': 'print(1)\n' })
     const hook = join(__dirname, '..', '..', 'scripts', 'email-send-gate.mjs')
     const run = (command: string) => spawnSync(process.execPath, [hook], {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }),
@@ -155,7 +156,7 @@ describe('sender scripts, review round 1 (SCRIPTSENDGATE1020)', () => {
   })
 
   it('judges the string of a shell -c the same way', () => {
-    const cwd = workdir({ 'smtp_send.py': SMTP_SCRIPT })
+    const cwd = workdir({ 'smtp_send.py': SMTP_SCRIPT, 'other.py': 'print(1)\n' })
     for (const cmd of [
       'sh -c "python3 smtp_send.py"',
       "bash -lc 'timeout 30 python3 smtp_send.py'",
@@ -406,6 +407,28 @@ describe('env value options in front of the sender (ENVOPTHEAD1104)', () => {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }
     expect(scriptRunSends('./harmless', cwd)).toBe(false)
+  })
+})
+
+describe('a cd before the run, and a missing script (JSCDSEND1104, Bence 69475)', () => {
+  it('the script is resolved under every literal cd target too; an undecidable cd or a missing script is a send', () => {
+    const SMTP = 'import smtplib\nsmtplib.SMTP("h")\n'
+    const cwd = workdir({ 'send.py': 'print(1)\n' })
+    mkdirSync(join(cwd, 'evil'))
+    writeFileSync(join(cwd, 'evil', 'send.py'), SMTP)
+    mkdirSync(join(cwd, 'evil', 'pkg'))
+    writeFileSync(join(cwd, 'evil', 'pkg', '__init__.py'), '')
+    writeFileSync(join(cwd, 'evil', 'pkg', 'main.py'), SMTP)
+    for (const cmd of [`cd ${cwd}/evil && python3 send.py`, 'cd evil && python3 send.py', 'cd evil; python3 send.py',
+      'cd -- evil && python3 send.py', 'cd -P evil && python3 send.py', 'cd $DEST && python3 send.py',
+      'cd evil && python3 -m pkg.main', 'cd $DEST && python3 -m pkg.main', 'cd evil && ./send.py',
+      'python3 missing.py', 'python3 $S', 'node missing.mjs']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+    // controls: the cwd's own harmless script, a cd into a dir without a sender, a non-script run
+    for (const cmd of ['python3 send.py', `cd ${cwd} && python3 send.py`, 'cd evil && ls', 'bun test', 'node --version']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+    }
   })
 })
 

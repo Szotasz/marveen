@@ -799,10 +799,12 @@ and the main agent's `email_send` approval gate keeps its current reach.
   - an import after the first 1 MiB of the file.
 - **Reach:**
   - helpers past the first level;
-  - a script started after `cd dir &&`, which is resolved against the session
-    cwd, not `dir`;
-  - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+- **Closed since (JSCDSEND1104):** a script started after `cd dir &&` (or
+  `env -C dir`) is resolved under `dir` too, and an undecidable `cd` is a send;
+  a missing script is a send, as in the main agent's approval gate. Both gates'
+  script-run judgement now runs on one shared table
+  (`scripts/hooks/script-run-cases.json`).
 
 # Autonomy levels: a raise takes the owner
 

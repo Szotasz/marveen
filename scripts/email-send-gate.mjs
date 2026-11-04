@@ -1037,12 +1037,54 @@ function readScriptHead(path, limit = SCRIPT_READ_LIMIT) {
   }
 }
 
-function resolveScriptPath(script, cwd) {
-  if (!script || UNDECIDABLE_PATH.test(script)) return null
+// JSCDSEND1104 (Bence 69475, Samu 69478): the python twin's cd handling (outgoing-copy-gate.py _cd_bases,
+// MAILGATESCRIPT1027 R1/R2), ported. This twin resolved a relative script under the cwd only, so
+// `cd <dir> && python3 send.py` read the cwd's file and a sender in <dir> was no send. The directories a relative
+// script may be under: the cwd, and every literal `cd DIR` target of the command (cumulative over chained cds, and
+// DIR alone under the cwd). undecidable: some `cd` names a directory that cannot be known here.
+const CD_OPTIONS = new Set(['-P', '-L', '-e', '-@'])
+
+function cdBases(cwd, cmdWords) {
+  const cwdAbs = typeof cwd === 'string' && isAbsolute(cwd)
+  let cur = cwdAbs ? cwd : null
+  const bases = cwdAbs ? [cwd] : []
+  let undecidable = false
+  let i = 0
+  while (i < cmdWords.length) {
+    if (cmdWords[i] !== 'cd') { i++; continue }
+    i++
+    while (i < cmdWords.length && CD_OPTIONS.has(cmdWords[i])) i++
+    if (i < cmdWords.length && cmdWords[i] === '--') i++ // `--` ends the options: the next word is DIR
+    const d = i < cmdWords.length ? cmdWords[i] : null
+    const tilde = d !== null && (d === '~' || d.startsWith('~/'))
+    if (!d || d === '-' || (d.startsWith('~') && !tilde) || UNDECIDABLE_PATH.test(d)) { undecidable = true; cur = null; continue }
+    let next
+    if (tilde) next = join(homedir(), d.slice(1))
+    else if (isAbsolute(d)) next = d
+    else if (cur !== null) next = join(cur, d)
+    else { undecidable = true; cur = null; continue }
+    bases.push(next)
+    if (!tilde && !isAbsolute(d) && cwdAbs) bases.push(join(cwd, d))
+    cur = next
+  }
+  return { bases: [...new Set(bases.map((b) => resolve(b)))], undecidable }
+}
+
+// A relative script-shaped operand and a cd that cannot be resolved: what runs cannot be known (a send).
+function relativeUnderUndecidableCd(script, cwd, cmdWords) {
+  if (!script || isAbsolute(script) || script === '~' || script.startsWith('~/')) return false
+  if (!(SCRIPT_FILE.test(script) || script.includes('/'))) return false
+  return cdBases(cwd, cmdWords).undecidable
+}
+
+// Every absolute path the script operand can name: itself when absolute, `~` expanded, a relative one under the
+// cwd and under every literal `cd DIR` target of the command. May be empty.
+function resolveScriptPaths(script, cwd, cmdWords) {
+  if (!script || UNDECIDABLE_PATH.test(script)) return []
   let p = script
   if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1))
-  if (isAbsolute(p)) return p
-  return cwd ? resolve(cwd, p) : null
+  if (isAbsolute(p)) return [p]
+  return [...new Set(cdBases(cwd, cmdWords).bases.map((b) => resolve(b, p)))]
 }
 
 // node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
@@ -1168,7 +1210,8 @@ function fileSends(path, text, kind, readScript) {
 // python runs a directory's __main__.py, and a zip app's __main__.py from inside the archive
 // (MAILGATEDIRZIP1027). The archive is not unpacked here, so a zip run by python is a send.
 const ZIP_MAGIC = 'PK\u0003\u0004'
-function scriptFileSends(path, kind, readScript) {
+// JSCDSEND1104: { readable, sends } like the python twin's _judge_candidates for one path.
+function judgeScript(path, kind, readScript) {
   let p = path
   let text = readScript(p)
   if (text === null && kind === 'py') {
@@ -1180,16 +1223,32 @@ function scriptFileSends(path, kind, readScript) {
     const pkg = readScript(join(path, 'package.json'))
     let main = null
     if (pkg !== null) {
-      try { main = JSON.parse(pkg)?.main ?? null } catch { return true }
+      try { main = JSON.parse(pkg)?.main ?? null } catch { return { readable: true, sends: true } }
     }
     const declared = typeof main === 'string' && main !== ''
     p = declared ? resolve(path, main) : join(path, 'index.js')
     text = readScript(p)
-    if (text === null && declared) return true
+    if (text === null && declared) return { readable: true, sends: true }
   }
-  if (text === null) return false
-  if (kind === 'py' && text.includes(ZIP_MAGIC)) return true
-  return fileSends(p, text, kind, readScript)
+  if (text === null) return { readable: false, sends: false }
+  if (kind === 'py' && text.includes(ZIP_MAGIC)) return { readable: true, sends: true }
+  return { readable: true, sends: fileSends(p, text, kind, readScript) }
+}
+
+function scriptFileSends(path, kind, readScript) {
+  return judgeScript(path, kind, readScript).sends
+}
+
+// Any readable candidate that sends is a send; the candidates are where the script may be (the cwd, each cd target).
+function judgeCandidates(paths, kind, readScript) {
+  let readable = false
+  for (const path of paths) {
+    const r = judgeScript(path, kind, readScript)
+    if (!r.readable) continue
+    readable = true
+    if (r.sends) return { readable: true, sends: true }
+  }
+  return { readable, sends: false }
 }
 
 // MAILGATEDIRZIP1027: MOD of `-m MOD` / `-mMOD` among the interpreter options, else null (the Python twin's
@@ -1209,20 +1268,23 @@ function pythonModule(rest) {
   }
   return null
 }
-function pythonModuleSends(module, cwd, readScript) {
-  if (!/^[\w.]+$/.test(module) || !cwd) return false
+function pythonModuleSends(module, cwd, readScript, cmdWords = []) {
+  if (!/^[\w.]+$/.test(module)) return false
   const rel = module.split('.').join('/')
-  return [rel + '.py', join(rel, '__main__.py')].some((c) => scriptFileSends(resolve(cwd, c), 'py', readScript))
+  const { bases, undecidable } = cdBases(cwd, cmdWords)
+  if (undecidable) return true // JSCDSEND1104: a cd that cannot be resolved: fail-closed, as the python twin
+  const paths = bases.flatMap((b) => [resolve(b, rel + '.py'), resolve(b, rel, '__main__.py')])
+  return judgeCandidates(paths, 'py', readScript).sends
 }
 
-function headRunsSenderScript(toks, cwd, readScript, depth) {
+function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (!toks || !toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (WRAPPER_SHELL.test(prog)) {
     if (depth >= SHELL_C_DEPTH) return false
     for (let i = 0; i < rest.length - 1; i++) {
-      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1)) return true
+      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1, cmdWords)) return true
     }
     return false
   }
@@ -1231,7 +1293,7 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
-    if (module) return pythonModuleSends(module, cwd, readScript)
+    if (module) return pythonModuleSends(module, cwd, readScript, cmdWords)
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {
@@ -1241,45 +1303,47 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
     if (addressFlagGiven(rest)) return true
     kind = 'node'
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
-    // a directly executed file: its #! line picks the interpreter, else its extension
-    const path = resolveScriptPath(toks[0], cwd)
-    if (!path) return false
-    kind = shebangKind(readScript(path, SHEBANG_READ_LIMIT)) ??
-      (/\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null)
-    if (!kind) return false
-    if (addressFlagGiven(rest)) return true
-    return scriptFileSends(path, kind, readScript)
+    // a directly executed file: its #! line picks the interpreter, else its extension; every candidate on its own
+    const extKind = /\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null
+    if (relativeUnderUndecidableCd(toks[0], cwd, cmdWords)) return true
+    const addr = addressFlagGiven(rest)
+    let readable = false
+    for (const path of resolveScriptPaths(toks[0], cwd, cmdWords)) {
+      const head = readScript(path, SHEBANG_READ_LIMIT)
+      if (head === null) continue
+      const k = shebangKind(head) ?? extKind
+      if (!k) continue
+      if (addr) return true
+      readable = true
+      if (scriptFileSends(path, k, readScript)) return true
+    }
+    if (readable) return false
+    if (!extKind) return false // no candidate with a kind is readable: a #! line cannot be known, the extension gives none
+    return true // the kind is known and no candidate is readable: fail-closed (JSCDSEND1104, as the python twin)
   } else {
     return false
   }
   if (script === null) return false
-  const path = resolveScriptPath(script, cwd)
-  if (!path) return false
-  return scriptFileSends(path, kind, readScript)
+  if (UNDECIDABLE_PATH.test(script)) return true // what runs is undecidable here: fail-closed
+  if (relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
+  const { readable, sends } = judgeCandidates(resolveScriptPaths(script, cwd, cmdWords), kind, readScript)
+  if (readable) return sends
+  return SCRIPT_FILE.test(script) || script.includes('/') // JSCDSEND1104: a missing script is a send; `bun test` is not
 }
 
-export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0) {
+export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
   let segments
   try {
     segments = segmentsTokens(cmd)
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
-  return segments.some((toks) => {
-    // ENVOPTHEAD1104 (Bence 69475): `env -C DIR` runs its command in DIR, so a relative script is read there too; a
-    // DIR that cannot be known (a variable, `-`, `~user`) makes an interpreter or script run behind it a send.
-    const dirs = envChdirDirs(toks)
-    const heads = commandHeads(toks)
-    // an undecidable DIR: an interpreter or script run behind it is a send (this twin does not call a missing script
-    // a send, so the directory cannot simply be read as one that does not exist)
-    if (dirs.some((d) => UNDECIDABLE_CHDIR.test(d))
-      && heads.some((h) => h && h.length && (PYTHON.test(basename(h[0])) || NODEISH.test(basename(h[0])) || h[0].includes('/')))) return true
-    const bases = [cwd, ...dirs.map((d) => (d === '~' || d.startsWith('~/') ? join(homedir(), d.slice(1)) : isAbsolute(d) ? d : join(cwd, d)))]
-    return heads.some((h) => bases.some((b) => headRunsSenderScript(h, b, readScript, depth)))
-  })
+  // JSCDSEND1104: every word of the command, so a `cd DIR` before the run is seen; ENVOPTHEAD1104 (Bence 69475):
+  // `env -C DIR` runs its command in DIR, handed on as a `cd DIR` word (an undecidable DIR then makes it a send).
+  const flat = [...cdWords, ...segments.flat()]
+  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d])]
+  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
 }
-
-const UNDECIDABLE_CHDIR = /^-$|^~[^/]|[*?[{$`]/
 
 // Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
 const ENV_LONG_OPTIONS = ['argv0', 'block-signal', 'chdir', 'debug', 'default-signal', 'ignore-environment', 'ignore-signal',
