@@ -273,6 +273,8 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
   it.each([
     "echo x # it's\ncp x *(D)\n# that's",
     "cat > f <<'EOF'\nit's\nEOF\ncp x *(D); echo \"'\"",
+    // balanced for a plain scan too: the apostrophes of two heredoc bodies pair across the cp
+    "cat > f <<'EOF'\nit's\nEOF\ncp x *(D)\ncat > g <<'EOF'\nthat's\nEOF",
     "echo $((1<<EOF)) 'a\ncp x *(D)\n' b",
     "echo $[1] 'a; cp x *(D); ' b",
     "echo 'x; cp x *(D)",
