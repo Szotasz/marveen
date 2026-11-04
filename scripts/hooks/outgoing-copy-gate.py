@@ -1839,6 +1839,13 @@ _GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log"
 _SYSTEM_MESSAGES = []
 
 
+class _HardFinding(str):
+    """A finding of audit() that warn mode never softens: the mixed-script
+    (homoglyph) word, and the fail-closed entry when that rule could not be
+    loaded. It travels in the same problems list as the copy findings, so every
+    caller keeps one list; _copy_findings tells the two kinds apart by type."""
+
+
 def _copy_gate_mode() -> str:
     try:
         import importlib.util
@@ -1865,9 +1872,10 @@ def _system_message(text: str) -> None:
 
 def _copy_findings(label: str, lines, footer: str, header: str = "") -> None:
     """Copy findings: deny (exit 2) in block mode; in warn mode log and report
-    them and RETURN, so the caller's remaining checks still run."""
+    them and RETURN, so the caller's remaining checks still run. A _HardFinding
+    among them denies in warn mode too."""
     body = "\n".join(f"  - {p}" for p in lines)
-    if _copy_gate_mode() == "warn":
+    if _copy_gate_mode() == "warn" and not any(isinstance(p, _HardFinding) for p in lines):
         _gate_log(f"WARN-MODE ({label}): {len(lines)} copy finding(s) let through")
         _system_message(f"KIMENO-SZOVEG KAPU ({label}, figyelo mod): a szoveg kiment, de ezeket talaltam:\n{body}")
         return
@@ -2561,20 +2569,20 @@ def audit(text: str):
     try:
         mixed = mixed_script_words(prose)
     except MixedScriptUnavailable as exc:
-        problems.append(
+        problems.append(_HardFinding(
             "A VEGYES-IRASRENDSZER SZABALY NEM TOLTHETO BE "
             f"(scripts/lib/mixed_script.py: {exc}). Ez NEM homoglifa-talalat: a "
             "szabaly meg sem futott, tehat a szovegrol semmit nem tudunk. "
             "Szandekosan fail-closed."
-        )
+        ))
         mixed = []
     if mixed:
         shown = "; ".join(f"{w!r} -- benne {name}" for w, _c, name in mixed[:5])
         more = f" (+{len(mixed) - 5} tovabbi)" if len(mixed) > 5 else ""
-        problems.append(
+        problems.append(_HardFinding(
             f"VEGYES IRASRENDSZERU SZO (homoglifa), {len(mixed)} db: {shown}{more}. "
             "Latin szoba keveredett nem-latin betu: olvasva lathatatlan, de a keresest/grepet neman eltori."
-        )
+        ))
     # EKEZETMASZK1018: the accent check runs on the text after the ADDITIONAL identifier mask (anchor, flag, /path);
     # the homoglyph and double-hyphen rules above still see the TECHNICAL-masked prose, unchanged.
     accent_prose = strip_for_accent(prose)

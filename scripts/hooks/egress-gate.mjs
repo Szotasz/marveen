@@ -330,7 +330,7 @@ export function loadRuntimeAllowlist() {
 }
 
 // The posture once the dashboard has a say: SECURITY_QUARANTINE_POSTURE, saved on
-// the Security tab (or set in .env), wins; while it is unset the file's own
+// the Security tab (never read from .env), wins; while it is unset the file's own
 // quarantine_reader_posture keeps deciding, so an install that set it there does
 // not flip at upgrade. A value other than the two postures counts as unset.
 export function effectiveQuarantinePosture(filePosture) {

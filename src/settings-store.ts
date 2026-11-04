@@ -102,18 +102,18 @@ export function getEffectiveSettingSource(key: string): { value: string | number
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
   if (key in cache) return { value: coerce(def, cache[key]), source: 'override' }
-  const envValue = readEnvFile([key])[key]
-  if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
-  return { value: def.default, source: 'default' }
+  return getSettingFallback(key)
 }
 
 // What would answer for this key WITHOUT its override: .env, then the registry
 // default. This is what a reset turns the value into, and the page shows it
 // before the reset happens (review of #1908: a confirmation that lists only key
-// names cannot show that a reset switches a notification back on).
+// names cannot show that a reset switches a notification back on). An
+// `overridesOnly` key skips .env: its hook-side readers do too.
 export function getSettingFallback(key: string): { value: string | number; source: Exclude<SettingSource, 'override'> } {
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
+  if (def.overridesOnly) return { value: def.default, source: 'default' }
   const envValue = readEnvFile([key])[key]
   if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
   return { value: def.default, source: 'default' }

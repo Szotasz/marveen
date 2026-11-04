@@ -19,10 +19,15 @@ vi.mock('../config.js', async (orig) => {
 })
 // The .env resolution layer reads the REAL repo-root .env (env.ts carries its
 // own PROJECT_ROOT), which would leak host state into the "falls back to the
-// registry default" assertion -- blank it.
+// registry default" assertion -- blank it. A test that needs a .env line puts
+// it into fakeEnv and clears it after.
+const { fakeEnv } = vi.hoisted(() => ({ fakeEnv: {} as Record<string, string> }))
 vi.mock('../env.js', async (orig) => {
   const actual = await orig<typeof import('../env.js')>()
-  return { ...actual, readEnvFile: () => ({}) }
+  return {
+    ...actual,
+    readEnvFile: (keys?: string[]) => Object.fromEntries((keys ?? []).filter((k) => k in fakeEnv).map((k) => [k, fakeEnv[k]])),
+  }
 })
 
 const {
@@ -31,6 +36,7 @@ const {
   setOverride,
   clearOverride,
   getEffectiveSettingSource,
+  getSettingFallback,
   getOverrides,
   reloadOverridesForTest,
 } = await import('../settings-store.js')
@@ -95,6 +101,39 @@ describe('settings-store', () => {
     const overrides = getOverrides()
     expect(overrides.KANBAN_WIP_WARN_PCT).toBe(60)
     expect(overrides.KANBAN_WIP_OK_COLOR).toBe('#abcdef')
+  })
+})
+
+// Review of #2277 (blocking 2): the owner-only rule guards the overrides file, a .env line is not
+// owner-gated, so an `overridesOnly` key never takes its value from .env, here or in the hooks.
+describe('overridesOnly: no .env source', () => {
+  beforeEach(() => {
+    mkdirSync(STORE, { recursive: true })
+    if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
+    reloadOverridesForTest()
+    for (const k of Object.keys(fakeEnv)) delete fakeEnv[k]
+  })
+  afterAll(() => { for (const k of Object.keys(fakeEnv)) delete fakeEnv[k] })
+
+  it('a loosening value in .env alone reads as the default', () => {
+    fakeEnv.SECURITY_COPY_GATE_MODE = 'warn'
+    fakeEnv.SECURITY_BASH_EXTERNAL = '1'
+    expect(getEffectiveSettingSource('SECURITY_COPY_GATE_MODE')).toEqual({ value: 'block', source: 'default' })
+    expect(getEffectiveSettingSource('SECURITY_BASH_EXTERNAL')).toEqual({ value: '0', source: 'default' })
+    expect(getSettingFallback('SECURITY_COPY_GATE_MODE')).toEqual({ value: 'block', source: 'default' })
+  })
+
+  it('a saved override still answers', () => {
+    fakeEnv.SECURITY_COPY_GATE_MODE = 'block'
+    expect(setOverride('SECURITY_COPY_GATE_MODE', 'warn').ok).toBe(true)
+    expect(getEffectiveSettingSource('SECURITY_COPY_GATE_MODE')).toEqual({ value: 'warn', source: 'override' })
+  })
+
+  it('a key without the flag keeps its .env source (MAIL_OWNER_CC and the rest of the registry)', () => {
+    fakeEnv.KANBAN_WIP_WARN_PCT = '55'
+    fakeEnv.MAIL_OWNER_CC = 'owner@example.org'
+    expect(getEffectiveSettingSource('KANBAN_WIP_WARN_PCT')).toEqual({ value: 55, source: 'env' })
+    expect(getEffectiveSettingSource('MAIL_OWNER_CC')).toEqual({ value: 'owner@example.org', source: 'env' })
   })
 })
 

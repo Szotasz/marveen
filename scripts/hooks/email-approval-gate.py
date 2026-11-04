@@ -206,8 +206,12 @@ _ADDR = re.compile(r"[^\s<>,;:\"'()\[\]]+@[^\s<>,;:\"'()\[\]]+")
 
 def owner_cc_address() -> str:
     """MAIL_OWNER_CC, lowercased, or '' when the check is off: the dashboard's
-    Security tab (store/config-overrides.json) first, then the install .env,
-    the same order as the settings store. Never from the process environment:
+    Security tab (store/config-overrides.json) first, then the install .env.
+    The one Security key that keeps its .env source: .env is where it lived
+    before the tab, and from the default (off) a .env value can only switch the
+    check on; dropping it would switch the check off on every install that set
+    it there. Once the owner saves it on the tab, .env no longer counts. Never
+    from the process environment:
     an empty value that ends up in the launch environment would switch the gate
     off with no trace (the mail senders read their recipient settings from .env
     only for the same reason), and a sub-agent cannot write the overrides file.
@@ -220,7 +224,9 @@ def owner_cc_address() -> str:
     except Exception:  # noqa: BLE001 -- no reader: .env only, as before the tab existed
         reader = None
     if reader is not None:
-        return reader.security_setting("MAIL_OWNER_CC", "", root=root).lower()
+        saved = reader.override("MAIL_OWNER_CC", root=root)
+        if saved is not None:
+            return saved.strip().lower()
     try:
         with open(os.path.join(root, ".env"), encoding="utf-8") as fh:
             for line in fh:

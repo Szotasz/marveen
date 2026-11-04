@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """The dashboard's Security switches, on the Python side.
 
-  (1) scripts/hooks/security_settings.py resolves a key the way the settings
-      store does: store/config-overrides.json (an empty value included), then
-      the install .env, then the caller's default; a malformed overrides file
-      or a value outside `allowed` reads as the default.
+  (1) scripts/hooks/security_settings.py resolves a key from
+      store/config-overrides.json (an empty value included), then the caller's
+      default; the install .env is not read (not owner-gated); a malformed
+      overrides file or a value outside `allowed` reads as the default.
   (2) SECURITY_COPY_GATE_MODE=warn lets a text with copy findings out with a
-      systemMessage; block (the default) denies it; an unreadable send stays
-      denied in warn mode too.
+      systemMessage; block (the default) denies it; an unreadable send and a
+      mixed-script word stay denied in warn mode too; warn only in .env is
+      no warn mode.
   (3) MAIL_OWNER_CC saved on the dashboard (overrides file) switches the
-      owner-copy check on and wins over the .env; never the process env.
+      owner-copy check on and wins over the .env, which still counts while the
+      overrides file does not set it; never the process env.
   (4) SECURITY_CREDENTIAL_GATE warn/block sets the credential gate's mode.
 
 Drives the hooks as subprocesses against throwaway install roots, so the real
@@ -63,13 +65,16 @@ with tempfile.TemporaryDirectory() as td:
     r = make_root(td, "none")
     check("nothing set -> the default", ss.security_setting("K", "block", root=r) == "block")
     r = make_root(td, "env", env_text='K="warn"\n')
-    check("a quoted .env line counts", ss.security_setting("K", "block", root=r) == "warn")
+    check("a .env line alone is not read (not owner-gated)", ss.security_setting("K", "block", root=r) == "block")
+    check("override(): None when the overrides file does not set the key", ss.override("K", root=r) is None)
     r = make_root(td, "both", overrides={"K": "block"}, env_text="K=warn\n")
-    check("the override wins over .env", ss.security_setting("K", "x", root=r) == "block")
+    check("the override decides", ss.security_setting("K", "x", root=r) == "block")
     r = make_root(td, "empty", overrides={"K": ""}, env_text="K=warn\n")
     check("an empty override still wins (as in the settings store)", ss.security_setting("K", "x", root=r) == "")
+    check("override(): an empty value is a set value", ss.override("K", root=r) == "")
     r = make_root(td, "bad", overrides="{ not json", env_text="K=warn\n")
-    check("a malformed overrides file is no override", ss.security_setting("K", "x", root=r) == "warn")
+    check("a malformed overrides file reads as the default, .env ignored",
+          ss.security_setting("K", "x", root=r) == "x")
     r = make_root(td, "odd", overrides={"K": "open"})
     check("a value outside `allowed` -> the default",
           ss.security_setting("K", "block", ("block", "warn"), root=r) == "block")
@@ -106,6 +111,22 @@ with tempfile.TemporaryDirectory() as td:
     check("warn: the letter goes out with a notice", code == 0 and "figyelo mod" in msg, f"exit={code} out={out[:120]!r}")
     code, _, _ = copy_gate({"tool_name": "send_email", "tool_input": "not-a-dict"}, r)
     check("warn: an unreadable send is still DENIED", code == 2, f"exit={code}")
+    # Review of #2277 (blocking 1): the mixed-script finding is not a copy finding.
+    # An accented Hungarian text, correct apart from one Cyrillic o (U+043E) in foglalás.
+    HOMOGLYPH = "Szia! Köszönöm szépen, a fоglalás rendben van, holnap küldöm a részleteket."
+    for name, payload in (
+        ("Telegram reply", {"tool_name": "mcp__plugin_telegram_telegram__reply", "tool_input": {"text": HOMOGLYPH}}),
+        ("send_email", {"tool_name": "send_email", "tool_input": {"body": HOMOGLYPH}}),
+    ):
+        for mode_root in (make_root(td, f"hg-block-{name[:4]}"),
+                          make_root(td, f"hg-warn-{name[:4]}", overrides={"SECURITY_COPY_GATE_MODE": "warn"})):
+            code, _, err = copy_gate(payload, mode_root)
+            check(f"{name}, {'warn' if 'warn' in mode_root else 'block'}: a mixed-script word is DENIED",
+                  code == 2 and "VEGYES IRASRENDSZERU SZO" in err, f"exit={code} err={err[:120]!r}")
+    # Review of #2277 (blocking 2): .env is not owner-gated, so it cannot loosen a switch.
+    r = make_root(td, "envwarn", env_text="SECURITY_COPY_GATE_MODE=warn\n")
+    code, _, err = copy_gate(tg, r)
+    check("warn only in .env: the unaccented text is still DENIED", code == 2 and "TILTVA" in err, f"exit={code}")
 
 print("(3) MAIL_OWNER_CC from the dashboard")
 OWNER = "owner@example.org"

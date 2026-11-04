@@ -836,16 +836,19 @@ Seven gates have a switch on Settings > Security (registry module `security`, `s
 Every default is the gate's shipped behaviour, so an install that never opens the tab is unchanged.
 The value is saved to `store/config-overrides.json` like every other setting; the hooks read it
 through `scripts/lib/security-settings.mjs` (Node) and `scripts/hooks/security_settings.py`
-(Python), in the settings store's order: the overrides file, then the install `.env`, then the
-default. A malformed overrides file, a value outside the switch's set, or a reader that does not
-load reads as the default.
+(Python): the overrides file, then the default. The install `.env` is not read for these keys
+(registry `overridesOnly`, which the settings store follows too, so the page shows the value the
+hooks use): loosening through the settings route needs the owner, a line in `.env` does not, so a
+`.env` source would let a switch be loosened around that rule. `MAIL_OWNER_CC` is the one
+exception, see its row. A malformed overrides file, a value outside the switch's set, or a reader
+that does not load reads as the default.
 
 | Key | Values (default first) | What it changes | Takes effect |
 |---|---|---|---|
 | `SECURITY_BASH_EXTERNAL` | `0`, `1` | `1` drops the `curl https://` / `wget` deny rules and the bash-egress-parser lets any external host through. `nc` / `ncat` / `telnet` and the fleet baseline deny stay. | hook: next call; deny rules: next agent spawn |
 | `SECURITY_QUARANTINE_POSTURE` | `allowlist`, `denylist` | The quarantine-reader's WebFetch posture. While it is unset, `quarantine_reader_posture` in `store/egress-allowlist.json` keeps deciding. | next call |
-| `MAIL_OWNER_CC` | empty, one address | The main agent's letters and drafts must carry the owner's address (email-approval-gate). Read from the overrides file or `.env`, never from the process environment. | next call |
-| `SECURITY_COPY_GATE_MODE` | `block`, `warn` | `warn` lets a text with copy findings out with a notice. An unreadable send, a broken rules file and a mixed-script word stay denied. | next call |
+| `MAIL_OWNER_CC` | empty, one address | The main agent's letters and drafts must carry the owner's address (email-approval-gate). Read from the overrides file, and only while that does not set it, from `.env`, where it lived before the tab: from the default (off) a `.env` value can only switch the check on, and dropping it would switch the check off on every install that set it there. Never from the process environment. | next call |
+| `SECURITY_COPY_GATE_MODE` | `block`, `warn` | `warn` lets a text with copy findings out with a notice. An unreadable send, a broken rules file and a mixed-script word (and the fail-closed finding when the mixed-script rule cannot be loaded) stay denied. | next call |
 | `SECURITY_RECIPIENT_LEDGER_MODE` | `block`, `warn` | Sub-agent mail gate: `warn` lets a draft whose only problem is an unsourced address through with a notice. Every other deny (a send, the draft rule, an unreadable recipient) stays. | next call |
 | `SECURITY_CREDENTIAL_GATE` | `off`, `warn`, `block` | `warn` / `block` wires the credential gate for every sub-agent and sets its mode (`CREDENTIAL_GATE_MODE` still overrides per process). `off` leaves the security profile in charge. | next agent spawn |
 | `SECURITY_DESTRUCTIVE_GATE` | `0`, `1` | `1` wires the destructive gate for every sub-agent. `0` leaves the security profile in charge. | next agent spawn |

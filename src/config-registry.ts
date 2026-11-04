@@ -90,6 +90,14 @@ export interface SettingDefinition {
    * control constrains could switch it off for itself (BASHSANDBOX1022 security review).
    */
   loosens?: (oldValue: string, newValue: string) => boolean
+  /**
+   * Optional: the value comes from the overrides file or the registry default, never from the
+   * install .env. For a `loosens` key whose readers live in the hooks: the owner-only rule guards
+   * only the overrides file, so a .env source would let the key be loosened around it. The hook-side
+   * readers (scripts/lib/security-settings.mjs, scripts/hooks/security_settings.py) skip .env too,
+   * so the dashboard shows the value the hooks use.
+   */
+  overridesOnly?: boolean
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -1122,8 +1130,10 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   // Every default is the shipped gate behaviour, so an install that never opens the tab is
   // unchanged. Each entry declares `loosens`: a fleet-token caller (any agent) can tighten a gate
   // but only an owner session can loosen one. The hooks read these keys through
-  // scripts/lib/security-settings.mjs and scripts/hooks/security_settings.py (override > .env >
-  // default, the same order as this store).
+  // scripts/lib/security-settings.mjs and scripts/hooks/security_settings.py (override > default):
+  // `overridesOnly` keeps .env out, because the owner-only rule guards only the overrides file.
+  // MAIL_OWNER_CC keeps its pre-tab .env source (email-approval-gate owner_cc_address), where a
+  // .env value can only switch the check on.
   {
     key: 'SECURITY_BASH_EXTERNAL',
     type: 'boolean',
@@ -1133,6 +1143,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     loosens: (oldValue, newValue) => oldValue.trim() !== '1' && newValue.trim() === '1',
+    overridesOnly: true,
   },
   {
     key: 'SECURITY_QUARANTINE_POSTURE',
@@ -1144,6 +1155,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     loosens: rankDrops(['denylist', 'allowlist']),
+    overridesOnly: true,
   },
   {
     key: 'MAIL_OWNER_CC',
@@ -1167,6 +1179,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     loosens: rankDrops(['warn', 'block']),
+    overridesOnly: true,
   },
   {
     key: 'SECURITY_RECIPIENT_LEDGER_MODE',
@@ -1178,6 +1191,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     loosens: rankDrops(['warn', 'block']),
+    overridesOnly: true,
   },
   {
     key: 'SECURITY_CREDENTIAL_GATE',
@@ -1189,6 +1203,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     loosens: rankDrops(['off', 'warn', 'block']),
+    overridesOnly: true,
   },
   {
     key: 'SECURITY_DESTRUCTIVE_GATE',
@@ -1199,6 +1214,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     loosens: (oldValue, newValue) => oldValue.trim() === '1' && newValue.trim() !== '1',
+    overridesOnly: true,
   },
 ]
 

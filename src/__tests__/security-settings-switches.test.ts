@@ -169,12 +169,24 @@ describe('the hooks read the switches (real processes, a throwaway install root)
     expect(denied(run('scripts/hooks/bash-egress-parser.mjs', payload))).toBe(true)
   })
 
-  it('bash-egress-parser: the .env line counts, the override wins over it', () => {
+  it('bash-egress-parser: a .env line alone does not open it (not owner-gated), the override does', () => {
     const payload = { tool_name: 'Bash', tool_input: { command: 'curl -s http://example.com/x' } }
     writeFileSync(join(root, '.env'), 'SECURITY_BASH_EXTERNAL="1"\n')
-    expect(denied(run('scripts/hooks/bash-egress-parser.mjs', payload))).toBe(false)
-    setOverrides({ SECURITY_BASH_EXTERNAL: '0' })
     expect(denied(run('scripts/hooks/bash-egress-parser.mjs', payload))).toBe(true)
+    setOverrides({ SECURITY_BASH_EXTERNAL: '1' })
+    expect(denied(run('scripts/hooks/bash-egress-parser.mjs', payload))).toBe(false)
+  })
+
+  it('email-send-gate: warn only in .env is no warn mode', () => {
+    writeFileSync(join(root, '.env'), 'SECURITY_RECIPIENT_LEDGER_MODE=warn\n')
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `import { recipientLedgerMode } from ${JSON.stringify(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))}; console.log(recipientLedgerMode())`],
+    { encoding: 'utf-8', timeout: 15_000, env: { ...process.env, SECURITY_SETTINGS_ROOT: root } })
+    expect(r.stdout.trim()).toBe('block')
+  })
+
+  it('every switch except MAIL_OWNER_CC is overridesOnly in the registry', () => {
+    for (const key of KEYS) expect(getSettingDefinition(key)!.overridesOnly ?? false, key).toBe(key !== 'MAIL_OWNER_CC')
   })
 
   it('a malformed overrides file reads as the shipped default', () => {
