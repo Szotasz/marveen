@@ -34,6 +34,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
+import { startTelegramInboundReplay } from './web/telegram-inbound-replay.js'
 import { startTeamsCredentialMonitor } from './web/teams-credential-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startMessageSeenSweep } from './web/message-seen-sweep.js'
@@ -515,6 +516,10 @@ export function startWebServer(port = 3420): http.Server {
   // only signal a silently deaf poller leaves behind.
   const channelIntakeInterval = servicesOff ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
   if (!servicesOff) logger.info('Channel intake monitor started (5min poll, 100s offset)')
+  // A message that reaches a sub-agent's Telegram plugin before Claude Code has registered its channel handler (the
+  // first seconds after every restart) is dropped silently; this re-delivers it from the plugin's own inbound log.
+  const telegramInboundReplayInterval = servicesOff ? undefined : startTelegramInboundReplay()
+  if (!servicesOff) logger.info('Telegram inbound replay started (60s poll, 90s offset)')
   const teamsCredentialInterval = servicesOff ? undefined : startTeamsCredentialMonitor()
   if (!servicesOff) logger.info('Teams credential monitor started (daily, 5min offset)')
 
@@ -827,6 +832,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
+    if (telegramInboundReplayInterval) clearInterval(telegramInboundReplayInterval)
     if (teamsCredentialInterval) clearInterval(teamsCredentialInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
