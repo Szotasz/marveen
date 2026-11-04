@@ -68,9 +68,36 @@ describe('filterWorkerMcpServers (fail-closed)', () => {
     expect(filterWorkerMcpServers({ gmail: { command: 'npx', args: ['-y', '@someone/mail-mcp'] } })).toEqual({ kept: {}, dropped: ['gmail'] })
   })
 
-  it('the allowlisted package is recognised with a version suffix, or as the command itself', () => {
-    expect(Object.keys(filterWorkerMcpServers(gmail(['-y', '@gongrzhe/server-gmail-autoauth-mcp@1.1.11'])).kept)).toEqual(['x'])
-    expect(Object.keys(filterWorkerMcpServers({ x: { command: '@gongrzhe/server-gmail-autoauth-mcp' } }).kept)).toEqual(['x'])
+  it('the exact shape is kept: npx, only -y/--yes, the package with an optional @version, nothing after', () => {
+    for (const args of [
+      ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+      ['-y', '@gongrzhe/server-gmail-autoauth-mcp@1.1.11'],
+      ['--yes', '@gongrzhe/server-gmail-autoauth-mcp'],
+      ['-y', '--yes', '@gongrzhe/server-gmail-autoauth-mcp'],
+      ['@gongrzhe/server-gmail-autoauth-mcp'],
+    ]) expect(Object.keys(filterWorkerMcpServers(gmail(args)).kept), JSON.stringify(args)).toEqual(['x'])
+  })
+
+  it('the host\'s resolved npx path counts as npx; another path or command does not', () => {
+    const npx = '/opt/homebrew/bin/npx'
+    const at = (command: string) => ({ x: { command, args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'] } })
+    expect(Object.keys(filterWorkerMcpServers(at(npx), npx).kept)).toEqual(['x'])
+    expect(filterWorkerMcpServers(at(npx)).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(at('/tmp/evil/npx'), npx).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(at('node'), npx).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers({ x: { command: '@gongrzhe/server-gmail-autoauth-mcp' } }, npx).dropped).toEqual(['x'])
+  })
+
+  it('Dani\'s #2499 review: a shell or another package that merely NAMES the mail package drops out', () => {
+    expect(filterWorkerMcpServers({ x: { command: '/bin/sh', args: ['-c', 'anything', '@gongrzhe/server-gmail-autoauth-mcp'] } }).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(gmail(['-y', 'some-other-mcp', '@gongrzhe/server-gmail-autoauth-mcp'])).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(gmail(['-y', '@gongrzhe/server-gmail-autoauth-mcp', '--extra'])).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(gmail(['-p', 'x', '@gongrzhe/server-gmail-autoauth-mcp'])).dropped).toEqual(['x'])
+    // a flag other than -y/--yes right before the package changes what npx runs
+    expect(filterWorkerMcpServers(gmail(['--prefix=/tmp/x', '@gongrzhe/server-gmail-autoauth-mcp'])).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(gmail(['-y', '--registry=https://x.test', '@gongrzhe/server-gmail-autoauth-mcp'])).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers(gmail(['-y', 7, '@gongrzhe/server-gmail-autoauth-mcp'])).dropped).toEqual(['x'])
+    expect(filterWorkerMcpServers({ x: { command: 'npx', args: '@gongrzhe/server-gmail-autoauth-mcp' } }).dropped).toEqual(['x'])
   })
 
   it('a look-alike or an embedded mention is not the package', () => {
@@ -88,6 +115,7 @@ describe('filterWorkerMcpServers (fail-closed)', () => {
     expect(filterWorkerMcpServers(gmail(['@gongrzhe/server-gmail-autoauth-mcp'], { type: 'http' })).dropped).toEqual(['x'])
     expect(filterWorkerMcpServers(gmail(['@gongrzhe/server-gmail-autoauth-mcp'], { url: 'https://x.test' })).dropped).toEqual(['x'])
     expect(filterWorkerMcpServers({ a: null, b: 'str', c: [], d: { args: ['@gongrzhe/server-gmail-autoauth-mcp'] } }).dropped).toEqual(['a', 'b', 'c', 'd'])
+    expect(filterWorkerMcpServers({ x: { command: 'npx' } }).dropped).toEqual(['x'])
     expect(filterWorkerMcpServers(null)).toEqual({ kept: {}, dropped: [] })
     expect(filterWorkerMcpServers([])).toEqual({ kept: {}, dropped: [] })
   })
@@ -101,7 +129,7 @@ describe('wiring (static)', () => {
   it('ensureWorkerCwd builds the worker .claude.json through buildWorkerClaudeJson and logs the dropped names', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'agent-worker.ts'), 'utf-8')
     const body = src.slice(src.indexOf('export function ensureWorkerCwd'))
-    expect(body).toContain('buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys)')
+    expect(body).toContain("buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys, tryResolveFromPath('npx'))")
     expect(body).toContain('droppedUser, droppedProject')
     // the old unfiltered mirror is gone
     expect(src).not.toMatch(/const trusted = \{ \.\.\.base, hasTrustDialogAccepted/)

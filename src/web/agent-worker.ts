@@ -576,7 +576,7 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
     const keys = new Set<string>([ctx.home])
     try { keys.add(realpathSync(ctx.home)) } catch { /* dir may not resolve yet */ }
-    const { droppedUser, droppedProject } = buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys)
+    const { droppedUser, droppedProject } = buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys, tryResolveFromPath('npx'))
     if (droppedUser.length || droppedProject.length) {
       logger.info({ droppedUser, droppedProject }, 'worker: MCP servers left out of the worker config (only the allowlisted mail server stays)')
     }
@@ -600,10 +600,11 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
  * harmless on CC versions that do not know these keys.
  */
 // WORKERMCPSEND1104: the MCP servers a worker may keep. The only worker prompt that uses MCP is the heartbeat, and it
-// only READS mail (src/heartbeat.ts); no worker prompt uses any other server. A server stays only when its launch
-// command names one of these packages as a whole word (an optional @version suffix allowed); every other server,
-// and every non-stdio (url) server, drops out. Fail-closed: an install with another mail server loses mail in the
-// heartbeat, visibly, instead of the worker carrying tools it never needs.
+// only READS mail (src/heartbeat.ts); no worker prompt uses any other server. A server stays only when its launch has
+// EXACTLY this shape: `npx` (or the host's resolved npx path), then only -y/--yes flags, then one of these packages
+// (an optional @version suffix allowed), and nothing after it (Dani's #2499 review: an "any argv word" match kept a
+// `sh -c ...` or another package that merely named this one). Every other server, and every non-stdio (url) server,
+// drops out. Fail-closed: an install with another mail server loses mail in the heartbeat, visibly.
 export const WORKER_MAIL_MCP_PACKAGES: readonly string[] = ['@gongrzhe/server-gmail-autoauth-mcp']
 
 function packageOfToken(token: string): string {
@@ -612,16 +613,31 @@ function packageOfToken(token: string): string {
   return at > 0 ? token.slice(0, at) : token
 }
 
-/** Splits project MCP servers into the ones a worker keeps (the allowlisted mail server) and the dropped names. */
-export function filterWorkerMcpServers(servers: unknown): { kept: Record<string, unknown>; dropped: string[] } {
+const NPX_YES_FLAGS = new Set(['-y', '--yes'])
+
+/** Is this launch exactly `npx [-y|--yes]... <allowlisted package>[@version]`? */
+function isAllowlistedMailLaunch(command: string, args: unknown[], npxPath: string | null): boolean {
+  if (command !== 'npx' && !(npxPath && command === npxPath)) return false
+  if (!args.every((a) => typeof a === 'string')) return false
+  const words = args as string[]
+  let i = 0
+  while (i < words.length && NPX_YES_FLAGS.has(words[i])) i++
+  return i === words.length - 1 && WORKER_MAIL_MCP_PACKAGES.includes(packageOfToken(words[i]))
+}
+
+/**
+ * Splits project MCP servers into the ones a worker keeps (the allowlisted mail server) and the dropped names.
+ * npxPath: the host's resolved npx (an absolute path), accepted as the command besides the bare `npx`.
+ */
+export function filterWorkerMcpServers(servers: unknown, npxPath: string | null = null): { kept: Record<string, unknown>; dropped: string[] } {
   const kept: Record<string, unknown> = {}
   const dropped: string[] = []
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return { kept, dropped }
   for (const [name, cfg] of Object.entries(servers as Record<string, unknown>)) {
     const c = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg as { type?: unknown; command?: unknown; args?: unknown; url?: unknown } : null
     const stdio = !!c && (c.type === undefined || c.type === 'stdio') && c.url === undefined && typeof c.command === 'string'
-    const words = stdio ? [c!.command as string, ...(Array.isArray(c!.args) ? c!.args.filter((a): a is string => typeof a === 'string') : [])] : []
-    if (words.some((w) => WORKER_MAIL_MCP_PACKAGES.includes(packageOfToken(w.trim())))) kept[name] = cfg
+    const args = stdio ? (c!.args === undefined ? [] : c!.args) : null
+    if (stdio && Array.isArray(args) && isAllowlistedMailLaunch(c!.command as string, args, npxPath)) kept[name] = cfg
     else dropped.push(name)
   }
   return { kept, dropped }
@@ -637,6 +653,7 @@ export function buildWorkerClaudeJson(
   parsed: { projects?: Record<string, unknown>; mcpServers?: unknown; hasCompletedOnboarding?: boolean; [k: string]: unknown },
   projectRoot: string,
   homeKeys: Iterable<string>,
+  npxPath: string | null = null,
 ): { droppedUser: string[]; droppedProject: string[] } {
   stampWorkerFirstRun(parsed)
   const droppedUser = (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers))
@@ -647,7 +664,7 @@ export function buildWorkerClaudeJson(
   const base = (projects[projectRoot] && typeof projects[projectRoot] === 'object')
     ? projects[projectRoot] as Record<string, unknown>
     : {}
-  const { kept, dropped } = filterWorkerMcpServers(base.mcpServers)
+  const { kept, dropped } = filterWorkerMcpServers(base.mcpServers, npxPath)
   const trusted = { ...base, mcpServers: kept, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
   for (const k of homeKeys) projects[k] = { ...trusted }
   parsed.projects = projects
