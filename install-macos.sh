@@ -55,6 +55,31 @@ managed_settings_notice() {
 # megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
 # forditani az upstream hibat (explain_install_error, install-lang.sh).
 INSTALL_ERRLOG=$(mktemp "${TMPDIR:-/tmp}/marveen-install-stderr.XXXXXX")
+# INSTSTDERRTMP1104: the copy holds whatever a failing tool printed (a token in a
+# URL, a password a broken prompt echoed back), and it outlived every run in the
+# customer's TMPDIR. Only explain_install_error reads it, on the way out (fail()
+# and on_error() call it before exit), so it leaves with the process: removed on
+# EXIT, which bash runs after those calls on every exit path, and turned into an
+# exit by INT/TERM so an interrupted run cleans up too.
+cleanup_install_errlog() {
+  [ -n "${INSTALL_ERRLOG:-}" ] || return 0
+  rm -f "$INSTALL_ERRLOG"
+  # The tee behind `exec 2>` starts asynchronously; a run that exits within its
+  # first milliseconds can unlink the file before tee opened it, and `tee -a`
+  # then creates it again (measured in the test). Close our end of the pipe so
+  # tee sees EOF, give it a moment, and remove a re-created file once more.
+  exec 2>&-
+  local i=0
+  while [ "$i" -lt 10 ]; do
+    [ -e "$INSTALL_ERRLOG" ] && rm -f "$INSTALL_ERRLOG"
+    sleep 0.05 2>/dev/null || break
+    i=$((i + 1))
+  done
+  return 0
+}
+trap cleanup_install_errlog EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 exec 2> >(tee -a "$INSTALL_ERRLOG" >&2)
 
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
@@ -1829,9 +1854,18 @@ DASH_TOKEN=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
-if [ -n "$DASH_TOKEN" ]; then
+# INSTSTDERRTMP1104: the token URL only to a terminal, the same rule the server
+# keeps (src/web.ts). Redirected (the Bridge, a CI log, `> file`), the line would
+# leave a root-equivalent credential in whatever captured it.
+if [ -n "$DASH_TOKEN" ] && [ -t 1 ]; then
   echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
+elif [ -n "$DASH_TOKEN" ]; then
+  _hint="$(_t dash.token_file_hint)"
+  # An older install-lang.sh (standalone run) answers an unknown key with the key itself.
+  [ "$_hint" = "dash.token_file_hint" ] && _hint="  (store/.dashboard-token)"
+  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
+  echo -e "  ${DIM}${_hint}${NC}"
 else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
   echo -e "  ${DIM}$(_t dash.no_token_hint)${NC}"

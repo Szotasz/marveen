@@ -138,6 +138,10 @@ jobs:
       # block runs against a throwaway HOME with npm and claude stubbed on PATH.
       - run: bash scripts/__tests__/channels-native-install-no-npm.test.sh
       - run: bash scripts/__tests__/channels-native-autoupdate.test.sh
+      # INSTSTDERRTMP1104: the installers' stderr copy leaves with the process, the
+      # raw error tail is masked, and the token URL is printed only to a terminal.
+      # Hermetic: throwaway TMPDIR, the blocks are cut from the real scripts.
+      - run: bash scripts/__tests__/install-stderr-tmp.test.sh
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
