@@ -789,6 +789,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   const catalogUninstallMatch = path.match(/^\/api\/mcp-catalog\/([^/]+)\/uninstall$/)
   if (catalogUninstallMatch && method === 'DELETE') {
+    // OWNERGATE3-1104 (review): runs `claude mcp remove` on the user and project scope, i.e. takes an MCP server away
+    // from every agent on the machine; the install twin is owner-only, so is this. Before the catalog read and any spawn.
+    if (!mayActAsOwnerStrict(ctx.auth, req)) {
+      refuseOwner(res, 'Removing an MCP server installed from the catalog needs the dashboard login (an owner session).')
+      return true
+    }
     const id = decodeURIComponent(catalogUninstallMatch[1])
     try {
       const catalog = loadMcpCatalog()

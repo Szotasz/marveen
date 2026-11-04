@@ -247,6 +247,11 @@ const CASES: Case[] = [
     ownerCheck: (r) => { expect(r.status).toBe(404); expect(r.body.error).toBe('Item not found in catalog'); expect(execFileMock).not.toHaveBeenCalled() },
   },
   {
+    // Review (Dani 69599): the uninstall twin. An id not in the catalog: the owner lanes stop at the lookup.
+    label: 'DELETE /api/mcp-catalog/:id/uninstall', handler: tryHandleConnectors, method: 'DELETE', path: '/api/mcp-catalog/__og3-not-in-catalog/uninstall',
+    ownerCheck: (r) => { expect(r.status).toBe(404); expect(r.body.error).toBe('Item not found in catalog'); expect(execFileMock).not.toHaveBeenCalled() },
+  },
+  {
     // Both names given: the owner lanes would write .env and the persona files, so they stop at validation here
     // (a missing owner name, 400) right after the gate; the bare token is refused with a complete body.
     label: 'POST /api/onboarding/identity', handler: tryHandleOnboarding as Handler, method: 'POST', path: '/api/onboarding/identity',
@@ -389,5 +394,17 @@ describe('controls: what stays open to the bare token', () => {
     expect(refusedByOwnerGate(r)).toBe(false)
     expect(r.status).toBe(400)
     expect(state()).toEqual(before)
+  })
+})
+
+// Review (Dani 69599): the catalog uninstall with a REAL catalog id and the bare token. The refusal must not depend
+// on the lookup: `claude mcp remove` is never spawned and the answer is the owner gate's.
+describe('OWNERGATE3-1104: catalog uninstall of a real item', () => {
+  it('DELETE /api/mcp-catalog/:id/uninstall with the bare token: refused, `claude mcp remove` never spawned', async () => {
+    for (const id of ['notion', 'filesystem']) {
+      const r = await hit(tryHandleConnectors, 'DELETE', `/api/mcp-catalog/${id}/uninstall`, TOKEN)
+      expect(refusedByOwnerGate(r), id).toBe(true)
+    }
+    expect(execFileMock).not.toHaveBeenCalled()
   })
 })

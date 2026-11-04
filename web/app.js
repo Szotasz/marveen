@@ -9462,8 +9462,10 @@ async function catalogUninstall(item) {
   if (!confirmed) return
   try {
     const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // OWNERGATE3-1104: an owner-session refusal is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body || {}
+    if (!reply.ok) throw new Error(refusalReason(res, reply.body))
     showToast(data.message || t('connectors.toast.removed'))
     loadCatalog()
     loadConnectors()

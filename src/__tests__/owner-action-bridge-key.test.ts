@@ -214,7 +214,7 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
     // agents.ts mayActAsOwner: POST /api/agents, channel setup, and approve while the channel has no approved sender.
     // OWNERGATE3-1104: agents.ts +4 strict (auto-restart, voice-config, OpenRouter manual, auth/init); agent-terminal.ts 3
     // (terminal-input, keys, login); skills.ts 1 strict (assign) beside its older mayActAsOwner (the skill decision).
-    for (const [f, loose, strict] of [['agents.ts', 3, 18], ['connectors.ts', 0, 8], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1], ['agent-terminal.ts', 0, 3], ['skills.ts', 1, 1]] as const) {
+    for (const [f, loose, strict] of [['agents.ts', 3, 18], ['connectors.ts', 0, 9], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1], ['agent-terminal.ts', 0, 3], ['skills.ts', 1, 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerStrict'), count(f, 'mayIssueCredentials')]).toEqual([f, loose, strict, 0])
     }
     expect(src('agents.ts')).toContain('firstPairing ? mayActAsOwner(ctx.auth, req) : mayActAsOwnerStrict(ctx.auth, req)')
