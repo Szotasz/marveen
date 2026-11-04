@@ -5,7 +5,7 @@
 // reads paths: nothing here writes a real config.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, SUBAGENT_PROTECTED_INSTALL_PATHS } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, SUBAGENT_PROTECTED_INSTALL_PATHS, SUBAGENT_FILE_GATE_MSG } from '../../scripts/hooks/db-write-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -188,4 +188,8 @@ describe('the hook end to end: CLAUDE_PROJECT_DIR and CLAUDE_CONFIG_DIR are read
     expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
   })
+})
+
+it('the deny message names the npx form the CLI rule does not see (Samu 68172)', () => {
+  expect(SUBAGENT_FILE_GATE_MSG).toContain('npx @anthropic-ai/claude-code')
 })
