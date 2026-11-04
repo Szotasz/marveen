@@ -1898,10 +1898,11 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if _address_flag_given(rest):
             # COPYGATEDRAFTFP1104: an address is a send (also under -m / -c, where no file is named), unless the script
             # file and everything it imports is visible here and the walk finds no send (_py_walk_verdict). A PYTHON*
-            # setting in the command can change what an import loads, so it keeps the old rule.
-            if (module or script is None or _UNDECIDABLE_PATH.search(script)
-                    or _relative_under_undecidable_cd(script, cwd, cmd_words)
-                    or any(re.match(r"^PYTHON\w*=", w) for w in cmd_words)):
+            # setting in the command can change what an import loads, so it keeps the old rule. Bence 69343 / Samu
+            # 69345: code the interpreter runs at START-UP, before the script (a .pth line, sitecustomize,
+            # usercustomize in a writable site-packages), is not visible to the walk; only -I with -S (or -E -s -S)
+            # turns it off, so without them the old rule holds (the approval gate names the fix: draft_isolation_hint).
+            if not _address_run_judgeable(rest, module, script, cwd, cmd_words):
                 return True
             return _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script)
         if module:
@@ -2048,6 +2049,65 @@ def _assigned_cd_dirs(segments):
             if v is not None:
                 out.append(v)
     return out
+
+
+def _py_isolated(rest) -> bool:
+    """The interpreter options before the script turn off every start-up code path: -I with -S (`-I -S`, `-IS`,
+    `-SI`), or -E with -s and -S. A joined -X / -W value and anything after a -c / -m letter is not an option letter."""
+    letters = set()
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t in _PY_OPT_WITH_ARG:
+            i += 2
+            continue
+        if t == "-" or t == "--" or not t.startswith("-") or t.startswith("--"):
+            if t.startswith("--") and t != "--":
+                i += 1
+                continue
+            break
+        for ch in t[1:]:
+            if ch in "cmXW":
+                break
+            letters.add(ch)
+        if re.search(r"[cm]", t[1:]):
+            break
+        i += 1
+    return ("I" in letters and "S" in letters) or {"E", "s", "S"} <= letters
+
+
+def _address_run_judgeable(rest, module, script, cwd, cmd_words) -> bool:
+    """A python run with an address may be judged by its script's content (the walk) only in these shapes."""
+    return not (module or script is None or _UNDECIDABLE_PATH.search(script)
+                or _relative_under_undecidable_cd(script, cwd, cmd_words)
+                or any(re.match(r"^PYTHON\w*=", w) for w in cmd_words)
+                or not _py_isolated(rest))
+
+
+def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
+    """True when a python run with an address is a send only because the interpreter was not isolated: run with -I -S
+    it would be judged by its content, and its script walks clean (the approval gate names the fix then)."""
+    if read_script is None:
+        read_script = _read_script_head
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    cmd_words = [w for toks in segments for w in toks]
+    for toks in segments:
+        for h in _command_heads(toks):
+            if not h or not _PYTHON.match(_basename(h[0])):
+                continue
+            rest = h[1:]
+            if not _address_flag_given(rest) or _py_isolated(rest):
+                continue
+            module = _python_module(rest)
+            script = None if module else _python_script_operand(rest)[0]
+            if not _address_run_judgeable(["-I", "-S"] + list(rest), module, script, cwd, cmd_words):
+                continue
+            if not _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script):
+                return True
+    return False
 
 
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:

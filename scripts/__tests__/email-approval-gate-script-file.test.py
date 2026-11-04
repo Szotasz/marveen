@@ -186,8 +186,10 @@ try:
         ("node --version", D, False, "no script operand"),
         ("node $SCRIPT", D, True, "undecidable operand (fail-closed)"),
         (f'bash -c "node {D}/graph-send.mjs"', D, True, "shell -c recursion"),
-        # COPYGATEDRAFTFP1104: an address no longer makes a fully visible, stdlib-only script a send (see below)
-        (f"python3 {D}/plain.py --to b@example.test", D, False, "an address on a stdlib-only script that does not send"),
+        # COPYGATEDRAFTFP1104: an address still makes a script run a send, unless the interpreter is isolated (-I -S)
+        # and the script walks clean (see below)
+        (f"python3 {D}/plain.py --to b@example.test", D, True, "an address after --to makes a script run a send"),
+        (f"python3 -I -S {D}/plain.py --to b@example.test", D, False, "the same, isolated, on a script that does not send"),
         (f"python3 {D}/plain.py", D, False, "the same script without an address"),
         (f"{D}/missing-direct.py", D, True, "a directly run .py file that cannot be read (fail-closed)"),
         ("cd $DEST && node job.mjs", D, True, "cd to a variable: fail-closed"),
@@ -349,26 +351,39 @@ try:
     for name, body in unfollowed.items():
         put(f"cg/u_{name}.py", body)  # u_: a fixture named like a stdlib module would import itself
     for cmd, want, what in [
-        ("python3 draft.py --to a@example.test --subject s", False, "an IMAP draft writer with --to (the customer case)"),
-        ("python3 draft.py --to=a@example.test", False, "the same with --to="),
-        ("python3 draft.py --cc a@example.test --bcc b@example.test", False, "the same with --cc/--bcc"),
-        ("python3 drafthelp.py --to a@example.test", False, "a local helper that only uses imaplib"),
-        ("python3 smtpto.py --to a@example.test", True, "smtplib sendmail with an address"),
+        # Bence 69343 / Samu 69345: start-up code (.pth, sitecustomize) runs before the script; only an isolated
+        # interpreter lets the walk decide
+        ("python3 draft.py --to a@example.test", True, "the clean draft writer, NOT isolated: a send"),
+        ("python3 -I -S draft.py --to a@example.test", False, "the same, isolated: the walk decides"),
+        ("python3 -IS draft.py --to a@example.test", False, "isolated, -IS"),
+        ("python3 -SI draft.py --to a@example.test", False, "isolated, -SI"),
+        ("python3 -E -s -S draft.py --to a@example.test", False, "isolated, -E -s -S"),
+        ("python3 -u -I -B -S draft.py --to a@example.test", False, "isolated among other options"),
+        ("python3 -I draft.py --to a@example.test", True, "-I alone leaves the site module on"),
+        ("python3 -S draft.py --to a@example.test", True, "-S alone leaves the environment on"),
+        ("python3 -E -S draft.py --to a@example.test", True, "-E -S without -s"),
+        ("python3 -XIS draft.py --to a@example.test", True, "-X takes its value: IS is no option"),
+        ("python3 -W IS draft.py --to a@example.test", True, "-W takes its value: IS is no option"),
+        ("python3 -I -S draft.py --to a@example.test --subject s", False, "an IMAP draft writer with --to (the customer case)"),
+        ("python3 -I -S draft.py --to=a@example.test", False, "the same with --to="),
+        ("python3 -I -S draft.py --cc a@example.test --bcc b@example.test", False, "the same with --cc/--bcc"),
+        ("python3 -I -S drafthelp.py --to a@example.test", False, "a local helper that only uses imaplib"),
+        ("python3 -I -S smtpto.py --to a@example.test", True, "smtplib sendmail with an address"),
         ("python3 smtpto.py", True, "smtplib sendmail without an address"),
-        ("python3 pkgsend.py --to a@example.test", True, "an installed package may send: the address rule holds"),
+        ("python3 -I -S pkgsend.py --to a@example.test", True, "an installed package may send: the address rule holds"),
         ("python3 pkgsend.py", False, "the same without an address (as before)"),
-        ("python3 helpsend.py --to a@example.test", True, "a local helper imports smtplib"),
-        ("python3 helpproc.py --to a@example.test", True, "a local helper starts a process"),
-        ("python3 helppkg.py --to a@example.test", True, "a local helper imports an installed package"),
-        ("python3 shadow/draft.py --to a@example.test", True, "a local imaplib.py shadows the stdlib and sends"),
-        ("python3 deep/d0.py --to a@example.test", True, "the helper chain is deeper than the walk"),
-        ("python3 wide.py --to a@example.test", True, "more helpers than the file budget"),
-        ("python3 nothere.py --to a@example.test", True, "a missing script with an address"),
-        ("PYTHONPATH=/x python3 draft.py --to a@example.test", True, "a PYTHON* setting can change what an import loads"),
-        ("python3 -c 'print(1)' --to a@example.test", True, "a code string with an address"),
-        ("python3 -m draft --to a@example.test", True, "a module run with an address"),
-        ("python3 $S --to a@example.test", True, "an undecidable script with an address"),
-    ] + [(f"python3 u_{n}.py --to a@example.test", True, f"unfollowed code ({n})") for n in unfollowed]:
+        ("python3 -I -S helpsend.py --to a@example.test", True, "a local helper imports smtplib"),
+        ("python3 -I -S helpproc.py --to a@example.test", True, "a local helper starts a process"),
+        ("python3 -I -S helppkg.py --to a@example.test", True, "a local helper imports an installed package"),
+        ("python3 -I -S shadow/draft.py --to a@example.test", True, "a local imaplib.py shadows the stdlib and sends"),
+        ("python3 -I -S deep/d0.py --to a@example.test", True, "the helper chain is deeper than the walk"),
+        ("python3 -I -S wide.py --to a@example.test", True, "more helpers than the file budget"),
+        ("python3 -I -S nothere.py --to a@example.test", True, "a missing script with an address"),
+        ("PYTHONPATH=/x python3 -I -S draft.py --to a@example.test", True, "a PYTHON* setting can change what an import loads"),
+        ("python3 -I -S -c 'print(1)' --to a@example.test", True, "a code string with an address"),
+        ("python3 -I -S -m draft --to a@example.test", True, "a module run with an address"),
+        ("python3 -I -S $S --to a@example.test", True, "an undecidable script with an address"),
+    ] + [(f"python3 -I -S u_{n}.py --to a@example.test", True, f"unfollowed code ({n})") for n in unfollowed]:
         got = ocg.script_run_sends(cmd, os.path.join(D, "cg"))
         check(f"COPYGATEDRAFTFP1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 
@@ -419,8 +434,8 @@ try:
     for name, body in plain.items():
         put(f"cg/p_{name}.py", body)
     for cmd, want, what in (
-        [(f"python3 v_{n}.py --to a@example.test", True, f"round 2, not followed ({n})") for n in round2]
-        + [(f"python3 p_{n}.py --to a@example.test", False, f"round 2, plain form ({n})") for n in plain]
+        [(f"python3 -I -S v_{n}.py --to a@example.test", True, f"round 2, not followed ({n})") for n in round2]
+        + [(f"python3 -I -S p_{n}.py --to a@example.test", False, f"round 2, plain form ({n})") for n in plain]
     ):
         got = ocg.script_run_sends(cmd, os.path.join(D, "cg"))
         check(f"COPYGATEDRAFTFP1104 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
@@ -441,17 +456,27 @@ try:
     code, err = run_gate(f"node {D}/harmless.mjs")
     check("MAILGATESCRIPT1027 hook: a harmless script passes", code == 0, f"exit={code} err={err[:200]!r}")
     # COPYGATEDRAFTFP1104 end to end: the draft writer with an address passes the hook, the sender does not
+    code, err = run_gate(f"cd {D}/cg && python3 -I -S draft.py --to a@example.test")
+    check("COPYGATEDRAFTFP1104 hook: the IMAP draft writer with --to, isolated, passes", code == 0, f"exit={code} err={err[:300]!r}")
     code, err = run_gate(f"cd {D}/cg && python3 draft.py --to a@example.test")
-    check("COPYGATEDRAFTFP1104 hook: the IMAP draft writer with --to passes", code == 0, f"exit={code} err={err[:300]!r}")
+    check("COPYGATEDRAFTFP1104 hook: the same NOT isolated is DENIED and the message names python3 -I -S",
+          code == 2 and "python3 -I -S" in err, f"exit={code} err={err[:400]!r}")
     code, err = run_gate(f"cd {D}/cg && python3 pkgsend.py --to a@example.test")
-    check("COPYGATEDRAFTFP1104 hook: an installed-package sender with --to is DENIED", code == 2,
+    check("COPYGATEDRAFTFP1104 hook: a real sender gets no -I -S hint", code == 2 and "python3 -I -S" not in err,
+          f"exit={code} err={err[:400]!r}")
+    for cmd, want in ((f"python3 draft.py --to a@example.test", True), (f"python3 -I -S draft.py --to a@example.test", False),
+                      (f"python3 pkgsend.py --to a@example.test", False), (f"python3 draft.py", False)):
+        got = ocg.draft_isolation_hint(cmd, os.path.join(D, "cg"))
+        check(f"COPYGATEDRAFTFP1104 draft_isolation_hint: {cmd!r} -> {want}", got is want, f"got {got}")
+    code, err = run_gate(f"cd {D}/cg && python3 -I -S pkgsend.py --to a@example.test")
+    check("COPYGATEDRAFTFP1104 hook: an installed-package sender with --to, isolated, is DENIED", code == 2,
           f"exit={code} err={err[:200]!r}")
     # the same hooks under Python < 3.10 (the walk needs no 3.10 feature): the draft writer passes, the package sender
     # is denied (there by the approval gate's own fail-closed load of its email_extract dependency, EMAILGATEPY39-1104)
     old_py = next((x for x in ("/usr/bin/python3",) if os.path.exists(x)), None)
     if old_py and subprocess.run([old_py, "-c", "import sys; sys.exit(0 if sys.version_info < (3, 10) else 1)"]).returncode == 0:
         for script, want in (("draft.py", 0), ("pkgsend.py", 2)):
-            payload = {"tool_name": "Bash", "tool_input": {"command": f"cd {D}/cg && python3 {script} --to a@example.test"}, "cwd": D}
+            payload = {"tool_name": "Bash", "tool_input": {"command": f"cd {D}/cg && python3 -I -S {script} --to a@example.test"}, "cwd": D}
             p = subprocess.run([old_py, gate_for(store, GATE)], input=json.dumps(payload).encode(), capture_output=True)
             check(f"COPYGATEDRAFTFP1104 hook under Python < 3.10: {script} with an address -> exit {want}",
                   p.returncode == want, f"exit={p.returncode} err={p.stderr.decode()[:300]!r}")
