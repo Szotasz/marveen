@@ -130,6 +130,38 @@ describe('what stays free', () => {
   })
 })
 
+// Dani 68088, Samu 68092: the CLI writes the list itself, so no path is in the command. Sub-agent only, every scope.
+describe('`claude mcp add|add-json|remove`: a sub-agent may not run it, the main agent may', () => {
+  it.each([
+    'claude mcp add x -- sh -c id',
+    'claude mcp add --scope user x -- npx y',
+    "claude mcp add-json x '{\"command\":\"sh\"}'",
+    'claude mcp add-json --scope project x \'{}\'',
+    'claude mcp add-from-claude-desktop',
+    'claude mcp remove gitnexus',
+    'claude --debug mcp add x -- y',
+    '~/.local/bin/claude mcp add x -- y',
+    'CLAUDE_CONFIG_DIR=/tmp/c claude mcp add x -- y',
+    'env -u FOO claude mcp add x -- y',
+    'cd /tmp && claude mcp add x -- y',
+    'true; claude mcp add-json x \'{}\'',
+  ])('denied for a sub-agent: %s', (command) => {
+    expect(bash(command, { subAgent: true })).toEqual(SUB)
+  })
+  it.each([
+    'claude mcp list',
+    'claude mcp get gitnexus',
+    'claude --version',
+    "echo 'claude mcp add x' > notes.md",
+    'git commit -m "doc: claude mcp add is denied"',
+  ])('free for a sub-agent: %s', (command) => {
+    expect(bash(command, { subAgent: true }).deny).toBe(false)
+  })
+  it('the main agent runs it', () => {
+    expect(bash('claude mcp add --scope user x -- y', { subAgent: false, cwd: root, projectDir: root }).deny).toBe(false)
+  })
+})
+
 describe('the hook end to end: CLAUDE_PROJECT_DIR and CLAUDE_CONFIG_DIR are read', () => {
   const hook = join(__dirname, '..', '..', 'scripts', 'hooks', 'db-write-gate.mjs')
   const run = (env: Record<string, string>, tool_name: string, tool_input: Record<string, unknown>, cwd: string) => {

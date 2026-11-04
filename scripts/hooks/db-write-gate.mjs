@@ -69,6 +69,7 @@ import {
   splitSegments,
   underKey,
 } from '../self-pace-gate.mjs'
+import { claudeInvocations } from './child-claude-channel-guard.mjs'
 
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -808,6 +809,19 @@ export function fileToolDeny(toolInput, opts = {}) {
   return c === 'exact' || c === 'under' || c === 'unresolved' ? 'install-file' : null
 }
 
+// `claude mcp add|add-json|add-from-claude-desktop|remove` (ENVRELAXMCPCFG1104, Dani 68088, Samu 68092): the CLI
+// writes an MCP server list itself, so no path appears in the command. A sub-agent may not run it, for any --scope;
+// the main agent may. The invocation is found by the child-claude guard's own parser (a `claude` at a segment's start,
+// after env assignments and wrappers); one started from a script, or as `npx @anthropic-ai/claude-code`, is not seen
+// (stated limit, as for that guard).
+const CLAUDE_MCP_WRITE_SUBS = new Set(['add', 'add-json', 'add-from-claude-desktop', 'remove'])
+export function claudeMcpListWrite(command) {
+  return claudeInvocations(String(command ?? '')).some((args) => {
+    const i = args.indexOf('mcp')
+    return i >= 0 && CLAUDE_MCP_WRITE_SUBS.has(args[i + 1])
+  })
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   // A deny that only the sub-agent list gives gets its own message (ENVRELAXGATE1104).
@@ -819,6 +833,7 @@ function decide(toolName, toolInput, opts = {}) {
   }
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
+    if (subOnly() && claudeMcpListWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     const file = installFileDeny(command, opts)
     if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
@@ -877,7 +892,9 @@ export const SUBAGENT_FILE_GATE_MSG =
   '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, .claude.json, plugins/*.json), ' +
   'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
   'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
-  'a telepites .mcp.json fajljat es a ~/.claude.json-t: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
+  'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
+  'amit ez a kapu NEM lat (limit): egy plugin sajat szerverlistajat (a plugin-mappa .mcp.json-ja, plugin.json mcpServers) es egy szkriptbol inditott claude-ot. ' +
+  'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
 
