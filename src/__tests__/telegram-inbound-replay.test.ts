@@ -486,6 +486,7 @@ function makeDeps(root: string, over: Partial<ReplayDeps> = {}) {
     listAgents: () => ['agent-a'],
     isTelegramAgent: () => true,
     isRunning: () => true,
+    runsAsOtherUser: () => false,
     stateDirFor: n => join(root, n, 'state'),
     transcriptDirsFor: n => [join(root, n, 'tx')],
     alreadyReplayed: () => false,
@@ -703,18 +704,20 @@ describe('replayMissedInbound', () => {
     expect(enqueued).toHaveLength(0)
   })
 
-  it('7g: the main agent, a non-telegram agent and a stopped agent are skipped; a normal one in the same list is not', async () => {
+  it('7g: the main agent, a non-telegram agent, a stopped agent and an agent under its own OS user are skipped; a normal one in the same list is not', async () => {
     quietLogger()
     const root = tmpRoot()
     const fx: AgentFixture = {
       evidence: [lineFor('42')],
       transcripts: [{ name: 's.jsonl', content: transcriptLine(GROUP, '99') + '\n', mtimeMs: NOW - 30_000 }],
     }
-    for (const a of [MAIN_AGENT_ID, 'agent-nontg', 'agent-stopped', 'agent-a']) setupAgent(root, a, fx)
+    const names = [MAIN_AGENT_ID, 'agent-nontg', 'agent-stopped', 'agent-ownuser', 'agent-a']
+    for (const a of names) setupAgent(root, a, fx)
     const { deps, enqueued } = makeDeps(root, {
-      listAgents: () => [MAIN_AGENT_ID, 'agent-nontg', 'agent-stopped', 'agent-a'],
+      listAgents: () => names,
       isTelegramAgent: n => n !== 'agent-nontg',
       isRunning: n => n !== 'agent-stopped',
+      runsAsOtherUser: n => n === 'agent-ownuser',
     })
     const out = await replayMissedInbound(deps)
     expect(out).toEqual([{ agent: 'agent-a', chatId: GROUP, messageId: '42', result: 'replayed' }])
