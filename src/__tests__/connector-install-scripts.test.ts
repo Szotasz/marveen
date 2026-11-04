@@ -953,7 +953,8 @@ async function callRaw(method: string, path: string, payload: string) {
   const ctx: RouteContext = {
     req: req as unknown as http.IncomingMessage,
     res: res as unknown as http.ServerResponse,
-    path, method, url: new URL(`http://127.0.0.1:3420${path}`), auth: { kind: 'token' },
+    // OWNERGATE2-1104: these routes are owner-gated now (owner-gate-round2.test.ts measures the gate); here the caller is the owner.
+    path, method, url: new URL(`http://127.0.0.1:3420${path}`), auth: { kind: 'session' },
   }
   const handled = await tryHandleConnectors(ctx)
   return { handled, status: res.statusCode, data: res.body ? JSON.parse(res.body) : undefined }

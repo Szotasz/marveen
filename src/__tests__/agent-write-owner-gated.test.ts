@@ -2,7 +2,7 @@
 // (CLAUDE.md, SOUL.md), what it runs (.mcp.json), where its prompt goes (customProvider, custom providers), which login
 // it runs under (authMode, apiKey, claudePlan), its memory boundary, its security profile, where it runs (remote) or
 // replace it wholesale (import with overwrite). Those need the owner: the browser login, the token with the owner's
-// session cookie beside it, or the Bridge's full key with that cookie (mayActAsOwner, the #2513 pattern). model and
+// session cookie beside it, or the Bridge's full key with that cookie (mayActAsOwnerStrict since OWNERGATE2-1104: no first-run branch). model and
 // modelProfile stay token-writable (Samu 69185). A refused call writes NOTHING, measured on the bytes.
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
@@ -141,11 +141,48 @@ describe('PUT /api/agents/:name on the owner lanes', () => {
     })
   }
 
-  it('before the first dashboard login the shared token is still the owner (first-run branch)', async () => {
+  // OWNERGATE2-1104 (review finding, tech lead decision): the first-run branch no longer reaches these gates. Before the
+  // first dashboard login the bare token is refused too, with setup_required (create a login first).
+  it('before the first dashboard login the shared token is refused with setup_required, and nothing is written', async () => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
+    const before = snapshot()
     const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, TOKEN, { claudeMd: '# first run\n' })
-    expect(r.status).toBe(200)
-    expect(readFileSync(join(DIR, 'CLAUDE.md'), 'utf-8')).toBe('# first run\n')
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.setup_required).toBe(true)
+    expect(r.body.fields).toEqual(['claudeMd'])
+    expect(snapshot()).toEqual(before)
+  })
+})
+
+describe('OWNERGATE2-1104: first-run (zero dashboard users), every APIAGENTWRITE1104 gate refuses the bare token', () => {
+  const zeroUsers = () => { getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users'); _clearSessionCacheForTest() }
+  const providers = () => readFileSync(PROVIDERS_PATH, 'utf-8')
+  const rows: Array<[string, Handler, string, string, unknown, Record<string, string>?]> = [
+    ['PUT /api/agents/:name (owner field)', tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, { mcpJson: '{"mcpServers":{"x":{"command":"true"}}}' }],
+    ['PUT /api/agents/:name/security', tryHandleAgents, 'PUT', `/api/agents/${AGENT}/security`, { profile: 'default' }],
+    ['PUT /api/agents/:name/remote', tryHandleAgents, 'PUT', `/api/agents/${AGENT}/remote`, { host: 'evil.example', workdir: '/tmp' }],
+    ['POST /api/agents/import (overwrite)', tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}&overwrite=1`, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' }],
+    ['POST /api/custom-providers', tryHandleCustomProviders, 'POST', '/api/custom-providers', { id: 'added', label: 'Added', baseUrl: 'http://127.0.0.1:11434', authHeader: 'none', vaultKey: null }],
+    ['DELETE /api/custom-providers/:id', tryHandleCustomProviders, 'DELETE', '/api/custom-providers/keep', undefined],
+  ]
+  for (const [label, handler, method, path, body, headers] of rows) {
+    it(`${label}: 403 owner_session_required + setup_required, nothing written`, async () => {
+      zeroUsers()
+      const before = { files: snapshot(), providers: providers(), settings: existsSync(join(DIR, '.claude', 'settings.json')) }
+      const r = await hit(handler, method, path, TOKEN, body, headers)
+      expect(refusedByOwnerGate(r)).toBe(true)
+      expect(r.body.setup_required).toBe(true)
+      expect(r.body.error).toMatch(/no dashboard login exists yet/)
+      expect({ files: snapshot(), providers: providers(), settings: existsSync(join(DIR, '.claude', 'settings.json')) }).toEqual(before)
+    })
+  }
+  it('control: {model} alone still goes through with the bare token before the first login (not an owner field)', async () => {
+    zeroUsers()
+    expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, TOKEN, { model: 'claude-opus-5' }))).toBe(false)
+  })
+  it('a session principal passes the gate whatever the user count (control)', async () => {
+    zeroUsers()
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { claudeMd: '# by session\n' })).status).toBe(200)
   })
 })
 
@@ -166,13 +203,13 @@ describe('the related agent endpoints', () => {
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}/remote`, SESSION, { host: '', workdir: '' }))).toBe(false)
   })
 
-  it('POST /import?overwrite=1: the token is refused before the bundle is read; without overwrite the gate does not apply', async () => {
+  it('POST /import: the token is refused before the bundle is read, with or without overwrite (OWNERGATE2-1104)', async () => {
     const before = snapshot()
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}&overwrite=1`, TOKEN, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' }))).toBe(true)
     expect(snapshot()).toEqual(before)
-    // Control: the same garbage without overwrite reaches the importer (a 400 for the bundle, not the owner gate).
+    // OWNERGATE2-1104 changed this control: importing a NEW agent is owner-only too, so the token is refused here as well.
     const plain = await hit(tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}-new`, TOKEN, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' })
-    expect(refusedByOwnerGate(plain)).toBe(false)
+    expect(refusedByOwnerGate(plain)).toBe(true)
     // And the session passes the overwrite gate (then the same bundle error).
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'POST', `/api/agents/import?name=${AGENT}&overwrite=1`, SESSION, Buffer.from('not a bundle'), { 'content-type': 'application/gzip' }))).toBe(false)
   })

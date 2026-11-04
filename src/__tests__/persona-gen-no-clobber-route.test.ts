@@ -108,7 +108,8 @@ function startCreate(): Promise<{ status: number; body: Record<string, any> }> {
     ;(req as unknown as EventEmitter).emit('end')
   })
   return tryHandleAgents(
-    { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext,
+    // The owner's browser login: creating an agent needs the owner (OWNERGATE2-1104); this file is about generation.
+    { req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'session' } } as unknown as RouteContext,
     join(PROJECT_ROOT, 'web'),
   ).then((handled) => {
     expect(handled).toBe(true)

@@ -18,7 +18,7 @@ vi.mock('../config.js', async (orig) => {
 })
 import { initDatabase, getDb, getDashboardUser, getRecentConfigChanges } from '../db.js'
 import { resolveAuth, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { bridgeOwner, mayActAsOwner, mayIssueCredentials, ownerCookieSession, tryHandleAuth } from '../web/routes/auth.js'
+import { bridgeOwner, mayActAsOwner, mayActAsOwnerStrict, mayIssueCredentials, ownerCookieSession, tryHandleAuth } from '../web/routes/auth.js'
 import { isOwnerSession } from '../web/routes/gromzo.js'
 import { tryHandleSkills } from '../web/routes/skills.js'
 import { tryHandleFleetFreeze } from '../web/routes/fleet-freeze.js'
@@ -149,6 +149,47 @@ describe('the predicate (the five-case matrix, Samu 65617, and Dani 65623 (c))',
   })
 })
 
+// OWNERGATE2-1104 (review finding): mayActAsOwner without the first-run branch. Real resolveAuth, real sessions, real
+// device keys, the same matrix as above plus the zero-users row that mayActAsOwner lets through.
+describe('mayActAsOwnerStrict', () => {
+  const zeroUsers = () => { getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users'); _clearSessionCacheForTest() }
+  it('a session principal is the owner', () => {
+    expect(mayActAsOwnerStrict({ kind: 'session', user: 'owner' } as RouteContext['auth'], reqWith({}))).toBe(true)
+  })
+  it('the shared token without a cookie is refused, also with zero dashboard users (where mayActAsOwner lets it through)', () => {
+    expect(mayActAsOwnerStrict({ kind: 'token' }, reqWith({}))).toBe(false)
+    zeroUsers()
+    expect(mayActAsOwnerStrict({ kind: 'token' }, reqWith({}))).toBe(false)
+    expect(mayActAsOwner({ kind: 'token' }, reqWith({}))).toBe(true)
+  })
+  it('the shared token with the owner cookie is the owner; a sub-agent token with it is not', () => {
+    const req = reqWith({ cookie: cookieHeader() })
+    expect(mayActAsOwnerStrict({ kind: 'token' }, req)).toBe(true)
+    expect(mayActAsOwnerStrict({ kind: 'token', agent: 'zara', tokenAgent: 'zara' }, req)).toBe(false)
+  })
+  it('a full key with the owner cookie is the owner, with the same audit line mayActAsOwner writes', () => {
+    const spy = vi.spyOn(logger, 'info')
+    const req = reqWith({ authorization: `Bearer ${keyOf()}`, cookie: cookieHeader() })
+    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(true)
+    const line = spy.mock.calls.find((c) => String(c[1]).includes('owner action on a Bridge key'))
+    expect(line?.[0]).toMatchObject({ owner: 'owner', auth: 'device', device: 'Bridge' })
+    spy.mockRestore()
+  })
+  it('a bare full key is refused (with and without dashboard users); an operator key with the cookie is refused', () => {
+    const key = keyOf()
+    let req = reqWith({ authorization: `Bearer ${key}` })
+    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(false)
+    req = reqWith({ authorization: `Bearer ${keyOf('operator')}`, cookie: cookieHeader() })
+    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(false)
+    zeroUsers()
+    req = reqWith({ authorization: `Bearer ${key}` })
+    expect(mayActAsOwnerStrict(authOf(req), req)).toBe(false)
+  })
+  it('no principal is refused', () => {
+    expect(mayActAsOwnerStrict(undefined as RouteContext['auth'], reqWith({ cookie: cookieHeader() }))).toBe(false)
+  })
+})
+
 describe('which call site asks which predicate (source pin, all 17 sites)', () => {
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
@@ -168,6 +209,13 @@ describe('which call site asks which predicate (source pin, all 17 sites)', () =
     expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\)\) \{/g) ?? []).length).toBe(0)
     expect(src('security.ts')).toContain('!bridgeOwner(auth, req)')
     expect(src('operator-access.ts')).toContain('!bridgeOwner(auth, req)')
+  })
+  it('OWNERGATE2-1104: the agent, channel, plan, provider and connector gates take the strict predicate; only agent create, channel setup and a channel\'s first pairing approve keep the first-run branch', () => {
+    // agents.ts mayActAsOwner: POST /api/agents, channel setup, and approve while the channel has no approved sender.
+    for (const [f, loose, strict] of [['agents.ts', 3, 14], ['connectors.ts', 0, 8], ['claude-plans.ts', 0, 3], ['custom-providers.ts', 0, 1]] as const) {
+      expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerStrict'), count(f, 'mayIssueCredentials')]).toEqual([f, loose, strict, 0])
+    }
+    expect(src('agents.ts')).toContain('firstPairing ? mayActAsOwner(ctx.auth, req) : mayActAsOwnerStrict(ctx.auth, req)')
   })
 })
 
