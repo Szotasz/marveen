@@ -393,8 +393,52 @@ const GLOB_CHAR_RX = /[*?[{]/
 // shells read them (underscores and case ignored). A false hit only brings back the strict reading.
 // Stated limit: such a setting switched on in the user's shell rc is not visible here.
 // Only the Bash path sets shellGlob; a file tool's path or an MCP argument is never read this way.
-const DOTGLOB_RX = /dotglob|globdots|globignore|fignore|\([^)\s]*D[^)\s]*\)/i
-const namesDotglob = (cmd) => DOTGLOB_RX.test(cmd.replace(/_/g, ''))
+// GATEQUOTEDSQL1104: the zsh qualifier test reads only the UNQUOTED text, case-sensitively. The old
+// `/\([^)\s]*D[^)\s]*\)/i` over the whole command fired on ANY "(...d...)" without a space: a quoted
+// `left(t.id::text,8)` or a Python `open(p,encoding='utf-8')` turned the strict reading on, and the `*` of a quoted
+// `select *` / `count(*)` in the same command then reached the caller's own .mcp.json, so a read-only query was denied
+// (measured on 11-04 replays). zsh's dot qualifier is an upper-case D, and a quoted "(...D...)" is never a qualifier.
+// Every unquoted parenthesis group with an upper-case D still counts, glob character or not (a narrower shape lost
+// `(*|x)(D)`, `(*)(D)` and `{*,' '}(D)`, which zsh expands to the .mcp.json; Bence 69254). The option names keep the
+// shells' case and underscore rules and are read over the whole command.
+// The quoted spans are taken out only where that reading is the shell's own; otherwise the whole command is read (fail
+// closed): a command that re-runs text as shell code (`zsh -c '... *(D)'`), a "..." span holding a command
+// substitution (it runs, its globs expand, its own quotes end the scan early: `"$(cp x "y" *(D))"`), and a command
+// whose quoting a plain scan may pair wrongly: a heredoc body
+// or a comment (an apostrophe there is literal), arithmetic (`$((1<<x))` is not a heredoc), an unterminated quote.
+const DOTGLOB_OPTION_RX = /dotglob|globdots|globignore|fignore/i
+const ZSH_DOT_QUALIFIER_RX = /\([^)\s]*D[^)\s]*\)/
+export function unquotedForQualifier(cmd) {
+  const s = String(cmd ?? '')
+  if (/(?:^|[\s;&|()])#/.test(s) || /(?<!<)<<(?!<)/.test(s) || /\(\(|\$\[/.test(s)) return s
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === '\\') { out += s.slice(i, i + 2); i++; continue }
+    if (c === "'" || (c === '$' && s[i + 1] === "'")) {
+      let j = c === '$' ? i + 2 : i + 1
+      while (j < s.length && s[j] !== "'") j += c === '$' && s[j] === '\\' ? 2 : 1
+      if (j >= s.length) return s
+      out += 'Q'
+      i = j
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1
+      if (j >= s.length) return s
+      // a command substitution inside "..." runs, and its own quotes end this scan early: read the whole command
+      if (/\$\(|`/.test(s.slice(i, j + 1))) return s
+      out += 'Q'
+      i = j
+      continue
+    }
+    out += c
+  }
+  return out
+}
+const namesDotglob = (cmd, reShell) => DOTGLOB_OPTION_RX.test(cmd.replace(/_/g, ''))
+  || ZSH_DOT_QUALIFIER_RX.test(reShell ? cmd : unquotedForQualifier(cmd))
 
 // Does a shell segment hold an UNQUOTED bare-glob word (`*`, `?`, `./*`)? The text outside '...' and "..." spans (a
 // backslash inside double quotes escapes the next character) is split into words; backslashes outside quotes are
@@ -936,9 +980,10 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd),
-    // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
-    reShell: reShellsText(cmd) }
+  // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
+  const reShell = reShellsText(cmd)
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, reShell),
+    reShell }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir
     && (t.pattern ? ['exact', 'under'].includes(patternRel(pathKey(cwd), t)) : underKey(pathKey(cwd), t.key)))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }

@@ -5,7 +5,7 @@
 // reads paths: nothing here writes a real config.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, SUBAGENT_PROTECTED_INSTALL_PATHS, SUBAGENT_FILE_GATE_MSG } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, SUBAGENT_PROTECTED_INSTALL_PATHS, SUBAGENT_FILE_GATE_MSG, unquotedForQualifier } from '../../scripts/hooks/db-write-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -199,6 +199,21 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
   it.each([
     'sqlite3 ../../store/claudeclaw.db "SELECT count(*) FROM kanban_cards"',
     'sqlite3 x.db "SELECT * FROM t"',
+    // GATEQUOTEDSQL1104: a "(...d...)" elsewhere in the command is not a zsh dot qualifier (the old test was
+    // case-insensitive and needed no glob before the parenthesis, so these read-only queries were denied).
+    'supabase db query "select left(t.id::text,8) szal from t join lateral (select * from dm_messages d where d.thread_id=t.id) m on true" > dm.out',
+    'python3 -c "open(sys.argv[1],encoding=\'utf-8\').read()" x.md; sqlite3 -readonly x.db "SELECT count(*) FROM t"',
+    'psql "$DB" -c "select f(XD), * from t"',
+    // a lower-case d qualifier (order by depth) is not the dot qualifier: zsh qualifiers are case-sensitive
+    'cp /tmp/x.txt *(od[1])',
+    // Bence 69262: a quoted "(...D...)" is never a qualifier, wherever the command's glob stands
+    "grep 'x(D)' *.md",
+    'sqlite3 x.db "SELECT * FROM t" | wc -l',
+    'sqlite3 x.db "SELECT max(ID) FROM t"; sqlite3 x.db "SELECT count(*) FROM t"',
+    "psql -c $'select f(XD), * from t'",
+    'echo "f(XD)"; cp /tmp/evil.json *',
+    // python re-runs text as code, so its whole text is read: no glob here, so the strict reading changes nothing
+    'python3 -c "print(len(D))"',
   ])('passes: %s', (command) => {
     expect(bash(command, own())).toEqual({ deny: false })
   })
@@ -211,6 +226,32 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
     'cp /tmp/evil.json *(D)',
     'cp /tmp/evil.json ?mcp.json(D)',
     'cp /tmp/evil.json *mcp.json(D)',
+    // GATEQUOTEDSQL1104: the qualifier forms that still count (a D among other qualifiers, the #q form, a bracket glob)
+    'cp /tmp/evil.json *(.D)',
+    'cp /tmp/evil.json *(#qD)',
+    'cp /tmp/evil.json [.]mcp.json(D)',
+    'echo "(id)" > x.txt; cp /tmp/evil.json *(D)',
+    // a quoted or escaped literal part between the glob and the qualifier: zsh still applies (D), so these expand to
+    // the leading-dot .mcp.json (measured in zsh 5.9); the literal part names no protected path by itself
+    "cp /tmp/evil.json *'json'(D)",
+    'cp /tmp/evil.json *"json"(D)',
+    'cp /tmp/evil.json *\\json(D)',
+    // Bence 69254: every unquoted group with an upper-case D counts, a glob character before it or not
+    'cp /tmp/evil.json (*|x)(D)',
+    'cp /tmp/evil.json (*)(D)',
+    'cp /tmp/evil.json (*.json|q)(D)',
+    "cp /tmp/evil.json {*,' '}(D)",
+    "cp /tmp/evil.json *' x'(D)",
+    // the deliberate strict case: an unquoted "(...D...)" with no glob still turns the strict reading on
+    'echo f(XD); cp /tmp/evil.json *',
+    // where taking the quotes out is not the shell's own reading, the whole command is read
+    "zsh -c 'cp /tmp/evil.json *(D)'",
+    'echo "$(cp /tmp/evil.json *(D))"',
+    'echo "`cp /tmp/evil.json *(D)`"',
+    "cat > f <<'EOF'\nit's\nEOF\ncp /tmp/evil.json *(D); echo \"'\"",
+    "echo $((1<<EOF)) # it's\ncp /tmp/evil.json *(D)\n# that's\nEOF",
+    "echo $'\\''; cp /tmp/evil.json *(D); echo $'\\''",
+    "echo 'x; cp /tmp/evil.json *(D)",
     'setopt GLOB__DOTS; cp /tmp/evil.json *',
     'setopt g_l_o_b_d_o_t_s; cp /tmp/evil.json *',
     'shopt -s DotGlob; cp /tmp/evil.json *',
@@ -218,5 +259,37 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
     'ksh -c "FIGNORE=; cp /tmp/evil.json *"',
   ])('still denied (a dot segment, or a dotglob mode named in the command): %s', (command) => {
     expect(bash(command, own()).deny).toBe(true)
+  })
+  // GATEQUOTEDSQL1104: the quoted spans come out only where a plain scan pairs the quotes as the shell does
+  it.each([
+    ['psql -c "select f(XD), * from t"', 'psql -c Q'],
+    ["grep 'x(D)' *.md", 'grep Q *.md'],
+    ["psql -c $'it\\'s (XD)'", 'psql -c Q'],
+    ["echo \\'; cp x *(D); echo \\'", "echo \\'; cp x *(D); echo \\'"],
+    ["cp x *' x'(D)", 'cp x *Q(D)'],
+  ])('the quoted spans are taken out: %s', (command, read) => {
+    expect(unquotedForQualifier(command)).toBe(read)
+  })
+  it.each([
+    "echo x # it's\ncp x *(D)\n# that's",
+    "cat > f <<'EOF'\nit's\nEOF\ncp x *(D); echo \"'\"",
+    // balanced for a plain scan too: the apostrophes of two heredoc bodies pair across the cp
+    "cat > f <<'EOF'\nit's\nEOF\ncp x *(D)\ncat > g <<'EOF'\nthat's\nEOF",
+    "echo $((1<<EOF)) 'a\ncp x *(D)\n' b",
+    "echo $[1] 'a; cp x *(D); ' b",
+    "echo 'x; cp x *(D)",
+    'echo "x; cp x *(D)',
+  ])('a quoting a plain scan may pair wrongly is read whole: %s', (command) => {
+    expect(unquotedForQualifier(command)).toBe(command)
+  })
+  it.each([
+    'echo "$(cp x *(D))" "y(D)"',
+    'echo "`cp x *(D)`"',
+    'echo "$(cp x "y" *(D))"',
+  ])('a "..." span holding a command substitution: the whole command is read (it runs, its globs expand): %s', (command) => {
+    expect(unquotedForQualifier(command)).toBe(command)
+  })
+  it('a substitution outside quotes stays visible, its quoted parts come out', () => {
+    expect(unquotedForQualifier('echo $(cp x "y(D)" *(D))')).toBe('echo $(cp x Q *(D))')
   })
 })
