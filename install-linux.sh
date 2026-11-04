@@ -487,11 +487,28 @@ if ! command -v make &>/dev/null || ! command -v cc &>/dev/null; then
 fi
 
 # Node.js v20+ ellenorzes
+# LINUXINSTPREREQ1104: the >= 20 rule is checked BEFORE and AFTER the package step,
+# through one function. Before this, it was checked only before: when nodesource
+# failed, the distro nodejs went in (Ubuntu 24.04: 18.19, measured on the probe
+# VPS) and only `command -v node` ran afterwards, so the install went on with a
+# Node it does not support and broke later with an unrelated-looking error.
+node_major() {
+  command -v node &>/dev/null || { echo 0; return 0; }
+  node -e 'process.stdout.write(process.version.slice(1).split(".")[0])' 2>/dev/null || echo 0
+}
+# The major version of apt's nodejs candidate, 0 when there is none or it is
+# unreadable ("1:18.19.1+dfsg-6ubuntu5" -> 18, "(none)" -> 0).
+apt_nodejs_candidate_major() {
+  local c=""
+  c=$(apt-cache policy nodejs 2>/dev/null | awk '/Candidate:/ {print $2; exit}') || c=""
+  c="${c#*:}"
+  c="${c%%[!0-9]*}"
+  echo "${c:-0}"
+}
+NODE_FIX_APT='curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - && sudo apt-get install -y nodejs'
 NODE_OK=false
-if command -v node &>/dev/null; then
-  NODE_VER=$(node -e 'process.stdout.write(process.version.slice(1).split(".")[0])' 2>/dev/null || echo "0")
-  [ "$NODE_VER" -ge 20 ] && NODE_OK=true
-fi
+NODE_VER=$(node_major)
+[ "$NODE_VER" -ge 20 ] && NODE_OK=true
 $NODE_OK || MISSING_PKGS="$MISSING_PKGS nodejs"
 
 if [ -n "$MISSING_PKGS" ]; then
@@ -523,9 +540,18 @@ if [ -n "$MISSING_PKGS" ]; then
       if [ "$NODESOURCE_OK" = false ]; then
         # Fallback: disztro sajat nodejs-e. Debianon az npm kulon csomag,
         # a nodesource-bundle-lel ellentetben nem jon a nodejs-sel magatol.
-        warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs + npm csomagjat telepitem."
         apt_run update -qq
-        MISSING_PKGS="$MISSING_PKGS npm"
+        # LINUXINSTPREREQ1104: only a candidate that meets the rule goes in. An
+        # older one would only leave an unsupported Node on the machine.
+        NODE_CAND=$(apt_nodejs_candidate_major)
+        if [ "$NODE_CAND" -ge 20 ]; then
+          warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs (v${NODE_CAND}) + npm csomagjat telepitem."
+          MISSING_PKGS="$MISSING_PKGS npm"
+        else
+          fail "$(_t linux.node_distro_too_old) ${NODE_CAND}.
+    $(_t linux.node_fix_lead)
+      ${NODE_FIX_APT}"
+        fi
       fi
     else
       apt_run update -qq
@@ -555,6 +581,19 @@ else
 fi
 command -v node &>/dev/null || fail "Node.js telepitese sikertelen. Ellenorizd: $NODE_FIX_HINT"
 command -v npm &>/dev/null || fail "npm nem talalhato a nodejs csomag utan sem. Ellenorizd: $NPM_FIX_HINT"
+# LINUXINSTPREREQ1104: the rule again, after the package step, on every path
+# (apt and dnf/yum, a node that was there before or one that just went in).
+NODE_VER=$(node_major)
+if [ "$NODE_VER" -lt 20 ]; then
+  if [ "$PKG_MANAGER" = "apt" ]; then
+    fail "$(_t linux.node_too_old) ${NODE_VER}.
+    $(_t linux.node_fix_lead)
+      ${NODE_FIX_APT}"
+  else
+    fail "$(_t linux.node_too_old) ${NODE_VER}.
+    $(_t linux.node_fix_rpm)"
+  fi
+fi
 
 ok "ffmpeg $(ffmpeg -version | awk 'NR==1 {print $3}')"
 ok "git $(git --version | awk '{print $3}')"

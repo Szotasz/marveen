@@ -142,6 +142,9 @@ jobs:
       # raw error tail is masked, and the token URL is printed only to a terminal.
       # Hermetic: throwaway TMPDIR, the blocks are cut from the real scripts.
       - run: bash scripts/__tests__/install-stderr-tmp.test.sh
+      # LINUXINSTPREREQ1104: install-linux.sh never goes on with a Node.js older than v20 (the
+      # distro fallback and the post-check). Hermetic: the real block with stubbed node/apt/curl/sudo.
+      - run: bash scripts/__tests__/install-linux-node-recheck.test.sh
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
