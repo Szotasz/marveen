@@ -56,6 +56,39 @@ describe('OWNERGATE4-1104: the first-run callers are pinned', () => {
     })
   })
 
+  // Review (Dani 69635, LOW): the call regex above sees only a plain, exactly named call without nested parentheses.
+  // So every OTHER occurrence of the identifier outside comments must be accounted for: the definition, or a plain
+  // (unaliased) import. An alias, passing the helper as a value, or a call whose arguments hold another call would
+  // slip past the call pin; here they fail.
+  it('every non-comment occurrence of mayActAsOwnerOrFirstRun is the definition, a plain import, or a pinned call', () => {
+    const stray: string[] = []
+    for (const f of sourceFiles(SRC)) {
+      const src = readFileSync(f, 'utf-8')
+      if (!src.includes('mayActAsOwnerOrFirstRun')) continue
+      const callAt = new Set([...src.matchAll(/(?<!function )\bmayActAsOwnerOrFirstRun\(([^()]*)\)/g)].map((m) => m.index))
+      let inImport = false
+      let offset = 0
+      for (const line of src.split('\n')) {
+        const trimmed = line.trim()
+        if (/^import\b/.test(trimmed) && !/\bfrom\b/.test(trimmed)) inImport = true
+        const isComment = trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')
+        const isImport = inImport || /^import\b/.test(trimmed)
+        for (const m of line.matchAll(/\bmayActAsOwnerOrFirstRun\b/g)) {
+          const at = offset + m.index!
+          if (isComment) continue
+          if (/\bmayActAsOwnerOrFirstRun\s+as\b/.test(line.slice(m.index!))) { stray.push(`${relative(SRC, f)}: alias: ${trimmed}`); continue }
+          if (isImport) continue
+          if (/function\s+$/.test(line.slice(0, m.index!))) continue
+          if (callAt.has(at)) continue
+          stray.push(`${relative(SRC, f)}: ${trimmed}`)
+        }
+        if (inImport && /\bfrom\b/.test(trimmed)) inImport = false
+        offset += line.length + 1
+      }
+    }
+    expect(stray).toEqual([])
+  })
+
   it('the set of reasons used equals FIRST_RUN_PATHS (no unused entry, no reason off the list)', () => {
     const used = new Set(Object.values(firstRunCalls()).flat())
     expect([...used].sort()).toEqual([...FIRST_RUN_PATHS].sort())
