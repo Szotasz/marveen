@@ -501,21 +501,31 @@ export const RESHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh'
   'osascript', 'awk', 'gawk', 'mawk', 'nawk', 'xargs', 'find', 'watch', 'script', 'parallel', 'make'])
 // INSTRFILES1104 A (Samu 69747 (a), Bence 69765): the python and node families run their own language, not shell code:
 // a quoted glob handed to them, their inline code (-c, -e/-p) and a heredoc body they read are data, and no shell
-// expands a glob in them. They count as re-shelling only when the command shows a call that hands text to a shell
-// (os.system, subprocess, child_process, execSync, shell=True, ...): then the strict reading stays (Dani's review of
-// 7ae2931af: `python3 -c "import os; os.system('tee *')"` is a glob after all). The other interpreters (perl, ruby,
-// php, lua, awk, ...) keep the strict reading whatever their code says (fail closed).
+// expands a glob in them. They count as re-shelling when the command shows a call that hands text to a shell
+// (os.system, subprocess, child_process, execSync, shell=True, ...), a hidden call, or ANY reference to a module that can
+// start a process (the reverse rule, Dani 69850): then the strict reading stays (Dani's review of 7ae2931af:
+// `python3 -c "import os; os.system('tee *')"` is a glob after all). The other interpreters (perl, ruby, php, lua,
+// awk, ...) keep the strict reading whatever their code says (fail closed).
 const DATA_INTERPRETERS = new Set(['python', 'pypy', 'node', 'nodejs', 'deno', 'bun'])
 const SHELL_CALL_RX = /\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)\b|\bsubprocess\b|\bpty\s*\.\s*spawn\b|\bcommands\s*\.|\bplatform\s*\.\s*popen\b|\bchild_process\b|\b(?:execSync|execFileSync|spawnSync|execFile|execa)\b|\b(?:exec|spawn|fork)\s*\(|\bshell\s*=\s*True\b|\bshell\s*:\s*true\b|\bDeno\s*\.\s*(?:run|Command)\b|\bBun\s*\.\s*(?:spawn|spawnSync|\$)|\$`|\bzx\b/
 // ...and the signs of a HIDDEN call (Samu 69768, Dani 69775): a name built at run time can reach a shell without any of
 // the words above, so these count as a shell call too (fail closed): __import__, importlib, builtins, ctypes, the
 // builtin getattr/eval/exec/compile called as a builtin (`re.compile(` is a module's method and is not one),
 // new Function / vm.run*, process.binding/dlopen, and a require() or import() whose argument is no string literal.
-const HIDDEN_CALL_RX = /\b__import__\b|\bimportlib\b|\bbuiltins\b|\bctypes\b|(?<![.\w$])(?:getattr|eval|exec|compile)\s*\(|\bnew\s+Function\b|(?<![.\w$])Function\s*\(|\bvm\s*\.\s*run\w*|\brunIn(?:This|New)?Context\b|\bcompileFunction\b|['"`](?:node:)?vm['"`]|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))|(?<![.\w$])import\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))/
+// Dani's review of e53c1080 (69850): a list of call shapes leaks (`from os import system; system(...)`, `vars(os)[...]`,
+// `os.__dict__[...]`, `__builtins__.getattr(...)`). So the rule is the other way round: the code is data only when it
+// refers to NO module that can start a process and to NO reflection handle. Any such reference keeps the strict
+// reading, whatever is done with it (PROCESS_REF_RX below, and the reflection handles in HIDDEN_CALL_RX).
+// Any token, an attribute included (`shutil.os.system`, `asyncio.subprocess`): os, posix, subprocess, pty,
+// multiprocessing, asyncio, _posixsubprocess, child_process, sys.modules, and the loaders that run code they are handed
+// (pickle, marshal, shelve, runpy) or start a program (webbrowser). Modules whose names are everyday words (platform,
+// commands, code, pdb) count when they are imported, the only way to reach them without a handle caught above.
+const PROCESS_REF_RX = /\b_?(?:os|posix|subprocess|pty|multiprocessing|asyncio|_posixsubprocess|pickle|marshal|shelve|runpy|webbrowser)\b|\bchild_process\b|\bsys\s*\.\s*modules\b|\b(?:from\s+(?:platform|commands|code|pdb)\b|import\s+[\w\s,.]*\b(?:platform|commands|code|pdb)\b)/
+const HIDDEN_CALL_RX = /__import__|\bimportlib\b|__builtins__|\bbuiltins\b|\bctypes\b|(?<![.\w$])(?:getattr|eval|exec|compile|vars|globals|locals)\b|__dict__|__globals__|__subclasses__|__bases__|__mro__|__getattribute__|\bglobalThis\b|\bnew\s+Function\b|(?<![.\w$])Function\s*\(|\bvm\s*\.\s*run\w*|\brunIn(?:This|New)?Context\b|\bcompileFunction\b|['"`](?:node:)?vm['"`]|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))|(?<![.\w$])import\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))/
 export function reShellsText(text) {
   const src = String(text ?? '')
   if (/(?:^|[;&|(]\s*)\.\s/.test(src) || /\.(?:shell|system)\b/i.test(src)) return true
-  const shellCall = SHELL_CALL_RX.test(src) || HIDDEN_CALL_RX.test(src)
+  const shellCall = SHELL_CALL_RX.test(src) || HIDDEN_CALL_RX.test(src) || PROCESS_REF_RX.test(src)
   return src.split(/[\s;&|<>()`'"=,{}$]+/).some((w) => {
     if (/^-(?:exec|execdir|ok|okdir)$/i.test(w)) return true
     const name = (w.split('/').pop() ?? '').toLowerCase().replace(/[\d.]+$/, '')
@@ -1253,9 +1263,14 @@ export function installFileDeny(command, opts = {}) {
     for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null])
     closing = sub.closes
     const own = sub.body
-    // INSTRFILES1104 A: with no re-shelling program in the command, quoted spans and heredoc bodies hold no glob
-    const bodies = ctx.reShell ? seg.bodies : seg.bodies.map(literalHeredocBody)
-    const ownText = ctx.reShell ? own : literalQuotedGlobs(own)
+    const words = shellWords(own)
+    // INSTRFILES1104 A: with no re-shelling program in the command, quoted spans and heredoc bodies hold no glob.
+    // Not when a later segment of the command runs the file this one writes (Dani 69850: `cat > x.sh <<'EOF' ...
+    // EOF; chmod +x x.sh && ./x.sh` runs the body as shell code, its globs expand): then both stay strict.
+    const runsWritten = !!words && laterRuns(segs, segs.indexOf(seg), words.redirects.map((t) => t.value).filter((v) => v !== '/dev/null'))
+    const literal = !ctx.reShell && !runsWritten
+    const bodies = literal ? seg.bodies.map(literalHeredocBody) : seg.bodies
+    const ownText = literal ? literalQuotedGlobs(own) : own
     const view = { ...seg, own, bodies, text: [ownText, ...bodies].join('\n') }
     ctx.cwdInsideDir = insideDir(ctx.cwd)
     // WORKERCFGDIR1104: the segment's own text (a heredoc body is never globbed) and the whole command (re-shelling)
@@ -1263,7 +1278,6 @@ export function installFileDeny(command, opts = {}) {
     ctx.bareGlobQuoted = ctx.reShell === false && !unquotedBareGlob(own)
     const rawHits = hitsBoth(view.text)
     const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
-    const words = shellWords(own)
     // A segment the word reader still cannot split (a case pattern, an arithmetic group): its git commands are read
     // roughly, so they reach the git rule.
     if (!words) {

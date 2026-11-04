@@ -115,6 +115,43 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     "python3 -c \"import json; print(json.dumps({'a': 1}))\"",
   ])('no shell call, no hidden call: %s', (c) => { expect(reShellsText(c)).toBe(false) })
 
+  // Dani's review of e53c1080 (69850): the reverse rule. Any reference to a module that can start a process, or to a
+  // reflection handle, keeps the strict reading, whatever is done with it.
+  it.each([
+    "python3 -c \"from os import system; system('tee @H@/.claude/set*')\"",
+    "python3 -c \"from os import popen as p; p('tee @H@/.claude/set*')\"",
+    "python3 -c \"import os; __builtins__.getattr(os, 'sys' + 'tem')('tee @H@/.claude/set*')\"",
+    "python3 -c \"import os; vars(os)['sys' + 'tem']('tee @H@/.claude/set*')\"",
+    "python3 -c \"import os; os.__dict__['system']('tee @H@/.claude/set*')\"",
+    "python3 -c \"import asyncio; asyncio.run(asyncio.create_subprocess_shell('tee @H@/.claude/set*'))\"",
+    "python3 -c \"import multiprocessing\"; tee \"@H@/.claude/set*\"",
+    "python3 -c \"g = globals(); x = '@H@/.claude/set*'\"",
+    "python3 -c \"[c for c in ().__class__.__bases__[0].__subclasses__()]; '@H@/.claude/set*'\"",
+    "node -e \"globalThis.process.mainModule; '@H@/.claude/set*'\"",
+    // os reached through another module, a loader that runs what it is handed, the module table
+    "python3 -c \"import shutil; shutil.os.system('tee @H@/.claude/set*')\"",
+    "python3 -c \"import shutil; f = shutil.os; f.popen('tee @H@/.claude/set*')\"",
+    "python3 -c \"import pickle; pickle.loads(b); '@H@/.claude/set*'\"",
+    "python3 -c \"import sys; sys.modules['o' + 's']; '@H@/.claude/set*'\"",
+    "python3 -c \"import platform; platform.system(); '@H@/.claude/set*'\"",
+    // a heredoc body written to a file that the same command then runs is shell code (laterRuns)
+    "cat > /tmp/lg-x.sh <<'EOF'\necho x > @H@/.claude/settings.js*\nEOF\nchmod +x /tmp/lg-x.sh && /tmp/lg-x.sh",
+    "cat > /tmp/lg-x.sh <<'EOF'\necho x > @H@/.claude/settings.js*\nEOF\nbash /tmp/lg-x.sh",
+  ])('the reverse rule, denied: %s', (c) => { expect(run(c).deny).toBe(true) })
+
+  it('a reference to os, posix, subprocess, pty, commands, platform, multiprocessing, asyncio or child_process re-shells', () => {
+    for (const m of ['os', 'posix', 'subprocess', 'pty', 'commands', 'platform', 'multiprocessing', 'asyncio', 'pickle', 'runpy', 'webbrowser']) {
+      expect(reShellsText(`python3 -c "import ${m}"`)).toBe(true)
+      expect(reShellsText(`python3 -c "from ${m} import x"`)).toBe(true)
+    }
+    expect(reShellsText("node -e \"require('child_process')\"")).toBe(true)
+    expect(reShellsText("node -e \"require('node:child_process')\"")).toBe(true)
+    // a name that only contains one of them is no reference
+    expect(reShellsText('python3 -c "import osmosis, cosmos; x.os_name; macOS"')).toBe(false)
+    // an everyday word that only names such a module counts when imported
+    expect(reShellsText('python3 -c "print(\'the platform runs commands as code\')"')).toBe(false)
+  })
+
   it('the #2514 rows stay denied (a visible or hidden shell call with a glob)', () => {
     expect(run("python3 -c \"import os; os.system('echo x | tee @H@/.claude/set*')\"").deny).toBe(true)
     expect(run("python3 -c \"__import__('os').system('tee @H@/.claude/set*')\"").deny).toBe(true)
