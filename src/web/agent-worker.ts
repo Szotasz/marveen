@@ -539,8 +539,9 @@ export function withWorkerGates(settings: WorkerSettings): WorkerSettings {
  *    (so auth/transcripts/marketplaces stay shared, persona memory does not);
  *  - settings.json with every channel plugin disabled (no 409);
  *  - .credentials.json seeded from the host login (subscription auth);
- *  - .claude.json with projects[ctx.home] mirroring projects[PROJECT_ROOT]
- *    so the worker inherits Marveen's project-scoped MCP servers.
+ *  - .claude.json with projects[ctx.home] mirroring projects[PROJECT_ROOT],
+ *    but with NO user-scope MCP server and only the allowlisted mail server
+ *    of the project scope (buildWorkerClaudeJson, WORKERMCPSEND1104).
  * No CLAUDE.md is written here: the cwd is outside PROJECT_ROOT, so the worker
  * boots with a neutral context.
  */
@@ -625,16 +626,12 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
     const homeClaudeJson = join(homedir(), '.claude.json')
     const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
-    stampWorkerFirstRun(parsed)
-    const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
-    const base = (projects[PROJECT_ROOT] && typeof projects[PROJECT_ROOT] === 'object')
-      ? projects[PROJECT_ROOT] as Record<string, unknown>
-      : {}
-    const trusted = { ...base, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
     const keys = new Set<string>([ctx.home])
     try { keys.add(realpathSync(ctx.home)) } catch { /* dir may not resolve yet */ }
-    for (const k of keys) projects[k] = { ...trusted }
-    parsed.projects = projects
+    const { droppedUser, droppedProject } = buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys, tryResolveFromPath('npx'))
+    if (droppedUser.length || droppedProject.length) {
+      logger.info({ droppedUser, droppedProject }, 'worker: MCP servers left out of the worker config (only the allowlisted mail server stays)')
+    }
     writeFileSync(join(ctx.configDir, '.claude.json'), JSON.stringify(parsed, null, 2) + '\n', { mode: 0o600 })
   } catch (err) {
     logger.warn({ err }, 'worker: failed to materialise .claude.json (worker may park on a first-run modal)')
@@ -654,6 +651,91 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
  * Pure (mutates the parsed object only) so it is unit-testable; idempotent and
  * harmless on CC versions that do not know these keys.
  */
+// WORKERMCPSEND1104: the MCP servers a worker may keep. The only worker prompt that uses MCP is the heartbeat, and it
+// only READS mail (src/heartbeat.ts); no worker prompt uses any other server. A server stays only when its launch has
+// EXACTLY this shape: `npx` (or the host's resolved npx path), then only -y/--yes flags, then one of these packages
+// (an optional @version suffix allowed), and nothing after it (Dani's #2499 review: an "any argv word" match kept a
+// `sh -c ...` or another package that merely named this one), a plain version or `latest` only after the @, and no
+// env key or unknown config key (the #2499 delta). Every other server, and every non-stdio (url) server, drops out. Fail-closed: an install with another mail server loses mail in the heartbeat, visibly.
+export const WORKER_MAIL_MCP_PACKAGES: readonly string[] = ['@gongrzhe/server-gmail-autoauth-mcp']
+
+// What may follow `<package>@`: a plain semver version or the `latest` tag. Any other npm spec after the @ (an
+// `npm:` alias, a URL, `file:`, `github:`) installs something else under the allowlisted name (Dani's #2499 delta).
+const PLAIN_VERSION_RE = /^(?:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?|latest)$/
+
+/** Is this npx argument exactly an allowlisted package, bare or with a plain @version / @latest? */
+function isAllowlistedPackageSpec(token: string): boolean {
+  return WORKER_MAIL_MCP_PACKAGES.some((pkg) =>
+    token === pkg || (token.startsWith(pkg + '@') && PLAIN_VERSION_RE.test(token.slice(pkg.length + 1))))
+}
+
+// The config keys a kept mail server may carry. An `env` with any key drops the entry: NODE_OPTIONS or
+// npm_config_* change what npx runs, and the mail server needs none (measured on this install: an empty env).
+const WORKER_MCP_CONFIG_KEYS = new Set(['type', 'command', 'args', 'env'])
+function hasOnlyPlainConfig(c: Record<string, unknown>): boolean {
+  if (!Object.keys(c).every((k) => WORKER_MCP_CONFIG_KEYS.has(k))) return false
+  if (c.env === undefined) return true
+  return !!c.env && typeof c.env === 'object' && !Array.isArray(c.env) && Object.keys(c.env as object).length === 0
+}
+
+const NPX_YES_FLAGS = new Set(['-y', '--yes'])
+
+/** Is this launch exactly `npx [-y|--yes]... <allowlisted package>[@version]`? */
+function isAllowlistedMailLaunch(command: string, args: unknown[], npxPath: string | null): boolean {
+  if (command !== 'npx' && !(npxPath && command === npxPath)) return false
+  if (!args.every((a) => typeof a === 'string')) return false
+  const words = args as string[]
+  let i = 0
+  while (i < words.length && NPX_YES_FLAGS.has(words[i])) i++
+  return i === words.length - 1 && isAllowlistedPackageSpec(words[i])
+}
+
+/**
+ * Splits project MCP servers into the ones a worker keeps (the allowlisted mail server) and the dropped names.
+ * npxPath: the host's resolved npx (an absolute path), accepted as the command besides the bare `npx`.
+ */
+export function filterWorkerMcpServers(servers: unknown, npxPath: string | null = null): { kept: Record<string, unknown>; dropped: string[] } {
+  const kept: Record<string, unknown> = {}
+  const dropped: string[] = []
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return { kept, dropped }
+  for (const [name, cfg] of Object.entries(servers as Record<string, unknown>)) {
+    const c = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg as { type?: unknown; command?: unknown; args?: unknown; url?: unknown } : null
+    const stdio = !!c && (c.type === undefined || c.type === 'stdio') && c.url === undefined && typeof c.command === 'string'
+    const args = stdio ? (c!.args === undefined ? [] : c!.args) : null
+    if (stdio && Array.isArray(args) && hasOnlyPlainConfig(c as Record<string, unknown>) && isAllowlistedMailLaunch(c!.command as string, args, npxPath)) kept[name] = cfg
+    else dropped.push(name)
+  }
+  return { kept, dropped }
+}
+
+/**
+ * The worker's .claude.json from the host's (parsed ~/.claude.json): the first-run chrome pre-accepted, the
+ * user-scope MCP servers REMOVED (WORKERMCPSEND1104: they reached every worker), and projects[<worker home keys>]
+ * mirroring projects[projectRoot] trusted, with only the allowlisted mail server kept. Pure; mutates `parsed`.
+ * Returns the dropped server names (names only, for the log).
+ */
+export function buildWorkerClaudeJson(
+  parsed: { projects?: Record<string, unknown>; mcpServers?: unknown; hasCompletedOnboarding?: boolean; [k: string]: unknown },
+  projectRoot: string,
+  homeKeys: Iterable<string>,
+  npxPath: string | null = null,
+): { droppedUser: string[]; droppedProject: string[] } {
+  stampWorkerFirstRun(parsed)
+  const droppedUser = (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers))
+    ? Object.keys(parsed.mcpServers as Record<string, unknown>)
+    : []
+  parsed.mcpServers = {}
+  const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
+  const base = (projects[projectRoot] && typeof projects[projectRoot] === 'object')
+    ? projects[projectRoot] as Record<string, unknown>
+    : {}
+  const { kept, dropped } = filterWorkerMcpServers(base.mcpServers, npxPath)
+  const trusted = { ...base, mcpServers: kept, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
+  for (const k of homeKeys) projects[k] = { ...trusted }
+  parsed.projects = projects
+  return { droppedUser, droppedProject: dropped }
+}
+
 export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
   parsed.hasCompletedOnboarding = true
   const seen = Number(parsed.fullscreenUpsellSeenCount)
