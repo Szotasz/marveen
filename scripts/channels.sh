@@ -2288,13 +2288,28 @@ PLUGIN_DEAD_GRACE=180
 # for the reload to actually take effect (bun poller respawn + reconnect)
 # before we give up and sacrifice the whole session.
 PLUGIN_RELOAD_AFTER=90
-# RESTARTCOALESCE1103: how much slack to give store/.channel-last-respawn
-# (channel-monitor.ts writeRespawnStamp(), epoch seconds) when deciding
-# whether it explains the plugin going missing, versus a genuine unexplained
-# crash. One poll tick (see the 5s `sleep` in the watchdog loop below) would
-# be enough in theory, but a generous buffer costs nothing -- the stamp is
-# only ever this fresh right after an actual restart, never by accident.
-RESPAWN_COALESCE_WINDOW=30
+# RESTARTCOALESCE1103: how long after store/.channel-last-respawn
+# (channel-monitor.ts writeRespawnStamp(), epoch seconds) a disappearance is
+# still this restart's own doing, not a genuine unexplained crash.
+#
+# FIXED 2026-11-04: this used to be a 30s RESPAWN_COALESCE_WINDOW compared
+# against PLUGIN_DEAD_SINCE, which the suppression branch below resets to 0 on
+# every tick it fires -- so PLUGIN_DEAD_SINCE itself kept sliding to "now",
+# and the comparison silently measured only ~30s of real wall-clock time after
+# the respawn stamp, not "however long this restart actually takes". Measured
+# live 2026-11-04 08:07-08:11: a context-guard restart that took longer than
+# that window still hit the redundant systemd restart ~3.5min later (the 30s
+# window plus the full $PLUGIN_DEAD_GRACE from wherever PLUGIN_DEAD_SINCE
+# happened to slide to).
+#
+# The budget now compares directly against the FIXED respawn stamp (NOW -
+# _respawn_stamp), never against PLUGIN_DEAD_SINCE, so it cannot slide. The
+# value mirrors RESUME_GRACE_MS in src/web/channel-monitor.ts, which already
+# reads this exact stamp file for the same question ("how long can a full
+# resume legitimately take") and was tuned through three live incidents
+# (comment there: "Grace history: 90s -> 150s -> 240s"). Two independent
+# readers of one fact should agree on it.
+RESPAWN_SETTLE_BUDGET=240
 PLUGIN_SEEN_ONCE=false
 PLUGIN_DEAD_SINCE=0
 PLUGIN_RELOAD_ATTEMPTED=false
@@ -2460,22 +2475,22 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
     # would -- confirmed 2026-11-03 against
     # ~/.cache/claude-cli-nodejs/.../mcp-logs-plugin-telegram-telegram/*.jsonl
     # and store/dashboard.log "context-guard: acting" entries) writes
-    # store/.channel-last-respawn at the moment it respawns the pane. If that
-    # stamp is at or after our own death-timer start (within
-    # $RESPAWN_COALESCE_WINDOW slack for poll-loop granularity), the
-    # disappearance is that restart's own doing: it already has a fresh
-    # claude process and its own plugin-unlock probe scheduled, so exiting
-    # here too would only sacrifice the conversation a second time for
-    # nothing. Reset and keep watching instead of counting towards exit.
+    # store/.channel-last-respawn at the moment it respawns the pane. While
+    # we are still within $RESPAWN_SETTLE_BUDGET of THAT FIXED stamp (never
+    # compared against the sliding PLUGIN_DEAD_SINCE -- see the budget's own
+    # comment above for why), the disappearance is that restart's own doing:
+    # it already has a fresh claude process and its own plugin-unlock probe
+    # scheduled, so exiting here too would only sacrifice the conversation a
+    # second time for nothing. Keep watching instead of counting towards
+    # exit; PLUGIN_DEAD_SINCE is left untouched so it keeps tracking the real
+    # death time for whoever reads it once the settle budget runs out.
     _respawn_stamp="$(cat "$INSTALL_DIR/store/.channel-last-respawn" 2>/dev/null | tr -d '[:space:]')"
     case "$_respawn_stamp" in (*[!0-9]*|'') _respawn_stamp=0 ;; esac
-    if [ "$_respawn_stamp" -gt 0 ] && [ "$_respawn_stamp" -ge "$((PLUGIN_DEAD_SINCE - RESPAWN_COALESCE_WINDOW))" ]; then
-      respawn_log "died-after-up-suppressed: $CHANNEL_PROVIDER plugin gone, but store/.channel-last-respawn ($_respawn_stamp) explains it (within ${RESPAWN_COALESCE_WINDOW}s of death-timer start $PLUGIN_DEAD_SINCE) -- already handled by an in-process hard restart, not restarting again"
-      PLUGIN_DEAD_SINCE=0
-      PLUGIN_RELOAD_ATTEMPTED=false
+    if [ "$_respawn_stamp" -gt 0 ] && [ "$((NOW - _respawn_stamp))" -le "$RESPAWN_SETTLE_BUDGET" ]; then
+      respawn_log "died-after-up-suppressed: $CHANNEL_PROVIDER plugin gone, but store/.channel-last-respawn ($_respawn_stamp) explains it (within ${RESPAWN_SETTLE_BUDGET}s settle budget, $((NOW - _respawn_stamp))s elapsed) -- already handled by an in-process hard restart, not restarting again"
     elif [ "$((NOW - PLUGIN_DEAD_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
-      respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s (RESTARTCOALESCE1103 saw respawn_stamp=$_respawn_stamp, death_timer_start=$PLUGIN_DEAD_SINCE, window=${RESPAWN_COALESCE_WINDOW}s -- did not explain the gap) -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
+      respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s (RESTARTCOALESCE1103 saw respawn_stamp=$_respawn_stamp, settle_budget=${RESPAWN_SETTLE_BUDGET}s -- did not explain the gap) -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
       RESTART_REQUESTED=1
       EXIT_REASON="plugin-died"
       break
