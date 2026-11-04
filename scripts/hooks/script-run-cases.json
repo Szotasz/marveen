@@ -139,6 +139,8 @@
     {"name": "Samu 69682: dirname of a realpath of $0, the same", "cmd": "cd \"$(dirname \"$(realpath \"$0\")\")\" && python3 tool.py", "main": true, "sub": false},
     {"name": "Samu 69682: a substitution with options is not resolved: still a command-substitution cd", "cmd": "cd \"$(dirname -z evil/send.py)\" && python3 tool.py", "main": true, "sub": true},
     {"name": "Samu 69682: basename of a literal", "cmd": "cd \"$(basename /x/evil)\" && python3 plain.py", "main": true, "sub": true},
-    {"name": "Samu 69682: dirname of a realpath into a dir without a sender: a literal cd, no send", "cmd": "cd \"$(dirname \"$(realpath pkgclean/__main__.py)\")\" && python3 plain.py", "main": false, "sub": false}
+    {"name": "Samu 69682: dirname of a realpath into a dir without a sender: a literal cd, no send", "cmd": "cd \"$(dirname \"$(realpath pkgclean/__main__.py)\")\" && python3 plain.py", "main": false, "sub": false},
+    {"name": "Bence 69701: a # right after the ) of a $(...) is part of the word: the --to after it addresses the run", "cmd": "cd $WT && python3 tool.py $(echo x)#y --to a@example.com", "main": true, "sub": true},
+    {"name": "Bence 69701: control, after a space the # starts a comment (no recipient)", "cmd": "cd $WT && python3 tool.py $(echo x) #y --to a@example.com", "main": true, "sub": false}
   ]
 }

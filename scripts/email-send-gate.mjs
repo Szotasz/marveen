@@ -1447,6 +1447,8 @@ function resolveDeterministicSubst(cmd, cwd) {
 function stripShellComments(cmd) {
   let out = ''
   let q = null
+  const parens = [] // Bence 69701: 's' for an open $( , 'p' for a plain ( -- which ) closes a command substitution
+  let substCloseAt = -1
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
@@ -1457,10 +1459,14 @@ function stripShellComments(cmd) {
     }
     if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
     if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
-    if (ch === '#' && (i === 0 || /[\s;&|()]/.test(cmd[i - 1]))) {
+    // a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701, as the python twin's mask)
+    if (ch === '#' && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]) || (cmd[i - 1] === ')' && substCloseAt !== i - 1))) {
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
       continue
     }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += '$('; i++; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
     out += ch
   }
   return out
