@@ -418,7 +418,8 @@ describe('env -C and the launchers in front of the sender (ENVOPTHEAD1104, Bence
     writeFileSync(join(cwd, 'sender.py'), SMTP)
     for (const cmd of [`env -C ${cwd}/evil python3 send.py`, `env --chdir=${cwd}/evil python3 send.py`,
       `env --chdir ${cwd}/evil python3 send.py`, `env -C${cwd}/evil python3 send.py`, 'env -C evil python3 send.py',
-      'env -C $X python3 send.py', 'stdbuf -o0 python3 sender.py', 'ionice -c 3 python3 sender.py',
+      'env -C $X python3 send.py', `env -a x -C ${cwd}/evil python3 send.py`, `env --c=${cwd}/evil python3 send.py`,
+      `env --chd ${cwd}/evil python3 send.py`, 'stdbuf -o0 python3 sender.py', 'ionice -c 3 python3 sender.py',
       'chrt -r 1 python3 sender.py', 'caffeinate -i python3 sender.py']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }

@@ -87,6 +87,11 @@ try:
         (f"env -i -C {D}/evil python3 send.py", True, "env -i -C DIR"),
         ("env -C ../evil python3 send.py", True, "env -C with a relative DIR"),
         ("env -C $X python3 send.py", True, "env -C with an undecidable DIR"),
+        # Bence 69517: -a takes a value; a unique prefix of --chdir works like the full name
+        (f"env -a x -C {D}/evil python3 send.py", True, "env -a ARG -C DIR"),
+        (f"env --c={D}/evil python3 send.py", True, "env --c=DIR (prefix of --chdir)"),
+        (f"env --chd {D}/evil python3 send.py", True, "env --chd DIR (prefix of --chdir)"),
+        (f"env --un FOO --chd {D}/evil python3 send.py", True, "env --un NAME --chd DIR"),
         (f"env -C {D}/decoy python3 send.py", False, "control: env -C into a dir whose script does not send"),
     ]:
         got = ocg.script_run_sends(cmd, C)

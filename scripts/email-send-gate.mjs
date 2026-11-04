@@ -446,7 +446,8 @@ const WRAPPERS = new Map([
   ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
     'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
   // ENVOPTHEAD1104: -P (macOS/BSD env: another search path) takes a value; -S / --split-string: envSplitHeads
-  ['env', ['uCSP', ['unset', 'chdir', 'split-string'], 0]],
+  // Bence 69517: -a / --argv0 (GNU env 9.x) takes a value too
+  ['env', ['uCSPa', ['unset', 'chdir', 'split-string', 'argv0'], 0]],
   ['nohup', ['', [], 0]],
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
@@ -562,10 +563,11 @@ function commandHeads(toksIn, d = 0) {
     const t = toks[i]
     if (t === '--') { i++; break }
     if (t.startsWith('--')) {
-      if (w === 'env' && (t === '--split-string' || t.startsWith('--split-string='))) {
+      if (w === 'env' && envLongName(t) === 'split-string') {
         const eq = t.indexOf('=')
         return eq >= 0 ? envSplitHeads(t.slice(eq + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
       }
+      if (w === 'env' && !t.includes('=') && longVal.includes(envLongName(t))) { i += 2; continue } // `--un NAME`, `--chd DIR`
       if (!t.includes('=') && longVal.includes(t.slice(2))) { i += 2; continue }
       if (!t.includes('=')) starts.push(i + 2)
       i++
@@ -1244,6 +1246,17 @@ export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScript
 
 const UNDECIDABLE_CHDIR = /^-$|^~[^/]|[*?[{$`]/
 
+// Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
+const ENV_LONG_OPTIONS = ['argv0', 'block-signal', 'chdir', 'debug', 'default-signal', 'ignore-environment', 'ignore-signal',
+  'list-signal-handling', 'null', 'split-string', 'unset', 'help', 'version']
+function envLongName(t) {
+  if (!t.startsWith('--') || t === '--') return null
+  const word = t.slice(2).split('=')[0]
+  if (ENV_LONG_OPTIONS.includes(word)) return word
+  const hits = ENV_LONG_OPTIONS.filter((o) => word && o.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+
 // ENVOPTHEAD1104: the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also in a cluster) runs in.
 function envChdirDirs(words) {
   const out = []
@@ -1253,11 +1266,13 @@ function envChdirDirs(words) {
     while (j < words.length) {
       const t = words[j]
       if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
-      if (t === '-C' || t === '--chdir') { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
-      if (t.startsWith('--chdir=')) out.push(t.slice(8))
+      const long = envLongName(t)
+      if (t === '-C' || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
+      if (long === 'chdir') out.push(t.slice(t.indexOf('=') + 1))
+      else if (long && !t.includes('=') && ['unset', 'split-string', 'argv0'].includes(long)) j++ // its value
       else if (t.startsWith('-') && !t.startsWith('--')) {
         let k = -1
-        for (let x = 1; x < t.length; x++) if ('uCSP'.includes(t[x])) { k = x; break }
+        for (let x = 1; x < t.length; x++) if ('uCSPa'.includes(t[x])) { k = x; break }
         if (k > 0 && t[k] === 'C') {
           if (k < t.length - 1) out.push(t.slice(k + 1))
           else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }

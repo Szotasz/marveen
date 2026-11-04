@@ -511,7 +511,8 @@ _WRAPPERS = {
                              "role", "type", "chdir", "chroot", "command-timeout"), 0),
     # ENVOPTHEAD1104: -P (macOS/BSD env: another search path) takes a value too; without it the value read as the
     # program, so `env -P /x python3 send.py --to a@x` was no send. -S / --split-string: _env_split_heads.
-    "env": ("uCSP", ("unset", "chdir", "split-string"), 0),
+    # Bence 69517: -a / --argv0 (GNU env 9.x) takes a value too
+    "env": ("uCSPa", ("unset", "chdir", "split-string", "argv0"), 0),
     "nohup": ("", (), 0),
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
@@ -662,9 +663,12 @@ def _command_heads(toks, _d: int = 0):
             i += 1
             break
         if t.startswith("--"):
-            if w == "env" and (t == "--split-string" or t.startswith("--split-string=")):
+            if w == "env" and _env_long_name(t) == "split-string":
                 value, after = (t.split("=", 1)[1], i + 1) if "=" in t else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
                 return _env_split_heads(value, toks[after:], _d)
+            if w == "env" and "=" not in t and _env_long_name(t) in long_val:
+                i += 2  # an abbreviated long option that takes a value (`--un NAME`, `--chd DIR`)
+                continue
             if "=" not in t and t[2:] in long_val:
                 i += 2
                 continue
@@ -689,6 +693,23 @@ def _command_heads(toks, _d: int = 0):
     return heads
 
 
+# Bence 69517: GNU env reads a long option by any unique prefix (getopt_long): `--c=DIR` is --chdir, `--spl=` is
+# --split-string. Its long options, as of coreutils 9.x.
+_ENV_LONG_OPTIONS = ("argv0", "block-signal", "chdir", "debug", "default-signal", "ignore-environment", "ignore-signal",
+                     "list-signal-handling", "null", "split-string", "unset", "help", "version")
+
+
+def _env_long_name(t):
+    """The env long option a `--word[=value]` names, by exact name or unique prefix; else None."""
+    if not t.startswith("--") or t == "--":
+        return None
+    word = t[2:].split("=", 1)[0]
+    if word in _ENV_LONG_OPTIONS:
+        return word
+    hits = [o for o in _ENV_LONG_OPTIONS if word and o.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _env_chdir_dirs(words):
     """ENVOPTHEAD1104 (Bence 69475): the directories `env -C DIR` / `--chdir DIR` / `--chdir=DIR` / `-CDIR` (also
     inside a cluster) runs its command in. A relative script there is resolved under DIR, not the cwd: they are handed
@@ -702,15 +723,17 @@ def _env_chdir_dirs(words):
             t = words[j]
             if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
                 break
-            if t in ("-C", "--chdir"):
+            if t == "-C" or (t.startswith("--") and "=" not in t and _env_long_name(t) == "chdir"):
                 if j + 1 < len(words):
                     out.append(words[j + 1])
                 j += 2
                 continue
-            if t.startswith("--chdir="):
+            if t.startswith("--") and "=" in t and _env_long_name(t) == "chdir":
                 out.append(t.split("=", 1)[1])
+            elif t.startswith("--") and "=" not in t and _env_long_name(t) in ("unset", "split-string", "argv0"):
+                j += 1  # its value
             elif t.startswith("-") and not t.startswith("--"):
-                k = next((x for x, ch in enumerate(t[1:], 1) if ch in "uCSP"), -1)
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in "uCSPa"), -1)
                 if k > 0 and t[k] == "C":
                     if k < len(t) - 1:
                         out.append(t[k + 1:])
