@@ -487,8 +487,9 @@ export function withFleetFreezeGate(settings: WorkerSettings): WorkerSettings {
  *    (so auth/transcripts/marketplaces stay shared, persona memory does not);
  *  - settings.json with every channel plugin disabled (no 409);
  *  - .credentials.json seeded from the host login (subscription auth);
- *  - .claude.json with projects[ctx.home] mirroring projects[PROJECT_ROOT]
- *    so the worker inherits Marveen's project-scoped MCP servers.
+ *  - .claude.json with projects[ctx.home] mirroring projects[PROJECT_ROOT],
+ *    but with NO user-scope MCP server and only the allowlisted mail server
+ *    of the project scope (buildWorkerClaudeJson, WORKERMCPSEND1104).
  * No CLAUDE.md is written here: the cwd is outside PROJECT_ROOT, so the worker
  * boots with a neutral context.
  */
@@ -573,16 +574,12 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
     const homeClaudeJson = join(homedir(), '.claude.json')
     const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
-    stampWorkerFirstRun(parsed)
-    const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
-    const base = (projects[PROJECT_ROOT] && typeof projects[PROJECT_ROOT] === 'object')
-      ? projects[PROJECT_ROOT] as Record<string, unknown>
-      : {}
-    const trusted = { ...base, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
     const keys = new Set<string>([ctx.home])
     try { keys.add(realpathSync(ctx.home)) } catch { /* dir may not resolve yet */ }
-    for (const k of keys) projects[k] = { ...trusted }
-    parsed.projects = projects
+    const { droppedUser, droppedProject } = buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys)
+    if (droppedUser.length || droppedProject.length) {
+      logger.info({ droppedUser, droppedProject }, 'worker: MCP servers left out of the worker config (only the allowlisted mail server stays)')
+    }
     writeFileSync(join(ctx.configDir, '.claude.json'), JSON.stringify(parsed, null, 2) + '\n', { mode: 0o600 })
   } catch (err) {
     logger.warn({ err }, 'worker: failed to materialise .claude.json (worker may park on a first-run modal)')
@@ -602,6 +599,61 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
  * Pure (mutates the parsed object only) so it is unit-testable; idempotent and
  * harmless on CC versions that do not know these keys.
  */
+// WORKERMCPSEND1104: the MCP servers a worker may keep. The only worker prompt that uses MCP is the heartbeat, and it
+// only READS mail (src/heartbeat.ts); no worker prompt uses any other server. A server stays only when its launch
+// command names one of these packages as a whole word (an optional @version suffix allowed); every other server,
+// and every non-stdio (url) server, drops out. Fail-closed: an install with another mail server loses mail in the
+// heartbeat, visibly, instead of the worker carrying tools it never needs.
+export const WORKER_MAIL_MCP_PACKAGES: readonly string[] = ['@gongrzhe/server-gmail-autoauth-mcp']
+
+function packageOfToken(token: string): string {
+  // '@scope/name@1.2.3' -> '@scope/name', 'name@1.2.3' -> 'name'
+  const at = token.lastIndexOf('@')
+  return at > 0 ? token.slice(0, at) : token
+}
+
+/** Splits project MCP servers into the ones a worker keeps (the allowlisted mail server) and the dropped names. */
+export function filterWorkerMcpServers(servers: unknown): { kept: Record<string, unknown>; dropped: string[] } {
+  const kept: Record<string, unknown> = {}
+  const dropped: string[] = []
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return { kept, dropped }
+  for (const [name, cfg] of Object.entries(servers as Record<string, unknown>)) {
+    const c = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg as { type?: unknown; command?: unknown; args?: unknown; url?: unknown } : null
+    const stdio = !!c && (c.type === undefined || c.type === 'stdio') && c.url === undefined && typeof c.command === 'string'
+    const words = stdio ? [c!.command as string, ...(Array.isArray(c!.args) ? c!.args.filter((a): a is string => typeof a === 'string') : [])] : []
+    if (words.some((w) => WORKER_MAIL_MCP_PACKAGES.includes(packageOfToken(w.trim())))) kept[name] = cfg
+    else dropped.push(name)
+  }
+  return { kept, dropped }
+}
+
+/**
+ * The worker's .claude.json from the host's (parsed ~/.claude.json): the first-run chrome pre-accepted, the
+ * user-scope MCP servers REMOVED (WORKERMCPSEND1104: they reached every worker), and projects[<worker home keys>]
+ * mirroring projects[projectRoot] trusted, with only the allowlisted mail server kept. Pure; mutates `parsed`.
+ * Returns the dropped server names (names only, for the log).
+ */
+export function buildWorkerClaudeJson(
+  parsed: { projects?: Record<string, unknown>; mcpServers?: unknown; hasCompletedOnboarding?: boolean; [k: string]: unknown },
+  projectRoot: string,
+  homeKeys: Iterable<string>,
+): { droppedUser: string[]; droppedProject: string[] } {
+  stampWorkerFirstRun(parsed)
+  const droppedUser = (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers))
+    ? Object.keys(parsed.mcpServers as Record<string, unknown>)
+    : []
+  parsed.mcpServers = {}
+  const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
+  const base = (projects[projectRoot] && typeof projects[projectRoot] === 'object')
+    ? projects[projectRoot] as Record<string, unknown>
+    : {}
+  const { kept, dropped } = filterWorkerMcpServers(base.mcpServers)
+  const trusted = { ...base, mcpServers: kept, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
+  for (const k of homeKeys) projects[k] = { ...trusted }
+  parsed.projects = projects
+  return { droppedUser, droppedProject: dropped }
+}
+
 export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
   parsed.hasCompletedOnboarding = true
   const seen = Number(parsed.fullscreenUpsellSeenCount)
