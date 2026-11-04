@@ -13,21 +13,18 @@
 // on purpose -- a silent skip would hide that someone is one `npm test` away from
 // mutating production state (loaded via vitest `setupFiles`, so it gates every
 // worker; per-file guards cannot be forgotten this way).
-import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { isTmpRootedPath, TMP_ROOT_PREFIXES } from '../../web/tmp-root-prefixes.js'
+import { findLiveMarkers } from './live-install-markers.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
-const LIVE_MARKERS = [
-  join('store', '.dashboard-token'),
-  join('store', 'claudeclaw.db'),
-  join('store', '.claude-oauth-token'),
-]
-
-const found = LIVE_MARKERS.filter((m) => existsSync(join(repoRoot, m)))
+// The marker list lives in live-install-markers.ts, shared with the globalSetup
+// gate (global-live-install-gate.ts), which refuses the run once, up front; this
+// per-worker copy is the second layer.
+const found = findLiveMarkers(repoRoot)
 if (found.length > 0) {
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} looks like a LIVE install (found: ${found.join(', ')}). ` +

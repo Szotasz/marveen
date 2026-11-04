@@ -39,9 +39,17 @@ export default defineConfig({
     // bump: without this line those three red out as timeouts, with it the
     // suite is green. This is a timeout budget, not a behavioural change.
     testTimeout: 60000,
+    // global-live-install-gate: refuse the whole run ONCE, in the main process,
+    // before any worker starts, when the checkout is a live install (same marker
+    // list as the per-worker gate below, which stays as the second layer).
+    globalSetup: ['./src/__tests__/setup/global-live-install-gate.ts'],
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
+    //  - rm-guard: refuse recursive or forced deletes outside the temp dir, /tmp and
+    //    this checkout (and inside the checkout's .git), for every in-process
+    //    fs.rm*/rmdir* caller however it imports fs (child processes are not
+    //    covered). Must stay AFTER assert-not-live-install.
     //  - assert-supported-node: refuse to run on a Node whose ABI the installed
     //    native modules were not built for, which otherwise reds out 40 files
     //    with errors that look like bugs in those files (2026-08-17).
@@ -52,6 +60,7 @@ export default defineConfig({
     //    2026-09-15). A seam, not a gate: it sets state, so it lives in its own file.
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
+      './src/__tests__/setup/rm-guard.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/default-ssh-dir-seam.ts',
     ],
