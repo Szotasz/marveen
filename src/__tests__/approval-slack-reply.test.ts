@@ -97,7 +97,7 @@ describe('the owner\'s last word, after the settle time', () => {
 
   it('a "mehet" younger than REPLY_SETTLE_S waits; older decides', async () => {
     const ts = 1700000000 + 10
-    expect(await verdict({ after: [owner('mehet', 10)] }, post, ts + REPLY_SETTLE_S - 1)).toEqual({ kind: 'none' })
+    expect(await verdict({ after: [owner('mehet', 10)] }, post, ts + REPLY_SETTLE_S - 1)).toEqual({ kind: 'none', pending: true })
     expect(await verdict({ after: [owner('mehet', 10)] }, post, ts + REPLY_SETTLE_S + 1)).toMatchObject({ kind: 'approved' })
   })
 
@@ -150,6 +150,30 @@ describe('the modes', () => {
     const w: World = { after: [owner('mehet', 10)], calls: [] }
     expect(await checkPost(fake(w), { ...post, reactionMode: true, replyMode: false }, NOW)).toEqual({ kind: 'none' })
     expect(w.calls).toEqual(['conversations.history'])
+  })
+})
+
+describe('a post offered BOTH: the reaction and the reply are read together (Dani 67810)', () => {
+  const both = { ...post, reactionMode: true, replyMode: true }
+  const withReaction = (name: string) => parent([], { reactions: [{ name, users: [OWNER], count: 1 }] })
+  it('✅ on the request, then the owner types "nem": a refusal (conflict), never an approval', async () => {
+    expect(await verdict({ parent: withReaction('white_check_mark'), after: [owner('nem', 10)] }, both)).toEqual({ kind: 'refused', reason: 'reaction_reply_conflict' })
+  })
+  it('and the other way round: ❌ with a typed "mehet" is a conflict too', async () => {
+    expect(await verdict({ parent: withReaction('x'), after: [owner('mehet', 10)] }, both)).toEqual({ kind: 'refused', reason: 'reaction_reply_conflict' })
+  })
+  it('they agree: the reply decides (it names the owner message)', async () => {
+    expect(await verdict({ parent: withReaction('white_check_mark'), after: [owner('mehet', 10)] }, both)).toEqual({ kind: 'approved', userId: OWNER, via: { binding: 'next_message', ts: at(10) } })
+  })
+  it('only the reaction: it decides', async () => {
+    expect(await verdict({ parent: withReaction('white_check_mark') }, both)).toEqual({ kind: 'approved', userId: OWNER })
+  })
+  it('a typed word still settling holds the reaction back (no decision yet)', async () => {
+    const ts = 1700000000 + 10
+    expect(await verdict({ parent: withReaction('white_check_mark'), after: [owner('nem', 10)] }, both, ts + 5)).toEqual({ kind: 'none', pending: true })
+  })
+  it('an edited reply holds the reaction back too: a notice, no decision', async () => {
+    expect(await verdict({ parent: withReaction('white_check_mark'), after: [owner('nem', 10, { edited: { ts: at(11) } })] }, both)).toEqual({ kind: 'notice', reason: 'owner_edited' })
   })
 })
 

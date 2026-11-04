@@ -89,7 +89,7 @@ Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false;
 export type Binding = 'thread' | 'next_message'
 
 export type Verdict =
-  | { kind: 'none' }
+  | { kind: 'none'; pending?: true }
   | { kind: 'approved' | 'rejected'; userId: string; via?: { binding: Binding; ts: string } }
   | { kind: 'refused'; reason: string }
   | { kind: 'notice'; reason: 'owner_edited' }
@@ -127,7 +127,8 @@ function fromDeciding(d: Msg, post: ApprovalSlackPost, binding: Binding, nowS: n
   if (d.edited !== undefined) return { kind: 'notice', reason: 'owner_edited' }
   const word = replyWord(d.text)
   if (!word || typeof d.ts !== 'string') return { kind: 'none' }
-  if (Number(d.ts) > nowS - REPLY_SETTLE_S) return { kind: 'none' }
+  // a decision word still inside its settle time: nothing decides yet, a reaction neither (see checkPost)
+  if (Number(d.ts) > nowS - REPLY_SETTLE_S) return { kind: 'none', pending: true }
   return { kind: word, userId: post.ownerUserId, via: { binding, ts: d.ts } }
 }
 
@@ -181,15 +182,27 @@ export async function checkPost(call: SlackCall, post: ApprovalSlackPost, nowS: 
   if (h.ok !== true) return { kind: 'none' }
   const m = (h.messages as Array<Record<string, unknown>> | undefined)?.[0]
   if (!m || m.ts !== post.ts) return { kind: 'refused', reason: 'message_missing' }
-  let v: Verdict = { kind: 'none' }
+  let reaction: Verdict = { kind: 'none' }
   if (post.reactionMode !== false) {
     const reactors = reactorsOf(m)
     const yes = (reactors.get(APPROVE_REACTION) ?? []).includes(post.ownerUserId)
     const no = (reactors.get(REJECT_REACTION) ?? []).includes(post.ownerUserId)
     if (yes && no) return { kind: 'refused', reason: 'both_reactions' }
-    if (yes || no) v = { kind: yes ? 'approved' : 'rejected', userId: post.ownerUserId }
+    if (yes || no) reaction = { kind: yes ? 'approved' : 'rejected', userId: post.ownerUserId }
   }
-  if (v.kind === 'none' && post.replyMode === true) v = await replySignal(call, post, m, nowS)
+  // Dani 67810 (#2489 review): a post offered BOTH reads both, so a later typed "nem" is never overridden by a reaction.
+  // They disagree: a refusal (rejection + alert), as two reactions do. They agree: the reply decides (it names the
+  // owner message). A reply word still settling, or an edited reply, holds the reaction back too.
+  const reply: Verdict = post.replyMode === true ? await replySignal(call, post, m, nowS) : { kind: 'none' }
+  let v: Verdict
+  if (reply.kind === 'approved' || reply.kind === 'rejected') {
+    if ((reaction.kind === 'approved' || reaction.kind === 'rejected') && reaction.kind !== reply.kind) return { kind: 'refused', reason: 'reaction_reply_conflict' }
+    v = reply
+  } else if (reply.kind === 'notice' || (reply.kind === 'none' && reply.pending)) {
+    return reply
+  } else {
+    v = reaction
+  }
   if (v.kind !== 'approved' && v.kind !== 'rejected') return v
   // The request message must still be the one the server posted, whichever signal decided.
   if (m.edited !== undefined) return { kind: 'refused', reason: 'message_edited' }
