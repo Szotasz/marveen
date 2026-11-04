@@ -899,6 +899,7 @@ function mcpVerdict(m, opts) {
 export function mcpDecision(toolName, toolInput, opts = {}) {
   const m = mcpFileTargets(toolName, toolInput)
   if (!m) return null
+  if (m.dbNamed) return { deny: true, reason: 'db' } // the DB by name, any class, any caller (as the native tools)
   if (m.cls !== 'other' && (m.missingPath || m.truncated)) return { deny: true, reason: 'mcp-path' }
   if (m.cls === 'other' && opts.subAgent !== true) return { deny: false }
   const r = mcpVerdict(m, opts)
@@ -1082,7 +1083,7 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
   try {
     // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
     const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
-    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated) allow()
+    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.dbNamed) allow()
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input,
       {
         cwd: payload?.cwd,

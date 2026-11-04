@@ -36,12 +36,30 @@ describe('mcpFileTargets', () => {
   })
   it('every string leaf that looks like a path, at any depth, whatever its key', () => {
     const m = mcpFileTargets('mcp__any__save', { opts: { deep: { where: '/a/b.json' } }, list: ['~/c', 'plain'], uri: 'file:///d%20e/f' })
-    expect(m.targets.map((t: { path: string }) => t.path).sort()).toEqual(['/a/b.json', '/d e/f', '~/c'])
+    expect(m.targets.map((t: { path: string }) => t.path).sort()).toEqual(['/a/b.json', '/d e/f', 'plain', '~/c']) // a writer: a bare leaf too
     expect(m.cls).toBe('writer')
   })
-  it('a relative path with a slash is a candidate; a bare word is not', () => {
-    const m = mcpFileTargets('mcp__x__write_thing', { a: 'store/extra-hooks.json', b: 'hello' })
-    expect(m.targets.map((t: { path: string }) => t.path)).toEqual(['store/extra-hooks.json'])
+  it('a writer: every whitespace-free leaf is a relative-path candidate, a bare name too (Dani 68192 (2))', () => {
+    const m = mcpFileTargets('mcp__notes__save_note', { filename: '.mcp.json', title: 'two words', dir: 'store/x' })
+    expect(m.targets.map((t: { path: string }) => t.path).sort()).toEqual(['.mcp.json', 'store/x'])
+  })
+  it('the other class: a bare name is not a candidate, a slash is', () => {
+    const m = mcpFileTargets('mcp__x__search', { q: 'hello', p: 'a/b' })
+    expect(m.targets.map((t: { path: string }) => t.path)).toEqual(['a/b'])
+  })
+  it.each([['create_file', 'writer'], ['update_file', 'writer'], ['replace_in_file', 'writer'], ['insertText', 'writer'],
+    ['set_contents', 'writer']])('Dani 68192 (1): %s -> %s', (tool, cls) => {
+    expect(toolClass(tool)).toBe(cls)
+  })
+  it('a known mover\'s own keys are directory targets (Dani 68192 (3))', () => {
+    const m = mcpFileTargets('mcp__fs__move_file', { source: 'store', destination: 'x' })
+    expect(m.targets).toContainEqual({ path: 'store', dir: true })
+    expect(m.targets.filter((t: { dir: boolean }) => !t.dir)).toEqual([])
+  })
+  it('a leaf naming the dashboard DB is flagged, whatever the class', () => {
+    expect(mcpFileTargets('mcp__sqlite__read_query', { db: 'store/claudeclaw.db', q: 'select 1' }).dbNamed).toBe(true)
+    expect(mcpFileTargets('mcp__x__search', { q: 'claudeclaw.db-wal' }).dbNamed).toBe(true)
+    expect(mcpFileTargets('mcp__x__search', { q: 'about claudeclaw.db files' }).dbNamed).toBe(false)
   })
   it('for the other class, prose (whitespace) is not a path; a lone path is', () => {
     const m = mcpFileTargets('mcp__plugin_telegram_telegram__reply', { text: 'see store/x.json now', files: ['/tmp/a.png'] })

@@ -104,6 +104,30 @@ describe('an UNKNOWN MCP writer: its tool-name class decides, not its server (Da
   })
 })
 
+// Dani 68192: the three classifier gaps found on d995334b, each measured from the install root (cwd = root).
+describe('Dani 68192: create/update/replace writers, bare names, a known mover\'s own keys', () => {
+  const atRoot = () => ({ cwd: root, projectDir: root }) // a function: root is set in beforeEach
+  it('(1) create_file / update_file / replace_in_file onto a protected path: denied for the main agent too', () => {
+    for (const tool of ['mcp__x__create_file', 'mcp__x__update_file', 'mcp__x__replace_in_file']) {
+      expect(denied(db(tool, { path: join(root, '.claude', 'settings.json'), content: 'x' }, { ...atRoot(), subAgent: false }))).toBe(true)
+      expect(db(tool, { path: join(store, 'claudeclaw.db'), content: 'x' }, { ...atRoot(), subAgent: false })).toEqual({ deny: true, reason: 'db' })
+    }
+  })
+  it('(1) the DB by name in ANY class, for the main agent too (as the native Write)', () => {
+    expect(db('mcp__sqlite__read_query', { db: join(store, 'claudeclaw.db'), q: 'select 1' }, { ...atRoot(), subAgent: false })).toEqual({ deny: true, reason: 'db' })
+    expect(db('mcp__x__search', { q: 'claudeclaw.db' }, { ...atRoot(), subAgent: false })).toEqual({ deny: true, reason: 'db' })
+  })
+  it('(2) an unknown writer\'s bare relative name is a path', () => {
+    expect(denied(db('mcp__notes__save_note', { filename: '.mcp.json', body: 'x' }, atRoot()))).toBe(true)
+    expect(denied(db('mcp__notes__save_note', { filename: './.mcp.json', body: 'x' }, atRoot()))).toBe(true)
+    expect(db('mcp__notes__save_note', { filename: 'notes.md', body: 'x' }, { cwd: join(agent, 'work'), projectDir: join(agent, 'work') })).toEqual({ deny: false })
+  })
+  it('(3) a known mover\'s own key, relative: a directory, on both gates', () => {
+    expect(denied(db('mcp__Filesystem__move_file', { source: 'store', destination: '/tmp/s' }, atRoot()))).toBe(true)
+    expect(denied(pace('mcp__Filesystem__move_file', { source: 'store', destination: '/tmp/s' }, atRoot()))).toBe(true)
+  })
+})
+
 describe('what stays free', () => {
   it.each([
     ['mcp__server-gmail-autoauth-mcp__search_emails', { query: 'from:x subject:y' }],

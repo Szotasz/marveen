@@ -29,9 +29,11 @@ const MAX_DEPTH = 6
 const MAX_LEAVES = 256
 
 const MOVER_WORDS = new Set(['move', 'mv', 'rename', 'copy', 'cp', 'delete', 'remove', 'rm', 'unlink', 'rmdir', 'trash'])
-const WRITER_WORDS = new Set(['write', 'edit', 'save', 'download', 'export', 'mkdir', 'append', 'put', 'patch', 'overwrite', 'touch'])
-// "create" alone is not a writer (create_event, create_draft); "create" with a directory word is
-const DIR_WORDS = new Set(['directory', 'dir', 'folder'])
+const WRITER_WORDS = new Set(['write', 'edit', 'save', 'download', 'export', 'mkdir', 'append', 'put', 'patch', 'overwrite', 'touch',
+  // Dani 68192 (1): create_file / update_file / replace_in_file named no writer word before
+  'update', 'replace', 'insert', 'set', 'modify', 'upsert'])
+// "create" alone is not a writer (create_event, create_draft); "create" with a file or directory word is
+const DIR_WORDS = new Set(['directory', 'dir', 'folder', 'file', 'files'])
 
 // Known writers, by tool name (lower case). `file`: keys whose value is the written file. `dir`: keys whose value is
 // a directory a file lands in under a name the call may not give (`name` keys give it when present). `required`: the
@@ -83,11 +85,13 @@ function fileUriPath(s) {
   try { return decodeURIComponent(s.replace(/^file:\/\/(?:localhost)?/i, '')) } catch { return s.replace(/^file:\/\//i, '') }
 }
 
+// A writer's or a mover's leaf with no whitespace is a candidate even with no slash (Dani 68192 (2)): a bare
+// '.mcp.json' is a path relative to the cwd. For the other class (read, send) a leaf needs a slash or a leading ~.
 function looksLikePath(s, cls) {
   if (!s) return false
   if (/^file:\/\//i.test(s)) return true
-  if (cls === 'other' && /\s/.test(s)) return false
-  return s.includes('/') || s.startsWith('~')
+  if (/\s/.test(s)) return cls !== 'other' && (s.includes('/') || s.startsWith('~'))
+  return cls !== 'other' || s.includes('/') || s.startsWith('~')
 }
 
 // Every string leaf, depth- and count-bounded (a deadline guard). Past the bound the call is reported `truncated`:
@@ -141,7 +145,8 @@ export function mcpFileTargets(toolName, toolInput) {
     const files = known.file ? pick(toolInput, known.file) : []
     const dirs = known.dir ? pick(toolInput, known.dir) : []
     const names = known.name ? pick(toolInput, known.name) : []
-    for (const f of files) add(f, false)
+    // a known mover's own keys are trees too (Dani 68192 (3)): a whole directory can go
+    for (const f of files) add(f, !!known.mover)
     for (const d of dirs) {
       add(d, true)
       // a given name is joined (a "../" in it is resolved by the gate, not trusted); no name = the sender's name
@@ -153,5 +158,7 @@ export function mcpFileTargets(toolName, toolInput) {
   // ...and every path-looking leaf, whatever its key (known or not): nothing a renamed key carries is skipped
   const { values, truncated } = leaves(toolInput)
   for (const v of values) if (looksLikePath(v, cls)) add(v, cls === 'mover')
-  return { server: parsed.server, tool: parsed.tool, cls, known: !!known, targets, missingPath, truncated }
+  // every leaf naming the dashboard DB by name, whatever the class (Dani 68192 (1)): judged for every caller
+  const dbNamed = values.some((v) => /(?:^|\/)claudeclaw\.db(?:-wal|-shm|-journal)?$/i.test(fileUriPath(v.trim())))
+  return { server: parsed.server, tool: parsed.tool, cls, known: !!known, targets, missingPath, truncated, dbNamed }
 }
