@@ -2,10 +2,17 @@
 """Send an email FROM the configured support mailbox via SMTP (implicit TLS:465).
 
 Usage:
-  python3 send.py --to a@b.hu --subject "..." --body "..." [--cc you@example.com] [--html]
+  python3 send.py --to a@b.hu --subject "..." --body "..." [--cc you@example.com] [--html] [--attach FILE]...
 Body can also be piped on stdin if --body is omitted.
 Mailbox / hosts come from config (.env); password is pulled from the vault at
 runtime (never stored/printed). --html sends the body as an HTML alternative.
+--attach (repeatable) adds a file; like scripts/graph-mail.ts it must sit inside
+the attachment drop directory (<repo>/store/mail-attachments, fixed; the
+directory itself must not be a symlink), anything else is refused (exit 3):
+putting a file there is the deliberate act that authorises sending it. A
+regular file only, at most MAX_ATTACH_BYTES, with no control character in its name. The
+attachments' name, sha256 and size join the letter sender_check checks, so an
+approval covers the exact files.
 
 Exit 3 = refused, nothing sent (the reason on stderr, "KULDES MEGTAGADVA: ..."):
 the checks of scripts/hooks/sender_check.py on the exact letter this run
@@ -14,7 +21,7 @@ approval or a live standing recipient), and, when the install turned the
 recipient ledger on for the main agent, an address not in
 store/verified-recipients.json. Checked before the vault or SMTP is touched.
 """
-import sys, os, ssl, smtplib, argparse, imaplib, time
+import sys, os, ssl, smtplib, argparse, imaplib, time, hashlib, mimetypes, stat
 from email.message import EmailMessage
 from email.utils import getaddresses
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -78,6 +85,89 @@ def envelope_recipients(to, cc=None):
     return out
 
 
+# FIXED, not configurable: neither the environment (any shell spelling in
+# front of the send sets it, and no gate reads it) nor the project .env (a
+# value like "/" would lift the limit) may move it.
+ATTACH_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "store", "mail-attachments")
+
+
+# Per-file cap: the bytes are read into memory once, then held again as base64 in
+# the letter and in the IMAP copy. Nothing beyond the cap is ever read.
+MAX_ATTACH_BYTES = 10 * 1024 * 1024
+
+
+def _refuse_attach(raw, why):
+    # The sender's refusal contract (module docstring): exit 3, reason on stderr.
+    print(f"KULDES MEGTAGADVA: a csatolmany ({raw!r}) {why}", file=sys.stderr)
+    sys.exit(3)
+
+
+def _open_in_drop_dir(root, name):
+    """A read-only fd for root/name, opened from a descriptor of root with
+    O_NOFOLLOW on both: a file swapped for a symlink after the path check
+    cannot lead the open out of the drop directory, and root itself (the
+    UNRESOLVED drop directory path) may not be a symlink. Only DIRECT children of
+    the drop directory are attachable, so no subdirectory can be moved out
+    from under an open descriptor. Without these flags the platform cannot
+    hold the limit, so the attachment is refused (fail-closed)."""
+    if not (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd):
+        raise OSError("a platform nem tamogatja a biztonsagos megnyitast (O_NOFOLLOW, O_DIRECTORY, dir_fd)")
+    fd = os.open(root, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        # O_NONBLOCK: a FIFO must not hang the open; fstat below refuses it
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
+def read_attachments(paths):
+    """[(name, bytes)] for --attach, each confined to ATTACH_DIR. The name is
+    the basename of the path as given, as the mail gates' extractor
+    (email_extract.collect_bash_attachments) names it, so one file has one
+    anchor everywhere; the bytes are read once, from the descriptor."""
+    if not paths:
+        return []
+    root = os.path.realpath(ATTACH_DIR)
+    out = []
+    for raw in paths:
+        real = os.path.realpath(raw)
+        if real == root or os.path.commonpath([root, real]) != root:
+            _refuse_attach(raw, f"nincs a csatolmany-mappaban ({root}); masold oda, aztan kuldd ujra")
+        if os.path.dirname(real) != root:
+            _refuse_attach(raw, f"csak a csatolmany-mappa ({root}) kozvetlen fajlja csatolhato, alkonyvtare nem")
+        name = os.path.basename(raw)
+        # The name goes into a header. A control character (CR, LF, VT, FF, FS/GS/RS ...) or bytes that are not
+        # UTF-8 would make the message builder raise (a traceback, exit 1): refuse them here, exit 3.
+        if any(ord(c) < 32 or c == "\x7f" for c in name):
+            _refuse_attach(raw, "neve vezerlokaraktert (pl. CR/LF) tartalmaz")
+        try:
+            name.encode("utf-8")
+        except UnicodeEncodeError:
+            _refuse_attach(raw, "neve nem ervenyes UTF-8")
+        try:
+            # ATTACH_DIR as configured, NOT its realpath: a drop directory that is itself a symlink to
+            # somewhere else fails the O_NOFOLLOW open of the directory instead of becoming the "drop directory".
+            fd = _open_in_drop_dir(ATTACH_DIR, os.path.basename(real))
+        except OSError as exc:
+            _refuse_attach(raw, f"nem nyithato meg a csatolmany-mappaban ({exc.strerror or exc})")
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                _refuse_attach(raw, "nem sima fajl")
+            with os.fdopen(fd, "rb") as fh:
+                fd = None
+                data = fh.read(MAX_ATTACH_BYTES + 1)
+            if len(data) > MAX_ATTACH_BYTES:
+                _refuse_attach(raw, f"nagyobb, mint a megengedett {MAX_ATTACH_BYTES} bajt")
+            out.append((name, data))
+        except OSError as exc:
+            _refuse_attach(raw, f"nem olvashato ({exc.strerror or exc})")
+        finally:
+            if fd is not None:
+                os.close(fd)
+    return out
+
+
 def main():
     # allow_abbrev=False: with argparse's default prefix matching, `--t x` /
     # `--c x` silently meant --to / --cc, so a recipient arrived under a
@@ -104,6 +194,8 @@ def main():
     # replaces the plain part with a useless "look at this in an HTML client"
     # stub, which is what plain-text readers and previews then show.
     ap.add_argument("--html-wrap", action="store_true")
+    ap.add_argument("--attach", action="append", default=[],
+                    help="file to attach (repeatable); only from the attachment drop directory")
     a = ap.parse_args()
     # Was --cc given on the command line (as opposed to the configured default)?
     cc_given = any(x == "--cc" or x.startswith("--cc=") for x in sys.argv[1:])
@@ -128,6 +220,16 @@ def main():
         msg.add_alternative(body, subtype="html")
     else:
         msg.set_content(body)
+    attachments = read_attachments(a.attach)
+    for name, data in attachments:
+        ctype, _ = mimetypes.guess_type(name)
+        maintype, subtype = (ctype.split("/", 1) if ctype else ("application", "octet-stream"))
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+    # The same {name, sha256, size} list the mail gates extract from the command
+    # line (email_extract.collect_bash_attachments), in the same order, so the
+    # approval anchor this sender checks is the one the owner approved.
+    att_env = sorted(({"name": n, "sha256": hashlib.sha256(d).hexdigest(), "size": len(d)}
+                      for n, d in attachments), key=lambda x: (x["name"], x["sha256"]))
 
     try:
         rcpts = envelope_recipients(a.to, a.cc)
@@ -146,6 +248,7 @@ def main():
         notes = sender_check.check({
             "to": to_addrs, "cc": cc_addrs, "text": f"{a.subject}\n{body}",
             "render": "--html-wrap" if a.html_wrap else ("--html" if a.html else ""),
+            "attachments": att_env,
             "raw_to": a.to, "raw_cc": a.cc,
             "explicit_to": [a.to], "explicit_cc": explicit_cc,
             "default_cc": envelope_recipients(OWNER_CC) if (OWNER_CC and a.cc == OWNER_CC and not cc_given) else [],

@@ -931,7 +931,7 @@ def ledger_gate(kind: str, tool_input: dict, cmd: str, tool: str = "") -> None:
 # runs some other mailer or a sender copy elsewhere is levelled here exactly as
 # before.
 _SENDER_FLAGS = {
-    "send.py": ({"--to", "--cc", "--subject", "--body"}, {"--no-owner-cc", "--html", "--html-wrap"}),
+    "send.py": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--no-owner-cc", "--html", "--html-wrap"}),
     "graph-mail.ts": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--html"}),
 }
 _CANONICAL_RELATIVE = {"scripts/support-mail/send.py": "send.py", "scripts/graph-mail.ts": "graph-mail.ts"}
