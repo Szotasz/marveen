@@ -6,8 +6,11 @@ import { join } from 'node:path'
 
 export const CONFLICT_GUARD_FILE = 'update-conflict-guard.json'
 
-export type ConflictGuardState = 'repaired' | 'refused_no_stash' | 'backup_failed' | 'repair_failed' | 'markers_only'
-const STATES: ReadonlySet<string> = new Set(['repaired', 'refused_no_stash', 'backup_failed', 'repair_failed', 'markers_only'])
+export type ConflictGuardState =
+  | 'repaired' | 'refused_no_stash' | 'refused_in_progress' | 'backup_failed' | 'repair_failed' | 'markers_only'
+const STATES: ReadonlySet<string> = new Set([
+  'repaired', 'refused_no_stash', 'refused_in_progress', 'backup_failed', 'repair_failed', 'markers_only',
+])
 
 export interface ConflictGuardReport {
   state: ConflictGuardState
@@ -15,7 +18,7 @@ export interface ConflictGuardReport {
   at: number
   /** the install-relative paths concerned (at most MAX_PATHS) */
   paths: string[]
-  /** install-relative backup dir, e.g. store/update-conflict-backup-20261105-091500 */
+  /** install-relative backup dir, e.g. store/update-conflict-backup-20261105-091500-a1B2c3 */
   backup?: string
   /** the `git stash list` line that holds the operator's copy */
   stash?: string
@@ -23,7 +26,7 @@ export interface ConflictGuardReport {
 
 const MAX_PATHS = 20
 const MAX_PATH_LEN = 300
-const BACKUP_RE = /^store\/update-conflict-backup-\d{8}-\d{6}$/
+const BACKUP_RE = /^store\/update-conflict-backup-\d{8}-\d{6}-[A-Za-z0-9]{6}$/
 // eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 

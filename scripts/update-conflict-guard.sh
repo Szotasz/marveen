@@ -12,9 +12,10 @@
 # What it does, and nothing more:
 #   - Only in the install's own git tree (the toplevel must be the install dir); no git or no tree: one line, done.
 #   - Clean tree: one `git diff-index HEAD` (plumbing, writes nothing), under a time limit. Nothing else runs.
-#   - Unmerged (conflicted) paths are repaired ONLY when a "marveen-update-auto-stash" entry exists, which holds the
-#     operator's own copy. Before the repair: the conflicted files and a `git diff HEAD` patch go to a timestamped
-#     store/update-conflict-backup-<ts>/; if that backup fails, nothing is repaired. The repair touches only the
+#   - Unmerged (conflicted) paths are repaired ONLY when stash@{0} is a "marveen-update-auto-stash" entry (a conflicted
+#     pop leaves it there), which holds the operator's own copy, and no merge/cherry-pick/revert/rebase of the
+#     operator's is in progress (then: report only). Before the repair: the conflicted files and a `git diff HEAD`
+#     patch go to an owner-only store/update-conflict-backup-<ts>-<rand>/; if that backup fails, nothing is repaired. The repair touches only the
 #     unmerged paths: back to the HEAD (upstream) version, or removed when HEAD no longer has the file.
 #   - Never: stash pop/apply/drop, reset --hard, clean. The stash entry stays and is named.
 #   - A marker in a file that is NOT unmerged (for example one that was staged by hand) is only reported.
@@ -95,28 +96,49 @@ if [ -z "$UNMERGED" ]; then
   exit 0
 fi
 
-STASH_LINE="$(g stash list 2>/dev/null | grep -m1 'marveen-update-auto-stash' || true)"
 LIST="$(printf '%s' "$UNMERGED" | paste -sd, -)"
-if [ -z "$STASH_LINE" ]; then
-  say "WARNING: conflicted files, but no marveen-update-auto-stash entry holds the local copy; not touched: $LIST"
-  write_state refused_no_stash "$UNMERGED$MARKER_ONLY"
-  exit 0
-fi
 
-# Backup first; no backup, no repair.
+# The operator's own merge, cherry-pick, revert or rebase is in progress: its conflicts are theirs to resolve (an
+# unmerged path may already hold their hand resolution). Report only. Dani's #2542 review: a merge in progress plus an
+# OLD auto-stash entry from an earlier update made the guard overwrite a manual resolution.
+GITDIR="$(g rev-parse --absolute-git-dir 2>/dev/null)"
+for m in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+  if [ -n "$GITDIR" ] && [ -e "$GITDIR/$m" ]; then
+    say "WARNING: a git operation is in progress ($m); its conflicts are not repaired: $LIST"
+    write_state refused_in_progress "$UNMERGED$MARKER_ONLY"
+    exit 0
+  fi
+done
+
+# A conflicted `git stash pop` keeps the popped entry at stash@{0}. So the operator's copy is the update's only when
+# stash@{0} itself is a marveen-update-auto-stash entry; an older one further down belongs to another run.
+STASH_LINE="$(g stash list -n 1 2>/dev/null)"
+case "$STASH_LINE" in
+  *marveen-update-auto-stash*) ;;
+  *)
+    say "WARNING: conflicted files, but stash@{0} is not a marveen-update-auto-stash entry holding the local copy; not touched: $LIST"
+    write_state refused_no_stash "$UNMERGED$MARKER_ONLY"
+    exit 0 ;;
+esac
+
+# Backup first; no backup, no repair. Owner-only (umask 077): the patch holds every local change. A unique suffix, so
+# two runs within one second never share (or overwrite) a backup.
+OLD_UMASK="$(umask)"
+umask 077
 TS="$(date +%Y%m%d-%H%M%S)"
-BREL="store/update-conflict-backup-$TS"
-B="$DIR/$BREL"
 backup_ok=1
-mkdir -p "$B" 2>/dev/null || backup_ok=0
+B="$(mkdir -p "$DIR/store" 2>/dev/null && mktemp -d "$DIR/store/update-conflict-backup-$TS-XXXXXX" 2>/dev/null)" || backup_ok=0
+[ -n "$B" ] && [ -d "$B" ] || backup_ok=0
+BREL="store/$(basename "${B:-update-conflict-backup-$TS}")"
 if [ "$backup_ok" = 1 ]; then
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -e "$DIR/$p" ] || continue
-    mkdir -p "$B/$(dirname "$p")" && cp -p "$DIR/$p" "$B/$p" || { backup_ok=0; break; }
+    mkdir -p "$B/$(dirname "$p")" && cp "$DIR/$p" "$B/$p" || { backup_ok=0; break; }
   done <<< "$UNMERGED"
 fi
 [ "$backup_ok" = 1 ] && { g diff HEAD > "$B/local-changes.patch" 2>/dev/null || backup_ok=0; }
+umask "$OLD_UMASK"   # the repaired files get the install's usual modes, not owner-only
 if [ "$backup_ok" != 1 ]; then
   say "WARNING: the backup to $BREL failed; nothing repaired: $LIST"
   write_state backup_failed "$UNMERGED"

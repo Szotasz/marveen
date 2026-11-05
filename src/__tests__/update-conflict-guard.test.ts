@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
@@ -149,6 +149,71 @@ describe('update-conflict-guard.sh: the repair (UPDATECONFLICT1105)', () => {
   })
 })
 
+describe('update-conflict-guard.sh: only the update\'s own pop is repaired (Dani #2542 review)', () => {
+  it('the operator\'s own merge in progress, with an OLD auto-stash entry: the hand resolution stays, report only', () => {
+    const dir = mkdtempSync(join(SANDBOX, 'merge-'))
+    writeFileSync(join(dir, 'x.py'), 'x = 5\n')
+    expect(sh(dir, 'git init -q && git add -A && git commit -qm base').code).toBe(0)
+    // an old auto-stash entry from an earlier update
+    writeFileSync(join(dir, 'old.txt'), 'old\n')
+    expect(sh(dir, 'git stash push -q -u -m "marveen-update-auto-stash 20261001-120000"').code).toBe(0)
+    expect(sh(dir, 'git checkout -q -b other && sed -i.bak "s/5/8/" x.py && rm x.py.bak && git commit -qam other && git checkout -q -').code).toBe(0)
+    expect(sh(dir, 'sed -i.bak "s/5/6/" x.py && rm x.py.bak && git commit -qam main').code).toBe(0)
+    expect(sh(dir, 'git merge other').code).not.toBe(0)
+    writeFileSync(join(dir, 'x.py'), 'x = 7\n') // the hand resolution, not yet added
+    const r = guard(dir)
+    expect(read(dir, 'x.py')).toBe('x = 7\n')
+    expect(existsSync(join(dir, '.git', 'MERGE_HEAD'))).toBe(true)
+    expect(r.out).toContain('a git operation is in progress (MERGE_HEAD)')
+    expect(state(dir)).toMatchObject({ state: 'refused_in_progress', paths: ['x.py'] })
+    expect(backups(dir)).toHaveLength(0)
+  })
+
+  it.each(['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge/', 'rebase-apply/'])(
+    'any operation in progress (%s) stops the repair', (m) => {
+      const dir = conflicted()
+      const p = join(dir, '.git', m.replace('/', ''))
+      if (m.endsWith('/')) mkdirSync(p)
+      else writeFileSync(p, git(dir, 'rev-parse HEAD'))
+      const before = read(dir, GATE)
+      guard(dir)
+      expect(read(dir, GATE)).toBe(before)
+      expect(state(dir).state).toBe('refused_in_progress')
+    })
+
+  it('stash@{0} is the operator\'s own stash, an old auto-stash below it: not touched', () => {
+    const dir = mkdtempSync(join(SANDBOX, 'ownstash-'))
+    mkdirSync(join(dir, 'scripts'))
+    writeFileSync(join(dir, GATE), BASE)
+    expect(sh(dir, 'git init -q && git add -A && git commit -qm base').code).toBe(0)
+    writeFileSync(join(dir, 'old.txt'), 'old\n')
+    expect(sh(dir, 'git stash push -q -u -m "marveen-update-auto-stash 20261001-120000"').code).toBe(0)
+    writeFileSync(join(dir, GATE), LOCAL)
+    expect(sh(dir, 'git stash push -q -m "my own work"').code).toBe(0)
+    writeFileSync(join(dir, GATE), UPSTREAM)
+    expect(sh(dir, 'git commit -qam upstream').code).toBe(0)
+    expect(sh(dir, 'git stash pop').code).not.toBe(0) // pops "my own work": conflict, it stays at stash@{0}
+    expect(git(dir, 'stash list -n 1')).toContain('my own work')
+    const before = read(dir, GATE)
+    const r = guard(dir)
+    expect(read(dir, GATE)).toBe(before)
+    expect(r.out).toContain('stash@{0} is not a marveen-update-auto-stash entry')
+    expect(state(dir).state).toBe('refused_no_stash')
+  })
+
+  it('the backup is owner-only with a unique suffix; the repaired file keeps the usual mode', () => {
+    const dir = conflicted()
+    guard(dir)
+    const b = backups(dir)
+    expect(b).toHaveLength(1)
+    expect(b[0]).toMatch(/^update-conflict-backup-\d{8}-\d{6}-[A-Za-z0-9]{6}$/)
+    expect(statSync(join(dir, 'store', b[0])).mode & 0o777).toBe(0o700)
+    expect(statSync(join(dir, 'store', b[0], 'local-changes.patch')).mode & 0o077).toBe(0)
+    expect(statSync(join(dir, 'store', b[0], GATE)).mode & 0o077).toBe(0)
+    expect(statSync(join(dir, GATE)).mode & 0o044).toBe(0o044) // readable as before, not 0600
+  })
+})
+
 describe('update-conflict-guard.sh: when it must NOT repair', () => {
   it('no marveen-update-auto-stash entry: the file is not touched, a warning is written', () => {
     const dir = conflicted({ stashMsg: 'something else' })
@@ -156,7 +221,7 @@ describe('update-conflict-guard.sh: when it must NOT repair', () => {
     const r = guard(dir)
     expect(read(dir, GATE)).toBe(before)
     expect(git(dir, 'diff --name-only --diff-filter=U').trim()).toBe(GATE)
-    expect(r.out).toContain('no marveen-update-auto-stash entry')
+    expect(r.out).toContain('stash@{0} is not a marveen-update-auto-stash entry')
     expect(state(dir)).toMatchObject({ state: 'refused_no_stash', paths: [GATE] })
     expect(backups(dir)).toHaveLength(0)
   })
@@ -227,7 +292,7 @@ describe('start.sh wiring', () => {
 describe('the dashboard side: the report and the banner text', () => {
   it('parseConflictGuard keeps a well-formed report and drops anything else', async () => {
     const { parseConflictGuard } = await import('../update-conflict-guard.js')
-    const ok = { state: 'repaired', at: 1793866000000, paths: [GATE], backup: 'store/update-conflict-backup-20261105-091500', stash: 'stash@{0}: On main: marveen-update-auto-stash 20261103-201500' }
+    const ok = { state: 'repaired', at: 1793866000000, paths: [GATE], backup: 'store/update-conflict-backup-20261105-091500-a1B2c3', stash: 'stash@{0}: On main: marveen-update-auto-stash 20261103-201500' }
     expect(parseConflictGuard(ok)).toEqual(ok)
     expect(parseConflictGuard({ ...ok, state: 'hacked' })).toBeNull()
     expect(parseConflictGuard({ ...ok, at: 'x' })).toBeNull()
@@ -245,14 +310,14 @@ describe('the dashboard side: the report and the banner text', () => {
     guard(dir)
     const r = readConflictGuard(join(dir, 'store'))
     expect(r).toMatchObject({ state: 'repaired', paths: [GATE] })
-    expect(r?.backup).toMatch(/^store\/update-conflict-backup-\d{8}-\d{6}$/)
+    expect(r?.backup).toMatch(/^store\/update-conflict-backup-\d{8}-\d{6}-[A-Za-z0-9]{6}$/)
     expect(readConflictGuard(join(SANDBOX, 'nowhere'))).toBeNull()
   })
 
   it('every guard state has a one-sentence Hungarian (accented) and English banner text with the paths', () => {
     const hu = readFileSync(join(__dirname, '..', '..', 'web', 'lang', 'hu.js'), 'utf-8')
     const en = readFileSync(join(__dirname, '..', '..', 'web', 'lang', 'en.js'), 'utf-8')
-    for (const st of ['repaired', 'refused_no_stash', 'backup_failed', 'repair_failed', 'markers_only']) {
+    for (const st of ['repaired', 'refused_no_stash', 'refused_in_progress', 'backup_failed', 'repair_failed', 'markers_only']) {
       const huLine = hu.split('\n').find((l) => l.includes(`'update_conflict.banner.${st}'`)) ?? ''
       const enLine = en.split('\n').find((l) => l.includes(`'update_conflict.banner.${st}'`)) ?? ''
       expect(huLine, st).toContain('{paths}')

@@ -2200,6 +2200,7 @@ window._i18n.en = {
   'branch_drift.notice.heal':     'Switch back to the product branch:',
   'update_conflict.banner.repaired': 'The last update left a conflict in: {paths}, so it was put back to the updated version; your local changes are kept in the backup ({backup}) and in the git stash ({stash}).',
   'update_conflict.banner.refused_no_stash': 'The last update left conflict markers in: {paths}, but no stashed local copy exists, so nothing was touched; ask for help before deleting anything.',
+  'update_conflict.banner.refused_in_progress': 'A conflict is left in: {paths}, but a git operation (merge, cherry-pick or rebase) is in progress, so nothing was touched; finish it or ask for help.',
   'update_conflict.banner.backup_failed': 'The last update left a conflict in: {paths}, but the backup failed, so nothing was repaired; ask for help.',
   'update_conflict.banner.repair_failed': 'The conflict from the last update was repaired, but this is still broken afterwards: {paths}; the backup is in {backup}, ask for help.',
   'update_conflict.banner.markers_only': 'Conflict markers are left in: {paths}, and they are not repaired automatically; ask for help.',
