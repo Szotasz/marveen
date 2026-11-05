@@ -55,6 +55,8 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
       ...['~/.claude/channels', '.claude/channels', 'agents/*/.claude/channels'].flatMap((b) => [
         'access.json', '.env', 'invites.json', 'inbound-evidence.jsonl', 'inbound-evidence.jsonl.1', 'inbox-pending.jsonl',
         'inbox-draining-*.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json', 'bot.pid', 'coordinator.pid',
+        // SLACKOUTDM1007: the Slack plugin's persisted allowFrom DMs and their atomic-write temporary name
+        'delivered-dms.json', 'delivered-dms.json.tmp.*',
         'progress', 'approved'].map((f) => `${b}/*/${f}`))])
 })
 
