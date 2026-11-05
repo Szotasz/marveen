@@ -29,6 +29,16 @@ LOCK = (b'{\n  "packages": {\n    "node_modules/better-sqlite3": {\n      "versi
         b'      "integrity": "sha512-x",\n      "license": "MIT"\n    }\n  }\n}\n')
 LOCK_NPM = LOCK.replace(b'"integrity": "sha512-x",\n', b'"integrity": "sha512-x",\n      "hasInstallScript": true,\n')
 INSTALLER = b"#!/bin/bash\nINSTALL_STEP=\"init\"\necho install\n"
+# REPAIRSLACKOFF1105: the launchers decide whether restoring settings.json is safe. A tree from
+# this branch on passes the PRIMARY plugin at launch; a v1.46.1 tree (main 00d82dbb) only the extras.
+LAUNCHERS_PRIMARY = {
+    "scripts/channels.sh": b'EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"\n',
+    "scripts/channel-watchdog.sh": b'EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PRIMARY_PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"\n',
+}
+LAUNCHERS_V1461 = {  # verbatim from main 00d82dbb: channels.sh:684, channel-watchdog.sh:126
+    "scripts/channels.sh": b'EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"\n',
+    "scripts/channel-watchdog.sh": b'EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"\n',
+}
 
 
 def cli_enable(raw, key, value=True):
@@ -41,10 +51,12 @@ def cli_enable(raw, key, value=True):
 
 
 class Repo:
-    def __init__(self):
+    def __init__(self, launchers=LAUNCHERS_PRIMARY):
         self.dir = tempfile.mkdtemp(prefix="driftrepair-")
         self.backups = tempfile.mkdtemp(prefix="driftrepair-bak-")
         self.git("init", "-q")
+        for rel, data in launchers.items():
+            self.write(rel, data, mode=0o755)
         self.write(".claude/settings.json", SHIPPED_SETTINGS)
         self.write("install-macos.sh", INSTALLER, mode=0o755)
         self.write("install-linux.sh", INSTALLER, mode=0o755)
@@ -499,6 +511,102 @@ class UnresolvableConflict(Base):
         self.r.write("b.txt", b"a markdown rule\n=======\n")
         self.assertTrue(mod.has_markers(os.path.join(self.r.dir, "a.txt")))
         self.assertFalse(mod.has_markers(os.path.join(self.r.dir, "b.txt")))
+
+
+class PrimaryPluginStaysOn(unittest.TestCase):
+    """REPAIRSLACKOFF1105 (Dani 70671): on a tree whose launchers do not enable the primary
+    plugin themselves (v1.46.1), restoring settings.json from HEAD would switch the main channel
+    off at the next restart. There the file is NOT ours: it is left, never restored."""
+
+    def setUp(self):
+        self.r = Repo(launchers=LAUNCHERS_V1461)
+
+    def tearDown(self):
+        self.r.close()
+
+    def reason(self, out, path):
+        return [r for r in out["results"] if r["path"] == path][0]["reason"]
+
+    def test_v1461_slack_enabled_by_the_installer_is_left_not_restored(self):
+        enabled = cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True)
+        self.r.write(".claude/settings.json", enabled)
+        code, out = self.r.repair()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+        self.assertIn("launchers do not enable the primary plugin", self.reason(out, ".claude/settings.json"))
+        self.assertEqual(self.r.read(".claude/settings.json"), enabled, "the file is untouched: slack stays true")
+
+    def test_v1461_an_added_marketplace_channel_is_left_too(self):
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "telegram@marveen-marketplace"))
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+
+    def test_v1461_formatting_only_is_still_restored(self):
+        # Nothing switches off: the restore only undoes the reformat, so it stays safe.
+        self.r.write(".claude/settings.json", (json.dumps(json.loads(SHIPPED_SETTINGS), indent=2) + "\n").encode())
+        code, out = self.r.repair()
+        self.assertEqual((code, self.r.actions(out)), (0, {".claude/settings.json": "restored"}))
+        self.assertEqual(self.r.read(".claude/settings.json"), SHIPPED_SETTINGS)
+
+    def test_v1461_other_cleanups_still_run(self):
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        self.r.write("install-linux.sh", INSTALLER + (MARKER + "\n").encode(), mode=0o644)
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave", "install-linux.sh": "restored"})
+
+    def test_v1461_bridge_lines_say_left(self):
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--install-dir", self.r.dir, "--backup-dir", self.r.backups,
+                            "--lines", "--dry-run"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = p.stdout.decode().splitlines()
+        self.assertIn("REPAIR_LEFT .claude/settings.json", out)
+        self.assertFalse(any(l.startswith("REPAIR_CLEANED .claude/settings.json") for l in out), out)
+
+    def test_a_commented_out_primary_line_does_not_count(self):
+        self.r.write("scripts/channels.sh", b"# " + LAUNCHERS_PRIMARY["scripts/channels.sh"])
+        self.r.write("scripts/channel-watchdog.sh", LAUNCHERS_PRIMARY["scripts/channel-watchdog.sh"])
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+
+    def test_both_launchers_are_required_and_a_missing_one_fails_closed(self):
+        self.r.write("scripts/channels.sh", LAUNCHERS_PRIMARY["scripts/channels.sh"])  # watchdog still v1.46.1
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+        os.remove(os.path.join(self.r.dir, "scripts", "channel-watchdog.sh"))
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+
+    def test_a_symlinked_launcher_does_not_count(self):
+        # Dani 70702: with the islink check removed nothing failed. A launcher that is a symlink
+        # (to a file that would pass) must not count: the tree's own file is what the service runs.
+        real = os.path.join(self.r.backups, "channels-elsewhere.sh")
+        with open(real, "wb") as f:
+            f.write(LAUNCHERS_PRIMARY["scripts/channels.sh"])
+        os.remove(os.path.join(self.r.dir, "scripts", "channels.sh"))
+        os.symlink(real, os.path.join(self.r.dir, "scripts", "channels.sh"))
+        self.r.write("scripts/channel-watchdog.sh", LAUNCHERS_PRIMARY["scripts/channel-watchdog.sh"])
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+
+    def test_primary_launchers_restore_as_before(self):
+        for rel, data in LAUNCHERS_PRIMARY.items():
+            self.r.write(rel, data)
+        self.r.commit("launchers from this branch")
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        code, out = self.r.repair()
+        self.assertEqual((code, self.r.actions(out)), (0, {".claude/settings.json": "restored"}))
+
+    def test_the_real_launchers_match_the_detector(self):
+        # The patterns must match THIS tree's real channels.sh / channel-watchdog.sh, or every
+        # repair here would leave settings.json for nothing.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("idr", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertTrue(mod.launchers_pass_primary(ROOT))
 
 
 if __name__ == "__main__":

@@ -109,6 +109,20 @@ HAS_INSTALL_SCRIPT = re.compile(r'\s*"hasInstallScript": true,?\s*')
 UNMERGED = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
 MISSING = object()
 
+# REPAIRSLACKOFF1105: restoring settings.json from HEAD turns OFF every channel plugin the
+# install enabled there (HEAD ships slack-channel false). That is only safe when this tree's
+# launchers enable the PRIMARY plugin themselves, through the launch-time --settings file
+# (INSTALLDIRTYTREE1103, c2df58d2). On a v1.46.x tree, restoring flips the primary plugin off
+# (measured); on v1.46.x only channels.sh turns it back on at launch (its pre-launch guard), and
+# the watchdog's own launch does not, so a watchdog relaunch (after a failed or timed-out restart,
+# or a hung service) brings the main session up without its channel. Each launcher must pass the
+# primary id, on a live (non-comment) line; a launcher file that is missing or a symlink does not
+# count as passing.
+PRIMARY_LAUNCHERS = (
+    ("scripts/channels.sh", re.compile(r'main_extra_settings_flag\s+"\$INSTALL_DIR"\s+"\$PLUGIN_ID"')),
+    ("scripts/channel-watchdog.sh", re.compile(r'main_extra_settings_flag\s+"\$INSTALL_DIR"\s+"\$PRIMARY_PLUGIN_ID"')),
+)
+
 
 class GitError(Exception):
     pass
@@ -132,6 +146,45 @@ def blob(cwd, spec):
 
 
 # --- the three rules: is every difference from `base` to `local` one of ours? ------------
+
+def launchers_pass_primary(cwd):
+    """True when every launcher in this tree enables the primary channel plugin at launch."""
+    for rel, pattern in PRIMARY_LAUNCHERS:
+        path = os.path.join(cwd, rel)
+        if not os.path.isfile(path) or os.path.islink(path):
+            return False
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            live = [l for l in f if not l.lstrip().startswith("#")]
+        if not any(pattern.search(l) for l in live):
+            return False
+    return True
+
+
+def turns_a_channel_off(bp, lp):
+    """Would going back from `lp` (local enabledPlugins) to `bp` (HEAD's) switch a plugin off?"""
+    for key, new in lp.items():
+        if new is True and bp.get(key, MISSING) is not True:
+            return True
+    return False
+
+
+def settings_rule(cwd):
+    """The settings rule for this tree: the generated-change check, plus REPAIRSLACKOFF1105."""
+    def rule(base, local):
+        ok, why = settings_generated(base, local)
+        if not ok:
+            return ok, why
+        try:
+            bp = json.loads(base.decode("utf-8")).get("enabledPlugins", {})
+            lp = json.loads(local.decode("utf-8")).get("enabledPlugins", {})
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            return False, "not valid JSON"
+        if turns_a_channel_off(bp, lp) and not launchers_pass_primary(cwd):
+            return False, ("restoring would switch a channel plugin off, and this tree's launchers do not "
+                           "enable the primary plugin at launch")
+        return ok, why
+    return rule
+
 
 def settings_generated(base, local):
     try:
@@ -184,9 +237,9 @@ def lock_generated(base, local):
     return True, "only hasInstallScript lines"
 
 
-def rule_for(path):
+def rule_for(path, cwd):
     if path == SETTINGS:
-        return settings_generated
+        return settings_rule(cwd)
     if path in INSTALL_SCRIPTS:
         return install_script_generated
     return lock_generated
@@ -206,7 +259,7 @@ def status_codes(cwd):
 
 def decide(cwd, path, xy):
     """Return (restore?, reason)."""
-    rule = rule_for(path)
+    rule = rule_for(path, cwd)
     head = blob(cwd, "HEAD:" + path)
     if head is None:
         return False, "not in HEAD"
