@@ -418,6 +418,8 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a cd into the install and ls, run by /bin/bash', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\n/bin/bash /tmp/s.sh`],
     ['an env bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/usr/bin/env bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
     ['an unrelated assignment before a shell run of a cd into the install and ls', `MYPATH=/x; cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash /tmp/s.sh`],
+    ['a shell script with a cd into the install and a fleet tool, run behind an assignment prefix', `cat > /tmp/c.sh <<'EOF'\n#!/bin/sh\ncd @ROOT@ || exit 1\npython3 scripts/kartya-es-ertesites.py --id \${CARD:?} --comment-file "$1"\nEOF\nCARD=X1 sh /tmp/c.sh /tmp/n.txt`],
+    ['a note that is only an argument of a prefixed script', `echo 'see @ROOT@/scripts' > /tmp/n.txt; CARD=X1 sh /tmp/other.sh /tmp/n.txt`],
     ['a note read by a prefixed reader', `echo 'see @ROOT@/scripts' > /tmp/n.txt; LC_ALL=C grep x /tmp/n.txt`],
     ['a cd into the install and ls, read and then run by sh', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\ncat /tmp/s.sh; sh /tmp/s.sh`],
   ])('text written to a file by %s passes', (_, cmd) => {

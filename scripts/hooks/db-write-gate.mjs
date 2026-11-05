@@ -791,8 +791,13 @@ function shellRunsOnly(segs, k, targets, text) {
   for (let j = k + 1; j < segs.length; j++) {
     const s = segs[j]
     if (!targets.some((t) => [s.own, ...s.bodies].join('\n').includes(t))) continue
-    const words = shellWords(s.own)
-    if (!words || !words.length) return false
+    const all = shellWords(s.own)
+    if (!all || !all.length) return false
+    // leading assignments (`CARD=x sh F`) are the run's environment, not its command (a PATH among them is caught above)
+    let a0 = 0
+    while (a0 < all.length && /^[A-Za-z_]\w*=/.test(all[a0].value)) a0++
+    const words = all.slice(a0)
+    if (!words.length) return false
     const first = words[0].value
     const name = commandName(words) || first.slice(first.lastIndexOf('/') + 1)
     if (targets.includes(first)) {
@@ -1472,11 +1477,19 @@ export function installFileDeny(command, opts = {}) {
       const k = segs.indexOf(seg)
       // a later segment that starts with an assignment (`PATH=... bash F`, `X=1 ./F`) and names the file is read as
       // running it: laterRuns sees the assignment as the command word (Dani #2546)
+      // ...only when the file is that command or the script word of a shell or an interpreter after it; a file that is
+      // only an argument of another script (`CARD=X sh card.sh note.txt`) is not run
       const prefixedRun = () => segs.slice(k + 1).some((s) => {
-        const m = /^\s*(?:[A-Za-z_]\w*=\S*\s+)+(\S+)/.exec(s.own)
-        if (!m || !targets.some((t) => s.own.includes(t))) return false
-        const w = m[1]
-        return targets.includes(w) || /^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.|python[\d.]*|node|perl|ruby|php)$/.test(w)
+        if (!/^\s*[A-Za-z_]\w*=/.test(s.own)) return false
+        const ws = shellWords(s.own)
+        if (!ws) return false
+        const rest = ws.map((w) => w.value).filter((v, i, a) => !a.slice(0, i + 1).every((x) => /^[A-Za-z_]\w*=/.test(x)))
+        const [w, ...args] = rest
+        if (!w) return false
+        if (targets.includes(w)) return true
+        if (!/^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.|python[\d.]*|node|perl|ruby|php)$/.test(w)) return false
+        const script = args.find((v) => !v.startsWith('-'))
+        return script !== undefined && targets.includes(script)
       })
       if (targets.length && (laterRuns(segs, k, targets) || prefixedRun())) {
         const text = [pipedInText(k), scriptTextOf(own, seg.bodies, name)].filter(Boolean).join('\n')
