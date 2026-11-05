@@ -1583,6 +1583,206 @@ def _file_sends(path, text, kind, read_script) -> bool:
     return False
 
 
+# COPYGATEDRAFTFP1104 (Samu 69301, Bence 69319): a python script given a --to/--cc/--bcc address used to be a send
+# before it was read (MAILGATESCRIPT1027), so an IMAP draft writer (`python3 draft.py --to a@x`, imaplib APPEND) needed
+# approval like a sender. The address rule now yields to the script judge ONLY when the script, and every local helper
+# it imports (read in turn), uses nothing but a short ALLOWLIST of modules a draft writer needs, in plain forms the walk
+# can follow. Everything else keeps the old rule (a send): any other module, standard library included (a stdlib module
+# can send or run code on its own: logging.handlers.SMTPHandler, timeit, pdb, cProfile ... -- Bence 69319), an
+# installed package, an import that cannot be parsed, code the judge cannot follow (dynamic import, exec/eval/compile,
+# getattr and friends, a dunder or private attribute, a module reached through another module's attribute:
+# `imaplib.socket`, `pathlib.os`), os and sys beyond a few plain attributes, the depth or file budget running out.
+# Exactly the imports of the draft writers (Samu 69321, Bence 69319); widening it is a gate decision, not a fix.
+_PY_DRAFT_MODULES = frozenset((
+    "imaplib", "email", "argparse", "json", "re", "datetime", "time", "base64", "pathlib", "textwrap", "html",
+    "mimetypes", "uuid", "hashlib", "getpass", "string", "os", "sys",
+))
+# os and sys only through these attributes (a bare `os`, passed on or aliased, is not followed)
+_PY_OS_ATTRS = frozenset(("path", "environ", "getenv", "getcwd"))
+_PY_SYS_ATTRS = frozenset(("argv", "exit", "stdin"))
+# Builtins that run code (or a pager, help()), and the reflective reaches, as bare names (`re.compile` is not `compile`)
+_PY_UNFOLLOWED_CODE = re.compile(
+    r"(?<![\w.])(?:__import__|exec|eval|compile|execfile|__builtins__|getattr|setattr|delattr|globals|locals|vars"
+    r"|__loader__|__spec__|breakpoint|help|get_type_hints)\b")
+# An attribute that reaches a module or a raw channel through another object: `imaplib.socket`, `pathlib.os`,
+# `argparse._os`, an IMAP object's own socket and raw writer (`.sock`, `.send`: SMTP spoken over a re-opened IMAP
+# connection), the stream class that runs a command (`IMAP4_stream`), and every private or dunder attribute except
+# on self / cls (`uuid._get_command_stdout`, `os.__dict__`, `type(x).__subclasses__`).
+_PY_REACH_ATTRS = ("os", "sys", "socket", "subprocess", "ssl", "posix", "nt", "builtins", "importlib", "smtplib",
+                   "logging", "shutil", "pty", "ctypes", "signal", "multiprocessing", "asyncio", "threading", "select",
+                   "selectors", "http", "urllib", "operator", "IMAP4_stream", "sock", "send", "sendall", "file",
+                   "readline", "shutdown", "sslobj", "get_type_hints")
+_PY_REACH = re.compile(r"\.\s*(?:" + "|".join(_PY_REACH_ATTRS) + r")\b|(?<!self)(?<!cls)\.\s*_[A-Za-z_]")
+# a class built on an imaplib class can override what the constructor checks (and reach the socket)
+_PY_IMAP_SUBCLASS = re.compile(r"\bclass\b[^\n:]*\([^)]*\bIMAP4")
+_PY_FROM_IMPORT = re.compile(r"\bfrom[ \t]+(\.*[\w.]*)[ \t]+import\b[ \t]*(\([^)]*\)|[\w.,* \t]*)")
+_PY_PLAIN_IMPORT = re.compile(r"\bimport[ \t]+([\w., \t]+)")
+_PY_WALK_FILES = 24
+_PY_WALK_DEPTH = 4
+
+
+def _py_module_files(dirs, dotted):
+    """The local files `import a.b` loads from one of dirs: each package __init__.py on the way and the module."""
+    out = []
+    parts = dotted.split(".")
+    for d in dirs:
+        for i in range(1, len(parts) + 1):
+            base = os.path.join(d, *parts[:i])
+            if i < len(parts):
+                out.append(os.path.join(base, "__init__.py"))
+            else:
+                out += [base + ".py", os.path.join(base, "__init__.py")]
+    return list(dict.fromkeys(os.path.normpath(p) for p in out))
+
+
+def _py_script_dirs(path):
+    dirs = [os.path.dirname(path)]
+    try:
+        real = os.path.dirname(os.path.realpath(path))
+        if real not in dirs:
+            dirs.append(real)
+    except (OSError, ValueError):
+        pass
+    return dirs
+
+
+def _py_imports(masked):
+    """(modules, froms, spans, ok). modules: (name, required) for each module a masked text imports, a relative one
+    with its leading dots; a `from M import x` also lists M.x as not required (x may be a submodule, or only a name).
+    froms: (M, [names]) per from-import. plains: (name, alias) per `import name [as alias]`. spans: the statements'
+    text ranges. ok=False when an `import` word is not one of the two plain forms (a continuation line, `import(`)."""
+    mods, froms, plains, spans = [], [], [], []
+    for m in _PY_FROM_IMPORT.finditer(masked):
+        spans.append((m.start(), m.end()))
+        mod = m.group(1)
+        if not mod:
+            return [], [], [], [], False
+        mods.append((mod, True))
+        names = []
+        for n in (m.group(2) or "").strip().strip("()").replace("\n", ",").split(","):
+            name = (n.split() or [""])[0]
+            if name:
+                names.append(name)
+                if name != "*":
+                    mods.append((mod + ("" if mod.endswith(".") else ".") + name, False))
+        froms.append((mod, names))
+    for m in _PY_PLAIN_IMPORT.finditer(masked):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        spans.append((m.start(), m.end()))
+        for n in m.group(1).split(","):
+            words = n.split()
+            if not words:
+                return [], [], [], [], False
+            mods.append((words[0], True))
+            plains.append((words[0], words[2] if len(words) >= 3 and words[1] == "as" else None))
+    # every `import` keyword must sit inside one of the parsed statements (a `\` continuation, `import(` ... do not)
+    for m in re.finditer(r"\bimport\b", masked):
+        if not any(a <= m.start() < b for a, b in spans):
+            return [], [], [], [], False
+    if "\\\n" in masked:
+        return [], [], [], [], False
+    return mods, froms, plains, spans, True
+
+
+def _py_code_unfollowed(masked, froms, plains, spans) -> bool:
+    """The allowlist's code rules over one masked file (see the block above)."""
+    for mod, alias in plains:
+        if alias and mod.split(".")[0] in ("os", "sys"):
+            return True
+    for mod, names in froms:
+        if mod.startswith("."):
+            continue
+        top = mod.split(".")[0]
+        for name in names:
+            if name == "*" or name.startswith("_") or name in _PY_REACH_ATTRS:
+                return True
+            if mod == "os" and name not in _PY_OS_ATTRS:
+                return True
+            if mod == "sys" and name not in _PY_SYS_ATTRS:
+                return True
+        if top not in ("os", "sys") and "*" in names:
+            return True
+    # the code outside the import statements
+    code = list(masked)
+    for a, b in spans:
+        code[a:b] = " " * (b - a)
+    code = "".join(code)
+    if _PY_UNFOLLOWED_CODE.search(code) or _PY_REACH.search(code) or _PY_IMAP_SUBCLASS.search(code):
+        return True
+    for m in re.finditer(r"(?<![\w.])(os|sys)\b", code):
+        attr = re.match(r"\s*\.\s*(\w+)", code[m.end():])
+        allowed = _PY_OS_ATTRS if m.group(1) == "os" else _PY_SYS_ATTRS
+        if not attr or attr.group(1) not in allowed:
+            return True
+    return False
+
+
+def _py_walk_verdict(path, text, read_script):
+    """'send' | 'unfollowed' | 'clean' for a readable python script and everything it imports (see the block above)."""
+    seen = {os.path.normpath(path)}
+    queue = [(os.path.normpath(path), text, 0)]
+    while queue:
+        cur, body, depth = queue.pop(0)
+        if len(body.encode("utf-8")) > _SCRIPT_READ_LIMIT or _ZIP_MAGIC in body:
+            return "send"
+        masked = _mask_prose_literals(body, "py")
+        # no separate mail-text check here: smtplib, the network clients and the process modules are all off the
+        # allowlist, so a file that sends is already "unfollowed" (the judge's own text check runs before the walk)
+        mods, froms, plains, spans, ok = _py_imports(masked)
+        if not ok or _py_code_unfollowed(masked, froms, plains, spans):
+            return "unfollowed"
+        dirs = _py_script_dirs(cur)
+        for mod, required in mods:
+            if mod.startswith("."):
+                rest = mod.lstrip(".")
+                base = os.path.dirname(cur)
+                for _ in range(len(mod) - len(rest) - 1):
+                    base = os.path.dirname(base)
+                files = _py_module_files([base], rest) if rest else [os.path.join(base, "__init__.py")]
+                local = [f for f in files if read_script(f, 1) is not None]
+                if not local and required and rest:
+                    return "unfollowed"
+            else:
+                top = mod.split(".")[0]
+                # a local file of the same name shadows the standard library: it is what runs, so it is read
+                local = [f for f in _py_module_files(dirs, mod) if read_script(f, 1) is not None]
+                if not local:
+                    if not required:
+                        continue
+                    if top not in _PY_DRAFT_MODULES or (top == "os" and mod not in ("os", "os.path")):
+                        return "unfollowed"
+                    continue
+            for f in local:
+                if f in seen:
+                    continue
+                if depth + 1 > _PY_WALK_DEPTH or len(seen) >= _PY_WALK_FILES:
+                    return "unfollowed"
+                t = read_script(f, _SCRIPT_READ_LIMIT + 1)
+                if t is None:
+                    return "unfollowed"
+                seen.add(f)
+                queue.append((f, t, depth + 1))
+    return "clean"
+
+
+def _py_address_run_sends(paths, read_script) -> bool:
+    """A python script run with an address flag: a send unless some candidate is readable and every readable
+    candidate walks 'clean' (COPYGATEDRAFTFP1104)."""
+    found = False
+    for path in paths:
+        text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None:
+            path = os.path.join(path, "__main__.py")
+            text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None:
+            continue
+        found = True
+        if _py_walk_verdict(path, text, read_script) != "clean":
+            return True
+    return not found
+
+
 # MAILGATEDIRZIP1027: python runs a directory's __main__.py, and a zip app's __main__.py from inside the
 # archive. The archive is not unpacked here, so a zip run by python is a send.
 _ZIP_MAGIC = "PK\x03\x04"
@@ -1693,12 +1893,20 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
     # Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
     addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _SUBST_MARK in cmd_words or _run_is_addressed(rest, cmd_words)
     if _PYTHON.match(prog):
-        if _address_flag_given(rest):  # also under -m / -c, where no file is named
-            return True
         module = _python_module(rest)
+        script = None if module else _python_script_operand(rest)[0]
+        if _address_flag_given(rest):
+            # COPYGATEDRAFTFP1104: an address is a send (also under -m / -c, where no file is named), unless the script
+            # file and everything it imports is visible here and the walk finds no send (_py_walk_verdict). A PYTHON*
+            # setting in the command can change what an import loads, so it keeps the old rule. Bence 69343 / Samu
+            # 69345: code the interpreter runs at START-UP, before the script (a .pth line, sitecustomize,
+            # usercustomize in a writable site-packages), is not visible to the walk; only -I with -S (or -E -s -S)
+            # turns it off, so without them the old rule holds (the approval gate names the fix: draft_isolation_hint).
+            if not _address_run_judgeable(rest, module, script, cwd, cmd_words, toks[0]):
+                return True
+            return _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script)
         if module:
             return _python_module_sends(module, cwd, cmd_words, read_script, addressed)
-        script = _python_script_operand(rest)[0]
         kind = "py"
     elif _NODEISH.match(prog):
         script = _node_script_operand(prog, rest)
@@ -1843,6 +2051,91 @@ def _assigned_cd_dirs(segments):
     return out
 
 
+def _py_isolated(rest) -> bool:
+    """The interpreter options before the script turn off every start-up code path: -I with -S (`-I -S`, `-IS`,
+    `-SI`), or -E with -s and -S. A joined -X / -W value and anything after a -c / -m letter is not an option letter."""
+    letters = set()
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t in _PY_OPT_WITH_ARG:
+            i += 2
+            continue
+        if t == "-" or t == "--" or not t.startswith("-") or t.startswith("--"):
+            if t.startswith("--") and t != "--":
+                i += 1
+                continue
+            break
+        for ch in t[1:]:
+            if ch in "cmXW":
+                break
+            letters.add(ch)
+        if re.search(r"[cm]", t[1:]):
+            break
+        i += 1
+    return ("I" in letters and "S" in letters) or {"E", "s", "S"} <= letters
+
+
+# Bence 69412 / Samu 69415: the walk is only meaningful for the real interpreter. A program merely NAMED python3 (an
+# absolute or relative path, a PATH change in the command, a shell function, alias or hash entry of that name) is
+# whatever it is, so the address rule holds for it. Accepted: a bare python/python3[.x] with no such change, or an
+# absolute path in a system bin directory. Stated limit: a PATH or alias set in a shell profile, and a same-named
+# program put into a writable system bin directory, are not visible in the command.
+_PY_BARE_INTERPRETER = re.compile(r"^python(?:3(?:\.\d+)?)?$")
+_PY_SYSTEM_INTERPRETER = re.compile(r"^/(?:usr/bin|usr/local/bin|opt/homebrew/bin)/python(?:3(?:\.\d+)?)?$")
+_PY_NAME_REBOUND = re.compile(r"\bpython[\w.]*\s*\(\s*\)|\bfunction\s+python|\balias\b|\bhash\b|\benable\b")
+# The tokenizer splits `python3() { ...; }` at the parentheses, so a function definition is found on the raw
+# command and handed on as this marker word.
+_PY_FUNC_DEF_RAW = re.compile(r"\bpython[\w.]*\s*\(\s*\)|\bfunction\s+python")
+_PY_REBOUND_MARK = "__python_name_rebound__"
+
+
+def _py_interpreter_is_real(prog_word, cmd_words) -> bool:
+    # a PATH change anywhere in the command (a prefix, export, env PATH=, PATH+=), or env -P (macOS: another search path)
+    if any(re.match(r"^PATH\+?=", w) for w in cmd_words):
+        return False
+    if "env" in cmd_words and any(w.startswith("-P") for w in cmd_words):
+        return False
+    if _PY_REBOUND_MARK in cmd_words or _PY_NAME_REBOUND.search(" ".join(cmd_words)):
+        return False
+    return bool(_PY_BARE_INTERPRETER.match(prog_word) or _PY_SYSTEM_INTERPRETER.match(prog_word))
+
+
+def _address_run_judgeable(rest, module, script, cwd, cmd_words, prog_word="python3") -> bool:
+    """A python run with an address may be judged by its script's content (the walk) only in these shapes."""
+    return not (module or script is None or _UNDECIDABLE_PATH.search(script)
+                or _relative_under_undecidable_cd(script, cwd, cmd_words)
+                or any(re.match(r"^PYTHON\w*=", w) for w in cmd_words)
+                or not _py_isolated(rest)
+                or not _py_interpreter_is_real(prog_word, cmd_words))
+
+
+def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
+    """True when a python run with an address is a send only because the interpreter was not isolated: run with -I -S
+    it would be judged by its content, and its script walks clean (the approval gate names the fix then)."""
+    if read_script is None:
+        read_script = _read_script_head
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    cmd_words = [w for toks in segments for w in toks] + ([_PY_REBOUND_MARK] if _PY_FUNC_DEF_RAW.search(cmd) else [])
+    for toks in segments:
+        for h in _command_heads(toks):
+            if not h or not _PYTHON.match(_basename(h[0])):
+                continue
+            rest = h[1:]
+            if not _address_flag_given(rest) or _py_isolated(rest):
+                continue
+            module = _python_module(rest)
+            script = None if module else _python_script_operand(rest)[0]
+            if not _address_run_judgeable(["-I", "-S"] + list(rest), module, script, cwd, cmd_words, h[0]):
+                continue
+            if not _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script):
+                return True
+    return False
+
+
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
@@ -1856,6 +2149,8 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         cmd_words += ["cd", d]
     if _SUBST_CD.search(cmd):
         cmd_words += ["cd", _SUBST_MARK]
+    if _PY_FUNC_DEF_RAW.search(cmd):
+        cmd_words.append(_PY_REBOUND_MARK)
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 

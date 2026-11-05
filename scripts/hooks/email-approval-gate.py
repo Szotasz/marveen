@@ -397,6 +397,24 @@ def _load_script_run_sends():
              "eszkozokon fut.")
 
 
+def draft_hint_note(cmd: str, cwd) -> str:
+    """COPYGATEDRAFTFP1104 (Samu 69345): the fix to name when a python run with an address is a send only because the
+    interpreter was not isolated (outgoing-copy-gate.draft_isolation_hint). A hint, never a decision: any failure
+    gives no hint."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate_hint", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not mod.draft_isolation_hint(cmd, cwd):
+            return ""
+    except Exception:  # noqa: BLE001 -- a hint only
+        return ""
+    return ("(Ha ez a szkript csak piszkozatot ir, futtasd igy: python3 -I -S <szkript> ... -- akkor a kapu a szkript "
+            "tartalma alapjan dont, es egy csak a piszkozat-iro modulokat hasznalo szkript nem kuldes. A -I -S nelkul "
+            "az indulaskor futo kod (.pth, sitecustomize) nem latszik, ezert a cimmel futtatott szkript kuldes.)\n")
+
+
 def read_email_level():
     """Return (level, note). Missing category / unreadable config -> level 2:
     fail-closed but recoverable through an approval, instead of a hard lockout
@@ -1264,6 +1282,8 @@ def main():
     prefix = f"({note})\n" if note else ""
     if level >= 3:
         sys.exit(0)
+    if tool == "Bash":
+        prefix += draft_hint_note(cmd, payload.get("cwd"))
     if level <= 1:
         deny(prefix +
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"

@@ -104,6 +104,15 @@ jobs:
             echo "== $t"
             python3 "$t"
           done
+      # COPYGATEDRAFTFP1104: the approval gate's own tests (the script-file judge, the level, MS365) ran nowhere in CI,
+      # the same rot as above. Same form: every email-approval-gate*.test.py, an empty glob fails.
+      - name: Email approval gate tests
+        run: |
+          set -e
+          for t in scripts/__tests__/email-approval-gate*.test.py; do
+            echo "== $t"
+            python3 "$t"
+          done
       # HOOKDRIFT926: the hook sidecar validator (drift / reorder / missing
       # script / forbidden key) and the gate lock list of hook_switches.py,
       # then the validator itself on the repo's own settings.
