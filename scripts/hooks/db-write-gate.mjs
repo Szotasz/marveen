@@ -510,7 +510,9 @@ const DATA_INTERPRETERS = new Set(['python', 'pypy', 'node', 'nodejs', 'deno', '
 const SHELL_CALL_RX = /\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)\b|\bsubprocess\b|\bpty\s*\.\s*spawn\b|\bcommands\s*\.|\bplatform\s*\.\s*popen\b|\bchild_process\b|\b(?:execSync|execFileSync|spawnSync|execFile|execa)\b|\b(?:exec|spawn|fork)\s*\(|\bshell\s*=\s*True\b|\bshell\s*:\s*true\b|\bDeno\s*\.\s*(?:run|Command)\b|\bBun\s*\.\s*(?:spawn|spawnSync|\$)|\$`|\bzx\b/
 // ...and the signs of a HIDDEN call (Samu 69768, Dani 69775): a name built at run time can reach a shell without any of
 // the words above, so these count as a shell call too (fail closed): __import__, importlib, builtins, ctypes, the
-// builtin getattr/eval/exec/compile called as a builtin (`re.compile(` is a module's method and is not one),
+// builtins getattr/vars/globals/locals, and eval/exec/compile wherever the name stands (Samu 69948: always a sign,
+// except before a space or tab and a word starting with a letter, the `exec python3 ...` of shell text, or inside a
+// longer identifier; `re.compile(` is a module's method and is not one),
 // new Function / vm.run*, process.binding/dlopen, and a require() or import() whose argument is no string literal.
 // Dani's review of e53c1080 (69850): a list of call shapes leaks (`from os import system; system(...)`, `vars(os)[...]`,
 // `os.__dict__[...]`, `__builtins__.getattr(...)`). So the rule is the other way round: the code is data only when it
@@ -521,7 +523,7 @@ const SHELL_CALL_RX = /\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\
 // (pickle, marshal, shelve, runpy) or start a program (webbrowser). Modules whose names are everyday words (platform,
 // commands, code, pdb) count when they are imported, the only way to reach them without a handle caught above.
 const PROCESS_REF_RX = /\b_?(?:os|posix|subprocess|pty|multiprocessing|asyncio|_posixsubprocess|pickle|marshal|shelve|runpy|webbrowser)\b|\bchild_process\b|\bsys\s*\.\s*modules\b|\bfrom\s+(?:platform|commands|code|pdb)\b|\bimport\s+(?:[\w.]+(?:\s+as\s+\w+)?\s*,\s*)*(?<![.\w])(?:platform|commands|code|pdb)(?!\w)/
-const HIDDEN_CALL_RX = /__import__|\bimportlib\b|__builtins__|\bbuiltins\b|\bctypes\b|(?<![.\w$])(?:getattr|vars|globals|locals)\b|(?<![.\w$-])(?:eval|exec|compile)(?=(?:\s|\\\n)*(?:[(),;\]=\n"'`]|$))|__dict__|__globals__|__subclasses__|__bases__|__mro__|__getattribute__|\bglobalThis\b|\bnew\s+Function\b|(?<![.\w$])Function\s*\(|\bvm\s*\.\s*run\w*|\brunIn(?:This|New)?Context\b|\bcompileFunction\b|['"`](?:node:)?vm['"`]|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))|(?<![.\w$])import\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))/
+const HIDDEN_CALL_RX = /__import__|\bimportlib\b|__builtins__|\bbuiltins\b|\bctypes\b|(?<![.\w$])(?:getattr|vars|globals|locals)\b|(?<![.\w$-])(?:eval|exec|compile)(?![\w$])(?![ \t]+[A-Za-z])|__dict__|__globals__|__subclasses__|__bases__|__mro__|__getattribute__|\bglobalThis\b|\bnew\s+Function\b|(?<![.\w$])Function\s*\(|\bvm\s*\.\s*run\w*|\brunIn(?:This|New)?Context\b|\bcompileFunction\b|['"`](?:node:)?vm['"`]|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))|(?<![.\w$])import\s*\(\s*(?!(?:'[^'$]*'|"[^"$]*"|`[^`$]*`)\s*\))/
 export function reShellsText(text) {
   const src = String(text ?? '')
   if (/(?:^|[;&|(]\s*)\.\s/.test(src) || /\.(?:shell|system)\b/i.test(src)) return true

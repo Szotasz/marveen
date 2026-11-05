@@ -128,6 +128,10 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     "python3 -c \"g = globals(); x = '@H@/.claude/set*'\"",
     "python3 -c \"[c for c in ().__class__.__bases__[0].__subclasses__()]; '@H@/.claude/set*'\"",
     "node -e \"globalThis.process.mainModule; '@H@/.claude/set*'\"",
+    // the builtin reached through an attribute or an optional call (Dani 69945)
+    "node -e \"eval?.('x'); '@H@/.claude/set*'\"",
+    "node -e \"eval.call(null, 'x'); '@H@/.claude/set*'\"",
+    "python3 -c \"exec.__call__('x'); '@H@/.claude/set*'\"",
     // os reached through another module, a loader that runs what it is handed, the module table
     "python3 -c \"import shutil; shutil.os.system('tee @H@/.claude/set*')\"",
     "python3 -c \"import shutil; f = shutil.os; f.popen('tee @H@/.claude/set*')\"",
@@ -170,6 +174,17 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     // Samu 69909 (2): a call through whitespace, a line break, a backslash continuation, or a node tagged template
     for (const c of ['exec (x)', 'exec\t(x)', 'exec\n(x)', 'exec \\\n(x)', 'exec`x`', 'eval `x`']) {
       expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
+    }
+    // Dani's review of 545c8c2b (69945) and Samu 69948: the name is ALWAYS a sign, except before a space or tab and a
+    // word starting with a letter (shell text: `exec python3 ...`) or inside a longer identifier (executor, evaluate)
+    expect(reShellsText("node -e \"eval?.('requ' + 'ire')('x')\"")).toBe(true)
+    expect(reShellsText("node -e \"eval.call(null, 'x')\"")).toBe(true)
+    expect(reShellsText("python3 -c \"exec.__call__('x')\"")).toBe(true)
+    for (const c of ['exec[0]', 'x = eval', 'eval', 'exec -a n', 'compile;', 'exec\\', 'eval{', 'exec#x', 'eval  \t(x)']) {
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
+    }
+    for (const c of ['executor = 1', 'evaluate(x)', 'compiled = re.compile(r"x")', 'exec python3 run.py', 'exec\tnode x.js', 'run_exec = 1']) {
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(false)
     }
   })
 
