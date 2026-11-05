@@ -187,6 +187,15 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     expect(reShellsText("python3 -c \"print.__self__.eval('x')\"")).toBe(true)
     expect(reShellsText("python3 -c \"import builtins as b; b.exec('x')\"")).toBe(true)
     expect(reShellsText("python3 -c \"m.exec\"")).toBe(true)
+    // Samu 69962: the handles that build a callable from a code object are reflection handles too
+    for (const c of ['import types; types.FunctionType(c, {})()', 'from types import FunctionType', 'f.__code__', 'f.__closure__',
+      'm.__func__', 'CodeType(1)', 'LambdaType', 'import sys, types', 'import types as t']) {
+      expect(reShellsText(`python3 -c "${c}"`)).toBe(true)
+    }
+    // an everyday "types" that is no import of the module stays data
+    for (const c of ["print('the types of x')", 'import mypkg.types', 'from x.types import y']) {
+      expect(reShellsText(`python3 -c "${c}"`)).toBe(false)
+    }
     for (const c of ['exec[0]', 'x = eval', 'eval', 'exec -a n', 'compile;', 'exec\\', 'eval{', 'exec#x', 'eval  \t(x)']) {
       expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
     }
