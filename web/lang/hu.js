@@ -2311,7 +2311,7 @@ window._i18n.hu = {
   'gromzo.card.title': 'Gromzo (mobilapp)',
   'gromzo.card.desc': 'Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.',
   'gromzo.status.loading': 'Állapot lekérdezése...',
-  'gromzo.status.linked': 'A chat-szolgáltatás fut ezen a gépen, és össze van kapcsolva a csapatoddal.',
+  'gromzo.status.linked': 'A chat-szolgáltatás fut ezen a gépen, és össze van kapcsolva azzal a Gromzo-fiókkal, amellyel először összekötötték. Másik fiókhoz csak leválasztás után köthető.',
   'gromzo.status.not_linked': 'A chat-szolgáltatás fut, de még nincs összekapcsolva a csapatoddal.',
   'gromzo.status.not_running': 'A Gromzo chat-szolgáltatás (mxd) nem fut ezen a gépen, vagy nincs telepítve.',
   'gromzo.status.unknown': 'Az állapot most nem kérdezhető le ({code}).',

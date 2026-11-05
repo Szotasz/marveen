@@ -2309,7 +2309,7 @@ window._i18n.en = {
   'gromzo.card.title': 'Gromzo (mobile app)',
   'gromzo.card.desc': 'Add your phone to the Gromzo app here. The first time this code registers you; later it signs a new phone in to the same account.',
   'gromzo.status.loading': 'Checking status...',
-  'gromzo.status.linked': 'The chat service is running on this machine and linked to your team.',
+  'gromzo.status.linked': 'The chat service is running on this machine and is linked to the Gromzo account it was first linked with. It can only be linked to another account after it is unlinked.',
   'gromzo.status.not_linked': 'The chat service is running but not linked to your team yet.',
   'gromzo.status.not_running': 'The Gromzo chat service (mxd) is not running on this machine, or is not installed.',
   'gromzo.status.unknown': 'The status cannot be read right now ({code}).',
