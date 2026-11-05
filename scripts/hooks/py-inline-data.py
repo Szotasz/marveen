@@ -17,9 +17,11 @@ Nothing here runs, imports or evaluates the code it reads: ast.parse only.
 """
 import ast
 import builtins
+import io
 import json
 import re
 import sys
+import tokenize
 import types
 
 # The closed lists, measured over 7 days of sub-agent calls (work/instrfiles-a-pyscan2.txt in the PR's measurement):
@@ -62,6 +64,9 @@ OK_DUNDER = {'__name__', '__main__', '__file__', '__tests__'}
 # The builtin exception classes may be named (except ValueError:, raise SystemExit(1)).
 EXC_NAME = re.compile(r'[A-Z]\w*(?:Error|Exception|Warning|Exit|Interrupt|Iteration)')
 DUNDER = re.compile(r'__\w+__')
+# PEP 263: a coding declaration on line 1 or 2 re-decodes the text before it is parsed (Dani 70116)
+CODING = re.compile(r'^[ \t\f]*#.*?coding[:=]')
+STR_PREFIX = re.compile(r'[A-Za-z]*')
 # rule (5), Dani 70000 / Samu 69997: a pattern-expanding or directory-walking API anywhere in the text
 GLOB_API = re.compile(r'\b(?:glob|iglob|fnmatch|fnmatchcase|scandir|listdir|iterdir|rglob|walk|pathlib|Path)\b')
 # R7: frame, code and traceback object attributes (gi_frame.f_builtins holds eval); as an attribute, and (Samu 70023 (4))
@@ -276,8 +281,34 @@ def free_name_ok(name):
     return name in BUILTINS_OK or name in OK_DUNDER or bool(EXC_NAME.fullmatch(name))
 
 
+def source_form(code):
+    """What Python reads is not always the text: a coding declaration or a BOM re-decodes it, and identifiers are
+    NFKC-normalized (a full-width underscore is an underscore). So: no declaration, no BOM, and every name in the code
+    is ASCII. Non-ASCII stays free in a plain string literal and in a comment; not in an f-string, whose expressions
+    are one string token under 3.9. None when the text is what runs, else the reason."""
+    if code.startswith('\ufeff'):
+        return 'coding'
+    if any(CODING.match(line) for line in code.split('\n')[:2]):
+        return 'coding'
+    if code.isascii():
+        return None
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            if tok.type == tokenize.COMMENT or tok.string.isascii():
+                continue
+            if tok.type == tokenize.STRING and 'f' not in STR_PREFIX.match(tok.string).group(0).lower():
+                continue
+            return 'non-ascii'
+    except Exception:
+        return 'unparsed'
+    return None
+
+
 def check_code(code):
     """None when the code is data, else the first reason it is not."""
+    why = source_form(code)
+    if why:
+        return why
     for d in DUNDER.findall(code):
         if d not in OK_DUNDER:
             return 'dunder'
@@ -336,6 +367,10 @@ def check_code(code):
             a = n.attr
             if a in NEVER and a != 'compile':      # re.compile: a module pair below; running code needs exec/eval
                 return 'never'
+            if DUNDER.fullmatch(a) and a not in OK_DUNDER:  # the parsed name, after normalization (Dani 70116)
+                return 'dunder'
+            if a == 'format_map':
+                return 'format_map'
             if a.startswith('_') and not DUNDER.fullmatch(a):
                 return 'private'
             if FRAME_ATTR.match(a):
@@ -357,6 +392,8 @@ def check_code(code):
                 path = path + '.' + rest.pop(0)
             if not rest or path not in MODULES or rest[0] not in MODULE_ATTRS[path]:
                 return 'module-attr'
+        elif isinstance(n, ast.Name) and DUNDER.fullmatch(n.id) and n.id not in OK_DUNDER:
+            return 'dunder'
         elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
             if n.id in NEVER:
                 return 'never'

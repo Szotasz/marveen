@@ -288,6 +288,18 @@ describe('1b. python code is data only by the closed allowlist', () => {
     [`python3 - <<PY\nprint('\\$HOME', '${T}')\nPY`, 'heredoc-expands'],
     [`python3 - <<'PY'\nprint('${T}')`, 'heredoc-unterminated'],
     [`python3 -c 'print(1)' 'unterminated`, 'quote'],
+    // Dani 70116: what Python reads is not always the text. Names are NFKC-normalized, so every name must be ASCII
+    // (a full-width underscore is an underscore); a coding declaration or a BOM re-decodes the text.
+    [`python3 -c "print(print._＿self＿_)" '${T}'`, 'non-ascii'],
+    [`python3 - <<'PY'\nｐrint('${T}')\nPY`, 'non-ascii'],
+    [`python3 -c "print('{x}'.format＿map({}))" '${T}'`, 'non-ascii'],
+    [`python3 -c "x = 1; print(f'{x.＿＿class＿＿}')" '${T}'`, 'non-ascii'],
+    [`python3 -c "print(f'á {1}')" '${T}'`, 'non-ascii'],
+    [`python3 - <<'PY'\n# coding: utf-7\nprint('${T}')\nPY`, 'coding'],
+    [`python3 - <<'PY'\n#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\nprint('${T}')\nPY`, 'coding'],
+    [`python3 -c "# vim: set fileencoding=utf-7 :\nprint(1)" '${T}'`, 'coding'],
+    [`python3 - <<'PY'\n﻿print('${T}')\nPY`, 'coding'],
+    [`python3 -c "print(int.__dict__)" '${T}'`, 'dunder'],
   ])('strict: %s -> %s', (c, why) => {
     const cmd = c.replaceAll('@H@', home)
     expect(pythonDataVerdict(cmd)).toBe(`strict ${why}`)
@@ -306,6 +318,10 @@ describe('1b. python code is data only by the closed allowlist', () => {
     `python3 - <<'PY'\nfrom datetime import datetime\nimport hashlib\nif __name__ == '__main__':\n    try:\n        print(datetime.now(), hashlib.sha256(b'x').hexdigest())\n    except ValueError as e:\n        print(e)\nPY`,
     `python3 -c "print('{}'.format(1)); print('src/__tests__/x.ts')"`,
     `cd /tmp && python3 -c "import sys; print(sys.argv[1:])" a '*' 2>&1 | head -5`,
+    // non-ASCII stays free in a plain string literal and in a comment; "coding" later than line 2 is a word
+    `python3 -c "print('árvíztűrő tükörfúrógép', '${T}')"`,
+    `python3 - <<'PY'\n# ékezetes megjegyzés\nimport json\nprint(json.dumps({'név': 'Béla'}, ensure_ascii=False), '${T}')\nPY`,
+    `python3 - <<'PY'\nprint(1)\nprint(2)\n# coding: utf-8\nprint('${T}')\nPY`,
   ])('data: %s', (c) => {
     const cmd = c.replaceAll('@H@', home)
     expect(pythonDataVerdict(cmd)).toBe('data')
