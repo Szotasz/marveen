@@ -431,6 +431,7 @@ function switchPage(pageId) {
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'skills') loadGlobalSkills()
   if (pageId === 'connectors') loadConnectors()
+  if (pageId === 'clitools') loadCliTools()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
   if (pageId === 'research') loadResearch()
@@ -494,7 +495,7 @@ const SIDEBAR_GROUPS = [
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
-  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
+  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'clitools', 'federation', 'migrate'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
 // data-page -> group key, derived from the map (not the DOM) so the map wins.
@@ -567,7 +568,7 @@ const NAV_I18N = {
   agents: 'nav.agents', activity: 'nav.activity', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
-  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
+  skills: 'nav.skills', connectors: 'nav.connectors', clitools: 'nav.clitools', migrate: 'nav.migrate',
   approvals: 'nav.approvals',
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
@@ -614,6 +615,7 @@ const PAGE_HEADER_I18N = {
   updatesPage:    { title: 'updates.page_title',     sub: null },
   naploPage:      { title: 'naplo.page_title',       sub: 'naplo.page_subtitle' },
   costsPage:      { title: 'costs.page_title',       sub: 'costs.page_subtitle' },
+  clitoolsPage:   { title: 'clitools.page_title',    sub: 'clitools.page_subtitle' },
   federationPage: { title: 'federation.page_title',  sub: 'federation.page_subtitle' },
   approvalsPage:  { title: 'approvals.page_title',   sub: 'approvals.page_subtitle' },
 }
@@ -11275,6 +11277,165 @@ async function loadExternalPaths() {
   })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
 })()
+
+// --- CLI inventory page ---
+// Read-only view of scripts/cli-inventory.py's output, built like the MCP page:
+// stat cards, one heading per configured folder, a card per tool, and a
+// detail modal. Every field comes from a CLI's own manifest, help text or
+// README, so each one is escaped before it reaches innerHTML.
+let cliInventory = null
+
+const CLI_PROBE_DOT = { ok: 'connected', no_binary: 'unknown', timeout: 'failed', failed: 'failed', unparsed: 'failed' }
+
+async function loadCliTools(refresh = false) {
+  const grid = document.getElementById('cliToolGrid')
+  const stats = document.getElementById('cliToolStats')
+  const errEl = document.getElementById('cliToolError')
+  if (!grid || !stats || !errEl) return
+  grid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${escapeHtml(t('clitools.loading'))}</div>`
+  stats.innerHTML = ''
+  try {
+    const res = await fetch('/api/cli-inventory' + (refresh ? '?refresh=1' : ''))
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !Array.isArray(data.tools)) {
+      throw new Error(data.detail || data.error || ('HTTP ' + res.status))
+    }
+    cliInventory = data
+    const regenError = data.cache && data.cache.regen_error
+    errEl.hidden = !regenError
+    errEl.textContent = regenError ? t('clitools.regen_error', { msg: regenError }) : ''
+    renderCliTools()
+  } catch (err) {
+    cliInventory = null
+    grid.innerHTML = ''
+    errEl.hidden = false
+    errEl.textContent = t('clitools.load_error', { msg: err && err.message ? err.message : String(err) })
+  }
+}
+
+function renderCliTools() {
+  const grid = document.getElementById('cliToolGrid')
+  const stats = document.getElementById('cliToolStats')
+  const meta = document.getElementById('cliToolMeta')
+  if (!grid || !stats || !cliInventory) return
+  const tools = cliInventory.tools
+  const summary = cliInventory.summary || {}
+  const working = tools.filter((x) => x.probe && x.probe.status === 'ok').length
+  const noBinary = tools.filter((x) => x.probe && x.probe.status === 'no_binary').length
+  const failed = Number(summary.probe_failures) || 0
+  stats.innerHTML = `
+    <div class="stat-card"><div class="stat-value">${Number(tools.length)}</div><div class="stat-label">${escapeHtml(t('clitools.stat.total'))}</div></div>
+    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${working}</div><div class="stat-label">${escapeHtml(t('clitools.stat.working'))}</div></div>
+    ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">${escapeHtml(t('clitools.stat.failed'))}</div></div>` : ''}
+    ${noBinary ? `<div class="stat-card"><div class="stat-value" style="color:var(--text-muted)">${noBinary}</div><div class="stat-label">${escapeHtml(t('clitools.stat.no_binary'))}</div></div>` : ''}
+  `
+  if (meta) {
+    const age = cliInventory.cache && cliInventory.cache.age_seconds
+    meta.textContent = age == null ? '' : t('clitools.meta_age', { min: Math.round(age / 60) })
+  }
+
+  grid.innerHTML = ''
+  const dirs = Array.isArray(summary.dirs) ? summary.dirs : []
+  if (tools.length === 0) {
+    grid.innerHTML = `<div class="connector-loading">${escapeHtml(t('clitools.empty', { dirs: dirs.map((d) => d.dir).join(', ') }))}</div>`
+    return
+  }
+  for (const d of dirs) {
+    const heading = document.createElement('div')
+    heading.className = 'connector-group-heading'
+    heading.textContent = d.found ? d.dir : t('clitools.dir_missing', { dir: d.dir })
+    grid.appendChild(heading)
+    const scopeGrid = document.createElement('div')
+    scopeGrid.className = 'connector-scope-grid'
+    for (const tool of tools.filter((x) => x.root === d.dir)) {
+      scopeGrid.appendChild(renderCliToolCard(tool))
+    }
+    if (scopeGrid.children.length > 0) grid.appendChild(scopeGrid)
+  }
+}
+
+function renderCliToolCard(tool) {
+  const card = document.createElement('div')
+  card.className = 'connector-card'
+  const status = (tool.probe && tool.probe.status) || 'failed'
+  const dotClass = CLI_PROBE_DOT[status] || 'failed'
+  const name = tool.display_name || tool.name
+  const version = tool.version ? `<span class="connector-source-badge">${escapeHtml(tool.version)}</span>` : ''
+  card.innerHTML = `
+    <div class="connector-status-dot ${escapeHtml(dotClass)}" title="${escapeHtml(t('clitools.probe.' + status))}"></div>
+    <div class="connector-info">
+      <div class="connector-name">${escapeHtml(name)} ${version}</div>
+      <div class="connector-endpoint">${escapeHtml(tool.description || tool.name)}</div>
+    </div>
+    <span class="connector-type-badge local">CLI</span>
+  `
+  card.addEventListener('click', () => openCliToolDetail(tool))
+  return card
+}
+
+// Both label and value are plain text; the row escapes them itself.
+function cliDetailRow(label, value, isMono = false) {
+  const style = isMono ? ' style="font-family:monospace;font-size:12px"' : ''
+  return `<div class="connector-detail-row"><span class="meta-label">${escapeHtml(label)}</span><span class="meta-value"${style}>${escapeHtml(value)}</span></div>`
+}
+
+function openCliToolDetail(tool) {
+  const overlay = document.getElementById('cliToolDetailOverlay')
+  if (!overlay) return
+  document.getElementById('cliToolDetailTitle').textContent = tool.display_name || tool.name
+  const mono = (s) => `<span style="font-family:monospace;font-size:12px">${escapeHtml(s)}</span>`
+  const status = (tool.probe && tool.probe.status) || 'failed'
+  const auth = tool.auth
+  const commands = Array.isArray(tool.commands) ? tool.commands : []
+  const rows = [
+    tool.binary ? cliDetailRow(t('clitools.field.binary'), tool.binary, true) : cliDetailRow(t('clitools.field.binary'), t('clitools.no_binary')),
+    cliDetailRow(t('clitools.field.status'), t('clitools.probe.' + status)),
+    tool.version ? cliDetailRow(t('clitools.field.version'), tool.version) : '',
+    tool.license ? cliDetailRow(t('clitools.field.license'), tool.license) : '',
+    cliDetailRow(t('clitools.field.dir'), tool.dir, true),
+    auth ? cliDetailRow(t('clitools.field.auth'), [auth.mode || '-', ...(auth.env_vars || [])].join(' · '), true) : '',
+    commands.length ? cliDetailRow(t('clitools.field.commands'), t('clitools.commands_count', {
+      n: commands.length, source: (tool.probe && tool.probe.command_source) || '-' })) : '',
+    tool.docs && tool.docs.length ? cliDetailRow(t('clitools.field.docs'), tool.docs.join(', '), true) : '',
+  ]
+  document.getElementById('cliToolDetailInfo').innerHTML = rows.join('')
+
+  const skills = Array.isArray(tool.skills) ? tool.skills : []
+  document.getElementById('cliToolDetailSkills').innerHTML = skills.length
+    ? skills.map((s) => `<div class="connector-agent-item"><label>${escapeHtml(s.scope === 'global' ? t('clitools.skill_global') : s.agent)}</label> ${mono(s.skill)}</div>`).join('')
+    : `<p style="color:var(--text-muted);font-size:13px;margin:0">${escapeHtml(t('clitools.no_skills'))}</p>`
+
+  document.getElementById('cliToolDetailCommands').innerHTML = commands.length
+    ? commands.map((c) => `<div class="connector-detail-row"><span class="meta-label">${mono(c.name)}</span><span class="meta-value">`
+      + escapeHtml(c.description || '')
+      + (c.subcommands && c.subcommands.length ? `<br>${mono(c.subcommands.join(' · '))}` : '')
+      + '</span></div>').join('')
+    : `<p style="color:var(--text-muted);font-size:13px;margin:0">${escapeHtml(t('clitools.no_commands'))}</p>`
+
+  const readme = document.getElementById('cliToolDetailReadme')
+  readme.textContent = tool.readme_excerpt || ''
+  document.getElementById('cliToolDetailReadmeGroup').hidden = !tool.readme_excerpt
+  openModal(overlay)
+  const closeBtn = document.getElementById('cliToolDetailClose')
+  if (closeBtn) setTimeout(() => closeBtn.focus(), 50)
+}
+
+function wireCliToolsPage() {
+  const overlay = document.getElementById('cliToolDetailOverlay')
+  const closeBtn = document.getElementById('cliToolDetailClose')
+  const refreshBtn = document.getElementById('cliToolRefreshBtn')
+  if (!overlay || !closeBtn || !refreshBtn) return
+  closeBtn.addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal(overlay)
+  })
+  refreshBtn.addEventListener('click', () => loadCliTools(true))
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', wireCliToolsPage)
+} else {
+  wireCliToolsPage()
+}
 
 async function openConnectorDetail(connector) {
   document.getElementById('connectorDetailTitle').textContent = connector.name
