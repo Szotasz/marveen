@@ -159,6 +159,18 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     for (const c of ['f = exec', 'g(exec)', "exec ('x')", 'h = [eval]', 'k = compile,']) {
       expect(reShellsText(`python3 -c "${c}"`)).toBe(true)
     }
+    // Samu 69909 (1): the FIRST segment of a dotted import is the name Python binds, so it counts; a later one does not
+    for (const c of ['import os.path', 'import importlib.util', 'import subprocess as s', 'from os.path import join',
+      'import platform.x', 'import sys, platform.x', 'from platform.x import y']) {
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
+    }
+    for (const c of ['import androidx.compose.ui.platform.LocalContext', 'import a.b, androidx.platform']) {
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(false)
+    }
+    // Samu 69909 (2): a call through whitespace, a line break, a backslash continuation, or a node tagged template
+    for (const c of ['exec (x)', 'exec\t(x)', 'exec\n(x)', 'exec \\\n(x)', 'exec`x`', 'eval `x`']) {
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
+    }
   })
 
   it('the #2514 rows stay denied (a visible or hidden shell call with a glob)', () => {
