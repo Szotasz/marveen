@@ -299,6 +299,12 @@ describe('1b. python code is data only by the closed allowlist', () => {
     [`python3 - <<'PY'\n#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\nprint('${T}')\nPY`, 'coding'],
     [`python3 -c "# vim: set fileencoding=utf-7 :\nprint(1)" '${T}'`, 'coding'],
     [`python3 - <<'PY'\n﻿print('${T}')\nPY`, 'coding'],
+    // Dani 70196: Python also ends a line at a lone \r
+    [`python3 -c "\r# coding: utf-7\rprint('${T}')"`, 'coding'],
+    [`python3 - <<'PY'\n\r# coding: utf-7\rprint('${T}')\nPY`, 'coding'],
+    [`python3 -c "# x\r\n# coding: utf-7\r\nprint('${T}')"`, 'coding'],
+    [`python3 -x - <<'PY'\n# x\n# y\n# coding: utf-7\nprint('${T}')\nPY`, 'option'],
+    [`python3 -Ix -c "print('${T}')"`, 'option'],
     [`python3 -c "print(int.__dict__)" '${T}'`, 'dunder'],
   ])('strict: %s -> %s', (c, why) => {
     const cmd = c.replaceAll('@H@', home)

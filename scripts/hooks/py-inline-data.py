@@ -67,6 +67,8 @@ DUNDER = re.compile(r'__\w+__')
 # PEP 263: a coding declaration on line 1 or 2 re-decodes the text before it is parsed (Dani 70116)
 CODING = re.compile(r'^[ \t\f]*#.*?coding[:=]')
 STR_PREFIX = re.compile(r'[A-Za-z]*')
+# Python ends a line at \r\n, \r or \n (Dani 70196: a \r-only line break hid a declaration from a \n split)
+LINE_END = re.compile(r'\r\n?|\n')
 # rule (5), Dani 70000 / Samu 69997: a pattern-expanding or directory-walking API anywhere in the text
 GLOB_API = re.compile(r'\b(?:glob|iglob|fnmatch|fnmatchcase|scandir|listdir|iterdir|rglob|walk|pathlib|Path)\b')
 # R7: frame, code and traceback object attributes (gi_frame.f_builtins holds eval); as an attribute, and (Samu 70023 (4))
@@ -78,7 +80,9 @@ PY_NAME = re.compile(r'(?:python|pypy)(?:\d+(?:\.\d+)*)?')
 WRAPPERS = {'env', 'exec', 'command', 'nohup', 'timeout', 'nice', 'time', 'sudo', 'stdbuf', 'caffeinate', 'builtin',
             'chrt', 'ionice', 'taskset', 'setsid', 'arch', 'uv', 'poetry', 'pipenv', 'conda', 'pyenv', 'npx'}
 # python options that take no argument (combined, -IS), and those that take one
-FLAGS = set('IsSEBdOquvbRxPh')
+# -x is not here: it skips the first line, so the lines Python reads a coding declaration from are not the text's
+# first two (Dani 70196); its 7-day use is 0, so it keeps the strict reading
+FLAGS = set('IsSEBdOquvbRPh')
 FLAGS_ARG = {'-W', '-X'}
 
 
@@ -288,7 +292,7 @@ def source_form(code):
     are one string token under 3.9. None when the text is what runs, else the reason."""
     if code.startswith('\ufeff'):
         return 'coding'
-    if any(CODING.match(line) for line in code.split('\n')[:2]):
+    if any(CODING.match(line) for line in LINE_END.split(code)[:2]):
         return 'coding'
     if code.isascii():
         return None
