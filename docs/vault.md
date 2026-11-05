@@ -61,16 +61,17 @@ A generikus secret-vault mellett a dashboard egy dedikált **SSH Vault** modult 
 
 - `vault_ssh_servers`: nyilvántartott szerverek (host, user, opcionális `ssh_key_id` hivatkozás).
 - `vault_ssh_keys`: megosztott SSH kulcs-készlet (label, username, publikus kulcs, fingerprint, kulcstípus). Egy kulcs **több szerverhez** is hozzárendelhető (many-servers-to-one-key modell).
-- A privát kulcsok a generikus `vault.ts` titkosított tárolóban élnek (`ssh-key-<id>` prefixű bejegyzésként), de a generikus `/api/vault` listázásból ki vannak szűrve -- kizárólag a Kulcstároló saját endpointján (`/api/vault/ssh-keys`) érhetők el, hogy ne duplikálódjanak a UI-n.
+- A privát kulcsok a generikus `vault.ts` titkosított tárolóban élnek (`ssh-key-<id>` prefixű bejegyzésként), de a generikus `/api/vault` listázásból ki vannak szűrve -- kizárólag az SSH-kulcstároló saját endpointján (`/api/vault/ssh-keys`) érhetők el, hogy ne duplikálódjanak a UI-n.
 
 ### API végpontok
 
 - `GET/POST /api/vault/ssh-servers`, `PUT/DELETE /api/vault/ssh-servers/:id` -- szerver CRUD.
 - `GET/POST /api/vault/ssh-keys` -- kulcs-készlet listázás/generálás (új ed25519 pár).
 - `POST /api/vault/ssh-keys/import` -- meglévő privát kulcs importálása (publikus kulcs + fingerprint automatikus levezetéssel, `ssh-keygen -y`).
+- A címke egy kulcsot nevez meg: generálásnál és importnál egy már létező címke (kis- és nagybetűtől függetlenül) `409`-et kap, `code: "label_taken"`. A szerverhez generáló `POST /api/vault/ssh-servers/:id/generate-key` maga adja a címkét, foglalt címkénél sorszámmal (`… 2`, `… 3`).
 - `GET /api/vault/ssh-keys/:id/public-key` -- publikus kulcs + telepítési (`authorized_keys`) instrukció lekérése.
 - `DELETE /api/vault/ssh-keys/:id` -- kulcs törlése; a hozzárendelt szerverek referenciája is törlődik, és a mögöttes titkosított secret is takarítva (`deleteSecret`), nincs árva bejegyzés.
 
 ### UI
 
-A dashboard Vault oldalán külön szekció (Kulcstároló) mutatja a kulcs-készletet (lista/másolás/törlés), és a SSH Szerverek szekció (kártya- és táblázat-nézet) a szerverekhez rendelt kulcsot egy legördülőben lehet váltani. Új szerver felvételekor egy önálló, csak-kulcsválasztós info-modal mutatja a telepítési parancsokat -- szerver-kiválasztás nélkül, mivel az új szerver még nincs felvéve.
+A dashboard Vault oldalán külön szekció (SSH-kulcstároló) mutatja a kulcs-készletet (lista/másolás/törlés), és a SSH Szerverek szekció (kártya- és táblázat-nézet) a szerverekhez rendelt kulcsot egy legördülőben lehet váltani. Új szerver felvételekor egy önálló, csak-kulcsválasztós info-modal mutatja a telepítési parancsokat -- szerver-kiválasztás nélkül, mivel az új szerver még nincs felvéve.

@@ -10116,11 +10116,17 @@ async function loadVault() {
       const item = document.createElement('div')
       item.className = 'connector-external-item'
       const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
-      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="Torles" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
+      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="${t('common.btn.delete')}" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
-        if (!confirm(`Torlod: ${s.label}?`)) return
+        const confirmed = await confirmDialog({
+          title: t('vault.confirm.delete_title'),
+          message: t('vault.confirm.delete', { name: s.label }),
+          okLabel: t('vault.confirm.delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         const res = await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
-        if (!res.ok) { showToast('Törlés sikertelen'); return }
+        if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
         loadVault()
       })
       list.appendChild(item)
@@ -10151,7 +10157,7 @@ async function loadVault() {
     })
     if (!res.ok) {
       const e = await res.json().catch(() => ({}))
-      showToast('Mentés sikertelen: ' + (e.error || res.status))
+      showToast(t('vault.toast.save_failed', { msg: e.error || res.status }))
       return
     }
     idInput.value = ''
@@ -10249,10 +10255,10 @@ function renderSshKeys() {
       <td class="ssh-table-mono" style="font-size:11px">${k.fingerprint ? escapeHtml(k.fingerprint.slice(0,28)) + '…' : ''}</td>
       <td class="ssh-table-mono">${k.createdAt ? new Date(k.createdAt).toLocaleDateString('hu-HU') : ''}</td>
       <td><div class="ssh-table-actions">
-        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="Publikus kulcs másolása">
+        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="${escapeHtml(t('vault.ssh.keys.copy_title'))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
-        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="Törlés">
+        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="${escapeHtml(t('common.btn.delete'))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
         </button>
       </div></td>
@@ -10275,15 +10281,30 @@ function renderSshKeys() {
   })
   tbody.querySelectorAll('.ssh-key-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Biztosan törlöd ezt a kulcsot?')) return
-      await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      const key = _sshKeys.find(k => k.id === btn.dataset.id)
+      // Deleting a key unassigns it server-side, so name the servers that lose it.
+      const servers = _sshServers
+        .filter(s => (s.sshKeyId || s.assignedKeyId || s.vaultKeyId) === btn.dataset.id)
+        .map(s => `"${s.name || s.id}"`)
+      let message = t('vault.ssh.confirm.key_delete', { name: (key && key.label) || btn.dataset.id })
+      if (servers.length) message += '\n\n' + t('vault.ssh.confirm.key_delete_servers', { servers: servers.join(', ') })
+      const confirmed = await confirmDialog({
+        title: t('vault.ssh.confirm.key_delete_title'),
+        message,
+        okLabel: t('vault.ssh.confirm.key_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
+      const res = await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      if (!res.ok) showToast(t('vault.toast.delete_error'))
       await loadSshKeys()
+      await loadSshServers()
     })
   })
 }
 
 function _refreshKeySelects() {
-  const opts = ['<option value="">-- Nincs kulcs --</option>',
+  const opts = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
   ].join('')
   document.querySelectorAll('.ssh-key-select').forEach(sel => {
@@ -10294,7 +10315,7 @@ function _refreshKeySelects() {
 }
 
 function _sshKeyBadge(status) {
-  const labels = { ok: 'OK', missing: 'Hiányzó', expired: 'Lejárt' }
+  const labels = { ok: t('vault.ssh.status.ok'), missing: t('vault.ssh.status.missing'), expired: t('vault.ssh.status.expired') }
   const icons = {
     ok: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
     missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
@@ -10305,17 +10326,17 @@ function _sshKeyBadge(status) {
 
 function _sshKeyAssignSelect(s) {
   const currentKeyId = s.sshKeyId || s.assignedKeyId || s.vaultKeyId || ''
-  const opts = ['<option value="">-- Nincs kulcs --</option>',
+  const opts = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => {
       const sel = (currentKeyId && currentKeyId === k.id) ? ' selected' : ''
       return `<option value="${escapeHtml(k.id)}"${sel}>${escapeHtml(k.label || k.id)}</option>`
     })
   ].join('')
-  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="Kulcs hozzárendelése">${opts}</select>`
+  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('vault.ssh.assign_title'))}">${opts}</select>`
 }
 
 function _sshInfoBtn(s) {
-  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="Telepítési útmutató">i</button>`
+  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="${escapeHtml(t('vault.ssh.install_title'))}">i</button>`
 }
 
 function renderSshServers() {
@@ -10367,10 +10388,10 @@ function renderSshServers() {
         <div style="display:flex;align-items:center;gap:4px;width:100%">
           ${_sshKeyAssignSelect(s)}
           <div class="ssh-card-actions">
-            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.edit'))}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
-            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.delete'))}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
             </button>
           </div>
@@ -10389,10 +10410,10 @@ function renderSshServers() {
       <td>${_sshKeyAssignSelect(s)}</td>
       <td style="color:var(--text-muted)">${escapeHtml(s.desc || '')}</td>
       <td><div class="ssh-table-actions">
-        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.edit'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
-        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.delete'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
         </button>
       </div></td>
@@ -10403,11 +10424,18 @@ function renderSshServers() {
   document.querySelectorAll('.ssh-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
-      if (!confirm(`Törlöd: ${id}?`)) return
+      const server = _sshServers.find(s => s.id === id)
+      const confirmed = await confirmDialog({
+        title: t('vault.ssh.confirm.server_delete_title'),
+        message: t('vault.ssh.confirm.server_delete', { name: (server && server.name) || id }),
+        okLabel: t('vault.ssh.confirm.server_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
         await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
         await loadSshServers()
-      } catch { showToast('Törlés sikertelen') }
+      } catch { showToast(t('vault.toast.delete_error')) }
     })
   })
 
@@ -10428,7 +10456,7 @@ function renderSshServers() {
       if (keySel) keySel.value = server.sshKeyId || server.assignedKeyId || server.vaultKeyId || ''
 
       const titleEl = document.getElementById('sshAddPanelTitle')
-      if (titleEl) titleEl.textContent = `Szerver szerkesztése – ${server.name}`
+      if (titleEl) titleEl.textContent = t('vault.ssh.form.edit_title', { name: server.name })
 
       const panel = document.getElementById('sshAddPanel')
       panel.hidden = false
@@ -10464,6 +10492,8 @@ function openSshKeygenModal(callback) {
   document.getElementById('sshKeygenSpinner').hidden = true
   document.getElementById('sshKeygenResult').hidden = true
   document.getElementById('sshKeygenFooter').hidden = false
+  document.getElementById('sshKeygenSubmitBtn').hidden = false
+  document.getElementById('sshKeygenDoneBtn').hidden = true
   document.getElementById('sshKeygenForm').hidden = false
   document.getElementById('sshKeygenPubkeyBox').value = ''
   _sshKeygenCallback = callback || null
@@ -10476,15 +10506,17 @@ function openSshKeygenModal(callback) {
   const closeBtn = document.getElementById('sshKeygenClose')
   const submitBtn = document.getElementById('sshKeygenSubmitBtn')
   const copyBtn = document.getElementById('sshKeygenCopyBtn')
+  const doneBtn = document.getElementById('sshKeygenDoneBtn')
   if (!overlay) return
 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
   closeBtn.addEventListener('click', () => closeModal(overlay))
+  doneBtn.addEventListener('click', () => closeModal(overlay))
 
   submitBtn.addEventListener('click', async () => {
     const label = document.getElementById('sshKeygenLabelInput').value.trim()
     const username = document.getElementById('sshKeygenUserInput').value.trim()
-    if (!label || !username) { showToast('Cimke és felhasználónév megadása kötelező'); return }
+    if (!label || !username) { showToast(t('vault.ssh.toast.label_user_required')); return }
 
     document.getElementById('sshKeygenForm').hidden = true
     document.getElementById('sshKeygenSpinner').hidden = false
@@ -10498,23 +10530,33 @@ function openSshKeygenModal(callback) {
         body: JSON.stringify({ label, username }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Generálás sikertelen'); resetKeygenForm(); return }
+      if (!res.ok) {
+        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || t('vault.ssh.keygen.failed')))
+        resetKeygenForm()
+        if (data.code === 'label_taken') document.getElementById('sshKeygenLabelInput').focus()
+        return
+      }
 
       const pubkey = data.publicKey || (data.key && data.key.publicKey) || ''
       document.getElementById('sshKeygenPubkeyBox').value = pubkey
       document.getElementById('sshKeygenSpinner').hidden = true
       document.getElementById('sshKeygenResult').hidden = false
+      // The key is made: the footer offers Close, not a second Generate.
+      submitBtn.hidden = true
+      doneBtn.hidden = false
+      document.getElementById('sshKeygenFooter').hidden = false
+      doneBtn.focus()
 
       await loadSshKeys()
       if (_sshKeygenCallback) _sshKeygenCallback(data.key || data)
-    } catch { showToast('Hálózati hiba'); resetKeygenForm() }
+    } catch { showToast(t('vault.toast.network_error')); resetKeygenForm() }
   })
 
   copyBtn?.addEventListener('click', () => {
     const val = document.getElementById('sshKeygenPubkeyBox').value
     navigator.clipboard.writeText(val).then(() => {
-      copyBtn.textContent = 'Másolva!'
-      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Másolás' }, 2000)
+      copyBtn.textContent = t('common.copied')
+      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + escapeHtml(t('common.copy')) }, 2000)
     }).catch(() => {})
   })
 
@@ -10523,6 +10565,8 @@ function openSshKeygenModal(callback) {
     document.getElementById('sshKeygenSpinner').hidden = true
     document.getElementById('sshKeygenResult').hidden = true
     document.getElementById('sshKeygenFooter').hidden = false
+    submitBtn.hidden = false
+    doneBtn.hidden = true
   }
 })()
 
@@ -10561,9 +10605,9 @@ async function _sshInfoLoadKey(keyId, serverUser) {
 
   const cmd2text = pubkey
     ? `echo "${pubkey}" >> ~/.ssh/authorized_keys`
-    : `echo "<publikus kulcs ide>" >> ~/.ssh/authorized_keys`
+    : `echo "${t('vault.ssh.install.pubkey_here')}" >> ~/.ssh/authorized_keys`
   document.getElementById('sshInfoCmd2').textContent = cmd2text
-  document.getElementById('sshInfoPubkey').textContent = pubkey || '(kulcs nem elérhető)'
+  document.getElementById('sshInfoPubkey').textContent = pubkey || t('vault.ssh.install.pubkey_missing')
 
   const overlay = document.getElementById('sshInfoOverlay')
   overlay.querySelectorAll('.ssh-code-copy').forEach(btn => {
@@ -10586,7 +10630,7 @@ function _sshInfoLoadServer(serverId) {
   document.getElementById('sshInfoServerName').textContent = server ? server.name : (serverId || '')
 
   const keySel = document.getElementById('sshInfoKeySelect')
-  keySel.innerHTML = ['<option value="">-- Nincs kulcs --</option>',
+  keySel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
   ].join('')
   const assignedKeyId = (server && (server.sshKeyId || server.assignedKeyId || server.vaultKeyId)) || ''
@@ -10602,11 +10646,11 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     // Key-only mode: hide server selector, reset server context
     serverSection.hidden = true
     _sshInfoServerId = null
-    document.getElementById('sshInfoServerName').textContent = 'Új szerver'
+    document.getElementById('sshInfoServerName').textContent = t('vault.ssh.install.new_server')
 
     // Populate key selector without a pre-selected key
     const keySel = document.getElementById('sshInfoKeySelect')
-    keySel.innerHTML = ['<option value="">-- Válassz kulcsot --</option>',
+    keySel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.choose_key'))}</option>`,
       ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
     ].join('')
     // Pre-select whatever is chosen in the form's key dropdown
@@ -10622,7 +10666,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     // Normal mode: show server selector, pick first server by default
     serverSection.hidden = false
     const serverSel = document.getElementById('sshInfoServerSelect')
-    serverSel.innerHTML = ['<option value="">-- Válassz szervert --</option>',
+    serverSel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.choose_server'))}</option>`,
       ..._sshServers.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.host)})</option>`)
     ].join('')
 
@@ -10689,7 +10733,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
   function resetSshAddForm() {
     _sshEditingId = null
     const titleEl = document.getElementById('sshAddPanelTitle')
-    if (titleEl) titleEl.textContent = 'Szerver hozzáadása'
+    if (titleEl) titleEl.textContent = t('vault.ssh.form.add_title')
     document.getElementById('sshNameInput').value = ''
     document.getElementById('sshHostInput').value = ''
     document.getElementById('sshUserInput').value = ''
@@ -10728,7 +10772,12 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     const port = parseInt(document.getElementById('sshPortInput').value, 10) || 22
     const desc = document.getElementById('sshDescInput').value.trim()
     const sshKeyId = document.getElementById('sshKeySelectInput')?.value || null
-    if (!name || !host || !user) { showToast('Név, IP és felhasználó megadása kötelező'); return }
+    // Point at the first empty required field, as the new-skill form does.
+    const missing = !name ? ['sshNameInput', 'vault.ssh.form.name_required']
+      : !host ? ['sshHostInput', 'vault.ssh.form.host_required']
+      : !user ? ['sshUserInput', 'vault.ssh.form.user_required']
+      : null
+    if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1])); return }
     const isEdit = !!_sshEditingId
     try {
       const res = await fetch(
@@ -10741,13 +10790,13 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        showToast(err.error || 'Hiba a mentéskor'); return
+        showToast(err.error || t('common.error_save')); return
       }
       resetSshAddForm()
       panel.hidden = true
       await loadSshServers()
-      showToast(isEdit ? 'Szerver frissítve' : 'Szerver hozzáadva')
-    } catch { showToast('Hálózati hiba') }
+      showToast(t(isEdit ? 'vault.ssh.toast.server_updated' : 'vault.ssh.toast.server_added'))
+    } catch { showToast(t('vault.toast.network_error')) }
   })
 
   cardViewBtn?.addEventListener('click', () => {
@@ -10766,7 +10815,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     tableView.hidden = false
   })
 
-  // Kulcstároló "Új kulcs generálása" button
+  // SSH key store "New key" button
   document.getElementById('sshKeyNewBtn')?.addEventListener('click', () => {
     openSshKeygenModal()
   })
@@ -10810,7 +10859,7 @@ function renderVaultGrid(secrets) {
     card.className = 'vault-card'
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
-    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
+    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${escapeHtml(t('vault.binding_count', { n: bindingCount }))}">${escapeHtml(t('vault.binding_count', { n: bindingCount }))}</span>` : ''
     card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn-secondary btn-compact vault-card-edit" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
     list.appendChild(card)
   }
@@ -10844,7 +10893,7 @@ function renderVaultGrid(secrets) {
       const initialLabel = label === id ? '' : label
       const form = document.createElement('div')
       form.className = 'vault-card-edit-form'
-      form.innerHTML = `<input type="text" class="input vault-edit-label" maxlength="200" value="${escapeHtml(initialLabel)}" placeholder="${escapeHtml(id)}" aria-label="${escapeHtml(t('vault.field.desc_label'))}" style="font-size:13px;margin-bottom:6px"><input type="password" class="input vault-edit-value" value="" placeholder="${escapeHtml(t('vault.edit.value_placeholder'))}" aria-label="${escapeHtml(t('vault.field.value_label'))}" autocomplete="new-password" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
+      form.innerHTML = `<input type="text" class="input vault-edit-label" maxlength="200" value="${escapeHtml(initialLabel)}" placeholder="${escapeHtml(id)}" aria-label="${escapeHtml(t('vault.field.desc_label'))}" style="font-size:13px"><input type="password" class="input vault-edit-value" value="" placeholder="${escapeHtml(t('vault.edit.value_placeholder'))}" aria-label="${escapeHtml(t('vault.field.value_label'))}" autocomplete="new-password" style="font-size:13px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
       card.appendChild(form)
       const labelInput = form.querySelector('.vault-edit-label')
       const input = form.querySelector('.vault-edit-value')
@@ -10896,9 +10945,15 @@ function renderVaultGrid(secrets) {
   list.querySelectorAll('.vault-card-delete').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
-      if (!confirm(`Torlod: ${id}?`)) return
+      const confirmed = await confirmDialog({
+        title: t('vault.confirm.delete_title'),
+        message: t('vault.confirm.delete', { name: id }),
+        okLabel: t('vault.confirm.delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       const res = await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      if (!res.ok) { showToast('Törlés sikertelen'); return }
+      if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
       loadVaultPage()
       loadVault()
     })
@@ -10997,7 +11052,7 @@ function renderVaultGrid(secrets) {
       }
       if (secrets.length === 0) {
         const opt = document.createElement('option')
-        opt.textContent = '-- Nincs vault kulcs --'
+        opt.textContent = t('vault.bind.no_secret')
         opt.disabled = true
         secretSelect.appendChild(opt)
       }
@@ -11012,7 +11067,7 @@ function renderVaultGrid(secrets) {
       }
       if (mcpConnectors.length === 0) {
         const opt = document.createElement('option')
-        opt.textContent = '-- Nincs MCP szerver --'
+        opt.textContent = t('vault.bind.no_server')
         opt.disabled = true
         serverSelect.appendChild(opt)
       }
@@ -11020,7 +11075,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } catch (err) {
       console.error('Vault bind modal error:', err)
-      showToast('Hiba a hozzarendeles betoltesekor: ' + err.message)
+      showToast(t('vault.bind.load_error', { msg: err.message }))
     }
   })
 
@@ -11029,7 +11084,7 @@ function renderVaultGrid(secrets) {
     const serverName = serverSelect.value
     const envVar = envVarInput.value.trim()
     if (!vaultSecretId || !serverName || !envVar) {
-      statusEl.textContent = 'Minden mezo kitoltese kotelezo'
+      statusEl.textContent = t('vault.bind.all_required')
       statusEl.className = 'vault-bind-status error'
       statusEl.hidden = false
       return
@@ -11045,24 +11100,24 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.ok) {
-        statusEl.textContent = `Hozzarendelve! ${data.synced || 0} fajl frissitve.`
+        statusEl.textContent = t('vault.bind.done', { n: data.synced || 0 })
         statusEl.className = 'vault-bind-status success'
         statusEl.hidden = false
         loadVaultPage()
         loadVault()
         setTimeout(() => { closeModal(overlay) }, 1500)
       } else {
-        statusEl.textContent = data.error || 'Hiba tortent'
+        statusEl.textContent = data.error || t('common.error')
         statusEl.className = 'vault-bind-status error'
         statusEl.hidden = false
       }
     } catch (err) {
-      statusEl.textContent = 'Halozati hiba'
+      statusEl.textContent = t('vault.toast.network_error')
       statusEl.className = 'vault-bind-status error'
       statusEl.hidden = false
     } finally {
       saveBtn.disabled = false
-      saveBtn.textContent = 'Hozzarendeles'
+      saveBtn.textContent = t('vault.btn.bind')
     }
   })
 })()
@@ -11078,7 +11133,7 @@ function renderVaultGrid(secrets) {
 
   scanBtn.addEventListener('click', async () => {
     scanBtn.disabled = true
-    scanBtn.textContent = 'Kereses...'
+    scanBtn.textContent = t('common.searching')
     try {
       const res = await fetch('/api/vault/scan')
       const data = await res.json()
@@ -11087,7 +11142,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } finally {
       scanBtn.disabled = false
-      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Scan &amp; Import'
+      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> ' + escapeHtml(t('vault.btn.scan'))
     }
   })
 
@@ -11096,21 +11151,21 @@ function renderVaultGrid(secrets) {
 
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true
-    syncBtn.textContent = 'Szinkron...'
+    syncBtn.textContent = t('vault.btn.syncing')
     try {
       const res = await fetch('/api/vault/sync', { method: 'POST' })
       const data = await res.json()
       if (data.updated > 0) {
-        showToast(`${data.updated} .mcp.json frissitve`)
+        showToast(t('vault.sync.updated', { n: data.updated }))
       } else {
-        showToast('Nincs szinkronizalando kotes')
+        showToast(t('vault.sync.nothing'))
       }
       if (data.errors?.length) {
-        showToast('Hibak: ' + data.errors.join(', '))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
       }
     } finally {
       syncBtn.disabled = false
-      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Szinkron'
+      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> ' + escapeHtml(t('vault.btn.sync'))
     }
   })
 
@@ -11124,9 +11179,8 @@ function renderVaultGrid(secrets) {
     if (actionable.length === 0) {
       empty.hidden = false
       footer.hidden = true
-      if (findings.length > 0) {
-        empty.textContent = `${findings.length} erzekeny ertek talalva, de mind mar a Vault-ban van.`
-      }
+      // Set both ways: an earlier all-in-the-Vault scan must not leave its count behind.
+      empty.textContent = findings.length > 0 ? t('vault.scan.all_in_vault', { n: findings.length }) : t('vault.scan.empty')
       return
     }
     empty.hidden = true
@@ -11150,7 +11204,7 @@ function renderVaultGrid(secrets) {
         <div class="vault-scan-info">
           <div class="vault-scan-server">${escapeHtml(f.serverName)}</div>
           <div class="vault-scan-env">${escapeHtml(f.envVar)} = <code>${escapeHtml(f.maskedValue)}</code></div>
-          <div class="vault-scan-targets">${f.allTargets.length} fajlban</div>
+          <div class="vault-scan-targets">${escapeHtml(t('vault.scan.in_files', { n: f.allTargets.length }))}</div>
         </div>
         <div class="vault-scan-id">
           <input type="text" class="input vault-scan-vault-id" value="${escapeHtml(f.suggestedVaultId)}" data-key="${escapeHtml(key)}" style="font-size:12px;width:180px">
@@ -11193,10 +11247,10 @@ function renderVaultGrid(secrets) {
       })
     }
 
-    if (imports.length === 0) { showToast('Nincs kivalasztott elem'); return }
+    if (imports.length === 0) { showToast(t('vault.scan.none_selected')); return }
 
     importBtn.disabled = true
-    importBtn.textContent = 'Importalas...'
+    importBtn.textContent = t('common.importing')
 
     try {
       const res = await fetch('/api/vault/import', {
@@ -11206,14 +11260,14 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.imported > 0) {
-        showToast(`${data.imported} kulcs importalva, ${data.bound} kotes letrehozva`)
+        showToast(t('vault.scan.imported', { imported: data.imported, bound: data.bound }))
       }
       if (data.errors?.length) {
-        showToast('Hibak: ' + data.errors.join(', '))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
       }
     } finally {
       importBtn.disabled = false
-      importBtn.textContent = 'Kivalasztottak importalasa'
+      importBtn.textContent = t('vault.scan.import_btn')
     }
     closeModal(overlay)
     loadVaultPage()
@@ -11233,7 +11287,7 @@ async function loadExternalPaths() {
     for (const p of paths) {
       const item = document.createElement('div')
       item.className = 'connector-external-item'
-      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="Torles">&times;</button>`
+      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="${t('common.btn.delete')}">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
         await fetch('/api/connectors/external-paths', {
           method: 'DELETE',
