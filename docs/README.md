@@ -19,6 +19,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Channels (Telegram / Slack)](channels.md) | Natív üzenetküldő-integráció proaktív értesítésekkel |
 | [Hangüzenetek (voice)](voice.md) | Per-agent STT+TTS: helyben futó hang oda-vissza Telegramon, ügynökönként állítható móddal |
 | [Printing-press CLI-k](printing-press-cli.md) | API nélküli oldalakhoz is agent-natív CLI generálás |
+| [CLI-nyilvántartás](cli-inventory.md) | A flotta parancssori eszközei a Kapcsolatok > CLI oldalon: parancsok, hitelesítés, hivatkozó skillek; a talált binárist leíró hívással futtatja ([EN](en/cli-inventory.md)) |
 | [Skool CLI](skool-cli.md) | Közösségi platform kezelése parancssorból (API nélkül) |
 | [connectors.hu](connectors-hu.md) | Üzleti API-átjáró (NAV, Billingo, Wise, fal.ai) MCP-n |
 | [Egy Google-jóváhagyás minden fogyasztónak](google-consent.md) | Egy telefonos jóváhagyás, egy refresh token a Gmail/Calendar/Drive MCP-knek és az API-szkripteknek, mindegyik a saját fájlformátumában; scope-hiány és 7 napos "Testing" token hangos jelzése ([EN](en/google-consent.md)) |
