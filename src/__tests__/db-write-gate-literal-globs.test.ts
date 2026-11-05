@@ -132,6 +132,8 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     "node -e \"eval?.('x'); '@H@/.claude/set*'\"",
     "node -e \"eval.call(null, 'x'); '@H@/.claude/set*'\"",
     "python3 -c \"exec.__call__('x'); '@H@/.claude/set*'\"",
+    "node -e \"global.eval?.('x'); '@H@/.claude/set*'\"",
+    "python3 -c \"print.__self__.eval('x'); '@H@/.claude/set*'\"",
     // os reached through another module, a loader that runs what it is handed, the module table
     "python3 -c \"import shutil; shutil.os.system('tee @H@/.claude/set*')\"",
     "python3 -c \"import shutil; f = shutil.os; f.popen('tee @H@/.claude/set*')\"",
@@ -180,6 +182,11 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     expect(reShellsText("node -e \"eval?.('requ' + 'ire')('x')\"")).toBe(true)
     expect(reShellsText("node -e \"eval.call(null, 'x')\"")).toBe(true)
     expect(reShellsText("python3 -c \"exec.__call__('x')\"")).toBe(true)
+    // Dani 69959: reached as an attribute, eval and exec are signs too; only .compile is not (re.compile)
+    expect(reShellsText("node -e \"global.eval?.('x')\"")).toBe(true)
+    expect(reShellsText("python3 -c \"print.__self__.eval('x')\"")).toBe(true)
+    expect(reShellsText("python3 -c \"import builtins as b; b.exec('x')\"")).toBe(true)
+    expect(reShellsText("python3 -c \"m.exec\"")).toBe(true)
     for (const c of ['exec[0]', 'x = eval', 'eval', 'exec -a n', 'compile;', 'exec\\', 'eval{', 'exec#x', 'eval  \t(x)']) {
       expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
     }
