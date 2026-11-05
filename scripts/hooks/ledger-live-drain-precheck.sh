@@ -11,4 +11,5 @@
 # cwd is pinned to the install root so the drain attributes the open question to
 # the main agent, exactly as it does inside the live session.
 cd "$(dirname "$0")/../.." || exit 1
-exec python3 scripts/hooks/ledger-live-drain.py --precheck
+# SITEPKGPLANT1104 (Bence 69829): isolated like every hook, so no start-up code it did not ship runs first.
+exec python3 -I -S scripts/hooks/ledger-live-drain.py --precheck

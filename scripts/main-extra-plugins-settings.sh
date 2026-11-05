@@ -71,7 +71,7 @@ if not ids and not policy:
 data = {"enabledPlugins": {i: True for i in ids}}
 if policy:
     # pythonHookCommand() in src/web/agent-scaffold.ts, for this one script.
-    inv = 'python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/sender-role-gate.py" --policy ' + policy
+    inv = 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/sender-role-gate.py" --policy ' + policy
     fail = ("governance-kapu (fail-closed): sender-role-gate.py: a kapu nem 0-val vagy 2-vel lepett ki "
             "(rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. "
             "Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.")
