@@ -112,10 +112,12 @@ MISSING = object()
 # REPAIRSLACKOFF1105: restoring settings.json from HEAD turns OFF every channel plugin the
 # install enabled there (HEAD ships slack-channel false). That is only safe when this tree's
 # launchers enable the PRIMARY plugin themselves, through the launch-time --settings file
-# (INSTALLDIRTYTREE1103, c2df58d2). A v1.46.1 tree's channels.sh does not (it passes only the
-# extras), so there the restore stopped the main Slack session after the next restart (Dani,
-# measured on a throwaway main worktree). Each launcher must pass the primary id, on a live
-# (non-comment) line; a launcher file that is missing does not count as passing.
+# (INSTALLDIRTYTREE1103, c2df58d2). On a v1.46.x tree, restoring flips the primary plugin off
+# (measured); on v1.46.x only channels.sh turns it back on at launch (its pre-launch guard), and
+# the watchdog's own launch does not, so a watchdog relaunch (after a failed or timed-out restart,
+# or a hung service) brings the main session up without its channel. Each launcher must pass the
+# primary id, on a live (non-comment) line; a launcher file that is missing or a symlink does not
+# count as passing.
 PRIMARY_LAUNCHERS = (
     ("scripts/channels.sh", re.compile(r'main_extra_settings_flag\s+"\$INSTALL_DIR"\s+"\$PLUGIN_ID"')),
     ("scripts/channel-watchdog.sh", re.compile(r'main_extra_settings_flag\s+"\$INSTALL_DIR"\s+"\$PRIMARY_PLUGIN_ID"')),

@@ -578,6 +578,19 @@ class PrimaryPluginStaysOn(unittest.TestCase):
         code, out = self.r.repair()
         self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
 
+    def test_a_symlinked_launcher_does_not_count(self):
+        # Dani 70702: with the islink check removed nothing failed. A launcher that is a symlink
+        # (to a file that would pass) must not count: the tree's own file is what the service runs.
+        real = os.path.join(self.r.backups, "channels-elsewhere.sh")
+        with open(real, "wb") as f:
+            f.write(LAUNCHERS_PRIMARY["scripts/channels.sh"])
+        os.remove(os.path.join(self.r.dir, "scripts", "channels.sh"))
+        os.symlink(real, os.path.join(self.r.dir, "scripts", "channels.sh"))
+        self.r.write("scripts/channel-watchdog.sh", LAUNCHERS_PRIMARY["scripts/channel-watchdog.sh"])
+        self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
+        code, out = self.r.repair()
+        self.assertEqual(self.r.actions(out), {".claude/settings.json": "leave"})
+
     def test_primary_launchers_restore_as_before(self):
         for rel, data in LAUNCHERS_PRIMARY.items():
             self.r.write(rel, data)
