@@ -100,6 +100,36 @@ describe('mcpFileTargets', () => {
     expect(m.missingPath).toBe(false)
     expect(m.targets).toEqual([])
   })
+  // MCPWRITEGATE1104 regression (Iris 70079): the channel plugins' download_attachment writes into its own inbox
+  describe('a channel plugin\'s download_attachment takes no path: not missingPath, still a writer', () => {
+    it.each([
+      ['mcp__plugin_slack-channel_slack__download_attachment', { chat_id: 'D0C74N9SAF6', message_id: '1730000000.123456' }],
+      ['mcp__plugin_telegram_telegram__download_attachment', { file_id: 'AgACAgIAAxkBAAIB' }],
+      ['mcp__plugin_discord_discord__download_attachment', { chat_id: '123456789012345678', message_id: '123456789012345679' }],
+      ['mcp__plugin_gromzo-channel_gromzo__download_attachment', { attachment_id: 'att-1' }],
+      ['mcp__Plugin_Slack-Channel_Slack__Download_Attachment', { chat_id: 'D1', message_id: '1.2' }],
+    ])('%s', (name, input) => {
+      const m = mcpFileTargets(name, input)
+      expect(m.missingPath).toBe(false)
+      expect(m.cls).toBe('writer')
+      expect(m.targets).toEqual([])
+    })
+    it('a path-looking leaf on it is still a target (only the required rule is lifted)', () => {
+      const m = mcpFileTargets('mcp__plugin_slack-channel_slack__download_attachment', { chat_id: 'D1', message_id: '1.2', savePath: '/x/store' })
+      expect(m.targets).toContainEqual({ path: '/x/store', dir: true })
+    })
+    it.each([
+      ['mcp__server-gmail-autoauth-mcp__download_attachment', { messageId: '1', attachmentId: '2' }],
+      ['mcp__gmail__download_attachment', { messageId: '1', attachmentId: '2' }],
+      ['mcp__slack__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
+      ['mcp__plugin_slack-channel_slackx__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
+      ['mcp__plugin_evil_slack-channel_slack__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
+      ['mcp__x__download_attachment', { messageId: '1', attachmentId: '2' }],
+      ['mcp__evil__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
+    ])('the same tool on any other server still needs its path (%s)', (name, input) => {
+      expect(mcpFileTargets(name, input).missingPath).toBe(true)
+    })
+  })
   it('the walk is bounded: too deep or too many leaves is reported, not silently cut', () => {
     let deep: Record<string, unknown> = { p: '/x' }
     for (let i = 0; i < 40; i++) deep = { d: deep }

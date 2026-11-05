@@ -218,6 +218,34 @@ describe('self-pace-gate: the same MCP paths against its own protected set', () 
   })
 })
 
+// MCPWRITEGATE1104 regression (Iris 70079): the channel plugins' download_attachment (no path argument, writes into
+// the plugin's own inbox) passes both gates; the Gmail server's download_attachment without savePath still does not.
+describe('a channel plugin\'s download_attachment passes both gates; the Gmail one without a path still does not', () => {
+  const channel: Array<[string, Record<string, unknown>]> = [
+    ['mcp__plugin_slack-channel_slack__download_attachment', { chat_id: 'D0C74N9SAF6', message_id: '1730000000.123456' }],
+    ['mcp__plugin_telegram_telegram__download_attachment', { file_id: 'AgACAgIAAxkBAAIB' }],
+    ['mcp__plugin_discord_discord__download_attachment', { chat_id: '123456789012345678', message_id: '123456789012345679' }],
+    ['mcp__plugin_gromzo-channel_gromzo__download_attachment', { attachment_id: 'att-1' }],
+  ]
+  it.each(channel)('%s: a sub-agent and the main agent', (tool, input) => {
+    expect(db(tool, input)).toEqual({ deny: false })
+    expect(pace(tool, input)).toEqual({ deny: false })
+    expect(db(tool, input, { subAgent: false, cwd: root, projectDir: root })).toEqual({ deny: false })
+    expect(pace(tool, input, { subAgent: false, cwd: root, projectDir: root })).toEqual({ deny: false })
+  })
+  it('a protected path handed to it is still judged', () => {
+    const tool = 'mcp__plugin_slack-channel_slack__download_attachment'
+    expect(denied(db(tool, { chat_id: 'D1', message_id: '1.2', savePath: store }))).toBe(true)
+    expect(denied(pace(tool, { chat_id: 'D1', message_id: '1.2', savePath: store }))).toBe(true)
+  })
+  it.each(['mcp__server-gmail-autoauth-mcp__download_attachment', 'mcp__gmail__download_attachment', 'mcp__slack__download_attachment', 'mcp__evil__download_attachment',
+    'mcp__plugin_slack-channel_slackx__download_attachment'])(
+    '%s without savePath: still denied by both gates', (tool) => {
+      expect(db(tool, { messageId: '1', attachmentId: '2' })).toEqual({ deny: true, reason: 'mcp-path' })
+      expect(pace(tool, { messageId: '1', attachmentId: '2' })).toEqual({ deny: true, reason: 'mcp-path' })
+    })
+})
+
 describe('the hooks end to end', () => {
   const run = (hook: string, tool_name: string, tool_input: Record<string, unknown>, env: Record<string, string>) => {
     const e = { ...process.env }
@@ -236,6 +264,16 @@ describe('the hooks end to end', () => {
     const r = run(paceHook, 'mcp__x__download_attachment', { messageId: '1', attachmentId: '2', savePath: join(INSTALL_ROOT, 'store') }, subEnv())
     expect(r.status).toBe(0)
     expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason).toContain('MCPWRITEGATE1104')
+  })
+  it('the Slack plugin\'s download_attachment passes both hooks; the Gmail one without savePath is denied', () => {
+    for (const hook of [dbHook, paceHook]) {
+      const ok = run(hook, 'mcp__plugin_slack-channel_slack__download_attachment', { chat_id: 'D0C74N9SAF6', message_id: '1730000000.123456' }, subEnv())
+      expect(ok.status).toBe(0)
+      expect(ok.stdout).toBe('')
+      const no = run(hook, 'mcp__server-gmail-autoauth-mcp__download_attachment', { messageId: '1', attachmentId: '2' }, subEnv())
+      expect(no.status).toBe(0)
+      expect(JSON.parse(no.stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+    }
   })
   it('the fast path: an MCP call naming no path passes both hooks, clean', () => {
     for (const hook of [dbHook, paceHook]) {

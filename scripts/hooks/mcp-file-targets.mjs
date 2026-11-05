@@ -51,6 +51,21 @@ const KNOWN = new Map([
   ['meshy_download_model', { file: ['save_to'], dirOf: ['save_to'], required: true }],
 ])
 
+// A channel plugin's download_attachment (MCPWRITEGATE1104 regression, Iris 70079) shares the Gmail tool's name but
+// takes no path at all: it writes into the plugin's own inbox under a name the plugin builds (Slack:
+// <ts>_<sanitised name>, Telegram: <time>-<unique id>.<ext>, Discord the same shape, Gromzo: a file per
+// attachment_id), measured on the installed plugin sources 2026-11-05. Its missing path is not a default we cannot
+// see, so `required` does not apply to it. Only the REQUIRED rule is lifted, and only for these server + tool pairs:
+// the class stays the tool name's (a writer), every path-looking leaf is still judged, and the same tool on any other
+// server (the Gmail server under any name, an unknown server) still needs its path.
+const INBOX_DOWNLOADERS = new Set([
+  'plugin_slack-channel_slack__download_attachment',
+  'plugin_telegram_telegram__download_attachment',
+  'plugin_discord_discord__download_attachment',
+  'plugin_gromzo-channel_gromzo__download_attachment',
+])
+const writesOwnInbox = (server, tool) => INBOX_DOWNLOADERS.has(`${server}__${tool}`.toLowerCase())
+
 // mcp__<server>__<tool>: the tool is the part after the LAST "__" (a plugin server name carries "__"-free segments,
 // e.g. mcp__plugin_telegram_telegram__reply); everything between "mcp__" and it is the server.
 export function parseMcpName(toolName) {
@@ -162,7 +177,7 @@ export function mcpFileTargets(toolName, toolInput) {
       for (const n of names) add(`${d.replace(/\/+$/, '')}/${n}`, false)
     }
     for (const f of known.dirOf ? pick(toolInput, known.dirOf) : []) add(posixDirname(f), true)
-    if (known.required && files.length === 0 && dirs.length === 0) missingPath = true
+    if (known.required && files.length === 0 && dirs.length === 0 && !writesOwnInbox(parsed.server, parsed.tool)) missingPath = true
   }
   // ...and every path-looking leaf, whatever its key (known or not): nothing a renamed key carries is skipped
   const { values, truncated } = leaves(toolInput)
