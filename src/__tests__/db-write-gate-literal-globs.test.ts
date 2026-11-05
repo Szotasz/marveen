@@ -150,6 +150,15 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     expect(reShellsText('python3 -c "import osmosis, cosmos; x.os_name; macOS"')).toBe(false)
     // an everyday word that only names such a module counts when imported
     expect(reShellsText('python3 -c "print(\'the platform runs commands as code\')"')).toBe(false)
+    // measured on 7 days of calls (Samu 69855): Kotlin import lines and shell text held as DATA in an edit heredoc
+    expect(reShellsText("python3 - <<'PY'\ns = 'import androidx.compose.ui.platform.LocalContext'\nPY")).toBe(false)
+    expect(reShellsText("python3 - <<'PY'\nline = 'exec python3 run.py \"$@\"'\nPY")).toBe(false)
+    // ...while a real import of the module, or a builtin used as a value or called, still re-shells
+    expect(reShellsText('python3 -c "import sys, platform"')).toBe(true)
+    expect(reShellsText('python3 -c "import platform as p"')).toBe(true)
+    for (const c of ['f = exec', 'g(exec)', "exec ('x')", 'h = [eval]', 'k = compile,']) {
+      expect(reShellsText(`python3 -c "${c}"`)).toBe(true)
+    }
   })
 
   it('the #2514 rows stay denied (a visible or hidden shell call with a glob)', () => {
