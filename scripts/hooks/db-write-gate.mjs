@@ -768,6 +768,87 @@ function hitsIn(text, ctx) {
   return hits
 }
 
+// INSTRWRITEEXEC1105: true only when every later segment that names a written file either only reads it (a reader,
+// chmod) or runs it as shell code: a shell with the file as its script word or its stdin, source/. of the file, or the
+// file run directly with a shell shebang or none (exec falls back to sh). Anything else (another interpreter, a -c
+// code word, xargs, a pipe) is not known to be shell, and at least one shell run must be seen. A shell is a bare name
+// or one in a system bin directory: any other path may be another program under a shell's name (Dani, #2546). Run
+// directly, the file's first line decides, so only a segment that starts the file (`>`, no earlier writer of it in the
+// command) can show it; an append, or a file an earlier segment began, keeps the strict reading.
+const SHELL_RUNNERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh'])
+const SYSTEM_BIN = String.raw`(?:/usr(?:/local)?)?/s?bin/|/opt/homebrew/bin/`
+const SYSTEM_SHELL_RX = new RegExp(`^(?:${SYSTEM_BIN})?(?:ba|z|da|k)?sh$`)
+const SHELL_SHEBANG = new RegExp(String.raw`^#!\s*(?:${SYSTEM_BIN})(?:(?:ba|z|da|k)?sh|env\s+(?:-\S+\s+)*(?:ba|z|da|k)?sh)(?:\s|$)`)
+const escapeRx = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// A shell name the command itself redefines (a function, an alias or a hash entry named like a shell or source/.,
+// a quoted alias name too, or a PATH set, exported or given as a prefix) may run another program: then no run is known to be shell (Dani #2546).
+const SHELL_REDEF_RX = /(?:^|[\s;&|(])(?:function\s+(?:(?:ba|z|da|k)?sh|source|\.)(?=[\s({])|(?:(?:ba|z|da|k)?sh|source|\.)\s*\(\s*\))|\balias\s+(?:-\w+\s+)*['"]?(?:(?:ba|z|da|k)?sh|source|\.)['"]?=|\bhash\s+(?:-\w+\s+\S+\s+)*['"]?(?:(?:ba|z|da|k)?sh|source)(?![\w-])|(?:^|[\s;&|(])PATH\+?=/
+function shellRunsOnly(segs, k, targets, text) {
+  if (SHELL_REDEF_RX.test(segs.map((s) => s.own).join('\n'))) return false
+  const startsFile = !targets.some((t) => new RegExp(`>>\\s*['"]?${escapeRx(t)}`).test(segs[k].own))
+    && !segs.slice(0, k).some((s) => { const w = shellWords(s.own); return !!w && w.redirects.some((r) => targets.includes(r.value)) })
+  let seen = false
+  for (let j = k + 1; j < segs.length; j++) {
+    const s = segs[j]
+    if (!targets.some((t) => [s.own, ...s.bodies].join('\n').includes(t))) continue
+    const all = shellWords(s.own)
+    if (!all || !all.length) return false
+    // leading assignments (`CARD=x sh F`) are the run's environment, not its command (a PATH among them is caught above)
+    let a0 = 0
+    while (a0 < all.length && /^[A-Za-z_]\w*=/.test(all[a0].value)) a0++
+    const words = all.slice(a0)
+    if (!words.length) return false
+    const first = words[0].value
+    const name = commandName(words) || first.slice(first.lastIndexOf('/') + 1)
+    if (targets.includes(first)) {
+      if (!startsFile) return false
+      const line = text.split('\n', 1)[0]
+      if (line.startsWith('#!') && !SHELL_SHEBANG.test(line)) return false
+      seen = true
+      continue
+    }
+    if (name === 'chmod' || (READERS.has(name) && !PRINTERS.has(name) && !s.bodies.length)) continue
+    if (SHELL_RUNNERS.has(name) || name === 'source' || name === '.') {
+      const runner = words.find((w) => w.value === name || w.value.endsWith('/' + name))
+      if (!runner || (runner.value !== name && !SYSTEM_SHELL_RX.test(runner.value))) return false
+      const script = words.slice(words.indexOf(runner) + 1).find((w) => !w.value.startsWith('-'))
+      const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own))
+      if (words.slice(1).some((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.value))) return false
+      if ((script && targets.includes(script.value)) || stdin) { seen = true; continue }
+      return false
+    }
+    return false
+  }
+  return seen
+}
+
+const PRINTERS = new Set(['echo', 'printf'])
+// The escapes printf (format and %b), echo -e and a POSIX echo decode: \\ and the letter escapes, octal (\NNN, \0NNN),
+// hex (\xHH) and \uHHHH. A decoded control character is a line break for the reading (it ends a word).
+const PRINT_ESC = { a: '\n', b: '\n', f: '\n', n: '\n', r: '\n', t: ' ', v: '\n', e: '\n', E: '\n', c: '\n', '\\': '\\' }
+export function decodePrintEscapes(s) {
+  return String(s).replace(/\\(?:0([0-7]{0,3})|([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|([abfnrtveEc\\]))/g,
+    (m, o0, o, x, u, c) => {
+      if (c !== undefined) return PRINT_ESC[c]
+      const code = o0 !== undefined ? parseInt(o0 || '0', 8) : o !== undefined ? parseInt(o, 8) : parseInt(x ?? u, 16)
+      return code < 0x20 || code === 0x7f ? '\n' : String.fromCharCode(code)
+    })
+}
+
+// INSTRWRITEEXEC1105: the text a segment puts into the file it writes, as a script would read it. printf/echo: what
+// they print, i.e. their arguments' values (a printf argument on its own line), an escape as the break it prints; a
+// reader: its heredoc bodies only (it copies file contents, not its arguments); any other program (sed, awk, an
+// interpreter): its own text and bodies. Words that do not split: the own text, as for any other program.
+function scriptTextOf(own, bodies, name) {
+  if (PRINTERS.has(name)) {
+    const words = shellWords(own)
+    const vals = words ? words.slice(1).map((w) => w.value).filter((v) => !/^-[neE]+$/.test(v)) : [own]
+    return [decodePrintEscapes(vals.join(name === 'printf' ? '\n' : ' ')), ...bodies].join('\n')
+  }
+  if (READERS.has(name)) return bodies.join('\n')
+  return [own, ...bodies].join('\n')
+}
+
 // Commands that only read a file they name (the output redirect is checked apart).
 const READERS = new Set(['cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls',
   'stat', 'file', 'shasum', 'sha1sum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf', 'test', '[',
@@ -1136,7 +1217,10 @@ export function installFileDeny(command, opts = {}) {
   // fast path: nothing in any spelling of the whole command reaches a target,
   // and no program in it writes into the cwd on its own
   // (a .claude source, or a dot-glob that may be one, goes on to the segments: claudeDirCopyIn)
-  if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
+  // INSTRWRITEEXEC1105: a printf/echo escape glued to a name (`scripts/hooks\\n`, `\\x2f`) hides it from the raw text, so
+  // a command with a backslash is also read with its escapes decoded
+  const decoded = cmd.includes('\\') ? decodePrintEscapes(cmd) : ''
+  if (!hitsIn(cmd, ctx).length && !(decoded && hitsIn(decoded, ctx).length) && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
   // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
   ctx.reShell = reShellsText(cmd)
   ctx.dotglob = namesDotglob(cmd, ctx.reShell)
@@ -1261,6 +1345,56 @@ export function installFileDeny(command, opts = {}) {
       return hitsIn(s, at).length || roughCommands(s).some((words) => writes(words, at))
     }))
   }
+  // INSTRWRITEEXEC1105: a script text that, read with its cd followed, runs a directory-changing program (rm, mv, cp,
+  // chmod, find, tar, ...) on a path that names a protected one or a directory on the way to one (`cd <root> && rm -rf
+  // scripts`): the earlier heredoc rule denied every such name, so an ancestor-only allowance must not let this pass.
+  const dirChangeInScript = (text) => {
+    const c = { ...ctx }
+    const cwds = [c.cwd]
+    for (const words of roughCommands(text)) {
+      const line = words.map((w) => w.value).join(' ')
+      if (DIR_CHANGERS.has(commandName(words)) && cwds.some((cwd) => hitsIn(line, { ...ctx, cwd, cwdInsideDir: insideDir(cwd) }).length)) return true
+      if (!['cd', 'pushd', 'popd'].includes(words[0].value)) continue
+      cwdAfterSegment(line, c)
+      if (!c.cwd) return true
+      if (!cwds.includes(c.cwd)) cwds.push(c.cwd)
+    }
+    return false
+  }
+  // INSTRWRITEEXEC1105: the directories later segments move to (cd/pushd, a subshell's included, conservatively), or
+  // null when a cd cannot be followed
+  const laterCwds = (k) => {
+    const c = { ...ctx }
+    const out = []
+    for (let j = k + 1; j < segs.length; j++) {
+      cwdAfterSegment(subshellParts(segs[j].own).body, c)
+      if (!c.cwd) return null
+      if (c.cwd !== ctx.cwd && !out.includes(c.cwd)) out.push(c.cwd)
+    }
+    return out
+  }
+  const atCwd = (cwd, fn) => {
+    const c = ctx.cwd
+    const d = ctx.cwdInsideDir
+    ctx.cwd = cwd
+    ctx.cwdInsideDir = insideDir(cwd)
+    try { return fn() } finally { ctx.cwd = c; ctx.cwdInsideDir = d }
+  }
+  // INSTRWRITEEXEC1105: the text of the segments piped into segment k (printf/echo decoded, a reader's heredoc only)
+  const pipedInText = (k) => {
+    const feeders = []
+    for (let j = k; j > 0 && (segs[j - 1].sep === '|' || segs[j - 1].sep === '|&'); j--) {
+      const fw = shellWords(segs[j - 1].own)
+      feeders.push(scriptTextOf(segs[j - 1].own, segs[j - 1].bodies, fw ? commandName(fw) : ''))
+    }
+    return feeders.reverse().filter(Boolean).join('\n')
+  }
+  // shell code text: a protected name in it is denied; a directory on the way to one passes only when the text, read
+  // with its cd followed, names and writes nothing protected and runs no directory-changing program on such a path
+  const shellTextDenied = (text) => {
+    const hits = hitsIn(text, ctx)
+    return hits.some((h) => h.kind !== 'ancestor') || (hits.length > 0 && (!ancestorOnlyHolds(text) || dirChangeInScript(text)))
+  }
   if (!segs) {
     // The quoting does not resolve: a command substitution with quotes or an expansion inside, most often a plain reader
     // (`echo "$(git log -1 --format='%ad' $c)"`, Dani 56794). A protected path anywhere in it: fail closed. Otherwise
@@ -1277,6 +1411,7 @@ export function installFileDeny(command, opts = {}) {
     return false
   }
   const tainted = new Set()
+  const taintedIn = (text) => [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(text))
   // INSTRFILES1104 A: a check run at the cwd and, after a cd that may have failed (moveCwd), at the old directory too
   const atAlt = (fn) => {
     if (!ctx.altCwd) return undefined
@@ -1311,7 +1446,7 @@ export function installFileDeny(command, opts = {}) {
     // decide the noBareGlob skip
     ctx.bareGlobQuoted = ctx.reShell === false && !unquotedBareGlob(own)
     const rawHits = hitsBoth(view.text)
-    const usesTainted = [...tainted].some((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(own))
+    const usesTainted = taintedIn(own)
     // A segment the word reader still cannot split (a case pattern, an arithmetic group): its git commands are read
     // roughly, so they reach the git rule.
     if (!words) {
@@ -1329,6 +1464,68 @@ export function installFileDeny(command, opts = {}) {
       if (g === 'allow') continue
     }
     if (words && words.length && !usesTainted && both(() => landingDenied(words, name))) return true
+    // INSTRWRITEEXEC1105: a file this segment writes and a later segment of the same command runs or feeds (a script)
+    // holds shell code, whatever wrote it: a heredoc body, the text of printf/echo, the code of a program that prints
+    // (sed, awk, ...), and the same of the segments piped into the writer. A reader (cat, ls, grep, ...) puts file
+    // contents there, not its arguments, so only its heredoc body counts. The script text is judged as commands: a
+    // protected name in it is denied; a directory on the way to one (the install root) passes only when the text,
+    // read with its cd followed, names and writes nothing protected (ancestorOnlyHolds). A message or comment file
+    // that is only written, read or sent on (curl -d @file) passes (Marveen 56653). This replaces the heredoc-only
+    // rule. A printf/echo escape (\n, \r) is the line break it prints.
+    if (words && words.length) {
+      const targets = words.redirects.map((r) => r.value).filter((v) => v !== '/dev/null')
+      const k = segs.indexOf(seg)
+      // a later segment that starts with an assignment (`PATH=... bash F`, `X=1 ./F`) and names the file is read as
+      // running it: laterRuns sees the assignment as the command word (Dani #2546)
+      // ...only when the file is that command or the script word of a shell or an interpreter after it; a file that is
+      // only an argument of another script (`CARD=X sh card.sh note.txt`) is not run
+      const prefixedRun = () => segs.slice(k + 1).some((s) => {
+        if (!/^\s*[A-Za-z_]\w*=/.test(s.own)) return false
+        const ws = shellWords(s.own)
+        if (!ws) return false
+        const rest = ws.map((w) => w.value).filter((v, i, a) => !a.slice(0, i + 1).every((x) => /^[A-Za-z_]\w*=/.test(x)))
+        const [w, ...args] = rest
+        if (!w) return false
+        if (targets.includes(w)) return true
+        if (!/^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.|python[\d.]*|node|perl|ruby|php)$/.test(w)) return false
+        const script = args.find((v) => !v.startsWith('-'))
+        return script !== undefined && targets.includes(script)
+      })
+      if (targets.length && (laterRuns(segs, k, targets) || prefixedRun())) {
+        const text = [pipedInText(k), scriptTextOf(own, seg.bodies, name)].filter(Boolean).join('\n')
+        // a name an earlier segment assigned a protected path to, used in the text: an unquoted heredoc expands it as it
+        // is written, an exported one expands as the file runs
+        if (taintedIn(text)) return true
+        // judged at the cwd and, after a cd that may have failed, at the old directory too (INSTRFILES1104 A)
+        const judge = () => {
+          const hits = text ? hitsIn(text, ctx) : []
+          if (hits.some((h) => h.kind !== 'ancestor')) return true
+          // The ancestor-only pass reads the text as shell (its cd followed). It holds only when a shell is what runs
+          // the file; another interpreter changes directory in its own language, which this reading does not see.
+          return hits.length > 0 && (!shellRunsOnly(segs, k, targets, text) || !ancestorOnlyHolds(text) || dirChangeInScript(text))
+        }
+        if (both(judge)) return true
+        // ...and at every directory a later segment moves to before the file runs (`cd <dir> && sh s.sh`, Dani #2546):
+        // a relative name in the script resolves there. A protected name there is denied; a directory on the way to
+        // one counts only for a shell run (a file another program reads as data, a message the kanban tool sends,
+        // names the install root's subdirectories without running them). A later cd that cannot be followed is read as
+        // its inline form is (PATHGLOBSPLIT1105).
+        const judgeLater = () => {
+          const hits = text ? hitsIn(text, ctx) : []
+          if (hits.some((h) => h.kind !== 'ancestor')) return true
+          return hits.length > 0 && shellRunsOnly(segs, k, targets, text) && (!ancestorOnlyHolds(text) || dirChangeInScript(text))
+        }
+        if ((laterCwds(k) ?? []).some((cwd) => atCwd(cwd, judgeLater))) return true
+      }
+      // The text a shell runs itself gets the same reading: its -c code, or, when it names no script file, its heredoc
+      // and what is piped into it (`sh -c 'rm -rf scripts'` at the root removes a protected directory's parent).
+      if (SHELL_RUNNERS.has(name)) {
+        const ci = words.findIndex((w, i) => i > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w.value))
+        const code = ci > 0 ? (words[ci + 1]?.value ?? '')
+          : words.slice(1).every((w) => w.value.startsWith('-')) ? [pipedInText(k), ...seg.bodies].filter(Boolean).join('\n') : ''
+        if (code && (taintedIn(code) || both(() => shellTextDenied(code)))) return true
+      }
+    }
     if (!rawHits.length && !usesTainted) {
       if (words && words.length && writesIntoCwd(words, name) && (cwdReaches(ctx.cwd) || (!!ctx.altCwd && cwdReaches(ctx.altCwd)))) return true
       moveCwd(own, seg, ctx)
@@ -1341,10 +1538,6 @@ export function installFileDeny(command, opts = {}) {
       if (both(() => ['exact', 'under', 'unresolved'].includes(classifyWord(r.value, ctx)))) return true
       if (usesTainted && /\$/.test(r.value)) return true
     }
-    // a heredoc body that names a protected path, written to a file that the same command then runs or feeds (a
-    // script); a message or comment file that only mentions the path passes (Marveen 56653)
-    const fileTargets = words.redirects.map((t) => t.value).filter((v) => v !== '/dev/null')
-    if (bodies.length && bodies.some((b) => hitsBoth(b).length) && laterRuns(segs, segs.indexOf(seg), fileTargets)) return true
     // an assignment carries the path to a later word (`F=<path>; cp x $F`): the
     // name is tainted, and a later segment that uses it is judged as naming it
     if (words.every((w) => ASSIGN_RX.test(w.value)) || /^(?:export|local|declare|readonly|typeset)$/.test(words[0].value)) {

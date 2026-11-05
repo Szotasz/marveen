@@ -302,6 +302,133 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   ])('%s is denied in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(DENY_FILE)
   })
+  // INSTRWRITEEXEC1105: whatever writes the file the command then runs, its text is shell code
+  it.each([
+    ['printf, then sh', `printf 'cp /tmp/x @ROOT@/.claude/settings.json\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['echo, then bash', `echo 'cp /tmp/x @ROOT@/.claude/settings.json' > /tmp/s.sh && bash /tmp/s.sh`],
+    ['printf with a glob, then chmod and the command word', `printf 'echo x > @ROOT@/.claude/settings.js*\\n' > /tmp/s.sh; chmod +x /tmp/s.sh; /tmp/s.sh`],
+    ['printf with a glob, sourced', `printf 'rm -rf @ROOT@/scripts/hoo*\\n' > $S/s.sh; . $S/s.sh`],
+    ['echo appended, sourced', `echo "rm @ROOT@/store/autonomy-config.json" >> $S/s.sh; source $S/s.sh`],
+    ['printf %s, then zsh', `printf '%s\\n' 'echo x > @ROOT@/.claude/settings.js*' > /tmp/s.sh; zsh /tmp/s.sh`],
+    ['printf piped into the writer', `printf 'echo x > @ROOT@/.claude/settings.js*\\n' | cat > /tmp/s.sh; sh /tmp/s.sh`],
+    ['printf, then a shell on its stdin', `printf 'echo x > @ROOT@/.claude/settings.js*\\n' > /tmp/s.sh; sh < /tmp/s.sh`],
+    ['a second line of printf, then sh', `printf 'cd /tmp\\necho x > @ROOT@/.claude/settings.js*\\n' > /tmp/s.sh && sh /tmp/s.sh`],
+    ['printf with its own cd into the install, then a relative write', `printf 'cd @ROOT@ && echo x > scripts/hooks/a.py\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['printf with its own cd into the install, then rm of a parent', `printf 'cd @ROOT@ && rm -rf scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['a heredoc with its own cd into the install, then rm of a parent', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nrm -rf scripts\nEOF\nsh /tmp/s.sh`],
+  ])('text written to a file by %s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  // the ancestor-only pass reads the text as shell, so it holds only when a shell runs the file; from a worktree the
+  // relative names are not protected by themselves, so the runner decides
+  it.each([
+    ['python that changes directory itself, then python runs it', `cat > /tmp/a.py <<'EOF'\nimport os\nos.chdir('@ROOT@')\nopen('scripts/hooks/a.py', 'w').write('x')\nEOF\npython3 /tmp/a.py`],
+    ['python that runs a copy in the install, then python runs it', `cat > /tmp/a.py <<'EOF'\nimport subprocess\nsubprocess.run(['cp', '/tmp/x', 'scripts/hooks/a.py'], cwd='@ROOT@')\nEOF\npython3 /tmp/a.py`],
+    ['a python shebang, run as the command word', `cat > /tmp/a <<'EOF'\n#!/usr/bin/env python3\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; /tmp/a`],
+    ['shell text that a shell runs as -c code', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash -c "python3 /tmp/s.sh"`],
+    ['a python shebang, run by bash -c as a command', `cat > /tmp/a <<'EOF'\n#!/usr/bin/env python3\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; bash -c /tmp/a`],
+    ['a shell name in another directory as the runner', `cat > /tmp/s.sh <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\n/tmp/bash /tmp/s.sh`],
+    ['a shell name in another directory as the shebang', `cat > /tmp/a <<'EOF'\n#!/tmp/sh\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; /tmp/a`],
+    ['a python shebang from one segment and the body appended by the next', `printf '#!/usr/bin/env python3\\n' > /tmp/p; cat >> /tmp/p <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/p; /tmp/p`],
+    ['a body appended to a file the command did not start, run directly', `cat >> /tmp/p <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\n/tmp/p`],
+    ['a shell-named function in the command', `bash() { python3 "$@"; }; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a shell-named alias in the command', `alias bash=python3\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['an exported PATH in the command', `export PATH=/tmp:$PATH; ln -sf /usr/bin/python3 /tmp/bash; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a PATH prefix on the run', `cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nPATH=/tmp:$PATH bash /tmp/f`],
+    ['a hash entry for a shell name (zsh)', `hash bash=/usr/bin/python3\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a hash -p entry for a shell name (bash)', `hash -p /usr/bin/python3 bash; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a quoted alias name', `alias "bash=python3"\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+  ])('text written to a file by %s is denied from a worktree too', (_, cmd) => {
+    expect(bash(cmd, wt)).toEqual(DENY_FILE)
+  })
+  // a printf/echo escape is the character it prints: glued to a name or building one, it hides nothing
+  it.each([
+    ['a newline escape glued to the name', `printf 'rm -rf scripts/hooks\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['an octal newline', `printf 'rm -rf scripts/hooks\\012' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['a four-digit octal newline', `printf 'rm -rf scripts/hooks\\0012' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['a hex slash inside the name', `printf 'rm -rf scripts\\x2fhooks\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['an octal slash inside the name', `printf 'rm -rf scripts\\057hooks' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['a %b argument', `printf '%b' 'echo x > .claude/settings.json\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['echo -e with a tab glued', `echo -e 'rm -rf scripts/hooks\\t' > /tmp/s.sh; sh /tmp/s.sh`],
+  ])('text written to a file with %s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  it.each([
+    ['an escape glued to the name, not run', `printf 'rm -rf scripts/hooks\\n' > /tmp/s.sh`],
+    ['harmless escapes, run', `printf 'echo a\\tb\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['a note with an escape, read back', `printf 'see scripts/hooks\\n' > /tmp/n.txt; cat /tmp/n.txt`],
+  ])('text written to a file with %s passes', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+  // the text a shell runs itself (its -c code, its heredoc, what is piped into it) is read the same way
+  it.each([
+    ['-c code that removes a protected directory\'s parent', `bash -c "rm -rf scripts"`],
+    ['-c code that moves it', `sh -c 'mv scripts /tmp/x'`],
+    ['-lc code', `bash -lc 'rm -rf scripts'`],
+    ['-c code with its own cd into the install', `sh -c 'cd @ROOT@ && rm -rf scripts'`, '/tmp'],
+    ['a heredoc into a shell', `sh <<'E'\nrm -rf scripts\nE`],
+    ['printf piped into a shell', `printf 'rm -rf scripts\\n' | sh`],
+  ])('shell code from %s is denied in the install', (_, cmd, cwd?: string) => {
+    expect(bash(cmd, cwd ?? root)).toEqual(DENY_FILE)
+  })
+  it.each([
+    ['-c code that lists the parent', `sh -c 'ls scripts'`],
+    ['-c code with a cd into the install and git status', `sh -c 'cd @ROOT@ && git status'`],
+    ['a heredoc into a shell that lists', `sh <<'E'\nls scripts\nE`],
+    ['a heredoc that is a script\'s stdin', `bash /tmp/x.sh <<'E'\nrm -rf scripts\nE`],
+  ])('shell code from %s passes', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
+  // a name an earlier segment assigned a protected path to, used in the text that runs
+  it.each([
+    ['an unquoted heredoc', `X=scripts/hooks; cat > /tmp/s.sh <<EOF\nrm -rf $X\nEOF\nsh /tmp/s.sh`],
+    ['an unquoted heredoc, the name built on', `X=scripts; cat > /tmp/s.sh <<EOF\nrm -rf $X/hooks\nEOF\nsh /tmp/s.sh`],
+    ['an exported name in a quoted heredoc', `export X=scripts/hooks; cat > /tmp/s.sh <<'EOF'\nrm -rf $X\nEOF\nsh /tmp/s.sh`],
+    ['a printf argument', `X=scripts/hooks; printf "rm -rf $X\\n" > /tmp/s.sh; sh /tmp/s.sh`],
+  ])('an assigned protected name in %s that then runs is denied', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  it('an assigned harmless name in a heredoc that runs passes', () => {
+    expect(bash(`X=/tmp/w; cat > /tmp/s.sh <<EOF\nls $X\nEOF\nsh /tmp/s.sh`)).toEqual(ALLOW)
+  })
+  it('a written script is read at the directory a later cd moves to before it runs', () => {
+    expect(bash(`echo 'echo x > hooks/a.py' > /tmp/s.sh; cd @ROOT@/scripts && sh /tmp/s.sh`, wt)).toEqual(DENY_FILE)
+    expect(bash(`echo 'echo x > hooks/a.py' > /tmp/s.sh; (cd @ROOT@/scripts && sh /tmp/s.sh)`, wt)).toEqual(DENY_FILE)
+    expect(bash(`echo 'echo x > out.txt' > /tmp/s.sh; cd /tmp && sh /tmp/s.sh`, wt)).toEqual(ALLOW)
+    expect(bash(`echo 'ls scripts' > /tmp/s.sh; cd @ROOT@ && sh /tmp/s.sh`, wt)).toEqual(ALLOW)
+    // a file another program reads as data, after a cd into the install: a directory on the way counts only for a shell
+    expect(bash(`echo 'rm -rf scripts' > /tmp/m.txt; cd @ROOT@ && python3 -c "print(open('/tmp/m.txt').read())"`, wt)).toEqual(ALLOW)
+  })
+  it('a written script after a cd that may fail is read at the old directory too', () => {
+    expect(bash(`cd @WT@; printf 'rm -rf scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`)).toEqual(DENY_FILE)
+    expect(bash(`cd @WT@ && printf 'rm -rf scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`)).toEqual(ALLOW)
+  })
+  it('a script whose own cd leads into the install is read from there, whatever the caller\'s directory', () => {
+    expect(bash(`printf 'cd @ROOT@ && rm -rf scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`, wt)).toEqual(DENY_FILE)
+    expect(bash(`printf 'cd @ROOT@ && ls scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`, wt)).toEqual(ALLOW)
+  })
+  it.each([
+    ['printf, not run', `printf 'echo x > @ROOT@/.claude/settings.js*\\n' > /tmp/s.sh`],
+    ['echo to a note, then cat', `echo 'see @ROOT@/.claude/settings.json' > /tmp/n.txt; cat /tmp/n.txt`],
+    ['echo to a note, then curl sends it', `echo 'see .claude/settings.json' > /tmp/n.txt; curl -s --data-binary @/tmp/n.txt http://localhost:3420/api/messages`],
+    ['echo to a note, then another script runs', `echo 'see .claude/settings.json' > /tmp/n.txt; sh /tmp/other.sh`],
+    ['printf, then a reader piped into wc', `printf 'echo x > @ROOT@/.claude/settings.js*\\n' > /tmp/s.sh; cat /tmp/s.sh | wc -l`],
+    ['harmless printf, then sh', `printf 'echo hello\\n' > /tmp/s.sh; sh /tmp/s.sh`],
+    ['printf with a cd into the install and a read-only tool, then bash', `printf '#!/bin/bash\\ncd @ROOT@ && python3 tools/report.py --id X\\n' > /tmp/s.sh; bash /tmp/s.sh`],
+    ['ls of a protected name into a file python then reads', `ls -d @ROOT@/.claude/settings.js* > /tmp/l.txt; python3 - /tmp/l.txt <<'EOF'\nimport sys; print(open(sys.argv[1]).read())\nEOF`],
+    ['a heredoc whose regex holds an escape, then sh', `cat > /tmp/s.sh <<'EOF'\nperl -0pi -e 's/a\\n.*?b//' /tmp/x.txt\nEOF\nsh /tmp/s.sh`],
+    ['a bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/bin/bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
+    ['a cd into the install and ls, run by /bin/bash', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\n/bin/bash /tmp/s.sh`],
+    ['an env bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/usr/bin/env bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
+    ['an unrelated assignment before a shell run of a cd into the install and ls', `MYPATH=/x; cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash /tmp/s.sh`],
+    ['a shell script with a cd into the install and a fleet tool, run behind an assignment prefix', `cat > /tmp/c.sh <<'EOF'\n#!/bin/sh\ncd @ROOT@ || exit 1\npython3 scripts/kartya-es-ertesites.py --id \${CARD:?} --comment-file "$1"\nEOF\nCARD=X1 sh /tmp/c.sh /tmp/n.txt`],
+    ['a note that is only an argument of a prefixed script', `echo 'see @ROOT@/scripts' > /tmp/n.txt; CARD=X1 sh /tmp/other.sh /tmp/n.txt`],
+    ['a hash entry for another program before a shell run of a cd into the install and ls', `hash -p /usr/bin/git git; cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash /tmp/s.sh`],
+    ['a note read by a prefixed reader', `echo 'see @ROOT@/scripts' > /tmp/n.txt; LC_ALL=C grep x /tmp/n.txt`],
+    ['a cd into the install and ls, read and then run by sh', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\ncat /tmp/s.sh; sh /tmp/s.sh`],
+  ])('text written to a file by %s passes', (_, cmd) => {
+    expect(bash(cmd)).toEqual(ALLOW)
+  })
   it.each([
     ['cp', `cp /tmp/x .claude/settings.json`],
     ['a redirect', `echo '{}' > store/extra-hooks.json`],
