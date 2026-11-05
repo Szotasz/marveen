@@ -118,3 +118,55 @@ describe('outgoing-copy gate tokenization: a Hungarian suffix on a dotted filena
     expect(probs[0]).toContain('küldj át ot darabot')
   })
 })
+
+function auditAll(text: string): string[] {
+  const out = execFileSync('python3', ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE)})
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+print(json.dumps(g.audit(sys.argv[1])))
+`, text], { encoding: 'utf-8' })
+  return JSON.parse(out.trim())
+}
+
+// ISSUE1838COPYGATE (#2543, 2026-11-05): GATESZAMKOTOJEL821 one step further. The number branch wanted a DIGIT
+// right before the hyphen, so a suffix after a UNIT SIGN ('30%-ot', '2‰-es') was cut off and read as a standalone
+// word: 'ot' -> 'öt', 'es' -> 'és'. Suffixes that are not dictionary words ('20%-kal', '15%-át') passed by luck,
+// which is why the class stayed hidden. Number + sign + suffix is now one technical token.
+// The sentences carry enough Hungarian context to be judged as Hungarian at all: a one-line sentence is not, and the
+// accent check never runs on it -- a test on one would pass with and without the fix (measured on the mutant).
+const HU_TAIL = 'ha a csomag megújul, és köszönöm, hogy szóltál.'
+
+describe('outgoing-copy gate tokenization: a suffix after a number and a unit sign is not prose (ISSUE1838COPYGATE)', () => {
+  it('the reported sentence passes: a percentage with a hyphenated suffix', () => {
+    expect(auditAccent(`Szia! A jutalék a 30%-ot is elérheti, ${HU_TAIL}`)).toEqual([])
+  })
+
+  it('the other unit signs and a spaced or non-breaking-spaced sign decline the same way', () => {
+    expect(auditAccent(`Szia! A 2‰-es arány, a 90°-os szög és az 5€-es díj is rendben van, ${HU_TAIL}`)).toEqual([])
+    expect(auditAccent(`Szia! A jutalék a 30 %-ot is elérheti, ${HU_TAIL}`)).toEqual([])
+    expect(auditAccent(`Szia! A jutalék a 30\u00a0%-ot is elérheti, ${HU_TAIL}`)).toEqual([])
+  })
+
+  it('the suffixes that already passed still pass (no regression on the lucky cases)', () => {
+    expect(auditAccent(`Szia! A jutalék 20%-kal nőtt, a bevétel 15%-át és a 10%-os kedvezményt is beszámoljuk, ${HU_TAIL}`)).toEqual([])
+  })
+
+  it('a real accent error right after the percentage is still caught -- the mask ends at the suffix', () => {
+    const probs = auditAccent(`Szia! A 30%-ot es a többit holnap küldöm, ${HU_TAIL}`)
+    expect(probs.length).toBe(1)
+    expect(probs[0]).toContain('es -> és')
+  })
+
+  it('a standalone "ot" in the same sentence as a percentage is still caught (no whitelist widening)', () => {
+    const probs = auditAccent(`Szia! A 30%-ot megnéztem, de kérlek küldj át ot darabot, ${HU_TAIL}`)
+    expect(probs.length).toBe(1)
+    expect(probs[0]).toContain('ot -> öt')
+    expect(probs[0]).toContain('küldj át ot darabot')
+  })
+
+  it('a Cyrillic homoglyph in the suffix still reaches the homoglyph rule (the sign branch is Latin-only)', () => {
+    const probs = auditAll(`Szia! A jutalék a 30%-\u043et is elérheti, ${HU_TAIL}`)
+    expect(probs.some((p) => p.includes('homoglifa') && p.includes('U+043E'))).toBe(true)
+  })
+})

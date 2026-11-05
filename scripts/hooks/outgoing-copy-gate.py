@@ -2740,10 +2740,17 @@ _TECH_COMMON = r"""
 # tulajdonnevet a toldalekaval egyutt elnyelni, ezert a nev-szabaly nem kapja meg.
 _TECH_SUFFIXED = r"""
         \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
+      | \d+(?:[.:,]\d+)*[\   ]?[%‰°$€£]-[a-záéíóöőúüű]+   # szam + mertekegyseg-jel + toldalek (30%-ot, 2‰-es, 90°-os, 5€-t)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
       | (?:(?<![\w-])--)?\b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek), --flag alakban is
 """
+# ISSUE1838COPYGATE (#2543, 2026-11-05): the number branch wanted a DIGIT right before the hyphen, so a suffix after a
+# unit sign ('30%-ot', '2‰-es', '90°-os', '5€-es') was cut at the hyphen and its fragment checked as a standalone word:
+# 'ot' -> 'öt', 'es' -> 'és'. Suffixes that are not dictionary words ('20%-kal', '15%-át') passed by luck. The second
+# branch takes number + sign + suffix whole, with an optional (also non-breaking) space before the sign ('30 %-ot').
+# Its suffix is Hungarian Latin letters ONLY, unlike the branch above: TECHNICAL also feeds the homoglyph rule
+# (mixed_script_words runs on the stripped prose), and a Cyrillic letter in '30%-оt' must still reach it.
 # FLAGDASH1030 (2026-10-30): the hyphenated-identifier branch above used to eat only the word part of a
 # '--select-release-current' flag, so strip_technical() left the leading '--' between two spaces, and the double-hyphen
 # rule counted it as a dash in prose: 'plesk installer --select-release-current --upgrade-installed-components' was
