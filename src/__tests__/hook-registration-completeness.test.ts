@@ -58,6 +58,8 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 const EXEMPT: Record<string, string> = {
   'mcp-file-targets.mjs':
     'shared library (MCPWRITEGATE1104): names the local paths of an MCP tool call, imported by db-write-gate.mjs and self-pace-gate.mjs; not itself a hook',
+  'py-inline-data.py':
+    'helper run by db-write-gate.mjs (pythonDataVerdict, /usr/bin/python3 -I -S) to decide whether a Bash command\'s python code is data (INSTRFILES1104 A); not itself a hook',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'command_prompt.py':
