@@ -39,7 +39,8 @@ const write = (p: string, subAgent = true) => gateDecision('Write', { file_path:
 const bash = (c: string) => gateDecision('Bash', { command: c }, o())
 
 const FILES = ['access.json', '.env', 'invites.json', 'inbound-evidence.jsonl', 'inbound-evidence.jsonl.1', 'inbox-pending.jsonl',
-  'inbox-draining-4242.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json', 'bot.pid', 'coordinator.pid']
+  'inbox-draining-4242.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json', 'bot.pid', 'coordinator.pid',
+  'delivered-dms.json', 'delivered-dms.json.tmp.4242']
 const roots = () => ({
   'the shared ~/.claude/channels': join(home, '.claude', 'channels', 'slack'),
   "the install's .claude/channels (the main agent's Telegram)": join(root, '.claude', 'channels', 'telegram'),
@@ -73,6 +74,20 @@ describe('the other routes', () => {
   it('a bare trust directory name from its parent', () => {
     expect(bash(`cd ${join(root, '.claude', 'channels', 'telegram')} && rm -rf progress`).deny).toBe(true)
     expect(bash(`cd ${join(self, '.claude', 'channels', 'telegram')} && rm -rf approved`).deny).toBe(true)
+  })
+  it('SLACKOUTDM1007: delivered-dms.json and its temporary name, by the shell and through the config-dir symlink', () => {
+    const slack = join(home, '.claude', 'channels', 'slack')
+    expect(write(join(self, '.claude-config', 'channels', 'slack', 'delivered-dms.json'))).toEqual(SUB)
+    expect(bash(`echo '{}' > ${join(slack, 'delivered-dms.json')}`)).toEqual(SUB)
+    expect(bash(`printf x > ${join(slack, 'delivered-dms.json.tmp.1')} && mv ${join(slack, 'delivered-dms.json.tmp.1')} ${join(slack, 'delivered-dms.json')}`).deny).toBe(true)
+    expect(bash(`cp ${join(base, 'x.json')} ${join(root, 'agents', 'geri', '.claude', 'channels', 'slack', 'delivered-dms.json')}`).deny).toBe(true)
+    expect(bash(`rm ${join(self, '.claude', 'channels', 'telegram', 'delivered-dms.json')}`).deny).toBe(true)
+  })
+  it('SLACKOUTDM1007: a look-alike name is not the trust file', () => {
+    const slack = join(home, '.claude', 'channels', 'slack')
+    expect(write(join(slack, 'delivered-dms.json.bak'))).toEqual(FREE)
+    expect(write(join(slack, 'delivered-dms.jsonx'))).toEqual(FREE)
+    expect(bash(`cat ${join(slack, 'delivered-dms.json')}`)).toEqual(FREE)
   })
   it('a case-folded name', () => {
     expect(write(join(home, '.claude', 'channels', 'slack', 'Access.JSON'))).toEqual(SUB)

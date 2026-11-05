@@ -77,9 +77,12 @@ export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..
 
 // CHANSTATEWRITE1104: the trust files and directories of a channel plugin's state dir, per plugin (`*`), under each
 // root. A name with a glob character matches one path segment by that glob (inbox-draining-<pid>.jsonl).
+// SLACKOUTDM1007: the Slack plugin's delivered-dms.json (the DM channels an allowFrom user wrote from, kept across
+// restarts) teaches its outbound gate whose DM a channel is, so a forged row would open a stranger's DM; it is a trust
+// file like access.json, and so is the temporary name its atomic write renames from (delivered-dms.json.tmp.<pid>).
 const CHANNEL_STATE_FILES = ['access.json', '.env', 'invites.json', 'inbound-evidence.jsonl', 'inbound-evidence.jsonl.1',
   'inbox-pending.jsonl', 'inbox-draining-*.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json',
-  'bot.pid', 'coordinator.pid']
+  'bot.pid', 'coordinator.pid', 'delivered-dms.json', 'delivered-dms.json.tmp.*']
 const CHANNEL_STATE_DIRS = ['progress', 'approved']
 function channelStateTargets() {
   const out = []
