@@ -44,6 +44,7 @@
 // Engine: scheduleSurfaceDeny in scripts/self-pace-gate.mjs (segments, quoting,
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
+import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -108,8 +109,8 @@ function channelStateTargets() {
 // spans removed, has no bare-glob word left (a backslash-escaped `\*` counts as unquoted, an unterminated quote fails
 // closed); the whole command names no program that runs text as shell code again (reShellsText: a quoted `tee *`
 // handed to `bash -c`, `eval`, an interpreter, `xargs`, `find -exec` or sqlite3's `.shell` is globbed after all, Dani's
-// review of 7ae2931af; since INSTRFILES1104 A the python and node families only when the command shows a shell call,
-// see DATA_INTERPRETERS); and the word is read from the caller's OWN project dir (another sub-agent's cd into the home
+// review of 7ae2931af; since INSTRFILES1104 A python only when its code is not data by a closed allowlist, node always,
+// see PY_FAMILY); and the word is read from the caller's OWN project dir (another sub-agent's cd into the home
 // gets no skip at all). An absolute or ~ glob, a partial one (`C*`), the name itself and an unquoted `tee *` / `> *` /
 // `sed -i ... *` all still match. Stated limit: a program name put together at run time is beyond a text brake.
 const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.claude', dir: true }, { sub: '.mcp.json' },
@@ -506,7 +507,27 @@ export const RESHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh'
 // start a process (the reverse rule, Dani 69850): then the strict reading stays (Dani's review of 7ae2931af:
 // `python3 -c "import os; os.system('tee *')"` is a glob after all). The other interpreters (perl, ruby, php, lua,
 // awk, ...) keep the strict reading whatever their code says (fail closed).
-const DATA_INTERPRETERS = new Set(['python', 'pypy', 'node', 'nodejs', 'deno', 'bun'])
+// INSTRFILES1104 A, closing decision (Samu 69992/69997/70023, Dani 70000): the deny list of call shapes below was
+// bypassed round after round, so the python decision is a CLOSED ALLOWLIST, made by scripts/hooks/py-inline-data.py
+// with the real python ast: every python invocation must show its code (-c, a heredoc), and that code may import only
+// measured modules, reach only measured module attributes, name only allowed builtins, no private name, no frame or
+// code attribute, no dunder but __name__/__main__/__file__/__tests__, no format_map, .format only on a literal, and no
+// pattern-expanding or directory-walking API. Anything it cannot show or parse is strict. The node family gets no data
+// exception (computed member access and .constructor cannot be closed cheaply). The regexes below stay as a first,
+// cheaper layer: any hit is strict without starting python.
+const PY_FAMILY = new Set(['python', 'pypy'])
+const NODE_FAMILY = new Set(['node', 'nodejs', 'deno', 'bun'])
+const PY_DATA_CHECK = join(dirname(fileURLToPath(import.meta.url)), 'py-inline-data.py')
+// /usr/bin/python3: a path the same OS user cannot plant a stand-in at (a PATH lookup could find one). -I -S: no user
+// site, no environment, no site-packages start-up code.
+const PY_DATA_PYTHON = '/usr/bin/python3'
+// "data", or "strict <reason>"; no interpreter, a timeout or a crash is strict too (the develop reading).
+export function pythonDataVerdict(command) {
+  if (!existsSync(PY_DATA_PYTHON)) return 'strict no-python'
+  const r = spawnSync(PY_DATA_PYTHON, ['-I', '-S', PY_DATA_CHECK], { input: String(command ?? ''), encoding: 'utf8', timeout: 5000, maxBuffer: 1 << 16 })
+  const out = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : ''
+  return out === 'data' || out.startsWith('strict ') ? out : `strict checker-${r.error ? 'error' : `exit-${r.status}`}`
+}
 const SHELL_CALL_RX = /\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)\b|\bsubprocess\b|\bpty\s*\.\s*spawn\b|\bcommands\s*\.|\bplatform\s*\.\s*popen\b|\bchild_process\b|\b(?:execSync|execFileSync|spawnSync|execFile|execa)\b|\b(?:exec|spawn|fork)\s*\(|\bshell\s*=\s*True\b|\bshell\s*:\s*true\b|\bDeno\s*\.\s*(?:run|Command)\b|\bBun\s*\.\s*(?:spawn|spawnSync|\$)|\$`|\bzx\b/
 // ...and the signs of a HIDDEN call (Samu 69768, Dani 69775): a name built at run time can reach a shell without any of
 // the words above, so these count as a shell call too (fail closed): __import__, importlib, builtins, ctypes, the
@@ -529,10 +550,16 @@ export function reShellsText(text) {
   const src = String(text ?? '')
   if (/(?:^|[;&|(]\s*)\.\s/.test(src) || /\.(?:shell|system)\b/i.test(src)) return true
   const shellCall = SHELL_CALL_RX.test(src) || HIDDEN_CALL_RX.test(src) || PROCESS_REF_RX.test(src)
+  let pyData
   return src.split(/[\s;&|<>()`'"=,{}$]+/).some((w) => {
     if (/^-(?:exec|execdir|ok|okdir)$/i.test(w)) return true
     const name = (w.split('/').pop() ?? '').toLowerCase().replace(/[\d.]+$/, '')
-    if (DATA_INTERPRETERS.has(name)) return shellCall
+    if (NODE_FAMILY.has(name)) return true
+    if (PY_FAMILY.has(name)) {
+      if (shellCall) return true
+      pyData ??= pythonDataVerdict(src) === 'data'
+      return !pyData
+    }
     return RESHELL_NAMES.has(name)
   })
 }
@@ -1098,10 +1125,11 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
-  const reShell = reShellsText(cmd)
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, reShell),
-    reShell }
+  // The fast path below is judged with the STRICT re-shell reading (reShell true: no literal reading, the wider dotglob
+  // test), whose hits include the literal reading's; the real reading (for python a python start, py-inline-data.py)
+  // is computed only past it. (Only the segment reading below and the dotglob test read it.)
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, true),
+    reShell: true }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir
     && (t.pattern ? ['exact', 'under'].includes(patternRel(pathKey(cwd), t)) : underKey(pathKey(cwd), t.key)))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
@@ -1109,6 +1137,9 @@ export function installFileDeny(command, opts = {}) {
   // and no program in it writes into the cwd on its own
   // (a .claude source, or a dot-glob that may be one, goes on to the segments: claudeDirCopyIn)
   if (!hitsIn(cmd, ctx).length && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
+  // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
+  ctx.reShell = reShellsText(cmd)
+  ctx.dotglob = namesDotglob(cmd, ctx.reShell)
   // the git environment that redirects a remote or points git at another repo or work tree, anywhere in a git command
   if (GIT_WORD_RX.test(cmd) && GIT_ENV_RX.test(cmd)) return 'git'
   // the cwd is the install root, a directory on the way to a protected path, or

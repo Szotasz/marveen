@@ -176,24 +176,31 @@ describe('another sub-agent may not write the project-scope files in a worker\'s
       'python', 'pypy', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'osascript', 'awk', 'gawk',
       'mawk', 'nawk', 'xargs', 'find', 'watch', 'script', 'parallel', 'make']
     expect([...RESHELL_NAMES].sort()).toEqual([...names].sort())
-    // INSTRFILES1104 A (Samu 69747 (a), Bence 69765): the python and node families re-shell only with a shell call shown
-    const data = new Set(['python', 'pypy', 'node', 'nodejs', 'deno', 'bun'])
+    // INSTRFILES1104 A (Samu 69992/70023): every name re-shells when its code is not shown (a script file); python's
+    // shown code is data only by the closed allowlist (py-inline-data.py), node's never
     for (const n of names) {
-      expect(reShellsText(`${n} x`)).toBe(!data.has(n))
-      expect(reShellsText(`/usr/bin/${n}2 x`)).toBe(!data.has(n))
-      if (data.has(n)) expect(reShellsText(`${n} -c "import os; os.system('x')"`)).toBe(true)
+      expect(reShellsText(`${n} x`)).toBe(true)
+      expect(reShellsText(`/usr/bin/${n}2 x`)).toBe(true)
     }
+    for (const n of ['python', 'pypy']) {
+      expect(reShellsText(`${n} -c "print(1)"`)).toBe(false)
+      expect(reShellsText(`/usr/bin/${n}2 -c "print(1)"`)).toBe(false)
+      expect(reShellsText(`${n} -c "import os; os.system('x')"`)).toBe(true)
+    }
+    for (const n of ['node', 'nodejs', 'deno', 'bun']) expect(reShellsText(`${n} -e "console.log(1)"`)).toBe(true)
     expect(reShellsText("env -S 'tee *'")).toBe(false)
   })
   it('reShellsText: shells, eval/source, runners, sqlite3 dot commands, an interpreter that calls a shell; a plain read is not one', () => {
     for (const t of ["bash -c 'x'", 'eval "x"', 'source f', '. f', 'x; . f', 'python3.12 -c "import subprocess"',
       '/usr/bin/env node -e "require(\'child_process\').execSync(\'x\')"', 'node -e "x.exec(1)"', 'python3 -c "y(shell=True)"',
       'find . -name x -exec rm {} +', 'find . -okdir rm {} ;', 'xargs rm', 'sqlite3 db ".shell ls"', 'sqlite3 db ".SYSTEM ls"', 'awk "{print}" f',
-      "perl -e 'print 1'", "python3 - <<'PY'\nimport os\nos.system('ls')\nPY"]) {
+      "perl -e 'print 1'", "python3 - <<'PY'\nimport os\nos.system('ls')\nPY",
+      // the closed allowlist: a free name, node inline code, python's own glob API
+      'python3.12 -c x', '/usr/bin/env node -e x', "python3 - <<'PY'\nimport glob\nprint(glob.glob('*'))\nPY"]) {
       expect(reShellsText(t)).toBe(true)
     }
     for (const t of ['sqlite3 -readonly db "SELECT count(*) FROM t"', 'echo x | tee "*"', 'cat ./a.md', 'grep -l foo f',
-      'python3.12 -c x', '/usr/bin/env node -e x', "python3 - <<'PY'\nimport glob\nprint(glob.glob('*'))\nPY"]) {
+      'python3.12 -c "print(1)"', "python3 - <<'PY'\nimport json\nprint(json.dumps(['*']))\nPY"]) {
       expect(reShellsText(t)).toBe(false)
     }
   })

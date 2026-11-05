@@ -11,7 +11,8 @@
 // The decision function only reads paths: nothing here writes a real config.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, literalQuotedGlobs, literalHeredocBody, reShellsText } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, literalQuotedGlobs, literalHeredocBody, reShellsText, pythonDataVerdict } from '../../scripts/hooks/db-write-gate.mjs'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -46,10 +47,8 @@ const run = (command: string, cwd = agent) => gateDecision('Bash', { command: co
 
 describe('1. a glob in quoted code or a heredoc body that goes to no shell is a literal name', () => {
   it.each([
-    "python3 - <<'PY'\nimport glob\nfor p in glob.glob('@H@/.claude/*'):\n    print(p)\nPY",
     "python3 - <<'PY'\ns = open('ChatView.kt').read()\ns = s.replace('/** old */', '/** new */')\nPY",
-    'python3 -c "import glob; print(glob.glob(\'@H@/.claude/set*\'))"',
-    "node -e \"console.log('@H@/.claude/*')\"",
+    'python3 -c "import json; print(json.dumps([\'@H@/.claude/set*\']))"',
     "cat > notes.md <<'EOF'\nsee @H@/.claude/* and @H@/**\nEOF",
     "cd @AWAY@ && python3 - <<'PY'\np = 'x.kt'\ns = open(p).read().replace('*/', '*/\\n')\nPY",
   ])('free: %s', (c) => { expect(run(c)).toEqual(FREE) })
@@ -73,6 +72,11 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     'python3 -c "$(tee @H@/.claude/set*)"',
     // perl and the other interpreters keep the strict reading
     "perl -e 'print \"@H@/.claude/set*\"'",
+    // the closed allowlist (Samu 69997, Dani 70000 (5)): python's own pattern API expands the glob without a shell,
+    // and node gets no data exception
+    "python3 - <<'PY'\nimport glob\nfor p in glob.glob('@H@/.claude/*'):\n    print(p)\nPY",
+    'python3 -c "import glob; print(glob.glob(\'@H@/.claude/set*\'))"',
+    "node -e \"console.log('@H@/.claude/*')\"",
   ])('denied: %s', (c) => { expect(run(c).deny).toBe(true) })
 
   it('a word of glob characters only keeps the #2514 rule (quoted count(*) free in the own dir only)', () => {
@@ -110,10 +114,13 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
 
   it.each([
     "python3 - <<'PY'\nimport re\nrx = re.compile(r'x')\ns = open('a.kt').read().replace('/** a */', '/** b */')\nPY",
-    "node -e \"const fs = require('fs'); console.log(/x/.test('y'))\"",
-    "node -e \"import('fs').then(m => m)\"",
     "python3 -c \"import json; print(json.dumps({'a': 1}))\"",
   ])('no shell call, no hidden call: %s', (c) => { expect(reShellsText(c)).toBe(false) })
+
+  it.each([
+    "node -e \"const fs = require('fs'); console.log(/x/.test('y'))\"",
+    "node -e \"import('fs').then(m => m)\"",
+  ])('node inline code is never data (Samu 69992): %s', (c) => { expect(reShellsText(c)).toBe(true) })
 
   // Dani's review of e53c1080 (69850): the reverse rule. Any reference to a module that can start a process, or to a
   // reflection handle, keeps the strict reading, whatever is done with it.
@@ -152,8 +159,10 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     }
     expect(reShellsText("node -e \"require('child_process')\"")).toBe(true)
     expect(reShellsText("node -e \"require('node:child_process')\"")).toBe(true)
-    // a name that only contains one of them is no reference
-    expect(reShellsText('python3 -c "import osmosis, cosmos; x.os_name; macOS"')).toBe(false)
+    // a name that only contains one of them is no reference to it; under the closed allowlist an unlisted module is
+    // strict anyway, so a data row holds only listed names
+    expect(reShellsText('python3 -c "import osmosis, cosmos; x.os_name; macOS"')).toBe(true)
+    expect(reShellsText('python3 -c "import json; d = json.loads(\'{}\'); d.os_name"')).toBe(false)
     // an everyday word that only names such a module counts when imported
     expect(reShellsText('python3 -c "print(\'the platform runs commands as code\')"')).toBe(false)
     // measured on 7 days of calls (Samu 69855): Kotlin import lines and shell text held as DATA in an edit heredoc
@@ -170,8 +179,9 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
       'import platform.x', 'import sys, platform.x', 'from platform.x import y']) {
       expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
     }
+    // ...and an import of an unlisted module is strict whatever its name (the closed allowlist, Samu 69992 (1))
     for (const c of ['import androidx.compose.ui.platform.LocalContext', 'import a.b, androidx.platform']) {
-      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(false)
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
     }
     // Samu 69909 (2): a call through whitespace, a line break, a backslash continuation, or a node tagged template
     for (const c of ['exec (x)', 'exec\t(x)', 'exec\n(x)', 'exec \\\n(x)', 'exec`x`', 'eval `x`']) {
@@ -192,15 +202,20 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
       'm.__func__', 'CodeType(1)', 'LambdaType', 'import sys, types', 'import types as t']) {
       expect(reShellsText(`python3 -c "${c}"`)).toBe(true)
     }
-    // an everyday "types" that is no import of the module stays data
-    for (const c of ["print('the types of x')", 'import mypkg.types', 'from x.types import y']) {
-      expect(reShellsText(`python3 -c "${c}"`)).toBe(false)
+    // an everyday "types" in text stays data; an unlisted module is strict whatever its name
+    expect(reShellsText(`python3 -c "print('the types of x')"`)).toBe(false)
+    for (const c of ['import mypkg.types', 'from x.types import y']) {
+      expect(reShellsText(`python3 -c "${c}"`)).toBe(true)
     }
     for (const c of ['exec[0]', 'x = eval', 'eval', 'exec -a n', 'compile;', 'exec\\', 'eval{', 'exec#x', 'eval  \t(x)']) {
       expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
     }
-    for (const c of ['executor = 1', 'evaluate(x)', 'compiled = re.compile(r"x")', 'exec python3 run.py', 'exec\tnode x.js', 'run_exec = 1']) {
+    for (const c of ['executor = 1', 'import re\ncompiled = re.compile(r"x")', 'run_exec = 1', 's = "exec python3 run.py"']) {
       expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(false)
+    }
+    // the closed allowlist: a free name that is no listed builtin, and code the ast cannot parse, are strict
+    for (const c of ['evaluate(x)', 'compiled = re.compile(r"x")', 'exec python3 run.py', 'exec\tnode x.js']) {
+      expect(reShellsText(`python3 - <<'PY'\n${c}\nPY`)).toBe(true)
     }
   })
 
@@ -209,6 +224,112 @@ describe('1. a glob in quoted code or a heredoc body that goes to no shell is a 
     expect(run("python3 -c \"__import__('os').system('tee @H@/.claude/set*')\"").deny).toBe(true)
     expect(run("node -e \"require('child_' + 'process').execSync('tee @H@/.claude/set*')\"").deny).toBe(true)
     expect(run("python3 - <<'PY'\nimport re\nrx = re.compile(r'@H@/.claude/*')\nPY")).toEqual(FREE)
+  })
+})
+
+// INSTRFILES1104 A, closing decision (Samu 69992/69997/70023, Dani 70000): python code is data only by a CLOSED
+// allowlist (scripts/hooks/py-inline-data.py, the real ast under /usr/bin/python3 -I -S). Each rule part has its own
+// row with the checker's reason, so taking one part out fails that row.
+describe('1b. python code is data only by the closed allowlist', () => {
+  const T = '@H@/.claude/settings.js*'
+  it.each([
+    // Dani's forms of every earlier round (probe2-9) and the glob forms of 69994/69997
+    [`python3 -c "from os import system; system('tee ${T}')"`, 'import'],
+    [`python3 -c "import os as o; o.system('tee ${T}')"`, 'import'],
+    [`python3 -c "import operator; operator.attrgetter('ev'+'al')(print)"`, 'import'],
+    [`python3 -c "import types; f = types.FunctionType"`, 'import'],
+    [`python3 -c "exec.__call__('x')"`, 'dunder'],
+    [`python3 -c "print.__self__.eval('x')"`, 'dunder'],
+    [`python3 -c "import sys; sys._getframe().f_builtins['ev'+'al']('x')"`, 'frame'],
+    [`python3 -c "import glob; [open(p, 'a') for p in glob.glob('${T}')]"`, 'globapi'],
+    [`python3 -c "import pathlib; [p.touch() for p in pathlib.Path('@H@/.claude').glob('settings.js*')]"`, 'globapi'],
+    // rule (5): the pattern / directory-walk API, even with every name otherwise allowed
+    [`python3 -c "import json; json.loads(s).glob('${T}')"`, 'globapi'],
+    // the routes of 70019 point 3: an allowed module's attribute that is a module, a private name, a frame
+    [`python3 -c "import re; re.enum.bltns; print('${T}')"`, 'module-attr'],
+    [`python3 -c "import json; json.codecs; print('${T}')"`, 'module-attr'],
+    [`python3 -c "import statistics; statistics.sys; print('${T}')"`, 'module-attr'],
+    [`python3 -c "import csv; csv.types.FunctionType; print('${T}')"`, 'module-attr'],
+    [`python3 -c "import xml.etree.ElementTree as E; E.sys.modules; print('${T}')"`, 'module-attr'],
+    [`python3 -c "import random; random._os; print('${T}')"`, 'private'],
+    [`python3 -c "d = {}; d._x; print('${T}')"`, 'private'],
+    [`python3 -c "from random import _os; print('${T}')"`, 'import'],
+    [`python3 -c "g = (x for x in [0]); g.gi_frame; print('${T}')"`, 'frame'],
+    [`python3 -c "s = 'gi_frame'; print('${T}')"`, 'frame-word'],
+    // Samu 70023 (2): import *, an alias held bare, a module name rebound
+    [`python3 -c "from json import *; print('${T}')"`, 'import-star'],
+    [`python3 -c "import re as r; x = r; print('${T}')"`, 'bare-module'],
+    [`python3 -c "from json import loads as l; import re; re = l; print('${T}')"`, 'module-rebound'],
+    // builtins: never, a name not on the list, as a value too
+    [`python3 -c "f = getattr; print('${T}')"`, 'never'],
+    [`python3 -c "x.eval; print('${T}')"`, 'never'],
+    [`python3 -c "t = type(1); print('${T}')"`, 'builtin'],
+    [`python3 -c "help(); print('${T}')"`, 'never'],
+    // dunder in text, format_map, .format on a non-literal
+    [`python3 -c "s = '__class__'; print('${T}')"`, 'dunder'],
+    [`python3 -c "'{0}'.format_map({}); print('${T}')"`, 'format_map'],
+    [`python3 -c "f = '{}'; f.format(1); print('${T}')"`, 'format'],
+    // Samu 70023 (1): code the ast cannot parse
+    [`python3 -c "print('${T}'"`, 'unparsed'],
+    // the code is not visible: a script, -m, code from a pipe, an expanding word, a substitution
+    [`python3 /tmp/lg.py '${T}'`, 'script-or-module'],
+    [`python3 -m json.tool '${T}'`, 'script-or-module'],
+    [`python3 --version '${T}'`, 'option'],
+    [`cat <<'EOF' | python3 -\nprint('${T}')\nEOF`, 'stdin'],
+    [`python3 - < /tmp/lg.py '${T}'`, 'stdin'],
+    [`X='import glob'; python3 -c "$X; print('${T}')"`, 'code-expands'],
+    [`P=python3; $P -c "import glob" '${T}'`, 'program-expands'],
+    [`P=python3; env "$P" -c "print(1)" '${T}'`, 'wrapper-expands'],
+    [`python3 "$OPT" -c "print(1)" '${T}'`, 'option-expands'],
+    [`echo "$(python3 -c 'import glob')" '${T}'`, 'substitution'],
+    [`echo $(python3 -c 'import glob') '${T}'`, 'substitution'],
+    // a later stdin redirect wins over the heredoc: the code comes from the file
+    [`python3 - <<'PY' < /tmp/lg.py\nprint('${T}')\nPY`, 'stdin'],
+    [`python3 - <<PY\nprint('\\$HOME', '${T}')\nPY`, 'heredoc-expands'],
+    [`python3 - <<'PY'\nprint('${T}')`, 'heredoc-unterminated'],
+    [`python3 -c 'print(1)' 'unterminated`, 'quote'],
+  ])('strict: %s -> %s', (c, why) => {
+    const cmd = c.replaceAll('@H@', home)
+    expect(pythonDataVerdict(cmd)).toBe(`strict ${why}`)
+    expect(reShellsText(cmd)).toBe(true)
+  })
+
+  it.each([
+    `python3 -c "print('${T}')"`,
+    `python3 -c "import re; re.compile('x'); print('${T}')"`,
+    `python3 -c "s = 'exec python3 run.py'; print('${T}')"`,
+    `python3 -I -S -c "import json, sys; print(json.dumps(sys.argv[1:]))" '${T}'`,
+    `python3 - <<'PY'\nimport re, json, sys\nd = json.load(sys.stdin)\nfor k in sorted(d):\n    print(re.sub(r'x$', '', k))\nPY`,
+    `python3 - <<'PY'\ns = open('ChatView.kt').read()\nopen('ChatView.kt', 'w').write(s.replace('/** a */', '/** b */'))\nPY`,
+    `python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('a.xml').getroot().tag)"`,
+    `python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('a.xml'))"`,
+    `python3 - <<'PY'\nfrom datetime import datetime\nimport hashlib\nif __name__ == '__main__':\n    try:\n        print(datetime.now(), hashlib.sha256(b'x').hexdigest())\n    except ValueError as e:\n        print(e)\nPY`,
+    `python3 -c "print('{}'.format(1)); print('src/__tests__/x.ts')"`,
+    `cd /tmp && python3 -c "import sys; print(sys.argv[1:])" a '*' 2>&1 | head -5`,
+  ])('data: %s', (c) => {
+    const cmd = c.replaceAll('@H@', home)
+    expect(pythonDataVerdict(cmd)).toBe('data')
+    expect(reShellsText(cmd)).toBe(false)
+    expect(run(cmd)).toEqual(FREE)
+  })
+
+  it('the data rows above are denied when the glob reading is strict (the allowlist is what frees them)', () => {
+    expect(run(`python3 -c "import glob; print('${T}')"`).deny).toBe(true)
+    expect(run(`python3 -c "print('${T}')"`)).toEqual(FREE)
+  })
+
+  // Samu 70023 (3): no allowed attribute is a module, a frame, a code object (nor one level down), under every python
+  // the test host has; a python update that breaks this fails here, the gate does not open
+  it('the (module, attr) list reaches no module, frame or code object, under each python found', () => {
+    let ran = 0
+    for (const py of ['/usr/bin/python3', 'python3']) {
+      const r = spawnSync(py, ['-I', '-S', join(process.cwd(), 'scripts', 'hooks', 'py-inline-data.py'), '--selftest'], { encoding: 'utf8' })
+      if (r.error) continue
+      ran++
+      const out = JSON.parse(r.stdout)
+      expect(out.bad, `python ${out.python}`).toEqual([])
+    }
+    expect(ran).toBeGreaterThan(0)
   })
 })
 
