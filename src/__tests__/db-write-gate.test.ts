@@ -331,6 +331,10 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a shell name in another directory as the shebang', `cat > /tmp/a <<'EOF'\n#!/tmp/sh\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; /tmp/a`],
     ['a python shebang from one segment and the body appended by the next', `printf '#!/usr/bin/env python3\\n' > /tmp/p; cat >> /tmp/p <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/p; /tmp/p`],
     ['a body appended to a file the command did not start, run directly', `cat >> /tmp/p <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\n/tmp/p`],
+    ['a shell-named function in the command', `bash() { python3 "$@"; }; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a shell-named alias in the command', `alias bash=python3\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['an exported PATH in the command', `export PATH=/tmp:$PATH; ln -sf /usr/bin/python3 /tmp/bash; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a PATH prefix on the run', `cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nPATH=/tmp:$PATH bash /tmp/f`],
   ])('text written to a file by %s is denied from a worktree too', (_, cmd) => {
     expect(bash(cmd, wt)).toEqual(DENY_FILE)
   })
@@ -413,6 +417,8 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/bin/bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
     ['a cd into the install and ls, run by /bin/bash', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\n/bin/bash /tmp/s.sh`],
     ['an env bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/usr/bin/env bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
+    ['an unrelated assignment before a shell run of a cd into the install and ls', `MYPATH=/x; cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash /tmp/s.sh`],
+    ['a note read by a prefixed reader', `echo 'see @ROOT@/scripts' > /tmp/n.txt; LC_ALL=C grep x /tmp/n.txt`],
     ['a cd into the install and ls, read and then run by sh', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\ncat /tmp/s.sh; sh /tmp/s.sh`],
   ])('text written to a file by %s passes', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)

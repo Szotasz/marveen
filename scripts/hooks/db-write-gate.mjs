@@ -780,7 +780,11 @@ const SYSTEM_BIN = String.raw`(?:/usr(?:/local)?)?/s?bin/|/opt/homebrew/bin/`
 const SYSTEM_SHELL_RX = new RegExp(`^(?:${SYSTEM_BIN})?(?:ba|z|da|k)?sh$`)
 const SHELL_SHEBANG = new RegExp(String.raw`^#!\s*(?:${SYSTEM_BIN})(?:(?:ba|z|da|k)?sh|env\s+(?:-\S+\s+)*(?:ba|z|da|k)?sh)(?:\s|$)`)
 const escapeRx = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// A shell name the command itself redefines (a function or an alias named like a shell or source/., or a PATH set,
+// exported or given as a prefix) may run another program: then no run is known to be shell (Dani #2546).
+const SHELL_REDEF_RX = /(?:^|[\s;&|(])(?:function\s+(?:(?:ba|z|da|k)?sh|source|\.)(?=[\s({])|(?:(?:ba|z|da|k)?sh|source|\.)\s*\(\s*\))|\balias\s+(?:(?:ba|z|da|k)?sh|source|\.)=|(?:^|[\s;&|(])PATH\+?=/
 function shellRunsOnly(segs, k, targets, text) {
+  if (SHELL_REDEF_RX.test(segs.map((s) => s.own).join('\n'))) return false
   const startsFile = !targets.some((t) => new RegExp(`>>\\s*['"]?${escapeRx(t)}`).test(segs[k].own))
     && !segs.slice(0, k).some((s) => { const w = shellWords(s.own); return !!w && w.redirects.some((r) => targets.includes(r.value)) })
   let seen = false
@@ -1466,7 +1470,15 @@ export function installFileDeny(command, opts = {}) {
     if (words && words.length) {
       const targets = words.redirects.map((r) => r.value).filter((v) => v !== '/dev/null')
       const k = segs.indexOf(seg)
-      if (targets.length && laterRuns(segs, k, targets)) {
+      // a later segment that starts with an assignment (`PATH=... bash F`, `X=1 ./F`) and names the file is read as
+      // running it: laterRuns sees the assignment as the command word (Dani #2546)
+      const prefixedRun = () => segs.slice(k + 1).some((s) => {
+        const m = /^\s*(?:[A-Za-z_]\w*=\S*\s+)+(\S+)/.exec(s.own)
+        if (!m || !targets.some((t) => s.own.includes(t))) return false
+        const w = m[1]
+        return targets.includes(w) || /^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.|python[\d.]*|node|perl|ruby|php)$/.test(w)
+      })
+      if (targets.length && (laterRuns(segs, k, targets) || prefixedRun())) {
         const text = [pipedInText(k), scriptTextOf(own, seg.bodies, name)].filter(Boolean).join('\n')
         // a name an earlier segment assigned a protected path to, used in the text: an unquoted heredoc expands it as it
         // is written, an exported one expands as the file runs
