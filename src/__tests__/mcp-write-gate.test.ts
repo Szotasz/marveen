@@ -238,7 +238,8 @@ describe('a channel plugin\'s download_attachment passes both gates; the Gmail o
     expect(denied(db(tool, { chat_id: 'D1', message_id: '1.2', savePath: store }))).toBe(true)
     expect(denied(pace(tool, { chat_id: 'D1', message_id: '1.2', savePath: store }))).toBe(true)
   })
-  it.each(['mcp__server-gmail-autoauth-mcp__download_attachment', 'mcp__gmail__download_attachment', 'mcp__slack__download_attachment'])(
+  it.each(['mcp__server-gmail-autoauth-mcp__download_attachment', 'mcp__gmail__download_attachment', 'mcp__slack__download_attachment', 'mcp__evil__download_attachment',
+    'mcp__plugin_slack-channel_slackx__download_attachment'])(
     '%s without savePath: still denied by both gates', (tool) => {
       expect(db(tool, { messageId: '1', attachmentId: '2' })).toEqual({ deny: true, reason: 'mcp-path' })
       expect(pace(tool, { messageId: '1', attachmentId: '2' })).toEqual({ deny: true, reason: 'mcp-path' })

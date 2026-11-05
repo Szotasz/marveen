@@ -125,6 +125,7 @@ describe('mcpFileTargets', () => {
       ['mcp__plugin_slack-channel_slackx__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
       ['mcp__plugin_evil_slack-channel_slack__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
       ['mcp__x__download_attachment', { messageId: '1', attachmentId: '2' }],
+      ['mcp__evil__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
     ])('the same tool on any other server still needs its path (%s)', (name, input) => {
       expect(mcpFileTargets(name, input).missingPath).toBe(true)
     })
