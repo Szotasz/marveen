@@ -768,17 +768,21 @@ function hitsIn(text, ctx) {
   return hits
 }
 
-// INSTRWRITEEXEC1105: the text a segment puts into the file it writes, as a script would read it. printf/echo: what
-// they print, i.e. their arguments' values (a printf argument on its own line), an escape as the break it prints; a
-// reader: its heredoc bodies only (it copies file contents, not its arguments); any other program (sed, awk, an
-// interpreter): its own text and bodies. Words that do not split: the own text, as for any other program.
 // INSTRWRITEEXEC1105: true only when every later segment that names a written file either only reads it (a reader,
 // chmod) or runs it as shell code: a shell with the file as its script word or its stdin, source/. of the file, or the
 // file run directly with a shell shebang or none (exec falls back to sh). Anything else (another interpreter, a -c
-// code word, xargs, a pipe) is not known to be shell, and at least one shell run must be seen.
+// code word, xargs, a pipe) is not known to be shell, and at least one shell run must be seen. A shell is a bare name
+// or one in a system bin directory: any other path may be another program under a shell's name (Dani, #2546). Run
+// directly, the file's first line decides, so only a segment that starts the file (`>`, no earlier writer of it in the
+// command) can show it; an append, or a file an earlier segment began, keeps the strict reading.
 const SHELL_RUNNERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh'])
-const SHELL_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(?:ba|z|da|k)?sh(?:\s|$)/
+const SYSTEM_BIN = String.raw`(?:/usr(?:/local)?)?/s?bin/|/opt/homebrew/bin/`
+const SYSTEM_SHELL_RX = new RegExp(`^(?:${SYSTEM_BIN})?(?:ba|z|da|k)?sh$`)
+const SHELL_SHEBANG = new RegExp(String.raw`^#!\s*(?:${SYSTEM_BIN})(?:(?:ba|z|da|k)?sh|env\s+(?:-\S+\s+)*(?:ba|z|da|k)?sh)(?:\s|$)`)
+const escapeRx = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 function shellRunsOnly(segs, k, targets, text) {
+  const startsFile = !targets.some((t) => new RegExp(`>>\\s*['"]?${escapeRx(t)}`).test(segs[k].own))
+    && !segs.slice(0, k).some((s) => { const w = shellWords(s.own); return !!w && w.redirects.some((r) => targets.includes(r.value)) })
   let seen = false
   for (let j = k + 1; j < segs.length; j++) {
     const s = segs[j]
@@ -788,6 +792,7 @@ function shellRunsOnly(segs, k, targets, text) {
     const first = words[0].value
     const name = commandName(words) || first.slice(first.lastIndexOf('/') + 1)
     if (targets.includes(first)) {
+      if (!startsFile) return false
       const line = text.split('\n', 1)[0]
       if (line.startsWith('#!') && !SHELL_SHEBANG.test(line)) return false
       seen = true
@@ -795,8 +800,10 @@ function shellRunsOnly(segs, k, targets, text) {
     }
     if (name === 'chmod' || (READERS.has(name) && !PRINTERS.has(name) && !s.bodies.length)) continue
     if (SHELL_RUNNERS.has(name) || name === 'source' || name === '.') {
-      const script = words.slice(1).find((w) => !w.value.startsWith('-'))
-      const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(s.own))
+      const runner = words.find((w) => w.value === name || w.value.endsWith('/' + name))
+      if (!runner || (runner.value !== name && !SYSTEM_SHELL_RX.test(runner.value))) return false
+      const script = words.slice(words.indexOf(runner) + 1).find((w) => !w.value.startsWith('-'))
+      const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own))
       if (words.slice(1).some((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.value))) return false
       if ((script && targets.includes(script.value)) || stdin) { seen = true; continue }
       return false
@@ -819,6 +826,10 @@ export function decodePrintEscapes(s) {
     })
 }
 
+// INSTRWRITEEXEC1105: the text a segment puts into the file it writes, as a script would read it. printf/echo: what
+// they print, i.e. their arguments' values (a printf argument on its own line), an escape as the break it prints; a
+// reader: its heredoc bodies only (it copies file contents, not its arguments); any other program (sed, awk, an
+// interpreter): its own text and bodies. Words that do not split: the own text, as for any other program.
 function scriptTextOf(own, bodies, name) {
   if (PRINTERS.has(name)) {
     const words = shellWords(own)
@@ -1341,6 +1352,25 @@ export function installFileDeny(command, opts = {}) {
     }
     return false
   }
+  // INSTRWRITEEXEC1105: the directories later segments move to (cd/pushd, a subshell's included, conservatively), or
+  // null when a cd cannot be followed
+  const laterCwds = (k) => {
+    const c = { ...ctx }
+    const out = []
+    for (let j = k + 1; j < segs.length; j++) {
+      cwdAfterSegment(subshellParts(segs[j].own).body, c)
+      if (!c.cwd) return null
+      if (c.cwd !== ctx.cwd && !out.includes(c.cwd)) out.push(c.cwd)
+    }
+    return out
+  }
+  const atCwd = (cwd, fn) => {
+    const c = ctx.cwd
+    const d = ctx.cwdInsideDir
+    ctx.cwd = cwd
+    ctx.cwdInsideDir = insideDir(cwd)
+    try { return fn() } finally { ctx.cwd = c; ctx.cwdInsideDir = d }
+  }
   // INSTRWRITEEXEC1105: the text of the segments piped into segment k (printf/echo decoded, a reader's heredoc only)
   const pipedInText = (k) => {
     const feeders = []
@@ -1450,6 +1480,17 @@ export function installFileDeny(command, opts = {}) {
           return hits.length > 0 && (!shellRunsOnly(segs, k, targets, text) || !ancestorOnlyHolds(text) || dirChangeInScript(text))
         }
         if (both(judge)) return true
+        // ...and at every directory a later segment moves to before the file runs (`cd <dir> && sh s.sh`, Dani #2546):
+        // a relative name in the script resolves there. A protected name there is denied; a directory on the way to
+        // one counts only for a shell run (a file another program reads as data, a message the kanban tool sends,
+        // names the install root's subdirectories without running them). A later cd that cannot be followed is read as
+        // its inline form is (PATHGLOBSPLIT1105).
+        const judgeLater = () => {
+          const hits = text ? hitsIn(text, ctx) : []
+          if (hits.some((h) => h.kind !== 'ancestor')) return true
+          return hits.length > 0 && shellRunsOnly(segs, k, targets, text) && (!ancestorOnlyHolds(text) || dirChangeInScript(text))
+        }
+        if ((laterCwds(k) ?? []).some((cwd) => atCwd(cwd, judgeLater))) return true
       }
       // The text a shell runs itself gets the same reading: its -c code, or, when it names no script file, its heredoc
       // and what is piped into it (`sh -c 'rm -rf scripts'` at the root removes a protected directory's parent).

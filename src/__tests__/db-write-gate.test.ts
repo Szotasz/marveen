@@ -327,6 +327,10 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a python shebang, run as the command word', `cat > /tmp/a <<'EOF'\n#!/usr/bin/env python3\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; /tmp/a`],
     ['shell text that a shell runs as -c code', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash -c "python3 /tmp/s.sh"`],
     ['a python shebang, run by bash -c as a command', `cat > /tmp/a <<'EOF'\n#!/usr/bin/env python3\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; bash -c /tmp/a`],
+    ['a shell name in another directory as the runner', `cat > /tmp/s.sh <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\n/tmp/bash /tmp/s.sh`],
+    ['a shell name in another directory as the shebang', `cat > /tmp/a <<'EOF'\n#!/tmp/sh\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/a; /tmp/a`],
+    ['a python shebang from one segment and the body appended by the next', `printf '#!/usr/bin/env python3\\n' > /tmp/p; cat >> /tmp/p <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nchmod +x /tmp/p; /tmp/p`],
+    ['a body appended to a file the command did not start, run directly', `cat >> /tmp/p <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\n/tmp/p`],
   ])('text written to a file by %s is denied from a worktree too', (_, cmd) => {
     expect(bash(cmd, wt)).toEqual(DENY_FILE)
   })
@@ -380,6 +384,14 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('an assigned harmless name in a heredoc that runs passes', () => {
     expect(bash(`X=/tmp/w; cat > /tmp/s.sh <<EOF\nls $X\nEOF\nsh /tmp/s.sh`)).toEqual(ALLOW)
   })
+  it('a written script is read at the directory a later cd moves to before it runs', () => {
+    expect(bash(`echo 'echo x > hooks/a.py' > /tmp/s.sh; cd @ROOT@/scripts && sh /tmp/s.sh`, wt)).toEqual(DENY_FILE)
+    expect(bash(`echo 'echo x > hooks/a.py' > /tmp/s.sh; (cd @ROOT@/scripts && sh /tmp/s.sh)`, wt)).toEqual(DENY_FILE)
+    expect(bash(`echo 'echo x > out.txt' > /tmp/s.sh; cd /tmp && sh /tmp/s.sh`, wt)).toEqual(ALLOW)
+    expect(bash(`echo 'ls scripts' > /tmp/s.sh; cd @ROOT@ && sh /tmp/s.sh`, wt)).toEqual(ALLOW)
+    // a file another program reads as data, after a cd into the install: a directory on the way counts only for a shell
+    expect(bash(`echo 'rm -rf scripts' > /tmp/m.txt; cd @ROOT@ && python3 -c "print(open('/tmp/m.txt').read())"`, wt)).toEqual(ALLOW)
+  })
   it('a written script after a cd that may fail is read at the old directory too', () => {
     expect(bash(`cd @WT@; printf 'rm -rf scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`)).toEqual(DENY_FILE)
     expect(bash(`cd @WT@ && printf 'rm -rf scripts\\n' > /tmp/s.sh; sh /tmp/s.sh`)).toEqual(ALLOW)
@@ -399,6 +411,8 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['ls of a protected name into a file python then reads', `ls -d @ROOT@/.claude/settings.js* > /tmp/l.txt; python3 - /tmp/l.txt <<'EOF'\nimport sys; print(open(sys.argv[1]).read())\nEOF`],
     ['a heredoc whose regex holds an escape, then sh', `cat > /tmp/s.sh <<'EOF'\nperl -0pi -e 's/a\\n.*?b//' /tmp/x.txt\nEOF\nsh /tmp/s.sh`],
     ['a bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/bin/bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
+    ['a cd into the install and ls, run by /bin/bash', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\n/bin/bash /tmp/s.sh`],
+    ['an env bash shebang with a cd into the install and ls, run as the command word', `cat > /tmp/s.sh <<'EOF'\n#!/usr/bin/env bash\ncd @ROOT@\nls scripts\nEOF\nchmod +x /tmp/s.sh; /tmp/s.sh`],
     ['a cd into the install and ls, read and then run by sh', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\ncat /tmp/s.sh; sh /tmp/s.sh`],
   ])('text written to a file by %s passes', (_, cmd) => {
     expect(bash(cmd)).toEqual(ALLOW)
