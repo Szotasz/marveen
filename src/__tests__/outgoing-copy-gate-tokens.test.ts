@@ -169,4 +169,11 @@ describe('outgoing-copy gate tokenization: a suffix after a number and a unit si
     const probs = auditAll(`Szia! A jutalék a 30%-\u043et is elérheti, ${HU_TAIL}`)
     expect(probs.some((p) => p.includes('homoglifa') && p.includes('U+043E'))).toBe(true)
   })
+
+  it('a non-Latin letter at the END of the suffix still reaches the homoglyph rule (the suffix end is pinned)', () => {
+    for (const [suffix, code] of [['o\u0442', 'U+0442'], ['ka\u043b', 'U+043B'], ['o\u03c4', 'U+03C4']]) {
+      const probs = auditAll(`Szia! A jutalék a 30%-${suffix} is elérheti, ${HU_TAIL}`)
+      expect(probs.some((p) => p.includes('homoglifa') && p.includes(code))).toBe(true)
+    }
+  })
 })
