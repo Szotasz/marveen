@@ -3380,10 +3380,10 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal: the card is closed with C-u then Down, never a digit (see
-// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
-// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
-// keep". A "0" there would silently disable feedback drafting for that agent,
+// Dismissal: the card is closed with one "0" into an empty prompt (see
+// feedbackDraftDismissPlan for why Down does not close it and why a digit goes
+// only into an empty input). Claude Code then offers "Turn off Claude-drafted
+// feedback? 0 to turn off · Esc to keep". A "0" there would silently disable feedback drafting for that agent,
 // so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
@@ -3429,8 +3429,8 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
-// Between C-u and Down: in one tmux call Down would reach the TUI before it
-// re-rendered the cleared input.
+// Between C-u and "0": in one tmux call the digit would reach the TUI before it
+// re-rendered the cleared input, and land after the leftover.
 const FEEDBACK_KEY_GAP_MS = 200
 
 // A hold sends no keystroke, so nothing on our side ever ends it: measured
@@ -3458,7 +3458,8 @@ function noteFeedbackHold(session: string, host: string | null, reason: string, 
   notifyChannel(
     `🚨 A(z) ${session} pane-jén ~${minutes} perce áll a Claude Code visszajelzés-vázlat kártyája (${reason}), ` +
     `és amíg ott van, az ütemező és az üzenet-kézbesítés nem jut be. A dashboard nem nyúl hozzá, mert nem biztonságos. ` +
-    `KÉZI FELOLDÁS: tmux attach -t ${session}; ha a prompt üres, 0 (bezárja a kártyát), ` +
+    `KÉZI FELOLDÁS: tmux attach -t ${session}; ha a promptban csak egy 0 áll, előbb Ctrl-U; ` +
+    `ha a prompt üres, 0 (bezárja a kártyát), ` +
     `a "Turn off Claude-drafted feedback?" kérdésre Esc; kilépés: Ctrl-B d.`,
   ).catch(() => { /* notify is best-effort */ })
 }
@@ -3467,8 +3468,8 @@ function clearFeedbackHold(session: string, host: string | null): void {
   feedbackHolds.delete(`${host ?? 'local'}:${session}`)
 }
 
-// After a "0" the card fires on a 400 ms debounce, so the opt-out question can
-// come later than the 300 ms the Down path waits. And the card's Escape handler
+// After a "0" the card fires on a 400 ms debounce, so the opt-out question is
+// polled for rather than read once. And the card's Escape handler
 // ignores a press inside its settle window (shipped CLI), so the Escape waits
 // a little after the question is seen.
 const FEEDBACK_OPTOUT_POLL_MS = 200
@@ -3498,7 +3499,11 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
     if (plan.act === 'none') { clearFeedbackHold(session, host); return }
     if (plan.act === 'hold') {
       logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
-      noteFeedbackHold(session, host, plan.reason, Date.now())
+      // With the footer in view the text reads as a parked line, and the
+      // parked-input janitor on the same refusal branch owns it (on the main
+      // session the MAIN_PARKED owner alert): a second page here would double it.
+      if (detectPaneState(pane) === 'typing') clearFeedbackHold(session, host)
+      else noteFeedbackHold(session, host, plan.reason, Date.now())
       return
     }
     clearFeedbackHold(session, host)
@@ -3506,16 +3511,7 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
       if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
       runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
     }
-    if (plan.keys.includes('0')) {
-      await answerFeedbackOptOutAfterDigit(session, host)
-    } else {
-      await delay(300)
-      const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-      if (detectsFeedbackOptOutPrompt(after)) {
-        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
-        await delay(300)
-      }
-    }
+    await answerFeedbackOptOutAfterDigit(session, host)
     logger.info({ session, keys: plan.keys }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')

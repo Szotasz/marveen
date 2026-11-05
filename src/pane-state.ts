@@ -1349,7 +1349,12 @@ export function detectsModelConsentDialog(pane: string): boolean {
 // cheaper failure. Gating on the footer's "N feedback draft" counter would
 // prune it, but that string TRUNCATES on a narrow pane, and a false negative
 // here costs a 10-minute silent stall.
-const FEEDBACK_DRAFT_OPTIONS_RX = /^[^\S\n]*│.*?\d+ to review\b.*?\d+ to send\b.*?\d+ to dismiss\b/
+// While the prompt holds text the card swaps its option line for "clear text
+// to review, send, or dismiss" (measured 2026-11-04, Claude Code 2.1.318, both
+// layouts); the binary also carries "clear text to open review or (to)
+// dismiss". Without that form a card over a clipped box with a lone leftover
+// "0" read as no card at all: no keystroke, no hold, no page.
+const FEEDBACK_DRAFT_OPTIONS_RX = /^[^\S\n]*│.*?(?:\d+ to review\b.*?\d+ to send\b.*?\d+ to dismiss\b|\bclear text to (?:open )?review\b.*?\bdismiss\b)/
 const PROMPT_MARKER_RX = /^[^\S\n]*❯/
 
 export function detectsFeedbackDraftModal(pane: string): boolean {
@@ -1395,30 +1400,28 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
 
 export type FeedbackDismissPlan =
   | { act: 'none' }
-  | { act: 'keys'; keys: Array<'C-u' | 'Down' | '0'> }
+  | { act: 'keys'; keys: Array<'C-u' | '0'> }
   | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
 
 /**
- * What the dismisser may type at a feedback-draft modal. No digit, with ONE
- * measured exception (the clipped box, below). The card
- * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
- * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
- * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
- * that did not fire stays in the input, the next attempt makes it two digits, and a
- * longer input never fires again, so every later attempt only appends (an agent
- * sat not-ready behind a growing `❯ 0000`). And "2" sends the draft. The measured
- * manual recipe is C-u, then Down: Down moves focus to the footer, which stops the
- * band above the prompt from rendering.
- * C-u clears only what is provably a digit-typing dismisser's leftover -- an empty
- * or all-digit input -- and NEVER on the main session, whose box may hold an
- * operator's reply; there even digits may be a numbered answer, so only an empty
- * prompt gets its Down. Anything else gets no keystroke.
- * The exception: when the card clips the box (inputBoxClippedBelowCard), Down
- * does NOT close it -- measured 2026-11-02 on agent-enigma, the card stayed up
- * unchanged -- while "0" did, followed by the opt-out question. So a clipped,
- * EMPTY box gets a single "0": an empty input is exactly where one digit makes
- * the input exactly one digit, and a "0" that did not fire reads as typed text
- * on the next attempt, which then holds (and escalates) instead of appending.
+ * What the dismisser may type at a feedback-draft modal: a single "0" into an
+ * EMPTY prompt, after C-u only where the input is provably a dismisser's
+ * leftover. The card does not read a keypress: it watches the prompt INPUT VALUE
+ * and fires only when the input changes to exactly one digit, after a 400 ms
+ * debounce, ignoring a digit typed within 600 ms of the card appearing (measured
+ * in the shipped CLI). A digit that did not fire stays in the input, and a longer
+ * input never fires again (an agent once sat not-ready behind a growing `❯ 0000`),
+ * so the "0" goes only into an empty input, where it makes the input exactly one
+ * digit; a "0" that did not fire reads as typed text on the next attempt and holds
+ * (and escalates) instead of appending. "2" would send the draft.
+ * Down does NOT close the card: measured 2026-11-02 (2.1.312) with the card
+ * clipping the box, and 2026-11-04 (2.1.318) in both layouts, the card stayed up
+ * unchanged, while "0" closed it and the opt-out question followed. The earlier
+ * recipe (C-u, then Down) left an unclipped card up on every attempt.
+ * C-u clears only an all-digit input, and NEVER on the main session, whose box may
+ * hold an operator's reply; there even digits may be a numbered answer. Anything
+ * else gets no keystroke. A clipped box (inputBoxClippedBelowCard) is never
+ * cleared either: rows below the capture are unseen.
  * Two captures: `pane`, the plain one the detector reads (the card's own text
  * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
  * ghost-stripped one the input box is read from (otherwise an empty prompt
@@ -1436,8 +1439,8 @@ export function feedbackDraftDismissPlan(pane: string, inputView: string | null,
     return typedInBox(clipped) === '' ? { act: 'keys', keys: ['0'] } : { act: 'hold', reason: 'input-occupied' }
   }
   const typed = typedInBox(box)
-  if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
-  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
+  if (typed === '') return { act: 'keys', keys: ['0'] }
+  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', '0'] }
   return { act: 'hold', reason: 'input-occupied' }
 }
 
