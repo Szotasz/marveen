@@ -335,6 +335,9 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a shell-named alias in the command', `alias bash=python3\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
     ['an exported PATH in the command', `export PATH=/tmp:$PATH; ln -sf /usr/bin/python3 /tmp/bash; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
     ['a PATH prefix on the run', `cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nPATH=/tmp:$PATH bash /tmp/f`],
+    ['a hash entry for a shell name (zsh)', `hash bash=/usr/bin/python3\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a hash -p entry for a shell name (bash)', `hash -p /usr/bin/python3 bash; cat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
+    ['a quoted alias name', `alias "bash=python3"\ncat > /tmp/f <<'EOF'\nimport os\nos.chdir('@ROOT@')\nos.remove('scripts/hooks/a.py')\nEOF\nbash /tmp/f`],
   ])('text written to a file by %s is denied from a worktree too', (_, cmd) => {
     expect(bash(cmd, wt)).toEqual(DENY_FILE)
   })
@@ -420,6 +423,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['an unrelated assignment before a shell run of a cd into the install and ls', `MYPATH=/x; cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash /tmp/s.sh`],
     ['a shell script with a cd into the install and a fleet tool, run behind an assignment prefix', `cat > /tmp/c.sh <<'EOF'\n#!/bin/sh\ncd @ROOT@ || exit 1\npython3 scripts/kartya-es-ertesites.py --id \${CARD:?} --comment-file "$1"\nEOF\nCARD=X1 sh /tmp/c.sh /tmp/n.txt`],
     ['a note that is only an argument of a prefixed script', `echo 'see @ROOT@/scripts' > /tmp/n.txt; CARD=X1 sh /tmp/other.sh /tmp/n.txt`],
+    ['a hash entry for another program before a shell run of a cd into the install and ls', `hash -p /usr/bin/git git; cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\nbash /tmp/s.sh`],
     ['a note read by a prefixed reader', `echo 'see @ROOT@/scripts' > /tmp/n.txt; LC_ALL=C grep x /tmp/n.txt`],
     ['a cd into the install and ls, read and then run by sh', `cat > /tmp/s.sh <<'EOF'\ncd @ROOT@\nls scripts\nEOF\ncat /tmp/s.sh; sh /tmp/s.sh`],
   ])('text written to a file by %s passes', (_, cmd) => {

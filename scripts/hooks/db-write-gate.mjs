@@ -780,9 +780,9 @@ const SYSTEM_BIN = String.raw`(?:/usr(?:/local)?)?/s?bin/|/opt/homebrew/bin/`
 const SYSTEM_SHELL_RX = new RegExp(`^(?:${SYSTEM_BIN})?(?:ba|z|da|k)?sh$`)
 const SHELL_SHEBANG = new RegExp(String.raw`^#!\s*(?:${SYSTEM_BIN})(?:(?:ba|z|da|k)?sh|env\s+(?:-\S+\s+)*(?:ba|z|da|k)?sh)(?:\s|$)`)
 const escapeRx = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-// A shell name the command itself redefines (a function or an alias named like a shell or source/., or a PATH set,
-// exported or given as a prefix) may run another program: then no run is known to be shell (Dani #2546).
-const SHELL_REDEF_RX = /(?:^|[\s;&|(])(?:function\s+(?:(?:ba|z|da|k)?sh|source|\.)(?=[\s({])|(?:(?:ba|z|da|k)?sh|source|\.)\s*\(\s*\))|\balias\s+(?:(?:ba|z|da|k)?sh|source|\.)=|(?:^|[\s;&|(])PATH\+?=/
+// A shell name the command itself redefines (a function, an alias or a hash entry named like a shell or source/.,
+// a quoted alias name too, or a PATH set, exported or given as a prefix) may run another program: then no run is known to be shell (Dani #2546).
+const SHELL_REDEF_RX = /(?:^|[\s;&|(])(?:function\s+(?:(?:ba|z|da|k)?sh|source|\.)(?=[\s({])|(?:(?:ba|z|da|k)?sh|source|\.)\s*\(\s*\))|\balias\s+(?:-\w+\s+)*['"]?(?:(?:ba|z|da|k)?sh|source|\.)['"]?=|\bhash\s+(?:-\w+\s+\S+\s+)*['"]?(?:(?:ba|z|da|k)?sh|source)(?![\w-])|(?:^|[\s;&|(])PATH\+?=/
 function shellRunsOnly(segs, k, targets, text) {
   if (SHELL_REDEF_RX.test(segs.map((s) => s.own).join('\n'))) return false
   const startsFile = !targets.some((t) => new RegExp(`>>\\s*['"]?${escapeRx(t)}`).test(segs[k].own))
