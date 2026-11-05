@@ -1402,6 +1402,10 @@ export type FeedbackDismissPlan =
   | { act: 'none' }
   | { act: 'keys'; keys: Array<'C-u' | '0'> }
   | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
+  | { act: 'wait'; ms: number }
+
+// The card ignores a digit typed within this long of its appearing (shipped CLI).
+export const FEEDBACK_CARD_INPUT_IGNORE_MS = 600
 
 /**
  * What the dismisser may type at a feedback-draft modal: a single "0" into an
@@ -1426,8 +1430,19 @@ export type FeedbackDismissPlan =
  * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
  * ghost-stripped one the input box is read from (otherwise an empty prompt
  * showing an autosuggest reads as occupied and the card stays up).
+ * `cardSeenForMs`: how long ago the caller first saw this card (null: just now).
+ * A "0" typed inside the card's 600 ms ignore window stays in the input. On a
+ * sub-agent the next attempt clears it with C-u, and in a clipped box it holds
+ * and pages with the lone-0 hint; an unclipped main box gets neither (no C-u,
+ * and its footer hands the leftover to the parked-input path). So there the
+ * "0" waits until the card was seen at least FEEDBACK_CARD_INPUT_IGNORE_MS ago.
  */
-export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
+export function feedbackDraftDismissPlan(
+  pane: string,
+  inputView: string | null,
+  isMainSession: boolean,
+  cardSeenForMs: number | null = null,
+): FeedbackDismissPlan {
   if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
   if (inputView == null) return { act: 'hold', reason: 'input-unreadable' }
   const box = liveInputBox(inputView)
@@ -1439,7 +1454,11 @@ export function feedbackDraftDismissPlan(pane: string, inputView: string | null,
     return typedInBox(clipped) === '' ? { act: 'keys', keys: ['0'] } : { act: 'hold', reason: 'input-occupied' }
   }
   const typed = typedInBox(box)
-  if (typed === '') return { act: 'keys', keys: ['0'] }
+  if (typed === '') {
+    const seen = cardSeenForMs ?? 0
+    if (isMainSession && seen < FEEDBACK_CARD_INPUT_IGNORE_MS) return { act: 'wait', ms: FEEDBACK_CARD_INPUT_IGNORE_MS - seen }
+    return { act: 'keys', keys: ['0'] }
+  }
   if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', '0'] }
   return { act: 'hold', reason: 'input-occupied' }
 }
