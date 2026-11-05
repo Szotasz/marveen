@@ -436,6 +436,43 @@ export function upgradeLegacyHookCommands(
 }
 
 /**
+ * HOOKISOAGENTS1105: hook commands a template shipped and a later one dropped, removed from an agent's settings.
+ * The add and upgrade passes only ever add or rewrite what the CURRENT template carries, so an entry the template
+ * stopped shipping stays forever. Exact shipped forms only (any install root), so an operator's own hook that
+ * merely shares a name is left alone. An emptied group goes too.
+ *
+ * - claude-usage.py: absorbed into marveen-commands.py (#1529, b1d619225) and deleted. Its sub-agent entry ran
+ *   `python3` without -I -S on a path that no longer exists: a no-op today, an unisolated run in every agent the
+ *   moment a file appears there again.
+ *
+ * Exported for unit testing.
+ */
+export const RETIRED_HOOK_COMMANDS: readonly RegExp[] = [
+  /^bash -c '\[ -f (\/[^\s']+)\/scripts\/hooks\/claude-usage\.py \] && exec python3 \1\/scripts\/hooks\/claude-usage\.py; exit 0'$/,
+  /^python3 "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/claude-usage\.py"$/,
+]
+export function removeRetiredHookCommands(
+  existingHooks: Record<string, unknown>,
+  retired: readonly RegExp[] = RETIRED_HOOK_COMMANDS,
+): boolean {
+  let changed = false
+  for (const [event, entries] of Object.entries(existingHooks)) {
+    if (!Array.isArray(entries)) continue
+    const kept: HookEntry[] = []
+    let eventChanged = false
+    for (const entry of entries as HookEntry[]) {
+      if (!entry || !Array.isArray(entry.hooks)) { kept.push(entry); continue }
+      const hooks = entry.hooks.filter((h) => !(typeof h?.command === 'string' && retired.some((r) => r.test(h.command as string))))
+      if (hooks.length === entry.hooks.length) { kept.push(entry); continue }
+      eventChanged = true
+      if (hooks.length > 0) kept.push({ ...entry, hooks })
+    }
+    if (eventChanged) { existingHooks[event] = kept; changed = true }
+  }
+  return changed
+}
+
+/**
  * In-place matcher sync: when a template hook group's MATCHER changes, carry the
  * new matcher onto the group an earlier run wrote into an agent's settings.
  *
@@ -904,6 +941,8 @@ export function ensureAgentHooks(
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
+    // HOOKISOAGENTS1105: entries the template no longer ships (claude-usage.py) go.
+    if (removeRetiredHookCommands(existingHooks)) changed = true
     // HOSTMOVE923: an existing PreCompact prompt inherited from another
     // install/host names a dead root; the add pass below would never see it.
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
@@ -2240,10 +2279,17 @@ export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
 // and writes it again from the new PROJECT_ROOT, so it needs no entry in
 // INSTALL_ANCHORED_SUFFIXES.
-function webSearchEnvelopeCommand(): string {
+// HOOKISOAGENTS1105: python3 -I -S like every other python hook (SITEPKGPLANT1104), so no start-up code the hook
+// did not ship (a .pth line, a sitecustomize, PYTHON* settings) runs before the label it writes. A plain command,
+// NOT pythonHookCommand(): that builder makes a hook fail-closed, and this one must never block a tool call.
+export function webSearchEnvelopeCommand(): string {
   const scriptPath = join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)
-  return `python3 "${scriptPath}"`
+  return `python3 -I -S "${scriptPath}"`
 }
+// The forms earlier versions wrote or documented, and nothing else: `python3 "<any root>/scripts/hooks/browser-content-
+// notice.py"` (the injector) and `python3 "$CLAUDE_PROJECT_DIR/..."` (docs/security-hardening.md, operator-wired).
+// The upgrade only inserts -I -S; the path stays exactly as written.
+export const LEGACY_ENVELOPE_COMMAND = /^python3 ("(?:\/[^"]*|\$CLAUDE_PROJECT_DIR)\/scripts\/hooks\/browser-content-notice\.py")$/
 
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
@@ -2285,7 +2331,17 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
       g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
       // a single envelope tool name; this also migrates the old WebSearch-only group
       (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
-    if (!managed || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    if (!managed || !Array.isArray(g.hooks)) {
+      // HOOKISOAGENTS1105: an operator-wired group keeps its matcher, its place and its path; an envelope command in
+      // a shipped or documented earlier form only gains -I -S, in place.
+      if (Array.isArray(g?.hooks)) {
+        for (const h of g.hooks) {
+          if (typeof h?.command === 'string') h.command = h.command.replace(LEGACY_ENVELOPE_COMMAND, 'python3 -I -S $1')
+        }
+      }
+      kept.push(g)
+      continue
+    }
     const rest = g.hooks.filter((h) => !isEnvelope(h))
     if (rest.length) kept.push({ ...g, hooks: rest })
   }

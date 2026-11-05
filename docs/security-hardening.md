@@ -344,7 +344,7 @@ themselves, in the project `settings.json` or `settings.local.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
+            "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
             "timeout": 10
           }
         ]

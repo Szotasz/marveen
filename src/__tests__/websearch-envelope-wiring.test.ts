@@ -43,7 +43,7 @@ function render(profileId: string): void {
 }
 
 describe('WebSearch envelope: where it lands', () => {
-  const expected = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)}"`
+  const expected = `python3 -I -S "${join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)}"`
 
   it('every shipped profile renders exactly one WebSearch envelope group, by absolute path', () => {
     const ids = listProfileTemplates().map((p) => p.id)
@@ -91,7 +91,7 @@ describe('WebSearch envelope: where it lands', () => {
 
   it("an operator's own hook in a WebSearch group survives; an envelope the operator wired under a covering matcher is not doubled (#2091 review)", () => {
     const own = { type: 'command', command: 'python3 "/x/own-audit.py"', timeout: 5 }
-    const theirEnvelope = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const theirEnvelope = { type: 'command', command: `python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
     // (1) WebSearch group with [their envelope, own hook]: own hook stays, one envelope in total
     const s1: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'WebSearch', hooks: [theirEnvelope, own] }] } }
     expect(injectWebSearchEnvelope(s1)).toBe(true)
@@ -133,14 +133,14 @@ describe('WebSearch envelope: where it lands', () => {
   })
 
   it('an operator group ending in |WebSearch gets a managed WebFetch group only', () => {
-    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const theirs = { type: 'command', command: `python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
     const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__browser.*|WebSearch', hooks: [theirs] }] } }
     expect(injectWebSearchEnvelope(s)).toBe(true)
     expect(envelopeGroups(s as any).map((g) => g.matcher)).toEqual(['mcp__browser.*|WebSearch', 'WebFetch'])
   })
 
   it.each(['*', ''])('an operator group with matcher %j holding the envelope hook gets no managed group', (matcher) => {
-    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const theirs = { type: 'command', command: `python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
     const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher, hooks: [theirs] }] } }
     expect(injectWebSearchEnvelope(s)).toBe(false)
     expect(envelopeGroups(s as any)).toHaveLength(1)
@@ -148,7 +148,7 @@ describe('WebSearch envelope: where it lands', () => {
   })
 
   it('an operator group covering both tools gets no managed group', () => {
-    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const theirs = { type: 'command', command: `python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
     const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: '.*', hooks: [theirs] }] } }
     expect(injectWebSearchEnvelope(s)).toBe(false)
     expect(s.hooks.PostToolUse).toHaveLength(1)
@@ -166,7 +166,7 @@ describe('WebSearch envelope: where it lands', () => {
     [5, true, [5, 'WebSearch|WebFetch']],
     [null, true, [null, 'WebSearch|WebFetch']],
   ])('an operator matcher %j holding the envelope hook is read the way Claude Code reads it', (m, changed, groups) => {
-    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const theirs = { type: 'command', command: `python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
     const group = m === 'MISSING' ? { hooks: [theirs] } : { matcher: m, hooks: [theirs] }
     const s = { hooks: { PostToolUse: [group] } }
     expect(injectWebSearchEnvelope(s)).toBe(changed)
