@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { expandAndValidateConfigDir } from './config-dir-path.js'
+import { CLAUDE_CONFIG_DIR_ALLOWED, expandAndValidateConfigDir, hasParentTraversal } from './config-dir-path.js'
 import { alertChatFormatError, alertChatProviderOf, OWNER_ALERT_CHAT_KEY } from './alert-chat-format.js'
 import { readEnvFile } from './env.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
@@ -146,6 +146,29 @@ function validKeepAlive(v: string): string | null {
   if (t === '') return null
   if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? null : 'Túl nagy szám.'
   return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
+}
+
+// CLI_INVENTORY_DIRS: comma-separated folders the CLI inventory reads, each
+// holding one tool per subfolder (the Printing Press library layout). Each item
+// is an absolute or ~/ path from the config-dir character set, without a '..'
+// segment; '' means the default. Returns the list, or null when an item is
+// invalid. Shared by the validator and the inventory route.
+export const CLI_INVENTORY_DEFAULT_DIRS = '~/printing-press/library'
+const CLI_INVENTORY_MAX_DIRS = 16
+const CLI_INVENTORY_MAX_DIR_LENGTH = 512
+export function parseCliInventoryDirs(raw: string): string[] | null {
+  const dirs = raw.split(',').map((d) => d.trim()).filter((d) => d !== '')
+  if (dirs.length === 0) return [CLI_INVENTORY_DEFAULT_DIRS]
+  if (dirs.length > CLI_INVENTORY_MAX_DIRS) return null
+  for (const d of dirs) {
+    const rooted = d.startsWith('/') || d.startsWith('~/')
+    if (!rooted || d.length > CLI_INVENTORY_MAX_DIR_LENGTH || !CLAUDE_CONFIG_DIR_ALLOWED.test(d) || hasParentTraversal(d)) return null
+  }
+  return [...new Set(dirs)]
+}
+
+function validCliInventoryDirs(v: string): string | null {
+  return parseCliInventoryDirs(v) ? null : 'Vesszővel elválasztott abszolút vagy ~/ kezdetű mappák kellenek (pl. ~/printing-press/library), legfeljebb 16, szóköz és .. nélkül.'
 }
 
 // OSS_INVENTORY_NOTES_DIRS: comma-separated folder names under each agent
@@ -463,6 +486,22 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'CLI_INVENTORY_DIRS',
+    type: 'string',
+    default: CLI_INVENTORY_DEFAULT_DIRS,
+    description: 'A CLI-nyilvántartás (Kapcsolatok > CLI oldal) ezekben a mappákban keresi az eszközöket, almappánként egyet (a Printing Press könyvtár elrendezése): vesszővel elválasztott abszolút vagy ~/ kezdetű útvonalak, pl. ~/printing-press/library. Üres = ~/printing-press/library. A leltár az itt talált *-pp-cli fájlokat a dashboard jogával ELINDÍTJA (csak leíró hívás: agent-context vagy --help, időkorláttal, tisztított környezettel), ezért csak olyan mappát adj meg, amelynek a binárisaiban megbízol. Csak a gazda állíthatja (dashboard-belépéssel), a közös ügynök-token nem, és a .env-ben álló érték nem érvényesül: aki ezt átírja, az dönti el, mit futtat a dashboard. A következő leltár-frissítéskor érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validCliInventoryDirs,
+    // This key chooses which binaries the dashboard process STARTS with its own rights, outside the agent hooks'
+    // gates. Any change is treated as loosening (the OWNER_DRIVE_FOLDER form): through the Settings route only the
+    // owner may set or reset it (the shared fleet token gets 403), and the key is overrides-only, so a .env line
+    // that differs from the default never counts (ENVRELAXGATE1104). Not ownerGated: that flag keeps the .env line
+    // working, which is exactly what must not happen here.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'OSS_INVENTORY_NOTES_DIRS',
