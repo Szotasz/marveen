@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
+import { readConflictGuard } from '../../update-conflict-guard.js'
 import { logger } from '../../logger.js'
 import { generatedDriftPaths, runInstallDriftRepair, withoutGeneratedDrift } from '../../install-drift-repair.js'
 import {
@@ -68,7 +69,8 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   const { res, req, path, method } = ctx
 
   if (path === '/api/updates' && method === 'GET') {
-    json(res, getUpdateStatus())
+    // UPDATECONFLICT1105: what start.sh's conflict guard found after the last update (null when nothing).
+    json(res, { ...getUpdateStatus(), conflictGuard: readConflictGuard(STORE_DIR) })
     return true
   }
 

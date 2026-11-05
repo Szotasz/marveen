@@ -167,6 +167,42 @@ describe('update.sh: a conflicted auto-stash pop (ANETTUPDATESTASH1102)', () => 
   })
 })
 
+// UPDATECONFLICT1105 (field report, 2026-11-05): the same pop conflict in a tracked Python script. A marker there is
+// a SyntaxError that keeps the channel service down, so the path rule must hold for scripts/*.py too, not only for
+// settings.json.
+describe('update.sh: a conflicted pop in a scripts/*.py file (UPDATECONFLICT1105)', () => {
+  const PY = 'scripts/memoria_heartbeat_gate.py'
+  const PY_BASE = 'AGENT = "picard"\n\n\ndef main():\n    return AGENT\n'
+  const PY_LOCAL = PY_BASE.replace('"picard"', '"tibor"')
+  const PY_UP = PY_BASE.replace('"picard"', '"marveen"')
+  function pyRepo(): string {
+    const dir = mkdtempSync(join(SANDBOX, 'pyrepo-'))
+    mkdirSync(join(dir, 'scripts'))
+    writeFileSync(join(dir, PY), PY_BASE)
+    writeFileSync(join(dir, 'other.txt'), 'base\n')
+    expect(sh(dir, 'git init -q && git add -A && git commit -qm base').code).toBe(0)
+    writeFileSync(join(dir, PY), PY_LOCAL)
+    writeFileSync(join(dir, 'other.txt'), 'local\n')
+    expect(sh(dir, 'git stash push -q -u -m "marveen-update-auto-stash 20261103-201500"').code).toBe(0)
+    writeFileSync(join(dir, PY), PY_UP)
+    expect(sh(dir, 'git commit -qam upstream').code).toBe(0)
+    return dir
+  }
+  it('the script goes back to the upstream version: no marker, it parses, nothing unmerged, the stash is kept', () => {
+    const dir = pyRepo()
+    const r = runBlock(dir, 'pop_auto_stash; echo "rc=$?"')
+    expect(r.out).toContain('rc=1')
+    const now = readFileSync(join(dir, PY), 'utf-8')
+    expect(now).toBe(PY_UP)
+    expect(now).not.toMatch(/^(<<<<<<<|=======|>>>>>>>)/m)
+    expect(sh(dir, `python3 -I -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' ${PY}`).code).toBe(0)
+    expect(git(dir, 'diff --name-only --diff-filter=U').trim()).toBe('')
+    expect(git(dir, `show 'stash@{0}':${PY}`)).toBe(PY_LOCAL)
+    expect(readFileSync(join(dir, 'other.txt'), 'utf-8')).toBe('local\n')
+    expect(r.warn).toContain(PY)
+  })
+})
+
 describe('update.sh: the settings.json gate before the restart (ANETTUPDATESTASH1102)', () => {
   function committed(content: string): string {
     const dir = mkdtempSync(join(SANDBOX, 'gate-'))

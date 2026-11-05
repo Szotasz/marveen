@@ -25,6 +25,11 @@ source "${INSTALL_DIR}/install-lang.sh"
 # channels.sh, so export the sandbox escape hatch for the whole stack when root.
 [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
 
+# UPDATECONFLICT1105: an update whose stash pop conflicted can leave <<<<<<< markers in a tracked hook or script,
+# and the run that brought this guard is still the OLD update.sh, which restarts through THIS (new) start.sh. So the
+# repair runs here, first, before any Python hook or script is started. Never blocks the start (see the script).
+bash "${INSTALL_DIR}/scripts/update-conflict-guard.sh" "$INSTALL_DIR" 2>&1 || true
+
 # Prune stale hook paths (e.g. /tmp scratchpad installs that survived a reboot)
 # before launching agents -- a missing hook script causes non-zero exit which
 # blocks every UserPromptSubmit, creating a silent fleet lockout (2026-07-14 incident).
