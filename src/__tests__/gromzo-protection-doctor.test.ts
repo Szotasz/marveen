@@ -42,8 +42,12 @@ describe('doctor: the Gromzo protection lines', () => {
       const envFile = join(d, 'install.env'); writeFileSync(envFile, `OTHER=1\nMXD_DASH_SOCK="${sock}"\n`)
       const pick = (f: string) => execFileSync('/bin/bash', ['-c', '. "$1"; gromzo_mxdctl_and_sock "$2"', 'x', LIB, f], { encoding: 'utf-8', env: { ...process.env, GROMZO_MXDCTL: ctl } })
       expect(pick(envFile)).toBe(`${ctl}|${sock}`)
-      // No env file: the platform default (a live mxd on this host may have one), never the custom path.
+      // No env file: the platform default, never the custom path. Whether the default socket exists depends on the
+      // host (a live mxd, or none on CI), so only that holds; the call itself must succeed either way (rc 0).
       expect(pick(join(d, 'missing.env'))).not.toContain(sock)
+      // A dash.sock that is not there: an empty answer with rc 0, never a failure (the CI case, made explicit here).
+      const noSock = join(d, 'gone.env'); writeFileSync(noSock, `MXD_DASH_SOCK="${join(d, 'no-such.sock')}"\n`)
+      expect(pick(noSock)).toBe('')
       expect(readFileSync(join(ROOT, 'scripts', 'doctor.sh'), 'utf-8')).toContain('gromzo_mxdctl_and_sock "$INSTALL_DIR/.env"')
     } finally {
       await new Promise<void>((res) => srv.close(() => res()))

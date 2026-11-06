@@ -19,7 +19,9 @@ gromzo_mxdctl_and_sock() {
     envsock="$(grep -E '^MXD_DASH_SOCK=' "$1" | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')"
     [ -z "$envsock" ] || sock="$envsock"
   fi
-  [ -x "$ctl" ] && [ -S "$sock" ] && printf '%s|%s' "$ctl" "$sock"
+  # Always rc 0: "not installed" is an answer (an empty line), not a failure (CI has no mxd; Samu 71599).
+  if [ -x "$ctl" ] && [ -S "$sock" ]; then printf '%s|%s' "$ctl" "$sock"; fi
+  return 0
 }
 
 # gromzo_protection_lines: the status JSON on stdin -> "level|message" lines (level: ok, warn, info).
