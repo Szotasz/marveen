@@ -5363,6 +5363,7 @@ async function loadAvailableModels() {
     for (const gid of cpGroupIds) {
       const g = document.getElementById(gid)
       if (!g) continue
+      g.label = '🔧 ' + t('providers.optgroup')
       g.innerHTML = ''
       if (customProviders.length === 0) { g.style.display = 'none'; continue }
       g.style.display = ''
@@ -16947,7 +16948,7 @@ async function loadSettings() {
       const btn = document.createElement('button')
       btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
       btn.dataset.tab = mod
-      btn.textContent = 'Provider-ok'
+      btn.textContent = t('providers.tab')
       btn.addEventListener('click', () => activateSettingsTab(mod))
       tabNav.appendChild(btn)
 
@@ -17716,14 +17717,14 @@ async function loadClaudePlansList() {
 
 
 async function renderProvidersContent(container) {
-  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">' + escapeHtml(t('common.loading')) + '</p>'
   try {
     const res = await fetch('/api/custom-providers')
     if (!res.ok) throw new Error('fetch failed')
     const { providers } = await res.json()
     buildProvidersUI(container, providers)
   } catch {
-    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">' + escapeHtml(t('providers.load_error')) + '</p>'
   }
 }
 
@@ -17732,7 +17733,7 @@ function buildProvidersUI(container, providers) {
 
   const notice = document.createElement('p')
   notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
-  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  notice.textContent = t('providers.notice')
   container.appendChild(notice)
 
   if (providers.length > 0) {
@@ -17741,10 +17742,11 @@ function buildProvidersUI(container, providers) {
     const table = document.createElement('table')
     table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
     table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
-      <th style="text-align:left;padding:6px 8px">Név</th>
-      <th style="text-align:left;padding:6px 8px">Base URL</th>
-      <th style="text-align:left;padding:6px 8px">Auth</th>
-      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.name'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.base_url'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.auth'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.vault_key'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.used_by'))}</th>
       <th style="padding:6px 8px"></th>
     </tr></thead><tbody id="customProvidersTableBody"></tbody>`
     tableWrap.appendChild(table)
@@ -17757,10 +17759,11 @@ function buildProvidersUI(container, providers) {
         <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
         <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
         <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
-        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : `<em style="color:var(--text-muted)">${escapeHtml(t('providers.none'))}</em>`}</td>
+        <td style="padding:6px 8px">${(p.usedBy || []).length ? escapeHtml(p.usedBy.join(', ')) : `<em style="color:var(--text-muted)">${escapeHtml(t('providers.none'))}</em>`}</td>
         <td style="padding:6px 8px;text-align:right;white-space:nowrap">
-          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
-          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">${escapeHtml(t('common.btn.edit'))}</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">${escapeHtml(t('common.btn.delete'))}</button>
         </td>`
       tbody.appendChild(tr)
     }
@@ -17801,13 +17804,13 @@ function buildProvidersUI(container, providers) {
   } else {
     const empty = document.createElement('p')
     empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
-    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    empty.textContent = t('providers.empty')
     container.appendChild(empty)
   }
 
   const addBtn = document.createElement('button')
   addBtn.className = 'btn-primary btn-compact'
-  addBtn.textContent = '+ Új provider'
+  addBtn.textContent = '+ ' + t('providers.new_btn')
   addBtn.addEventListener('click', () => openAddProviderModal(container))
   container.appendChild(addBtn)
 }
@@ -17825,42 +17828,42 @@ function openAddProviderModal(container, editProvider = null) {
   overlay.innerHTML = `
     <div class="modal" style="max-width:480px">
       <div class="modal-header">
-        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <h2>${escapeHtml(t(isEdit ? 'providers.modal.edit_title' : 'providers.modal.add_title'))}</h2>
         <button class="modal-close" id="addProviderModalClose">&times;</button>
       </div>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
         <div class="form-group">
-          <label class="form-label">Megjelenő név *</label>
-          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+          <label class="form-label">${escapeHtml(t('providers.field.label'))} *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="${escapeHtml(t('providers.field.label_ph'))}" value="${v('label')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
-          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
-          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
+          <label class="form-label">${escapeHtml(t('providers.field.id'))} * <small style="color:var(--text-muted)">${escapeHtml(t('providers.field.id_chars'))}</small></label>
+          <input type="text" id="cpId" class="input" placeholder="${escapeHtml(t('providers.field.id_ph'))}" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">${escapeHtml(t('providers.field.id_help'))}</small>
         </div>
         <div class="form-group">
-          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <label class="form-label">${escapeHtml(t('providers.field.base_url'))} * <small style="color:var(--text-muted)">${escapeHtml(t('providers.field.base_url_hint'))}</small></label>
           <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Auth header *</label>
+          <label class="form-label">${escapeHtml(t('providers.field.auth'))} *</label>
           <select id="cpAuthHeader" class="input">
             <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
             <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
-            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>${escapeHtml(t('providers.field.auth_none'))}</option>
           </select>
         </div>
         <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
-          <label class="form-label">Vault kulcs neve *</label>
-          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
-          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+          <label class="form-label">${escapeHtml(t('providers.field.vault_key'))} *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="${escapeHtml(t('providers.field.vault_key_ph'))}" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">${escapeHtml(t('providers.field.vault_key_help'))}</small>
         </div>
         <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
-          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+          ${escapeHtml(t('providers.modal.note'))}
         </p>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
-          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+          <button class="btn-secondary" id="addProviderCancelBtn">${escapeHtml(t('common.btn.cancel'))}</button>
+          <button class="btn-primary" id="addProviderSaveBtn">${escapeHtml(t('common.btn.save'))}</button>
         </div>
       </div>
     </div>`

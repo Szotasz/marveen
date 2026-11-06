@@ -16,10 +16,12 @@ Alapból az ágensek az Anthropic Cloud API-n, OpenRouter-en vagy helyi Ollama v
 
 ### Providerek kezelése (Dashboard)
 
-Beállítások > Provider-ok tab. Innen lehet:
-- új providert létrehozni (Új provider gomb)
+Beállítások > Szolgáltatók fül (angolul Providers). Innen lehet:
+- új providert létrehozni (Új szolgáltató gomb)
 - meglévőt szerkeszteni (Szerkesztés gomb a sorban)
-- törölni (Törlés gomb a sorban)
+- törölni (Törlés gomb a sorban). A megerősítő kérdés megnevezi azokat az ágenseket, amelyek a providert használják: ezek a törlés után nem indulnak el, amíg másik modellt nem kapnak.
+
+A táblázat Használja oszlopa mutatja, melyik ágens melyik providert használja.
 
 A provider-lista a `store/custom-providers.json` fájlban tárolódik.
 
@@ -36,7 +38,7 @@ A provider-lista a `store/custom-providers.json` fájlban tárolódik.
 ### Ágens hozzárendelése providerhez
 
 1. Nyisd meg az ágens szerkesztőjét (szerkesztőceruza ikon).
-2. A **Modell** legördülőben válassz egy bejegyzést az "Egyéni providerek" csoportból (pl. "my-deepseek").
+2. A **Modell** legördülőben válassz egy bejegyzést az "Egyéni szolgáltató" csoportból (pl. "my-deepseek").
 3. Az **Egyéni modell ID** mezőbe írd be a modell azonosítóját (pl. `deepseek-chat`). Ez a provider végpontjára kerül küldésre.
 4. Mentés után az ágens következő indításakor az egyéni végpontot használja.
 
@@ -107,7 +109,7 @@ model_list:
       api_key: os.environ/OPENCODE_API_KEY
 ```
 
-**3. LiteLLM regisztrálása egyéni providerként** (Dashboard > Provider-ok > Új provider): Base URL = a proxy gyökere (pl. `http://127.0.0.1:4010`); Auth header = `Bearer`; Vault kulcs neve = a LiteLLM `master_key`-t tartalmazó vault-kulcs.
+**3. LiteLLM regisztrálása egyéni providerként** (Dashboard > Beállítások > Szolgáltatók > Új szolgáltató): Base URL = a proxy gyökere (pl. `http://127.0.0.1:4010`); Auth header = `Bearer`; Vault kulcs neve = a LiteLLM `master_key`-t tartalmazó vault-kulcs.
 
 **4. Ágenshez rendelés** (ágens szerkesztő): Modell = a LiteLLM provider; Egyéni modell ID = a `model_name` (pl. `deepseek-v4-flash`).
 

@@ -55,3 +55,40 @@ describe('the provider form says which field is missing', () => {
     }
   })
 })
+
+describe('the Providers tab is translated', () => {
+  it('the hard-coded Hungarian texts are gone', () => {
+    expect(APP).not.toContain("'Provider-ok'")
+    for (const gone of ['Betöltés...</p>', 'Hiba a provider lista', 'Tiszta OpenAI végponthoz proxy', '>Név</th>', '>Vault kulcs</th>',
+      '>nincs</em>', '>Szerkesztés</button>', '>Törlés</button>', 'Nincs egyéni provider', "'+ Új provider'", 'Provider szerkesztése', 'Új egyéni provider',
+      'Megjelenő név *', 'Provider azonosító', 'pl. DeepSeek', 'Ez a provider belső neve', '(https:// vagy http://localhost)</small>', 'Auth header *',
+      'Ollama-szerű, token nélkül)</option>', 'Vault kulcs neve *', 'Vault tabon', 'fordítóproxy', '>Mégsem<', '>Mentés</button>']) {
+      expect(SECTION, gone).not.toContain(gone)
+    }
+  })
+
+  it('every providers.* key the page uses is in both languages', () => {
+    const used = new Set([...APP.matchAll(/t\('(providers\.[a-z_.]+)'/g)].map(m => m[1]))
+    for (const m of APP.matchAll(/'(providers\.modal\.(?:edit|add)_title)'/g)) used.add(m[1])
+    expect(used.size).toBeGreaterThan(30)
+    for (const key of used) {
+      expect(hasKey(HU, key), `hu: ${key}`).toBe(true)
+      expect(hasKey(EN, key), `en: ${key}`).toBe(true)
+    }
+  })
+
+  it('the translated texts that go into innerHTML are escaped', () => {
+    const raw = [...SECTION.matchAll(/\$\{t\('/g)]
+    expect(raw.length, 'a ${t(...)} without escapeHtml').toBe(0)
+  })
+
+  it('the tab button and the agent editor\'s model group are named from a key', () => {
+    expect(APP).toContain("btn.textContent = t('providers.tab')")
+    expect(APP).toContain("g.label = '🔧 ' + t('providers.optgroup')")
+  })
+
+  it('the table has a "Used by" column from usedBy', () => {
+    expect(SECTION).toContain("escapeHtml(t('providers.col.used_by'))")
+    expect(SECTION).toContain("(p.usedBy || []).length ? escapeHtml(p.usedBy.join(', '))")
+  })
+})
