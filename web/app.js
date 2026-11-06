@@ -17774,13 +17774,28 @@ function buildProvidersUI(container, providers) {
     tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.providerDelete
-        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        const p = providers.find(x => x.id === id)
+        // An agent whose provider is gone no longer starts, so name the agents that use it.
+        const users = (p && p.usedBy) || []
+        let message = t('providers.confirm.delete', { name: (p && p.label) || id })
+        if (users.length) message += '\n\n' + t('providers.confirm.delete_used_by', { agents: users.map(n => `"${n}"`).join(', ') })
+        const confirmed = await confirmDialog({
+          title: t('providers.confirm.delete_title'),
+          message,
+          okLabel: t('providers.confirm.delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         try {
           const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
-          if (!r.ok) throw new Error()
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}))
+            showToast(err.error || t('providers.toast.delete_error'))
+            return
+          }
           renderProvidersContent(container)
           loadAvailableModels()
-        } catch { alert('Hiba a törléskor.') }
+        } catch { showToast(t('providers.toast.delete_error')) }
       })
     })
   } else {

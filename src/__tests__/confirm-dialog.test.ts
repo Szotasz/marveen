@@ -573,3 +573,53 @@ describe('the Vault deletes use it', () => {
     }
   })
 })
+
+describe('the custom provider delete uses it', () => {
+  const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
+  const handler = (() => {
+    const i = APP.indexOf(anchor)
+    const end = "catch { showToast(t('providers.toast.delete_error')) }"
+    const j = i < 0 ? -1 : APP.indexOf(end, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + end.length)
+  })()
+
+  it('a danger confirmDialog with its own title and button, naming the provider, no native confirm()', () => {
+    expect(handler, 'handler not found').not.toBe('')
+    expect(handler).toContain('const confirmed = await confirmDialog({')
+    expect(handler).toContain("title: t('providers.confirm.delete_title')")
+    expect(handler).toContain("t('providers.confirm.delete', { name: (p && p.label) || id })")
+    expect(handler).toContain("okLabel: t('providers.confirm.delete_ok')")
+    expect(handler).toContain('danger: true')
+    expect(handler).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a "no" stops it -- the answer is checked before the request', () => {
+    const ask = handler.indexOf('const confirmed = await confirmDialog({')
+    const guard = handler.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the question names the agents that use the provider, from the list\'s usedBy', () => {
+    expect(handler).toContain('const users = (p && p.usedBy) || []')
+    expect(handler).toContain("if (users.length) message += '\\n\\n' + t('providers.confirm.delete_used_by', { agents: ")
+  })
+
+  it('a failed delete shows a translated toast, or the server\'s reason', () => {
+    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'))")
+    expect(handler).toContain('loadAvailableModels()')
+  })
+
+  it('the hard-coded question and error are gone, and the keys are in both languages', () => {
+    expect(APP).not.toContain('providert?`')
+    expect(APP).not.toContain("alert('Hiba a törléskor.')")
+    for (const key of ['providers.confirm.delete_title', 'providers.confirm.delete', 'providers.confirm.delete_used_by', 'providers.confirm.delete_ok', 'providers.toast.delete_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'providers.confirm.delete':"))).toContain('{name}')
+      expect(lang.split('\n').find(l => l.includes("'providers.confirm.delete_used_by':"))).toContain('{agents}')
+    }
+  })
+})
