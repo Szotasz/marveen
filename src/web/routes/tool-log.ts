@@ -1,4 +1,10 @@
-import { logToolCall, analyzeWorkflowCandidates, getRecentToolCalls, pruneToolCallLog } from '../../db.js'
+import {
+  logToolCall,
+  analyzeWorkflowCandidates,
+  getRecentToolCalls,
+  pruneToolCallLog,
+  pruneToolCallLogRetention,
+} from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -57,7 +63,16 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/tool-log/prune' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { older_than_secs?: number }
-    pruneToolCallLog(data.older_than_secs ?? 86400)
+    // No explicit window -> the CONFIGURED retention governs (opt-in,
+    // 0 = keep forever), not a 24h call-site default. The capture hook
+    // (scripts/hooks/tool-log-capture.py) posts an EMPTY body on ~1% of tool
+    // calls, so a hard-coded 86400 here silently capped tool_call_log at 24
+    // hours and made TOOL_CALL_LOG_RETENTION_DAYS ineffective: measured 24.06h
+    // of history with the key unset, i.e. with "keep forever" configured
+    // (TOOLLOGPRUNE24H1106). An explicit older_than_secs still purges exactly
+    // that window, so a manual narrow purge keeps working -- it just has to say so.
+    if (data.older_than_secs === undefined) pruneToolCallLogRetention()
+    else pruneToolCallLog(data.older_than_secs)
     json(res, { ok: true })
     return true
   }
