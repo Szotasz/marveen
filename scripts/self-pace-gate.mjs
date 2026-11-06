@@ -415,7 +415,7 @@ const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 // passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
   const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
-  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)), ctx?.rgConfigNamed)
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -449,21 +449,29 @@ const PROTECTED_MENTION_RX =
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
 // `mentions(text)` says whether a text names the protected object.
-function readOnlyMentionAllowed(seg, mentions) {
+// `rgConfigNamed`: the WHOLE command names RIPGREP_CONFIG_PATH (an export or an assignment in another segment
+// reaches rg too, Dani 71589), so rg is no read anywhere in it.
+function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   const s = String(seg ?? '').trim()
   if (!mentions(s)) return true
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
   const cmd = (words[i] ?? '').replace(/^.*\//, '')
-  if (!ALLOWLIST_READERS.has(cmd)) return false
+  // `git grep` reads too (EGRESSFP1106 (c)), in the narrow form gitGrepReadOnly accepts; a leading VAR=x in front of
+  // git (GIT_PAGER, GIT_CONFIG_PARAMETERS, ...) can make it run a program, so then it is not a read.
+  const gitRead = cmd === 'git' && i === 0 && gitGrepReadOnly(words.slice(i + 1))
+  if (!ALLOWLIST_READERS.has(cmd) && !gitRead) return false
+  // rg runs a program with --pre (EGRESSFP1106, Samu 71567), and a RIPGREP_CONFIG_PATH prefix can bring --pre in from
+  // a file: then it is not a read.
+  if (cmd === 'rg' && (rgConfigNamed || !rgReadOnly(words.slice(i + 1), i > 0))) return false
   // A command substitution inside the read runs a command of its own: each piece after a `$(` or a backtick (to its
   // `)`, the naive segments may have cut it) is measured with this same rule (Dani 57649: `echo $(cp /tmp/a
   // <allowlist>)` passed as a read).
   if (/\$\(|`/.test(s)) {
     for (const piece of s.split(/\$\(|`/).slice(1)) {
       const inner = piece.split(')')[0].replace(/^["'\s]+|["'\s]+$/g, '')
-      if (inner && !readOnlyMentionAllowed(inner, mentions)) return false
+      if (inner && !readOnlyMentionAllowed(inner, mentions, rgConfigNamed)) return false
     }
   }
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
@@ -474,8 +482,165 @@ function readOnlyMentionAllowed(seg, mentions) {
   return true
 }
 
-export function protectedStoreBashSegmentAllowed(seg) {
-  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text))
+export function protectedStoreBashSegmentAllowed(seg, ctx) {
+  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
+}
+
+// EGRESSFP1106 (c): `git grep` only reads, except where git runs a program of its choosing:
+//   - -O / --open-files-in-pager[=<pager>] opens the matches in a pager it RUNS (also inside a short-option
+//     cluster, -nO..., and as an abbreviation, --open..., which git's option parser accepts);
+//   - -c <name>=<value> / --config-env set any config (core.pager, alias.*, ...) for this run;
+//   - -p / --paginate and any other global option this list does not know: refused, not interpreted.
+// The accepted global options are -C <dir>, --no-pager, -P, --no-optional-locks, --git-dir=, --work-tree=.
+// `words` are the words after `git`, split on whitespace like readOnlyMentionAllowed's (a quoted pattern may span
+// several words: they are read as more arguments, so a stray -O spelling in a pattern refuses, never admits).
+export function gitGrepReadOnly(words) {
+  let k = 0
+  for (; k < words.length; k++) {
+    const w = words[k]
+    if (w === '-C') { k++; continue }
+    if (w === '--no-pager' || w === '-P' || w === '--no-optional-locks') continue
+    if (/^--(?:git-dir|work-tree)=/.test(w)) continue
+    break // anything else ends the accepted global options, and only `grep` may stand here (so -c, -p: refused)
+  }
+  if (words[k] !== 'grep') return false
+  for (const w of words.slice(k + 1)) {
+    if (/^-[^-]/.test(w) && w.includes('O')) return false
+    const long = w.startsWith('--') ? w.slice(2).split('=')[0] : null
+    if (long !== null && /^o/.test(long) && 'open-files-in-pager'.startsWith(long)) return false
+    // --textconv runs the textconv program the config names, with the file as its argument (Dani 71554, git 2.50.1).
+    // Its abbreviations count from --textc (--text alone is -a, a read).
+    if (long !== null && long.length >= 5 && /^textc/.test(long) && 'textconv'.startsWith(long)) return false
+  }
+  return true
+}
+
+// rg is a reader, except --pre <program> / --pre=<program> (rg runs it on every file), and any environment prefix
+// (RIPGREP_CONFIG_PATH names a config file that may hold --pre). --pre-glob only narrows --pre; --pretty is a read.
+const RG_CONFIG_ENV_RX = /RIPGREP_CONFIG_PATH/
+export function rgReadOnly(words, envPrefix = false) {
+  if (envPrefix) return false
+  return !words.some((w) => w === '--pre' || w.startsWith('--pre='))
+}
+
+// EGRESSFP1106 (a): the segments the protected-store and allowlist rules judge. A separator inside a quoted string
+// is no separator: `grep -n "a\|b" f` is one grep, but the naive split made `b" f` a command of its own, which is no
+// reader, so a plain grep from the project root was denied. The cut is made on maskInertLiterals' mask (same
+// length as the joined source) and every segment keeps its ORIGINAL text, so a quoted name is still read as a
+// mention. Fail-closed to the naive split, which only ever cuts MORE:
+//   - unresolved quoting (an unterminated quote, a "$(...)" or backtick in double quotes) -> naive;
+//   - any heredoc -> naive: a heredoc body is one masked region, and `bash <<EOF` with an `echo` first and a
+//     `cp ... <allowlist>` on the next body line would otherwise read as one echo.
+export function protectedSegments(command) {
+  return protectedSplit(command).segs
+}
+
+// protectedSegments plus what the definite-assignment rule needs: the separator after each segment ('' after the
+// last) and the mask. `quoteAware` false = the naive fallback, where no separator is known.
+function protectedSplit(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const heredocs = []
+  const masked = maskInertLiterals(src, heredocs)
+  if (masked == null || masked.length !== src.length || heredocs.length) {
+    return { segs: splitSegments(command), seps: null, masked: null, quoteAware: false }
+  }
+  const segs = []
+  const seps = []
+  let start = 0
+  for (const m of masked.matchAll(SEGMENT_SEP_RX)) {
+    segs.push(src.slice(start, m.index).trim())
+    seps.push(m[0] === '\n' ? ';' : m[0])
+    start = m.index + m[0].length
+  }
+  segs.push(src.slice(start).trim())
+  seps.push('')
+  return { segs, seps, masked, quoteAware: true }
+}
+
+// EGRESSFP1106 (b): a variable that is DEFINITELY a literal when a segment runs is read only as that literal there,
+// not also as "any text". Without this, `L=/abs/dir; ... cd <root> && docker run -v $L/out:/out ...` read `$L/out`
+// as `*/out`, and from the project root `*` can be local-hooks. Rule (Samu 71460), all of it, else the unresolved
+// reading STAYS:
+//   - the command has no subshell, group, substitution or compound command: no unquoted ( ) { } or backtick (a
+//     `${NAME}` is fine), and no segment starts with if/then/elif/else/fi/for/while/until/do/done/case/esac/
+//     select/function/coproc;
+//   - no segment can set a variable another way: source, `.`, eval, read, mapfile, readarray, getopts, unset,
+//     export, local, declare, typeset, readonly, let, `printf -v`;
+//   - the name is assigned exactly ONCE in the whole command (NAME= or NAME+=, quoted text excluded), in a segment
+//     that is only literal NAME=value words, and the use comes after it;
+//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES, any BASH*/ZSH*: Dani 71554);
+//   - every separator from that assignment to the use is && or ; (or a newline);
+//   - from the last ; before the assignment up to it there is no || (`a || F=x && use $F` can run use without F);
+//   - the separator right before the assignment is not a pipe or & (that would run it in a subshell).
+// Returns, per segment, a Map name -> literal value.
+const COMPOUND_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select', 'function', 'coproc', '{', '}', '(', ')', '((', '[[' ])
+// Names the SHELL itself sets or rewrites: an assignment to one is no definite literal. `PWD=/tmp/q; cd .; cp -R x/.
+// $PWD` copies into the real cwd (cd resets PWD; measured in bash and zsh, Dani 71554), `cd /` resets OLDPWD, and $_,
+// RANDOM, SECONDS, LINENO ... change on their own. zsh's lower-case twins (dirstack, cdpath, ...) are listed too; any
+// BASH* / ZSH* name is excluded by prefix.
+const SHELL_MANAGED_NAMES = new Set(['PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH', 'cdpath', 'IFS', 'RANDOM', 'SRANDOM',
+  'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID', 'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG',
+  'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path', 'argv', 'status', 'psvar',
+  'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
+const VAR_SETTERS = new Set(['source', '.', 'eval', 'read', 'mapfile', 'readarray', 'getopts', 'unset', 'export', 'local', 'declare', 'typeset', 'readonly', 'let'])
+export function definiteAssignments(split) {
+  const none = split.segs.map(() => new Map())
+  if (!split.quoteAware) return none
+  const shape = split.masked.replace(/\$\{[A-Za-z_]\w*\}/g, '')
+  if (/[(){}`]/.test(shape)) return none
+  const firstWords = split.segs.map((s) => {
+    const w = s.split(/\s+/)
+    let i = 0
+    while (i < w.length && /^[A-Za-z_]\w*\+?=/.test(w[i])) i++
+    return { cmd: w[i] ?? '', rest: w.slice(i + 1) }
+  })
+  for (const { cmd, rest } of firstWords) {
+    if (COMPOUND_WORDS.has(cmd) || VAR_SETTERS.has(cmd)) return none
+    if (cmd === 'printf' && rest.includes('-v')) return none
+  }
+  // assignments of each name anywhere in the unquoted text
+  const counts = new Map()
+  for (const m of split.masked.matchAll(/(?:^|[\s;&|])([A-Za-z_]\w*)\+?=/g)) counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
+  // literal-only assignment segments
+  const defs = [] // { at, name, value }
+  split.segs.forEach((s, at) => {
+    const words = shellWords(s)
+    if (!words || !words.length) return
+    const pairs = []
+    for (const w of words) {
+      const m = ASSIGN_RX.exec(w.value)
+      if (!m || w.dollar) return
+      const v = w.value.slice(m[0].length)
+      if (/[$`\u0000]/.test(v)) return
+      pairs.push([m[1], v])
+    }
+    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !/^(?:BASH|ZSH)_?/.test(name)) defs.push({ at, name, value })
+  })
+  const out = split.segs.map(() => new Map())
+  for (const d of defs) {
+    const before = d.at > 0 ? split.seps[d.at - 1] : ';'
+    if (!['&&', ';'].includes(before)) continue
+    // no || from the last ; before the assignment
+    let k = d.at - 1
+    let orBefore = false
+    while (k >= 0 && split.seps[k] !== ';') { if (split.seps[k] === '||') orBefore = true; k-- }
+    if (orBefore) continue
+    // A CONDITIONAL assignment (an && before it in its own ;-list: `false && F=x`) resolves only inside that && chain.
+    // Past a ; the use runs whether or not the assignment did, with F empty: `false && F=x; cp a ${F}local-hooks/b`
+    // writes into the protected dir (Samu 71530). An unconditional one (first in its list) holds for the rest.
+    const conditional = before === '&&'
+    for (let u = d.at + 1; u < split.segs.length; u++) {
+      if (!['&&', ';'].includes(split.seps[u - 1])) break
+      if (conditional && split.seps[u - 1] === ';') break
+      out[u].set(d.name, d.value)
+    }
+  }
+  return out
+}
+
+function substituteDefinite(text, definite) {
+  if (!definite?.size) return text
+  return text.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)(?!\w)/g, (m, a, b) => definite.has(a ?? b) ? definite.get(a ?? b) : m)
 }
 
 // Does a native file-tool call target one of the protected store files? By name anywhere
@@ -557,7 +722,9 @@ function substituteAssignments(text, assigns) {
 // Does this text spell a protected name? See "WHAT MENTIONS MEANS" above.
 export function protectedMention(text, ctx) {
   // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve
-  const src = String(text ?? '').replace(/\$(?=['"])/g, '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  const raw = String(text ?? '').replace(/\$(?=['"])/g, '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  // a variable that is definitely a literal here (definiteAssignments, EGRESSFP1106 (b)) has no unresolved reading
+  const src = substituteDefinite(raw, ctx?.definite)
   for (const t of substituteAssignments(src, ctx?.assigns)) {
     if (scheduleSurfaceVariants(t).some(mentionsProtectedName)) return true
     // implicit or `+` concatenation glued, every other quote kept as a word break:
@@ -3579,7 +3746,6 @@ function decide(toolName, toolInput, opts = {}) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
-    const protectedCtx = protectedContext(naiveSegs, opts.allowlistPath, opts.cwd)
     for (const seg of naiveSegs) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
@@ -3595,10 +3761,22 @@ function decide(toolName, toolInput, opts = {}) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+    }
+    // The protected store files and the allowlist judge the segments the shell runs (protectedSegments,
+    // EGRESSFP1106 (a)): a `|` or `;` inside a quoted grep pattern does not make a command of its own.
+    // Unresolved quoting or a heredoc falls back to the naive split.
+    const protSplit = protectedSplit(safeCommand)
+    const protSegs = protSplit.segs
+    const protectedCtx = protectedContext(protSegs, opts.allowlistPath, opts.cwd)
+    const definite = definiteAssignments(protSplit)
+    // the name spelled anywhere, also split by quotes or a backslash (RIPGREP_CONFIG_PAT""H= is the same variable)
+    protectedCtx.rgConfigNamed = RG_CONFIG_ENV_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
+    for (const [idx, seg] of protSegs.entries()) {
+      protectedCtx.definite = definite[idx]
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).
-      if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
+      if (!protectedStoreBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'protected-store-file' }
       // the egress allowlist and the extra hooks: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
       cwdAfterSegment(seg, protectedCtx)
