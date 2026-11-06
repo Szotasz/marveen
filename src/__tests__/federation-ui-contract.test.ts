@@ -23,7 +23,7 @@ describe('federation UI wiring', () => {
     // 2026-07-29: rendered DOM matches the map): the map places federation
     // inside connections between connectors and migrate, and the markup
     // snapshot already keeps the three links inside the connections container.
-    expect(APP).toMatch(/key: 'connections',[^\n]*pages: \['connectors', 'federation', 'migrate'\]/)
+    expect(APP).toMatch(/key: 'connections',[^\n]*pages: \['connectors', 'clitools', 'federation', 'migrate'\]/)
     const connectionsGroup = HTML.indexOf('data-group="connections"')
     const connectors = HTML.indexOf('data-page="connectors"')
     const federation = HTML.indexOf('data-page="federation"')
