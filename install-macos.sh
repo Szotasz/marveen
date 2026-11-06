@@ -244,6 +244,14 @@ macos_root_only_path() {
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
   macos_root_only_chain "$1"
 }
+# 0 = a mode (the last four octal digits of stat %p) that only the owner can write: no group or other write
+# bit, unless the sticky bit is set (/tmp). Anything but four octal digits is refused. A function of its own so
+# the rule is tested on mode strings: a root-owned, admin-group-writable dir (0775) is writable by the admin
+# installing user and so by every agent of theirs, and no test host has one to stat.
+macos_mode_root_only() {
+  case "$1" in [0-7][0-7][0-7][0-7]) ;; *) return 1 ;; esac
+  [ $(( 8#$1 & 8#022 )) -eq 0 ] || [ $(( 8#$1 & 8#1000 )) -ne 0 ]
+}
 # The same rule for a path and every dir above it, without the regular-file test (a dir chain).
 macos_root_only_chain() {
   local p="$1" m
@@ -251,7 +259,7 @@ macos_root_only_chain() {
     [ "$(/usr/bin/stat -f '%u' "$p" 2>/dev/null)" = 0 ] || return 1
     m="$(/usr/bin/stat -f '%p' "$p" 2>/dev/null)" || return 1
     m="${m: -4}"
-    if [ $(( 8#$m & 8#022 )) -ne 0 ] && [ $(( 8#$m & 8#1000 )) -eq 0 ]; then return 1; fi
+    macos_mode_root_only "$m" || return 1
     [ "$p" = / ] && break
     p="$(dirname "$p")"
   done
