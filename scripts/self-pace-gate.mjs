@@ -415,7 +415,7 @@ const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 // passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
   const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
-  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)), ctx?.rgConfigNamed)
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -449,7 +449,9 @@ const PROTECTED_MENTION_RX =
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
 // `mentions(text)` says whether a text names the protected object.
-function readOnlyMentionAllowed(seg, mentions) {
+// `rgConfigNamed`: the WHOLE command names RIPGREP_CONFIG_PATH (an export or an assignment in another segment
+// reaches rg too, Dani 71589), so rg is no read anywhere in it.
+function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   const s = String(seg ?? '').trim()
   if (!mentions(s)) return true
   const words = s.split(/\s+/)
@@ -462,14 +464,14 @@ function readOnlyMentionAllowed(seg, mentions) {
   if (!ALLOWLIST_READERS.has(cmd) && !gitRead) return false
   // rg runs a program with --pre (EGRESSFP1106, Samu 71567), and a RIPGREP_CONFIG_PATH prefix can bring --pre in from
   // a file: then it is not a read.
-  if (cmd === 'rg' && !rgReadOnly(words.slice(i + 1), i > 0)) return false
+  if (cmd === 'rg' && (rgConfigNamed || !rgReadOnly(words.slice(i + 1), i > 0))) return false
   // A command substitution inside the read runs a command of its own: each piece after a `$(` or a backtick (to its
   // `)`, the naive segments may have cut it) is measured with this same rule (Dani 57649: `echo $(cp /tmp/a
   // <allowlist>)` passed as a read).
   if (/\$\(|`/.test(s)) {
     for (const piece of s.split(/\$\(|`/).slice(1)) {
       const inner = piece.split(')')[0].replace(/^["'\s]+|["'\s]+$/g, '')
-      if (inner && !readOnlyMentionAllowed(inner, mentions)) return false
+      if (inner && !readOnlyMentionAllowed(inner, mentions, rgConfigNamed)) return false
     }
   }
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
@@ -480,8 +482,8 @@ function readOnlyMentionAllowed(seg, mentions) {
   return true
 }
 
-export function protectedStoreBashSegmentAllowed(seg) {
-  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text))
+export function protectedStoreBashSegmentAllowed(seg, ctx) {
+  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
 }
 
 // EGRESSFP1106 (c): `git grep` only reads, except where git runs a program of its choosing:
@@ -515,6 +517,7 @@ export function gitGrepReadOnly(words) {
 
 // rg is a reader, except --pre <program> / --pre=<program> (rg runs it on every file), and any environment prefix
 // (RIPGREP_CONFIG_PATH names a config file that may hold --pre). --pre-glob only narrows --pre; --pretty is a read.
+const RG_CONFIG_ENV_RX = /RIPGREP_CONFIG_PATH/
 export function rgReadOnly(words, envPrefix = false) {
   if (envPrefix) return false
   return !words.some((w) => w === '--pre' || w.startsWith('--pre='))
@@ -3766,12 +3769,14 @@ function decide(toolName, toolInput, opts = {}) {
     const protSegs = protSplit.segs
     const protectedCtx = protectedContext(protSegs, opts.allowlistPath, opts.cwd)
     const definite = definiteAssignments(protSplit)
+    // the name spelled anywhere, also split by quotes or a backslash (RIPGREP_CONFIG_PAT""H= is the same variable)
+    protectedCtx.rgConfigNamed = RG_CONFIG_ENV_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).
-      if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
+      if (!protectedStoreBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'protected-store-file' }
       // the egress allowlist and the extra hooks: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
       cwdAfterSegment(seg, protectedCtx)
