@@ -465,6 +465,8 @@ _t() {
     hu:npm.sudo_note) echo "Telepítés sudo-val (a rendszergazdai jelszót kérheti)..." ;;
     en:npm.aborted) echo "Stopped: the global npm directory is not writable and no remedy was chosen." ;;
     hu:npm.aborted) echo "Megálltam: a globális npm könyvtár nem írható, és nem választottál megoldást." ;;
+    en:macos.root_npm_refused) echo "Not running npm as root: npm or node is not a root-owned file in a root-owned folder, so a non-admin process could have replaced it. Install Claude Code yourself, after checking where npm comes from:" ;;
+    hu:macos.root_npm_refused) echo "Az npm-et nem futtatom rootként: az npm vagy a node nem root-tulajdonú fájl root-tulajdonú mappában, így egy nem admin folyamat is kicserélhette. Telepítsd a Claude Code-ot magad, miután megnézted, honnan jön az npm:" ;;
     # Error-translation layer (NPMPERM1/APTLOCK1/MACOSOLD1 -- the first three patterns)
     en:errxl.dpkg_lock) echo "TRANSLATED: the package manager (apt/dpkg) is locked by another process -- on a fresh system this is the automatic update. Wait a few minutes and re-run the installer." ;;
     hu:errxl.dpkg_lock) echo "FORDÍTÁS: a csomagkezelőt (apt/dpkg) egy másik folyamat zárolja -- friss rendszeren ez az automatikus frissítés. Várj pár percet, és indítsd újra a telepítőt." ;;

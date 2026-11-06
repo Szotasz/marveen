@@ -15,7 +15,7 @@ const LANG = readFileSync(join(ROOT, 'install-lang.sh'), 'utf-8')
 
 /** The Discord branch's managed-settings repair: from its presence check to the Slack branch. */
 function discordBranch(): string {
-  const start = MAC.indexOf('HAS_DISCORD=')
+  const start = MAC.indexOf('managed_has "$MANAGED_FILE" discord@claude-plugins-official')
   const end = MAC.indexOf('Az AI asszisztensed Slack-en', start)
   expect(start).toBeGreaterThan(-1)
   expect(end).toBeGreaterThan(start)
@@ -65,13 +65,12 @@ describe('macOS installer offers Discord with Linux parity', () => {
     // Review condition (#1306): an in-place json.dump truncates the file
     // before writing, and a {} parse-failure fallback would re-create the org
     // policy with ONLY discord in it -- muting every other channel host-wide.
-    // MANAGEDSETTINGSWRITE1103: the branch calls the shared writer
-    // (scripts/lib/managed-settings-write.py), merge only (no --create); the
-    // writer's refusal of an unparseable file and its mkstemp + os.replace are
-    // executed in installer-slack-managed-atomic.test.ts and pinned in
-    // scripts/__tests__/managed-settings-write.test.py.
+    // MANAGEDSETTINGSWRITE1103: the branch calls the shared writer, merge only (no --create); the
+    // writer's refusal of an unparseable file and its mkstemp + os.replace are executed in
+    // installer-slack-managed-atomic.test.ts and pinned in scripts/__tests__/managed-settings-write.test.py.
+    // MACROOTFROMCLONE1106: the writer is the copy embedded in the installer (managed_write), never the clone's file.
     const block = discordBranch()
-    expect(block).toContain('sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE"')
+    expect(block).toContain('managed_write "$MANAGED_FILE" --add-plugin discord@claude-plugins-official')
     expect(block).not.toContain('--create')
     expect(block).not.toContain('python3 - "$MANAGED_FILE"')
   })
