@@ -13,6 +13,7 @@ import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const T = vi.hoisted(() => ({ root: '' }))
 // The throwaway root is made by the node:os mock (the first factory to run: the config mock imports node:os).
@@ -71,6 +72,12 @@ vi.mock('../web/fleet-freeze.js', async (orig) => ({
   ...(await orig<typeof import('../web/fleet-freeze.js')>()),
   clearFleetFreeze: () => { h.unfreezes++; return null },
 }))
+// BRIDGEFIRSTLOGIN1106: the owner's security notices, recorded instead of sent
+const notices = vi.hoisted(() => [] as string[])
+vi.mock('../notify.js', async (orig) => ({
+  ...(await orig<typeof import('../notify.js')>()),
+  notifySecurityEvent: async (text: string) => { notices.push(text) },
+}))
 const settings = vi.hoisted(() => new Map<string, string>())
 vi.mock('../settings-store.js', async (orig) => ({
   ...(await orig<typeof import('../settings-store.js')>()),
@@ -80,7 +87,8 @@ vi.mock('../settings-store.js', async (orig) => ({
 }))
 
 const { initDatabase, createDashboardUser, getDashboardUser, listDashboardUsers, getApproval } = await import('../db.js')
-const { _clearSessionCacheForTest } = await import('../web/auth-sessions.js')
+const { _clearSessionCacheForTest, createSession } = await import('../web/auth-sessions.js')
+const { SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { createDeviceKey, revokeDeviceKey, listDeviceKeys, deviceKeyEverIssued, _clearDeviceKeyCacheForTest } = await import('../web/auth-device-keys.js')
 const { tryHandleAuth, mayActAsOwner, mayActAsOwnerOrFirstRun, FIRST_RUN_PATHS } = await import('../web/routes/auth.js')
 const { tryHandleSecurity } = await import('../web/routes/security.js')
@@ -316,6 +324,76 @@ describe("'first-login': creating the FIRST dashboard login", () => {
     expect((await addUser(FULL_KEY, 'owner')).status).toBe(201)
     expect((await addUser(FULL_KEY, 'second')).status).toBe(403)
     expect(listDashboardUsers().map((u) => u.username)).toEqual(['owner'])
+  })
+  // BRIDGEFIRSTLOGIN1106: the first login made with a device key is told to the owner's channel (Slack first, silent
+  // with no channel: notifySecurityEvent); the notice names the login and the device, never a credential.
+  it('the first login created with a FULL device key is told to the owner, naming the login and the device, no password', async () => {
+    notices.length = 0
+    expect((await addUser(FULL_KEY, 'owner')).status).toBe(201)
+    expect(notices).toHaveLength(1)
+    // The login and the device are named inside the sentence (the remove command alone also contains 'owner').
+    expect(notices[0]).toContain('Létrejött az első dashboard-belépés (owner) egy eszközkulccsal (eszköz: Bridge).')
+    expect(notices[0]).not.toContain('super-secret-pw')
+    expect(notices[0]).toContain('npm run dashboard-user -- remove owner')
+    expect(notices[0]).toContain('npm run dashboard-user -- security:reset')
+  })
+  it('no notice for a first login made with the shared token, nor for a later login the owner adds', async () => {
+    notices.length = 0
+    expect((await addUser(TOKEN, 'owner')).status).toBe(201)
+    expect((await addUser(SESSION, 'second')).status).toBe(201)
+    expect(notices).toHaveLength(0)
+  })
+  it('a FULL key WITH the owner cookie creates a SECOND login: no first-login notice (Dani 71183)', async () => {
+    notices.length = 0
+    const owner = createDashboardUser('owner', 'x'.repeat(60))
+    const cookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: owner.id, username: 'owner' })}`
+    const r = await hit(tryHandleAuth, 'POST', '/api/auth/users', FULL_KEY, { username: 'second', password: 'super-secret-pw' }, { cookie })
+    expect(r.status).toBe(201)
+    expect(getDashboardUser('second')).toBeDefined()
+    expect(notices).toHaveLength(0)
+  })
+  it('a refused attempt sends no notice (an operator key, a second key-made login)', async () => {
+    notices.length = 0
+    expect((await addUser(OPERATOR_KEY, 'op')).status).toBe(403)
+    createDashboardUser('owner', 'x'.repeat(60))
+    expect((await addUser(FULL_KEY, 'second')).status).toBe(403)
+    expect(notices).toHaveLength(0)
+  })
+})
+
+// --- BRIDGEFIRSTLOGIN1106: who can hold a FULL device key while no dashboard login exists ---------------------
+// The first login accepts a FULL device key at zero users. Over HTTP such a key comes only from the first-device path
+// (while no key was ever issued); the owner-session branch cannot exist with zero users. The machine-local CLIs
+// (scripts/bridge-device-key.ts, scripts/remote-access-enroll.ts --device-key) write the key store directly: they need
+// a shell as the install user, which also reads the shared token, and the shared token creates the first login on its
+// own ('first-login'), so a CLI key adds no power. The issuer list is pinned below: a new issuer cannot appear unseen.
+describe('BRIDGEFIRSTLOGIN1106: at zero users the HTTP issuers give a FULL key only on the first-device path', () => {
+  const enroll = (auth: Auth) => hit(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', auth, { key_line: 'x', name: '' })
+  const mint = (auth: Auth, name = 'Probe') => hit(tryHandleAuth, 'POST', '/api/auth/device-keys', auth, { name })
+  it('a sub-agent token, an operator key and a FULL key cannot mint or enrol at zero users; nothing is issued', async () => {
+    for (const a of [SUBAGENT, OPERATOR_KEY, FULL_KEY]) {
+      expect((await mint(a)).status).toBe(403)
+      expect((await enroll(a)).status).toBe(403)
+    }
+    expect(deviceKeyEverIssued()).toBe(false)
+  })
+  it('the shared token mints only the FIRST key; after it, mint and enrol are refused, and one key exists', async () => {
+    expect((await mint(TOKEN, 'First')).status).toBe(201)
+    expect(refused(await mint(TOKEN, 'Second'))).toBe(true)
+    expect(refused(await enroll(TOKEN))).toBe(true)
+    expect(listDeviceKeys()).toHaveLength(1)
+  })
+  it('the issuers of a device key are exactly the known ones (routes, the Bridge pairing, the two machine-local CLIs)', () => {
+    const repo = join(__dirname, '..', '..')
+    const files = execFileSync('git', ['-C', repo, 'grep', '-l', '-E', 'createDeviceKey\\(|mintBridgeDeviceKey\\(', '--', 'src', 'scripts', ':!src/__tests__'], { encoding: 'utf8' })
+      .split('\n').filter(Boolean).sort()
+    expect(files).toEqual([
+      'scripts/bridge-device-key.ts',
+      'scripts/remote-access-enroll.ts',
+      'src/web/auth-device-keys.ts',
+      'src/web/bridge-enroll.ts',
+      'src/web/routes/auth.ts',
+    ])
   })
 })
 

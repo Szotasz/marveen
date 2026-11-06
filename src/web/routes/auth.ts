@@ -25,6 +25,7 @@
 import type http from 'node:http'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
+import { notifySecurityEvent } from '../../notify.js'
 import { parseCookies, SESSION_COOKIE_NAME } from '../auth-gate.js'
 import {
   hashPassword,
@@ -234,6 +235,14 @@ export function mayActAsOwnerOrFirstRun(auth: RouteContext['auth'], req: http.In
   if (!firstRun) return false
   logger.info({ why, path: req?.url?.split('?')[0], method: req?.method, auth: auth?.kind }, 'owner action on the first-run setup: no dashboard login exists yet')
   return true
+}
+
+/** BRIDGEFIRSTLOGIN1106: the owner's notice when the first dashboard login is created with a device key. Names the
+ *  login and the device, never a credential. */
+export function firstLoginNotice(username: string, device: string): string {
+  return `[Biztonság] Létrejött az első dashboard-belépés (${username}) egy eszközkulccsal${device ? ` (eszköz: ${device})` : ''}. ` +
+    'Ha nem te hoztad létre a Bridge-ből, a géphez férő valaki tette: a gépen töröld a belépést ' +
+    `(npm run dashboard-user -- remove ${username}), és vond vissza az eszközkulcsokat (npm run dashboard-user -- security:reset).`
 }
 
 export const CLI_RECOVERY_ONLY = {
@@ -488,6 +497,14 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const hash = await hashPassword(password)
     const created = createDashboardUser(username, hash)
     logger.info({ username: created.username }, 'dashboard user created')
+    // BRIDGEFIRSTLOGIN1106: the first login made with a device key (the first-run branch: a key, no owner session) is
+    // told to the owner's channel, Slack first (notifySecurityEvent -> notifyOwner). With no channel set up yet (a
+    // fresh install often has none) the notice is silent by design and the audit lines are the record: the first-run
+    // one (mayActAsOwnerOrFirstRun) and this one.
+    if (auth?.kind === 'device' && ownerCookieSession(req) === null) {
+      logger.info({ username: created.username, device: auth.device }, 'the first dashboard login was created with a device key')
+      void notifySecurityEvent(firstLoginNotice(created.username, String(auth.device ?? '')))
+    }
     json(res, { ok: true, user: { id: created.id, username: created.username } }, 201)
     return true
   }
