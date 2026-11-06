@@ -1025,9 +1025,10 @@ function underForeignTmuxServer(pid: number, byPid: Map<number, ProcRow>, ownTmu
 // ---------------------------------------------------------------------------
 // Gromzo-channel orphans (MXDAGENTSOCKID1106 (b), Samu 71288).
 //
-// The gromzo-channel plugin is a node MCP server, a direct child of its claude. It does NOT exit when its stdin
-// closes (measured 2026-11-06 on the installed plugin: alive 8 s after stdin end, still reconnecting to mxd), and
-// none of the reapers above sees it: reapChannelOrphans matches *_STATE_DIR / bot.pid, and
+// The gromzo-channel plugin is a node MCP server, a direct child of its claude. Up to marveen-mxd #85 it does NOT
+// exit when its stdin closes (measured 2026-11-06 on the installed plugin: alive 8 s after stdin end, still
+// reconnecting to mxd); every plugin shipped before #85 behaves so until it is updated, and even after #85 the
+// plugin of a DETACHED claude that is still alive never sees its stdin close. None of the reapers above sees it: reapChannelOrphans matches *_STATE_DIR / bot.pid, and
 // reapDetachedChannelClaudes kills only the bun children of a detached claude (killBunChildren). So the plugin of
 // a killed detached claude lives on under pid 1, keeps its agent.sock connection and keeps popping the agent's
 // messages from mxd, with nobody to hand them to.
@@ -1067,6 +1068,9 @@ export function findGromzoOrphans(
   return rows.filter(({ pid }) => {
     const row = byPid.get(pid)
     if (!row) return false // gone since the scan
+    // The pid could have been reused between the env scan and this snapshot: signal it only while its own command
+    // line still names the gromzo-channel plugin (Dani #2558 review (1)).
+    if (!row.command.includes('/gromzo-channel/')) return false
     if (isClaudeBinary(row.command)) return false
     if (attachedToLivePane(pid, byPid, livePanePids)) return false
     if (underForeignTmuxServer(pid, byPid, ownTmuxServerPid)) return false

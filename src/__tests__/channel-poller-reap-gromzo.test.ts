@@ -95,6 +95,12 @@ describe('findGromzoOrphans', () => {
     expect(findGromzoOrphans(parseGromzoPluginRows(psEww()), procs(), new Set(), SERVER)).toEqual([])
   })
 
+  it('a pid reused since the scan (its command no longer the gromzo plugin) is never signalled', () => {
+    const reused = procs().map((p) => (p.pid === ORPHAN_PID1 ? { ...p, command: '/usr/bin/vim notes.txt' } : p))
+    const got = findGromzoOrphans(parseGromzoPluginRows(psEww()), reused, live(), SERVER).map((o) => o.pid)
+    expect(got).toEqual([ORPHAN_UNDER_DETACHED])
+  })
+
   it('a pid gone since the scan, or a claude, is never signalled', () => {
     const rows = [{ pid: 4_200_000, agent: 'x' }, { pid: DETACHED_CLAUDE, agent: 'x' }]
     expect(findGromzoOrphans(rows, procs(), live(), SERVER)).toEqual([])
@@ -131,7 +137,8 @@ describe('a real process in the shape the host shows (macOS/Linux ps)', () => {
   afterEach(() => { try { child?.kill('SIGKILL') } catch { /* gone */ } child = null })
 
   it('the env-scan row of a live gromzo-shaped node parses, and the reaper ends it when no pane holds it', async () => {
-    child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    // argv carries the plugin path, as the real plugin's does (node <root>/dist/server.js).
+    child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', `${GZ_ROOT}/dist/server.js`], {
       env: { PATH: process.env.PATH, CLAUDE_PLUGIN_ROOT: GZ_ROOT, MXD_AGENT: 'probe-gz', MXD_SCOPE: 'both' },
       stdio: 'ignore',
     })
@@ -142,7 +149,8 @@ describe('a real process in the shape the host shows (macOS/Linux ps)', () => {
     expect(parseGromzoPluginRows(own())).toEqual([{ pid, agent: 'probe-gz' }])
     const killed = reapGromzoOrphans({
       psEww: own,
-      procs: () => [{ pid, ppid: 1, command: `${process.execPath} -e x` }],
+      // The real ps row of the child (its command line), as snapshotProcs reads it; the parent made pid 1.
+      procs: () => [{ pid, ppid: 1, command: execFileSync('/bin/ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' }).trim() }],
       panePids: () => new Set([4_300_000]), tmuxServerPid: () => 4_300_001, ownUid: process.getuid!(), ownerOf: () => process.getuid!(),
     })
     expect(killed).toEqual([pid])
@@ -161,5 +169,9 @@ describe('the wiring', () => {
     const ap = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
     expect(ap).toContain("'pre-launch gromzo-orphan reap failed (continuing)'")
     expect(ap).toContain("'post-stop gromzo-orphan reap failed'")
+    // The calls themselves, not only their log lines (Dani #2558 review): periodic 1, pre-launch + post-stop 2.
+    const calls = (src: string) => src.split('\n').filter((l) => !l.trim().startsWith('//') && l.includes('reapGromzoOrphans({ tmuxPath: tmuxBin() })')).length
+    expect(calls(cm)).toBe(1)
+    expect(calls(ap)).toBe(2)
   })
 })
