@@ -135,6 +135,7 @@ import {
   sharedEnvAuthKeysCopiedTo,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
+import { describeApiCaller, isProtectedAgent, recordProtectedAgentEvent } from '../protected-agents.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
@@ -838,6 +839,36 @@ export async function refuseIfCliCannotLaunch(model: string): Promise<Record<str
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
+
+  // Refuse a write that would change a protected agent's identity or lifecycle
+  // (card 2fd5bfae, Sentinel's review 2026-10-03). Returns true when it has
+  // answered the request, so each call site is `if (...) return true`.
+  //
+  // Why these routes and not only stop/delete: stopping a protected agent is
+  // LOUD -- it disappears, and the reconciler says so. Rewriting its CLAUDE.md,
+  // mcp.json, model or auth is SILENT: the next restart brings up something that
+  // still runs, still answers, and is no longer the agent the operator relied
+  // on. A missing supervisor is noticed; a redirected one is not. The
+  // context-guard route is here for a different reason -- turning the guard off
+  // leaves the session free to wedge on a full context, and a wedged pane is
+  // still "running", so the reconciler never resurrects it.
+  //
+  // Blanket refusal on the whole PUT, not a per-field filter: a field allowlist
+  // is a second thing to get wrong, and every field on these routes feeds the
+  // next launch. The knobs stay reachable by editing the agent's files directly,
+  // which is deliberate -- hard and traceable, not impossible.
+  const denyProtectedWrite = (name: string, action: string, note: string): boolean => {
+    if (!isProtectedAgent(name)) return false
+    recordProtectedAgentEvent({
+      agent: name,
+      action,
+      outcome: 'blocked',
+      source: describeApiCaller(ctx.auth, req.socket?.remoteAddress),
+      note,
+    })
+    json(res, { error: `Protected agent, a beállítás az API-n keresztül nem módosítható (${action})` }, 400)
+    return true
+  }
 
   // Lists every model the dashboard is willing to serve up to an agent.
   // Claude IDs are static. DeepSeek is gated behind a vault secret because
@@ -1871,6 +1902,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (secGetMatch && method === 'PUT') {
     const name = decodeURIComponent(secGetMatch[1])
+    if (denyProtectedWrite(name, 'security-profile-write', 'PUT /api/agents/<name>/security refused: a narrowed profile takes effect on the next restart and silently changes what the agent can do')) return true
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     // APIAGENTWRITE1104: the profile rewrites the agent's settings.json (its permission mode and filesystem
     // allow/deny), so it needs the owner, not the shared access token.
@@ -1999,6 +2031,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
+    // GET stays open: reading the config tells an attacker nothing it could not
+    // infer, and the dashboard needs it. Only the write is refused.
+    if (method === 'PUT' && denyProtectedWrite(name, 'context-guard-write', 'PUT /context-guard refused: disabling the guard lets the session wedge, and a wedged pane is never reaped')) return true
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     if (method === 'GET') {
       json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
@@ -2042,6 +2077,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const remoteCfgMatch = path.match(/^\/api\/agents\/([^/]+)\/remote$/)
   if (remoteCfgMatch && method === 'PUT') {
     const name = decodeURIComponent(remoteCfgMatch[1])
+    if (denyProtectedWrite(name, 'remote-write', 'PUT /remote refused: an unreachable host disables the session without touching the process')) return true
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Main agent is always local' }, 400); return true }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     // APIAGENTWRITE1104: host and workdir decide on which machine, over ssh, the agent's session runs.
@@ -2577,6 +2613,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
+    // Protected agents (card 2fd5bfae): refuse before anything mutates. The
+    // order is the whole point -- removeDesiredAgent() below runs
+    // unconditionally, so a guard placed after it would leave the agent
+    // running but no longer desired, i.e. unprotected on the next reconcile.
+    if (isProtectedAgent(name)) {
+      recordProtectedAgentEvent({
+        agent: name,
+        action: 'stop',
+        outcome: 'blocked',
+        source: describeApiCaller(ctx.auth, req.socket?.remoteAddress),
+        note: 'POST /stop refused by the protected-agents guard',
+      })
+      json(res, { error: 'Protected agent, önállóan nem állítható le' }, 400)
+      return true
+    }
     // Explicit stop clears intent so the monitor will not resurrect it -- and
     // it must happen BEFORE the stop yields. stopAgentProcess() now awaits ~2s
     // while the session settles; in that window the agent is already dead but
@@ -2879,6 +2930,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (agentMatch && method === 'PUT') {
     const name = decodeURIComponent(agentMatch[1])
+    // The sharpest of the lot: claudeMd, soulMd, mcpJson, model, authMode and
+    // apiKey all feed the next launch, so this route can rewrite WHO the agent
+    // is without ever stopping it.
+    if (denyProtectedWrite(name, 'config-overwrite', 'PUT /api/agents/<name> refused: claudeMd/soulMd/mcpJson/model/authMode rewrite the identity the next restart brings up')) return true
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     if (isMainChannelsAgent(name)) {
       json(res, { error: 'Main agent configuration is read-only through the dashboard API' }, 400)
@@ -3015,6 +3070,22 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // here would remove whatever it holds and strip the main agent from every
     // team's reportsTo/delegatesTo (MAINGHOST1024).
     if (isMainChannelsAgent(name)) { json(res, { error: 'The main agent cannot be deleted' }, 400); return true }
+    // The protected-agents guard runs here, next to the main-agent one and
+    // still BEFORE the directory check. The order matters: a protected
+    // sub-agent HAS a directory, so unlike the main agent it never had even
+    // the accidental cover of the existsSync below -- this route deleted it,
+    // dir and all, with no check at all.
+    if (isProtectedAgent(name)) {
+      recordProtectedAgentEvent({
+        agent: name,
+        action: 'delete',
+        outcome: 'blocked',
+        source: describeApiCaller(ctx.auth, req.socket?.remoteAddress),
+        note: 'DELETE /api/agents/<name> refused by the protected-agents guard',
+      })
+      json(res, { error: 'Protected agent, önállóan nem törölhető' }, 400)
+      return true
+    }
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
     // OWNERGATE2-1104: stops the agent and removes its whole directory, irreversibly; owner-only, before the desired

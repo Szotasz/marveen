@@ -224,7 +224,11 @@ describe('the binding in the reconcile (source)', () => {
 
   it('no start bypasses the burst: startAgentProcess appears only as the injected start', () => {
     expect(fn.match(/startAgentProcess\(/g)?.length).toBe(1)
-    expect(fn).toContain('start: (name) => startAgentProcess(name),')
+    // The injected start is no longer a one-liner: a protected agent's
+    // out-of-band disappearance is named and audited AROUND the same single
+    // startAgentProcess call (2fd5bfae). The count assertion above is what
+    // proves no start bypasses the burst; this one only pins the shape.
+    expect(fn).toContain('start: async (name) => {')
     expect(fn).not.toMatch(/await delay\(/)
   })
 

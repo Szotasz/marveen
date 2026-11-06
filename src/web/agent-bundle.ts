@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
 import { MAIN_AGENT_ID, RESERVED_AGENT_IDS } from '../config.js'
 import { sanitizeAgentName } from './sanitize.js'
+import { isProtectedAgent, recordProtectedAgentEvent } from './protected-agents.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 // Portable per-agent export/import bundle.
@@ -283,6 +284,23 @@ export function importAgentBundle(
     if (exists && !opts.overwrite) {
       throw new Error(`Agent "${name}" already exists on this machine`)
     }
+    // An overwriting import is the most complete identity rewrite there is: it
+    // replaces CLAUDE.md, SOUL.md, .mcp.json, agent-config.json and the skills
+    // in one call, and the agent keeps running until its next restart brings up
+    // the substituted persona. The route-level guards on PUT close the field-by-
+    // field door; this closes the whole-directory one (card 2fd5bfae).
+    // Importing a protected NAME onto a machine that does not have that agent
+    // stays allowed -- there is nothing to subvert there, and refusing it would
+    // block a legitimate move of the supervisor to a new host.
+    if (exists && isProtectedAgent(name)) {
+      recordProtectedAgentEvent({
+        agent: name,
+        action: 'import-overwrite',
+        outcome: 'blocked',
+        note: 'POST /api/agents/import refused: an overwriting import replaces the whole agent directory, persona and MCP config included',
+      })
+      throw new Error(`Protected agent "${name}" cannot be overwritten by an import`)
+    }
     if (exists) rmSync(dest, { recursive: true, force: true })
     mkdirSync(join(dest, '..'), { recursive: true })
     cpSync(stagedAgentDir, dest, { recursive: true })
@@ -473,6 +491,20 @@ export function importAllAgentsBundle(
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
       const exists = existsSync(dest)
       if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }
+      // Same refusal as the single-agent import, but skipped rather than fatal:
+      // a fleet import that contains the supervisor must still install every
+      // other agent in the bundle, and the caller is told which one it left
+      // alone instead of silently dropping it.
+      if (exists && isProtectedAgent(name)) {
+        recordProtectedAgentEvent({
+          agent: name,
+          action: 'import-overwrite',
+          outcome: 'blocked',
+          note: 'fleet import refused for this agent: an overwriting import replaces the whole agent directory',
+        })
+        skipped.push({ name, reason: 'protected agent, not overwritten' })
+        continue
+      }
       if (exists) rmSync(dest, { recursive: true, force: true })
       mkdirSync(join(dest, '..'), { recursive: true })
       cpSync(stagedAgentDir, dest, { recursive: true })
