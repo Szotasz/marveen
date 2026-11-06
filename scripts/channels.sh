@@ -684,7 +684,31 @@ unset TMUX
 # a Mac that also had an older shared claude there ran the main session on that
 # one while the sub-agents ran the native build, and claude_is_native looked at
 # the wrong binary. Every other directory keeps its relative order.
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+# ISSUE1968BREWPREFIX (#1968): a Homebrew in a custom prefix (~/homebrew, say) keeps tmux, the claude cask and npm
+# in <prefix>/bin, which the fixed list below does not have: channels crash-looped on "claude not found". The prefix
+# is not stored anywhere, but every launchd PATH the installer ever wrote starts with node@22's keg,
+# <prefix>/opt/node@22/bin (NODE_BIN_DIR), and update.sh never rewrites that plist. So <prefix>/bin is derived from
+# the inherited PATH: the first keg entry whose <prefix>/bin exists and is not one the list already has. It goes
+# right after ~/.local/bin (the native claude still wins). No keg entry = the list exactly as before.
+# src/platform.ts knownBinDirs() applies the same rule for the dashboard.
+BREW_PREFIX_BIN=""
+while IFS= read -r -d : _bp_dir; do
+  case "$_bp_dir" in
+    /*/opt/node@[0-9]/bin|/*/opt/node@[0-9][0-9]/bin) ;;
+    *) continue ;;
+  esac
+  _bp_bin="${_bp_dir%/opt/node@*/bin}/bin"
+  case "$_bp_bin" in
+    /opt/homebrew/bin|/usr/local/bin) continue ;;
+  esac
+  if [ -d "$_bp_bin" ]; then
+    BREW_PREFIX_BIN="$_bp_bin:"
+    break
+  fi
+done <<< "${PATH:-}:"
+unset _bp_dir _bp_bin
+export PATH="$HOME/.local/bin:${BREW_PREFIX_BIN}/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+# /ISSUE1968BREWPREFIX
 
 # FLEETVENV923: the fleet Python venv's bin/ goes FIRST, when it is set and
 # exists, so the main session's `python3` (and markitdown & co.) come from the
