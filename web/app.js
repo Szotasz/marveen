@@ -14462,6 +14462,37 @@ function wireBranchDriftBanner() {
   })
 }
 
+// === Update-conflict guard (UPDATECONFLICT1105) ===
+// scripts/update-conflict-guard.sh (run by start.sh) repairs, or refuses to repair, what a conflicted auto-stash pop
+// left in a tracked file, and writes a report; /api/updates carries it as `conflictGuard`. One sentence: what
+// happened and where the backup is. Dismissal persists per browser and per guard run (`at`), so a later run re-warns.
+// textContent only: the paths are file names from the install, never markup.
+const UPDATE_CONFLICT_DISMISS_PREFIX = 'marveen.update-conflict-dismissed.'
+function updateConflictGuardUI(status) {
+  const banner = document.getElementById('updateConflictBanner')
+  if (!banner) return
+  const g = status && status.conflictGuard
+  let dismissed = false
+  try { dismissed = !!(g && localStorage.getItem(UPDATE_CONFLICT_DISMISS_PREFIX + g.at) === '1') } catch { /* storage blocked */ }
+  if (!g || !g.state || dismissed) { banner.hidden = true; return }
+  const paths = Array.isArray(g.paths) && g.paths.length ? g.paths.join(', ') : '?'
+  const stash = typeof g.stash === 'string' ? g.stash.split(':')[0] : 'git stash'
+  const textEl = document.getElementById('updateConflictBannerText')
+  if (textEl) textEl.textContent = t('update_conflict.banner.' + g.state, { paths, backup: g.backup || 'store/', stash })
+  banner.dataset.at = String(g.at)
+  banner.hidden = false
+}
+function wireUpdateConflictBanner() {
+  const dismiss = document.getElementById('updateConflictDismiss')
+  if (!dismiss) return
+  dismiss.addEventListener('click', () => {
+    const banner = document.getElementById('updateConflictBanner')
+    const at = banner && banner.dataset.at
+    try { if (at) localStorage.setItem(UPDATE_CONFLICT_DISMISS_PREFIX + at, '1') } catch { /* storage blocked */ }
+    if (banner) banner.hidden = true
+  })
+}
+
 function renderBranchNotice(status) {
   const el = document.getElementById('updatesBranchNotice')
   if (!el) return
@@ -14487,6 +14518,7 @@ async function pollUpdatesBadge() {
     window._updatesStatus = data
     renderUpdatesBadge(data)
     updateBranchDriftUI(data)
+    updateConflictGuardUI(data)
   } catch {}
 }
 
@@ -16458,6 +16490,7 @@ document.addEventListener('DOMContentLoaded', () => {
   wireAuthBanner()
   initAuthBanner()
   wireBranchDriftBanner()
+  wireUpdateConflictBanner()
   wireFleetFreeze()
 })
 
