@@ -96,7 +96,7 @@ describe('the other silent paths are loud now', () => {
   })
 
   it('--value takes exactly ONE label: a newline, a space or an = is exit 2, nothing printed, the id not echoed (Dani #2563)', async () => {
-    for (const id of ['KNOWN-LABEL\nB=KNOWN-LABEL', 'KNOWN-LABEL\n', 'KNOWN-LABEL\r', ' KNOWN-LABEL', 'X=KNOWN-LABEL', 'KNOWN-LABEL\t', 'KNOWN-LABEL ']) {
+    for (const id of ['KNOWN-LABEL\nB=KNOWN-LABEL', 'KNOWN-LABEL\nKNOWN-LABEL', 'KNOWN-LABEL\r\nKNOWN-LABEL', 'KNOWN-LABEL\n', 'KNOWN-LABEL\r', ' KNOWN-LABEL', 'X=KNOWN-LABEL', 'KNOWN-LABEL\t', 'KNOWN-LABEL ']) {
       const r = await run(['--value', id], null)
       expect(r.code, JSON.stringify(id)).toBe(2)
       expect(r.stdout).toBe('')
