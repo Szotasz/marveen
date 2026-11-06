@@ -34,7 +34,7 @@ beforeAll(() => {
   copyFileSync(join(process.cwd(), 'scripts', 'vault-dashboard-client.mjs'), join(ROOT, 'scripts', 'vault-dashboard-client.mjs'))
   // Exact-id lookup, as the real getSecret (vault.ts: entries.find(e => e.id === id)).
   writeFileSync(join(ROOT, 'dist', 'web', 'vault.js'), `export function getSecret(id) {
-  if (id === 'KNOWN-LABEL' || id === 'ssh-key-abc123') return '${SECRET_VALUE}'
+  if (id === 'KNOWN-LABEL' || id === 'ssh-key-abc123' || id === 'RESEND full access') return '${SECRET_VALUE}'
   if (id === 'EMPTY-LABEL') return ''
   return null
 }\n`)
@@ -96,13 +96,21 @@ describe('the other silent paths are loud now', () => {
   })
 
   it('--value takes exactly ONE label: a newline, a space or an = is exit 2, nothing printed, the id not echoed (Dani #2563)', async () => {
-    for (const id of ['KNOWN-LABEL\nB=KNOWN-LABEL', 'KNOWN-LABEL\n', 'KNOWN LABEL', ' KNOWN-LABEL', 'X=KNOWN-LABEL', 'KNOWN-LABEL\t']) {
+    for (const id of ['KNOWN-LABEL\nB=KNOWN-LABEL', 'KNOWN-LABEL\n', 'KNOWN-LABEL\r', ' KNOWN-LABEL', 'X=KNOWN-LABEL', 'KNOWN-LABEL\t', 'KNOWN-LABEL ']) {
       const r = await run(['--value', id], null)
       expect(r.code, JSON.stringify(id)).toBe(2)
       expect(r.stdout).toBe('')
+      expect(r.stderr).toContain("the --value label must be one line")
       expect(r.stderr).not.toContain('KNOWN-LABEL')
       noValueOnStderr(r)
     }
+  })
+
+  it('a label with a space INSIDE is one label: live vault ids carry it (Dani, 5 of 191)', async () => {
+    expect(await run(['--value', 'RESEND full access'], null)).toEqual({ code: 0, stdout: SECRET_VALUE, stderr: '' })
+    const r = await run(['--value', 'NO SUCH label'], null)
+    expect(r.code).toBe(3)
+    expect(r.stderr).toContain('no secret in the vault for label: NO SUCH label')
   })
 
   it('an empty stdin: exit 2, not a silent success', async () => {
