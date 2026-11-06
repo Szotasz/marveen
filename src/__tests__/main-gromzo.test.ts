@@ -211,20 +211,32 @@ describe('the shell launcher helpers and their TS twin', () => {
   const mains = ['', 'marveen', 'x-1', 'Marveen', 'B', 'a'.repeat(32), 'a'.repeat(33), 'bad name', 'é', 'aé', 'ß']
   const idSets = [[], [GZ], [SLACK], [SLACK, GZ], [GZ, SLACK, 'telegram@x']]
 
-  it('filter and env agree for every slug, id set and socket', () => {
+  it('filter and env agree for every slug, id set and socket, with and without mxd\'s tokens dir', () => {
     let rows = 0
-    for (const path of [() => sock, () => join(dir, 'missing.sock'), () => plainFile, () => readOnlyFile]) {
-      for (const main of mains) {
-        for (const ids of idSets) {
-          const p = path()
-          const tsIds = filterMainGromzoIds(main, ids, p)
-          expect(sh('main_gromzo_filter_ids', p, main, ids), `${p} ${main} ${ids}`).toBe(tsIds.join(' '))
-          expect(sh('main_gromzo_env', p, main, tsIds), `${p} ${main} ${ids}`).toBe(mainGromzoEnv(main, tsIds))
-          rows++
+    // MXDAGENTSOCKID1106: once without the tokens dir (an older mxd), once with it (the token path is exported).
+    for (const tokensDir of [false, true]) {
+      if (tokensDir) mkdirSync(join(dir, 'tokens'))
+      for (const path of [() => sock, () => join(dir, 'missing.sock'), () => plainFile, () => readOnlyFile]) {
+        for (const main of mains) {
+          for (const ids of idSets) {
+            const p = path()
+            const tsIds = filterMainGromzoIds(main, ids, p)
+            expect(sh('main_gromzo_filter_ids', p, main, ids), `${p} ${main} ${ids}`).toBe(tsIds.join(' '))
+            expect(sh('main_gromzo_env', p, main, tsIds), `${p} ${main} ${ids} ${tokensDir}`).toBe(mainGromzoEnv(main, tsIds, p))
+            rows++
+          }
         }
       }
     }
-    expect(rows).toBe(4 * mains.length * idSets.length)
+    expect(rows).toBe(2 * 4 * mains.length * idSets.length)
+  })
+
+  it('MXDAGENTSOCKID1106: the token path goes in with the tokens dir, and nothing without it', () => {
+    expect(sh('main_gromzo_env', sock, 'x-1', [GZ])).toBe('export MXD_AGENT="x-1" && export MXD_SCOPE="both" && ')
+    mkdirSync(join(dir, 'tokens'))
+    const want = `export MXD_AGENT="x-1" && export MXD_SCOPE="both" && export MXD_AGENT_TOKEN_FILE="${join(dir, 'tokens', 'x-1.token')}" && `
+    expect(sh('main_gromzo_env', sock, 'x-1', [GZ])).toBe(want)
+    expect(mainGromzoEnv('x-1', [GZ], sock)).toBe(want)
   })
 
   it('the slug rule holds under the C locale too', () => {
@@ -258,6 +270,17 @@ describe('the recovery respawn (channel-monitor)', () => {
     expect(cmd).toContain(`plugin:${GZ}`)
   })
 
+  it('MXDAGENTSOCKID1106: the token path, before claude starts, on the shared AND the isolated config', () => {
+    for (const config of [mainConfigDecisionForTest(), mainConfigDecisionForTest({ isolatedConfigDir: '/opt/m/.channels-config', fleetToken: true })]) {
+      const cmd = buildMainSessionRespawnCmd({ ...base, config, extraPluginIds: [GZ], mainAgentId: 'x-1', gromzoTokenFile: '/run/marveen-mxd/tokens/x-1.token' })
+      const at = cmd.indexOf('export MXD_AGENT_TOKEN_FILE="/run/marveen-mxd/tokens/x-1.token"')
+      expect(at).toBeGreaterThan(cmd.indexOf('export MXD_AGENT="x-1"'))
+      expect(at).toBeLessThan(cmd.indexOf('/usr/local/bin/claude'))
+    }
+    // No tokens dir (an older mxd): no path, so the plugin never waits for a file that does not come.
+    expect(buildMainSessionRespawnCmd({ ...base, extraPluginIds: [GZ], mainAgentId: 'x-1', gromzoTokenFile: null })).not.toContain('MXD_AGENT_TOKEN_FILE')
+  })
+
   it('without it, or with a bad slug: no MXD_ export at all', () => {
     expect(buildMainSessionRespawnCmd({ ...base, extraPluginIds: [SLACK], mainAgentId: 'x-1' })).not.toContain('MXD_')
     expect(buildMainSessionRespawnCmd({ ...base, extraPluginIds: [GZ], mainAgentId: 'Bad' })).not.toContain('MXD_')
@@ -266,6 +289,32 @@ describe('the recovery respawn (channel-monitor)', () => {
   it('the three respawn sites read the extras through the gromzo filter', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
     expect(src).toContain("return filterMainGromzoIds(readMainAgentIdRaw(projectRoot), readEnvValue(projectRoot, 'CHANNEL_PLUGINS_EXTRA')")
+  })
+})
+
+// MXDAGENTSOCKID1106, the release lock (Dani 71379, Samu 71381): once an agent is protected, a launcher that does
+// not export MXD_AGENT_TOKEN_FILE gets token_required for good. All six launchers of a Gromzo agent go through one
+// of the three exporting builders measured above; this pins that none bypasses them.
+describe('MXDAGENTSOCKID1106: every launcher of a Gromzo agent exports the token path', () => {
+  const read = (...p: string[]) => readFileSync(join(ROOT, ...p), 'utf-8')
+  it('the three shell launchers of the main session put main_gromzo_env into their launch', () => {
+    for (const f of ['channels.sh', 'channel-watchdog.sh', 'stuck-modal-guard.sh']) {
+      const src = read('scripts', f)
+      expect(src, f).toMatch(/GROMZO_ENV="\$\(main_gromzo_env /)
+      expect(src.match(/\$\{?GROMZO_ENV\}?/g)?.length ?? 0, `${f}: GROMZO_ENV used in the launch`).toBeGreaterThanOrEqual(1)
+    }
+    expect(read('scripts', 'main-gromzo-launch.sh')).toContain("[ -z \"$tf\" ] || printf 'export MXD_AGENT_TOKEN_FILE=\"%s\" && ' \"$tf\"")
+  })
+  it('the TS respawn (shared and isolated config) and the sub-agent launch', () => {
+    const cm = read('src', 'web', 'channel-monitor.ts')
+    expect(cm).toContain("const gromzoToken = gromzoSlug ? gromzoTokenExport(opts.gromzoTokenFile !== undefined ? opts.gromzoTokenFile : gromzoTokenFile(gromzoSlug)) : ''")
+    expect(cm).toContain("...(gromzoToken ? [`&& ${gromzoToken.replace(/ && $/, '')}`] : []),")
+    expect(read('src', 'web', 'agent-process.ts')).toContain('? { slug: name, sockUsable: mxdAgentSockUsable(), tokenFile: gromzoTokenFile(name) }')
+    expect(read('src', 'web', 'agent-extra-channels.ts')).toContain('export MXD_SCOPE="${gromzoScope}" && ${gromzoTokenExport(gromzoFor.tokenFile ?? null)}`')
+  })
+  it('no other place builds a gromzo MXD_AGENT export', () => {
+    const files = execFileSync('git', ['-C', ROOT, 'grep', '-l', 'export MXD_AGENT=', '--', 'src', 'scripts', ':!src/__tests__'], { encoding: 'utf-8' }).split('\n').filter(Boolean).sort()
+    expect(files).toEqual(['scripts/main-gromzo-launch.sh', 'src/web/agent-extra-channels.ts', 'src/web/channel-monitor.ts', 'src/web/main-gromzo-launch.ts'])
   })
 })
 

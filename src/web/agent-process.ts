@@ -41,7 +41,7 @@ import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
-import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
@@ -2292,7 +2292,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   // state dir for the reaper, the state fence or the token probes to act on.
   const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,
     readAgentGromzo(name)
-      ? { slug: name, sockUsable: mxdAgentSockUsable() }
+      ? { slug: name, sockUsable: mxdAgentSockUsable(), tokenFile: gromzoTokenFile(name) }
       : undefined)
   // GROMZOGATECONF1030 (c): the agent's own agent-config.json is no gate source any more (the agent can write it).
   if (agentConfigCarriesSenderRoleGate(name)) {

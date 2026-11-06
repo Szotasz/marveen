@@ -2,7 +2,7 @@
 // (channel-monitor respawns, the isolated main config). scripts/main-gromzo-launch.sh is the shell twin
 // (channels.sh, channel-watchdog.sh, stuck-modal-guard.sh); a test runs both on the same inputs.
 // The rules and why: see the header of the shell twin.
-import { GROMZO_PLUGIN_ID, MXD_AGENT_SOCK_DEFAULT, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { GROMZO_PLUGIN_ID, MXD_AGENT_SOCK_DEFAULT, gromzoTokenExport, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 
 export const MAIN_GROMZO_PLUGIN_ID = GROMZO_PLUGIN_ID
 
@@ -26,8 +26,9 @@ export function filterMainGromzoIds(mainAgentId: string | undefined | null, ids:
 }
 
 /** The launch-command exports when the (filtered) ids carry the gromzo plugin, else ''. Never a settings file. */
-export function mainGromzoEnv(mainAgentId: string | undefined | null, ids: string[]): string {
+export function mainGromzoEnv(mainAgentId: string | undefined | null, ids: string[], sockPath: string = MXD_AGENT_SOCK_DEFAULT): string {
   if (!ids.includes(MAIN_GROMZO_PLUGIN_ID)) return ''
   const slug = mainGromzoSlug(mainAgentId)
-  return slug === null ? '' : `export MXD_AGENT="${slug}" && export MXD_SCOPE="both" && `
+  // MXDAGENTSOCKID1106: the token path too, when mxd has a tokens dir (agent-extra-channels.ts gromzoTokenFile).
+  return slug === null ? '' : `export MXD_AGENT="${slug}" && export MXD_SCOPE="both" && ${gromzoTokenExport(gromzoTokenFile(slug, sockPath))}`
 }

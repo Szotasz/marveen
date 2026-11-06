@@ -62,15 +62,30 @@ main_gromzo_filter_ids() {
   printf '%s' "${out# }"
 }
 
+# main_gromzo_token_file <slug>: MXDAGENTSOCKID1106, the agent's token file <agent.sock's dir>/tokens/<slug>.token,
+# only when mxd has the tokens dir (an older mxd has none: then no path, or the plugin would wait for a file
+# that never comes). The twin of agent-extra-channels.ts gromzoTokenFile; nothing printed otherwise.
+main_gromzo_token_file() {
+  local sock dir
+  sock="$(main_gromzo_sock)"
+  dir="$(dirname "$sock")/tokens"
+  [ -d "$dir" ] || return 0
+  case "$dir" in *'"'*|*'$'*|*'`'*|*'\'*) return 0 ;; esac
+  printf '%s/%s.token' "$dir" "$1"
+}
+
 # main_gromzo_env <main_agent_id> [id ...]: the launch-command prefix when the (filtered) ids carry the
 # gromzo plugin, else nothing. Ends in "&& " like the other prefixes of the launch command.
+# MXDAGENTSOCKID1106: with the token path (MXD_AGENT_TOKEN_FILE) when mxd has one, so a protected agent binds.
 main_gromzo_env() {
-  local main="$1" i slug
+  local main="$1" i slug tf
   shift
   for i in "$@"; do
     if [ "$i" = "$MAIN_GROMZO_PLUGIN_ID" ]; then
       slug="$(main_gromzo_slug "$main")" || return 0
       printf 'export MXD_AGENT="%s" && export MXD_SCOPE="both" && ' "$slug"
+      tf="$(main_gromzo_token_file "$slug")"
+      [ -z "$tf" ] || printf 'export MXD_AGENT_TOKEN_FILE="%s" && ' "$tf"
       return 0
     fi
   done
