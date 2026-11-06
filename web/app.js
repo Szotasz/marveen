@@ -17881,10 +17881,13 @@ function openAddProviderModal(container, editProvider = null) {
     const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
     const authHeader = overlay.querySelector('#cpAuthHeader').value
     const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
-    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
-      alert('Töltsd ki az összes kötelező mezőt.')
-      return
-    }
+    // Point at the first empty required field, in the form's order, as the add-server form does.
+    const missing = !label ? ['#cpLabel', 'providers.form.label_required']
+      : !id ? ['#cpId', 'providers.form.id_required']
+      : !baseUrl ? ['#cpBaseUrl', 'providers.form.base_url_required']
+      : (authHeader !== 'none' && !vaultKey) ? ['#cpVaultKey', 'providers.form.vault_key_required']
+      : null
+    if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1])); return }
     try {
       const r = await fetch('/api/custom-providers', {
         method: 'POST',
@@ -17893,13 +17896,13 @@ function openAddProviderModal(container, editProvider = null) {
       })
       if (!r.ok) {
         const err = await r.json().catch(() => ({}))
-        alert(err.error || 'Hiba a mentéskor.')
+        showToast(err.error || t('providers.toast.save_error'))
         return
       }
       overlay.remove()
       renderProvidersContent(container)
       loadAvailableModels()
-    } catch { alert('Hiba a mentéskor.') }
+    } catch { showToast(t('providers.toast.save_error')) }
   })
 }
 
