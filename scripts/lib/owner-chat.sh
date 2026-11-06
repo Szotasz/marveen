@@ -165,8 +165,8 @@ owner_alert_chat_override() {
   node -e '
     const fs = require("fs")
     const FORMATS = {
-      telegram: /^-?[1-9][0-9]{0,19}$/,
-      slack: /^[CDGU][A-Z0-9]{6,}$/,
+      telegram: /^[1-9][0-9]{0,19}$/,
+      slack: /^[DU][A-Z0-9]{6,}$/,
       discord: /^[1-9][0-9]{14,24}$/,
       googlechat: /^spaces\/[A-Za-z0-9_-]+$/,
       teams: /^[A-Za-z0-9:@._-]{3,}$/,

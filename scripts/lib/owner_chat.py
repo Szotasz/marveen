@@ -140,8 +140,8 @@ def resolve_owner_chat_id(env, provider="telegram"):
 # when the caller's provider is the install's CHANNEL_PROVIDER. The patterns are src/alert-chat-format.ts's.
 OWNER_ALERT_CHAT_KEY = "OWNER_ALERT_CHAT_ID"
 _ALERT_CHAT_FORMATS = {
-    "telegram": re.compile(r"-?[1-9][0-9]{0,19}"),
-    "slack": re.compile(r"[CDGU][A-Z0-9]{6,}"),
+    "telegram": re.compile(r"[1-9][0-9]{0,19}"),
+    "slack": re.compile(r"[DU][A-Z0-9]{6,}"),
     "discord": re.compile(r"[1-9][0-9]{14,24}"),
     "googlechat": re.compile(r"spaces/[A-Za-z0-9_-]+"),
     "teams": re.compile(r"[A-Za-z0-9:@._-]{3,}"),

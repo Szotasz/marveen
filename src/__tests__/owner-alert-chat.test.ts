@@ -97,7 +97,8 @@ const cases: Case[] = [
   { name: 'a .env line never counts (overrides-only)', envChat: '0', access: TWO_DMS, envLine: ALERT, expected: null },
   { name: 'invalid shape: not used, the old rule answers', envChat: REAL, access: TWO_DMS, overrides: { OWNER_ALERT_CHAT_ID: 'abc' }, expected: REAL },
   { name: 'invalid shape and no old answer: none', envChat: '0', access: TWO_DMS, overrides: { OWNER_ALERT_CHAT_ID: 'D0123456789' }, expected: null },
-  { name: 'a Telegram group id is a valid target', envChat: '0', access: TWO_DMS, overrides: { OWNER_ALERT_CHAT_ID: '-1001234567890' }, expected: '-1001234567890' },
+  { name: 'a Telegram group id is refused (Samu 71847): the old rule answers', envChat: '0', access: { allowFrom: [REAL] }, overrides: { OWNER_ALERT_CHAT_ID: '-1001234567890' }, expected: REAL },
+  { name: 'a Slack channel id is refused (Samu 71847): the old rule answers', provider: 'slack', install: 'slack', envChat: '', access: { allowFrom: ['U0123456'] }, overrides: { OWNER_ALERT_CHAT_ID: 'C0123456789' }, expected: 'U0123456' },
   { name: 'a number in the JSON', envChat: '0', access: TWO_DMS, overrides: { OWNER_ALERT_CHAT_ID: Number(ALERT) }, expected: ALERT },
   { name: 'whitespace around the value', envChat: '0', access: TWO_DMS, overrides: { OWNER_ALERT_CHAT_ID: `  ${ALERT} ` }, expected: ALERT },
   { name: 'a malformed overrides file: unset', envChat: REAL, access: TWO_DMS, overrides: 'not json', expected: REAL },
@@ -158,9 +159,9 @@ describe('unset: byte-identical to the old resolvers', () => {
 
 describe('the chat id shapes, one table for the three ports', () => {
   const table: Array<[AlertChatProvider, string, boolean]> = [
-    ['telegram', REAL, true], ['telegram', '-1001234567890', true], ['telegram', '0123', false], ['telegram', 'abc', false],
+    ['telegram', REAL, true], ['telegram', '-1001234567890', false], ['telegram', '-1268077055', false], ['telegram', '0123', false], ['telegram', 'abc', false],
     ['telegram', '12 34', false], ['telegram', '123456789012345678901', false],
-    ['slack', 'D0123456789', true], ['slack', 'C0C71PY0S2H', true], ['slack', 'U01ABCDEF', true], ['slack', 'd0123456789', false],
+    ['slack', 'D0123456789', true], ['slack', 'C0C71PY0S2H', false], ['slack', 'G0123456789', false], ['slack', 'U01ABCDEF', true], ['slack', 'd0123456789', false],
     ['slack', '12345', false], ['slack', 'X0123456789', false],
     ['discord', '1234567890123456789', true], ['discord', '12345', false], ['discord', 'abc1234567890123', false],
     ['googlechat', 'spaces/AAAAbbbb_-1', true], ['googlechat', 'AAAA', false], ['googlechat', 'spaces/a b', false],
@@ -251,7 +252,8 @@ describe('the settings key', () => {
     expect(def.validate!('')).toBeNull()
     expect(def.validate!('0')).toBeNull()
     expect(def.validate!(provider === 'telegram' ? REAL : 'D0123456789')).toBeNull()
-    expect(def.validate!('not a chat')).toMatch(/Nem .*-chatazonosító/)
+    expect(def.validate!('not a chat')).toMatch(/Személyes chat-azonosító kell .*Csoport vagy csatorna nem lehet.* \/ A personal chat id is required .*A group or channel is not allowed/)
+    if (provider === 'telegram') expect(def.validate!('-1001234567890')).toMatch(/Személyes chat-azonosító kell \(telegram\)/)
   })
 })
 
