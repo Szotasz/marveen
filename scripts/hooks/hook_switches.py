@@ -69,6 +69,7 @@ DEFAULT_NON_DISABLEABLE = frozenset({
     "fleet-memory-gate",
     "self-pace-gate",
     "db-write-gate",                 # security tables, DB file, gate wiring (APPROVALDBGATE1030)
+    "mxd-path-gate",                 # mxd run dir, MXD env, gromzo entry points (MXDAGENTSOCKID1106)
     "staleness-guard",
     # reply enforcement and channel ownership
     "telegram-reply-guard",
