@@ -1030,14 +1030,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# (g) GROMZO -- the owner-DM key in the envelope, the reply's key in its result
+# (u) GROMZO -- the owner-DM key in the envelope, the reply's key in its result
 # (GROMZOLEDGERIN1102 v1). The envelope is the MEASURED form: Claude Code writes
 # source="plugin:gromzo-channel:gromzo" and appends the plugin's meta keys.
 # ---------------------------------------------------------------------------
 echo ""
-echo "(g) Gromzo owner-DM key"
+echo "(u) Gromzo owner-DM key"
 
-DB_G="$TMPDIR_BASE/g.db"
+DB_G="$(case_db g)"
 GZ_CHAT="gz65f616902edb4df70eba"
 python3 - "$GZ_CHAT" <<'PYEOF' | run_hook ledger-capture.py "$DB_G"
 import json, sys
@@ -1079,7 +1079,7 @@ assert_eq "gromzo outbound: filed under the result's key, not the input's or the
 # The other two result shapes (Dani 67668: a JSON string, and a {content:[...]}
 # dict) name the same key: no shape may silently fall back to the Slack chat.
 for SHAPE in json-string content-dict; do
-    DB_GS="$TMPDIR_BASE/g-$SHAPE.db"
+    DB_GS="$(case_db "g-$SHAPE")"
     python3 - "$GZ_CHAT" "$SHAPE" <<'PYEOF' | run_hook ledger-outbound.py "$DB_GS"
 import json, sys
 blocks = [{"type": "text", "text": "sent (1 part)\nchat_id: " + sys.argv[1]}]
@@ -1092,7 +1092,7 @@ PYEOF
 done
 
 # No key line (after a plugin restart): today's fallback, the owner chat.
-DB_G2="$TMPDIR_BASE/g2.db"
+DB_G2="$(case_db g2)"
 python3 - <<'PYEOF' | run_hook ledger-outbound.py "$DB_G2"
 import json
 print(json.dumps({"tool_name": "mcp__plugin_gromzo-channel_gromzo__reply",
@@ -1103,7 +1103,7 @@ assert_eq "gromzo outbound without a key line: falls back to the owner chat" "10
     "$(db_scalar "$DB_G2" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
 
 # Only the Gromzo tool reads the result: another plugin's result line names nothing.
-DB_G3="$TMPDIR_BASE/g3.db"
+DB_G3="$(case_db g3)"
 python3 - <<'PYEOF' | run_hook ledger-outbound.py "$DB_G3"
 import json
 print(json.dumps({"tool_name": "mcp__plugin_slack-channel_slack__reply",
