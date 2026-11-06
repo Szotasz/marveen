@@ -3588,6 +3588,8 @@ function resetWizard() {
   agentName.value = ''
   agentDesc.value = ''
   agentModel.value = 'inherit'
+  document.getElementById('agentModelCustomModelId').value = ''
+  updateCustomModelIdRow(agentModel)
   loadAvailableModels()
   loadOllamaModels()
   selectedAvatar = null
@@ -3622,12 +3624,21 @@ function updateWizardUI() {
   document.getElementById('wizardStep3').hidden = wizardStep !== 3
 }
 
+// The model ID field shows with a custom provider, as in the agent editor.
+agentModel.addEventListener('change', () => updateCustomModelIdRow(agentModel))
+
 // Step 1 -> Step 2 (generate)
 document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   const name = agentName.value.trim()
   const desc = agentDesc.value.trim()
+  // A custom provider goes in its own field with the model id typed beside it, as the agent editor saves it.
+  const modelVal = agentModel.value
+  const customProvider = modelVal.startsWith('custom:') ? modelVal.slice('custom:'.length) : null
+  const customModelInput = document.getElementById('agentModelCustomModelId')
+  const customModelId = customProvider ? customModelInput.value.trim() : ''
   if (!name) { agentName.focus(); return }
   if (!desc) { agentDesc.focus(); return }
+  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.wizard.custom_model_required')); return }
 
   wizardStep = 2
   updateWizardUI()
@@ -3643,7 +3654,8 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       body: JSON.stringify({
         name,
         description: desc,
-        model: agentModel.value,
+        model: customProvider ? customModelId : modelVal,
+        customProvider,
         profile: document.getElementById('agentProfile').value,
       }),
     })

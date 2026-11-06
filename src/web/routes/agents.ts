@@ -25,7 +25,7 @@ import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } fr
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
-import { listCustomProviders } from '../custom-providers.js'
+import { listCustomProviders, loadCustomProvider } from '../custom-providers.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -1239,6 +1239,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
     const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
+    // A custom provider is stored apart from the model id, as the editor's PUT does. The wizard used to send its
+    // picker value ("custom:<id>") as the model, so the agent ran that string as a model and the provider was on no
+    // record: its delete named no agent, and the agent could not start.
+    const customProvider = typeof data.customProvider === 'string' && data.customProvider.trim() ? data.customProvider.trim() : null
     const rawName = typeof data.name === 'string' ? data.name.trim() : ''
     const name = sanitizeAgentName(rawName)
     // DEFAULTCLIGUARD927: no model in the request = the install default,
@@ -1253,6 +1257,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
     // malformed id left a half-created agent dir behind.
     if (!isValidModelId(model)) { json(res, { error: new InvalidModelIdError(model).message }, 400); return true }
+    // Checked before anything is created, like the model: an agent on a missing provider would not start.
+    if (customProvider && !loadCustomProvider(customProvider)) { json(res, { error: `Unknown custom provider: ${customProvider}` }, 400); return true }
     // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
     const cliGate = await refuseIfCliCannotLaunch(model)
@@ -1270,6 +1276,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     scaffoldAgentDir(name)
     writeAgentModel(name, model)
+    if (customProvider) writeAgentCustomProvider(name, customProvider)
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
     // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).

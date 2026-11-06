@@ -42,6 +42,8 @@ A provider-lista a `store/custom-providers.json` fájlban tárolódik.
 3. Az **Egyéni modell ID** mezőbe írd be a modell azonosítóját (pl. `deepseek-chat`). Ez a provider végpontjára kerül küldésre.
 4. Mentés után az ágens következő indításakor az egyéni végpontot használja.
 
+Az Új ügynök varázslóban ugyanígy választható egyéni provider: ott is a Modell legördülőből, a mellette megjelenő mezőbe írt modell ID-vel. A varázsló a providert és a modell ID-t külön menti, ahogy a szerkesztő.
+
 ### store/custom-providers.json
 
 ```json

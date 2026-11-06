@@ -452,6 +452,7 @@ window._i18n.hu = {
   'agents.wizard.generating_status': 'CLAUDE.md generálás...',
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
+  'agents.wizard.custom_model_required': 'Egyéni szolgáltatóhoz add meg a modell azonosítóját is.',
   'agents.wizard.gen_hint':      'Ez néhány másodpercig tarthat',
   // Shown on step 3 when the backend answered personalityPending:true. State, not
   // error: the agent exists and works, only its personality text is a placeholder.
