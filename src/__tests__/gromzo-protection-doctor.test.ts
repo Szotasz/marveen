@@ -46,7 +46,7 @@ describe('the panel: badges and the fail-closed banner', () => {
     expect(app).toContain("ratchetEl.textContent = body.ratchetUnreadable === true ? t('gromzo.agents.prot.ratchet_unreadable') : ''")
     // Shown exactly when mxd says so, hidden otherwise.
     expect(app).toContain('ratchetEl.hidden = body.ratchetUnreadable !== true')
-    expect(readFileSync(join(ROOT, 'web', 'index.html'), 'utf-8')).toContain('id="gromzoAgentsRatchet" role="alert" hidden')
+    expect(readFileSync(join(ROOT, 'web', 'index.html'), 'utf-8')).toContain('<p class="mobile-login-warn gromzo-agent-state is-error" id="gromzoAgentsRatchet" role="alert" hidden></p>\n          <ul class="gromzo-agent-list" id="gromzoAgentList">')
   })
   it('every protection key exists in HU and EN, with no dash characters', () => {
     for (const lang of ['hu', 'en']) {
