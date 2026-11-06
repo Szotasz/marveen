@@ -518,6 +518,8 @@ export function gitGrepReadOnly(words) {
 // rg is a reader, except --pre <program> / --pre=<program> (rg runs it on every file), and any environment prefix
 // (RIPGREP_CONFIG_PATH names a config file that may hold --pre). --pre-glob only narrows --pre; --pretty is a read.
 const RG_CONFIG_ENV_RX = /RIPGREP_CONFIG_PATH/
+// a bare HOME word: not $HOME / ${HOME} (a read), not part of a longer name (HOMEBREW_X, MY_HOME)
+const HOME_TOUCH_RX = /(?<![$\w{])HOME(?!\w)/
 export function rgReadOnly(words, envPrefix = false) {
   if (envPrefix) return false
   return !words.some((w) => w === '--pre' || w.startsWith('--pre='))
@@ -699,6 +701,8 @@ export function cwdAfterSegment(seg, ctx) {
   if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
   const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
   if (name === 'popd' || !arg || arg.dollar || /[$`*?[]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
+  // a ~ under a HOME the command set itself is not the real home (EGRESSHOME1106)
+  if (ctx.homeTouched && arg.value.startsWith('~')) { ctx.cwd = null; return }
   const target = expandHome(arg.value)
   ctx.cwd = target.startsWith('/') ? resolve(target) : (ctx.cwd ? resolve(ctx.cwd, target) : null)
 }
@@ -721,8 +725,13 @@ function substituteAssignments(text, assigns) {
 
 // Does this text spell a protected name? See "WHAT MENTIONS MEANS" above.
 export function protectedMention(text, ctx) {
-  // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve
-  const raw = String(text ?? '').replace(/\$(?=['"])/g, '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve -- unless the command gives HOME
+  // a value of its own (EGRESSHOME1106, Dani 71590): then $HOME, ${HOME} and a leading ~ stay unresolved (any text),
+  // since `HOME=.; cp -R x/. $HOME` (or `~`) writes into the cwd, not the real home.
+  const unquoted = String(text ?? '').replace(/\$(?=['"])/g, '')
+  const raw = ctx?.homeTouched
+    ? unquoted.replace(/(^|[\s=:'"])~(?=\/|$|[\s;&|'"])/g, '$1$HOME')
+    : unquoted.replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
   // a variable that is definitely a literal here (definiteAssignments, EGRESSFP1106 (b)) has no unresolved reading
   const src = substituteDefinite(raw, ctx?.definite)
   for (const t of substituteAssignments(src, ctx?.assigns)) {
@@ -3771,6 +3780,9 @@ function decide(toolName, toolInput, opts = {}) {
     const definite = definiteAssignments(protSplit)
     // the name spelled anywhere, also split by quotes or a backslash (RIPGREP_CONFIG_PAT""H= is the same variable)
     protectedCtx.rgConfigNamed = RG_CONFIG_ENV_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
+    // HOME as a bare word anywhere (HOME=, export/unset/read HOME, for HOME in ...), also split by quotes: the command
+    // may change it, so neither $HOME nor ~ is the real home in it (EGRESSHOME1106)
+    protectedCtx.homeTouched = HOME_TOUCH_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
