@@ -979,45 +979,132 @@ export function findOrphanChannelClaudes(
   const byPid = new Map<number, ProcRow>()
   for (const p of procs) byPid.set(p.pid, p)
 
-  const attachedToLivePane = (pid: number): boolean => {
-    let cur = pid
-    const seen = new Set<number>()
-    for (let hops = 0; hops < 8; hops++) {
-      if (livePanePids.has(cur)) return true
-      if (seen.has(cur)) break
-      seen.add(cur)
-      const next = byPid.get(cur)?.ppid
-      if (next === undefined || next === cur || next <= 1) break
-      cur = next
-    }
-    return false
-  }
-
-  // Walks the whole parent chain (to pid 1), not a fixed number of hops: a
-  // sub-agent's claude sits under a shell under its server.
-  const underForeignTmuxServer = (pid: number): boolean => {
-    let cur = byPid.get(pid)?.ppid
-    const seen = new Set<number>([pid])
-    while (cur !== undefined && cur > 1 && !seen.has(cur)) {
-      seen.add(cur)
-      const row = byPid.get(cur)
-      if (!row) return false
-      if (argv0Base(row.command) === 'tmux' && row.pid !== ownTmuxServerPid) return true
-      cur = row.ppid
-    }
-    return false
-  }
-
   const orphans: number[] = []
   for (const p of procs) {
     if (!p.command.includes('--channels')) continue
     if (!isClaudeBinary(p.command)) continue
     if (channelNeedle && !p.command.includes(channelNeedle)) continue
-    if (attachedToLivePane(p.pid)) continue
-    if (ownTmuxServerPid !== undefined && underForeignTmuxServer(p.pid)) continue
+    if (attachedToLivePane(p.pid, byPid, livePanePids)) continue
+    if (ownTmuxServerPid !== undefined && underForeignTmuxServer(p.pid, byPid, ownTmuxServerPid)) continue
     orphans.push(p.pid)
   }
   return orphans
+}
+
+/** `pid` is a live pane, or one of its ancestors (at most 8 hops) is. */
+function attachedToLivePane(pid: number, byPid: Map<number, ProcRow>, livePanePids: Set<number>): boolean {
+  let cur = pid
+  const seen = new Set<number>()
+  for (let hops = 0; hops < 8; hops++) {
+    if (livePanePids.has(cur)) return true
+    if (seen.has(cur)) break
+    seen.add(cur)
+    const next = byPid.get(cur)?.ppid
+    if (next === undefined || next === cur || next <= 1) break
+    cur = next
+  }
+  return false
+}
+
+// Walks the whole parent chain (to pid 1), not a fixed number of hops: a
+// sub-agent's claude sits under a shell under its server. `null` = our server is
+// unknown, so every tmux ancestor counts as foreign.
+function underForeignTmuxServer(pid: number, byPid: Map<number, ProcRow>, ownTmuxServerPid: number | null): boolean {
+  let cur = byPid.get(pid)?.ppid
+  const seen = new Set<number>([pid])
+  while (cur !== undefined && cur > 1 && !seen.has(cur)) {
+    seen.add(cur)
+    const row = byPid.get(cur)
+    if (!row) return false
+    if (argv0Base(row.command) === 'tmux' && row.pid !== ownTmuxServerPid) return true
+    cur = row.ppid
+  }
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// Gromzo-channel orphans (MXDAGENTSOCKID1106 (b), Samu 71288).
+//
+// The gromzo-channel plugin is a node MCP server, a direct child of its claude. It does NOT exit when its stdin
+// closes (measured 2026-11-06 on the installed plugin: alive 8 s after stdin end, still reconnecting to mxd), and
+// none of the reapers above sees it: reapChannelOrphans matches *_STATE_DIR / bot.pid, and
+// reapDetachedChannelClaudes kills only the bun children of a detached claude (killBunChildren). So the plugin of
+// a killed detached claude lives on under pid 1, keeps its agent.sock connection and keeps popping the agent's
+// messages from mxd, with nobody to hand them to.
+//
+// A candidate is a JS-runtime row of the env scan whose env carries CLAUDE_PLUGIN_ROOT=<...>/gromzo-channel AND
+// MXD_AGENT=<slug>. MXD_AGENT alone is not enough: it is exported into the launch command, so every child of the
+// agent's claude inherits it (measured: claude, node, bun, even an ffmpeg). An orphan is a candidate that no live
+// pane of OUR tmux server holds and that does not sit under another install's tmux server. The live plugin of
+// every running agent hangs under its pane (node -> claude -> pane), so it is spared.
+const GROMZO_ROOT_RE = /(?:^|\s)CLAUDE_PLUGIN_ROOT=\S*\/gromzo-channel(?:\/|\s|$)/
+const MXD_AGENT_RE = /(?:^|\s)MXD_AGENT=([a-z0-9-]{1,32})(?:\s|$)/
+
+/** Pure: the gromzo-channel plugin rows of an env scan, with the agent each serves. Exported for testability. */
+export function parseGromzoPluginRows(psEwwOutput: string): { pid: number; agent: string }[] {
+  const out: { pid: number; agent: string }[] = []
+  for (const line of psEwwOutput.split('\n')) {
+    if (!GROMZO_ROOT_RE.test(line)) continue
+    const agent = line.match(MXD_AGENT_RE)?.[1]
+    const m = line.match(/^\s*(\d+)\s/)
+    if (!agent || !m) continue
+    const pid = parseInt(m[1]!, 10)
+    if (pid > 1) out.push({ pid, agent })
+  }
+  return out
+}
+
+/** Pure: the gromzo plugin pids that are orphans (see the block comment). Exported for testability. */
+export function findGromzoOrphans(
+  rows: { pid: number; agent: string }[],
+  procs: ProcRow[],
+  livePanePids: Set<number>,
+  ownTmuxServerPid: number | null,
+): { pid: number; agent: string }[] {
+  if (livePanePids.size === 0) return []
+  const byPid = new Map<number, ProcRow>()
+  for (const p of procs) byPid.set(p.pid, p)
+  return rows.filter(({ pid }) => {
+    const row = byPid.get(pid)
+    if (!row) return false // gone since the scan
+    if (isClaudeBinary(row.command)) return false
+    if (attachedToLivePane(pid, byPid, livePanePids)) return false
+    if (underForeignTmuxServer(pid, byPid, ownTmuxServerPid)) return false
+    return true
+  })
+}
+
+/**
+ * Reap gromzo-channel plugins that no live agent holds any more (see the block comment above). Run it AFTER
+ * reapDetachedChannelClaudes: the plugin of a claude that reaper just killed is an orphan only from then on.
+ * Fail-safe: no live pane, or a failed scan, reaps nothing. Signals only the dashboard's own uid. Returns the
+ * pids actually killed.
+ */
+export function reapGromzoOrphans(opts: { tmuxPath?: string } & ReapSeams = {}): number[] {
+  const tmuxPath = opts.tmuxPath ?? 'tmux'
+  const live = opts.panePids ? opts.panePids() : livePanePids(tmuxPath)
+  if (live.size === 0) {
+    logger.warn('channel-poller-reap: no live panes resolved, skipping gromzo-orphan reap (fail-safe)')
+    return []
+  }
+  const psEww = opts.psEww ? opts.psEww() : envScanOrEmpty({ reaper: 'gromzo-orphan' })
+  if (psEww === null) return []
+  const rows = parseGromzoPluginRows(psEww)
+  if (rows.length === 0) return []
+  const procs = opts.procs ? opts.procs() : snapshotProcs()
+  const server = opts.tmuxServerPid ? opts.tmuxServerPid() : tmuxServerPid(tmuxPath)
+  const orphans = findGromzoOrphans(rows, procs, live, server)
+  if (orphans.length === 0) return []
+  const where = { reaper: 'gromzo-orphan', agents: [...new Set(orphans.map((o) => o.agent))] }
+  const owners = splitByOwner(orphans.map((o) => o.pid), opts.ownUid === undefined ? dashboardUid() : opts.ownUid, opts.ownerOf)
+  logOwnerSkips(where, owners)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  if (killOutcome.killed.length > 0) {
+    logger.info({ ...where, reaped: killOutcome.killed, outcome: outcomeByKind(killOutcome) },
+      'channel-poller-reap: orphaned gromzo-channel plugin(s) killed (no live agent holds them)')
+  }
+  logNotKilled(where, killOutcome)
+  return killOutcome.killed
 }
 
 function snapshotProcs(): ProcRow[] {
@@ -1294,4 +1381,21 @@ export function reapForeignMainPollers(opts: {
   }
   logNotKilled(where, killOutcome)
   return killOutcome.killed
+}
+
+/**
+ * reapGromzoOrphans a few seconds AFTER a respawn-pane -k: the old claude's gromzo plugin becomes an orphan only
+ * once that claude is gone, which is after the respawn, so the pre-respawn reaps cannot see it. The new plugin
+ * hangs under the live pane and is spared. Fire and forget; never throws.
+ */
+export function scheduleGromzoOrphanReap(where: string, tmuxPath: string, delayMs = 3000): void {
+  const t = setTimeout(() => {
+    try {
+      const killed = reapGromzoOrphans({ tmuxPath })
+      if (killed.length > 0) logger.warn({ where, killed }, 'channel-poller-reap: post-respawn gromzo-orphan reap')
+    } catch (err) {
+      logger.warn({ ...execFailure(err), where }, 'channel-poller-reap: post-respawn gromzo-orphan reap failed')
+    }
+  }, delayMs)
+  t.unref?.()
 }

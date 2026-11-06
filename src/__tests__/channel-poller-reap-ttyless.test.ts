@@ -93,7 +93,7 @@ describe('every env-scan call site uses the tty-inclusive form', () => {
     // `ax`: every process, the tty-less ones included (PSEWWMACOSBLIND1007); then the environment of the runtime ones only.
     expect(code).toContain("deps.ps(['-axo', 'pid=,comm='])")
     expect(code).toContain("deps.ps(['eww', '-o', 'pid,command', '-p', pids.join(',')])")
-    expect(lines.filter((l) => l.includes('envScanOrEmpty(')).length).toBe(3) // its definition, psEwwSnapshot, the foreign-main reap
+    expect(lines.filter((l) => l.includes('envScanOrEmpty(')).length).toBe(4) // its definition, psEwwSnapshot, the foreign-main reap, the gromzo-orphan reap (MXDAGENTSOCKID1106)
   })
 
   it('channels.sh second reap pass (CLAUDE_PLUGIN_ROOT) scans with ps axeww', () => {

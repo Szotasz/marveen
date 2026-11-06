@@ -45,7 +45,7 @@ import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannels
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
-import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers } from './channel-poller-reap.js'
+import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers, reapGromzoOrphans, scheduleGromzoOrphanReap } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
@@ -1297,6 +1297,8 @@ export function respawnMainSessionFresh(): void {
     // that is a success for our purposes (something IS coming up), not a failure to retry.
     if (mainChannelsSessionExists()) {
       execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
+      // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
+      scheduleGromzoOrphanReap('main-respawn', tmuxBin())
     } else {
       // A fresh session starts its own claude: the respawn-specific follow-ups below
       // (identity, plugin unlock) are channels.sh's job on this path, not ours.
@@ -1394,6 +1396,8 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
     })
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
+    // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
+    scheduleGromzoOrphanReap('main-respawn', tmuxBin())
 
     // --continue replays the last conversation. When the prior session is large
     // (>200k tokens) Claude Code opens with a "Resume from summary" modal that
@@ -1700,6 +1704,8 @@ function respawnMarveenSessionFresh(): boolean {
       config: resolveMainConfigDecision(),
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
+    // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
+    scheduleGromzoOrphanReap('main-respawn', tmuxBin())
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')
     // Re-establish /rename on the fresh process (see note in resumeMarveenSession).
     // scheduleIdentitySetup only schedules delayed timers -> fire-and-forget.
@@ -3257,6 +3263,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         }
       } catch (err) {
         logger.warn({ err }, 'channel-monitor: periodic detached-claude reap failed')
+      }
+      // MXDAGENTSOCKID1106 (b): after the detached claudes are gone, their gromzo plugins are orphans; sweep them.
+      try {
+        const killed = reapGromzoOrphans({ tmuxPath: tmuxBin() })
+        if (killed.length > 0) logger.warn({ killed }, 'channel-monitor: periodic reap removed orphaned gromzo-channel plugin(s)')
+      } catch (err) {
+        logger.warn({ err }, 'channel-monitor: periodic gromzo-orphan reap failed')
       }
       // Also sweep foreign MAIN-token pollers (a thief that never fully tripped
       // the down cascade -- flapping getUpdates when a local-agent-mode subagent
