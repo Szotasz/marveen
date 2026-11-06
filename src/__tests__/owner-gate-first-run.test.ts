@@ -87,7 +87,8 @@ vi.mock('../settings-store.js', async (orig) => ({
 }))
 
 const { initDatabase, createDashboardUser, getDashboardUser, listDashboardUsers, getApproval } = await import('../db.js')
-const { _clearSessionCacheForTest } = await import('../web/auth-sessions.js')
+const { _clearSessionCacheForTest, createSession } = await import('../web/auth-sessions.js')
+const { SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { createDeviceKey, revokeDeviceKey, listDeviceKeys, deviceKeyEverIssued, _clearDeviceKeyCacheForTest } = await import('../web/auth-device-keys.js')
 const { tryHandleAuth, mayActAsOwner, mayActAsOwnerOrFirstRun, FIRST_RUN_PATHS } = await import('../web/routes/auth.js')
 const { tryHandleSecurity } = await import('../web/routes/security.js')
@@ -330,8 +331,8 @@ describe("'first-login': creating the FIRST dashboard login", () => {
     notices.length = 0
     expect((await addUser(FULL_KEY, 'owner')).status).toBe(201)
     expect(notices).toHaveLength(1)
-    expect(notices[0]).toContain('owner')
-    expect(notices[0]).toContain('Bridge')
+    // The login and the device are named inside the sentence (the remove command alone also contains 'owner').
+    expect(notices[0]).toContain('Létrejött az első dashboard-belépés (owner) egy eszközkulccsal (eszköz: Bridge).')
     expect(notices[0]).not.toContain('super-secret-pw')
     expect(notices[0]).toContain('npm run dashboard-user -- remove owner')
     expect(notices[0]).toContain('npm run dashboard-user -- security:reset')
@@ -340,6 +341,15 @@ describe("'first-login': creating the FIRST dashboard login", () => {
     notices.length = 0
     expect((await addUser(TOKEN, 'owner')).status).toBe(201)
     expect((await addUser(SESSION, 'second')).status).toBe(201)
+    expect(notices).toHaveLength(0)
+  })
+  it('a FULL key WITH the owner cookie creates a SECOND login: no first-login notice (Dani 71183)', async () => {
+    notices.length = 0
+    const owner = createDashboardUser('owner', 'x'.repeat(60))
+    const cookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: owner.id, username: 'owner' })}`
+    const r = await hit(tryHandleAuth, 'POST', '/api/auth/users', FULL_KEY, { username: 'second', password: 'super-secret-pw' }, { cookie })
+    expect(r.status).toBe(201)
+    expect(getDashboardUser('second')).toBeDefined()
     expect(notices).toHaveLength(0)
   })
   it('a refused attempt sends no notice (an operator key, a second key-made login)', async () => {
