@@ -42,6 +42,7 @@ import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { filterMainGromzoIds } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
@@ -610,10 +611,15 @@ export function mainAgentConfigDirIfSeparate(): string | null {
 // then `claude plugin install`) both looked correct and were both erased
 // seconds later by the next restart. Keeping the extras enabled here is the
 // only place that survives, because this function is what does the erasing.
+//
+// GROMZOMAINAGENT1106: through the same gromzo filter as every main launcher (main-gromzo-launch.ts), so the
+// isolated main config does not enable a gromzo plugin the launch left out (no agent.sock, or a bad slug):
+// enabled there, it would still start as an MCP server, without MXD_AGENT, and exit.
 export function readExtraChannelPluginIds(): string[] {
   try {
-    const raw = readEnvFile(['CHANNEL_PLUGINS_EXTRA'])['CHANNEL_PLUGINS_EXTRA'] ?? ''
-    return raw.split(/\s+/).map(s => s.trim()).filter(Boolean)
+    const env = readEnvFile(['CHANNEL_PLUGINS_EXTRA', 'MAIN_AGENT_ID'])
+    const raw = env['CHANNEL_PLUGINS_EXTRA'] ?? ''
+    return filterMainGromzoIds(env['MAIN_AGENT_ID'] ?? '', raw.split(/\s+/).map(s => s.trim()).filter(Boolean))
   } catch {
     return []
   }

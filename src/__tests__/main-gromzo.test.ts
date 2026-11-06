@@ -323,3 +323,13 @@ describe('the doctor (verify-channels-health.sh (d))', () => {
     expect(assign).toBeLessThan(compare)
   })
 })
+
+describe('the isolated main config provisioner (agent-process.ts)', () => {
+  it('enables only the extras the launchers load: the same gromzo filter', () => {
+    const src = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+    const fn = src.slice(src.indexOf('export function readExtraChannelPluginIds(): string[] {'))
+    const body = fn.slice(0, fn.indexOf('\n}\n'))
+    expect(body).toContain("return filterMainGromzoIds(env['MAIN_AGENT_ID'] ?? '', ")
+    expect(src).toMatch(/provisionIsolatedConfigDir\(\s*mainAgentSharedConfigDir\(\),[\s\S]{0,200}readExtraChannelPluginIds\(\),/)
+  })
+})
