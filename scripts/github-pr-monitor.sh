@@ -42,7 +42,9 @@ if [ -z "$NODE_BIN" ]; then
   done
 fi
 if [ -n "$NODE_BIN" ]; then
-  GH_TOKEN="$(printf 'GH_TOKEN=github-fleet-token\n' | "$NODE_BIN" "$INSTALL_DIR/scripts/vault-resolve.mjs" 2>/dev/null | cut -d= -f2- || true)"
+  # VAULTRESOLVECASE1105: `--value`, no `| cut` pipe: a missing or empty secret is a non-zero exit, and the file
+  # fallback below takes over the same way as before.
+  GH_TOKEN="$("$NODE_BIN" "$INSTALL_DIR/scripts/vault-resolve.mjs" --value github-fleet-token 2>/dev/null)" || GH_TOKEN=""
 fi
 # Legacy fallback: the plaintext file, if the vault could not resolve (e.g. dist
 # not built or node missing). Safe to keep even after the loose file is removed.

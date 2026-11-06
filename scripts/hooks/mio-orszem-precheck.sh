@@ -68,7 +68,10 @@ PURCHASE_AT="$(echo "$THRESHOLDS" | sed -n 4p)"
 
 # The token goes into the environment only -- never stdout (the sentinel's own
 # 2026-09-14 lesson, inherited here).
-SUPABASE_ACCESS_TOKEN="$(echo 'X=MARVEEN-CONNECTORS-PAT' | "$NODE" "$VAULT_RESOLVE" | cut -d= -f2-)" || fail_open "vault resolve failed"
+# VAULTRESOLVECASE1105: `--value`, not the `| cut` pipe. The pipe reported cut's exit code, so a missing label came
+# back as an empty string with exit 0 and this `||` never fired; now the resolver's own code reaches it
+# (3 missing, 4 refused, 6 empty value).
+SUPABASE_ACCESS_TOKEN="$("$NODE" "$VAULT_RESOLVE" --value MARVEEN-CONNECTORS-PAT)" || fail_open "vault resolve failed (exit $?)"
 [ -n "$SUPABASE_ACCESS_TOKEN" ] || fail_open "vault returned an empty PAT"
 export SUPABASE_ACCESS_TOKEN
 
