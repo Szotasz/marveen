@@ -114,9 +114,11 @@ describe('the embedded helpers, run', () => {
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
   const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'macroot-')); dirs.push(d); return d }
 
-  const HAS = heredoc("  /usr/bin/python3 -I -S - \"$@\" 2>/dev/null <<'MSH_PY'\n", 'MSH_PY')
+  // read lazily: a missing helper fails its own test, not the whole file's collection
   const has = (file: string, ...want: string[]): number =>
-    spawnSync('python3', ['-I', '-S', '-', file, ...want], { input: HAS }).status ?? -1
+    spawnSync('python3', ['-I', '-S', '-', file, ...want], {
+      input: heredoc("  /usr/bin/python3 -I -S - \"$@\" 2>/dev/null <<'MSH_PY'\n", 'MSH_PY'),
+    }).status ?? -1
 
   it('managed_has: 0 only when every wanted entry is there (read as the user, nothing written)', () => {
     const d = tmp()
