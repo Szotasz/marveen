@@ -460,6 +460,9 @@ function readOnlyMentionAllowed(seg, mentions) {
   // git (GIT_PAGER, GIT_CONFIG_PARAMETERS, ...) can make it run a program, so then it is not a read.
   const gitRead = cmd === 'git' && i === 0 && gitGrepReadOnly(words.slice(i + 1))
   if (!ALLOWLIST_READERS.has(cmd) && !gitRead) return false
+  // rg runs a program with --pre (EGRESSFP1106, Samu 71567), and a RIPGREP_CONFIG_PATH prefix can bring --pre in from
+  // a file: then it is not a read.
+  if (cmd === 'rg' && !rgReadOnly(words.slice(i + 1), i > 0)) return false
   // A command substitution inside the read runs a command of its own: each piece after a `$(` or a backtick (to its
   // `)`, the naive segments may have cut it) is measured with this same rule (Dani 57649: `echo $(cp /tmp/a
   // <allowlist>)` passed as a read).
@@ -501,9 +504,20 @@ export function gitGrepReadOnly(words) {
   if (words[k] !== 'grep') return false
   for (const w of words.slice(k + 1)) {
     if (/^-[^-]/.test(w) && w.includes('O')) return false
-    if (/^--o/.test(w) && 'open-files-in-pager'.startsWith(w.slice(2).split('=')[0])) return false
+    const long = w.startsWith('--') ? w.slice(2).split('=')[0] : null
+    if (long !== null && /^o/.test(long) && 'open-files-in-pager'.startsWith(long)) return false
+    // --textconv runs the textconv program the config names, with the file as its argument (Dani 71554, git 2.50.1).
+    // Its abbreviations count from --textc (--text alone is -a, a read).
+    if (long !== null && long.length >= 5 && /^textc/.test(long) && 'textconv'.startsWith(long)) return false
   }
   return true
+}
+
+// rg is a reader, except --pre <program> / --pre=<program> (rg runs it on every file), and any environment prefix
+// (RIPGREP_CONFIG_PATH names a config file that may hold --pre). --pre-glob only narrows --pre; --pretty is a read.
+export function rgReadOnly(words, envPrefix = false) {
+  if (envPrefix) return false
+  return !words.some((w) => w === '--pre' || w.startsWith('--pre='))
 }
 
 // EGRESSFP1106 (a): the segments the protected-store and allowlist rules judge. A separator inside a quoted string
@@ -551,11 +565,20 @@ function protectedSplit(command) {
 //     export, local, declare, typeset, readonly, let, `printf -v`;
 //   - the name is assigned exactly ONCE in the whole command (NAME= or NAME+=, quoted text excluded), in a segment
 //     that is only literal NAME=value words, and the use comes after it;
+//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES, any BASH*/ZSH*: Dani 71554);
 //   - every separator from that assignment to the use is && or ; (or a newline);
 //   - from the last ; before the assignment up to it there is no || (`a || F=x && use $F` can run use without F);
 //   - the separator right before the assignment is not a pipe or & (that would run it in a subshell).
 // Returns, per segment, a Map name -> literal value.
 const COMPOUND_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select', 'function', 'coproc', '{', '}', '(', ')', '((', '[[' ])
+// Names the SHELL itself sets or rewrites: an assignment to one is no definite literal. `PWD=/tmp/q; cd .; cp -R x/.
+// $PWD` copies into the real cwd (cd resets PWD; measured in bash and zsh, Dani 71554), `cd /` resets OLDPWD, and $_,
+// RANDOM, SECONDS, LINENO ... change on their own. zsh's lower-case twins (dirstack, cdpath, ...) are listed too; any
+// BASH* / ZSH* name is excluded by prefix.
+const SHELL_MANAGED_NAMES = new Set(['PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH', 'cdpath', 'IFS', 'RANDOM', 'SRANDOM',
+  'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID', 'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG',
+  'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path', 'argv', 'status', 'psvar',
+  'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
 const VAR_SETTERS = new Set(['source', '.', 'eval', 'read', 'mapfile', 'readarray', 'getopts', 'unset', 'export', 'local', 'declare', 'typeset', 'readonly', 'let'])
 export function definiteAssignments(split) {
   const none = split.segs.map(() => new Map())
@@ -588,7 +611,7 @@ export function definiteAssignments(split) {
       if (/[$`\u0000]/.test(v)) return
       pairs.push([m[1], v])
     }
-    for (const [name, value] of pairs) if (counts.get(name) === 1) defs.push({ at, name, value })
+    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !/^(?:BASH|ZSH)_?/.test(name)) defs.push({ at, name, value })
   })
   const out = split.segs.map(() => new Map())
   for (const d of defs) {

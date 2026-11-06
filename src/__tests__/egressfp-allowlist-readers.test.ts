@@ -8,7 +8,7 @@
 // Every relaxation sits next to the real writes that must stay denied.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, protectedSegments, splitSegments, gitGrepReadOnly } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision, protectedSegments, splitSegments, gitGrepReadOnly, rgReadOnly } from '../../scripts/self-pace-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -154,5 +154,41 @@ describe('(b) a definitely literal variable has no unresolved reading', () => {
     deniedAllowlist(`F=/tmp/x; printf -v F %s y; ${use}`)
     deniedAllowlist(`F=/tmp/x; echo $(true); ${use}`)
     deniedAllowlist(`${use}; F=/tmp/x`)
+  })
+})
+
+describe('Dani 71554 / Samu 71567: programs a reader runs, and names the shell rewrites', () => {
+  it('git grep --textconv runs the configured textconv program: every spelling from --textc is denied', () => {
+    for (const c of [
+      `git grep --textconv x -- store/egress-allowlist.json`,
+      `git grep --no-index --textconv x store/egress-allowlist.json`,
+      `git grep --textc x -- store/egress-allowlist.json`,
+      `git grep --textconv=1 x -- store/egress-allowlist.json`,
+    ]) deniedAllowlist(c)
+    allowed(`git grep --text x -- store/egress-allowlist.json`)
+    allowed(`git grep --no-textconv x -- store/egress-allowlist.json`)
+    expect(gitGrepReadOnly(['grep', '--textconv'])).toBe(false)
+    expect(gitGrepReadOnly(['grep', '--textc'])).toBe(false)
+    expect(gitGrepReadOnly(['grep', '--text'])).toBe(true)
+  })
+  it('a shell-managed name is never resolved: PWD / OLDPWD reset by cd, $_, RANDOM', () => {
+    deniedAllowlist(`PWD=/tmp/q; cd .; cp -R /tmp/stage/. $PWD`)
+    deniedAllowlist(`PWD=/tmp/q; cd -P .; cp -R /tmp/stage/. $PWD`)
+    deniedAllowlist(`OLDPWD=/tmp/q; cd /; cd ${root}; cp -R /tmp/stage/. $OLDPWD`, '/tmp')
+    deniedAllowlist(`_=/tmp/q; cp /tmp/x $_/a`)
+    deniedAllowlist(`RANDOM=/tmp/q; cp /tmp/x $RANDOM/a`)
+    deniedAllowlist(`BASH_ENV=/tmp/q; cp /tmp/x $BASH_ENV/a`)
+    // an ordinary name in the same shape still resolves
+    allowed(`Q=/tmp/q; cd .; cp -R /tmp/stage/. $Q`)
+  })
+  it('rg --pre runs a program; an env prefix may bring --pre from a config file', () => {
+    deniedAllowlist(`rg --pre ./x pattern store/egress-allowlist.json`)
+    deniedAllowlist(`rg --pre=./x pattern store/egress-allowlist.json`)
+    deniedAllowlist(`RIPGREP_CONFIG_PATH=/tmp/c rg pattern store/egress-allowlist.json`)
+    allowed(`rg --pretty pattern store/egress-allowlist.json`)
+    allowed(`rg -n pattern store/egress-allowlist.json`)
+    expect(rgReadOnly(['--pre', 'x'])).toBe(false)
+    expect(rgReadOnly(['--pre-glob', '*.gz', 'x'])).toBe(true)
+    expect(rgReadOnly(['x'], true)).toBe(false)
   })
 })
