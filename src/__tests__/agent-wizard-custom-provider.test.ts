@@ -2,11 +2,18 @@
 // the model, with no customProvider. The agent then ran that string as a model, and the provider was on no record:
 // its delete named no agent (usedBy reads customProvider) and the agent could not start. Now the wizard sends the
 // provider and the model id apart, as the agent editor does, and POST /api/agents stores the provider.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+
+// The provider store is mocked: other test files write and restore the real store/custom-providers.json in
+// parallel, and a file shared mid-run would make these results depend on which ran first.
+vi.mock('../web/custom-providers.js', async (orig) => ({
+  ...await orig<typeof import('../web/custom-providers.js')>(),
+  loadCustomProvider: () => null,
+}))
 
 const { tryHandleAgents } = await import('../web/routes/agents.js')
 const { agentDir } = await import('../web/agent-config.js')
@@ -40,9 +47,9 @@ describe('the wizard sends a custom provider apart from the model id', () => {
   })
 
   it('with a custom provider and no model id, the field gets the focus and a toast, before any request', () => {
-    expect(NEXT).toContain("if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.wizard.custom_model_required')); return }")
+    expect(NEXT).toContain("if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }")
     expect(NEXT).not.toMatch(/\bfetch\(/)
-    for (const lang of [HU, EN]) expect(lang).toContain("'agents.wizard.custom_model_required':")
+    for (const lang of [HU, EN]) expect(lang).toContain("'agents.model.custom_model_required':")
   })
 
   it('the model id field shows when a custom provider is picked, and a reset clears it', () => {
@@ -64,20 +71,9 @@ describe('POST /api/agents stores the custom provider', () => {
     expect(writeProvider).toBeGreaterThan(writeModel)
   })
 
-  const PROVIDERS_PATH = join(PROJECT_ROOT, 'store', 'custom-providers.json')
   const AGENT = '__test-wizard-cp'
-  let providersBefore: string | null = null
-  beforeAll(() => {
-    mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
-    providersBefore = existsSync(PROVIDERS_PATH) ? readFileSync(PROVIDERS_PATH, 'utf-8') : null
-    writeFileSync(PROVIDERS_PATH, JSON.stringify({ providers: [] }))
-    rmSync(agentDir(AGENT), { recursive: true, force: true })
-  })
-  afterAll(() => {
-    rmSync(agentDir(AGENT), { recursive: true, force: true })
-    if (providersBefore !== null) writeFileSync(PROVIDERS_PATH, providersBefore)
-    else rmSync(PROVIDERS_PATH, { force: true })
-  })
+  beforeAll(() => { rmSync(agentDir(AGENT), { recursive: true, force: true }) })
+  afterAll(() => { rmSync(agentDir(AGENT), { recursive: true, force: true }) })
 
   it('an unknown provider is a 400, and no agent directory is left behind', async () => {
     const req = Readable.from([Buffer.from(JSON.stringify({ name: AGENT, description: 'x', model: 'deepseek-chat', customProvider: 'nope' }))]) as unknown as http.IncomingMessage

@@ -1,19 +1,22 @@
 // An agent whose custom provider is deleted no longer starts ("Custom provider ... not found. Add it in Settings >
 // Providers."), and nothing told the owner which agents a delete would stop. GET /api/custom-providers now gives each
 // provider the agents whose agent-config.json names it (usedBy), so the delete question can name them.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+// The provider store is mocked: other test files write and restore the real store/custom-providers.json in
+// parallel, and a file shared mid-run would make these results depend on which ran first.
+const def = (id: string) => ({ id, label: id, baseUrl: 'http://127.0.0.1:1', authHeader: 'none' as const, vaultKey: null })
+vi.mock('../web/custom-providers.js', async (orig) => ({
+  ...await orig<typeof import('../web/custom-providers.js')>(),
+  listCustomProviders: () => [def('shared'), def('own'), def('unused')],
+}))
 
 const { tryHandleCustomProviders } = await import('../web/routes/custom-providers.js')
 const { agentDir } = await import('../web/agent-config.js')
-const { PROJECT_ROOT } = await import('../config.js')
-// custom-providers.ts keeps its file under PROJECT_ROOT/store (this checkout's, gitignored): saved and restored here,
-// the same pattern as agent-write-owner-gated.test.ts.
-const PROVIDERS_PATH = join(PROJECT_ROOT, 'store', 'custom-providers.json')
-let providersBefore: string | null = null
 
 const AGENTS = {
   '__test-cp-users-a': { customProvider: 'shared' },
@@ -33,10 +36,6 @@ async function get() {
 }
 
 beforeAll(() => {
-  mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
-  providersBefore = existsSync(PROVIDERS_PATH) ? readFileSync(PROVIDERS_PATH, 'utf-8') : null
-  const def = (id: string) => ({ id, label: id, baseUrl: 'http://127.0.0.1:1', authHeader: 'none', vaultKey: null })
-  writeFileSync(PROVIDERS_PATH, JSON.stringify({ providers: [def('shared'), def('own'), def('unused')] }, null, 2))
   for (const [name, config] of Object.entries(AGENTS)) {
     mkdirSync(agentDir(name), { recursive: true })
     writeFileSync(join(agentDir(name), 'agent-config.json'), JSON.stringify(config))
@@ -44,8 +43,6 @@ beforeAll(() => {
 })
 afterAll(() => {
   for (const name of Object.keys(AGENTS)) rmSync(agentDir(name), { recursive: true, force: true })
-  if (providersBefore !== null) writeFileSync(PROVIDERS_PATH, providersBefore)
-  else rmSync(PROVIDERS_PATH, { force: true })
 })
 
 describe('GET /api/custom-providers names the agents that use each provider', () => {

@@ -3638,7 +3638,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   const customModelId = customProvider ? customModelInput.value.trim() : ''
   if (!name) { agentName.focus(); return }
   if (!desc) { agentDesc.focus(); return }
-  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.wizard.custom_model_required')); return }
+  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
 
   wizardStep = 2
   updateWizardUI()
@@ -4437,7 +4437,11 @@ function renderAgents() {
         </div>
       </div>
       <div class="agent-card-footer">
-        <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
+        ${agent.missingCustomProvider || agent.brokenCustomModel
+          ? `<span class="agent-model-badge provider-missing" title="${escapeHtml(agent.missingCustomProvider
+              ? t('agents.model.provider_missing_card', { id: agent.missingCustomProvider })
+              : t('agents.model.custom_model_broken', { model: agent.brokenCustomModel }))}">⚠ ${escapeHtml(modelLabel)}</span>`
+          : `<span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>`}
         ${contextPctBadgeHtml(agent.name)}
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
@@ -4676,7 +4680,8 @@ async function openAgentDetail(agentName) {
       }
       sel.value = cpVal
       const modelInput = document.getElementById('editAgentModelCustomModelId')
-      if (modelInput) modelInput.value = mv
+      // A model saved as the picker value ("custom:<id>") is no model id: leave the field empty, so a save asks for one.
+      if (modelInput) modelInput.value = mv.startsWith('custom:') ? '' : mv
     } else {
       if (!Array.from(sel.options).some(o => o.value === mv)) {
         const opt = document.createElement('option')
@@ -4693,6 +4698,7 @@ async function openAgentDetail(agentName) {
     // onto a disabled option still reads back, but the order must not matter).
     if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
     updateCustomModelIdRow(sel)
+    markMissingCustomProvider(sel, customProviderId, customProviderId ? null : (mv.startsWith('custom:') ? mv : null))
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -5391,6 +5397,33 @@ async function loadAvailableModels() {
   } catch { /* dashboard not available */ }
 }
 
+// A provider deleted since the agent got it stays selected, so the agent's real setting shows, but the option and a
+// line under the picker say it is gone: the agent does not start until it gets another model.
+async function markMissingCustomProvider(sel, providerId, brokenModel = null) {
+  const warn = document.getElementById('editAgentModelProviderMissing')
+  if (!warn) return
+  warn.textContent = t('agents.model.provider_missing')
+  warn.hidden = true
+  // A model saved as the picker value with no provider beside it: say so, whatever the provider list holds.
+  // No option is marked: the provider may exist, and picking it again (with a model id) is the fix, so any change hides it.
+  if (brokenModel) {
+    warn.textContent = t('agents.model.custom_model_broken', { model: brokenModel })
+    warn.hidden = false
+    return
+  }
+  if (!providerId) return
+  const agent = currentAgent
+  let ids = null
+  try {
+    const r = await fetch('/api/custom-providers')
+    if (r.ok) ids = ((await r.json()).providers || []).map(p => p.id)
+  } catch { /* unknown: say nothing rather than a false alarm */ }
+  if (!ids || ids.includes(providerId) || currentAgent !== agent) return
+  const opt = Array.from(sel.options).find(o => o.value === `custom:${providerId}`)
+  if (opt) { opt.textContent = '🔧 ' + t('agents.model.provider_deleted', { id: providerId }); opt.dataset.deleted = '1' }
+  warn.hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
+}
+
 function updateCustomModelIdRow(selectEl) {
   if (!selectEl) return
   const isEdit = selectEl.id === 'editAgentModel'
@@ -5596,7 +5629,9 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
 }
 
 document.getElementById('editAgentModel').addEventListener('change', () => {
-  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+  const sel = document.getElementById('editAgentModel')
+  updateCustomModelIdRow(sel)
+  document.getElementById('editAgentModelProviderMissing').hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
 })
 
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
@@ -5604,9 +5639,11 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   const selectVal = document.getElementById('editAgentModel').value
   const isCustom = selectVal.startsWith('custom:')
   const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
-  const newModel = isCustom
-    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
-    : selectVal
+  // The model id is required with a custom provider: the picker value ("custom:<id>") used to be saved as the model.
+  const customModelInput = document.getElementById('editAgentModelCustomModelId')
+  const customModelId = isCustom ? customModelInput.value.trim() : ''
+  if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
+  const newModel = isCustom ? customModelId : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {

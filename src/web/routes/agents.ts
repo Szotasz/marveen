@@ -608,6 +608,12 @@ export interface AgentSummary {
    *  copies into this agent's isolated config dir -- drives the dashboard
    *  warning. Empty when there is nothing to warn about. */
   sharedEnvAuthKeys: string[]
+  /** The custom provider id the agent is set to when that provider no longer exists (the agent will not start),
+   *  else null -- drives the warning on the agent card. */
+  missingCustomProvider: string | null
+  /** A model saved as the picker value ("custom:<id>") with no customProvider beside it: no model a provider knows,
+   *  and the provider is on no record (the new-agent wizard saved it so before it sent the two apart), else null. */
+  brokenCustomModel: string | null
 }
 
 interface AgentDetail extends AgentSummary {
@@ -753,6 +759,8 @@ function getAgentSummary(name: string): AgentSummary {
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
     sharedEnvAuthKeys: sharedEnvAuthKeysCopiedTo(name),
+    missingCustomProvider: (() => { const id = readAgentCustomProvider(name); return id && !loadCustomProvider(id) ? id : null })(),
+    brokenCustomModel: typeof agentModelConfig.model === 'string' && agentModelConfig.model.startsWith('custom:') && !readAgentCustomProvider(name) ? agentModelConfig.model : null,
   }
 }
 
@@ -2914,6 +2922,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const ownerFields = agentPutOwnerFields(data as Record<string, unknown>)
     if (ownerFields.length > 0 && !mayActAsOwner(ctx.auth, req)) {
       refuseOwner(res, `Changing ${ownerFields.join(', ')} of an agent needs the dashboard login (an owner session); the shared access token can change only model and modelProfile.`, { fields: ownerFields })
+      return true
+    }
+    // As in the POST, and before the first write: an agent set to a provider that does not exist would not start.
+    // Clearing it (null or '') stays allowed, and a body without the field is not checked.
+    if (typeof data.customProvider === 'string' && data.customProvider.trim() && !loadCustomProvider(data.customProvider.trim())) {
+      json(res, { error: `Unknown custom provider: ${data.customProvider.trim()}` }, 400)
       return true
     }
 

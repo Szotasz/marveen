@@ -1931,6 +1931,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agent-model-badge.opus { background: rgba(217,119,87,0.12); color: var(--accent); }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
+/* The agent's custom provider was deleted: it will not start until it gets another model. */
+.agent-model-badge.provider-missing { background: var(--danger-soft); color: var(--danger); }
 
 /* Context-window-used badge (Agents grid card). Tiers mirror context-guard's
    own default actPct/hardPct (90%/97%) -- see contextPctBadgeHtml in app.js. */
