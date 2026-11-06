@@ -90,7 +90,11 @@ describe('ALERT_CHAT_ID edge cases (review follow-up)', () => {
   it('parked-line alerts drop the conversation preview when the alert is redirected', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
     const uses = src.match(/alertIsRedirected\(\) \? '' :/g) || []
-    expect(uses.length).toBe(2)
+    expect(uses.length).toBe(1)
+    // The MAIN_PARKED owner page is built by mainParkedOwnerAlert: its call site
+    // passes the redirect flag, and the builder drops the preview on it.
+    expect(src).toMatch(/mainParkedOwnerAlert\([^\n]*alertIsRedirected\(\)/)
+    expect(src).toMatch(/\(redirected \? '' : ` A parkolt sor eleje/)
   })
 })
 

@@ -37,7 +37,7 @@ vi.mock('../notify.js', async (orig) => ({
   notifyChannel: vi.fn(async (text: string) => { notify.calls.push(text) }),
 }))
 
-import { dismissFeedbackDraftModalIfPresent, FEEDBACK_HOLD_OWNER_AFTER_MS, decideFeedbackHoldEscalation } from '../web/agent-process.js'
+import { dismissFeedbackDraftModalIfPresent, FEEDBACK_HOLD_OWNER_AFTER_MS, decideFeedbackHoldEscalation, clearStaleParkedInput, mainParkedOwnerAlert, MAIN_PARKED_OWNER_AFTER } from '../web/agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
 import { feedbackDraftDismissPlan, stripGhostSuggestion, detectsFeedbackDraftModal, detectPaneState } from '../pane-state.js'
 
@@ -92,8 +92,12 @@ describe('the measured 2.1.318 frames', () => {
   it('an empty unclipped card gets the same single "0", never Down (Down left it up, measured)', () => {
     expect(detectPaneState(plain(UNCLIPPED_318))).toBe('idle')
     for (const main of [true, false]) {
-      expect(feedbackDraftDismissPlan(plain(UNCLIPPED_318), stripGhostSuggestion(UNCLIPPED_318), main)).toEqual({ act: 'keys', keys: ['0'] })
+      expect(feedbackDraftDismissPlan(plain(UNCLIPPED_318), stripGhostSuggestion(UNCLIPPED_318), main, 600)).toEqual({ act: 'keys', keys: ['0'] })
     }
+    // On the main session only once the card was seen 600 ms earlier: a "0" inside
+    // the card's ignore window would stay in a box that never gets C-u.
+    expect(feedbackDraftDismissPlan(plain(UNCLIPPED_318), stripGhostSuggestion(UNCLIPPED_318), true, 0)).toEqual({ act: 'wait', ms: 600 })
+    expect(feedbackDraftDismissPlan(plain(UNCLIPPED_318), stripGhostSuggestion(UNCLIPPED_318), false, 0)).toEqual({ act: 'keys', keys: ['0'] })
   })
   it('with text in the prompt the card is still seen, by its "clear text to ..." option line', () => {
     for (const f of [UNCLIPPED_TYPED_318, CLIPPED_TYPED_318]) {
@@ -212,6 +216,41 @@ describe('a hold that never ends reaches the owner once', () => {
     await run(UNCLIPPED_TYPED_318)
     await run(UNCLIPPED_TYPED_318)
     expect(notify.calls).toHaveLength(0)
+    expect(sent).toEqual([])
+  })
+})
+
+// When the dismisser's "0" lands inside the card's ignore window anyway, an
+// unclipped main box reads 'typing' and the MAIN_PARKED ladder owns it, so the
+// lone-0 hint has to ride on that page.
+describe('the MAIN_PARKED owner page names a feedback card on the same frame', () => {
+  beforeEach(() => { panes.queue = []; panes.last = ''; sent.length = 0; notify.calls.length = 0; vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('the hint appears only with the card up, and carries no parked text on a redirected alert', () => {
+    const withCard = mainParkedOwnerAlert('main', 6, '0', false, true)
+    expect(withCard).toContain('visszajelzés-vázlat kártyája')
+    expect(withCard).toContain('ha a parkolt sor csak egy 0')
+    expect(withCard).toContain('A parkolt sor eleje: "0"')
+    const noCard = mainParkedOwnerAlert('main', 6, '0', false, false)
+    expect(noCard).not.toContain('kártya')
+    expect(noCard).toContain('Ctrl-C és utána Ctrl-U')
+    expect(mainParkedOwnerAlert('main', 6, 'titkos sor', true, true)).not.toContain('titkos sor')
+  })
+
+  it('a lone "0" in an unclipped main box under the card (2.1.318 frame): the owner page says it may be the card\'s leftover', async () => {
+    const zero = typedAs(UNCLIPPED_TYPED_318, '0')
+    expect(detectPaneState(plain(zero))).toBe('typing')
+    panes.last = zero
+    for (let i = 0; i < MAIN_PARKED_OWNER_AFTER + 1; i++) {
+      const p = clearStaleParkedInput(MAIN_CHANNELS_SESSION)
+      await vi.runAllTimersAsync()
+      await p
+      vi.advanceTimersByTime(31_000)
+    }
+    expect(notify.calls).toHaveLength(1)
+    expect(notify.calls[0]).toContain('input-mezőjében')
+    expect(notify.calls[0]).toContain('ha a parkolt sor csak egy 0')
     expect(sent).toEqual([])
   })
 })

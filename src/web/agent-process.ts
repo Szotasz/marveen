@@ -3489,13 +3489,31 @@ async function answerFeedbackOptOutAfterDigit(session: string, host: string | nu
   }
 }
 
+// Slack past the card's input-ignore window, for the tmux keystroke and the render.
+const FEEDBACK_CARD_WAIT_SLACK_MS = 100
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+    let pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) { clearFeedbackHold(session, host); return }
+    // The card's age is measured from this call's first capture, never from an
+    // earlier pass: a remembered sighting could belong to a card that has since
+    // closed, and would let a digit into the next card's ignore window. Our
+    // sighting is never earlier than the card, so the wait can only err long.
+    const seenAt = Date.now()
     // The input box is read from the ghost-stripped view: a dim autosuggest in an
     // empty box must not read as typed text. Detection stays on the plain capture.
-    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
+    const planFor = (p: string) => feedbackDraftDismissPlan(
+      p, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION, Date.now() - seenAt,
+    )
+    let plan = planFor(pane)
+    if (plan.act === 'wait') {
+      // One more capture once the card is old enough, instead of a digit now.
+      await delay(plan.ms + FEEDBACK_CARD_WAIT_SLACK_MS)
+      pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+      plan = planFor(pane)
+      if (plan.act === 'wait') return
+    }
     if (plan.act === 'none') { clearFeedbackHold(session, host); return }
     if (plan.act === 'hold') {
       logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
@@ -4989,6 +5007,32 @@ export function decideMainParkedEscalation(
   return 'none'
 }
 
+// The MAIN_PARKED owner page. With the feedback-draft card on the same frame the
+// parked line may be the dismisser's own "0" that the card ignored: the
+// feedback-hold page carries that hint, but a box that reads 'typing' is handed
+// here instead, so the hint has to travel on this page. Pure, exported for tests.
+export function mainParkedOwnerAlert(
+  session: string,
+  minutes: number,
+  parked: string,
+  redirected: boolean,
+  feedbackCardUp: boolean,
+): string {
+  const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
+  return (
+    `🚨 A fő ágens (${session}) input-mezőjében ~${minutes} perce áll egy parkolt sor, ` +
+    `és emiatt a csatorna nem dolgoz fel bejövő üzenetet. KÉZI FELOLDÁS (pár másodperc): ` +
+    `tmux attach -t ${session}, majd Ctrl-C és utána Ctrl-U (a sor törlése), végül kilépés: Ctrl-B d.` +
+    (feedbackCardUp
+      ? ` A pane-en a Claude Code visszajelzés-vázlat kártyája is áll: ha a parkolt sor csak egy 0, ` +
+        `lehet, hogy a kártya bezárásának maradéka. Ctrl-U után a prompt üres, ` +
+        `és a kártyát a következő kör bezárja (kézzel: 0, a "Turn off Claude-drafted feedback?" kérdésre Esc).`
+      : '') +
+    // No conversation content in an alert that goes to a non-owner chat.
+    (redirected ? '' : ` A parkolt sor eleje: "${preview}"`)
+  )
+}
+
 // MAINBOXPARK816 stage-1 surface: the heartbeat round (same process) reads this
 // and puts the fact into its prompt -- deliberately NOT the inter-agent queue,
 // because a message queued to the main agent would strand behind the very
@@ -5117,13 +5161,8 @@ async function clearStaleParkedInputInLane(
     let escalated = !!(prev && prev.sig === parked && prev.escalated)
     const stage = decideMainParkedEscalation(fails, escalated)
     if (stage === 'owner') {
-      const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
-        `🚨 A fő ágens (${session}) input-mezőjében ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce áll egy parkolt sor, ` +
-        `és emiatt a csatorna nem dolgoz fel bejövő üzenetet. KÉZI FELOLDÁS (pár másodperc): ` +
-        `tmux attach -t ${session}, majd Ctrl-C és utána Ctrl-U (a sor törlése), végül kilépés: Ctrl-B d.` +
-        // No conversation content in an alert that goes to a non-owner chat.
-        (alertIsRedirected() ? '' : ` A parkolt sor eleje: "${preview}"`),
+        mainParkedOwnerAlert(session, Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000), parked, alertIsRedirected(), detectsFeedbackDraftModal(b)),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
