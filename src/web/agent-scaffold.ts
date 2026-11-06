@@ -1264,6 +1264,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // (APPROVALDBGATE1030): every sub-agent; the main agent's entry is
   // repo-shipped in the tracked .claude/settings.json.
   if (agentGetsGovernanceGates(name)) injectDbWriteGate(existing)
+  // (f) mxd's run dir, the MXD env names, the gromzo-channel entry points (MXDAGENTSOCKID1106): every sub-agent
+  if (agentGetsGovernanceGates(name)) injectMxdPathGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
@@ -2003,6 +2005,26 @@ export function injectDbWriteGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('db-write-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotently wire the mxd-path-gate PreToolUse hook (MXDAGENTSOCKID1106): a sub-agent's tool call may not name
+// mxd's run dir (the agent token files, agent.sock, dash.sock), set MXD_AGENT / MXD_AGENT_TOKEN_FILE, or start a
+// gromzo-channel entry point. Every sub-agent; the main agent stays out (its plugin connects in-process, Samu 71433).
+// The native file tools (Read and Grep included: the OS lets every agent READ a token file) and every MCP tool are in
+// the matcher, anchored (see SELF_PACE_GATE_MATCHER).
+export const MXD_PATH_GATE_MATCHER = '^(?:Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|mcp__.*)$'
+export function injectMxdPathGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'mxd-path-gate.mjs'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = { matcher: MXD_PATH_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('mxd-path-gate.mjs')),
     entry,
   ]
 }
@@ -3017,6 +3039,10 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   const dbGateStale = ptu.some((e) => JSON.stringify(e).includes('db-write-gate.mjs')
     && (e as { matcher?: unknown })?.matcher !== DB_WRITE_GATE_MATCHER)
   const needDbGate = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, dbGateCmd) || dbGateStale)
+  const mxdGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'mxd-path-gate.mjs'))
+  const mxdGateStale = ptu.some((e) => JSON.stringify(e).includes('mxd-path-gate.mjs')
+    && (e as { matcher?: unknown })?.matcher !== MXD_PATH_GATE_MATCHER)
+  const needMxdGate = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, mxdGateCmd) || mxdGateStale)
   // The destructive gate has the same two failure modes, plus a third that is
   // specific to it: it was hand-wired on 2026-09-08, so an install can carry a
   // correct-looking entry this code never wrote. Treat a stale matcher as
@@ -3040,12 +3066,13 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
   // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
   const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
-  if (!needEmail && !needPace && !needDbGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
+  if (!needEmail && !needPace && !needDbGate && !needMxdGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needDbGate) injectDbWriteGate(settings)
+  if (needMxdGate) injectMxdPathGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
   if (needReviewer) injectSecondReviewerGate(settings)
