@@ -2498,6 +2498,10 @@ window._i18n.en = {
   'gromzo.qr.lib_error': 'The QR generator did not load. Reload the page and try again.',
   'gromzo.err.rate_limited': 'Too many codes requested in a short time. Wait a few minutes and try again.',
   'gromzo.err.consent_required': 'A Bridge key is configured on this machine, so the dashboard cannot request an owner code right now. Contact support.',
+  // DASHSOCKPEER1106: dash.sock never hands out the owner's codes (marveen-mxd #89), so the owner QR card always gets
+  // consent_required; the card reads its OWN key first (web/app.js errorText). The step: the phone QR is in the Marveen
+  // Bridge (the menu item's name as both shipped Bridges show it, 0.3.8 and 1.0.16).
+  'gromzo.qr.err.consent_required': 'Get the phone QR code in the Marveen Bridge: open the Menu (⋮) in the corner and choose "Gromzo app on your phone (QR)". For safety, the dashboard does not hand out owner codes.',
   'gromzo.err.not_linked': 'The chat service is not linked to your team yet, so it cannot request a code.',
   'gromzo.err.invite_outstanding': 'The previous registration code is still valid (for up to 10 minutes). Use it, or wait until it expires and request a new one.',
   'gromzo.err.not_running': 'The chat service (mxd) is not running on this machine.',
@@ -2567,6 +2571,8 @@ window._i18n.en = {
   'gromzo.agents.name.label': 'Name on Gromzo',
   'gromzo.agents.err.consent_mismatch': 'The approval belonged to another agent, so nothing changed. Switch it on again.',
   'gromzo.agents.err.consent_mismatch_added': 'The approval belonged to another agent: the chat service added {slug}, and nothing changed for this one.',
+  // An agent's owner approval with a Bridge key (mxd owner_qr_proof): the sentence this panel showed before DASHSOCKPEER1106.
+  'gromzo.agents.err.consent_required': 'A Bridge key is configured on this machine, so the dashboard cannot request an owner code right now. Contact support.',
   'gromzo.agents.err.no_pending': 'No approval is pending for this agent.',
   'gromzo.agents.err.not_linked': 'The chat service is not linked to your team yet, so agents cannot be switched now.',
   'gromzo.agents.err.not_running': 'The chat service (mxd) is not running on this machine, so agents cannot be switched now.',
