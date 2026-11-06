@@ -95,6 +95,16 @@ describe('the other silent paths are loud now', () => {
     expect((await run(['--value', '  '], null)).code).toBe(2)
   })
 
+  it('--value takes exactly ONE label: a newline, a space or an = is exit 2, nothing printed, the id not echoed (Dani #2563)', async () => {
+    for (const id of ['KNOWN-LABEL\nB=KNOWN-LABEL', 'KNOWN-LABEL\n', 'KNOWN LABEL', ' KNOWN-LABEL', 'X=KNOWN-LABEL', 'KNOWN-LABEL\t']) {
+      const r = await run(['--value', id], null)
+      expect(r.code, JSON.stringify(id)).toBe(2)
+      expect(r.stdout).toBe('')
+      expect(r.stderr).not.toContain('KNOWN-LABEL')
+      noValueOnStderr(r)
+    }
+  })
+
   it('an empty stdin: exit 2, not a silent success', async () => {
     for (const input of ['', '\n', '  \n\n']) {
       const r = await run([], input)

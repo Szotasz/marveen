@@ -56,9 +56,11 @@ const argv = process.argv.slice(2)
 let valueMode = false
 let input
 if (argv.length > 0) {
-  if (argv[0] === '--value' && argv.length === 2 && argv[1].trim() !== '') {
+  // Exactly ONE label: no whitespace (a newline would make a second input line, and two values would come out glued
+  // together, Dani #2563 review) and no '='. Refused like any other bad argument, without echoing it.
+  if (argv[0] === '--value' && argv.length === 2 && /^[^\s=]+$/.test(argv[1])) {
     valueMode = true
-    input = `VALUE=${argv[1].trim()}\n`
+    input = `VALUE=${argv[1]}\n`
   } else {
     // The arguments are not echoed: one of them could be a value pasted by mistake.
     process.stderr.write(`vault-resolve: takes ENV_VAR=secret_id lines on stdin, or exactly '--value <secret_id>'; got ${argv.length} other argument(s)\n`)
