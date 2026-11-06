@@ -134,6 +134,26 @@ fi
 # combination is how a secondary inbound goes dead while everything else,
 # including the env the operator inspects first, looks correct.
 CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+# GROMZOMAINAGENT1106: the launchers drop the main agent's gromzo-channel id while mxd's agent.sock is not
+# usable or the main id fails mxd's slug rule (scripts/main-gromzo-launch.sh). That drop is on purpose, not a
+# half-mute: compare the argv against what the launchers would load, and say what was left out and why.
+if [ -n "$CHANNEL_PLUGINS_EXTRA" ] && [ -f "$INSTALL_DIR/scripts/main-gromzo-launch.sh" ]; then
+  # shellcheck source=scripts/main-gromzo-launch.sh
+  . "$INSTALL_DIR/scripts/main-gromzo-launch.sh"
+  # The RAW id (MAIN_AGENT_ID above is sanitized for the session name): the launchers judge the raw one.
+  _gz_raw_main="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  # shellcheck disable=SC2086
+  _gz_kept="$(main_gromzo_filter_ids "$_gz_raw_main" $CHANNEL_PLUGINS_EXTRA)"
+  case " $CHANNEL_PLUGINS_EXTRA " in
+    *" $MAIN_GROMZO_PLUGIN_ID "*)
+      case " $_gz_kept " in
+        *" $MAIN_GROMZO_PLUGIN_ID "*) ;;
+        *) note "(d) NOTE: $MAIN_GROMZO_PLUGIN_ID is listed but not loaded on purpose (mxd agent.sock not usable, or the main agent id fails the mxd slug rule)" ;;
+      esac ;;
+  esac
+  CHANNEL_PLUGINS_EXTRA="$_gz_kept"
+  unset _gz_raw_main _gz_kept
+fi
 if [ -z "$CHANNEL_PLUGINS_EXTRA" ]; then
   note "(d) SKIP: no CHANNEL_PLUGINS_EXTRA configured"
 elif [ -z "$CLAUDE_PID" ]; then

@@ -50,7 +50,8 @@ import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { gateManualRestart } from '../manual-restart-gate.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import {
-  mainGromzoLaunchState, readMainGromzoToken, restartMainAfterMxdReload, restartMainForGromzoNow, switchMainGromzoOff, switchMainGromzoOn,
+  mainGromzoLaunchState, mainGromzoPanelState, mainSessionLoadsGromzo, readMainGromzoToken, restartMainAfterMxdReload,
+  restartMainForGromzoNow, switchMainGromzoOff, switchMainGromzoOn,
 } from '../main-gromzo.js'
 import type { RouteContext } from './types.js'
 
@@ -261,7 +262,10 @@ const defaultAgentDeps: GromzoAgentDeps = {
     if (slug === MAIN_AGENT_ID) { if (on) switchMainGromzoOn(PROJECT_ROOT); else switchMainGromzoOff(PROJECT_ROOT); return }
     writeAgentGromzo(slug, on)
   },
-  mainLaunchState: () => mainGromzoLaunchState(),
+  mainLaunchState: () => {
+    const t = readMainGromzoToken(PROJECT_ROOT)
+    return mainGromzoPanelState(t.ok && t.on, mainSessionLoadsGromzo(MAIN_CHANNELS_SESSION))
+  },
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   isRunning: (slug) => isAgentRunning(slug),
   // agentDir(slug) only for a slug slugRefusal passed (sendGromzoAvatar checks first; the list only names fleet agents).
@@ -282,6 +286,13 @@ const defaultAgentDeps: GromzoAgentDeps = {
       // The launch side stopped (marketplace or .env): nothing to load, so no restart.
       const st = mainGromzoLaunchState()
       if (st === 'marketplace_failed' || st === 'env_failed') return
+      // Switched off: mxd is not part of it (it keeps the main agent), so no wait and no held check; the
+      // plugin goes with the next start, through the same pane gate.
+      const tok = readMainGromzoToken(PROJECT_ROOT)
+      if (tok.ok && !tok.on) {
+        void restartMainForGromzoNow(mainRestartDeps()).catch((e) => logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo main agent: restart failed'))
+        return
+      }
       void restartMainAfterMxdReload(mainRestartDeps()).catch((e) => logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo main agent: restart failed'))
       return
     }

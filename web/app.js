@@ -21306,8 +21306,24 @@ function gromzoStatusLine(s, nowMs) {
     errEl.hidden = !msg
   }
 
+  // GROMZOMAINAGENT1106: the main agent's own launch side (the server's mainLaunch), after the shared
+  // local/pending states. "running" is observed (the running session was started with the plugin), not
+  // assumed from the switch.
+  function mainStateOf(row) {
+    switch (row.mainLaunch) {
+      case 'running': return { cls: 'is-on', text: t('gromzo.agents.main.running') }
+      case 'restart_waiting': return { cls: 'is-pending', text: t(row.gromzo ? 'gromzo.agents.main.restart_waiting_on' : 'gromzo.agents.main.restart_waiting_off') }
+      case 'waiting_mxd': return { cls: 'is-pending', text: t('gromzo.agents.main.waiting_mxd') }
+      case 'held': return { cls: 'is-error', text: t('gromzo.agents.state.held') }
+      case 'marketplace_failed': return { cls: 'is-error', text: t('gromzo.agents.main.marketplace_failed') }
+      case 'env_failed': return { cls: 'is-error', text: t('gromzo.agents.main.env_failed') }
+      case 'restart_failed': return { cls: 'is-error', text: t('gromzo.agents.main.restart_failed') }
+      case 'on_unknown': return { cls: 'is-on', text: t('gromzo.agents.state.on') }
+      default: return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.main.off') }
+    }
+  }
+
   function stateOf(row) {
-    if (row.main) return { cls: 'is-on', text: t('gromzo.agents.state.main') }
     const l = local.get(row.slug)
     if (l && l.kind === 'busy') return { cls: '', text: t('gromzo.agents.state.busy') }
     if (l && l.kind === 'restarting') return { cls: 'is-on', text: t('gromzo.agents.state.restarting') }
@@ -21318,6 +21334,7 @@ function gromzoStatusLine(s, nowMs) {
       return { cls: 'is-pending', text: t('gromzo.agents.state.pending', { min }) }
     }
     if (row.held) return { cls: 'is-error', text: t('gromzo.agents.state.held') }
+    if (row.main) return mainStateOf(row)
     return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
   }
 
@@ -21344,8 +21361,15 @@ function gromzoStatusLine(s, nowMs) {
         pic.textContent = t('gromzo.agents.avatar.' + row.avatarProblem)
         main.append(pic)
       }
+      // The main agent: switching it on or off restarts the main conversation, so the row says so up front.
+      if (row.main) {
+        const note = document.createElement('span')
+        note.className = 'gromzo-agent-state gromzo-agent-note'
+        note.textContent = t('gromzo.agents.main.note')
+        main.append(note)
+      }
       li.append(main)
-      if (!row.main) {
+      {
         const l = local.get(row.slug)
         const pending = (l && l.kind === 'pending') || (row.pendingUntil && row.pendingUntil > Date.now())
         const disabled = !!pending || !!(l && (l.kind === 'busy' || l.kind === 'restarting'))
@@ -21362,6 +21386,14 @@ function gromzoStatusLine(s, nowMs) {
         const actions = document.createElement('div')
         actions.className = 'gromzo-agent-actions'
         // A held agent: mxd lists it but its last start held it back; ask for a new approval, or take it off.
+        if (row.main && row.mainLaunch === 'restart_waiting' && !pending) {
+          const b = document.createElement('button')
+          b.className = 'btn-primary btn-compact'
+          b.textContent = t('gromzo.agents.main.btn_restart')
+          b.disabled = disabled
+          b.addEventListener('click', () => restartMain(row))
+          actions.append(b)
+        }
         if (row.held) actions.append(mk(true, true, 'gromzo.agents.btn.reapprove'))
         if (row.gromzo) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
         else if (!row.held) actions.append(mk(true, true, 'gromzo.agents.btn.on'))
@@ -21424,6 +21456,7 @@ function gromzoStatusLine(s, nowMs) {
   }
 
   async function switchOn(row) {
+    if (row.main && !confirm(t('gromzo.agents.main.confirm_on'))) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'enable')
@@ -21438,7 +21471,7 @@ function gromzoStatusLine(s, nowMs) {
   }
 
   async function switchOff(row) {
-    if (!confirm(t('gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
+    if (!confirm(t(row.main ? 'gromzo.agents.main.confirm_off' : 'gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'disable')
@@ -21446,6 +21479,23 @@ function gromzoStatusLine(s, nowMs) {
       local.set(row.slug, { kind: 'restarting' })
       await loadAgents()
       setTimeout(() => { if (local.get(row.slug)?.kind === 'restarting') { local.delete(row.slug); loadAgents() } }, 15000)
+    } catch {
+      local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
+    }
+  }
+
+  // GROMZOMAINAGENT1106: the main conversation's restart, when the pane was busy at the switch. The server
+  // asks the pane gate again; a busy pane keeps the row on "waiting", never forced.
+  async function restartMain(row) {
+    if (!confirm(t('gromzo.agents.main.confirm_restart'))) return
+    local.set(row.slug, { kind: 'busy' }); render()
+    try {
+      const r = await post(row.slug, 'restart')
+      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      const b = await r.json()
+      local.delete(row.slug)
+      if (b.state === 'restart_waiting') local.set(row.slug, { kind: 'error', text: t('gromzo.agents.main.still_busy') })
+      await loadAgents()
     } catch {
       local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
     }

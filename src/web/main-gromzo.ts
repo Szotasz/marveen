@@ -11,10 +11,13 @@
 // The restart waits for mxd to answer again after its reload and for the main slug NOT to be held back
 // (Samu 71193 D1: an observable signal, not a timed wait). The state is kept for the panel.
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace, type GromzoMarketplaceResult } from './gromzo-marketplace.js'
+import { resolveFromPath } from '../platform.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 const KEY = 'CHANNEL_PLUGINS_EXTRA'
 
@@ -163,4 +166,40 @@ export function switchMainGromzoOff(projectRoot: string): MainGromzoLaunchState 
   const w = setMainGromzoToken(projectRoot, false)
   if (!w.ok) { launchState = 'env_failed'; return launchState }
   return null
+}
+
+/**
+ * Whether the RUNNING main session was launched with the gromzo plugin: its pane's start command (channels.sh
+ * new-session and every respawn set it) lists plugin:<gromzo id>. This is what the panel's "on, running" rests
+ * on, not the .env id: on the owner's VPS the id was there and the session had never restarted (2026-11-06).
+ * Only a yes/no leaves this function: the start command can carry secrets and is never returned or logged.
+ * null: the pane could not be read.
+ */
+export function mainSessionLoadsGromzo(session: string, read: (session: string) => string = readPaneStartCommand): boolean | null {
+  let cmd: string
+  try { cmd = read(session) } catch { return null }
+  if (!cmd.trim()) return null
+  return cmd.includes(`plugin:${MAIN_GROMZO_PLUGIN_ID}`)
+}
+
+function readPaneStartCommand(session: string): string {
+  return execFileSync(resolveFromPath('tmux'), ['display-message', '-p', '-t', exactTmuxTarget(session), '#{pane_start_command}'], {
+    timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+  })
+}
+
+/**
+ * The main row's launch state as the panel shows it. The in-memory run state wins while it says something
+ * (a failure, a wait, held); otherwise the observable pair decides: the .env id against what the running
+ * session loaded. "loaded" with the id on is "on, running"; the id on and not loaded is "restart_waiting"
+ * (exactly the VPS case); the id off and still loaded is "restart_waiting" too (switched off, not restarted).
+ */
+export function mainGromzoPanelState(flagOn: boolean, loaded: boolean | null, run: MainGromzoLaunchState = launchState): string {
+  // In progress, or stopped before anything was written / restarted: say so.
+  if (run === 'waiting_mxd' || run === 'held' || run === 'marketplace_failed' || run === 'env_failed') return run
+  // A failed restart stays visible until the pane shows the plugin after all (the owner restarted it).
+  if (run === 'restart_failed' && !(flagOn && loaded === true)) return run
+  if (loaded === null) return flagOn ? 'on_unknown' : 'idle'
+  if (flagOn) return loaded ? 'running' : 'restart_waiting'
+  return loaded ? 'restart_waiting' : 'idle'
 }

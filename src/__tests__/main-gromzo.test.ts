@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import {
   readMainGromzoToken, setMainGromzoToken, switchMainGromzoOn, switchMainGromzoOff,
   restartMainAfterMxdReload, restartMainForGromzoNow, mainGromzoLaunchState, resetMainGromzoLaunchState,
+  mainGromzoPanelState, mainSessionLoadsGromzo,
 } from '../web/main-gromzo.js'
 import { filterMainGromzoIds, mainGromzoEnv, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from '../web/main-gromzo-launch.js'
 import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
@@ -265,5 +266,60 @@ describe('the recovery respawn (channel-monitor)', () => {
   it('the three respawn sites read the extras through the gromzo filter', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
     expect(src).toContain("return filterMainGromzoIds(readMainAgentIdRaw(projectRoot), readEnvValue(projectRoot, 'CHANNEL_PLUGINS_EXTRA')")
+  })
+})
+
+describe('the main row on the panel: observed, not assumed', () => {
+  it('reads only yes/no from the pane start command', () => {
+    expect(mainSessionLoadsGromzo('s', () => `claude --channels plugin:telegram@x plugin:${GZ} --settings x`)).toBe(true)
+    expect(mainSessionLoadsGromzo('s', () => 'claude --channels plugin:telegram@x')).toBe(false)
+    expect(mainSessionLoadsGromzo('s', () => '')).toBeNull()
+    expect(mainSessionLoadsGromzo('s', () => { throw new Error('no session') })).toBeNull()
+  })
+
+  it('the .env id against the running session (the VPS case: id on, never restarted)', () => {
+    expect(mainGromzoPanelState(true, true, 'idle')).toBe('running')
+    expect(mainGromzoPanelState(true, false, 'idle')).toBe('restart_waiting')
+    expect(mainGromzoPanelState(false, true, 'idle')).toBe('restart_waiting')
+    expect(mainGromzoPanelState(false, false, 'idle')).toBe('idle')
+    expect(mainGromzoPanelState(true, null, 'idle')).toBe('on_unknown')
+    expect(mainGromzoPanelState(false, null, 'idle')).toBe('idle')
+  })
+
+  it('a run in progress or stopped says so; a stale restart_waiting gives way to the observation', () => {
+    for (const run of ['waiting_mxd', 'held', 'marketplace_failed', 'env_failed'] as const) {
+      expect(mainGromzoPanelState(true, true, run)).toBe(run)
+    }
+    expect(mainGromzoPanelState(true, true, 'restart_waiting')).toBe('running')
+    expect(mainGromzoPanelState(true, true, 'restarted')).toBe('running')
+    expect(mainGromzoPanelState(true, false, 'restart_failed')).toBe('restart_failed')
+    expect(mainGromzoPanelState(true, true, 'restart_failed')).toBe('running')
+  })
+})
+
+describe('the panel strings', () => {
+  it('every main-row key exists in HU and EN, with no dash characters', () => {
+    const app = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
+    const keys = [...new Set([...app.matchAll(/'(gromzo\.agents\.main\.[a-z_]+)'/g)].map((m) => m[1]))]
+    expect(keys.length).toBeGreaterThanOrEqual(14)
+    for (const lang of ['hu', 'en']) {
+      const src = readFileSync(join(ROOT, 'web', 'lang', `${lang}.js`), 'utf-8')
+      for (const k of keys) expect(src, `${lang} ${k}`).toMatch(new RegExp(`'${k.replace(/\./g, '\\.')}': '[^']+'`))
+      for (const line of src.split('\n').filter((l) => l.includes("'gromzo.agents.main."))) expect(line).not.toMatch(/[\u2013\u2014]/)
+    }
+  })
+})
+
+describe('the doctor (verify-channels-health.sh (d))', () => {
+  it('judges the argv against what the launchers load, not the raw list', () => {
+    const sh = readFileSync(join(ROOT, 'scripts', 'verify-channels-health.sh'), 'utf-8')
+    const src = sh.indexOf('. "$INSTALL_DIR/scripts/main-gromzo-launch.sh"')
+    const filter = sh.indexOf('_gz_kept="$(main_gromzo_filter_ids "$_gz_raw_main" $CHANNEL_PLUGINS_EXTRA)"')
+    const assign = sh.indexOf('CHANNEL_PLUGINS_EXTRA="$_gz_kept"')
+    const compare = sh.indexOf('for _p in $CHANNEL_PLUGINS_EXTRA; do')
+    expect(src).toBeGreaterThan(-1)
+    expect(src).toBeLessThan(filter)
+    expect(filter).toBeLessThan(assign)
+    expect(assign).toBeLessThan(compare)
   })
 })
