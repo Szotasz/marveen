@@ -85,10 +85,12 @@ describe('the helper prints the notice once, under set -e, in both installers', 
 describe('the notice comes BEFORE each root step on managed-settings.json', () => {
   // The first root step of each block, in file order. Each gets its own call in
   // front of it: which block runs first depends on the chosen channel.
+  // MACROOTFROMCLONE1106: the root steps are the embedded writer's calls (managed_write) and the mkdir of the
+  // managed dir; the presence checks before them (managed_has) read as the user and ask for no password.
   const MACOS_STEPS = [
-    'HAS_DISCORD=$(sudo python3 -c "',
-    'HAS_ALL=$(sudo python3 -c "',
-    'CHANNELS_GATE_OUT="$(bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh"',
+    'if managed_write "$MANAGED_FILE" --add-plugin discord@claude-plugins-official',
+    '      if managed_write "$MANAGED_FILE" \\',
+    'if /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled',
   ]
 
   it('install-macos.sh: a call between the previous step and each block\'s first root step', () => {
@@ -108,8 +110,9 @@ describe('the notice comes BEFORE each root step on managed-settings.json', () =
     const firstCall = lineOf(MACOS, '  managed_settings_notice')
     const rootSteps = lines
       .map((l, i) => ({ l, i }))
-      .filter(({ l }) => /\bsudo\b/.test(l) && /MANAGED|\$\(sudo python3/.test(l))
-    expect(rootSteps.length).toBe(6)
+      .filter(({ l }) => !/^\s*#/.test(l) && (/managed_write "\$MANAGED_FILE"/.test(l) || /\/usr\/bin\/sudo \/bin\/mkdir -p "\$MANAGED_DIR"/.test(l)))
+    // discord merge, slack merge, slack mkdir + create, the channels gate (mkdir and write on one line)
+    expect(rootSteps.length).toBe(5)
     for (const { i } of rootSteps) expect(i).toBeGreaterThan(firstCall)
   })
 
@@ -122,9 +125,11 @@ describe('the notice comes BEFORE each root step on managed-settings.json', () =
   })
 
   it('the write itself is unchanged: the gate still runs unconditionally, with no opt-out switch', () => {
-    for (const script of [MACOS, LINUX]) {
-      expect(script).not.toMatch(/SKIP_MANAGED|MANAGED_OPT_OUT|NO_MANAGED/)
-      expect(script).toContain('scripts/ensure-managed-channels-enabled.sh')
-    }
+    for (const script of [MACOS, LINUX]) expect(script).not.toMatch(/SKIP_MANAGED|MANAGED_OPT_OUT|NO_MANAGED/)
+    // MACROOTFROMCLONE1106: macOS sets channelsEnabled through the embedded writer, never the clone's gate script
+    // (which ran the clone's writer as root); Linux keeps its gate call until LINUXROOTORDER1106.
+    expect(MACOS).toContain('managed_write "$MANAGED_FILE" --create --channels-enabled')
+    expect(MACOS).not.toMatch(/^[^#\n]*bash "\$INSTALL_DIR\/scripts\/ensure-managed-channels-enabled\.sh"/m)
+    expect(LINUX).toContain('scripts/ensure-managed-channels-enabled.sh')
   })
 })

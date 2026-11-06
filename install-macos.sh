@@ -51,6 +51,228 @@ managed_settings_notice() {
   echo -e "    $(_t managed.notice_sudo)"
 }
 
+# MACROOTFROMCLONE1106: the installer's root steps run no code from the clone. The clone is the user's, so
+# anything running as that user (an agent) can rewrite it; a root step that ran a clone file would run the
+# agent's code as root on the next install. So:
+#   - the managed-settings writer is EMBEDDED below, byte for byte the same as
+#     scripts/lib/managed-settings-write.py (a test holds the two equal), and runs as
+#     /usr/bin/sudo /usr/bin/python3 -I -S - : no cwd import, no site-packages, no PATH lookup;
+#   - every root call names its program by absolute path (a PATH entry like ~/.bun/bin is the user's);
+#   - right after the last root step the sudo login is dropped and the password the Bridge passed in is
+#     unset, BEFORE any clone code (npm, the build, the sourced helpers) runs.
+# The boundary: the installer itself runs no clone code as root and leaves the password out of clone code's
+# reach. It does not protect the user's login environment (profile, PATH, HOME): against an agent running as
+# the same user only a separate admin account separates. The macOS sudoers secure_path: not measured.
+managed_write() { # $1 = the managed file, then the writer's flags; the writer's own exit code
+  /usr/bin/sudo /usr/bin/python3 -I -S - "$@" <<'MSW_PY'
+#!/usr/bin/env python3
+"""The ONE safe writer of Claude Code's machine-wide managed-settings.json (MANAGEDSETTINGSWRITE1103).
+
+Every installer path that touches the org-policy file calls this, instead of its own inline
+merge. The inline copies had two faults:
+
+1. scripts/ensure-managed-channels-enabled.sh turned an unreadable or non-object file into {}
+   and wrote it back, as root. That silently dropped every other managed key, including the
+   allowedChannelPlugins list, and so muted every channel host-wide.
+2. All of them wrote a FIXED tmp name (`<file>.tmp`) with a plain open(), which follows a
+   symlink, then copymode/chmod on that path (also following it), then os.replace. Whoever can
+   write the directory can make a root process write and chmod a file of its choosing.
+   (The same class was fixed in the Bridge's gromzo-root.sh on review of Bridge #99.)
+
+The rules here:
+- an existing file that is not valid JSON or not a JSON object: NOT written, exit 1;
+- the file, if it exists, must be a regular file (not a symlink) owned by the effective user;
+- the directory must be owned by the effective user and not group- or other-writable;
+- changes are additive only: plugins are appended once, channelsEnabled is set true; every
+  other key and entry stays; an unchanged file is not rewritten;
+- the write: a fresh mkstemp file in the same directory (O_EXCL, unpredictable name), mode and
+  owner set on the fd (an existing file keeps its mode, a new one gets 0644 so the
+  unprivileged session can read the policy), written through the fd, then os.replace; the
+  tmp is removed on any error.
+
+The ownership checks use the EFFECTIVE uid: root when the installer runs this with sudo, the
+test user in the tests, so the same code is measured in both.
+
+Usage: managed-settings-write.py <file> [--create] [--channels-enabled] [--add-plugin NAME@MARKET]...
+  --create  write the file if it does not exist (otherwise a missing file is left alone, exit 0)
+Exit: 0 written or nothing to do; 1 refused (the reason on stderr), nothing changed.
+"""
+import json
+import os
+import stat
+import sys
+import tempfile
+
+
+def refuse(msg):
+    print("managed-settings NOT written: %s" % msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_args(argv):
+    if not argv or argv[0].startswith("-"):
+        refuse("usage: managed-settings-write.py <file> [--create] [--channels-enabled] [--add-plugin NAME@MARKET]...")
+    path, create, enable, plugins = argv[0], False, False, []
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--create":
+            create = True
+        elif a == "--channels-enabled":
+            enable = True
+        elif a == "--add-plugin" and i + 1 < len(argv):
+            name, sep, market = argv[i + 1].partition("@")
+            if not sep or not name or not market:
+                refuse("bad --add-plugin value: %r (want NAME@MARKETPLACE)" % argv[i + 1])
+            plugins.append({"plugin": name, "marketplace": market})
+            i += 1
+        else:
+            refuse("unknown argument: %r" % a)
+        i += 1
+    return path, create, enable, plugins
+
+
+def check_dir(d, euid):
+    try:
+        st = os.lstat(d)
+    except OSError as e:
+        refuse("the directory %s cannot be read: %s" % (d, e.strerror))
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        refuse("%s is not a plain directory" % d)
+    if st.st_uid != euid:
+        refuse("the directory %s is not owned by uid %d" % (d, euid))
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        refuse("the directory %s is group- or other-writable" % d)
+
+
+def main(argv):
+    path, create, enable, plugins = parse_args(argv)
+    euid = os.geteuid()
+    d = os.path.dirname(os.path.abspath(path))
+    check_dir(d, euid)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        st = None
+    if st is None:
+        if not create:
+            print("managed-settings: %s does not exist, nothing to merge" % path)
+            return 0
+        data, mode = {}, 0o644
+    else:
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            refuse("%s is not a regular file" % path)
+        if st.st_uid != euid:
+            refuse("%s is not owned by uid %d" % (path, euid))
+        try:
+            with open(path, "rb") as f:
+                data = json.loads(f.read().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            refuse("%s is not valid JSON (%s); an org-policy file is never rebuilt from scratch" % (path, type(e).__name__))
+        if not isinstance(data, dict):
+            refuse("%s is not a JSON object" % path)
+        mode = stat.S_IMODE(st.st_mode)
+    before = json.dumps(data, sort_keys=True)
+    if plugins:
+        have = data.get("allowedChannelPlugins")
+        if have is None:
+            have = []
+        if not isinstance(have, list):
+            refuse("allowedChannelPlugins in %s is not a list" % path)
+        for p in plugins:
+            if not any(isinstance(e, dict) and e.get("plugin") == p["plugin"]
+                       and e.get("marketplace") == p["marketplace"] for e in have):
+                have.append(p)
+        data["allowedChannelPlugins"] = have
+    if enable:
+        data["channelsEnabled"] = True
+    if json.dumps(data, sort_keys=True) == before and st is not None:
+        print("managed-settings: %s already has everything, not rewritten" % path)
+        return 0
+    fd, tmp = tempfile.mkstemp(prefix=".managed-settings.", suffix=".tmp", dir=d)
+    try:
+        os.fchmod(fd, mode)
+        os.fchown(fd, euid, os.getegid() if euid != 0 else 0)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    print("managed-settings: %s written" % path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+MSW_PY
+}
+# Read as the user, nothing written: 0 when the file already has every wanted entry (NAME@MARKETPLACE, or
+# --channels for channelsEnabled), so an already-correct host asks for no password (the gate's old rule).
+# A wrong answer only means a needless or skipped write, never code run as root.
+managed_has() {
+  /usr/bin/python3 -I -S - "$@" 2>/dev/null <<'MSH_PY'
+import json, sys
+path, want = sys.argv[1], sys.argv[2:]
+try:
+    d = json.load(open(path))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+have = set()
+for p in d.get("allowedChannelPlugins") or []:
+    if isinstance(p, dict):
+        have.add("%s@%s" % (p.get("plugin"), p.get("marketplace")))
+for w in want:
+    if w == "--channels":
+        if d.get("channelsEnabled") is not True:
+            sys.exit(1)
+    elif w not in have:
+        sys.exit(1)
+sys.exit(0)
+MSH_PY
+}
+# 0 = a root-owned regular file, not group/other-writable, with every parent dir root-owned and not
+# group/other-writable unless sticky (/tmp). The macOS twin of install-linux.sh root_only_path (BSD stat).
+macos_root_only_path() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  macos_root_only_chain "$1"
+}
+# The same rule for a path and every dir above it, without the regular-file test (a dir chain).
+macos_root_only_chain() {
+  local p="$1" m
+  while :; do
+    [ "$(/usr/bin/stat -f '%u' "$p" 2>/dev/null)" = 0 ] || return 1
+    m="$(/usr/bin/stat -f '%p' "$p" 2>/dev/null)" || return 1
+    m="${m: -4}"
+    if [ $(( 8#$m & 8#022 )) -ne 0 ] && [ $(( 8#$m & 8#1000 )) -eq 0 ]; then return 1; fi
+    [ "$p" = / ] && break
+    p="$(dirname "$p")"
+  done
+  return 0
+}
+# The global npm install as root (NPMPERM1's sudo route): only from root-owned node and npm, under a clean
+# environment (no user PATH for npm's `env node`, no user HOME/.npmrc). Otherwise refused, with the manual step.
+root_npm_install_global() { # $1 = the package
+  local npm node npm_real node_real
+  npm="$(command -v npm 2>/dev/null)" || npm=""
+  node="$(command -v node 2>/dev/null)" || node=""
+  [ -n "$npm" ] && [ -n "$node" ] || return 1
+  npm_real="$(/usr/bin/python3 -I -S -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$npm")" || return 1
+  node_real="$(/usr/bin/python3 -I -S -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$node")" || return 1
+  macos_root_only_path "$npm_real" && macos_root_only_path "$node_real" || return 1
+  # the names on PATH (often links) sit in a root-only dir chain, so nobody swaps them after this check
+  macos_root_only_chain "$(dirname "$npm")" && macos_root_only_chain "$(dirname "$node")" || return 1
+  /usr/bin/sudo /usr/bin/env -i PATH="$(dirname "$node_real"):/usr/bin:/bin:/usr/sbin:/sbin" HOME=/var/root \
+    "$node_real" "$npm_real" install -g "$1"
+}
+
 # Error-translation layer (NPMPERM1 kor): minden stderr egy log-fajlba is
 # megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
 # forditani az upstream hibat (explain_install_error, install-lang.sh).
@@ -277,9 +499,9 @@ export PATH="$HOME/.bun/bin:$PATH"
 if ! command -v bun &>/dev/null; then
   echo -e "  ${ORANGE}$(_t macos.installing_bun)${NC}"
   curl -fsSL https://bun.sh/install | bash 2>/dev/null
-  # Source the profile that bun installer modified
-  [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null
-  [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null
+  # MACROOTFROMCLONE1106: the profile is NOT sourced into the installer. It is the user's (an agent can write it),
+  # and the root steps below would run in whatever it defined (a `sudo` function, a PATH). bun's installer only
+  # adds its bin dir to the profile; this run needs only that.
   export PATH="$HOME/.bun/bin:$PATH"
   if ! command -v bun &>/dev/null; then
     echo -e "  ${RED}✗${NC} $(_t macos.bun_install_failed)"
@@ -300,7 +522,13 @@ if ! command -v claude &>/dev/null; then
       fail "$(_t npm.aborted)"
     fi
     if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
-      sudo npm install -g @anthropic-ai/claude-code
+      if ! root_npm_install_global @anthropic-ai/claude-code; then
+        echo -e "  ${RED}✗${NC} $(_t macos.root_npm_refused)"
+        echo "    sudo npm install -g @anthropic-ai/claude-code"
+        fail "$(_t npm.aborted)"
+      fi
+      # the sudo login ends here: the user-level steps below run no root step until the managed block
+      command /usr/bin/sudo -K 2>/dev/null || true
     else
       npm install -g @anthropic-ai/claude-code
     fi
@@ -324,7 +552,7 @@ INSTALL_STEP="claude-setup"
 # Bypass Permissions promptokon. Tehat a flag-set FOLY-RA `auth login`
 # ELOTT, hogy ezek a defensive default-ok mindenkeppen a helyukre keruljenek.
 mkdir -p "$HOME/.claude"
-python3 - <<'PYEOF'
+/usr/bin/python3 -I -S - <<'PYEOF'
 import json, os, pathlib
 p = pathlib.Path(os.path.expanduser("~/.claude.json"))
 data = {}
@@ -342,7 +570,7 @@ try:
 except Exception:
     pass
 PYEOF
-python3 - <<'PYEOF'
+/usr/bin/python3 -I -S - <<'PYEOF'
 import json, os, pathlib
 p = pathlib.Path(os.path.expanduser("~/.claude/settings.json"))
 data = {}
@@ -550,15 +778,8 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
   if [ -f "$MANAGED_FILE" ]; then
     managed_settings_notice
-    HAS_DISCORD=$(sudo python3 -c "
-import json, sys
-try:
-  d = json.load(open('$MANAGED_FILE'))
-  have = {(p.get('plugin'),p.get('marketplace')) for p in d.get('allowedChannelPlugins', [])}
-  sys.exit(0 if ('discord','claude-plugins-official') in have else 1)
-except: sys.exit(1)
-" 2>/dev/null && echo "yes" || echo "no")
-    if [ "$HAS_DISCORD" = "no" ]; then
+    # Read as the user (MACROOTFROMCLONE1106): an already-allowed discord needs no password.
+    if ! managed_has "$MANAGED_FILE" discord@claude-plugins-official; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
       # Merge only, the file is never created here: the shared writer
       # (MANAGEDSETTINGSWRITE1103, scripts/lib/managed-settings-write.py).
@@ -567,8 +788,7 @@ except: sys.exit(1)
       # fallback would silently drop the OTHER channels' allowlist entries,
       # muting them host-wide. Every other key and the file mode stay; the
       # write goes through a fresh mkstemp file and os.replace.
-      if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" \
-        --add-plugin discord@claude-plugins-official
+      if managed_write "$MANAGED_FILE" --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
       else
@@ -610,17 +830,9 @@ else
     # the Teams bot is silently dropped (online but never replies). This is the
     # per-customer sudo-elimination: the installer (already sudo) allows teams
     # at install time, so no manual managed-settings edit is needed later.
-    HAS_ALL=$(sudo python3 -c "
-import json, sys
-required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace'),('discord','claude-plugins-official')]
-try:
-  d = json.load(open('$MANAGED_FILE'))
-  plugins = d.get('allowedChannelPlugins', [])
-  have = {(p.get('plugin'),p.get('marketplace')) for p in plugins}
-  sys.exit(0 if all(r in have for r in required) else 1)
-except: sys.exit(1)
-" 2>/dev/null && echo "yes" || echo "no")
-    if [ "$HAS_ALL" = "no" ]; then
+    # Read as the user (MACROOTFROMCLONE1106): a file that already allows all four needs no password.
+    if ! managed_has "$MANAGED_FILE" slack-channel@marveen-marketplace telegram@claude-plugins-official \
+      teams@marveen-marketplace discord@claude-plugins-official; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
       # Additive merge through the shared writer (MANAGEDSETTINGSWRITE1103,
       # scripts/lib/managed-settings-write.py; same call as the Discord branch).
@@ -630,7 +842,7 @@ except: sys.exit(1)
       # (channelsEnabled, other allowlists) host-wide, and the older `sudo tee`
       # shape TRUNCATED the file even when the merge failed. Every other key and
       # the file mode stay; the write goes through a fresh mkstemp file.
-      if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" \
+      if managed_write "$MANAGED_FILE" \
         --add-plugin slack-channel@marveen-marketplace \
         --add-plugin telegram@claude-plugins-official \
         --add-plugin teams@marveen-marketplace \
@@ -647,7 +859,7 @@ except: sys.exit(1)
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
-    sudo mkdir -p "$MANAGED_DIR"
+    /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR"
     # Fresh file through the same shared writer (--create): a fresh mkstemp file
     # and os.replace, so an interrupted install can never leave a truncated or
     # empty org-policy file that a later run would then refuse to touch (the
@@ -655,7 +867,7 @@ except: sys.exit(1)
     # whatever the umask: under `umask 077` a root-owned 0600 policy is one the
     # unprivileged session cannot read, so it silently never takes effect. If a
     # file appeared meanwhile, --create merges into it instead of replacing it.
-    if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" --create \
+    if managed_write "$MANAGED_FILE" --create \
       --add-plugin slack-channel@marveen-marketplace \
       --add-plugin telegram@claude-plugins-official \
       --add-plugin teams@marveen-marketplace \
@@ -674,23 +886,35 @@ fi
 # >= 2.1.205 silently drops channel-plugin INBOUND notifications on a team/
 # enterprise org unless managed-settings has channelsEnabled:true (harmless /
 # no-op on a personal org). Idempotent + preserves existing managed keys.
+# MACROOTFROMCLONE1106: the embedded writer does it, not the clone's
+# scripts/ensure-managed-channels-enabled.sh (that script ran the clone's writer as root). Its separate
+# call stays separate from the plugin merge above, so an allowlist the writer refuses never keeps
+# channelsEnabled from being set. ORGGATESILENT806: never fails the install, and the outcome reaches the
+# final summary (CHANNELS_GATE_STATE).
 CHANNELS_GATE_STATE="manual"
-if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+MANAGED_DIR="/Library/Application Support/ClaudeCode"
+MANAGED_FILE="$MANAGED_DIR/managed-settings.json"
+if managed_has "$MANAGED_FILE" --channels; then
+  echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
+  CHANNELS_GATE_STATE="ok"
+else
   managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
-  # ORGGATESILENT806: the gate script must never fail the install (exit 0 on
-  # every path -- a personal org is a legitimate no-op), but its OUTCOME must
-  # not vanish either: it prints a MARVEEN_CHANNELS_GATE=ok|manual verdict
-  # line, and the final summary below repeats it -- with the exact root
-  # command when manual. Silent skipping was the bug, not skipping.
-  CHANNELS_GATE_OUT="$(bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" 2>&1 || true)"
-  # The verdict line is machine-facing; the customer sees only the human lines.
-  echo "$CHANNELS_GATE_OUT" | grep -v "MARVEEN_CHANNELS_GATE=" || true
-  case "$CHANNELS_GATE_OUT" in
-    *MARVEEN_CHANNELS_GATE=ok*) CHANNELS_GATE_STATE="ok" ;;
-    *) CHANNELS_GATE_STATE="manual" ;;
-  esac
+  if /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled; then
+    echo "  channelsEnabled=true beallitva a managed-settings-ben ($MANAGED_FILE)"
+    echo "    (a bejovo channel-uzenetek team/enterprise orgnal is celba ernek; restart utan lep eletbe.)"
+    CHANNELS_GATE_STATE="ok"
+  else
+    echo "  ! channelsEnabled: a managed-settings frissitese sikertelen (a zaro osszegzes mondja a kezi lepest)."
+  fi
 fi
+
+# MACROOTFROMCLONE1106: the LAST root step is above. From here on clone code runs (npm install and the build,
+# the sourced helpers, the clone's scripts), so first the sudo login goes and the password the Bridge passed
+# in (headless-sudo-macos.sh) is unset. `command` keeps this line out of the Bridge's sudo -> run_priv rewrite.
+command /usr/bin/sudo -K 2>/dev/null || true
+unset __MARVEEN_SUDO_PW
+unset -f run_priv
 
 read -rp "$(_t prompt_bot_name)" BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
@@ -1875,7 +2099,8 @@ if [ "${CHANNELS_GATE_STATE:-manual}" = "ok" ]; then
   echo -e "  ${GREEN}✓${NC} Org-szintu channel-kapu: channelsEnabled=true a managed-settings-ben"
 else
   echo -e "  ${ORANGE}!${NC} Org-szintu channel-kapu NINCS beallitva (team/enterprise orgnal a bejovo uzenetek elakadnak)."
-  echo -e "    Kezi root-lepes: ${BOLD}sudo bash \"$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh\"${NC}"
+  # MACROOTFROMCLONE1106: the key itself, not a clone script to run as root.
+  echo -e "    Kezi root-lepes: a ${BOLD}/Library/Application Support/ClaudeCode/managed-settings.json${NC} fajlba (rootkent szerkesztve) keruljon: ${BOLD}\"channelsEnabled\": true${NC}"
 fi
 echo ""
 echo -e "  ${DIM}$(_t next_steps.title)${NC}"
