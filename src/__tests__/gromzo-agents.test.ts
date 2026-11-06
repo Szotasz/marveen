@@ -321,6 +321,14 @@ describe('the main agent (GROMZOMAINAGENT1106)', () => {
     expect(w.restarted).toEqual([MAIN_AGENT_ID])
   })
 
+  it('agent_exists with a name the owner typed stays an error: mxd keeps its listed name (Dani 71877)', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps, 'Új Név')).toEqual({ ok: false, code: 'agent_exists' })
+    expect(w.writes).toEqual([])
+    expect(w.restarted).toEqual([])
+  })
+
   it('agent_exists for a SUB-agent stays an error (the shortcut is the main agent\'s only)', async () => {
     const w = world()
     w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]

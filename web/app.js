@@ -21357,8 +21357,10 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
     return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
   }
 
+  // Not on a held row: mxd asks for a held agent again only under the name it lists (marveen-mxd main.rs is_held), so a
+  // new name there could not take effect (Dani 71877).
   function nameFieldShown(row, pending) {
-    return !pending && (!row.gromzo || row.held) && nameAsk.has(row.slug)
+    return !pending && !row.gromzo && !row.held && nameAsk.has(row.slug)
   }
 
   function nameFor(row) {

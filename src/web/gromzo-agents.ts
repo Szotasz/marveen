@@ -245,7 +245,9 @@ export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps, nam
   const r = await requestAgentAdd(deps.call, slug, wanted)
   // GROMZOMAINAGENT1106: mxd already lists the main agent (its config agent, or an earlier consent whose
   // launch side failed). No second consent: the launch side runs again (marketplace, .env id, restart).
-  if (!r.ok && r.code === 'agent_exists' && slug === MAIN_AGENT_ID) {
+  // GROMZONAMETAKEN1106 (Dani 71877): not when the owner typed a name. mxd keeps the name it lists, so "added" would
+  // drop the typed one without a word; the owner gets agent_exists instead.
+  if (!r.ok && r.code === 'agent_exists' && slug === MAIN_AGENT_ID && name === undefined) {
     deps.writeFlag(slug, true)
     deps.restartOne(slug)
     return { ok: true, state: 'added' }
