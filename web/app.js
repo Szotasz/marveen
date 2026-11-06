@@ -21290,6 +21290,8 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
 ;(function setupGromzoAgents() {
   const listEl = document.getElementById('gromzoAgentList')
   const errEl = document.getElementById('gromzoAgentsError')
+  // MXDAGENTSOCKID1106: mxd could not read its protection state, so it counts every agent as protected (Samu 71344 (1)).
+  const ratchetEl = document.getElementById('gromzoAgentsRatchet')
   if (!listEl || !errEl) return
   const POLL_MS = 6000
   // slug -> { kind: 'pending'|'busy'|'error'|'restarting', text?, until? } (this page's view only)
@@ -21371,6 +21373,14 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
         pic.textContent = t('gromzo.agents.avatar.' + row.avatarProblem)
         main.append(pic)
       }
+      // MXDAGENTSOCKID1106: the agent's agent.sock protection. Refused: its plugin sends no token for a protected
+      // agent; unprotected: running for 10 minutes without a token yet. Protected shows nothing.
+      if (row.protection === 'refused' || row.protection === 'unprotected') {
+        const prot = document.createElement('span')
+        prot.className = 'gromzo-agent-state ' + (row.protection === 'refused' ? 'is-error' : 'is-warn')
+        prot.textContent = t('gromzo.agents.prot.' + row.protection)
+        main.append(prot)
+      }
       // The main agent: switching it on or off restarts the main conversation, so the row says so up front.
       if (row.main) {
         const note = document.createElement('span')
@@ -21450,7 +21460,12 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
       }
       window.gromzoOwnerLogin(false)
       void showLogoutIfDevice()
-      rows = (await r.json()).agents || []
+      const body = await r.json()
+      rows = body.agents || []
+      if (ratchetEl) {
+        ratchetEl.textContent = body.ratchetUnreadable === true ? t('gromzo.agents.prot.ratchet_unreadable') : ''
+        ratchetEl.hidden = body.ratchetUnreadable !== true
+      }
       for (const row of rows) if (row.pendingUntil && row.pendingUntil > Date.now() && !local.has(row.slug)) local.set(row.slug, { kind: 'pending', until: row.pendingUntil })
       render()
       ensurePolling()

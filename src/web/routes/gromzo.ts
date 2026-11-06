@@ -40,7 +40,7 @@ export const OWNER_QR_SESSION_REQUIRED = {
 }
 import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
-  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, sendGromzoAvatar, type GromzoAgentDeps, type GromzoAgentOutcome,
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, sendGromzoAvatar, statusFactsOf, type GromzoAgentDeps, type GromzoAgentOutcome,
 } from '../gromzo-agents.js'
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
@@ -273,6 +273,15 @@ const defaultAgentDeps: GromzoAgentDeps = {
   avatarProblem: (slug) => avatarProblem(agentDir(slug)),
   // One tmux list-sessions per server for the whole list, not one sync call per agent.
   batch: (fn) => withTmuxBatch(fn),
+  // MXDAGENTSOCKID1106: the agents' token protection from the same dash status (marveen-mxd main.rs status_agents):
+  // agents.protected / agents.refused / agents.running (slugs only) and the top-level ratchet_unreadable. An older
+  // mxd has none of these: null, and the rows show nothing.
+  // One status call gives the list both the held agents and the protection.
+  statusFacts: async () => {
+    try {
+      return statusFactsOf(await call({ verb: 'status' }))
+    } catch { return { held: new Set<string>(), protection: null } }
+  },
   held: async () => {
     // dash status carries held_agents only when it is not empty (marveen-mxd link.rs status).
     try {
@@ -347,7 +356,7 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
     return true
   }
   if (!action) {
-    json(res, { agents: await listGromzoAgents(agentDeps) })
+    json(res, await listGromzoAgentsWithStatus(agentDeps))
     return true
   }
   let slug: string

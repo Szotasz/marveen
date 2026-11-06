@@ -4,8 +4,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
-  CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, resetPendingGromzoConsents,
-  sendGromzoAvatar, slugRefusal, type GromzoAgentDeps,
+  CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, listGromzoAgentsWithStatus,
+  protectionOf, resetPendingGromzoConsents, resetProtectionClockForTest, sendGromzoAvatar, slugRefusal, statusFactsOf,
+  UNPROTECTED_AFTER_MS, type GromzoAgentDeps, type MxdProtection,
 } from '../web/gromzo-agents.js'
 import type { MxdDashReply, MxdDashRequest } from '../web/mxd-dash.js'
 
@@ -448,5 +449,58 @@ describe('the agent picture (Samu 64526)', () => {
     w.avatars.set('zara', PNG)
     const rows = await listGromzoAgents(w.deps)
     expect(rows.map((r) => [r.slug, r.avatarProblem])).toEqual([[MAIN_AGENT_ID, null], ['abel', 'no_avatar'], ['samu', 'no_avatar'], ['zara', null]])
+  })
+})
+
+
+// MXDAGENTSOCKID1106: the agents' agent.sock protection on the list (Samu 71321, 71344 (1), 71418).
+describe('the token protection on the list', () => {
+  const P = (o: Partial<MxdProtection> = {}): MxdProtection => ({ protected: new Set(), refused: new Set(), running: new Set(), ratchetUnreadable: false, ...o })
+  beforeEach(() => resetProtectionClockForTest())
+
+  it('refused wins; protected; unprotected only after 10 minutes running without a token; nothing when off or unknown', () => {
+    const t0 = 5_000_000
+    expect(protectionOf('samu', true, P({ refused: new Set(['samu']), protected: new Set(['samu']) }), t0)).toBe('refused')
+    expect(protectionOf('samu', true, P({ protected: new Set(['samu']) }), t0)).toBe('protected')
+    expect(protectionOf('samu', false, P({ refused: new Set(['samu']) }), t0), 'Gromzo off: nothing').toBeNull()
+    expect(protectionOf('samu', true, null, t0), 'an older mxd: nothing').toBeNull()
+    const run = P({ running: new Set(['zara']) })
+    expect(protectionOf('zara', true, run, t0), 'first seen running').toBeNull()
+    expect(protectionOf('zara', true, run, t0 + UNPROTECTED_AFTER_MS - 1)).toBeNull()
+    expect(protectionOf('zara', true, run, t0 + UNPROTECTED_AFTER_MS)).toBe('unprotected')
+    // Not running any more resets the clock; protected resets it too.
+    expect(protectionOf('zara', true, P({ running: new Set() }), t0 + UNPROTECTED_AFTER_MS + 1)).toBeNull()
+    expect(protectionOf('zara', true, run, t0 + 2 * UNPROTECTED_AFTER_MS), 'seen again: a new 10 minutes').toBeNull()
+    // While mxd's agents are still starting (running null), no clock runs.
+    expect(protectionOf('abel', true, P({ running: null }), t0)).toBeNull()
+  })
+
+  it('an unreadable ratchet: every agent counts as protected, and the list says so', async () => {
+    expect(protectionOf('zara', true, P({ ratchetUnreadable: true, running: new Set(['zara']) }), 1)).toBe('protected')
+    const w = world()
+    w.flags.set('samu', true)
+    w.deps.statusFacts = async () => ({ held: new Set(), protection: P({ ratchetUnreadable: true, running: new Set(['samu']) }) })
+    const r = await listGromzoAgentsWithStatus(w.deps)
+    expect(r.ratchetUnreadable).toBe(true)
+    expect(r.agents.find((x) => x.slug === 'samu')!.protection).toBe('protected')
+  })
+
+  it('statusFacts replaces held: one status answer gives both, and only slugs pass', async () => {
+    const f = statusFactsOf({ ok: true, held_agents: ['zara', '../x', 7], agents: { running: ['samu', 'zara', 'Bad'], held: ['zara'], protected: ['samu'], refused: ['abel', '$x'] }, ratchet_unreadable: false })
+    expect([...f.held]).toEqual(['zara'])
+    expect(f.protection).toEqual({ protected: new Set(['samu']), refused: new Set(['abel']), running: new Set(['samu', 'zara']), ratchetUnreadable: false })
+    expect(statusFactsOf({ ok: true, agents: { running: [], held: [] } }).protection, 'an mxd before the tokens').toBeNull()
+    const w = world()
+    for (const s of ['samu', 'abel']) w.flags.set(s, true)
+    let heldCalls = 0
+    w.deps.held = async () => { heldCalls++; return new Set() }
+    w.deps.statusFacts = async () => f
+    const r = await listGromzoAgentsWithStatus(w.deps)
+    expect(heldCalls, 'the list asks mxd once').toBe(0)
+    expect(r.agents.find((x) => x.slug === 'samu')!.protection).toBe('protected')
+    expect(r.agents.find((x) => x.slug === 'abel')!.protection).toBe('refused')
+    expect(r.agents.find((x) => x.slug === 'zara')!).toMatchObject({ held: true, protection: null })
+    expect(r.ratchetUnreadable).toBe(false)
+    expect(await listGromzoAgents(w.deps)).toEqual(r.agents)
   })
 })

@@ -759,6 +759,20 @@ describe('the held list from the real dash status (fake dash.sock)', () => {
     expect(fake.seen).toEqual(['status'])
   })
 
+  it('MXDAGENTSOCKID1106: one status call gives the list the protection and the fail-closed ratchet state', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true, agents: { running: ['zara'], held: [], protected: ['zara'], refused: [] }, ratchet_unreadable: true })
+    const body = await (await fetch(origin + '/api/gromzo/agents')).json()
+    expect(body.ratchetUnreadable).toBe(true)
+    expect((body.agents as Array<Record<string, unknown>>).every((x) => 'protection' in x)).toBe(true)
+    expect(fake.seen).toEqual(['status'])
+    // An mxd before the tokens: no protection, no banner.
+    fake.seen.length = 0
+    fake.script.set('status', { ok: true, running: true, linked: true })
+    const old = await (await fetch(origin + '/api/gromzo/agents')).json()
+    expect(old.ratchetUnreadable).toBe(false)
+    expect((old.agents as Array<{ protection: unknown }>).every((x) => x.protection === null)).toBe(true)
+  })
+
   it('no held_agents field (the empty case) or mxd down: nobody is held, the list still answers', async () => {
     fake.script.set('status', { ok: true, running: true, linked: true })
     let rows = (await (await fetch(origin + '/api/gromzo/agents')).json()).agents as Array<{ held: boolean }>

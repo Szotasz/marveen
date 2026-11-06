@@ -47,6 +47,61 @@ export interface GromzoAgentDeps {
   now: () => number
   /** GROMZOMAINAGENT1106: the main agent's launch state for its row (main-gromzo.ts); absent = 'idle'. */
   mainLaunchState?: () => string
+  /** MXDAGENTSOCKID1106: the held agents and the agent.sock protection from ONE dash status call (statusFactsOf).
+   *  When given, the list uses it instead of `held`, so a list load asks mxd once. */
+  statusFacts?: () => Promise<{ held: Set<string>, protection: MxdProtection | null }>
+}
+
+/** MXDAGENTSOCKID1106: what one dash status says: held_agents (only when not empty, marveen-mxd link.rs) and the
+ *  token protection (marveen-mxd main.rs status_agents; absent from an older mxd: null). Slugs only, checked. */
+export function statusFactsOf(r: Record<string, unknown>): { held: Set<string>, protection: MxdProtection | null } {
+  const slugs = (v: unknown) => new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && MXD_AGENT_SLUG_RE.test(x)) : [])
+  const a = r.agents as Record<string, unknown> | undefined
+  const protection = a && Array.isArray(a.protected) && Array.isArray(a.refused)
+    ? { protected: slugs(a.protected), refused: slugs(a.refused), running: Array.isArray(a.running) ? slugs(a.running) : null, ratchetUnreadable: r.ratchet_unreadable === true }
+    : null
+  return { held: slugs(r.held_agents), protection }
+}
+
+/** MXDAGENTSOCKID1106: what mxd's dash status says about the agents' tokens (marveen-mxd agent_tokens). */
+export interface MxdProtection {
+  /** Agents whose tokenless hello is refused for good (the ratchet). */
+  protected: Set<string>
+  /** Agents refused with token_required in the last 10 minutes: a plugin that sends no token. */
+  refused: Set<string>
+  /** Agents mxd runs, or null while they are still starting. */
+  running: Set<string> | null
+  /** The ratchet file is unreadable: mxd counts every agent as protected (fail closed). */
+  ratchetUnreadable: boolean
+}
+
+export type GromzoProtection = 'protected' | 'unprotected' | 'refused'
+
+/** An agent running this long without its first tokened bind shows as unprotected (Samu 71321). */
+export const UNPROTECTED_AFTER_MS = 10 * 60_000
+/** slug -> when it was first seen running in mxd without protection (in memory: a dashboard restart starts over). */
+const unprotectedSince = new Map<string, number>()
+
+/** The row's protection state; null when Gromzo is off for it, mxd says nothing, or it is too early to tell. */
+export function protectionOf(slug: string, gromzo: boolean, p: MxdProtection | null, now: number): GromzoProtection | null {
+  if (!gromzo || p === null) return null
+  if (p.refused.has(slug)) return 'refused'
+  if (p.ratchetUnreadable || p.protected.has(slug)) {
+    unprotectedSince.delete(slug)
+    return 'protected'
+  }
+  if (!p.running || !p.running.has(slug)) {
+    unprotectedSince.delete(slug)
+    return null
+  }
+  const since = unprotectedSince.get(slug) ?? now
+  unprotectedSince.set(slug, since)
+  return now - since >= UNPROTECTED_AFTER_MS ? 'unprotected' : null
+}
+
+/** For the tests: forget the first-seen times. */
+export function resetProtectionClockForTest(): void {
+  unprotectedSince.clear()
 }
 
 export interface GromzoAgentRow {
@@ -63,6 +118,8 @@ export interface GromzoAgentRow {
   pendingUntil: number | null
   /** GROMZOMAINAGENT1106: the main row only: where its launch side stands (main-gromzo.ts); null on other rows. */
   mainLaunch: string | null
+  /** MXDAGENTSOCKID1106: protected, unprotected (running 10 min without a token), refused (a plugin with no token). */
+  protection: GromzoProtection | null
 }
 
 export type GromzoAgentOutcome =
@@ -104,7 +161,14 @@ export function slugRefusal(slug: string, deps: Pick<GromzoAgentDeps, 'agents'>,
 }
 
 export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAgentRow[]> {
-  const held = await deps.held()
+  return (await listGromzoAgentsWithStatus(deps)).agents
+}
+
+/** The list plus mxd's fail-closed ratchet state (MXDAGENTSOCKID1106: the owner sees it, Samu 71344 (1)). */
+export async function listGromzoAgentsWithStatus(deps: GromzoAgentDeps): Promise<{ agents: GromzoAgentRow[], ratchetUnreadable: boolean }> {
+  const facts = deps.statusFacts ? await deps.statusFacts() : { held: await deps.held(), protection: null }
+  const held = facts.held
+  const prot = facts.protection
   const now = deps.now()
   dropExpired(now)
   const build = (): GromzoAgentRow[] => {
@@ -115,6 +179,7 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
       gromzo: deps.readFlag(MAIN_AGENT_ID), running: deps.isRunning(MAIN_AGENT_ID), held: held.has(MAIN_AGENT_ID),
       avatarProblem: null, pendingUntil: pending.get(MAIN_AGENT_ID)?.expiresAt ?? null,
       mainLaunch: deps.mainLaunchState ? deps.mainLaunchState() : 'idle',
+      protection: protectionOf(MAIN_AGENT_ID, deps.readFlag(MAIN_AGENT_ID), prot, now),
     }]
     for (const slug of [...deps.agents()].sort()) {
       if (slug === MAIN_AGENT_ID) continue
@@ -128,11 +193,12 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
         avatarProblem: deps.avatarProblem(slug),
         pendingUntil: pending.get(slug)?.expiresAt ?? null,
         mainLaunch: null,
+        protection: protectionOf(slug, deps.readFlag(slug), prot, now),
       })
     }
     return rows
   }
-  return deps.batch ? deps.batch(build) : build()
+  return { agents: deps.batch ? deps.batch(build) : build(), ratchetUnreadable: prot?.ratchetUnreadable === true }
 }
 
 /** Switch on: the owner's consent first (in the app); the flag only after mxd added the agent. */

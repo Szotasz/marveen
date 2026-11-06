@@ -315,6 +315,21 @@ else
   ok "No failure log"
 fi
 
+# --- Gromzo token protection (MXDAGENTSOCKID1106) ---
+# Report only: a warn here never fails the run. See scripts/lib/gromzo-protection-check.sh.
+. "$INSTALL_DIR/scripts/lib/gromzo-protection-check.sh"
+GZ_CTL_SOCK="$(gromzo_mxdctl_and_sock)"
+if [ -n "$GZ_CTL_SOCK" ]; then
+  echo -e "\n${BOLD}Gromzo${RESET}"
+  "${GZ_CTL_SOCK%%|*}" "${GZ_CTL_SOCK#*|}" status 2>/dev/null | gromzo_protection_lines | while IFS='|' read -r level msg; do
+    case "$level" in
+      ok)   ok "$msg" ;;
+      warn) warn "$msg" ;;
+      *)    echo "  - $msg" ;;
+    esac
+  done
+fi
+
 # --- Spotlight (macOS) ---
 # Report only (SPOTLIGHT1022): a warn here never fails the run. See scripts/lib/spotlight-check.sh.
 if [ "$(uname -s)" = "Darwin" ]; then
