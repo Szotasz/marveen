@@ -125,6 +125,14 @@ esac
 # respawn dropped the secondary inbound for ~20 minutes while the primary kept
 # working, so neither the probes nor the agent itself noticed.
 CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+# GROMZOMAINAGENT1106: the same gromzo filter and launch exports as channels.sh. The slug is read raw from
+# .env here: MAIN_AGENT_ID above is stripped to [a-zA-Z0-9_-] for the session name, which is not mxd's rule.
+_GZ_MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+. "$INSTALL_DIR/scripts/main-gromzo-launch.sh"
+# shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+CHANNEL_PLUGINS_EXTRA="$(main_gromzo_filter_ids "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+# shellcheck disable=SC2086
+GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
@@ -301,7 +309,7 @@ STATE_DIR_ENV=""
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
 # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

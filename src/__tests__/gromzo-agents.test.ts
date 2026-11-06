@@ -60,7 +60,7 @@ beforeEach(() => resetPendingGromzoConsents())
 describe('a slug is checked before any mxd call', () => {
   for (const [slug, code] of [
     ['Abel', 'bad_request'], ['../samu', 'bad_request'], ['', 'bad_request'], ['a'.repeat(33), 'bad_request'],
-    [MAIN_AGENT_ID, 'main_agent'], ['nobody', 'unknown_agent'],
+    ['nobody', 'unknown_agent'],
   ] as const) {
     it(`"${slug.slice(0, 12)}" -> ${code}, enable / check / disable make no call`, async () => {
       const w = world()
@@ -283,11 +283,74 @@ describe('the list', () => {
     expect(runs.every(Boolean)).toBe(true)
   })
 
-  it('the main agent first, always on and never switchable; then the fleet sorted, with flags', async () => {
+  it('the main agent first, its switch read like any other (GROMZOMAINAGENT1106: no fixed "always on"); then the fleet sorted', async () => {
     const w = world(['zara', 'abel', MAIN_AGENT_ID])
     w.flags.set('zara', true)
+    let rows = await listGromzoAgents(w.deps)
+    expect(rows.map((r) => [r.slug, r.main, r.gromzo])).toEqual([[MAIN_AGENT_ID, true, false], ['abel', false, false], ['zara', false, true]])
+    expect(rows[0]!.mainLaunch).toBe('idle')
+    expect(rows[1]!.mainLaunch).toBeNull()
+    w.flags.set(MAIN_AGENT_ID, true)
+    w.heldSet.add(MAIN_AGENT_ID)
+    rows = await listGromzoAgents({ ...w.deps, mainLaunchState: () => 'restart_waiting' })
+    expect(rows[0]).toMatchObject({ slug: MAIN_AGENT_ID, gromzo: true, held: true, mainLaunch: 'restart_waiting' })
+  })
+})
+
+// GROMZOMAINAGENT1106: the main agent joins Gromzo through the same owner consent as every agent.
+describe('the main agent (GROMZOMAINAGENT1106)', () => {
+  it('switch on asks the owner first; only the added check writes its flag and restarts it', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A)]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: MAIN_AGENT_ID, name: MAIN_AGENT_ID[0]!.toUpperCase() + MAIN_AGENT_ID.slice(1) }])
+    expect(w.writes).toEqual([])
+    later(w)
+    w.replies.agent_add_check = [added(MAIN_AGENT_ID)]
+    expect(await checkGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'added' })
+    expect(w.writes).toEqual([[MAIN_AGENT_ID, true]])
+    expect(w.restarted).toEqual([MAIN_AGENT_ID])
+  })
+
+  it('already in mxd (agent_exists): no second consent, the launch side runs again', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'added' })
+    expect(w.writes).toEqual([[MAIN_AGENT_ID, true]])
+    expect(w.restarted).toEqual([MAIN_AGENT_ID])
+  })
+
+  it('agent_exists for a SUB-agent stays an error (the shortcut is the main agent\'s only)', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'agent_exists' })
+    expect(w.writes).toEqual([])
+    expect(w.restarted).toEqual([])
+  })
+
+  it('switch off takes only the launch side back: no agent_remove, the flag off, a restart', async () => {
+    const w = world()
+    w.flags.set(MAIN_AGENT_ID, true)
+    expect(await disableGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'removed' })
+    expect(w.calls).toEqual([])
+    expect(w.writes).toEqual([[MAIN_AGENT_ID, false]])
+    expect(w.restarted).toEqual([MAIN_AGENT_ID])
+  })
+
+  it('its picture is still not sent (main_agent), no call', async () => {
+    const w = world()
+    w.avatars.set(MAIN_AGENT_ID, Buffer.from('x'))
+    expect(await sendGromzoAvatar(MAIN_AGENT_ID, w.deps)).toEqual({ ok: false, code: 'main_agent' })
+    expect(w.calls).toEqual([])
+  })
+
+  it('its pending consent shows on its row, and blocks a second add like any other', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 300)]
+    await enableGromzoAgent(MAIN_AGENT_ID, w.deps)
     const rows = await listGromzoAgents(w.deps)
-    expect(rows.map((r) => [r.slug, r.main, r.gromzo])).toEqual([[MAIN_AGENT_ID, true, true], ['abel', false, false], ['zara', false, true]])
+    expect(rows[0]!.pendingUntil).toBe(w.clock.t + 300_000)
+    expect(await enableGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'add_in_progress' })
   })
 })
 

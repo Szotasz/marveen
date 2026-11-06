@@ -363,9 +363,29 @@ run_guard() {
   # project settings.json -- channels.sh passes it in a launch-time --settings
   # file instead. A respawn without that flag would come back with the Slack /
   # WhatsApp / Teams primary disabled by the shipped project false (deaf main).
+  # GROMZOMAINAGENT1106: the co-listen extras, derived EXACTLY as channels.sh and channel-watchdog.sh do. This
+  # respawn used to pass the primary alone, so it half-muted every extra (Slack co-listen, the main agent's
+  # Gromzo channel) until the next full restart. The gromzo id passes only with a usable agent.sock and a valid
+  # mxd slug, and its MXD_AGENT/MXD_SCOPE go in as exports of this command (scripts/main-gromzo-launch.sh).
+  local _extra _gz_main GROMZO_ENV="" EXTRA_Q="" _p
+  _extra="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  _gz_main="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+    # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+    _extra="$(main_gromzo_filter_ids "$_gz_main" $_extra)"
+    # shellcheck disable=SC2086
+    GROMZO_ENV="$(main_gromzo_env "$_gz_main" $_extra)"
+  else
+    # No helper (a half-updated tree): never pass the gromzo id without its exports.
+    _extra="$(printf '%s\n' $_extra | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  fi
+  for _p in $_extra; do
+    [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
+  done
   local SETTINGS_FLAG=""
   if . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh" 2>/dev/null; then
-    SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}")"
+    # shellcheck disable=SC2086
+    SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"
   fi
 
   # CFGDIR686: the main-agent isolated-config decision belongs on EVERY respawn
@@ -418,7 +438,7 @@ run_guard() {
   . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
   local FLEET_VENV_PREFIX; FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
   # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q"
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}${GROMZO_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q${EXTRA_Q}"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn
