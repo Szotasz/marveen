@@ -64,7 +64,7 @@ Ez a fájl nem kerül be a gitbe (`.gitignore`).
 
 | Módszer | Végpont | Leírás |
 |---------|---------|--------|
-| `GET` | `/api/custom-providers` | Az összes provider listája |
+| `GET` | `/api/custom-providers` | Az összes provider listája; mindegyik `usedBy` mezője azoknak az ágenseknek a neve, amelyek `agent-config.json`-ja erre a providerre mutat (a rejtett workereket is beleértve) |
 | `POST` | `/api/custom-providers` | Létrehozás vagy frissítés (upsert az `id` alapján) |
 | `GET` | `/api/custom-providers/:id` | Egy provider adatai |
 | `DELETE` | `/api/custom-providers/:id` | Törlés |
@@ -77,7 +77,7 @@ Minden végpont Bearer tokenes hitelesítést igényel (`store/.dashboard-token`
 
 - A `baseUrl` erősen validálva van indításkor: tiltott shell-metakarakterek, kötelező `https://` (kivéve localhost), URL-parse ellenőrzés.
 - A vault kulcsok értéke sosem kerül a provider-konfigba -- csak a kulcs neve tárolódik.
-- Ha egy ágenshez beállított provider-id nem található a `store/custom-providers.json`-ban, az ágens indítása hibával leáll (csendes Ollama-fallback helyett).
+- Ha egy ágenshez beállított provider-id nem található a `store/custom-providers.json`-ban, az ágens indítása hibával leáll (csendes Ollama-fallback helyett). Ezért a dashboard törlés előtt megnevezi azokat az ágenseket, amelyek a providert használják (`usedBy`).
 - Modell azonosítóban csak `a-zA-Z0-9._/:+-` karakterek engedélyeztek, hogy megakadályozzuk a shell-injekciót az egyéni provider ágakban.
 - Megosztott config-gyökér esetén (nincs izolált `CLAUDE_CONFIG_DIR` az ágenshez) az `x-api-key` jóváhagyási stamp az operátor saját `~/.claude.json` fájljába kerül, nem egy ágens-specifikus fájlba.
 - Az `ollama` ág a telepítés-szintű `AGENT_LOCAL_BASE_URL` környezeti változót olvassa a base URL-hez, az egyéni provider ág viszont a `store/custom-providers.json`-ban tárolt, per-provider `baseUrl` bejegyzést: a kettő egymástól függetlenül, egyszerre él.
