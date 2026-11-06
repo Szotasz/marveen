@@ -24,7 +24,7 @@
 import type http from 'node:http'
 import { json, readBody } from '../http-helpers.js'
 import { parseCommand, resolveCommand, dispatchCommand, botCommandList, isHelpRequest, hasCommand, type DispatchOutcome } from '../commands.js'
-import { resolveOwnerChatId } from '../../owner-chat.js'
+import { resolveOwnerIdentity, OWNER_UNSET_REPLY, type OwnerIdentity } from '../../owner-identity.js'
 import { checkWriteEvidence, WRITE_EVIDENCE_REPLY, type WriteEvidenceCheck } from '../write-evidence.js'
 import { onMainTurnEnded } from '../main-model.js'
 import { logger } from '../../logger.js'
@@ -63,7 +63,7 @@ export function mainSessionFromBody(b: Record<string, unknown>): boolean {
 
 export interface DispatchResult {
   handled: boolean
-  outcome: DispatchOutcome | 'not-owner' | 'sub-agent-write-refused' | 'deferred' | 'forwarded-refused' | 'write-evidence-refused'
+  outcome: DispatchOutcome | 'not-owner' | 'owner-unset' | 'sub-agent-write-refused' | 'deferred' | 'forwarded-refused' | 'write-evidence-refused'
   replies: string[]
 }
 
@@ -88,6 +88,17 @@ export interface DispatchResult {
 // scripts/patch-telegram-plugin.py). The owner forwarding someone else's
 // "/model opus keep" must not run it (ELSOKOR922 spec 5.; measured on the
 // test bot before the patch: a forwarded /status ran).
+// OWNERAUTHGUESS1106 (Samu 71849): with several paired DMs and no explicit owner id, a registry command is answered
+// with one generic line (nothing about who the owner is) instead of being run for, or refused to, a guessed owner.
+// Anything that is not a registry command passes as before.
+export function ownerUnsetResult(text: string, identity: OwnerIdentity): DispatchResult | null {
+  if (identity.chatId !== null || !identity.ambiguous) return null
+  // recognised the way dispatchForChat recognises a registry command (resolveCommand)
+  const parsed = parseCommand(text)
+  if (!parsed || !resolveCommand(parsed.name, isHelpRequest(parsed.args) ? [] : parsed.args)) return null
+  return { handled: true, outcome: 'owner-unset', replies: [OWNER_UNSET_REPLY] }
+}
+
 export const FORWARDED_REPLY = (name: string) => `Továbbított üzenetből nem futtatok parancsot: /${name}. Ha kell, írd be magad.`
 
 // `messageId` / `evidence`: a WRITE runs only with evidence that the owner's
@@ -185,7 +196,15 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   }
   const deferWrites = b.deferWrites === true
   const messageId = typeof b.messageId === 'string' || typeof b.messageId === 'number' ? String(b.messageId) : null
-  const result = await dispatchForChat(text, chatId, resolveOwnerChatId(), Date.now(), mainSession, deferWrites, b.forwarded === true, messageId)
+  // OWNERAUTHGUESS1106: who the owner is comes from the strict identity resolver, never from a delivery guess
+  const identity = resolveOwnerIdentity()
+  const unset = ownerUnsetResult(text, identity)
+  if (unset) {
+    logger.warn({ command: parseCommand(text)?.name }, 'commands: refused, several paired DMs and no TELEGRAM_OWNER_USER_ID -- nobody is guessed as the owner')
+    json(res, unset)
+    return true
+  }
+  const result = await dispatchForChat(text, chatId, identity.chatId, Date.now(), mainSession, deferWrites, b.forwarded === true, messageId)
   if (result.handled) logger.info({ command: parseCommand(text)?.name, outcome: result.outcome }, 'commands: dispatched')
   else if (result.outcome === 'not-owner') logger.warn({ chatId }, 'commands: registry command from a non-owner chat, passed to the model')
   json(res, result)

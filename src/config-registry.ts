@@ -955,6 +955,24 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
+    // OWNERAUTHGUESS1106 (Samu 71849): the owner of the Telegram chat commands. With several paired DMs and the
+    // installer's ALLOWED_CHAT_ID=0 nobody is guessed any more: the commands stop until this is set. Not the memory key
+    // (ALLOWED_CHAT_ID), not OWNER_ALERT_CHAT_ID (a delivery target).
+    key: 'TELEGRAM_OWNER_USER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Telegram-felhasználói azonosítója (pozitív szám, a saját chated száma): ő futtathatja a chat-parancsokat (/status, /model ...). Üresen a régi szabály marad: egy pozitív ALLOWED_CHAT_ID, vagy ha az nincs, a fő bot egyetlen párosított DM-je. Ha több DM van párosítva (pl. gazda és családtag) és az ALLOWED_CHAT_ID nincs kitöltve, a rendszer nem találgat: a chat-parancsok addig nem futnak, amíg ezt be nem állítod. Csak azt dönti el, ki a gazda a parancsoknál: hova menjenek a riasztások, azt az OWNER_ALERT_CHAT_ID mondja meg, az emlékek pedig változatlanok.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    // a positive Telegram user id or empty; refused otherwise, never stored and ignored later
+    validate: (v: string) => (v.trim() === '' || /^[1-9][0-9]{0,19}$/.test(v.trim())
+      ? null
+      : 'Pozitív Telegram-felhasználói azonosító kell (a saját chated száma, pl. 1268077055); csoport (negatív szám) nem lehet. / A positive Telegram user id is required (your own chat number, e.g. 1268077055); a group (a negative number) is not allowed.'),
+    // whose chat commands run: ANY change needs the owner's session, as SLACK_OWNER_USER_ID
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
     key: 'APPROVAL_SLACK_REACTIONS',
     type: 'string',
     default: 'off',
