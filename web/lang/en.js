@@ -2532,6 +2532,7 @@ window._i18n.en = {
   'gromzo.agents.state.restarting': 'Done, the agent is restarting',
   'gromzo.agents.prot.refused': 'Refused: its plugin sends no token, so Gromzo does not let it in. Update the plugin or restart the session.',
   'gromzo.agents.prot.unprotected': 'Not protected: its plugin does not send a token yet. Restart the session.',
+  'gromzo.agents.prot.unavailable': 'The Gromzo protection state is not available right now. Try again in a minute; if it stays this way, contact support.',
   'gromzo.agents.prot.ratchet_unreadable': 'The protection state is unreadable: every agent counts as protected, so a plugin without a token cannot connect. Tell your developer.',
   'gromzo.agents.state.held': 'Held: Gromzo did not accept it, so it did not start. Ask for a new approval, or switch it off.',
   'gromzo.agents.btn.reapprove': 'Approve again',

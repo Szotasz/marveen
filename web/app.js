@@ -21446,17 +21446,27 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
     } catch { logoutBtn.hidden = true }
   }
 
+  // The protection banner: the fail-closed ratchet, or (Samu 71546) the state not available after a failed load.
+  function showProtBanner(key) {
+    if (!ratchetEl) return
+    ratchetEl.textContent = key ? t(key) : ''
+    ratchetEl.hidden = !key
+  }
+
   async function loadAgents() {
     showError('')
     // Dani 71532 (1): a failed reload must not leave the last answer's "every agent protected" banner standing.
-    if (ratchetEl) { ratchetEl.textContent = ''; ratchetEl.hidden = true }
+    showProtBanner(null)
     try {
       const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
       if (!r.ok) {
         const code = await codeOf(r)
         rows = []; render()
         window.gromzoOwnerLogin(code === 'owner_session_required')
-        if (code !== 'owner_session_required') showError(agentErr(code))
+        if (code !== 'owner_session_required') {
+          showError(agentErr(code))
+          showProtBanner('gromzo.agents.prot.unavailable')
+        }
         if (logoutBtn) logoutBtn.hidden = true
         return
       }
@@ -21464,15 +21474,13 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
       void showLogoutIfDevice()
       const body = await r.json()
       rows = body.agents || []
-      if (ratchetEl) {
-        ratchetEl.textContent = body.ratchetUnreadable === true ? t('gromzo.agents.prot.ratchet_unreadable') : ''
-        ratchetEl.hidden = body.ratchetUnreadable !== true
-      }
+      showProtBanner(body.ratchetUnreadable === true ? 'gromzo.agents.prot.ratchet_unreadable' : null)
       for (const row of rows) if (row.pendingUntil && row.pendingUntil > Date.now() && !local.has(row.slug)) local.set(row.slug, { kind: 'pending', until: row.pendingUntil })
       render()
       ensurePolling()
     } catch {
       rows = []; render(); showError(agentErr('network'))
+      showProtBanner('gromzo.agents.prot.unavailable')
     }
   }
 

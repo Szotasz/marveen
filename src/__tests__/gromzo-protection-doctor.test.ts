@@ -64,20 +64,24 @@ describe('the panel: badges and the fail-closed banner', () => {
   it('the rows show refused and unprotected; the list shows the unreadable ratchet', () => {
     expect(app).toContain("if (row.protection === 'refused' || row.protection === 'unprotected') {")
     expect(app).toContain("prot.textContent = t('gromzo.agents.prot.' + row.protection)")
-    expect(app).toContain("ratchetEl.textContent = body.ratchetUnreadable === true ? t('gromzo.agents.prot.ratchet_unreadable') : ''")
-    // Shown exactly when mxd says so, hidden otherwise; and cleared at the start of every load, so a failed reload
-    // never leaves the last answer's banner standing (Dani 71532 (1)).
-    expect(app).toContain('ratchetEl.hidden = body.ratchetUnreadable !== true')
-    const load = app.slice(app.indexOf("  async function loadAgents() {\n    showError('')"))
-    const reset = load.indexOf("if (ratchetEl) { ratchetEl.textContent = ''; ratchetEl.hidden = true }")
-    expect(reset).toBeGreaterThan(-1)
-    expect(reset).toBeLessThan(load.indexOf("await fetch('/api/gromzo/agents'"))
+    expect(app).toContain("    ratchetEl.textContent = key ? t(key) : ''\n    ratchetEl.hidden = !key")
+    // Shown exactly when mxd says so; cleared at the start of every load, so a failed reload never leaves the last
+    // answer's banner standing (Dani 71532 (1)); a failed load says the state is not available (Samu 71546).
+    const load = app.slice(app.indexOf('  async function loadAgents() {'))
+    const body = load.slice(0, load.indexOf('\n  }\n'))
+    expect(body.indexOf('showProtBanner(null)')).toBeGreaterThan(-1)
+    expect(body.indexOf('showProtBanner(null)')).toBeLessThan(body.indexOf("await fetch('/api/gromzo/agents'"))
+    expect(body).toContain("showProtBanner(body.ratchetUnreadable === true ? 'gromzo.agents.prot.ratchet_unreadable' : null)")
+    expect(body.match(/showProtBanner\('gromzo\.agents\.prot\.unavailable'\)/g)?.length, 'both failure branches').toBe(2)
+    const notOk = body.slice(body.indexOf('if (!r.ok) {'), body.indexOf('window.gromzoOwnerLogin(false)'))
+    expect(notOk).toContain("showProtBanner('gromzo.agents.prot.unavailable')")
+    expect(body.slice(body.indexOf('} catch {'))).toContain("showProtBanner('gromzo.agents.prot.unavailable')")
     expect(readFileSync(join(ROOT, 'web', 'index.html'), 'utf-8')).toContain('<p class="mobile-login-warn gromzo-agent-state is-error" id="gromzoAgentsRatchet" role="alert" hidden></p>\n          <ul class="gromzo-agent-list" id="gromzoAgentList">')
   })
   it('every protection key exists in HU and EN, with no dash characters', () => {
     for (const lang of ['hu', 'en']) {
       const src = readFileSync(join(ROOT, 'web', 'lang', `${lang}.js`), 'utf-8')
-      for (const k of ['refused', 'unprotected', 'ratchet_unreadable']) {
+      for (const k of ['refused', 'unprotected', 'ratchet_unreadable', 'unavailable']) {
         const line = src.split('\n').find((l) => l.includes(`'gromzo.agents.prot.${k}':`))
         expect(line, `${lang} ${k}`).toBeDefined()
         expect(line).not.toMatch(/[–—]/)
