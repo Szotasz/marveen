@@ -29,10 +29,10 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { mcpFileTargets } from './hooks/mcp-file-targets.mjs'
@@ -2274,6 +2274,292 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
 // as SCHEDULE_DIR_REF_RX, see there).
 const SCHEDULE_DIR_PATH_RX = /scheduled-tasks([/\\]|$)/i
 
+// The base denies every path through a task dir. The one exception is a REPO COPY (isRepoCopyPath below):
+// a task dir of the STORE is the store. The runner's store and the linked config
+// dirs sit below a store parent (~/.claude, ~/.claude-config, <agent>/.claude-config,
+// ~/.channels-config); this install's own scheduled-tasks/ and seed-scheduled-tasks/ are
+// copied into the store at start. A fleet's config repo keeps a DIFFERENT copy of task
+// prompts (<repo>/common/scheduled-tasks/...), edited in a git worktree and deployed only
+// through review: a native Edit/Write of such a copy is not a self-schedule. The path is
+// judged in its canonical form: `..` resolved and the deepest existing ancestor resolved
+// through symlinks (realDeep, a dangling link is followed), so a copy-looking path that
+// links onto the store is the store. Three spellings are judged and any one denies: the kernel's
+// view, the same after the lexical `..` folding, and the lexical spelling itself (a store behind a
+// symlinked ~/.claude is still named .claude). The decision is made when the hook runs: a symlink
+// swapped in later is not seen. The Bash branch is unchanged (git can run a pager or a helper).
+const STORE_PARENT_SEGMENTS = new Set(['.claude', '.claude-config', '.channels-config'])
+function isStoreTaskPath(canonical, root = PROJECT_ROOT) {
+  const segs = canonical.split(/[\\/]+/).map((s) => s.toLowerCase())
+  // a store parent segment followed by a task dir segment, wherever the pair sits in the path
+  const firstParent = segs.findIndex((s) => STORE_PARENT_SEGMENTS.has(s))
+  const lastTaskDir = segs.map((s) => s.endsWith('scheduled-tasks')).lastIndexOf(true)
+  if (firstParent >= 0 && lastTaskDir > firstParent) return true
+  // the store parents of this home, resolved when the hook runs: a task dir under the TARGET of a symlinked
+  // ~/.claude (dotfiles/cc/<task dir>) is the store although no segment of that path says so
+  const lower = canonical.toLowerCase()
+  for (const name of STORE_PARENT_SEGMENTS) {
+    const real = realDeep(join(homedir(), name)).toLowerCase()
+    if (lower.startsWith(real + sep) && SCHEDULE_DIR_PATH_RX.test(lower.slice(real.length))) return true
+  }
+  // ...and the same for the store parents of every agent of this install (<install>/agents/<name>/.claude-config
+  // linked to a target of another name): the target path is the store as well. An agents/ dir that cannot be
+  // listed for any reason but "missing" denies, like the HOME loop never lets a task dir under a store pass.
+  let agentNames
+  try { agentNames = readdirSync(join(root, 'agents')) } catch (e) {
+    if (!e || e.code !== 'ENOENT') return true
+    agentNames = []
+  }
+  for (const agent of agentNames) {
+    for (const name of STORE_PARENT_SEGMENTS) {
+      const real = realDeep(join(root, 'agents', agent, name)).toLowerCase()
+      if (lower.startsWith(real + sep) && SCHEDULE_DIR_PATH_RX.test(lower.slice(real.length))) return true
+    }
+  }
+  // the install root's own task dirs, without regard to letter case (the name rule above is case-insensitive)
+  for (const d of ['scheduled-tasks', 'seed-scheduled-tasks']) {
+    const dir = realDeep(join(root, d)).toLowerCase()
+    if (lower === dir || lower.startsWith(dir + sep)) return true
+  }
+  return false
+}
+// The ONLY allowing branch (the base denied EVERY task dir path, so a path
+// the store rules do not name must not pass by default): a repo copy. R is the nearest ancestor of the
+// canonical path that holds a `.git` (a directory, or a FILE for a git worktree; the file system is
+// looked at, no git process runs in a hook), and the path below R is exactly common/scheduled-tasks/...
+// (letter case ignored) with no store parent segment (.claude, .claude-config, .channels-config) in it.
+// HOME itself may be R. Anything else denies.
+function isRepoCopyPath(canonical) {
+  let cur = canonical
+  for (;;) {
+    const up = dirname(cur)
+    if (up === cur) return false
+    cur = up
+    try { lstatSync(join(cur, '.git')); break } catch { /* no .git here: walk up */ }
+  }
+  const segs = relative(cur, canonical).split(/[\\/]+/).map((x) => x.toLowerCase())
+  if (segs.length < 3 || segs[0] !== 'common' || segs[1] !== 'scheduled-tasks') return false
+  return !segs.some((x) => STORE_PARENT_SEGMENTS.has(x))
+}
+function scheduleDirPathDenied(fp, cwd, root = PROJECT_ROOT) {
+  if (!SCHEDULE_DIR_PATH_RX.test(fp)) return false
+  // an absolute spelling that keeps every `..` as written (a symlink before a `..` is followed by the kernel,
+  // not folded away), a leading ~/ expanded and a relative path taken from the hook's cwd
+  const abs = fp.startsWith('~/') ? homedir() + sep + fp.slice(2) : isAbsolute(fp) ? fp : (cwd || process.cwd()) + sep + fp
+  // three spellings, any one denies: the kernel's view (symlinks followed), the same after the lexical
+  // `..` folding, and the lexical spelling itself (the store behind a symlinked ~/.claude is still named .claude)
+  const forms = [realDeep(abs), realDeep(resolve(abs)), resolve(abs)]
+  if (forms.some((c) => isStoreTaskPath(c, root))) return true
+  // not the store: a task dir path still denies unless it is a repo copy in EVERY spelling (the store rules above
+  // deny on any one, so the one allowing branch must hold on all of them: a `..` that folds onto an unnamed
+  // store is no copy even when the kernel's view is one)
+  return !forms.every((c) => isRepoCopyPath(c))
+}
+
+// A scheduler command word the shell builds from quotes or a backslash ('crontab' -r, cr''ontab, c\rontab)
+// reads as the same command, but the OS-scheduler rule matches the MASKED text (quoted = data) and a
+// quoted or escaped name passed. The command word of each code segment is judged in its dequoted form
+// too; a plain $VAR / "$VAR" / ${VAR} command word is resolved when the SAME command assigned it a
+// literal in an earlier assignment-only segment (X=crontab; $X -r). Arguments, quoted messages and
+// heredoc bodies are not command words and stay data. PARTIAL by design: a name glued from several
+// variables or copied through another variable is not resolved (accepted limit).
+// Only a name that matches BECAUSE of the dequoting or the resolution is judged here: when the plain spelling
+// of the segment already matches the rule, the rule above decided it (its read-listing exemption included).
+// So a dequoted name has no read exemption: crontab -l written as cr""ontab -l is denied as well.
+// A resolved name is carried into the shell code a segment hands to another shell (eval, sh -c, $(...)),
+// through opts.vars: every literal value this command ever gave a name (an assignment behind && / || / if may or may
+// not have run, so each literal stays a candidate), plus the NAME=literal prefixes a child inherits.
+const LITERAL_VALUE = '[^$`(){}<>;&|*[\\\\\\s]*'
+const LITERAL_ASSIGNMENT_RX = new RegExp(`^([A-Za-z_][A-Za-z0-9_]*)=(${LITERAL_VALUE})$`)
+const ANSI_ASSIGNMENT_RX = /^([A-Za-z_][A-Za-z0-9_]*)=\$'([A-Za-z0-9_./-]*)'$/
+const ANY_ASSIGNMENT_RX = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/
+const VARIABLE_WORD_RX = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$/
+const DEFAULT_WORD_RX = new RegExp(`^\\$\\{([A-Za-z_][A-Za-z0-9_]*)(:?)[-=](${LITERAL_VALUE})\\}$`)
+const MAX_WORD_COMBINATIONS = 256
+const DECLARATION_BUILTINS = new Set(['export', 'declare', 'readonly', 'local', 'typeset'])
+const literalAssignment = (w) => {
+  const m = w.ansi ? ANSI_ASSIGNMENT_RX.exec(w.value) : LITERAL_ASSIGNMENT_RX.exec(w.value)
+  return m ? [m[1], m[2]] : null
+}
+// `text` with the code of every backtick or $( ) substitution blanked: that code is decided on its own (the bodies
+// of the caller), so a scheduler name inside it must not stand for the command word of the segment.
+function blankSubstitutions(text) {
+  let out = ''
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') { out += text.slice(i, i + 2); i++; continue }
+    if (text[i] === '`') {
+      const e = text.indexOf('`', i + 1)
+      const end = e === -1 ? text.length - 1 : e
+      out += ' '.repeat(end - i + 1)
+      i = end
+      continue
+    }
+    if (text[i] === '$' && text[i + 1] === '(') {
+      let depth = 0
+      let j = i + 1
+      for (; j < text.length; j++) {
+        if (text[j] === '(') depth++
+        else if (text[j] === ')' && --depth === 0) break
+      }
+      const end = j >= text.length ? text.length - 1 : j
+      out += ' '.repeat(end - i + 1)
+      i = end
+      continue
+    }
+    out += text[i]
+  }
+  return out
+}
+// The command without its heredocs: each operator (with the file descriptor in front of it, 0<<EOF) and each body with
+// its terminator are cut out, using the ranges the mask resolved. The mask copies the rest of an operator line as
+// written, so a `;` inside a quoted redirect target (`cmd <<EOF 2>"a;b"`) cut the segment into two halves that do not
+// parse, and the dequoted check skipped both; without the operator the quoting is plain again and the segment splits
+// the way the shell reads it. Quoting the mask cannot resolve (null) leaves the command as it is. The mask resolves
+// one heredoc per line, so the cut repeats until nothing is left to cut (a second operator on the same line).
+function withoutHeredocs(command) {
+  let cur = String(command ?? '')
+  for (let round = 0; round < 4; round++) {
+    const next = cutHeredocsOnce(cur)
+    if (next === cur) break
+    cur = next
+  }
+  return cur
+}
+function cutHeredocsOnce(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const heredocs = []
+  if (maskInertLiterals(src, heredocs) == null || heredocs.length === 0) return command
+  const cuts = []
+  for (const h of heredocs) {
+    const op = /^<<-?\s*(?:'[^']*'|"[^"]*"|[A-Za-z_]\w*)/.exec(src.slice(h.opStart))
+    if (!op) return command
+    const fd = /(?:^|[\s;&|(])(\d+|\{[A-Za-z_]\w*\})$/.exec(src.slice(0, h.opStart))
+    cuts.push([fd ? h.opStart - fd[1].length : h.opStart, h.opStart + op[0].length, ' '])
+    cuts.push([h.bodyStart, h.end, ''])
+  }
+  cuts.sort((x, y) => x[0] - y[0])
+  let out = ''
+  let at = 0
+  for (const [from, to, fill] of cuts) {
+    if (from < at) return command // overlapping ranges: not understood
+    out += src.slice(at, from) + fill
+    at = to
+  }
+  return out + src.slice(at)
+}
+// One code segment the way the OS-scheduler rule reads it: a heredoc operator dropped (the segment of the command as
+// written still carries it, without its body), quoted = data and substitution code blanked (that code is decided on
+// its own). A segment that reaches this point parsed into plain words, so its quoting resolves; if it does not
+// anyway, '' gives no exemption and the dequoted word is judged.
+function schedulerRuleView(own) {
+  const masked = maskInertLiterals(own.replace(/<<-?\s*(?:'[^']*'|"[^"]*"|[A-Za-z_]\w*)/g, ' '))
+  return masked == null ? '' : blankSubstitutions(masked)
+}
+// Both readings of the command are judged, the text as written and the text without its heredocs, and either one
+// denies: the cut only ever ADDS what the first reading could not parse. The mask can read a `<<` that is no
+// operator (in a comment, in $((1<<2)), in a here-string) as one, so the cut may also remove real code; the first
+// reading still sees that code.
+function dequotedSchedulerDeny(command, inherited) {
+  const plainView = scanDequoted(command, inherited)
+  const cut = withoutHeredocs(command)
+  if (cut === command) return plainView
+  const cutView = scanDequoted(cut, inherited)
+  const vars = new Map()
+  for (const [name, set] of [...plainView.vars, ...cutView.vars]) {
+    if (!vars.has(name)) vars.set(name, new Set())
+    for (const value of set) vars.get(name).add(value)
+  }
+  return { deny: plainView.deny || cutView.deny, vars }
+}
+function scanDequoted(command, inherited) {
+  const addTo = (map, name, value) => {
+    if (!map.has(name)) map.set(name, new Set())
+    map.get(name).add(value)
+  }
+  const vars = new Map() // name -> the set of literal values it was ever given
+  for (const [name, v] of inherited ?? []) for (const value of typeof v === 'string' ? [v] : v) addTo(vars, name, value)
+  const childEnv = new Map() // NAME=literal prefixes of a command: its child shell inherits them
+  let deny = false
+  for (const seg of codeSegments(command)) {
+    const words = splitCodeWords(seg.own)
+    if (words == null) continue
+    let args = argWords(words)
+    // for NAME in literal
+    if (args.length === 4 && args[0].value === 'for' && args[2].value === 'in' && !args[3].ansi && new RegExp(`^${LITERAL_VALUE}$`).test(args[3].value)) {
+      addTo(vars, args[1].value, args[3].value)
+      continue
+    }
+    // export / declare / readonly / local / typeset [-options] NAME=literal: assignments that outlive the segment
+    const declaration = args.length > 0 && DECLARATION_BUILTINS.has(args[0].value)
+    if (declaration) {
+      let k = 1
+      while (args[k] && /^[-+]/.test(args[k].value)) k++
+      args = args.slice(k)
+    }
+    if ((declaration || args.length > 0) && args.every((w) => ANY_ASSIGNMENT_RX.test(w.value))) {
+      // an assignment-only segment: the shell keeps these values for the later segments
+      for (const w of args) {
+        const lit = literalAssignment(w)
+        if (lit) addTo(vars, lit[0], lit[1])
+      }
+      continue
+    }
+    // every value a word can take: a name holds each literal it was ever given
+    // null = an empty expansion: the shell drops it, the next word moves up
+    const noEmpty = (v) => (v === '' ? null : v)
+    const candidates = args.map((w) => {
+      if (w.ansi) return [w.value]
+      const ref = VARIABLE_WORD_RX.exec(w.value)
+      const name = ref ? ref[1] ?? ref[2] : null
+      if (name != null && vars.has(name)) return [...vars.get(name)].map(noEmpty)
+      const dflt = DEFAULT_WORD_RX.exec(w.value) // ${NAME:-literal}, ${NAME-literal}, ${NAME:=literal}, ${NAME=literal}
+      if (dflt) {
+        const [, dname, colon, lit] = dflt
+        if (!vars.has(dname)) return [noEmpty(lit)]
+        // the :- and := forms also take the literal when the name is set but EMPTY; - and = only when it is unset
+        return [...new Set([...vars.get(dname)].map((v) => (v === '' ? noEmpty(colon ? lit : '') : v)))]
+      }
+      return [w.value]
+    })
+    // only the words the scheduler rule reads (wrapper and assignment prefixes, the command word and what follows it)
+    // are listed in every reading; a later argument keeps its first reading, so a long argument list of
+    // many-valued names is not read as a scheduler. A word that can BE a prefix in some reading (empty, a wrapper,
+    // an assignment) is not the command word.
+    const prefixLike = (v) => v == null || CMD_WRAPPERS.has(v) || RESERVED_LEAD.has(v) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(v)
+    const cmdAt = candidates.findIndex((options) => !options.some(prefixLike))
+    if (cmdAt >= 0) for (let k = cmdAt + 6; k < candidates.length; k++) candidates[k] = [candidates[k][0]]
+    // NAME=literal prefixes in front of the command word reach the child shell's environment
+    for (let k = 0; k < args.length && ANY_ASSIGNMENT_RX.test(args[k].value); k++) {
+      const lit = literalAssignment(args[k])
+      if (lit) addTo(childEnv, lit[0], lit[1])
+    }
+    let combinations = [[]]
+    for (const options of candidates) {
+      combinations = combinations.flatMap((prefix) => options.map((v) => [...prefix, v]))
+      // too many readings to list: read as a scheduler (fail-closed)
+      if (combinations.length > MAX_WORD_COMBINATIONS) {
+        deny = true
+        combinations = []
+        break
+      }
+    }
+    // the plain-spelling test sees the text the way the rule above does (quoted = data), not the raw segment:
+    // a quoted decoy such as 2>"/tmp/a;crontab" must not switch the dequoted check off
+    const plain = schedulerRuleView(seg.own.trim())
+    for (const reading of combinations) {
+      const values = reading.filter((v) => v != null)
+      // a reserved word in front of the command (then, do, {, !) is not the command word
+      let lead = 0
+      while (values.length - lead > 1 && RESERVED_LEAD.has(values[lead])) lead++
+      // one flat word per argument: a separator or a space INSIDE a quoted argument cannot start a new command
+      const joined = values.slice(lead).map((v) => v.replace(/[\s;&|(`]/g, '_')).join(' ')
+      if (SCHEDULER_RX.test(joined) && !SCHEDULER_RX.test(plain)) deny = true
+    }
+  }
+  const out = new Map()
+  for (const [name, set] of [...vars, ...childEnv]) for (const value of set) addTo(out, name, value)
+  return { deny, vars: out }
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 // Any exception inside the decision is a DENY: a gate that throws must never
 // be read as "nothing to block" (see also the hook entry below).
@@ -3274,7 +3560,7 @@ function decide(toolName, toolInput, opts = {}) {
     if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
     if (fileToolTargetsProtectedStoreFile(toolInput, opts.storeDir, opts.cwd)) return { deny: true, reason: 'protected-store-file' }
     // ...and the dashboard's schedule store, which the runner turns into turns
-    if (SCHEDULE_DIR_PATH_RX.test(fp)) return { deny: true }
+    if (scheduleDirPathDenied(fp, opts.cwd, opts.projectRoot ?? PROJECT_ROOT)) return { deny: true }
   }
   if (name === 'Bash') {
     // The schedule surface is judged on the RAW command, before the payload and
@@ -3330,6 +3616,9 @@ function decide(toolName, toolInput, opts = {}) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg) && !transientUnitOk) return { deny: true }
     }
+    // ...and the same rule on the dequoted command word of each code segment
+    const dequoted = dequotedSchedulerDeny(String(toolInput?.command ?? ''), opts.vars)
+    if (!transientUnitOk && dequoted.deny) return { deny: true }
     // Shell code handed to another shell (sh -c, eval, here-strings, heredocs,
     // tmux -c) is decided recursively; quoted, it was blanked above. The RAW
     // command is used: safeCommand blanks heredoc bodies and data payloads.
@@ -3340,14 +3629,14 @@ function decide(toolName, toolInput, opts = {}) {
     // the code of each outermost substitution is a command of its own (scanShellCode does not look inside one)
     for (const body of bodies) {
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
-      const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1 })
+      const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
     const scan = scanShellCode(rawCommand)
     for (const code of scan.codes) {
       if (code.ansi) return { deny: true, reason: 'shell-code' }
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
-      const inner = decide('Bash', { command: code.value }, { ...opts, depth: depth + 1 })
+      const inner = decide('Bash', { command: code.value }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
     if (scan.bad) return { deny: true, reason: 'shell-code' }
