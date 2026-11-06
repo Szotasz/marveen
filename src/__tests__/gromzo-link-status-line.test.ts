@@ -114,6 +114,8 @@ describe('the pending link: its deadline and its re-read', () => {
     expect(fn).toContain('statusRefresh = gromzoScheduleStatusRefresh(() => statusEl.isConnected, () => { statusRefresh = null; loadStatus() }, setTimeout)')
   })
 
+  // Measured 2026-11-06: for hour:minute hu-HU and en-GB print the same ("00:05", "14:05"), so the language switch
+  // changes no visible output; what this pins is that English never turns into a 12-hour en-US clock ("02:05 PM").
   it('the deadline is a 24-hour clock in the UI language: hu-HU in Hungarian, en-GB in English', () => {
     const at = new Date(2026, 10, 6, 14, 5, 0).getTime()
     expect(h.untilText(at, 'hu')).toBe(new Date(at).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' }))
