@@ -21177,10 +21177,14 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
     errEl.hidden = !msg
   }
 
+  // DASHSOCKPEER1106: the owner QR card's own sentence first (gromzo.qr.err.*: consent_required says to ask in the
+  // Bridge), then the shared gromzo.err.* one; the agents panel keeps its own lookup (agentErr).
   function errorText(code) {
-    const key = 'gromzo.err.' + code
-    const s = t(key)
-    return s === key ? t('gromzo.err.generic', { code }) : s
+    for (const key of ['gromzo.qr.err.' + code, 'gromzo.err.' + code]) {
+      const s = t(key)
+      if (s !== key) return s
+    }
+    return t('gromzo.err.generic', { code })
   }
 
   // While a link waits for the owner's confirmation the line is read again, so the card turns to "linked" on its
