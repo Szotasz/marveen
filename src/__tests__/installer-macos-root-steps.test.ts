@@ -90,6 +90,7 @@ describe('the root part ends before any clone code runs', () => {
   })
 
   it('clone code runs only after the reset (install-lang.sh on a non-Bridge run is outside the boundary)', () => {
+    expect(RESET).toBeGreaterThan(-1)
     const clone = /npm install --loglevel|npm run build|(^|\s|\$\()\.\s+"\$INSTALL_DIR\/|bash "\$INSTALL_DIR\/|node "\$INSTALL_DIR\/|^\s*"\$INSTALL_DIR\/scripts\//
     const before = CODE.filter(({ i, l }) => i < RESET && clone.test(l)).map(({ i, l }) => `${i + 1}: ${l.trim()}`)
     expect(before).toEqual([])
@@ -97,6 +98,7 @@ describe('the root part ends before any clone code runs', () => {
   })
 
   it('before the reset every python runs as /usr/bin/python3 -I -S (no cwd import, no site-packages, no PATH)', () => {
+    expect(RESET).toBeGreaterThan(-1)
     const bad = CODE.filter(({ i, l }) => i < RESET && /(^|[\s($])python3\b/.test(l) && !/\/usr\/bin\/python3 -I -S\b/.test(l))
     expect(bad.map(({ i, l }) => `${i + 1}: ${l.trim()}`)).toEqual([])
   })
