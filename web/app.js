@@ -21108,6 +21108,28 @@ async function openResearchDoc(agent, name) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
 })()
 
+// GROMZOLINKCONFIRM1106: the Gromzo card's status line, pure so the tests can run it. A link that waits for the
+// owner's confirmation says where to confirm and until when (on 2026-11-06 the owner saw only "not linked yet"
+// and the request ran out); a refused or expired one says what to do next. A new pending request wins over an
+// older refusal.
+const GROMZO_LINK_REFUSAL_KINDS = ['expired', 'refused', 'owner_mismatch', 'not_found']
+function gromzoStatusLine(s, nowMs) {
+  if (!s || !s.available) {
+    if (s && (s.code === 'not_running' || s.code === 'no_access')) return { key: 'gromzo.status.not_running' }
+    return { key: 'gromzo.status.unknown', params: { code: String((s && s.code) || '?') } }
+  }
+  if (s.linked) return { key: 'gromzo.status.linked' }
+  if (Number.isInteger(s.linkPendingExpiresIn)) {
+    if (s.linkPendingExpiresIn <= 0) return { key: 'gromzo.status.link_expired' }
+    return { key: 'gromzo.status.link_pending', until: nowMs + s.linkPendingExpiresIn * 1000 }
+  }
+  if (typeof s.linkRefusal === 'string') {
+    if (GROMZO_LINK_REFUSAL_KINDS.includes(s.linkRefusal)) return { key: 'gromzo.status.link_' + s.linkRefusal }
+    return { key: 'gromzo.status.link_failed', params: { kind: s.linkRefusal } }
+  }
+  return { key: 'gromzo.status.not_linked' }
+}
+
 // === Gromzo card: the owner's QR code (GROMZOOWNERQR1030, MOBILRELOGINDASH1025) ===
 // POST /api/gromzo/owner-qr answers with the app's URI: the registration code while
 // the owner seat is free, afterwards a new phone's login code. The URI carries a live
@@ -21150,17 +21172,22 @@ async function openResearchDoc(agent, name) {
     return s === key ? t('gromzo.err.generic', { code }) : s
   }
 
+  // While a link waits for the owner's confirmation the line is read again, so the card turns to "linked" on its
+  // own once the owner confirms (or to "expired" when the 15 minutes run out). Only while the card is on the page.
+  let statusRefresh = null
   async function loadStatus() {
+    if (statusRefresh) { clearTimeout(statusRefresh); statusRefresh = null }
     statusEl.textContent = t('gromzo.status.loading')
     try {
       const r = await fetch('/api/gromzo/status', { cache: 'no-store' })
       const s = r.ok ? await r.json() : { available: false, code: 'http_' + r.status }
-      if (s.available) {
-        statusEl.textContent = t(s.linked ? 'gromzo.status.linked' : 'gromzo.status.not_linked')
-      } else if (s.code === 'not_running' || s.code === 'no_access') {
-        statusEl.textContent = t('gromzo.status.not_running')
+      const line = gromzoStatusLine(s, Date.now())
+      if (line.until) {
+        const until = new Date(line.until).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })
+        statusEl.textContent = t(line.key, { until })
+        statusRefresh = setTimeout(() => { statusRefresh = null; if (statusEl.isConnected) loadStatus() }, 15000)
       } else {
-        statusEl.textContent = t('gromzo.status.unknown', { code: String(s.code || '?') })
+        statusEl.textContent = t(line.key, line.params)
       }
     } catch (e) {
       statusEl.textContent = t('gromzo.status.unknown', { code: 'network' })
