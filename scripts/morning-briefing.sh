@@ -65,7 +65,7 @@ cd "$INSTALL_DIR"
 # The "nothing to deliver to" decision is made below, once both channels are
 # known (still before the model call).
 . "$INSTALL_DIR/scripts/lib/owner-chat.sh"
-CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")" || CHAT_ID=""
+CHAT_ID="$(resolve_alert_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")" || CHAT_ID=""
 
 # Delivery-proof sentinel. The dedup stamp must record "the briefing REACHED
 # the owner", not "the process exited 0" -- those diverged on 2026-09-13: the

@@ -12,7 +12,7 @@ import {
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
-import { resolveOwnerChatId } from '../../owner-chat.js'
+import { ownerAlertChatOverride, resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
@@ -284,7 +284,7 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // provider goes through sendOwnerMessage, which resolves provider, token
     // and owner chat the same way every other owner message does.
     if (CHANNEL_PROVIDER === 'telegram' && TELEGRAM_BOT_TOKEN) {
-      const ownerChat = resolveOwnerChatId()
+      const ownerChat = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
       if (!ownerChat) {
         logger.warn({ approvalId: approval.id, informative }, 'approval owner notification suppressed: no owner chat')
         if (!informative) fallbackInBand(approval, 'no-owner-chat')

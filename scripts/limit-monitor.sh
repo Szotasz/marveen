@@ -46,7 +46,7 @@ BOT_NAME="${BOT_NAME:-$MAIN_AGENT_ID}"
 # CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- the old
 # read let the installer's "0" placeholder through unnoticed, and never fell
 # back to a paired channel's access.json.
-if ! CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
+if ! CHAT_ID="$(resolve_alert_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
   # No owner chat configured: there is nobody to alert, and guessing one would
   # send a quota warning to a stranger. Stay silent rather than misdeliver.
   log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"

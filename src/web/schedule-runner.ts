@@ -26,7 +26,7 @@ import {
   CHANNEL_PROVIDER,
   TASK_STALL_TIMEOUT_MS,
 } from '../config.js'
-import { resolveOwnerChatId, configuredOwnerChatFor, normalizeChatId } from '../owner-chat.js'
+import { ownerAlertChatOverride, resolveOwnerChatId, configuredOwnerChatFor, normalizeChatId } from '../owner-chat.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import {
   appendTaskRun,
@@ -2788,8 +2788,9 @@ export function resolveSchedulerAlertToken(
 // Slack install) and the paired fallback from slack/access.json (the live
 // CHANNEL_PROVIDER=slack install has no telegram access.json at all, so the
 // default path returned null and every scheduler alert was suppressed).
+// ISSUE2556X: the owner's OWNER_ALERT_CHAT_ID wins when set (a delivery target only; unset, this is unchanged).
 function resolveSchedulerOwnerChat(): string | null {
-  return resolveOwnerChatId(undefined, configuredOwnerChatFor(CHANNEL_PROVIDER), CHANNEL_PROVIDER)
+  return ownerAlertChatOverride(CHANNEL_PROVIDER) ?? resolveOwnerChatId(undefined, configuredOwnerChatFor(CHANNEL_PROVIDER), CHANNEL_PROVIDER)
 }
 
 // Send a system-level scheduler alert over the MAIN agent's bound channel. The

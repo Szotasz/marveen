@@ -140,7 +140,7 @@ alert_owner() {
   # /dev/null: a skipped alert must say why (no DM entry, several DM entries,
   # no access.json). Not captured with 2>&1 -- any stderr noise on the success
   # path would then become part of the chat id.
-  chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env")" || chat=""
+  chat="$(resolve_alert_chat_id "$INSTALL_DIR/.env")" || chat=""
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured, could not Telegram): $msg"; return 1
   fi

@@ -143,3 +143,59 @@ resolve_owner_chat_id() {
   fi
   return 1
 }
+
+
+# ---------------------------------------------------------------- OWNER_ALERT_CHAT_ID (ISSUE2556X, marveen#2556)
+# The owner's alert chat from the dashboard's settings page: an overrides-only registry key, read from
+# <install>/store/config-overrides.json only (a .env line never counts). A DELIVERY target for the ALERT senders:
+# resolve_owner_chat_id above is unchanged. It applies only when PROVIDER is the install's CHANNEL_PROVIDER. The
+# patterns are src/alert-chat-format.ts's.
+
+# owner_alert_chat_override ENV_FILE [PROVIDER] -- stdout: the chat id. Exit 1 when unset, unreadable or another
+# provider; exit 2 with a reason on stderr when it is set but not a chat id of PROVIDER (never silently).
+owner_alert_chat_override() {
+  local env_file="$1" provider="${2:-telegram}" install_dir inst
+  [ -f "$env_file" ] || return 1
+  install_dir="$(cd "$(dirname "$env_file")" && pwd)"
+  inst="$(grep -E '^CHANNEL_PROVIDER=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2-)"
+  inst="$(_owner_chat_normalize "$inst" 2>/dev/null)" || inst=""
+  case "$inst" in telegram|slack|discord|googlechat|teams) ;; *) inst="telegram" ;; esac
+  [ "$provider" = "$inst" ] || return 1
+  [ -f "$install_dir/store/config-overrides.json" ] || return 1
+  node -e '
+    const fs = require("fs")
+    const FORMATS = {
+      telegram: /^-?[1-9][0-9]{0,19}$/,
+      slack: /^[CDGU][A-Z0-9]{6,}$/,
+      discord: /^[1-9][0-9]{14,24}$/,
+      googlechat: /^spaces\/[A-Za-z0-9_-]+$/,
+      teams: /^[A-Za-z0-9:@._-]{3,}$/,
+    }
+    let data
+    try { data = JSON.parse(fs.readFileSync(process.argv[1], "utf-8")) } catch { process.exit(1) }
+    const raw = data && typeof data === "object" ? data.OWNER_ALERT_CHAT_ID : undefined
+    if (typeof raw !== "string" && typeof raw !== "number") process.exit(1)
+    const v = String(raw).trim()
+    if (!v || v === "0") process.exit(1)
+    if (FORMATS[process.argv[2]].test(v)) { process.stdout.write(v); process.exit(0) }
+    process.stderr.write("owner-chat: OWNER_ALERT_CHAT_ID is set but is not a " + process.argv[2] + " chat id -- NOT used\n")
+    process.exit(2)
+  ' "$install_dir/store/config-overrides.json" "$provider"
+}
+
+# resolve_alert_chat_id ENV_FILE [PROVIDER] -- resolve_owner_chat_id with the owner's OWNER_ALERT_CHAT_ID in front:
+# for an ALERT sender only. Same stdout / stderr contract as resolve_owner_chat_id.
+resolve_alert_chat_id() {
+  local id rc=0
+  id="$(owner_alert_chat_override "$@")" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$id" ]; then
+    printf '%s\n' "$id"
+    return 0
+  fi
+  if id="$(resolve_owner_chat_id "$@")"; then
+    printf '%s\n' "$id"
+    return 0
+  fi
+  [ "$rc" -eq 2 ] && echo "no owner chat: OWNER_ALERT_CHAT_ID is set but invalid for ${2:-telegram}" >&2
+  return 1
+}
