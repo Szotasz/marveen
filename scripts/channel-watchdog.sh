@@ -128,11 +128,20 @@ CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2
 # GROMZOMAINAGENT1106: the same gromzo filter and launch exports as channels.sh. The slug is read raw from
 # .env here: MAIN_AGENT_ID above is stripped to [a-zA-Z0-9_-] for the session name, which is not mxd's rule.
 _GZ_MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-. "$INSTALL_DIR/scripts/main-gromzo-launch.sh"
-# shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
-CHANNEL_PLUGINS_EXTRA="$(main_gromzo_filter_ids "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
-# shellcheck disable=SC2086
-GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+GROMZO_ENV=""
+# shellcheck source=scripts/main-gromzo-launch.sh
+if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+  # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+  CHANNEL_PLUGINS_EXTRA="$(main_gromzo_filter_ids "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+  # shellcheck disable=SC2086
+  GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+else
+  # No helper (a half-updated tree): every other extra (Slack co-listen) stays; only the gromzo id goes, since
+  # it must never start without its exports (Dani 71308 (2)).
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"

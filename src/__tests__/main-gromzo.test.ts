@@ -333,3 +333,27 @@ describe('the isolated main config provisioner (agent-process.ts)', () => {
     expect(src).toMatch(/provisionIsolatedConfigDir\(\s*mainAgentSharedConfigDir\(\),[\s\S]{0,200}readExtraChannelPluginIds\(\),/)
   })
 })
+
+describe('a half-updated tree: the launchers keep every other extra when the helper is missing (Dani 71308 (2))', () => {
+  const block = (file: string, mainVar: string) => {
+    const sh = readFileSync(join(ROOT, 'scripts', file), 'utf-8')
+    const start = sh.indexOf('GROMZO_ENV=""\n# shellcheck source=scripts/main-gromzo-launch.sh\nif . "$INSTALL_DIR/scripts/main-gromzo-launch.sh"')
+    expect(start, file).toBeGreaterThan(-1)
+    const end = sh.indexOf('\nfi\n', start)
+    return { text: sh.slice(start, end + 4), mainVar }
+  }
+  const run = (b: { text: string, mainVar: string }, installDir: string, extra: string) =>
+    execFileSync('/bin/bash', ['-c', `set -u\n${b.mainVar}=marveen\nCHANNEL_PLUGINS_EXTRA="$1"\nINSTALL_DIR="$2"\n${b.text}\nprintf '%s|%s' "$CHANNEL_PLUGINS_EXTRA" "$GROMZO_ENV"`, 'x', extra, installDir], {
+      encoding: 'utf-8', env: { ...process.env, MAIN_GROMZO_SOCK_PATH: join(dir, 'no.sock'), LC_ALL: 'en_US.UTF-8' },
+    })
+
+  for (const [file, mainVar] of [['channels.sh', 'MAIN_AGENT_ID'], ['channel-watchdog.sh', '_GZ_MAIN_ID']] as const) {
+    it(`${file}: no helper -> Slack and the rest stay, only the gromzo id goes, no export`, () => {
+      expect(run(block(file, mainVar), dir, `${SLACK} ${GZ} telegram@x`)).toBe(`${SLACK} telegram@x|`)
+      expect(run(block(file, mainVar), dir, '')).toBe('|')
+    })
+    it(`${file}: with the helper -> the same filter as the twin`, () => {
+      expect(run(block(file, mainVar), ROOT, `${SLACK} ${GZ}`)).toBe(`${SLACK}|`)
+    })
+  }
+})
