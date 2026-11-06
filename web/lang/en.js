@@ -2561,6 +2561,7 @@ window._i18n.en = {
   'gromzo.agents.err.reserved_slug': 'This agent name is reserved on Gromzo.',
   'gromzo.agents.err.bad_name': 'This name cannot be used on Gromzo: it must start with a letter or a digit, be at most 64 characters, and hold only letters, digits, spaces and . , \' ( ) _ -. Enter another name and switch it on again.',
   'gromzo.agents.err.reserved_name': 'This name is taken on Gromzo: someone in your team already has it or one very like it, or Gromzo itself uses it. Enter another name and switch it on again.',
+  'gromzo.agents.err.name_taken_held': 'This name is taken on Gromzo. Gromzo can ask for this agent again only under its current name, so you cannot enter another one here. Switch it off, then on again: then you can give it another name.',
   'gromzo.agents.err.bad_display_name': 'This name cannot be used on Gromzo: it must start with a letter or a digit, be at most 64 characters, and hold only letters, digits, spaces and . , \' ( ) _ -. Enter another name and switch it on again.',
   'gromzo.agents.err.mixed_script': 'A word in the name mixes letters of different scripts (Latin and Cyrillic, for example). Write it in one script and switch it on again.',
   'gromzo.agents.name.label': 'Name on Gromzo',

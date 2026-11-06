@@ -21537,7 +21537,11 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   function nameRefused(row, code, tried) {
     nameAsk.add(row.slug)
     if (!nameDraft.has(row.slug) && tried) nameDraft.set(row.slug, tried)
-    local.set(row.slug, { kind: 'error', text: agentErr(code) })
+    // A held sub-agent has no name field (mxd asks for it again only under its listed name): its way to another name is
+    // switching it off (agent_remove), then on again. The main agent's switch-off does not remove it from mxd, so it
+    // keeps the general sentence (Dani 71903).
+    const text = row.held && !row.main && code === 'name_taken' ? t('gromzo.agents.err.name_taken_held') : agentErr(code)
+    local.set(row.slug, { kind: 'error', text })
   }
 
   async function switchOn(row) {
