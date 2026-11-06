@@ -362,6 +362,40 @@ describe('script parity with the store', () => {
     }
   })
 
+
+  // OWNERAUTHGUESS1106: TELEGRAM_OWNER_USER_ID is read by two mirrors of the store (owner-identity.ts and the
+  // marveen-commands.py hook): each must see exactly the owner id the store answers (an override, never the .env
+  // line), and only a positive Telegram user id counts.
+  it('the two TELEGRAM_OWNER_USER_ID mirrors (owner-identity.ts / marveen-commands.py)', async () => {
+    const { readTelegramOwnerSetting, TELEGRAM_USER_ID_RX } = await import('../owner-identity.js')
+    const K = 'TELEGRAM_OWNER_USER_ID'
+    const states: Array<Record<string, string> | 'unreadable' | null> = [null, 'unreadable', { K: '5556667778' }, { K: '' }, { K: '0' }, { K: '-1001234' }, { K: ' 5556667778 ' }]
+    const envs: Array<Record<string, string>> = [{}, { K: '1111111111' }]
+    const hook = join(ROOT, 'scripts', 'hooks', 'marveen-commands.py')
+    const py = [
+      'import importlib.util, sys',
+      'spec = importlib.util.spec_from_file_location("mc", sys.argv[1])',
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'print(m.owner_chat_id() or "")',
+    ].join('\n')
+    for (const ov of states) {
+      for (const env of envs) {
+        const o = sub(ov, K)
+        const e = Object.fromEntries(Object.entries(env).map(([, v]) => [K, v]))
+        const stored = String(storeView(K, o, e)).trim()
+        const want = TELEGRAM_USER_ID_RX.test(stored) ? stored : ''
+        const root = install(o, e)
+        const t = readTelegramOwnerSetting(join(root, 'store', 'config-overrides.json'))
+        const ts = TELEGRAM_USER_ID_RX.test(t) ? t : ''
+        const got = execFileSync('python3', ['-c', py, hook], { encoding: 'utf-8', env: { ...process.env, MARVEEN_INSTALL_DIR: root } }).trim()
+        const tag = JSON.stringify([o, e])
+        expect(ts, `ts ${tag}`).toBe(want)
+        expect(got, `py ${tag}`).toBe(want)
+      }
+    }
+  })
+
+
   it('ledger-capture keeps the .env for ALLOWED_CHAT_ID (no registry key)', () => {
     const hook = join(ROOT, 'scripts', 'hooks', 'ledger-capture.py')
     const py = [
@@ -385,6 +419,7 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/morning-briefing.sh', // reads through dist/settings-store.js
     'scripts/lib/owner-chat.sh', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
     'scripts/lib/owner_chat.py', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
+    'scripts/hooks/marveen-commands.py', // TELEGRAM_OWNER_USER_ID mirror, parity-tested above
   ])
   // file -> pinned mention count (comments and messages only, measured 2026-11-04)
   const MENTION_ONLY: Record<string, number> = {

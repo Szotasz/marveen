@@ -19,12 +19,12 @@ import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { CHANNEL_PROVIDER, CHANNEL_TOKEN, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { getProvider } from '../channel-provider.js'
-import { resolveOwnerChatId } from '../owner-chat.js'
+import { resolveOwnerIdentity, type OwnerIdentity } from '../owner-identity.js'
 import { markIfTestRun } from '../test-run-marker.js'
 import { logger } from '../logger.js'
 import { projectsDirFor } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
-import { dispatchForChat } from './routes/commands.js'
+import { dispatchForChat, ownerUnsetResult } from './routes/commands.js'
 
 const CHANNEL_RX = /<channel\s+([^>]*)>([\s\S]*?)<\/channel>/g
 const COMMAND_RX = /^\/[A-Za-z][A-Za-z0-9_]{0,31}(?:@[A-Za-z0-9_]+)?(?:\s|$)/
@@ -153,6 +153,8 @@ export function readNewLines(state: TailState, file: string | null, firstRun: bo
 export interface MidTurnDeps {
   transcriptDir: () => string
   ownerChatId: () => string | null
+  /** OWNERAUTHGUESS1106: the strict owner identity; when given, it decides (ownerChatId is then its chatId). */
+  ownerIdentity?: () => OwnerIdentity
   dispatch: typeof dispatchForChat
   send: (chatId: string, text: string, threadId?: string) => Promise<void>
   now: () => number
@@ -201,7 +203,9 @@ export async function midTurnTick(state: TailState, deps: MidTurnDeps, firstRun 
     state.seen.push(key)
     if (state.seen.length > SEEN_MAX) state.seen.splice(0, state.seen.length - SEEN_MAX)
     try {
-      const result = await deps.dispatch(cmd.text, cmd.chatId, deps.ownerChatId(), deps.now(), true, false, cmd.forwarded, cmd.messageId)
+      const identity = deps.ownerIdentity?.()
+      const unset = identity ? ownerUnsetResult(cmd.text, identity) : null
+      const result = unset ?? await deps.dispatch(cmd.text, cmd.chatId, identity ? identity.chatId : deps.ownerChatId(), deps.now(), true, false, cmd.forwarded, cmd.messageId)
       if (!result.handled) {
         logger.info({ text: cmd.text, outcome: result.outcome }, 'midturn-commands: not ours, left to the model')
         continue
@@ -228,7 +232,8 @@ function chunks(text: string): string[] {
 // Exported for its test (midturn-commands-live-send.test.ts); the watcher below is its only user.
 export const liveDeps: MidTurnDeps = {
   transcriptDir: () => projectsDirFor(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
-  ownerChatId: () => resolveOwnerChatId(),
+  ownerChatId: () => resolveOwnerIdentity().chatId,
+  ownerIdentity: () => resolveOwnerIdentity(),
   dispatch: dispatchForChat,
   // Plain text, like the hook: a command reply is not HTML-formatted.
   send: async (chatId, text, threadId) => {

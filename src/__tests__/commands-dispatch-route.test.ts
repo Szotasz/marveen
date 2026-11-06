@@ -16,7 +16,9 @@ import type { RouteContext } from '../web/routes/types.js'
 
 // The owner chat the route resolves, and the channel state dir the evidence
 // is read from: both pinned, so the HTTP cases below never see a live install.
-vi.mock('../owner-chat.js', async (orig) => ({ ...(await orig<typeof import('../owner-chat.js')>()), resolveOwnerChatId: () => '42' }))
+// OWNERAUTHGUESS1106: the route asks the strict identity resolver who the owner is
+const ident = vi.hoisted(() => ({ current: { chatId: '42', source: 'setting' } as Record<string, unknown> }))
+vi.mock('../owner-identity.js', async (orig) => ({ ...(await orig<typeof import('../owner-identity.js')>()), resolveOwnerIdentity: () => ident.current }))
 const STATE = mkdtempSync(join(tmpdir(), 'cmd-evidence-'))
 const prevStateDir = process.env.TELEGRAM_STATE_DIR
 beforeAll(() => { initDatabase(':memory:'); process.env.TELEGRAM_STATE_DIR = STATE })
@@ -177,6 +179,22 @@ describe('POST /api/commands/dispatch', () => {
     expect(await tryHandleCommands(ctx)).toBe(true)
     expect(out.status).toBe(403)
     expect(runs).toBe(0)
+  })
+  it('OWNERAUTHGUESS1106: several DMs and no owner id -> the generic answer, the command does not run', async () => {
+    ident.current = { chatId: null, source: null, ambiguous: true, reason: 'access.json has 2 DM entries, refusing to guess' }
+    try {
+      const before = runs
+      const { ctx, out } = fakeCtx({ text: '/status', chatId: '42' })
+      expect(await tryHandleCommands(ctx)).toBe(true)
+      expect(out.status).toBe(200)
+      expect(out.body).toEqual({ handled: true, outcome: 'owner-unset', replies: ['Ez a parancs most nem futtatható; a gazda a dashboardon tudja beállítani.'] })
+      expect(runs).toBe(before)
+      const plain = fakeCtx({ text: 'szia', chatId: '42' })
+      await tryHandleCommands(plain.ctx)
+      expect(plain.out.body.outcome).not.toBe('owner-unset')
+    } finally {
+      ident.current = { chatId: '42', source: 'setting' }
+    }
   })
   it('missing text/chatId -> 400; bad JSON -> 400; GET -> 405', async () => {
     let c = fakeCtx({ text: '/status' })

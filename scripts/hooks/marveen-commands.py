@@ -171,9 +171,24 @@ def env_value(path, key):
     return None
 
 
+TELEGRAM_USER_ID_RX = re.compile(r"[1-9][0-9]{0,19}")
+
+
 def owner_chat_id():
-    v = env_value(os.path.join(REPO_ROOT, ".env"), "ALLOWED_CHAT_ID")
-    if not v or v == "0":
+    """The owner, when this hook can name it; None leaves the decision to the dashboard (routes/commands.ts, the strict
+    identity resolver). OWNERAUTHGUESS1106: the owner's explicit TELEGRAM_OWNER_USER_ID first (an overrides-only key:
+    store/config-overrides.json only, as settings-store answers it), then a POSITIVE ALLOWED_CHAT_ID (a DM chat id is
+    the user id). A negative (group) ALLOWED_CHAT_ID names no person."""
+    try:
+        with open(os.path.join(REPO_ROOT, "store", "config-overrides.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        v = data.get("TELEGRAM_OWNER_USER_ID") if isinstance(data, dict) else None
+        if isinstance(v, (str, int)) and not isinstance(v, bool) and TELEGRAM_USER_ID_RX.fullmatch(str(v).strip()):
+            return str(v).strip()
+    except (OSError, ValueError):
+        pass
+    v = (env_value(os.path.join(REPO_ROOT, ".env"), "ALLOWED_CHAT_ID") or "").strip()
+    if not TELEGRAM_USER_ID_RX.fullmatch(v):
         return None  # not configured here; the dashboard's owner check decides
     return v
 
