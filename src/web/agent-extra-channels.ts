@@ -25,8 +25,8 @@
  * state dir contributes nothing, so a half-configured field cannot start a
  * plugin that would fall back to some other bot's token.
  */
-import { accessSync, constants } from 'node:fs'
-import { join } from 'node:path'
+import { accessSync, constants, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 
@@ -70,6 +70,28 @@ export function wantsGromzo(raw: unknown): boolean {
   return raw === true
 }
 
+/**
+ * MXDAGENTSOCKID1106: the agent's token file, `<agent.sock's dir>/tokens/<slug>.token`, which mxd writes at each
+ * start (marveen-mxd agent_tokens). Only when the `tokens` dir is there: an older mxd has none, and the plugin
+ * must then get no path at all (with a path it waits for the file and never connects). The file itself may be
+ * missing for a moment at an mxd start: the plugin waits for it. Every launcher of a Gromzo agent exports this,
+ * or a protected agent's hello is refused (token_required).
+ */
+export function gromzoTokenFile(slug: string, sockPath: string = MXD_AGENT_SOCK_DEFAULT): string | null {
+  if (!MXD_SLUG_RE.test(slug)) return null
+  const dir = join(dirname(sockPath), 'tokens')
+  try {
+    return statSync(dir).isDirectory() ? join(dir, `${slug}.token`) : null
+  } catch {
+    return null
+  }
+}
+
+/** The launch-command export of the token path (absolute; no quote or $ can be in it), or ''. */
+export function gromzoTokenExport(tokenFile: string | null): string {
+  return tokenFile === null || /["$`\\]/.test(tokenFile) ? '' : `export MXD_AGENT_TOKEN_FILE="${tokenFile}" && `
+}
+
 /** Whether this user can talk to mxd's agent.sock (read and write). */
 export function mxdAgentSockUsable(path: string = MXD_AGENT_SOCK_DEFAULT): boolean {
   try {
@@ -109,7 +131,7 @@ export function buildExtraChannelLaunch(
   primary: ChannelProviderType,
   agentDirPath: string,
   hasToken: (provider: ChannelProviderType, envPath: string) => boolean = (p, envPath) => !!readChannelToken(p, envPath),
-  gromzoFor?: { slug: string; sockUsable: boolean },
+  gromzoFor?: { slug: string; sockUsable: boolean; tokenFile?: string | null },
 ): ExtraChannelLaunch {
   const providers: ChannelProviderType[] = []
   const skipped: ChannelProviderType[] = []
@@ -138,7 +160,7 @@ export function buildExtraChannelLaunch(
       // no narrowing against the other channels (owner 2026-10-31, GROMZOSCOPEBOTH1031). A
       // senderRoleGate stays optional and per agent, wired by the scaffold as for Slack.
       gromzoScope = 'both'
-      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="${gromzoScope}" && `
+      envExports += `export MXD_AGENT="${gromzoFor.slug}" && export MXD_SCOPE="${gromzoScope}" && ${gromzoTokenExport(gromzoFor.tokenFile ?? null)}`
     }
   }
   const channelArgs = pluginIds.map(id => ` plugin:${id}`).join('')
