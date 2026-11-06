@@ -2500,6 +2500,10 @@ window._i18n.hu = {
   'gromzo.qr.lib_error': 'A QR-generátor nem töltött be. Frissítsd az oldalt, és próbáld újra.',
   'gromzo.err.rate_limited': 'Rövid időn belül túl sok kódot kértél. Várj néhány percet, és próbáld újra.',
   'gromzo.err.consent_required': 'Ezen a gépen Bridge-kulcs van beállítva, ezért a dashboard most nem kérhet tulajdonosi kódot. Szólj a támogatásnak.',
+  // DASHSOCKPEER1106: dash.sock never hands out the owner's codes (marveen-mxd #89), so the owner QR card always gets
+  // consent_required; the card reads its OWN key first (web/app.js errorText). The step: the phone QR is in the Marveen
+  // Bridge (the menu item's name as both shipped Bridges show it, 0.3.8 and 1.0.16).
+  'gromzo.qr.err.consent_required': 'A telefonos QR-kódot a Marveen Bridge-ben kéred: a sarokban nyisd meg a Menüt (⋮), és válaszd a „Gromzo app a telefonra (QR)” pontot. A dashboard biztonsági okból nem ad ki tulajdonosi kódot.',
   'gromzo.err.not_linked': 'A chat-szolgáltatás még nincs összekapcsolva a csapatoddal, ezért kódot sem tud kérni.',
   'gromzo.err.invite_outstanding': 'Az előző regisztrációs kód még érvényes (legfeljebb 10 percig). Használd azt, vagy várd meg, amíg lejár, és kérj újat.',
   'gromzo.err.not_running': 'A chat-szolgáltatás (mxd) nem fut ezen a gépen.',
@@ -2569,6 +2573,8 @@ window._i18n.hu = {
   'gromzo.agents.name.label': 'Név a Gromzóban',
   'gromzo.agents.err.consent_mismatch': 'A jóváhagyás nem ehhez az ügynökhöz tartozott, ezért semmi nem változott. Kapcsold be újra.',
   'gromzo.agents.err.consent_mismatch_added': 'A jóváhagyás egy másik ügynökhöz tartozott: a chat-szolgáltatás a(z) {slug} ügynököt vette fel, ennél semmi nem változott.',
+  // An agent's owner approval with a Bridge key (mxd owner_qr_proof): the sentence this panel showed before DASHSOCKPEER1106.
+  'gromzo.agents.err.consent_required': 'Ezen a gépen Bridge-kulcs van beállítva, ezért a dashboard most nem kérhet tulajdonosi kódot. Szólj a támogatásnak.',
   'gromzo.agents.err.no_pending': 'Nincs függő jóváhagyás ennél az ügynöknél.',
   'gromzo.agents.err.not_linked': 'A chat-szolgáltatás még nincs összekapcsolva a csapatoddal, ezért most nem lehet ügynököt kapcsolni.',
   'gromzo.agents.err.not_running': 'A chat-szolgáltatás (mxd) nem fut ezen a gépen, ezért most nem lehet ügynököt kapcsolni.',

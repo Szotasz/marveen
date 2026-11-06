@@ -19,11 +19,22 @@ import { join } from 'node:path'
 // The installer runs on customer Macs where no harness executes it end to end, so this
 // suite reads the writer calls OUT OF THE SHIPPED install-macos.sh and runs the real
 // writer with exactly those arguments against temp files.
+//
+// MACROOTFROMCLONE1106: the writer the installer runs is the copy EMBEDDED in install-macos.sh (managed_write,
+// byte-equal to scripts/lib/managed-settings-write.py, pinned in installer-macos-root-steps.test.ts), so this
+// suite runs that embedded copy, and the channels gate is the fourth call.
 
 const ROOT = join(__dirname, '..', '..')
 const MAC = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
-const WRITER = join(ROOT, 'scripts', 'lib', 'managed-settings-write.py')
-const CALL_MARK = 'scripts/lib/managed-settings-write.py" "$MANAGED_FILE"'
+const CALL_MARK = 'managed_write "$MANAGED_FILE"'
+/** The writer as the installer runs it: the managed_write heredoc. */
+const EMBEDDED = (() => {
+  const open = "/usr/bin/sudo /usr/bin/python3 -I -S - \"$@\" <<'MSW_PY'\n"
+  const start = MAC.indexOf(open)
+  const end = MAC.indexOf('\nMSW_PY\n', start)
+  if (start < 0 || end < 0) throw new Error('no embedded writer in install-macos.sh')
+  return MAC.slice(start + open.length, end + 1)
+})()
 
 const ALL_FOUR = [
   'slack-channel@marveen-marketplace',
@@ -42,7 +53,8 @@ function writerCalls(src: string): string[][] {
     while (text.trimEnd().endsWith('\\')) {
       text = text.trimEnd().slice(0, -1) + ' ' + lines[++i]!
     }
-    calls.push(text.trim().split(/\s+/).filter(Boolean))
+    // a call that ends the line with `; then` (the channels gate) stops at the `;`
+    calls.push(text.split(';')[0]!.trim().split(/\s+/).filter(Boolean))
   }
   return calls
 }
@@ -54,6 +66,7 @@ const calls = writerCalls(MAC)
 const discordMerge = calls[0]!
 const slackMerge = calls[1]!
 const slackCreate = calls[2]!
+const channelsGate = calls[3]!
 
 const dirs: string[] = []
 afterEach(() => {
@@ -71,8 +84,9 @@ function fixture(content: string | null, mode?: number): { dir: string; target: 
 
 /** The installer's own call, minus sudo (the writer checks ownership against the effective uid). */
 function runCall(target: string, args: string[], umask = '022'): number {
-  const r = spawnSync('bash', ['-c', `umask ${umask}; exec python3 -I "$@"`, 'bash', WRITER, target, ...args], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+  const r = spawnSync('bash', ['-c', `umask ${umask}; exec python3 -I -S - "$@"`, 'bash', target, ...args], {
+    input: EMBEDDED,
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
   return r.status ?? -1
 }
@@ -86,8 +100,9 @@ describe('install-macos.sh managed-settings writes go through the one shared wri
     expect(MAC).not.toContain('tee "$MANAGED_FILE"')
   })
 
-  it('exactly three calls, in order: Discord merge, Slack merge, Slack create', () => {
-    expect(calls).toHaveLength(3)
+  it('exactly four calls, in order: Discord merge, Slack merge, Slack create, the channels gate', () => {
+    expect(calls).toHaveLength(4)
+    expect(channelsGate).toEqual(['--create', '--channels-enabled'])
     expect(discordMerge).toEqual(['--add-plugin', 'discord@claude-plugins-official'])
     expect(slackMerge).not.toContain('--create')
     expect(plugins(slackMerge)).toEqual(ALL_FOUR)
@@ -95,9 +110,9 @@ describe('install-macos.sh managed-settings writes go through the one shared wri
     expect(plugins(slackCreate)).toEqual(ALL_FOUR)
   })
 
-  it('every call runs the writer as root with -I, from the install dir', () => {
-    const lines = MAC.split('\n').filter((l) => l.includes(CALL_MARK))
-    for (const l of lines) expect(l).toContain('sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE"')
+  it('every call runs the EMBEDDED writer as root: absolute sudo and python, -I -S, code from the heredoc', () => {
+    expect(MAC).toContain("managed_write() { # $1 = the managed file, then the writer's flags; the writer's own exit code\n  /usr/bin/sudo /usr/bin/python3 -I -S - \"$@\" <<'MSW_PY'\n")
+    expect(MAC).not.toMatch(/^[^#\n]*scripts\/lib\/managed-settings-write\.py" "\$MANAGED_FILE"/m)
   })
 
   it('the manual hint lists the same four plugins the calls add', () => {
