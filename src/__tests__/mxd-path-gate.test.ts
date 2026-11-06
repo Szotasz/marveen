@@ -210,6 +210,33 @@ describe('DENY (Dani 71760): a path the command assembles from its own literal a
   })
 })
 
+describe('DENY (Dani 71789): a default expansion and a literal array', () => {
+  const R = '/run/marveen'
+  const IFSX = 'IF' + 'S='
+  it.each([
+    [':- default', `cat \${D:-${R}}-mxd/tokens/samu`],
+    ['- default', `cat \${D-${R}}-mxd/tokens/samu`],
+    [':= default', `cat \${D:=${R}}-mxd/tokens/samu`],
+    ['= default', `cat \${D=${R}}-mxd/tokens/samu`],
+    [':+ alternate', `D=1; cat \${D:+${R}}-mxd/tokens/samu`],
+    ['an array element', `a=(${R}); cat \${a[0]}-mxd/tokens/samu`],
+    ['two array elements', `a=(/run marveen-${'mxd'}); cat \${a[0]}/\${a[1]}/tokens/samu`],
+    ['an array by its bare name (element 0)', `a=(${R}); cat $a-${'mxd'}/tokens/x`],
+    ['an array joined with an empty IFS', `a=(${R} -${'mxd'}); ${IFSX}; cat "\${a[*]}/tokens/x"`],
+    ['an appended array', `a=(/tmp); a+=(/run); cat \${a[1]}/marveen-${'mxd'}/tokens/x`],
+    ['an appended scalar', `D=/run; D+=/marveen-${'mxd'}; cat $D/tokens/x`],
+  ])('%s', (_n, cmd) => {
+    expect(bash(cmd)).toEqual({ deny: true, reason: 'run-dir' })
+  })
+  it.each([
+    ['a default elsewhere', 'cat ${D:-/tmp}/x'],
+    ['an array elsewhere', 'b=(/Users/someone/src); ls ${b[0]}'],
+    ['"${a[@]}" gives separate words', `a=(/run marveen-${'mxd'}); ls "\${a[@]}"`],
+  ])('ALLOW: %s', (_n, cmd) => {
+    expect(bash(cmd)).toEqual({ deny: false })
+  })
+})
+
 describe('DENY (Dani 71760): ~+, ~- and ~N are cwds', () => {
   it.each([
     ['~+ after cd (macOS)', `cd '/Library/Application Support/Marveen' && cat ~+/mxd-${'run'}/tokens/marveen`],

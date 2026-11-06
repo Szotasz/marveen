@@ -197,20 +197,44 @@ function wordValues(w, ctx) {
 const VAR_RX = /\$\{([A-Za-z_]\w*)[^}]*\}|\$([A-Za-z_]\w*)/g
 const MAX_VAR_VARIANTS = 16
 const varNames = (x) => [...x.matchAll(VAR_RX)].map((m) => m[1] ?? m[2])
+// `${NAME:-word}`, `${NAME-word}`, `${NAME:=word}`, `${NAME=word}`, `${NAME:+word}`, `${NAME+word}`: the word is one
+// reading, the variable itself the other (Dani 71789 (1)).
+const DEFAULT_RX = /\$\{([A-Za-z_]\w*)(:?[-=+])([^}]*)\}/
+// `${NAME[i]}`, `${NAME[@]}`, `${NAME[*]}` of a literal array (Dani 71789 (2)); `$NAME` / `${NAME}` of an array is its
+// element 0, as in bash.
+const ARRAY_REF_RX = /\$\{([A-Za-z_]\w*)\[([^\]]*)\]\}/
 function expandVars(v, ctx) {
   let out = [String(v).replace(/\$\{HOME\}|\$HOME(?![\w])/g, homedir())]
-  const assigns = ctx?.assigns
-  for (let round = 0; round < 4 && assigns?.size; round++) {
+  const assigns = ctx?.assigns ?? new Map()
+  const arrays = ctx?.arrays ?? new Map()
+  for (let round = 0; round < 6; round++) {
     let changed = false
     const next = []
     for (const x of out) {
-      const names = [...new Set(varNames(x).filter((n) => assigns.has(n)))]
+      const d = DEFAULT_RX.exec(x)
+      if (d) {
+        changed = true
+        next.push(x.replace(d[0], () => d[3]), x.replace(d[0], () => `\${${d[1]}}`))
+        continue
+      }
+      const a = ARRAY_REF_RX.exec(x)
+      if (a && arrays.has(a[1])) {
+        changed = true
+        for (const els of arrays.get(a[1])) {
+          // @ / * joined both ways: a space (the default IFS) and nothing (an empty IFS)
+          const picks = a[2] === '@' || a[2] === '*' ? [els.join(' '), els.join('')] : /^\d+$/.test(a[2]) ? [els[Number(a[2])] ?? ''] : els
+          for (const el of picks) next.push(x.replace(a[0], () => el))
+        }
+        continue
+      }
+      const names = [...new Set(varNames(x).filter((n) => assigns.has(n) || arrays.has(n)))]
       if (!names.length) { next.push(x); continue }
       changed = true
       let variants = [x]
       for (const n of names) {
-        const rx = new RegExp(`\\$\\{${n}(?:[^}]*)\\}|\\$${n}(?![\\w])`, 'g')
-        variants = variants.flatMap((y) => assigns.get(n).map((val) => y.replace(rx, () => val))).slice(0, MAX_VAR_VARIANTS)
+        const rx = new RegExp(`\\$\\{${n}\\}|\\$${n}(?![\\w])`, 'g')
+        const vals = [...(assigns.get(n) ?? []), ...(arrays.get(n) ?? []).map((els) => els[0] ?? '')]
+        variants = variants.flatMap((y) => vals.map((val) => y.replace(rx, () => val))).slice(0, MAX_VAR_VARIANTS)
       }
       next.push(...variants)
     }
@@ -230,7 +254,26 @@ function collectAssigns(segments, ctx) {
     const ci = commandIndex(words)
     const cmd = basename(words[ci] ?? '')
     const decl = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(cmd) ? words.slice(ci + 1) : []
-    for (const w of [...words.slice(0, ci), ...decl]) {
+    const pre = [...words.slice(0, ci), ...decl]
+    // bash takes `NAME+=x` / `NAME+=(...)` as an assignment; commandIndex reads it as the command word
+    for (let j = ci; j < words.length && /^[A-Za-z_]\w*\+=/.test(words[j]); j++) {
+      pre.push(words[j])
+      if (/^[A-Za-z_]\w*\+=\(/.test(words[j]) && !words[j].endsWith(')')) while (j + 1 < words.length && !words[j].endsWith(')')) pre.push(words[++j])
+    }
+    for (let k = 0; k < pre.length; k++) {
+      const w = pre[k]
+      // a literal array: `a=(x y)` reaches here as the words `a=(x` and `y)` (commandIndex skips them as one assignment)
+      const arr = /^([A-Za-z_]\w*)(\+?)=\((.*)$/s.exec(w)
+      if (arr) {
+        const parts = [arr[3]]
+        while (!parts[parts.length - 1].endsWith(')') && k + 1 < pre.length) parts.push(pre[++k])
+        parts[parts.length - 1] = parts[parts.length - 1].replace(/\)$/, '')
+        const els = parts.filter((x) => x !== '').map((x) => expandVars(x, ctx).find((y) => !y.includes('$')) ?? x)
+        const prev = ctx.arrays.get(arr[1]) ?? []
+        const add = arr[2] && prev.length ? prev.map((q) => [...q, ...els]) : [els]
+        ctx.arrays.set(arr[1], [...prev, ...add].slice(0, MAX_VAR_VARIANTS))
+        continue
+      }
       const m = /^([A-Za-z_]\w*)(\+?)=(.*)$/s.exec(w)
       if (!m) continue
       const vals = expandVars(m[3], ctx).filter((x) => !x.includes('$'))
@@ -581,7 +624,7 @@ export function gateDecision(toolName, toolInput, opts = {}) {
   const table = runDirTable(opts.runDirs ?? RUN_DIRS)
   const cwd = typeof opts.cwd === 'string' && isAbsolute(opts.cwd) ? opts.cwd : null
   const cdpaths = new Set(String(process.env.CDPATH ?? '').split(':').filter((d) => isAbsolute(d)))
-  const ctx = { cwds: new Set(cwd ? [cwd] : []), budget: { n: 0 }, assigns: new Map(), cdpaths }
+  const ctx = { cwds: new Set(cwd ? [cwd] : []), budget: { n: 0 }, assigns: new Map(), arrays: new Map(), cdpaths }
   const name = String(toolName ?? '')
   const input = toolInput && typeof toolInput === 'object' ? toolInput : {}
   try {
