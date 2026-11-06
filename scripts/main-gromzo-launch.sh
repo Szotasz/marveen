@@ -32,7 +32,9 @@ main_gromzo_sock() {
 # it fails mxd's rule (lower-case letters, digits, '-', 1-32).
 main_gromzo_slug() {
   local s="${1:-marveen}"
-  case "$s" in ''|*[!a-z0-9-]*) return 1 ;; esac
+  # The class is spelled out, never a-z: macOS /bin/bash 3.2 under a UTF-8 locale lets a range match
+  # 'B' and accented letters (measured 2026-11-06), and the launchers run with the owner's locale.
+  case "$s" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;; esac
   [ "${#s}" -le 32 ] || return 1
   printf '%s' "$s"
 }
@@ -42,7 +44,8 @@ main_gromzo_usable() {
   local sock
   main_gromzo_slug "$1" >/dev/null || return 1
   sock="$(main_gromzo_sock)"
-  [ -S "$sock" ] && [ -r "$sock" ] && [ -w "$sock" ]
+  # Read AND write, exactly mxdAgentSockUsable (accessSync R_OK|W_OK): the twin test holds the two equal.
+  [ -r "$sock" ] && [ -w "$sock" ]
 }
 
 # main_gromzo_filter_ids <main_agent_id> [id ...]: the ids, space-separated, the gromzo id dropped when it
