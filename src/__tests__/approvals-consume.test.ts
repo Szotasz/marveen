@@ -178,18 +178,23 @@ describe('POST /api/approvals/:id/consume (f2c5edb0)', () => {
 })
 
 describe('validators and the shared window (f2c5edb0)', () => {
-  it('the window follows EMAIL_APPROVAL_WINDOW_S like the gate, defaulting to 1800', () => {
-    expect(approvalWindowSeconds({})).toBe(1800)
-    expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: '60' })).toBe(60)
-    expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: 'x' })).toBe(1800)
-    expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: '0' })).toBe(1800)
+  it('the window is a fixed 1800 s; the environment does not change it (ENVRELAXGATE1104)', () => {
+    const saved = process.env.EMAIL_APPROVAL_WINDOW_S
+    process.env.EMAIL_APPROVAL_WINDOW_S = '999999'
+    try {
+      expect(approvalWindowSeconds()).toBe(1800)
+    } finally {
+      if (saved === undefined) delete process.env.EMAIL_APPROVAL_WINDOW_S
+      else process.env.EMAIL_APPROVAL_WINDOW_S = saved
+    }
   })
 
-  it('the gate and the endpoint carry the same default window (a drift here would let one path accept what the other calls stale)', () => {
+  it('the gate and the endpoint carry the same window, and the gate reads no environment for it (a drift here would let one path accept what the other calls stale)', () => {
     const gate = readFileSync(join(ROOT, 'scripts', 'hooks', 'email-approval-gate.py'), 'utf-8')
-    const m = gate.match(/EMAIL_APPROVAL_WINDOW_S", "(\d+)"/)
+    const m = gate.match(/^APPROVAL_WINDOW_S = (\d+)$/m)
     expect(m).not.toBeNull()
-    expect(Number(m![1])).toBe(approvalWindowSeconds({}))
+    expect(Number(m![1])).toBe(approvalWindowSeconds())
+    expect(gate).not.toContain('EMAIL_APPROVAL_WINDOW_S')
   })
 
   it('consumer and Message-Id validators', () => {

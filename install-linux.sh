@@ -23,6 +23,64 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
 INSTALL_STEP="init"
 
+# ADMINPREREQTRUST1104 (Samu 69561): --admin-prereq runs as ROOT, so it may only run code that the
+# non-admin user cannot write -- otherwise the user (or an agent running as it) edits a file and the
+# next admin run executes it as root. This guard comes FIRST, before install-lang.sh is sourced:
+#   - this script itself must be a root-owned regular file, not group/other-writable, in a dir chain
+#     that only root can change (a sticky dir like /tmp counts as safe: others cannot swap root's file);
+#   - an install-lang.sh next to it is held to the same rule, or not used;
+#   - the gate and its writer are ALWAYS fetched fresh from the official source (never the checkout);
+#   - MARVEEN_RAW_BASE is refused, MARVEEN_REF must be a plain ref name.
+# The safe way to run it is printed by admin_prereq_cmd: download from the fixed URL into a fresh
+# root-owned temp dir and run from there.
+MARVEEN_OFFICIAL_RAW="https://raw.githubusercontent.com/Szotasz/marveen"
+admin_prereq_cmd() { # $1 = the user Marveen will run as
+  # MARVEEN_REF goes along: the fetched script then takes install-lang.sh and the gate from the SAME ref
+  # (measured live: without it the script came from the branch and its texts from main, raw keys).
+  echo "sudo bash -c 'd=\$(mktemp -d) && curl -fsSL ${MARVEEN_OFFICIAL_RAW}/${MARVEEN_REF:-main}/install-linux.sh -o \"\$d/install-linux.sh\" && MARVEEN_REF=${MARVEEN_REF:-main} bash \"\$d/install-linux.sh\" --admin-prereq --user ${1}'"
+}
+root_only_path() { # $1 = file; 0 = root-owned, not g/o-writable, and every parent dir likewise (or sticky)
+  local p="$1" m
+  [ -f "$p" ] && [ ! -L "$p" ] || return 1
+  [ "$(stat -c '%u' "$p" 2>/dev/null)" = 0 ] || return 1
+  m="$(stat -c '%a' "$p" 2>/dev/null)" || return 1
+  [ $(( 8#$m & 8#022 )) -eq 0 ] || return 1
+  p="$(dirname "$p")"
+  while :; do
+    [ "$(stat -c '%u' "$p" 2>/dev/null)" = 0 ] || return 1
+    m="$(stat -c '%a' "$p" 2>/dev/null)" || return 1
+    # group/other-writable is only safe with the sticky bit (/tmp): then nobody else can swap root's file
+    if [ $(( 8#$m & 8#022 )) -ne 0 ] && [ $(( 8#$m & 8#1000 )) -eq 0 ]; then return 1; fi
+    [ "$p" = / ] && break
+    p="$(dirname "$p")"
+  done
+  return 0
+}
+__ADMIN_MODE=0
+for __a in "$@"; do [ "$__a" = --admin-prereq ] && __ADMIN_MODE=1; done
+if [ "$__ADMIN_MODE" = 1 ] && [ "$(id -u)" -eq 0 ]; then
+  __self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  if [ -n "${MARVEEN_RAW_BASE:-}" ]; then
+    echo "Hiba / Error: --admin-prereq does not accept MARVEEN_RAW_BASE (it runs as root; only the official source)." >&2
+    exit 1
+  fi
+  case "${MARVEEN_REF:-main}" in
+    *[!A-Za-z0-9._/-]*|-*|*..*) echo "Hiba / Error: --admin-prereq: invalid MARVEEN_REF." >&2; exit 1 ;;
+  esac
+  __who="${SUDO_USER:-<user>}"
+  if ! root_only_path "$__self"; then
+    echo "Hiba: az --admin-prereq rootként fut, de ezt a fájlt ($__self) egy nem-root felhasználó is módosíthatja. Innen nem futunk; futtasd a hivatalos forrásból:" >&2
+    echo "Error: --admin-prereq runs as root, but this file ($__self) can be changed by a non-root user. Not running it; run it from the official source:" >&2
+    echo "    $(admin_prereq_cmd "$__who")" >&2
+    exit 1
+  fi
+  if [ -f "$(dirname "$__self")/install-lang.sh" ] && ! root_only_path "$(dirname "$__self")/install-lang.sh"; then
+    echo "Hiba / Error: --admin-prereq: install-lang.sh next to this script is writable by a non-root user. Run it from the official source:" >&2
+    echo "    $(admin_prereq_cmd "$__who")" >&2
+    exit 1
+  fi
+fi
+
 # shellcheck source=install-lang.sh
 # MARVEENLANG1763: the README's one-liner (curl ... install-linux.sh -o install.sh &&
 # bash install.sh) and the Windows/WSL wrapper (/tmp/marveen-install.sh) run this
@@ -224,14 +282,42 @@ while [[ $# -gt 0 ]]; do
         echo "Error: --port requires a numeric argument (e.g. --port 3421)" >&2; exit 1
       fi
       WEB_PORT="$2"; shift 2 ;;
+    --admin-prereq)
+      ADMIN_PREREQ=1; shift ;;
+    --user)
+      if [[ -z "${2:-}" || "${2}" == --* ]]; then
+        echo "Error: --user requires a user name (with --admin-prereq: the user Marveen will run as)" >&2; exit 1
+      fi
+      ADMIN_USER="$2"; shift 2 ;;
     --help|-h)
-      echo "Usage: $0 [--port <N>]"
-      echo "  --port <N>   Dashboard port (default: 3420). Also settable via WEB_PORT env var."
+      echo "Usage: $0 [--port <N>] [--admin-prereq [--user <name>]]"
+      echo "  --port <N>       Dashboard port (default: 3420). Also settable via WEB_PORT env var."
+      echo "  --admin-prereq   Run as root (sudo) by an administrator: installs ONLY the machine-level"
+      echo "                   prerequisites (packages, Node.js >= 20, the managed-settings channel gate)"
+      echo "                   so a user without sudo can then run this installer. No clone, no dashboard,"
+      echo "                   no services. Safe to run again."
+      echo "  --user <name>    With --admin-prereq: the user Marveen will run as. Its user services"
+      echo "                   are allowed to keep running (loginctl linger), which only root can set."
       exit 0 ;;
     *) echo "Unknown option: $1 (use --help for usage)" >&2; exit 1 ;;
   esac
 done
 WEB_PORT="${WEB_PORT:-3420}"
+# LINUXINSTPREREQ1104: --admin-prereq is the root half of a non-admin install. Without root
+# it stops here, before any step, with the exact command.
+ADMIN_PREREQ="${ADMIN_PREREQ:-0}"
+ADMIN_USER="${ADMIN_USER:-}"
+if [ -n "$ADMIN_USER" ] && [ "$ADMIN_PREREQ" != 1 ]; then
+  echo -e "${RED}$(_t linux.adminprereq_user_needs_flag)${NC}" >&2; exit 1
+fi
+if [ "$ADMIN_PREREQ" = 1 ] && [ "$(id -u)" -ne 0 ]; then
+  echo -e "${RED}$(_t linux.adminprereq_need_root)${NC}" >&2
+  echo "    $(admin_prereq_cmd "${ADMIN_USER:-$(id -un)}")" >&2
+  exit 1
+fi
+if [ -n "$ADMIN_USER" ] && ! id "$ADMIN_USER" >/dev/null 2>&1; then
+  echo -e "${RED}$(_t linux.adminprereq_user_unknown) ${ADMIN_USER}${NC}" >&2; exit 1
+fi
 
 clear
 echo ""
@@ -487,12 +573,83 @@ if ! command -v make &>/dev/null || ! command -v cc &>/dev/null; then
 fi
 
 # Node.js v20+ ellenorzes
+# LINUXINSTPREREQ1104: the >= 20 rule is checked BEFORE and AFTER the package step,
+# through one function. Before this, it was checked only before: when nodesource
+# failed, the distro nodejs went in (Ubuntu 24.04: 18.19, measured on the probe
+# VPS) and only `command -v node` ran afterwards, so the install went on with a
+# Node it does not support and broke later with an unrelated-looking error.
+node_major() {
+  command -v node &>/dev/null || { echo 0; return 0; }
+  node -e 'process.stdout.write(process.version.slice(1).split(".")[0])' 2>/dev/null || echo 0
+}
+# The major version of apt's nodejs candidate, 0 when there is none or it is
+# unreadable ("1:18.19.1+dfsg-6ubuntu5" -> 18, "(none)" -> 0).
+apt_nodejs_candidate_major() {
+  local c=""
+  c=$(apt-cache policy nodejs 2>/dev/null | awk '/Candidate:/ {print $2; exit}') || c=""
+  c="${c#*:}"
+  c="${c%%[!0-9]*}"
+  echo "${c:-0}"
+}
+NODE_FIX_APT='curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - && sudo apt-get install -y nodejs'
 NODE_OK=false
-if command -v node &>/dev/null; then
-  NODE_VER=$(node -e 'process.stdout.write(process.version.slice(1).split(".")[0])' 2>/dev/null || echo "0")
-  [ "$NODE_VER" -ge 20 ] && NODE_OK=true
-fi
+NODE_VER=$(node_major)
+[ "$NODE_VER" -ge 20 ] && NODE_OK=true
 $NODE_OK || MISSING_PKGS="$MISSING_PKGS nodejs"
+
+# LINUXINSTPREREQ1104: the non-admin pre-check. A user who is not root, cannot sudo without a
+# password and is in none of the admin groups would stop at the package step with a bare
+# "sudo: a password is required". Instead: the missing root steps, measured with the SAME
+# code the package step uses (MISSING_PKGS, node_major), and the one-line admin command,
+# before anything is installed. A member of sudo/admin/wheel keeps the old path unchanged.
+admin_group_member() { id -nG 2>/dev/null | tr ' ' '\n' | grep -qxE 'sudo|admin|wheel'; }
+channels_gate_state() { # ok | missing | unknown -- the same test as ensure-managed-channels-enabled.sh
+  command -v python3 >/dev/null 2>&1 || { echo unknown; return 0; }
+  if python3 - /etc/claude-code/managed-settings.json 2>/dev/null <<'PY'
+import json, sys
+try:
+    sys.exit(0 if json.load(open(sys.argv[1])).get("channelsEnabled") is True else 1)
+except Exception:
+    sys.exit(1)
+PY
+  then echo ok; else echo missing; fi
+}
+# Linger: a non-admin user's services stop with its session unless root allows them to stay
+# (measured on the probe VPS: install rc 0, then the dashboard was gone). na = no loginctl (no systemd).
+# "na" also when systemd is not the running init (a container, WSL without systemd): loginctl may be
+# installed there, but linger cannot be set and [7/7] starts the services with nohup anyway.
+# /run/systemd/system is systemd's own "booted with systemd" test (sd_booted).
+LINGER_SYSTEMD_DIR="${LINGER_SYSTEMD_DIR:-/run/systemd/system}"
+linger_state() {
+  command -v loginctl >/dev/null 2>&1 && [ -d "$LINGER_SYSTEMD_DIR" ] || { echo na; return 0; }
+  if loginctl show-user "$(id -un)" 2>/dev/null | grep -q '^Linger=yes'; then echo yes; else echo no; fi
+}
+if [ "$ADMIN_PREREQ" != 1 ] && [ "$(id -u)" -ne 0 ] && ! admin_group_member && ! sudo -n true 2>/dev/null; then
+  GATE_STATE="$(channels_gate_state)"
+  LINGER_STATE="$(linger_state)"
+  ADMIN_CMD="$(admin_prereq_cmd "$(id -un)")"
+  if [ -n "$MISSING_PKGS" ] || [ "$LINGER_STATE" = no ]; then
+    echo -e "${RED}$(_t linux.nonadmin_head)${NC}"
+    [ -n "$MISSING_PKGS" ] && echo -e "  - $(_t linux.nonadmin_pkgs)${MISSING_PKGS}"
+    if [ "$NODE_VER" -eq 0 ]; then echo -e "  - $(_t linux.nonadmin_node_missing)"
+    elif [ "$NODE_VER" -lt 20 ]; then echo -e "  - $(_t linux.nonadmin_node) ${NODE_VER}"; fi
+    [ "$LINGER_STATE" = no ] && echo -e "  - $(_t linux.nonadmin_linger)"
+    echo -e "  - $(_t "linux.nonadmin_gate_${GATE_STATE}")"
+    echo -e "  $(_t linux.nonadmin_cmd_lead)"
+    echo "      $ADMIN_CMD"
+    echo -e "  ${DIM}$(_t linux.nonadmin_sudo_hint)${NC}"
+    echo -e "  ${DIM}$(_t linux.nonadmin_skips)${NC}"
+    exit 1
+  fi
+  if [ "$GATE_STATE" != ok ]; then
+    warn "$(_t "linux.nonadmin_gate_${GATE_STATE}")"
+    echo -e "  ${DIM}$(_t linux.nonadmin_cmd_lead) ${ADMIN_CMD}${NC}"
+  fi
+  # A stated limit (Samu 69465): the non-admin path is not a product path yet (the owner's
+  # user-model decision); these two need root and are left out, so say it before they are missed.
+  warn "$(_t linux.nonadmin_skips)"
+fi
+ADMIN_INSTALLED="$MISSING_PKGS"
 
 if [ -n "$MISSING_PKGS" ]; then
   warn "Hianyzo csomagok:$MISSING_PKGS"
@@ -523,9 +680,18 @@ if [ -n "$MISSING_PKGS" ]; then
       if [ "$NODESOURCE_OK" = false ]; then
         # Fallback: disztro sajat nodejs-e. Debianon az npm kulon csomag,
         # a nodesource-bundle-lel ellentetben nem jon a nodejs-sel magatol.
-        warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs + npm csomagjat telepitem."
         apt_run update -qq
-        MISSING_PKGS="$MISSING_PKGS npm"
+        # LINUXINSTPREREQ1104: only a candidate that meets the rule goes in. An
+        # older one would only leave an unsupported Node on the machine.
+        NODE_CAND=$(apt_nodejs_candidate_major)
+        if [ "$NODE_CAND" -ge 20 ]; then
+          warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs (v${NODE_CAND}) + npm csomagjat telepitem."
+          MISSING_PKGS="$MISSING_PKGS npm"
+        else
+          fail "$(_t linux.node_distro_too_old) ${NODE_CAND}.
+    $(_t linux.node_fix_lead)
+      ${NODE_FIX_APT}"
+        fi
       fi
     else
       apt_run update -qq
@@ -555,6 +721,19 @@ else
 fi
 command -v node &>/dev/null || fail "Node.js telepitese sikertelen. Ellenorizd: $NODE_FIX_HINT"
 command -v npm &>/dev/null || fail "npm nem talalhato a nodejs csomag utan sem. Ellenorizd: $NPM_FIX_HINT"
+# LINUXINSTPREREQ1104: the rule again, after the package step, on every path
+# (apt and dnf/yum, a node that was there before or one that just went in).
+NODE_VER=$(node_major)
+if [ "$NODE_VER" -lt 20 ]; then
+  if [ "$PKG_MANAGER" = "apt" ]; then
+    fail "$(_t linux.node_too_old) ${NODE_VER}.
+    $(_t linux.node_fix_lead)
+      ${NODE_FIX_APT}"
+  else
+    fail "$(_t linux.node_too_old) ${NODE_VER}.
+    $(_t linux.node_fix_rpm)"
+  fi
+fi
 
 ok "ffmpeg $(ffmpeg -version | awk 'NR==1 {print $3}')"
 ok "git $(git --version | awk '{print $3}')"
@@ -567,6 +746,52 @@ ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
 ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+
+# LINUXINSTPREREQ1104: --admin-prereq stops here. Only the channel gate is left of the root
+# steps; the clone, the build, the dashboard and the services are the non-admin user's run.
+if [ "$ADMIN_PREREQ" = 1 ]; then
+  # ADMINPREREQTRUST1104: never the checkout's copy (the non-admin user can write it). The gate AND
+  # the writer it calls (scripts/lib/managed-settings-write.py, found next to the gate) come from the
+  # official source at MARVEEN_REF, into a fresh root-owned temp tree.
+  {
+    GATE_DIR="$(mktemp -d /tmp/marveen-channels-gate.XXXXXX)"
+    mkdir -p "$GATE_DIR/lib"
+    GATE_SCRIPT="$GATE_DIR/ensure-managed-channels-enabled.sh"
+    _raw="${MARVEEN_OFFICIAL_RAW}/${MARVEEN_REF}/scripts"
+    # The writer is optional here: an older ref's gate does not call it (main before the
+    # writer landed), and a gate that needs it and misses it reports the manual step itself.
+    curl -fsSL "$_raw/ensure-managed-channels-enabled.sh" -o "$GATE_SCRIPT" 2>/dev/null || : > "$GATE_SCRIPT"
+    curl -fsSL "$_raw/lib/managed-settings-write.py" -o "$GATE_DIR/lib/managed-settings-write.py" 2>/dev/null \
+      || rm -f "$GATE_DIR/lib/managed-settings-write.py"
+  }
+  GATE_OUT=""
+  [ -s "$GATE_SCRIPT" ] && GATE_OUT="$(bash "$GATE_SCRIPT" 2>&1 || true)"
+  case "$GATE_OUT" in *MARVEEN_CHANNELS_GATE=ok*) GATE_RESULT=ok ;; *) GATE_RESULT=manual ;; esac
+  LINGER_RESULT=nouser
+  if ! command -v loginctl >/dev/null 2>&1 || [ ! -d "${LINGER_SYSTEMD_DIR:-/run/systemd/system}" ]; then LINGER_RESULT=na
+  elif [ -n "$ADMIN_USER" ]; then
+    if loginctl enable-linger "$ADMIN_USER" 2>/dev/null; then LINGER_RESULT=ok; else LINGER_RESULT=fail; fi
+  fi
+  echo ""
+  echo -e "${BOLD}$(_t linux.adminprereq_done_head)${NC}"
+  if [ -n "$ADMIN_INSTALLED" ]; then ok "$(_t linux.adminprereq_pkgs_installed)${ADMIN_INSTALLED}"; else ok "$(_t linux.adminprereq_pkgs_present)"; fi
+  ok "node $(node --version)"
+  if [ "$GATE_RESULT" = ok ]; then ok "$(_t linux.adminprereq_gate_ok)"; else
+    warn "$(_t linux.adminprereq_gate_manual)"
+    # the gate's own human lines (its reason); the machine verdict line stays out
+    [ -n "$GATE_OUT" ] && printf '%s\n' "$GATE_OUT" | grep -v 'MARVEEN_CHANNELS_GATE=' | sed 's/^/    /'
+  fi
+  case "$LINGER_RESULT" in
+    ok) ok "$(_t linux.adminprereq_linger_ok) ${ADMIN_USER}" ;;
+    na) ok "$(_t linux.adminprereq_linger_na)" ;;
+    fail) warn "$(_t linux.adminprereq_linger_fail) ${ADMIN_USER}" ;;
+    *) warn "$(_t linux.adminprereq_linger_nouser)"
+       echo "      $(admin_prereq_cmd '<name>')" ;;
+  esac
+  echo -e "  $(_t linux.adminprereq_next_lead)"
+  echo "      $(_t linux.adminprereq_next_same)${ADMIN_USER:+   (${ADMIN_USER})}"
+  exit 0
+fi
 
 # ─────────────────────────────────────────────
 # Repo bootstrap
@@ -1663,15 +1888,14 @@ else
   fi
 fi
 
-# Enable plugin at project scope so --channels can boot-time activate it
+# INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
+# call rewrote the TRACKED .claude/settings.json (the whole file reformatted, ~500
+# lines, plus a wrong "<provider>@marveen-marketplace" key for Telegram/Discord),
+# so every fresh install left a dirty tree and every later update had to stash.
+# channels.sh enables the primary plugin for the main session through its
+# launch-time --settings file (store/.main-extra-plugins.settings.json), which
+# outranks the project scope and is gitignored.
 cd "$INSTALL_DIR"
-if claude plugin enable "$PLUGIN_SHORT@marveen-marketplace" --scope project 2>/dev/null || \
-   claude plugin enable "$PLUGIN_ID" --scope project 2>/dev/null; then
-  ok "${CHANNEL_PROVIDER} plugin project-scope-ban engedelyezve"
-else
-  warn "Plugin project-scope enable sikertelen. Futtasd kezzel:"
-  echo -e "  ${DIM}cd $INSTALL_DIR && claude plugin enable ${PLUGIN_ID} --scope project${NC}"
-fi
 
 # skill-factory telepitese (self-learning meta-skill)
 SKILLS_DIR="$HOME/.claude/skills"
@@ -2390,6 +2614,52 @@ if [ "$IS_WSL" = "true" ]; then
   unset _wslcfg _winprofile _cmd
 fi
 
+# ISSUE2472WSLSPIN1103 begin
+# WSL before 3.0.1 has an interop bug: the threads of wslhost.exe can spin
+# forever, and over hours or days the host's CPU is eaten (microsoft/WSL#41173,
+# fixed by #41319, first shipped in 3.0.1). The fix is a Windows-side update,
+# so only detect and explain. `wsl.exe --version` prints UTF-16LE (see the note
+# at the top of install-windows.ps1): drop the NUL bytes before parsing. Best
+# effort only: no wsl.exe, a hang (timeout), an empty or unreadable answer all
+# stay silent, and nothing here may stop the install (set -e + ERR trap).
+if [ "$IS_WSL" = "true" ]; then
+  # 0 when $1 < $2, compared numerically component by component (2.10 > 2.9).
+  _wsl_ver_lt() {
+    local _a _b _i _x _y
+    IFS=. read -r -a _a <<< "$1" || true
+    IFS=. read -r -a _b <<< "$2" || true
+    for _i in 0 1 2 3; do
+      _x=$((10#${_a[$_i]:-0})); _y=$((10#${_b[$_i]:-0}))
+      if [ "$_x" -lt "$_y" ]; then return 0; fi
+      if [ "$_x" -gt "$_y" ]; then return 1; fi
+    done
+    return 1
+  }
+  _wslexe="$(command -v wsl.exe 2>/dev/null || true)"
+  if [ -z "$_wslexe" ] && [ -x /mnt/c/Windows/System32/wsl.exe ]; then
+    _wslexe=/mnt/c/Windows/System32/wsl.exe
+  fi
+  _wslver=""
+  if [ -n "$_wslexe" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      _wslout="$(timeout 10 "$_wslexe" --version 2>/dev/null | LC_ALL=C tr -d '\000\r' || true)"
+    else
+      _wslout="$("$_wslexe" --version 2>/dev/null | LC_ALL=C tr -d '\000\r' || true)"
+    fi
+    # The first line is "WSL version: 2.7.10.0" (localized label, so match the
+    # leading "WSL" and its separator, not "WSLg"); a BOM may precede it.
+    _wslver="$(printf '%s\n' "$_wslout" | LC_ALL=C sed -n 's/^[^A-Za-z0-9]*WSL[^A-Za-z0-9][^0-9]*\([0-9][0-9]*\(\.[0-9][0-9]*\)\{1,3\}\).*/\1/p' | head -n 1 || true)"
+  fi
+  if [ -n "$_wslver" ] && _wsl_ver_lt "$_wslver" 3.0.1; then
+    echo ""
+    echo -e "  ${ORANGE}WSL ${_wslver}: ebben a regi WSL-verzioban ismert hiba van, amitol orak-napok alatt a wslhost.exe leterheli a gepet (a 3.0.1-es verziotol javitva).${NC}"
+    echo -e "  ${DIM}Javitas Windows PowerShellben: wsl --update, utana: wsl --shutdown${NC}"
+  fi
+  unset _wslexe _wslout _wslver
+  unset -f _wsl_ver_lt
+fi
+# ISSUE2472WSLSPIN1103 end
+
 # Ellenorzes
 sleep 3
 echo ""
@@ -2586,12 +2856,19 @@ DASH_TOKEN=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
-if [ -n "$DASH_TOKEN" ]; then
+# INSTSTDERRTMP1104: the token URL only to a terminal, the same rule the server
+# keeps (src/web.ts). Redirected (the Bridge, a CI log, `> file`), the line would
+# leave a root-equivalent credential in whatever captured it.
+if [ -n "$DASH_TOKEN" ] && [ -t 1 ]; then
   echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
 else
+  if [ -n "$DASH_TOKEN" ]; then _hint="$(_t dash.token_file_hint)"; _k=dash.token_file_hint
+  else _hint="$(_t dash.no_token_hint)"; _k=dash.no_token_hint; fi
+  # An older install-lang.sh (standalone run) answers an unknown key with the key itself.
+  [ "$_hint" = "$_k" ] && _hint="  (store/.dashboard-token)"
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
-  echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
+  echo -e "  ${DIM}${_hint}${NC}"
 fi
 echo ""
 echo -e "  ${DIM}VPS/szerver eleres tavolrol:${NC}"

@@ -87,6 +87,11 @@ except ImportError:  # pragma: no cover
     fcntl = None
 from pathlib import Path
 
+# HOOKISOAGENTS1105: the hook runs as `python3 -I -S`, and -I leaves the script's own directory off sys.path
+# (measured: sys.flags.safe_path is True). Without this line the hook_errlog import on the audit-failure path
+# below fails inside its try, and the trace that path exists to leave is silently lost.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_PATH = Path(os.environ.get("BROWSER_CONTENT_LOG", REPO_ROOT / "store" / "browser-content.log"))
 

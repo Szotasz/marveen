@@ -34,7 +34,8 @@ plain text. A NON-ZERO EXIT BLOCKS THE PROMPT and deafens the agent (the
 including parse failures and unexpected exceptions.
 
 Tuning lives outside the public repo, in store/provenance-gate-rules.json
-(override with PROVENANCE_GATE_RULES). Shape, all keys optional:
+(always the install's own file: no environment variable points it elsewhere,
+ENVRELAXGATE1104 step 2). Shape, all keys optional:
 
     {
       "enabled": true,
@@ -287,7 +288,8 @@ def unwrap_pasted(text):
 # 100x margin over the worst legitimate case; a stale row goes to the
 # UNVERIFIABLE bucket (a real old row is not forgery evidence), and every
 # verified/stale outcome logs the measured age so the bound can be tightened
-# from real data later (env PROVENANCE_DIRECTIVE_MAX_AGE_S overrides).
+# from real data later (the install .env's PROVENANCE_DIRECTIVE_MAX_AGE_S
+# overrides it, capped at DIRECTIVE_MAX_AGE_CAP_S; never the environment).
 # One-shot (consume-on-first-sight) use was rejected on the ARGUMENT, not on
 # a current behaviour: its failure mode is a false alarm on a real emergency
 # directive whenever the same prompt reaches the hook twice -- and that has
@@ -301,20 +303,36 @@ def unwrap_pasted(text):
 # and this install has exactly one provenance-gate entry today. A time bound
 # tightened from logged ages does not depend on that ever staying true.
 DIRECTIVE_MAX_AGE_DEFAULT_S = 1800
+# ENVRELAXGATE1104 step 2: the bound may be tightened freely, loosened at most to
+# 4x the default. A longer window is a longer replay window for an old row.
+DIRECTIVE_MAX_AGE_CAP_S = 7200
 
 
 def directive_max_age_s():
-    """Resolved at call time (env / .env), not at import: _env_setting is defined
-    further down this file, and a NameError at import would silence the WHOLE
-    hook (exit 0 via the top-level except) -- measured on the first draft."""
+    """Resolved at call time, not at import: _env_file_value is defined further
+    down this file, and a NameError at import would silence the WHOLE hook
+    (exit 0 via the top-level except) -- measured on the first draft.
+
+    From the install .env ONLY (ENVRELAXGATE1104 step 2): the hook's environment
+    is the checked agent's own, so it must not choose the window that checks it.
+    A missing, malformed or non-positive value is the default; above the cap,
+    the cap."""
     try:
-        return int(_env_setting("PROVENANCE_DIRECTIVE_MAX_AGE_S", str(DIRECTIVE_MAX_AGE_DEFAULT_S)))
+        raw = _env_file_value("PROVENANCE_DIRECTIVE_MAX_AGE_S")
+        if raw is None or not re.fullmatch(r"[0-9]{1,9}", raw):
+            return DIRECTIVE_MAX_AGE_DEFAULT_S
+        n = int(raw)
+        if n <= 0:
+            return DIRECTIVE_MAX_AGE_DEFAULT_S
+        return min(n, DIRECTIVE_MAX_AGE_CAP_S)
     except Exception:
         return DIRECTIVE_MAX_AGE_DEFAULT_S
 
 
 def _db_path():
-    return os.environ.get("PROVENANCE_GATE_DB") or os.path.join(_install_dir(), "store", "claudeclaw.db")
+    # Always the install's own queue DB (ENVRELAXGATE1104 step 2): the row in it
+    # is what verifies a directive, so the environment must not pick the DB.
+    return os.path.join(_install_dir(), "store", "claudeclaw.db")
 
 
 def derive_agent_id(cwd):
@@ -544,6 +562,32 @@ def _env_setting(key, default):
     return default
 
 
+def _env_file_value(key):
+    """The install .env's value of `key` as src/env-parse.ts reads it: the LAST
+    matching line wins, the value is trimmed and ONE pair of surrounding quotes
+    is stripped; None when the key is absent or the file unreadable. For a
+    security value (ENVRELAXGATE1104 step 2): never os.environ, which is the
+    checked agent's own. Kept local, like _env_setting, so the hook has no
+    import that could fail."""
+    try:
+        with open(os.path.join(_install_dir(), ".env"), encoding="utf-8") as fh:
+            content = fh.read()
+    except Exception:
+        return None
+    found = None
+    for line in content.split("\n"):
+        t = line.strip()
+        if not t or t.startswith("#") or "=" not in t:
+            continue
+        k, v = t.split("=", 1)
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if v[:1] in ('"', "'") and v.endswith(v[:1]):
+            v = v[1:-1]
+        found = v
+    return found
+
 
 def _fleet_lead():
     """The agent this gate tells the flagged agent to notify.
@@ -566,10 +610,10 @@ def _fleet_lead():
         return lead
     return _env_setting("MAIN_AGENT_ID", "marveen")
 
-_RULES_PATH = os.environ.get(
-    "PROVENANCE_GATE_RULES",
-    os.path.join(_install_dir(), "store", "provenance-gate-rules.json"),
-)
+# Always the install's own rules file (ENVRELAXGATE1104 step 2; since #2492 a
+# sub-agent cannot write it). An environment path would let the checked agent
+# hand the gate rules of its own choosing.
+_RULES_PATH = os.path.join(_install_dir(), "store", "provenance-gate-rules.json")
 
 
 def strip_accents(text):

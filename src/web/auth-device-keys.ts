@@ -194,6 +194,23 @@ export function mintBridgeDeviceKey(name: string, installId: string): { minted: 
   return { minted, replaced: prior !== null }
 }
 
+/** OWNERGATE4-1104: has a device key EVER been issued on this install? Revoking and the expiry sweep DELETE the row,
+ *  so a row count alone would forget a revoked key; device_keys.id is AUTOINCREMENT, and sqlite_sequence keeps the
+ *  highest id ever handed out across those deletes. So: any row (an expired one too) or a non-zero sequence. The
+ *  first-device setup path (routes/auth.ts mayActAsOwnerOrFirstRun) is open only while this is false; an error reading
+ *  it counts as true (fail closed). */
+export function deviceKeyEverIssued(): boolean {
+  try {
+    const db = getDb()
+    const rows = (db.prepare('SELECT COUNT(*) AS c FROM device_keys').get() as { c: number }).c
+    if (rows > 0) return true
+    const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'device_keys'").get() as { seq: number } | undefined
+    return (seq?.seq ?? 0) > 0
+  } catch {
+    return true
+  }
+}
+
 // Revocation is immediate: the row and any cached entry go together, so the
 // very next request with the key falls through the gate.
 export function revokeDeviceKey(id: number): boolean {

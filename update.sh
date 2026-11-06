@@ -374,6 +374,14 @@ fi
 # was wrong twice: nothing was dropped, and the conflict markers were left in
 # the working tree (ANETTUPDATESTASH1102).
 STASHED_AUTO=0
+# INSTALLDIRTYTREE1103: first undo the drift the INSTALL itself left in tracked
+# files (the reformatted .claude/settings.json, the Bridge's headless installer,
+# the npm lock line). Only provably generated changes are restored; anything a
+# human changed stays and meets the guard below as before. Best effort: a
+# missing python3 or a failing helper never blocks the update.
+if [ -f "$INSTALL_DIR/scripts/install-drift-repair.py" ] && command -v python3 >/dev/null 2>&1; then
+  python3 "$INSTALL_DIR/scripts/install-drift-repair.py" --install-dir "$INSTALL_DIR" 2>&1 | sed 's/^/  /' || true
+fi
 # HEARTBEAT.md is rewritten by the agent every heartbeat tick (self-modifying).
 # Exclude it from the dirty check; the preflight ignores it too. It will be
 # auto-overwritten on the next heartbeat anyway, so no data loss.
@@ -2289,6 +2297,21 @@ elif command -v setsid >/dev/null 2>&1; then
   setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 else
   bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+fi
+
+# ENVRELAXGATE1104 step 2: a .env line that would LOOSEN a security key no longer counts (the .env may only tighten
+# one; loosening is the Settings page's, behind the owner login). Name each such key here, the name only, so a
+# hand-written line does not fall back to the default in silence. A warning, never a failure.
+_env_check_cli="$INSTALL_DIR/dist/settings-env-check-cli.js"
+if [ -f "$_env_check_cli" ] && command -v node >/dev/null 2>&1; then
+  _ignored_env_keys="$(node "$_env_check_cli" 2>/dev/null || true)"
+  for _ik in $_ignored_env_keys; do
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "  ${ORANGE:-}⚠${NC:-} The .env line for ${_ik} is IGNORED: it would loosen a security control. Set it on the Settings page instead."
+    else
+      echo -e "  ${ORANGE:-}⚠${NC:-} A .env ${_ik} sora NEM hat: egy biztonsági kapcsolót lazítana. A Beállítások oldalon állítható."
+    fi
+  done
 fi
 
 echo ""

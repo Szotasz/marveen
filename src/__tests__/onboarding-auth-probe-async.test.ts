@@ -134,7 +134,8 @@ async function callWithBody(method: string, path: string, body: unknown) {
     end(b?: string) { out = b ?? '' },
   }
   const url = new URL(`http://localhost${path}`)
-  await tryHandleOnboarding({ req, res, path: url.pathname, method, url } as any)
+  // The owner's browser login: identity needs the owner (OWNERGATE3-1104); the gate itself is owner-gate-round3.test.ts.
+  await tryHandleOnboarding({ req, res, path: url.pathname, method, url, auth: { kind: 'session' } } as any)
   return { status, json: JSON.parse(out) }
 }
 

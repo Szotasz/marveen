@@ -9,7 +9,7 @@ Egy mozdulattal megállítja az egész flottát, ha valami elszabadult. Ilyen le
 
 **Ki nyomhatja meg:** bárki, akinek dashboard-hozzáférése van, egy ügynök is (önfék). Egy tévedésből megnyomott fék a gazdának egy percébe kerül.
 
-**Ki oldhatja fel:** csak a gazda, a dashboard-jelszóval bejelentkezve (böngészőben, a Bridge-ben is; egy eszközkulcs, például a Bridge párosító kulcsa, nem elég). Ugyanez a szabály védi a hitelesítő adatok kiadását is (`mayIssueCredentials`). A közös tokennel nem lehet feloldani, így egy eltévedt vagy rávett ügynök nem oldhatja fel magát. Egyetlen kivétel van: amíg nincs dashboard-felhasználó (első telepítés), a token az egyetlen gazda-hitelesítés.
+**Ki oldhatja fel:** csak a gazda, a dashboard-jelszóval bejelentkezve (böngészőben, a Bridge-ben is; egy eszközkulcs, például a Bridge párosító kulcsa, nem elég). Ugyanez a szabály védi a többi gazda-műveletet is (`mayActAsOwner`). A közös tokennel nem lehet feloldani, így egy eltévedt vagy rávett ügynök nem oldhatja fel magát, akkor sem, ha még nincs dashboard-felhasználó (OWNERGATE4-1104): ilyenkor előbb a dashboard-logint kell létrehozni, vagy a gépen törölni a store/fleet-freeze.json fájlt.
 
 ## Hol
 

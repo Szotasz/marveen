@@ -495,6 +495,9 @@ nav { display: flex; gap: 4px; }
 }
 .team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
 .team-node-meta { font-size: 12px; color: var(--text-muted); }
+/* Owner-written tagline: it says what the agent does, so it reads stronger
+   than the muted role line it replaces, and wraps instead of widening the node. */
+.team-node-tagline { color: var(--text); text-align: center; overflow-wrap: anywhere; }
 .team-connector {
   width: 2px;
   height: 16px;
@@ -1928,6 +1931,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agent-model-badge.opus { background: rgba(217,119,87,0.12); color: var(--accent); }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
+/* The agent's custom provider was deleted: it will not start until it gets another model. */
+.agent-model-badge.provider-missing { background: var(--danger-soft); color: var(--danger); }
 
 /* Context-window-used badge (Agents grid card). Tiers mirror context-guard's
    own default actPct/hardPct (90%/97%) -- see contextPctBadgeHtml in app.js. */
@@ -2760,6 +2765,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .hint { font-weight: 400; color: var(--text-muted); }
 
+/* Base look for a .input field outside a styled container: without it the field
+   was the browser's unstyled white box (the Vault add forms, the Background
+   tasks and Ideas filters, the idea detail selects). No width, so nothing moves;
+   the container rules (.form-group input, .notes-form .input, ...) are more
+   specific and keep their own look. */
+.input {
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+.input:focus { border-color: var(--accent); }
+
 .form-group input,
 .form-group textarea,
 .form-group select {
@@ -3009,6 +3031,16 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .badge-paused {
   background: rgba(217, 119, 87, 0.12);
   color: var(--accent);
+}
+.badge-not-firing {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.schedule-not-firing {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .badge-heartbeat {
   background: rgba(200, 80, 120, 0.12);
@@ -4770,14 +4802,33 @@ a.oss-inv-name:hover { text-decoration: underline; }
   margin-left: 6px;
 }
 
+/* The inputs take a full row each and the buttons wrap under them, right
+   aligned: in one row an input's intrinsic width pushed Save/Cancel out past
+   the card's right edge. */
 .vault-card-edit-form {
-  padding: 10px 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
   align-items: center;
 }
-.vault-card-edit-form .input { flex: 1; }
+.vault-card-edit-form .input { flex: 1 1 100%; }
+/* .input has no base style, so these fields were the browser's white box. */
+.vault-card-edit-form .input,
+.connector-external-add .input {
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+.vault-card-edit-form .input:focus,
+.connector-external-add .input:focus { border-color: var(--accent); }
 
 /* === SSH Vault Section === */
 .ssh-section {
@@ -4786,6 +4837,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
   border-top: 1px solid var(--border);
 }
 .ssh-key-store-section { margin-top: 28px; }
+.vault-secrets-header { margin-top: 28px; }
 
 /* Key assign select in card/table */
 .ssh-key-select {
@@ -5201,6 +5253,8 @@ a.oss-inv-name:hover { text-decoration: underline; }
 }
 .modal-close:hover { color: var(--text); }
 .modal-body { padding: 16px 20px; }
+/* The class's display:flex outranks the browser's [hidden] default; the keygen and scan modals hide their footer. */
+.modal-footer[hidden] { display: none; }
 .modal-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 12px; }
 .modal-footer {
   display: flex;
@@ -7636,6 +7690,9 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-agent-state.is-warn { color: var(--accent); }
 .gromzo-agent-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
 .gromzo-agent-row .btn-compact { min-height: 36px; }
+/* GROMZONAMETAKEN1106: the agent's name on Gromzo, shown on a row after a name refusal. */
+.gromzo-agent-namefield { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; font-size: 12px; color: var(--text-muted); max-width: 360px; }
+.gromzo-agent-namefield input { width: 100%; }
 
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }

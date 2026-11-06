@@ -23,7 +23,10 @@ function slice(startMarker: string, endMarker: string): string {
 }
 
 const HELPERS = slice('async function readActionReply(', '\n// === Agents API ===')
-const SCHEDULE_ROW = slice('function makeScheduleRow(task) {', '\nfunction renderScheduleList(')
+// The row and the helpers it calls (#2429: the status badge and the not-firing
+// note sit right above it); sliced from the same marker as
+// ui-schedule-not-firing.test.ts, so a new helper there is loaded here too.
+const SCHEDULE_ROW = slice('const SCHEDULE_REGISTRY_REASONS', '\nfunction renderScheduleList(')
 const SAVE_MEMORY = slice('async function saveMemoryFromModal() {', "\ndocument.getElementById('saveMemBtn')")
 const SEND_CHAT = slice('async function sendChatMessage(toAgent) {', "\ndocument.getElementById('chatRefreshBtn')")
 const RESOLVE_APPROVAL = slice('async function _resolveApproval(id, decision) {', '\n}\n') + '\n}\n'
@@ -95,6 +98,10 @@ async function clickSchedule(action: 'toggle' | 'delete' | 'run', reply: Reply, 
 describe('#2424 schedule row actions show the server answer', () => {
   it('the snippets are found in web/app.js', () => {
     for (const s of [HELPERS, SCHEDULE_ROW, SAVE_MEMORY, SEND_CHAT, RESOLVE_APPROVAL]) expect(s.length).toBeGreaterThan(50)
+    // the row and every helper it calls (DEVELOPRED1103: a missing helper threw at call time)
+    expect(SCHEDULE_ROW).toContain('function makeScheduleRow(task) {')
+    expect(SCHEDULE_ROW).toContain('function scheduleStatusBadge(task) {')
+    expect(SCHEDULE_ROW).toContain('function scheduleNotFiringNote(task) {')
   })
 
   it('pause accepted: the paused toast, list reloaded', async () => {

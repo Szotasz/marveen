@@ -30,7 +30,7 @@ function runHook(payload: unknown): HookRun {
   let status = 0
   let stdout = ''
   try {
-    stdout = execFileSync('python3', [HOOK], {
+    stdout = execFileSync('python3', ['-I', '-S', HOOK], {
       input: JSON.stringify(payload),
       encoding: 'utf-8',
       env: { ...process.env, BROWSER_CONTENT_LOG: logPath },
@@ -215,7 +215,7 @@ describe('browser-content-notice (exit-code invariant)', () => {
   it('exits 0 on malformed stdin', () => {
     let status = 0
     try {
-      execFileSync('python3', [HOOK], { input: 'not json at all', encoding: 'utf-8' })
+      execFileSync('python3', ['-I', '-S', HOOK], { input: 'not json at all', encoding: 'utf-8' })
     } catch (err: any) {
       status = typeof err?.status === 'number' ? err.status : 1
     }
@@ -306,7 +306,7 @@ describe('browser-content-notice (envelope layer)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bcn-cap-'))
     const logPath = join(dir, 'browser-content.log')
     const env = { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: '4000' }
-    const once = (n: number) => execFileSync('python3', [HOOK], { input: JSON.stringify(mcpPayload(`page ${n} ` + 'x'.repeat(1200))), encoding: 'utf-8', env })
+    const once = (n: number) => execFileSync('python3', ['-I', '-S', HOOK], { input: JSON.stringify(mcpPayload(`page ${n} ` + 'x'.repeat(1200))), encoding: 'utf-8', env })
     once(1); once(2)
     expect(existsSync(`${logPath}.1`)).toBe(false)
     once(3)
@@ -326,7 +326,7 @@ describe('browser-content-notice (envelope layer)', () => {
   it('the cap is exact: a line that brings the file to exactly the cap is appended, one byte more rotates', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bcn-edge-'))
     const logPath = join(dir, 'browser-content.log')
-    const run = (max: number) => execFileSync('python3', [HOOK], {
+    const run = (max: number) => execFileSync('python3', ['-I', '-S', HOOK], {
       input: JSON.stringify(mcpPayload('same page')), encoding: 'utf-8',
       env: { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: String(max) },
     })
@@ -347,7 +347,7 @@ describe('browser-content-notice (envelope layer)', () => {
     const logPath = join(dir, 'browser-content.log')
     symlinkSync(target, logPath)
     const errlog = join(dir, 'hook-errors.log')
-    const out = execFileSync('python3', [HOOK], {
+    const out = execFileSync('python3', ['-I', '-S', HOOK], {
       input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
       env: { ...process.env, BROWSER_CONTENT_LOG: logPath, HOOK_ERRLOG_PATH: errlog },
     })
@@ -362,7 +362,7 @@ describe('browser-content-notice (envelope layer)', () => {
     const target = join(dir, 'planted-target')
     symlinkSync(target, `${logPath}.lock`)
     const errlog = join(dir, 'hook-errors.log')
-    const out = execFileSync('python3', [HOOK], {
+    const out = execFileSync('python3', ['-I', '-S', HOOK], {
       input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
       env: { ...process.env, BROWSER_CONTENT_LOG: logPath, HOOK_ERRLOG_PATH: errlog },
     })
@@ -377,7 +377,7 @@ describe('browser-content-notice (envelope layer)', () => {
     const logPath = join(dir, 'browser-content.log')
     writeFileSync(logPath, 'old\n')
     chmodSync(logPath, 0o644)
-    execFileSync('python3', [HOOK], {
+    execFileSync('python3', ['-I', '-S', HOOK], {
       input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
       env: { ...process.env, BROWSER_CONTENT_LOG: logPath },
     })
@@ -421,7 +421,7 @@ print(json.dumps({"rotated": open(log + ".1").read().count("OLD-GENERATION"), "c
     const logPath = join(dir, 'browser-content.log')
     writeFileSync(logPath, 'y'.repeat(5000))
     chmodSync(logPath, 0o644)
-    execFileSync('python3', [HOOK], {
+    execFileSync('python3', ['-I', '-S', HOOK], {
       input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
       env: { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: '4000' },
     })

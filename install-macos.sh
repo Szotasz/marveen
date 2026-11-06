@@ -55,6 +55,31 @@ managed_settings_notice() {
 # megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
 # forditani az upstream hibat (explain_install_error, install-lang.sh).
 INSTALL_ERRLOG=$(mktemp "${TMPDIR:-/tmp}/marveen-install-stderr.XXXXXX")
+# INSTSTDERRTMP1104: the copy holds whatever a failing tool printed (a token in a
+# URL, a password a broken prompt echoed back), and it outlived every run in the
+# customer's TMPDIR. Only explain_install_error reads it, on the way out (fail()
+# and on_error() call it before exit), so it leaves with the process: removed on
+# EXIT, which bash runs after those calls on every exit path, and turned into an
+# exit by INT/TERM so an interrupted run cleans up too.
+cleanup_install_errlog() {
+  [ -n "${INSTALL_ERRLOG:-}" ] || return 0
+  rm -f "$INSTALL_ERRLOG"
+  # The tee behind `exec 2>` starts asynchronously; a run that exits within its
+  # first milliseconds can unlink the file before tee opened it, and `tee -a`
+  # then creates it again (measured in the test). Close our end of the pipe so
+  # tee sees EOF, give it a moment, and remove a re-created file once more.
+  exec 2>&-
+  local i=0
+  while [ "$i" -lt 10 ]; do
+    [ -e "$INSTALL_ERRLOG" ] && rm -f "$INSTALL_ERRLOG"
+    sleep 0.05 2>/dev/null || break
+    i=$((i + 1))
+  done
+  return 0
+}
+trap cleanup_install_errlog EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 exec 2> >(tee -a "$INSTALL_ERRLOG" >&2)
 
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
@@ -535,34 +560,15 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_DISCORD" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      # Safe JSON merge (same shape as ensure-managed-channels-enabled.sh):
-      # tmp file + copymode + os.replace, so no interruption can leave a
-      # truncated managed-settings behind. And an org-policy file is NEVER
-      # rebuilt from scratch: on a parse failure we say so and leave it
-      # untouched -- a {} fallback would silently drop the OTHER channels'
-      # allowlist entries, muting them host-wide.
-      if sudo python3 - "$MANAGED_FILE" <<'DISCORDMERGEPY'
-import json, os, shutil, sys
-p = sys.argv[1]
-try:
-    d = json.load(open(p))
-except Exception as e:
-    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(d, dict):
-    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
-    sys.exit(1)
-plugins = d.get('allowedChannelPlugins', [])
-entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
-if entry not in plugins:
-    plugins.append(entry)
-d['allowedChannelPlugins'] = plugins
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-shutil.copymode(p, tmp)
-os.replace(tmp, p)
-DISCORDMERGEPY
+      # Merge only, the file is never created here: the shared writer
+      # (MANAGEDSETTINGSWRITE1103, scripts/lib/managed-settings-write.py).
+      # An org-policy file is NEVER rebuilt from scratch: one that is not a
+      # valid JSON object is left untouched and the call fails, because a {}
+      # fallback would silently drop the OTHER channels' allowlist entries,
+      # muting them host-wide. Every other key and the file mode stay; the
+      # write goes through a fresh mkstemp file and os.replace.
+      if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" \
+        --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
       else
@@ -616,42 +622,19 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_ALL" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      # Safe JSON merge (same shape as the Discord branch / #1306): tmp file +
-      # copymode + os.replace, so no interruption can leave a truncated
-      # managed-settings behind. And an org-policy file is NEVER rebuilt from
-      # scratch: on a parse failure we say so and leave it untouched -- the old
+      # Additive merge through the shared writer (MANAGEDSETTINGSWRITE1103,
+      # scripts/lib/managed-settings-write.py; same call as the Discord branch).
+      # An org-policy file is NEVER rebuilt from scratch: one that is not a
+      # valid JSON object is left untouched and the call fails -- the old
       # empty-object fallback silently dropped every OTHER managed key
-      # (channelsEnabled, other allowlists) host-wide. The old shape also
-      # piped through `sudo tee`, which TRUNCATES the file even when the merge
-      # process fails -- a failed merge left an EMPTY org-policy file behind.
-      if sudo python3 - "$MANAGED_FILE" <<'SLACKMERGEPY'
-import json, os, shutil, sys
-p = sys.argv[1]
-required = [
-    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
-    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
-]
-try:
-    d = json.load(open(p))
-except Exception as e:
-    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(d, dict):
-    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
-    sys.exit(1)
-plugins = d.get('allowedChannelPlugins', [])
-for entry in required:
-    if not any(p2.get('plugin') == entry['plugin'] and p2.get('marketplace') == entry['marketplace'] for p2 in plugins):
-        plugins.append(entry)
-d['allowedChannelPlugins'] = plugins
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-shutil.copymode(p, tmp)
-os.replace(tmp, p)
-SLACKMERGEPY
+      # (channelsEnabled, other allowlists) host-wide, and the older `sudo tee`
+      # shape TRUNCATED the file even when the merge failed. Every other key and
+      # the file mode stay; the write goes through a fresh mkstemp file.
+      if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" \
+        --add-plugin slack-channel@marveen-marketplace \
+        --add-plugin telegram@claude-plugins-official \
+        --add-plugin teams@marveen-marketplace \
+        --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
       else
@@ -665,28 +648,18 @@ SLACKMERGEPY
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
     sudo mkdir -p "$MANAGED_DIR"
-    # Fresh file: still tmp + os.replace, so an interrupted install can never
-    # leave a truncated/empty org-policy file that a later run would then
-    # refuse to touch (the merge above declines unparseable files by design).
-    if sudo python3 - "$MANAGED_FILE" <<'SLACKCREATEPY'
-import json, os, sys
-p = sys.argv[1]
-required = [
-    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
-    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
-]
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps({'allowedChannelPlugins': required}, indent=2) + "\n")
-# A fresh tmp inherits the caller's umask; under `umask 077` that leaves a
-# root-owned 0600 policy the unprivileged session cannot read, so the channel
-# policy silently never takes effect (the exact trap documented in
-# scripts/ensure-managed-channels-enabled.sh) -- pin the world-readable mode.
-os.chmod(tmp, 0o644)
-os.replace(tmp, p)
-SLACKCREATEPY
+    # Fresh file through the same shared writer (--create): a fresh mkstemp file
+    # and os.replace, so an interrupted install can never leave a truncated or
+    # empty org-policy file that a later run would then refuse to touch (the
+    # merge above declines unparseable files by design). A new file gets 0644
+    # whatever the umask: under `umask 077` a root-owned 0600 policy is one the
+    # unprivileged session cannot read, so it silently never takes effect. If a
+    # file appeared meanwhile, --create merges into it instead of replacing it.
+    if sudo python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$MANAGED_FILE" --create \
+      --add-plugin slack-channel@marveen-marketplace \
+      --add-plugin telegram@claude-plugins-official \
+      --add-plugin teams@marveen-marketplace \
+      --add-plugin discord@claude-plugins-official
     then
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
     else
@@ -1169,15 +1142,14 @@ else
   fi
 fi
 
-# Enable plugin at project scope so --channels can boot-time activate it
+# INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
+# call rewrote the TRACKED .claude/settings.json (the whole file reformatted, ~500
+# lines, plus a wrong "<provider>@marveen-marketplace" key for Telegram/Discord),
+# so every fresh install left a dirty tree and every later update had to stash.
+# channels.sh enables the primary plugin for the main session through its
+# launch-time --settings file (store/.main-extra-plugins.settings.json), which
+# outranks the project scope and is gitignored.
 cd "$INSTALL_DIR"
-if claude plugin enable "$PLUGIN_SHORT@marveen-marketplace" --scope project 2>/dev/null || \
-   claude plugin enable "$PLUGIN_ID" --scope project 2>/dev/null; then
-  ok "${CHANNEL_PROVIDER} plugin project-scope-ban engedelyezve"
-else
-  warn "Plugin project-scope enable sikertelen. Futtasd kezzel:"
-  echo -e "  ${DIM}cd $INSTALL_DIR && claude plugin enable ${PLUGIN_ID} --scope project${NC}"
-fi
 
 # Install skill-factory (self-learning meta-skill)
 SKILLS_DIR="$HOME/.claude/skills"
@@ -1527,6 +1499,9 @@ DASHBOARD_PLIST="com.${SERVICE_ID}.dashboard"
 CHANNELS_PLIST="com.${SERVICE_ID}.channels"
 
 # Dashboard service
+# ISSUE2490 (b1): TERM and LANG exactly as the channels plist below. After a reboot either job can be the one that
+# creates the tmux server (the dashboard's worker session often wins, agent-worker.ts), and the server's global
+# environment is its creator's: without these the whole fleet ran in a server with no TERM and no LANG.
 cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1555,6 +1530,10 @@ cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
     <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+    <key>LANG</key>
+    <string>${LANG:-en_US.UTF-8}</string>
   </dict>
   <key>SoftResourceLimits</key>
   <dict>
@@ -1875,9 +1854,18 @@ DASH_TOKEN=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
-if [ -n "$DASH_TOKEN" ]; then
+# INSTSTDERRTMP1104: the token URL only to a terminal, the same rule the server
+# keeps (src/web.ts). Redirected (the Bridge, a CI log, `> file`), the line would
+# leave a root-equivalent credential in whatever captured it.
+if [ -n "$DASH_TOKEN" ] && [ -t 1 ]; then
   echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
+elif [ -n "$DASH_TOKEN" ]; then
+  _hint="$(_t dash.token_file_hint)"
+  # An older install-lang.sh (standalone run) answers an unknown key with the key itself.
+  [ "$_hint" = "dash.token_file_hint" ] && _hint="  (store/.dashboard-token)"
+  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
+  echo -e "  ${DIM}${_hint}${NC}"
 else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
   echo -e "  ${DIM}$(_t dash.no_token_hint)${NC}"

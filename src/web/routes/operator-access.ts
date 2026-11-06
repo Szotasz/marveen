@@ -3,14 +3,14 @@
 // -- 'full' or 'operator' -- may neither read nor change what an operator gets,
 // the same rule as user and device-key administration in routes/auth.ts.
 // Every change lands in config_change_log with the actor.
-// Changing the switches widens what existing operator keys reach, so once a
-// dashboard login exists the PUT takes the owner's session (mayIssueCredentials,
-// DEVKEYFOLLOW1022); reading them stays open to both owner lanes.
+// Changing the switches widens what existing operator keys reach, so the PUT takes
+// the owner's session (mayActAsOwner, DEVKEYFOLLOW1022), also before the first
+// dashboard login exists (OWNERGATE4-1104); reading them stays open to both owner lanes.
 
 import { readBody, json } from '../http-helpers.js'
 import { logConfigChange } from '../../db.js'
 import { normaliseOperatorAccess, readOperatorAccess, writeOperatorAccess } from '../operator-access.js'
-import { bridgeOwner, mayActAsOwner, ownerCookieSession, OWNER_SESSION_REQUIRED } from './auth.js'
+import { bridgeOwner, mayActAsOwner, ownerCookieSession, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const OWNER_KINDS = ['token', 'session']
@@ -29,7 +29,7 @@ export async function tryHandleOperatorAccess(ctx: RouteContext): Promise<boolea
   }
   if (method === 'PUT') {
     if (!mayActAsOwner(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+      refuseOwner(res, 'Changing what an operator key may reach needs the dashboard login (an owner session).')
       return true
     }
     let parsed: unknown

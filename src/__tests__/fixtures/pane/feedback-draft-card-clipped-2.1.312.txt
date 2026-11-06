@@ -1,0 +1,24 @@
+  transcript line 1
+  transcript line 2
+  transcript line 3
+  transcript line 4
+  transcript line 5
+  transcript line 6
+  transcript line 7
+  transcript line 8
+  transcript line 9
+  transcript line 10
+  transcript line 11
+[38;5;246m✻[39m [38;5;246mChurned for 4m 26s · done 18:52 · 1 shell still running[39m
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ [38;5;174m✻ [39mBug report drafted: [1mFeedback-draft card blocks unattended tmux sessions w…[0m │
+│ [2m│[0m - [1mWhat happened:[0m In an unattended Claude Code session driven via tmux, the │
+│ [2m│[0m queued feedback-draft card stays above the prompt until someone answers    │
+│ [2m│[0m it; an au…                                                                 │
+│ [38;5;246m1 to review · 2 to send · 0 to dismiss[39m                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[38;5;244m──────────────────────────────────────────────────────────────────── Enigma AI ─
+[39m❯ 

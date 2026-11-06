@@ -55,7 +55,8 @@ function fakeCtx(path: string, body: unknown) {
   const raw = Buffer.from(JSON.stringify(body))
   const req = { on(ev: string, cb: (x?: Buffer) => void) { if (ev === 'data') cb(raw); if (ev === 'end') cb(); return req } }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext
+  // The owner's browser login: these routes need the owner (OWNERGATE2-1104); the gate itself is owner-gate-round2.test.ts.
+  const ctx = { req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'session' } } as unknown as RouteContext
   return { ctx, out }
 }
 

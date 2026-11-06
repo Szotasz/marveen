@@ -61,6 +61,28 @@ export async function extractPublicKeyFromVault(vaultKeyId: string): Promise<str
   }
 }
 
+// A label names one key: two keys under the same label look alike in a server's
+// key dropdown ("label (username)") and in the delete question. Compared without
+// case, so "Alma" and "alma" count as the same.
+export function sshKeyLabelTaken(label: string): boolean {
+  const wanted = label.toLocaleLowerCase()
+  return listVaultSshKeys().some(k => k.label.toLocaleLowerCase() === wanted)
+}
+
+// For a label the server makes up itself (generate-key): the first free one of
+// "base", "base 2", "base 3", ...
+export function uniqueSshKeyLabel(base: string): string {
+  if (!sshKeyLabelTaken(base)) return base
+  for (let n = 2; ; n++) {
+    const label = `${base} ${n}`
+    if (!sshKeyLabelTaken(label)) return label
+  }
+}
+
+function labelTakenReply(res: RouteContext['res'], label: string) {
+  json(res, { error: `An SSH key named "${label}" already exists`, code: 'label_taken' }, 409)
+}
+
 function toApiShape(key: VaultSshKey) {
   return {
     id: key.id,
@@ -97,6 +119,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
         json(res, { error: 'label and username are required' }, 400)
         return true
       }
+      if (sshKeyLabelTaken(label)) { labelTakenReply(res, label); return true }
 
       const id = randomBytes(8).toString('hex')
       const comment = `${username} (${label})`
@@ -129,6 +152,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
         json(res, { error: 'label, username and privateKey are required' }, 400)
         return true
       }
+      if (sshKeyLabelTaken(label)) { labelTakenReply(res, label); return true }
 
       // Restore the closing newline ONCE, before validation, and use this
       // normalized value for BOTH validation and storage -- ssh-keygen needs

@@ -1,6 +1,7 @@
 // DEVKEYMINT1022: once a dashboard login exists, issuing a credential (a device key,
 // a Bridge pairing) and adding or removing a dashboard user take the owner's
-// session; the bearer token keeps them only for the first-run setup (no user yet).
+// session; the bearer token keeps only the first-run setup (no user yet): the first user and the FIRST
+// device (OWNERGATE4-1104, mayActAsOwnerOrFirstRun 'first-login' and 'first-device').
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -48,10 +49,16 @@ beforeEach(() => {
 })
 
 describe('first-run setup (no dashboard user yet): the token is the one credential there is', () => {
-  it('the token creates the first user, mints a key, and reaches Bridge pairing', async () => {
-    expect((await mint(TOKEN_AUTH)).status).toBe(201)
+  // OWNERGATE4-1104: pairing first (it stops at validation and mints nothing), then the first key; a SECOND key is
+  // refused, since the first-device path is open only while no device key was ever issued.
+  it('the token reaches Bridge pairing, mints the first key (not a second), and creates the first user', async () => {
     // the pairing gate lets it through to input validation (400 on the empty name)
     expect((await pair(TOKEN_AUTH)).status).toBe(400)
+    expect((await mint(TOKEN_AUTH)).status).toBe(201)
+    const second = await mint(TOKEN_AUTH, 'second')
+    expect(second.status).toBe(403)
+    expect(second.json().setup_required).toBe(true)
+    expect(listDeviceKeys()).toHaveLength(1)
     expect((await addUser(TOKEN_AUTH, 'owner')).status).toBe(201)
   })
 })
@@ -99,10 +106,16 @@ describe('once a login exists, the token cannot issue or manage access', () => {
     expect((await pair(SESSION_AUTH)).status).toBe(400)
   })
 
-  it('listing and revoking keys stay open to the token: they grant nothing', async () => {
+  // DEVKEYREVOKETOKEN1104: revoking grants nothing, but it takes away: a revoked Bridge key locks the owner out of their
+  // own Bridge, and every sub-agent can read the shared token. Listing stays open (a read, no secret in it).
+  it('listing keys stays open to the token; revoking one needs the owner', async () => {
     const k = createDeviceKey('existing')
     expect((await call(tryHandleAuth, 'GET', '/api/auth/device-keys', TOKEN_AUTH)).status).toBe(200)
-    expect((await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${k.id}`, TOKEN_AUTH)).status).toBe(200)
+    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${k.id}`, TOKEN_AUTH)
+    expect(r.status).toBe(403)
+    expect(r.json().code).toBe('owner_session_required')
+    expect(listDeviceKeys()).toHaveLength(1)
+    expect((await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${k.id}`, SESSION_AUTH)).status).toBe(200)
     expect(listDeviceKeys()).toHaveLength(0)
   })
 

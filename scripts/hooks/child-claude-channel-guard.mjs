@@ -225,6 +225,19 @@ function startsNoServer(args) {
   return SAFE_SUBCOMMANDS.some(([a, b]) => args[0] === a && args[1] === b)
 }
 
+// The `claude` invocations of a command (each one's args), with the same quote masking and segment split as decide()
+// below. Exported for db-write-gate.mjs (ENVRELAXMCPCFG1104): `claude mcp add|add-json|remove` starts no server, so
+// it is safe HERE (startsNoServer), but it writes an MCP server list, which the db-write-gate denies a sub-agent.
+export function claudeInvocations(command) {
+  if (typeof command !== 'string' || !command.includes('claude')) return []
+  const out = []
+  for (const segment of stripInertText(command).split(SEGMENT_SPLIT)) {
+    const hit = inspectSegment(segment)
+    if (hit) out.push(hit.args)
+  }
+  return out
+}
+
 export function decide(command, env = process.env) {
   if (typeof command !== 'string' || !command.includes('claude')) return { allow: true }
   for (const segment of stripInertText(command).split(SEGMENT_SPLIT)) {

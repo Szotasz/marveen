@@ -113,8 +113,12 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
-STORE_DIR = os.environ.get("EMAIL_APPROVAL_GATE_STORE",
-                           os.path.join(_ROOT, "store"))
+# Always the install's own store (ENVRELAXGATE1104): the hook runs in the
+# checked agent's own environment, so no environment variable may choose the
+# store whose config, approvals and lists this gate decides by. A test runs the
+# hook from a tmp install (<tmp>/scripts linked to the repo's scripts/;
+# abspath, not realpath, keeps <tmp> as the root).
+STORE_DIR = os.path.join(_ROOT, "store")
 DB_PATH = os.path.join(STORE_DIR, "claudeclaw.db")
 CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 # EMAILALLANDOCIMZETT926: a standing recipient list, consulted at level 2 ONLY.
@@ -125,20 +129,13 @@ CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
 
 
-def _window_from_env():
-    """(seconds, error). HOOKDEPLOAD1008: a non-integer override used to
-    raise at module load, before the __main__ net: exit 1, which PreToolUse
-    treats as NON-blocking. The error is kept here, and the send path denies
-    with it."""
-    raw = os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800")
-    try:
-        return int(raw), None
-    except ValueError:
-        return None, f"EMAIL_APPROVAL_WINDOW_S={raw!r} nem egesz szam"
-
-
-# ~30 minutes from approval (resolved_at) to send; env override is for tests.
-WINDOW_S, _WINDOW_ERR = _window_from_env()
+# The window from approval (resolved_at) to send: a fixed 1800 s, the SAME
+# value as the dashboard's (src/web/routes/approvals.ts APPROVAL_WINDOW_S; a
+# test pins the two). No environment override (ENVRELAXGATE1104): the hook runs
+# in the agent's own environment, and a longer window is a longer life for an
+# approval. Should it ever need tuning, it becomes a registry setting.
+APPROVAL_WINDOW_S = 1800
+WINDOW_S = APPROVAL_WINDOW_S
 
 # GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools carry
 # neither word (mcp__claude_ai_Gmail__send_message / reply / forward), so the
@@ -210,8 +207,7 @@ def owner_cc_address() -> str:
     up in the launch environment would switch the gate off with no trace (the
     mail senders read their recipient settings from .env only for the same
     reason). The .env is the one next to the store this gate uses, i.e. the
-    install root in production, and the test's own root when a test points
-    EMAIL_APPROVAL_GATE_STORE at a temporary store."""
+    install root (a test's tmp install is its own root)."""
     try:
         with open(os.path.join(os.path.dirname(STORE_DIR), ".env"), encoding="utf-8") as fh:
             for line in fh:
@@ -401,6 +397,24 @@ def _load_script_run_sends():
              "eszkozokon fut.")
 
 
+def draft_hint_note(cmd: str, cwd) -> str:
+    """COPYGATEDRAFTFP1104 (Samu 69345): the fix to name when a python run with an address is a send only because the
+    interpreter was not isolated (outgoing-copy-gate.draft_isolation_hint). A hint, never a decision: any failure
+    gives no hint."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate_hint", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not mod.draft_isolation_hint(cmd, cwd):
+            return ""
+    except Exception:  # noqa: BLE001 -- a hint only
+        return ""
+    return ("(Ha ez a szkript csak piszkozatot ir, futtasd igy: python3 -I -S <szkript> ... -- akkor a kapu a szkript "
+            "tartalma alapjan dont, es egy csak a piszkozat-iro modulokat hasznalo szkript nem kuldes. A -I -S nelkul "
+            "az indulaskor futo kod (.pth, sitecustomize) nem latszik, ezert a cimmel futtatott szkript kuldes.)\n")
+
+
 def read_email_level():
     """Return (level, note). Missing category / unreadable config -> level 2:
     fail-closed but recoverable through an approval, instead of a hard lockout
@@ -543,7 +557,7 @@ def _env_file_setting(key: str, default: str = "") -> str:
     For a setting that decides who may receive a letter: a sender runs in the
     agent's own shell, where `KEY=... python3 ...` sets the environment. The
     .env is the one next to the store this gate reads (<root>/.env for
-    <root>/store), so a test that points the store elsewhere brings its own."""
+    <root>/store; a test's tmp install brings its own)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(STORE_DIR)), ".env"), encoding="utf-8") as fh:
             for line in fh:
@@ -917,7 +931,7 @@ def ledger_gate(kind: str, tool_input: dict, cmd: str, tool: str = "") -> None:
 # runs some other mailer or a sender copy elsewhere is levelled here exactly as
 # before.
 _SENDER_FLAGS = {
-    "send.py": ({"--to", "--cc", "--subject", "--body"}, {"--no-owner-cc", "--html", "--html-wrap"}),
+    "send.py": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--no-owner-cc", "--html", "--html-wrap"}),
     "graph-mail.ts": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--html"}),
 }
 _CANONICAL_RELATIVE = {"scripts/support-mail/send.py": "send.py", "scripts/graph-mail.ts": "graph-mail.ts"}
@@ -1105,6 +1119,9 @@ def names_own_sender(cmd: str, cwd) -> bool:
     try:
         lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
+        # MAINGATENLCOMMENT1104: shlex starts a comment at a `#` inside a word and runs it to the end of the line, so
+        # `echo a#b; python3 scripts/send.py` hid the sender's name; this check only denies, so every word is kept.
+        lexer.commenters = ""
         words = list(lexer)
     except ValueError:
         words = cmd.split()
@@ -1265,6 +1282,8 @@ def main():
     prefix = f"({note})\n" if note else ""
     if level >= 3:
         sys.exit(0)
+    if tool == "Bash":
+        prefix += draft_hint_note(cmd, payload.get("cwd"))
     if level <= 1:
         deny(prefix +
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
@@ -1299,9 +1318,6 @@ def main():
              "azzal kerj jovahagyast, es a jovahagyas utan ugyanaz a hivas atmegy.")
 
     # level 2: CHECK-BEFORE-SEND
-    if _WINDOW_ERR:
-        deny(prefix + f"A kapu beallitasa hibas ({_WINDOW_ERR}) -- fail-closed, "
-             "a level nem mehet ki.")
     env = _load_collect_email_envelope()(tool, tool_input)
     if env["unreadable_reason"]:
         deny(prefix +

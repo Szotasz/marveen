@@ -235,7 +235,10 @@ export function hookCommand(scriptPath: string, args: readonly string[] = [], ho
 // is probed first and a miss exits 2, which blocks.
 export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  const invocation = gateInvocation('python3', scriptPath, args)
+  // SITEPKGPLANT1104 (1): -I -S, so no start-up code the gate did not ship runs inside it (a .pth line or
+  // sitecustomize in a writable site-packages, a user site, PYTHON* settings). The hooks import only the standard
+  // library and their own directory, which they put on sys.path themselves (measured on every hook).
+  const invocation = gateInvocation('python3 -I -S', scriptPath, args)
   return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
@@ -428,6 +431,43 @@ export function upgradeLegacyHookCommands(
         }
       }
     }
+  }
+  return changed
+}
+
+/**
+ * HOOKISOAGENTS1105: hook commands a template shipped and a later one dropped, removed from an agent's settings.
+ * The add and upgrade passes only ever add or rewrite what the CURRENT template carries, so an entry the template
+ * stopped shipping stays forever. Exact shipped forms only (any install root), so an operator's own hook that
+ * merely shares a name is left alone. An emptied group goes too.
+ *
+ * - claude-usage.py: absorbed into marveen-commands.py (#1529, b1d619225) and deleted. Its sub-agent entry ran
+ *   `python3` without -I -S on a path that no longer exists: a no-op today, an unisolated run in every agent the
+ *   moment a file appears there again.
+ *
+ * Exported for unit testing.
+ */
+export const RETIRED_HOOK_COMMANDS: readonly RegExp[] = [
+  /^bash -c '\[ -f (\/[^\s']+)\/scripts\/hooks\/claude-usage\.py \] && exec python3 \1\/scripts\/hooks\/claude-usage\.py; exit 0'$/,
+  /^python3 "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/claude-usage\.py"$/,
+]
+export function removeRetiredHookCommands(
+  existingHooks: Record<string, unknown>,
+  retired: readonly RegExp[] = RETIRED_HOOK_COMMANDS,
+): boolean {
+  let changed = false
+  for (const [event, entries] of Object.entries(existingHooks)) {
+    if (!Array.isArray(entries)) continue
+    const kept: HookEntry[] = []
+    let eventChanged = false
+    for (const entry of entries as HookEntry[]) {
+      if (!entry || !Array.isArray(entry.hooks)) { kept.push(entry); continue }
+      const hooks = entry.hooks.filter((h) => !(typeof h?.command === 'string' && retired.some((r) => r.test(h.command as string))))
+      if (hooks.length === entry.hooks.length) { kept.push(entry); continue }
+      eventChanged = true
+      if (hooks.length > 0) kept.push({ ...entry, hooks })
+    }
+    if (eventChanged) { existingHooks[event] = kept; changed = true }
   }
   return changed
 }
@@ -901,6 +941,8 @@ export function ensureAgentHooks(
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
+    // HOOKISOAGENTS1105: entries the template no longer ships (claude-usage.py) go.
+    if (removeRetiredHookCommands(existingHooks)) changed = true
     // HOSTMOVE923: an existing PreCompact prompt inherited from another
     // install/host names a dead root; the add pass below would never see it.
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
@@ -1222,6 +1264,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // (APPROVALDBGATE1030): every sub-agent; the main agent's entry is
   // repo-shipped in the tracked .claude/settings.json.
   if (agentGetsGovernanceGates(name)) injectDbWriteGate(existing)
+  // (f) mxd's run dir, the MXD env names, the gromzo-channel entry points (MXDAGENTSOCKID1106): every sub-agent
+  if (agentGetsGovernanceGates(name)) injectMxdPathGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
@@ -1243,7 +1287,44 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
   // Install-local extras LAST, so they land after every built-in gate.
   injectExtraHookEntries(name, existing, extraHooksPath)
+  // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
+  // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
+  // live fleet) stays. The gate hooks themselves are put back by the inject* calls above.
+  stripLooseningKeys(existing, name, 'settings.json')
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+  sanitizeAgentLocalSettings(name)
+}
+
+// Top-level Claude settings keys that turn the agent's gate hooks off (disableAllHooks) or hand them another
+// environment (env: PATH, NODE_OPTIONS and the like reach every hook command). Only the dashboard writes an agent's
+// settings; the db-write-gate keeps the agents out of both files, and this drops what got in before.
+export const AGENT_SETTINGS_STRIPPED_KEYS = ['disableAllHooks', 'env'] as const
+
+function stripLooseningKeys(settings: Record<string, unknown>, name: string, file: string): string[] {
+  const dropped = AGENT_SETTINGS_STRIPPED_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(settings, k))
+  for (const k of dropped) delete settings[k]
+  if (dropped.length) logger.warn({ agent: name, file, dropped }, 'agent settings: hook-loosening keys dropped on spawn')
+  return dropped
+}
+
+/**
+ * The agent's .claude/settings.local.json, which Claude Code merges over settings.json: the same keys are dropped. The
+ * file is NEVER deleted; one that holds none of them is not rewritten; one that does not parse as an object is left as
+ * it is (logged), since rewriting it would lose what it holds.
+ */
+export function sanitizeAgentLocalSettings(name: string): 'absent' | 'clean' | 'stripped' | 'unparseable' {
+  const p = join(agentDir(name), '.claude', 'settings.local.json')
+  if (!existsSync(p)) return 'absent'
+  let parsed: unknown
+  try { parsed = JSON.parse(readFileSync(p, 'utf-8')) } catch { parsed = undefined }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    logger.warn({ agent: name }, 'agent settings.local.json does not parse as an object: left untouched')
+    return 'unparseable'
+  }
+  const obj = parsed as Record<string, unknown>
+  if (!stripLooseningKeys(obj, name, 'settings.local.json').length) return 'clean'
+  atomicWriteFileSync(p, JSON.stringify(obj, null, 2))
+  return 'stripped'
 }
 
 // Install-local extra hook entries (store/extra-hooks.json), see
@@ -1682,6 +1763,12 @@ export const FLEET_BASELINE_DENY = [
   'Bash(git push --force:*)',
   'Bash(git push -f:*)',
   'mcp__playwright__browser_run_code_unsafe',
+  // MCPWRITEGATE1104 (Samu 68033 D2): the filesystem MCP server (its root was "/": its read tools walked past the
+  // Read(...) rules above, its write tools past every path gate) and gitnexus's repo-wide rename (it rewrites files
+  // with no path in its arguments). The bare server form denies every tool of that server, in every permission mode
+  // including bypassPermissions (code.claude.com/docs/en/permissions, /permission-modes).
+  'mcp__Filesystem',
+  'mcp__gitnexus__rename',
 ]
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
@@ -1871,6 +1958,12 @@ export function agentGetsGovernanceGates(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }
 
+// MCPWRITEGATE1104: every MCP tool too (mcp__.*): an MCP tool that writes or moves a local file reaches the store
+// through its own arguments. A matcher with a `.` or `*` is an UNANCHORED regex (code.claude.com/docs/en/hooks,
+// "Matcher patterns"), so the list is anchored: without it `Write` would also fire on TodoWrite. MultiEdit was
+// handled by gateDecision but missing here.
+export const SELF_PACE_GATE_MATCHER = '^(?:ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
+
 // Idempotently wire the self-pace-gate PreToolUse hook (blocks ScheduleWakeup /
 // Cron* / RemoteTrigger + the Bash self-injection routes). Same shape + dedupe
 // discipline as injectEmailSendGate.
@@ -1885,7 +1978,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     // Write|Edit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    matcher: SELF_PACE_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -1900,7 +1993,8 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
 // database, no write of this install's gate wiring or autonomy levels. Write,
 // Edit, MultiEdit and NotebookEdit are in the matcher: the install-file part is
 // reachable through the native file tools as well as Bash.
-export const DB_WRITE_GATE_MATCHER = 'Bash|Write|Edit|MultiEdit|NotebookEdit'
+// MCPWRITEGATE1104: and every MCP tool, anchored (see SELF_PACE_GATE_MATCHER).
+export const DB_WRITE_GATE_MATCHER = '^(?:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
 export function injectDbWriteGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
@@ -1911,6 +2005,26 @@ export function injectDbWriteGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('db-write-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotently wire the mxd-path-gate PreToolUse hook (MXDAGENTSOCKID1106): a sub-agent's tool call may not name
+// mxd's run dir (the agent token files, agent.sock, dash.sock), set MXD_AGENT / MXD_AGENT_TOKEN_FILE, or start a
+// gromzo-channel entry point. Every sub-agent; the main agent stays out (its plugin connects in-process, Samu 71433).
+// The native file tools (Read and Grep included: the OS lets every agent READ a token file) and every MCP tool are in
+// the matcher, anchored (see SELF_PACE_GATE_MATCHER).
+export const MXD_PATH_GATE_MATCHER = '^(?:Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|mcp__.*)$'
+export function injectMxdPathGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'mxd-path-gate.mjs'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = { matcher: MXD_PATH_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('mxd-path-gate.mjs')),
     entry,
   ]
 }
@@ -2187,10 +2301,17 @@ export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
 // and writes it again from the new PROJECT_ROOT, so it needs no entry in
 // INSTALL_ANCHORED_SUFFIXES.
-function webSearchEnvelopeCommand(): string {
+// HOOKISOAGENTS1105: python3 -I -S like every other python hook (SITEPKGPLANT1104), so no start-up code the hook
+// did not ship (a .pth line, a sitecustomize, PYTHON* settings) runs before the label it writes. A plain command,
+// NOT pythonHookCommand(): that builder makes a hook fail-closed, and this one must never block a tool call.
+export function webSearchEnvelopeCommand(): string {
   const scriptPath = join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)
-  return `python3 "${scriptPath}"`
+  return `python3 -I -S "${scriptPath}"`
 }
+// The forms earlier versions wrote or documented, and nothing else: `python3 "<any root>/scripts/hooks/browser-content-
+// notice.py"` (the injector) and `python3 "$CLAUDE_PROJECT_DIR/..."` (docs/security-hardening.md, operator-wired).
+// The upgrade only inserts -I -S; the path stays exactly as written.
+export const LEGACY_ENVELOPE_COMMAND = /^python3 ("(?:\/[^"]*|\$CLAUDE_PROJECT_DIR)\/scripts\/hooks\/browser-content-notice\.py")$/
 
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
@@ -2232,7 +2353,17 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
       g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
       // a single envelope tool name; this also migrates the old WebSearch-only group
       (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
-    if (!managed || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    if (!managed || !Array.isArray(g.hooks)) {
+      // HOOKISOAGENTS1105: an operator-wired group keeps its matcher, its place and its path; an envelope command in
+      // a shipped or documented earlier form only gains -I -S, in place.
+      if (Array.isArray(g?.hooks)) {
+        for (const h of g.hooks) {
+          if (typeof h?.command === 'string') h.command = h.command.replace(LEGACY_ENVELOPE_COMMAND, 'python3 -I -S $1')
+        }
+      }
+      kept.push(g)
+      continue
+    }
     const rest = g.hooks.filter((h) => !isEnvelope(h))
     if (rest.length) kept.push({ ...g, hooks: rest })
   }
@@ -2899,11 +3030,19 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
-  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
+  // A self-pace entry under an older matcher (before MCPWRITEGATE1104: no mcp__, no MultiEdit) is stale, as for the
+  // db-write-gate below. The spawn rewrites it anyway (injectSelfPaceGate); this covers the dashboard-restart pass.
+  const paceStale = ptu.some((e) => JSON.stringify(e).includes('self-pace-gate.mjs')
+    && (e as { matcher?: unknown })?.matcher !== SELF_PACE_GATE_MATCHER)
+  const needPace = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, paceCmd) || paceStale)
   const dbGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
   const dbGateStale = ptu.some((e) => JSON.stringify(e).includes('db-write-gate.mjs')
     && (e as { matcher?: unknown })?.matcher !== DB_WRITE_GATE_MATCHER)
   const needDbGate = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, dbGateCmd) || dbGateStale)
+  const mxdGateCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'mxd-path-gate.mjs'))
+  const mxdGateStale = ptu.some((e) => JSON.stringify(e).includes('mxd-path-gate.mjs')
+    && (e as { matcher?: unknown })?.matcher !== MXD_PATH_GATE_MATCHER)
+  const needMxdGate = agentGetsGovernanceGates(name) && (!hookCommandWired(ptuJson, mxdGateCmd) || mxdGateStale)
   // The destructive gate has the same two failure modes, plus a third that is
   // specific to it: it was hand-wired on 2026-09-08, so an install can carry a
   // correct-looking entry this code never wrote. Treat a stale matcher as
@@ -2927,12 +3066,13 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
   // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
   const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
-  if (!needEmail && !needPace && !needDbGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
+  if (!needEmail && !needPace && !needDbGate && !needMxdGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needDbGate) injectDbWriteGate(settings)
+  if (needMxdGate) injectMxdPathGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
   if (needReviewer) injectSecondReviewerGate(settings)

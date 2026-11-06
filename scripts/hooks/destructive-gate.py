@@ -360,12 +360,73 @@ def _script_arg_ranges(text):
     return out
 
 
+# marveen #2482: a burkolok PARANCSSZTRINGJE is futo kod, nem proza. `flock FILE -c '...'`,
+# `env -S '...'`, es a `watch` / `parallel` maradek szavai (shell-sztringkent futnak).
+# A rovid alak OSSZEIRVA is (flock -c'...', env -S"...", egy rovid-kapcsolo-csoport vegen is),
+# a hosszu alak = jellel vagy kulon szoban (Samu review, #2484).
+_WRAP_CMDSTR_FLAG_RE = re.compile(
+    r'(?<![\w-])(?:-[A-Za-z0-9]*[cS](?:[ \t]+)?|(?:--command|--split-string)(?:=|[ \t]+))(?=[\'"])')
+_WRAP_CMDSTR_HEAD_RE = re.compile(r'(?<![\w-])(?:[^\s;|&]*/)?(?:flock|env)[ \t]')
+_WRAP_SHELL_RE = re.compile(r'(?<![\w-])(?:[^\s;|&]*/)?(?:watch|parallel)[ \t]')
+
+
+def _wrapper_script_ranges(text):
+    """A burkolok parancssztringjeinek tartomanyai (megtartando, nem proza)."""
+    state = _quote_map(text)
+    out = []
+
+    def seg_start(pos):
+        k = pos - 1
+        while k >= 0:
+            if not state[k] and text[k] in ';|&\n(`':
+                return k + 1
+            k -= 1
+        return 0
+
+    def quoted_from(k):            # k: a nyito idezojel indexe
+        j = k + 1
+        while j < len(text) and state[j]:
+            j += 1
+        return (k + 1, j)
+
+    for m in _WRAP_CMDSTR_FLAG_RE.finditer(text):
+        if state[m.start()]:
+            continue
+        head = text[seg_start(m.start()):m.start()]
+        heads = list(_WRAP_CMDSTR_HEAD_RE.finditer(head))
+        if not heads:
+            continue
+        # A kapcsolo a burkoloe, ne egy kesobbi parancse (`env X=1 grep -c '...'`): a burkolo
+        # es a kapcsolo kozott csak kapcsolo, NAME=ertek, flocknal a lock-fajl (es egy
+        # kapcsolo-ertek) allhat.
+        last = heads[-1]
+        wrapper = os.path.basename(last.group(0).strip())
+        between = head[last.end():].split()
+        loose = [w for w in between if not w.startswith('-')
+                 and not re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', w)]
+        if (wrapper == 'env' and loose) or (wrapper == 'flock' and len(loose) > 2):
+            continue
+        out.append(quoted_from(m.end()))
+    for m in _WRAP_SHELL_RE.finditer(text):
+        if state[m.start()]:
+            continue
+        k = m.end()
+        while k < len(text) and (state[k] or text[k] not in ';|&\n'):
+            if not state[k] and text[k] in ('"', "'") and k + 1 < len(text) and state[k + 1]:
+                rng = quoted_from(k)
+                out.append(rng)
+                k = rng[1] + 1
+                continue
+            k += 1
+    return out
+
+
 def scannable(cmd):
     """A parancs azon resze, amely TENYLEG lefut. Lasd a modul-fejlec 1-4. pontjat."""
     data, code = _heredoc_body_ranges(cmd)
     text = _blank_ranges(cmd, data)
     text = _blank_ranges(text, _comment_ranges(text))
-    keep = _script_arg_ranges(text)
+    keep = _script_arg_ranges(text) + _wrapper_script_ranges(text)
     text = _blank_ranges(text, _prose_quote_ranges(text, keep, code))
     return text
 
@@ -446,68 +507,236 @@ def _tokens(seg):
 _KEYWORDS = ('if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done',
              'case', 'esac', 'in', 'select', 'function', 'coproc',
              '!', '{', '}', '(', ')', '[[', ']]')
-_TRANSPARENT = ('exec', 'command', 'time', 'nohup', 'env')
-_PREFIX_WRAPPERS = ('xargs', 'timeout', 'nice', 'ionice', 'stdbuf', 'watch', 'parallel',
-                    'flock', 'chroot', 'setsid', 'unbuffer')
 _FIND_EXEC = ('-exec', '-execdir', '-ok', '-okdir')
 _SHELLS = ('sh', 'bash', 'zsh', 'dash', 'ksh')
-# A kapcsolok, amelyek KULON szoban hozzak az ertekuket (xargs -I {} / -n 1 / -P 4).
-_VALUE_FLAGS = ('-I', '-i', '-n', '-P', '-L', '-s', '-d', '-E', '-a',
-                '--max-args', '--max-procs', '--delimiter', '--replace', '--arg-file')
-_NUMERIC = re.compile(r'^[0-9]+(\.[0-9]+)?[smhd]?$')
 # Explicit melysegkorlat a hurokvedelem (sub != cmd) MELLE. A mert maximalis melyseg 3;
 # a korlat nem a mai viselkedes miatt kell, hanem hogy egy jovobeli valtoztatas se
 # tudjon vegtelen rekurzioba futni. Tullepese BLOKK, nem atengedes: egy ennyire agyazott
 # parancsot a kapu nem tud vegigkovetni, es amit nem lat at, azt nem engedi.
 _MAX_NEST = 8
 
+# ---- Burkolok: BURKOLONKENTI kapcsolo-ismeret (marveen #2482, ISSUE2482GATE1103) ----------
+# A regi atlepes egyetlen lapos kapcsolo-tablaval (a xargs-ei) es egy szam-atlepessel dolgozott,
+# a "lathatatlan" elotagok (env, time, command, exec) pedig EGYETLEN szot leptek at. Igy egy
+# kapcsolo erteke (`ionice -c idle`, `stdbuf -o L`, `timeout --signal KILL`, `env -u FOO`),
+# a flock lock-fajlja vagy a chroot gyokere lett "a parancs", es a mogotte allo torles rejtve
+# maradt. Merve 2026-11-04-en a develop 0ae732db-n: 18 ilyen alak ment at.
+#
+# A szabaly most: minden burkolonak sajat leirasa van.
+#   val   -- kapcsolok, amelyek ERTEKET kernek (rovidnel osszeirva is: -oL; hosszunal --x=v is)
+#   flag  -- ertek nelkuli kapcsolok (es az OPCIONALIS erteku rovidek, amelyek csak osszeirva
+#            visznek erteket: xargs -i[R], -e[EOF], -l[N])
+#   ops   -- hany operandus all a parancs ELOTT (timeout: az idotartam, flock: a lock-fajl,
+#            chroot: az uj gyoker)
+#   cmd   -- kapcsolok, amelyek erteke egy PARANCSSZTRING (flock -c, env -S): ezt a kapu
+#            ugyanugy vegignezi, mint egy `sh -c` szkriptet
+#   nocmd -- kapcsolok, amelyek mellett nincs futtatott parancs (ionice -p PID, command -v)
+#   shell -- a maradek szavak EGY shell-sztringkent futnak (watch -x nelkul, parallel)
+# Ismeretlen kapcsolo: a kapu nem talalgat, BLOKKOL (fail-closed). Ugyanigy a vegtelen vagy
+# tul hosszu burkolo-lanc.
+_WRAPPERS = {
+    'env': dict(val={'-u', '--unset', '-C', '--chdir', '-P'}, cmd={'-S', '--split-string'},
+                flag={'-i', '--ignore-environment', '-0', '--null', '-v', '--debug',
+                      '--block-signal', '--default-signal', '--ignore-signal',
+                      '--list-signal-handling', '-'}),
+    'time': dict(val={'-f', '--format', '-o', '--output'},
+                 flag={'-p', '--portability', '-a', '--append', '-v', '--verbose', '-q', '--quiet'}),
+    'command': dict(flag={'-p'}, nocmd={'-v', '-V'}),
+    'exec': dict(val={'-a'}, flag={'-c', '-l'}),
+    'nohup': dict(),
+    'nice': dict(val={'-n', '--adjustment'}),
+    'ionice': dict(val={'-c', '--class', '-n', '--classdata'}, flag={'-t', '--ignore'},
+                   nocmd={'-p', '--pid', '-P', '--pgid', '-u', '--uid'}),
+    'stdbuf': dict(val={'-i', '--input', '-o', '--output', '-e', '--error'}),
+    'timeout': dict(val={'-s', '--signal', '-k', '--kill-after'},
+                    flag={'--preserve-status', '--foreground', '-v', '--verbose'}, ops=1),
+    'flock': dict(val={'-w', '--wait', '--timeout', '-E', '--conflict-exit-code'},
+                  cmd={'-c', '--command'},
+                  flag={'-s', '--shared', '-x', '-e', '--exclusive', '-u', '--unlock',
+                        '-n', '--nb', '--nonblock', '-o', '--close', '-F', '--no-fork',
+                        '--verbose'}, ops=1),
+    'chroot': dict(val={'--userspec', '--groups'}, flag={'--skip-chdir'}, ops=1),
+    'setsid': dict(flag={'-c', '--ctty', '-f', '--fork', '-w', '--wait'}),
+    'unbuffer': dict(flag={'-p'}),
+    'watch': dict(val={'-n', '--interval', '-q', '--equexit', '-s', '--shotsdir'},
+                  flag={'-d', '--differences', '-g', '--chgexit', '-t', '--no-title', '-b',
+                        '--beep', '-e', '--errexit', '-c', '--color', '-C', '--no-color',
+                        '-p', '--precise', '-w', '--no-wrap', '-r', '--no-rerun', '-x', '--exec'},
+                  shell=True),
+    'xargs': dict(val={'-a', '--arg-file', '-d', '--delimiter', '-E', '-I', '-L', '-n',
+                       '--max-args', '-P', '--max-procs', '-s', '--max-chars',
+                       '--process-slot-var', '-J', '-R', '-S'},
+                  flag={'-0', '--null', '-o', '--open-tty', '-p', '--interactive', '-r',
+                        '--no-run-if-empty', '-t', '--verbose', '-x', '--exit', '--show-limits',
+                        '-i', '--replace', '-e', '--eof', '-l', '--max-lines'}),
+    'parallel': dict(val={'-j', '--jobs', '-n', '--max-args', '-N', '--max-replace-args',
+                          '-I', '--halt', '--colsep', '-a', '--arg-file', '-d', '--delimiter',
+                          '--delay', '--timeout', '-S', '--sshlogin', '--joblog', '--results',
+                          '--tmpdir', '--retries', '-L', '--max-lines', '-E', '--memfree',
+                          '--load', '--tagstring', '--workdir', '--wd'},
+                     flag={'-k', '--keep-order', '-X', '-m', '-q', '--quote', '--tag', '--pipe',
+                           '-0', '--null', '-v', '--dry-run', '--will-cite', '--bar',
+                           '--progress', '--eta', '-u', '--ungroup', '--line-buffer', '-r',
+                           '--no-run-if-empty', '--lb', '--group'},
+                     shell=True),
+}
+# A regi nevek: a heredoc-ertelmezo-felismeres (fent) ezt a halmazt hasznalja.
+_TRANSPARENT = ('exec', 'command', 'time', 'nohup', 'env')
+_PREFIX_WRAPPERS = tuple(w for w in _WRAPPERS if w not in _TRANSPARENT)
+# Ennel hosszabb burkolo-lancot a kapu nem kovet: blokk, nem "nincs parancs".
+_MAX_WRAP_CHAIN = 16
+
 
 def _bare_tokens(seg):
     return [(t, sp) for t, sp in _tokens(seg.replace('(', ' ')) if t]
 
 
-def _after_wrapper(toks, i):
-    """A burkolo utani elso parancsnev-jelolt indexe (kapcsolokat es szamot atlepve)."""
+def _wrap_unknown(base, opt):
+    block('A burkolo (%s) kapcsolojat (%s) a kapu nem ismeri, ezert nem tudja eldonteni, '
+          'melyik szo a futtatott parancs, es nem engedi at. Irjad a parancsot a burkolo '
+          'nelkul, vagy ismert kapcsoloval.' % (base, opt[:40]))
+
+
+def _parse_wrapper(toks, i, base, scripts):
+    """A burkolo (toks[i]) utani parancs indexe, a burkolo SAJAT kapcsolo-leirasa szerint.
+
+    None: nincs futtatott parancs (pl. `ionice -p PID`, `command -v x`, a parancs hianyzik).
+    A parancssztringet hordozo kapcsolok erteket a `scripts` listaba gyujti. Ismeretlen
+    kapcsolo eseten blokkol.
+    """
+    spec = _WRAPPERS[base]
+    val, flag = spec.get('val', set()), spec.get('flag', set())
+    cmd, nocmd = spec.get('cmd', set()), spec.get('nocmd', set())
+    ops = spec.get('ops', 0)
     j = i + 1
     while j < len(toks):
         t = toks[j][0]
-        if t.startswith('-'):
-            j += 2 if t in _VALUE_FLAGS else 1
-            continue
-        if _NUMERIC.match(t):        # timeout 5 CMD, nice 10 CMD
+        if t == '--':
+            j += 1
+            break
+        if not t.startswith('-') or t == '-' and t not in flag:
+            break
+        if t == '-':                      # env - (ures kornyezet)
             j += 1
             continue
-        return j
-    return None
+        if base == 'nice' and re.match(r'^-[0-9]+$', t):    # regi alak: nice -10 CMD
+            j += 1
+            continue
+        if t.startswith('--'):
+            name, eq, value = t.partition('=')
+            if name in nocmd:
+                return None
+            if name in cmd:
+                if eq:
+                    scripts.append(value)
+                    j += 1
+                elif j + 1 < len(toks):
+                    scripts.append(toks[j + 1][0])
+                    j += 2
+                else:
+                    return None
+                continue
+            if name in val:
+                j += 1 if eq else 2
+                continue
+            if name in flag:
+                j += 1
+                continue
+            _wrap_unknown(base, t)
+            return None           # block() mar kilepett; ide csak egy hibas block() jut
+        # rovid kapcsolo(k): egyenkent, osszeirva is (-0r, -oL, -n5)
+        k = 1
+        consumed_next = False
+        while k < len(t):
+            o = '-' + t[k]
+            if o in nocmd:
+                return None
+            if o in cmd:
+                rest = t[k + 1:]
+                if rest:
+                    scripts.append(rest)
+                elif j + 1 < len(toks):
+                    scripts.append(toks[j + 1][0])
+                    consumed_next = True
+                else:
+                    return None
+                break
+            if o in val:
+                if k + 1 == len(t):       # az ertek a kovetkezo szo
+                    consumed_next = True
+                break                     # kulonben a szo maradeka az ertek
+            if o in flag:
+                if base == 'xargs' and o in ('-i', '-e', '-l'):
+                    break                 # opcionalis, csak osszeirva vitt ertek
+                k += 1
+                continue
+            _wrap_unknown(base, t)
+            return None           # ld. fent
+        j += 2 if consumed_next else 1
+    # a parancs elotti operandusok (timeout: idotartam, flock: lock-fajl, chroot: gyoker)
+    for _ in range(ops):
+        if j >= len(toks):
+            return None
+        j += 1
+    if base == 'flock' and j < len(toks):
+        t = toks[j][0]
+        if t in ('-c', '--command'):
+            if j + 1 < len(toks):
+                scripts.append(toks[j + 1][0])
+            return None
+        if t.startswith('--command='):          # flock FILE --command='...'
+            scripts.append(t[len('--command='):])
+            return None
+        if t.startswith('-c') and len(t) > 2:   # flock FILE -c'...' (osszeirva)
+            scripts.append(t[2:])
+            return None
+    if j >= len(toks):
+        return None
+    if spec.get('shell') and not (base == 'watch' and any(
+            toks[x][0] in ('-x', '--exec') for x in range(i + 1, j))):
+        # A maradek szavak egy shell-sztringkent futnak (watch 'rm -rf x'): a kapu a
+        # teljes sztringet is vegignezi, nem csak az elso szot.
+        rest = [toks[x][0] for x in range(j, len(toks)) if toks[x][0] != ':::']
+        if base == 'parallel' and ':::' in [toks[x][0] for x in range(j, len(toks))]:
+            rest = [toks[x][0] for x in range(j, len(toks))]
+            rest = rest[:rest.index(':::')]
+        if rest:
+            scripts.append(' '.join(rest))
+    return j
 
 
-def command_index(toks):
-    """A szegmens TENYLEGES parancsnevenek indexe, a burkolokon atlatva.
+def _wrapper_walk(toks):
+    """(a szegmens tenyleges parancsnevenek indexe, a burkolok parancssztringjei).
 
-    A kornyezeti hozzarendelesek (FOO=bar), az atlatszo elotagok (exec, env, ...) es a
-    burkolok (xargs, timeout, ...) atlepesre kerulnek. None, ha nincs parancsnev.
+    A kornyezeti hozzarendelesek (FOO=bar), a kulcsszavak es a burkolok (env, time, xargs,
+    timeout, flock, ...) atlepesre kerulnek, a burkolo SAJAT kapcsolo-leirasa szerint.
     """
+    scripts = []
     i = 0
-    for _ in range(12):             # a lanc hossza korlatos: nem hurkolunk vegtelenul
+    for _ in range(_MAX_WRAP_CHAIN):
         while i < len(toks) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', toks[i][0]):
             i += 1
         if i >= len(toks):
-            return None
+            return None, scripts
         base = os.path.basename(toks[i][0])
         if toks[i][0] in _KEYWORDS and not toks[i][1]:
             i += 1
             continue
-        if base in _TRANSPARENT:
-            i += 1
-            continue
-        if base in _PREFIX_WRAPPERS:
-            nxt = _after_wrapper(toks, i)
+        if base in _WRAPPERS and not toks[i][1]:
+            nxt = _parse_wrapper(toks, i, base, scripts)
             if nxt is None:
-                return None
+                return None, scripts
             i = nxt
             continue
-        return i
-    return None
+        return i, scripts
+    block('Tul hosszu burkolo-lanc (legalabb %d elem): a kapu nem koveti vegig, ezert nem '
+          'engedi at.' % _MAX_WRAP_CHAIN)
+    return None, scripts
+
+
+def command_index(toks):
+    """A szegmens TENYLEGES parancsnevenek indexe, a burkolokon atlatva. None, ha nincs."""
+    return _wrapper_walk(toks)[0]
 
 
 def _sub_scripts(toks, idx):
@@ -867,7 +1096,7 @@ def check_bash(cmd, _depth=0, cwd=None):
     entry_cwd, saw_cd = cwd, False
     for seg in segments(text):
         toks = _bare_tokens(seg)
-        idx = command_index(toks)
+        idx, wrap_scripts = _wrapper_walk(toks)
 
         # A vizsgalando parancsnevek: a szegmens sajat parancsa, plusz a find -exec
         # utan allo parancs (az nem a szegmens elejen all, ezert kulon). Az argumentumok
@@ -913,7 +1142,7 @@ def check_bash(cmd, _depth=0, cwd=None):
             cwd = _cd_target(toks, idx + 1, cwd)
             saw_cd = True
 
-        for sub in _sub_scripts(toks, idx):
+        for sub in wrap_scripts + _sub_scripts(toks, idx):
             if not sub or sub == cmd:
                 continue
             if _depth >= _MAX_NEST:

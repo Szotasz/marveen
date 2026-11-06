@@ -16,10 +16,12 @@ Alapból az ágensek az Anthropic Cloud API-n, OpenRouter-en vagy helyi Ollama v
 
 ### Providerek kezelése (Dashboard)
 
-Beállítások > Provider-ok tab. Innen lehet:
-- új providert létrehozni (Új provider gomb)
+Beállítások > Szolgáltatók fül (angolul Providers). Innen lehet:
+- új providert létrehozni (Új szolgáltató gomb)
 - meglévőt szerkeszteni (Szerkesztés gomb a sorban)
-- törölni (Törlés gomb a sorban)
+- törölni (Törlés gomb a sorban). A megerősítő kérdés megnevezi azokat az ágenseket, amelyek a providert használják: ezek a törlés után nem indulnak el, amíg másik modellt nem kapnak.
+
+A táblázat Használja oszlopa mutatja, melyik ágens melyik providert használja.
 
 A provider-lista a `store/custom-providers.json` fájlban tárolódik.
 
@@ -36,9 +38,11 @@ A provider-lista a `store/custom-providers.json` fájlban tárolódik.
 ### Ágens hozzárendelése providerhez
 
 1. Nyisd meg az ágens szerkesztőjét (szerkesztőceruza ikon).
-2. A **Modell** legördülőben válassz egy bejegyzést az "Egyéni providerek" csoportból (pl. "my-deepseek").
+2. A **Modell** legördülőben válassz egy bejegyzést az "Egyéni szolgáltató" csoportból (pl. "my-deepseek").
 3. Az **Egyéni modell ID** mezőbe írd be a modell azonosítóját (pl. `deepseek-chat`). Ez a provider végpontjára kerül küldésre.
 4. Mentés után az ágens következő indításakor az egyéni végpontot használja.
+
+Az Új ügynök varázslóban ugyanígy választható egyéni provider: ott is a Modell legördülőből, a mellette megjelenő mezőbe írt modell ID-vel. A varázsló a providert és a modell ID-t külön menti, ahogy a szerkesztő.
 
 ### store/custom-providers.json
 
@@ -64,7 +68,7 @@ Ez a fájl nem kerül be a gitbe (`.gitignore`).
 
 | Módszer | Végpont | Leírás |
 |---------|---------|--------|
-| `GET` | `/api/custom-providers` | Az összes provider listája |
+| `GET` | `/api/custom-providers` | Az összes provider listája; mindegyik `usedBy` mezője azoknak az ágenseknek a neve, amelyek `agent-config.json`-ja erre a providerre mutat (a rejtett workereket is beleértve) |
 | `POST` | `/api/custom-providers` | Létrehozás vagy frissítés (upsert az `id` alapján) |
 | `GET` | `/api/custom-providers/:id` | Egy provider adatai |
 | `DELETE` | `/api/custom-providers/:id` | Törlés |
@@ -77,7 +81,7 @@ Minden végpont Bearer tokenes hitelesítést igényel (`store/.dashboard-token`
 
 - A `baseUrl` erősen validálva van indításkor: tiltott shell-metakarakterek, kötelező `https://` (kivéve localhost), URL-parse ellenőrzés.
 - A vault kulcsok értéke sosem kerül a provider-konfigba -- csak a kulcs neve tárolódik.
-- Ha egy ágenshez beállított provider-id nem található a `store/custom-providers.json`-ban, az ágens indítása hibával leáll (csendes Ollama-fallback helyett).
+- Ha egy ágenshez beállított provider-id nem található a `store/custom-providers.json`-ban, az ágens indítása hibával leáll (csendes Ollama-fallback helyett). Ezért a dashboard törlés előtt megnevezi azokat az ágenseket, amelyek a providert használják (`usedBy`).
 - Modell azonosítóban csak `a-zA-Z0-9._/:+-` karakterek engedélyeztek, hogy megakadályozzuk a shell-injekciót az egyéni provider ágakban.
 - Megosztott config-gyökér esetén (nincs izolált `CLAUDE_CONFIG_DIR` az ágenshez) az `x-api-key` jóváhagyási stamp az operátor saját `~/.claude.json` fájljába kerül, nem egy ágens-specifikus fájlba.
 - Az `ollama` ág a telepítés-szintű `AGENT_LOCAL_BASE_URL` környezeti változót olvassa a base URL-hez, az egyéni provider ág viszont a `store/custom-providers.json`-ban tárolt, per-provider `baseUrl` bejegyzést: a kettő egymástól függetlenül, egyszerre él.
@@ -107,7 +111,7 @@ model_list:
       api_key: os.environ/OPENCODE_API_KEY
 ```
 
-**3. LiteLLM regisztrálása egyéni providerként** (Dashboard > Provider-ok > Új provider): Base URL = a proxy gyökere (pl. `http://127.0.0.1:4010`); Auth header = `Bearer`; Vault kulcs neve = a LiteLLM `master_key`-t tartalmazó vault-kulcs.
+**3. LiteLLM regisztrálása egyéni providerként** (Dashboard > Beállítások > Szolgáltatók > Új szolgáltató): Base URL = a proxy gyökere (pl. `http://127.0.0.1:4010`); Auth header = `Bearer`; Vault kulcs neve = a LiteLLM `master_key`-t tartalmazó vault-kulcs.
 
 **4. Ágenshez rendelés** (ágens szerkesztő): Modell = a LiteLLM provider; Egyéni modell ID = a `model_name` (pl. `deepseek-v4-flash`).
 

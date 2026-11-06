@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, statSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -98,9 +98,41 @@ describe('isolated config dir: mcpServers reconcile', () => {
     expect(servers()['google-drive']).toEqual({ command: 'npx', args: ['gdrive-mcp'] })
   })
 
-  it('leaves a server removed from the shared config in place (additive only)', () => {
-    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+  // MCPWRITEGATE1104 D4 (Samu 68033): the one exception to "additive only". A server the seed or the gap-fill
+  // provably copied from the shared config goes once the shared config drops it; the agent's own server never does.
+  it('takes an INHERITED server back out once the shared config drops it (seed and gap-fill alike)', () => {
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')                       // gmail: seeded, recorded
+    writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, extra: { command: 'x' } })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')                       // extra: gap-filled, recorded
+    expect(Object.keys(servers()).sort()).toEqual(['extra', 'gmail'])
     writeShared({})
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers())).toEqual([])
+    expect(JSON.parse(readFileSync(join(SANDBOX, 'agents', AGENT, '.claude-config', '.marveen-mcp-inherited.json'), 'utf-8'))).toEqual({ servers: [] })
+  })
+
+  it('NEVER removes the agent\'s own server (no inherited record), e.g. a voice server it was given by hand', () => {
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    const cur = readIsolated()
+    writeFileSync(isolatedDotClaude(), JSON.stringify({ ...cur, mcpServers: { ...servers(), wisprflow: { command: 'w' } } }))
+    writeShared({})
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers())).toEqual(['wisprflow'])
+    expect(servers().wisprflow).toEqual({ command: 'w' })
+  })
+
+  it('a pre-provenance config (no record): only the named legacy server Filesystem goes, the rest stays', () => {
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    rmSync(join(SANDBOX, 'agents', AGENT, '.claude-config', '.marveen-mcp-inherited.json'))
+    const cur = readIsolated()
+    writeFileSync(isolatedDotClaude(), JSON.stringify({ ...cur, mcpServers: { ...servers(), Filesystem: { command: 'npx', args: ['fs', '/'] } } }))
+    writeShared({})
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers())).toEqual(['gmail'])
+  })
+
+  it('keeps an inherited server the shared config still has', () => {
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
     ensureIsolatedChannelConfigDir(AGENT, 'telegram')
     expect(Object.keys(servers())).toEqual(['gmail'])
   })
@@ -233,5 +265,26 @@ describe('isolated config dir: mcpServers reconcile', () => {
     const stray = readdirSync(join(SANDBOX, 'agents', AGENT, '.claude-config'))
       .filter((f) => f.includes('.tmp-'))
     expect(stray).toEqual([])
+  })
+
+  // PLUGINCODEWRITE1104 (Samu 68214): a config-dir link redirected elsewhere (by a tool call or a script) is put
+  // back at the next spawn; before, any symlink was accepted as is.
+  it('re-points a redirected plugins/cache and skills link at the next provisioning', () => {
+    const shared = join(SANDBOX, 'home', '.claude')
+    mkdirSync(join(shared, 'plugins', 'cache'), { recursive: true })
+    mkdirSync(join(shared, 'skills'), { recursive: true })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    const cfg = join(SANDBOX, 'agents', AGENT, '.claude-config')
+    const cacheLink = join(cfg, 'plugins', 'cache')
+    const skillsLink = join(cfg, 'skills')
+    expect(readlinkSync(cacheLink)).toBe(join(shared, 'plugins', 'cache'))
+    expect(readlinkSync(skillsLink)).toBe(join(shared, 'skills'))
+    const evil = join(SANDBOX, 'evil')
+    mkdirSync(evil, { recursive: true })
+    unlinkSync(cacheLink); symlinkSync(evil, cacheLink)
+    unlinkSync(skillsLink); symlinkSync(evil, skillsLink)
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(readlinkSync(cacheLink)).toBe(join(shared, 'plugins', 'cache'))
+    expect(readlinkSync(skillsLink)).toBe(join(shared, 'skills'))
   })
 })

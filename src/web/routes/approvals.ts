@@ -12,13 +12,13 @@ import {
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
-import { resolveOwnerChatId } from '../../owner-chat.js'
+import { ownerAlertChatOverride, resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
-import { reactionRoute, reactionsOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
+import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -27,13 +27,13 @@ import type { RouteContext } from './types.js'
 // the real email-approval-gate then let its letter through; through STANDING_CATEGORY the same
 // row made every later letter to an address approval-free. The self-declared agent_id and
 // resolved_by checks below stay, but they were never what stopped this.
-// Who counts as the owner is the predicate that guards issuing credentials (mayIssueCredentials,
-// #2163): the owner's session, also when the browser sends the stored token alongside it; the
-// bare token only before the first dashboard login exists.
+// Who counts as the owner is the owner gate (mayActAsOwner, #2163): the owner's session, also when
+// the browser sends the stored token alongside it; the bare token never, not even before the first
+// dashboard login exists (OWNERGATE4-1104: every agent holds it, and could approve its own request).
+// With no login yet, refuseOwner answers setup_required and says to create one.
 const OWNER_ONLY = {
   ...OWNER_SESSION_REQUIRED,
-  error: 'Approving needs the dashboard login (an owner session); the shared dashboard token can file, reject or time out a request, not approve one. ' +
-    'The token alone approves only before the first login exists.',
+  error: 'Approving needs the dashboard login (an owner session); the shared dashboard token can file, reject or time out a request, not approve one.',
 }
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -77,12 +77,14 @@ export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowM
 }
 
 // f2c5edb0: the window inside which an approved letter may still be consumed,
-// counted from resolved_at. The SAME variable and default as the gate
-// (EMAIL_APPROVAL_WINDOW_S, 1800 s in scripts/hooks/email-approval-gate.py), so
-// the two consume paths agree on when an approval has gone stale.
-export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
-  const v = Number.parseInt(env.EMAIL_APPROVAL_WINDOW_S ?? '', 10)
-  return Number.isFinite(v) && v > 0 ? v : 1800
+// counted from resolved_at. The SAME fixed value as the gate (APPROVAL_WINDOW_S
+// in scripts/hooks/email-approval-gate.py; a test pins the two), so the two
+// consume paths agree on when an approval has gone stale. No environment
+// override on either side (ENVRELAXGATE1104): the hook cannot see the
+// dashboard's launch environment, so an override here would split the two.
+export const APPROVAL_WINDOW_S = 1800
+export function approvalWindowSeconds(): number {
+  return APPROVAL_WINDOW_S
 }
 
 // The consumer names the sending tool in the audit trail. Printable only (no
@@ -235,7 +237,8 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
   void (async () => {
     // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
     // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
-    if (!informative && reactionsOn(reactionDeps.setting)) {
+    // APPROVALSLACK1030 B: with APPROVAL_SLACK_REPLIES on, the same one-message path, and the owner's typed reply decides.
+    if (!informative && (reactionsOn(reactionDeps.setting) || repliesOn(reactionDeps.setting))) {
       const expires = approval.timeout_at ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }) : 'nincs'
       const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl())
       if (route.ok && await postReactionPrompt(approval, route)) return
@@ -281,7 +284,7 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // provider goes through sendOwnerMessage, which resolves provider, token
     // and owner chat the same way every other owner message does.
     if (CHANNEL_PROVIDER === 'telegram' && TELEGRAM_BOT_TOKEN) {
-      const ownerChat = resolveOwnerChatId()
+      const ownerChat = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
       if (!ownerChat) {
         logger.warn({ approvalId: approval.id, informative }, 'approval owner notification suppressed: no owner chat')
         if (!informative) fallbackInBand(approval, 'no-owner-chat')
@@ -382,11 +385,12 @@ export function fileServerApproval(params: {
   return approval
 }
 
-/** APPROVALSLACK1030 (2): the owner's Slack reactions, read by the server (idle while the switch is off). */
+/** APPROVALSLACK1030 (2) and B: the owner's Slack reactions and typed replies, read by the server (idle while both switches are off). */
 export function startApprovalReactionSweeper(): NodeJS.Timeout {
   return startApprovalSlackSweeper({
     setting: reactionDeps.setting,
     token: reactionDeps.token,
+    pageUrl: approvalsPageUrl(),
     alert: (t) => { void sendOwnerSlackDm(t).catch(() => {}) },
   })
 }
@@ -545,7 +549,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
       if (!mayActAsOwner(ctx.auth, req)) {
         logger.warn({ agent_id, category, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'born-approved approval refused: no owner session')
-        json(res, OWNER_ONLY, 403)
+        refuseOwner(res, OWNER_ONLY.error)
         return true
       }
       if (agent_id.trim() !== MAIN_AGENT_ID) {
@@ -717,7 +721,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // an agent that cancels a request gains nothing by it.
     if (status === 'approved' && !mayActAsOwner(ctx.auth, req)) {
       logger.warn({ id: idMatch[1], resolved_by, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'approval approve refused: no owner session')
-      json(res, OWNER_ONLY, 403)
+      refuseOwner(res, OWNER_ONLY.error)
       return true
     }
 

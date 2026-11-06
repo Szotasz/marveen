@@ -1,0 +1,24 @@
+[38;5;174m▎[39m [38;5;246m]8;id=awvmy8;https://code.claude.com/docs/en/permission-modes\https://code.claude.com/docs/en/permission-modes[39m]8;;\
+  [38;5;246m1 more notice hidden[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mUI test: call SendFeedback once, type "idea", title "UI test small card, [39m
+  [38;5;231mplease discard", details "- [1mWhat happened:[0m[38;5;231m[48;5;237m UI test only, line one.\n- [1mWhat [0m[48;5;237m
+  [1m[38;5;231mthe user said:[0m[38;5;231m[48;5;237m none, line two.\n- [1mRepro:[0m[38;5;231m[48;5;237m line three." Nothing else.[39m
+
+[38;5;114m[49m●[39m [1mSendFeedback[0m(UI test small card, please discard)
+
+[38;5;231m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mBaked for 3s · done 19:34[39m
+
+╭────────────────────────────────────────────────────────────────╮
+│ [38;5;174m✻ [39mProduct feedback drafted: [1mUI test small card, please discard[0m │
+│ [2m│[0m - [1mWhat happened:[0m UI test only, line one.                     │
+│ [2m│[0m - [1mWhat the user said:[0m none, line two.                        │
+│ [2m│[0m - [1mRepro:[0m line three.                                         │
+│ [38;5;246mclear text to review, send, or dismiss[39m                         │
+╰────────────────────────────────────────────────────────────────╯
+
+  [38;5;246mtmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…[39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m❯ a reply

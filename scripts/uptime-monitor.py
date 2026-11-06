@@ -465,7 +465,7 @@ def resolve_chat():
         return c, None
     if owner_chat is None:
         return "", OWNER_CHAT_ERROR
-    chat, reason = owner_chat.resolve_owner_chat(INSTALL_ENV)
+    chat, reason = owner_chat.resolve_alert_chat(INSTALL_ENV)
     return (chat, None) if chat else ("", reason or "no owner chat")
 
 

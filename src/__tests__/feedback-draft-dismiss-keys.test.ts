@@ -1,12 +1,14 @@
 // The feedback-draft card watches the prompt INPUT VALUE: it fires only when the
 // input changes to exactly one digit, after a debounce, and ignores a digit typed
 // right after it appears. A dismisser that types "0" can leave the digit in the
-// input, and every later attempt then appends another one. These tests pin that
-// the dismisser closes the card with C-u then Down, as two separate keystrokes,
-// and never types a digit ("2" would even send the draft).
+// input, and every later attempt then appends another one. Down does not close
+// the card (measured on 2.1.312 and 2.1.318). These tests pin that the dismisser
+// types a single "0" only into an empty input (after C-u, as a separate
+// keystroke, only for a sub-agent's digit leftover), and never any other digit
+// ("2" would even send the draft).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { panes, sent } = vi.hoisted(() => ({ panes: { queue: [] as string[], last: '' }, sent: [] as string[][] }))
+const { panes, sent, sentAt, capturedAt } = vi.hoisted(() => ({ panes: { queue: [] as string[], last: '' }, sent: [] as string[][], sentAt: [] as number[], capturedAt: [] as number[] }))
 
 vi.mock('node:child_process', async (orig) => {
   const actual = await orig<typeof import('node:child_process')>()
@@ -14,6 +16,7 @@ vi.mock('node:child_process', async (orig) => {
   // a -e capture returns the current frame raw. Like tmux, a capture without -e
   // loses the escapes (and with them the dim styling).
   const nextPane = (args: string[]) => {
+    if (!args.includes('-e')) capturedAt.push(Date.now())
     if (!args.includes('-e') && panes.queue.length > 0) panes.last = panes.queue.shift() as string
     return args.includes('-e') ? panes.last : panes.last.replace(/\x1b\[[0-9;]*m/g, '')
   }
@@ -21,7 +24,7 @@ vi.mock('node:child_process', async (orig) => {
     ...actual,
     execFileSync: vi.fn((_file: string, args: string[]) => {
       if (Array.isArray(args) && args.includes('capture-pane')) return nextPane(args)
-      if (Array.isArray(args) && args.includes('send-keys')) sent.push(args.slice(args.indexOf('-t') + 2))
+      if (Array.isArray(args) && args.includes('send-keys')) { sent.push(args.slice(args.indexOf('-t') + 2)); sentAt.push(Date.now()) }
       return ''
     }),
   }
@@ -29,7 +32,7 @@ vi.mock('node:child_process', async (orig) => {
 
 import { dismissFeedbackDraftModalIfPresent } from '../web/agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
-import { feedbackDraftDismissPlan } from '../pane-state.js'
+import { feedbackDraftDismissPlan, FEEDBACK_CARD_INPUT_IGNORE_MS } from '../pane-state.js'
 
 const SEP = '─'.repeat(80)
 const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
@@ -50,13 +53,23 @@ describe('feedbackDraftDismissPlan', () => {
   it('no card: nothing to do', () => {
     expect(feedbackDraftDismissPlan(CLEAR_PANE, CLEAR_PANE, false)).toEqual({ act: 'none' })
   })
-  it('an empty input: C-u then Down on a sub-agent, only Down on the main session', () => {
-    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), false)).toEqual({ act: 'keys', keys: ['C-u', 'Down'] })
-    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), true)).toEqual({ act: 'keys', keys: ['Down'] })
+  it('an empty input: a single "0", on a sub-agent and on the main session', () => {
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), false)).toEqual({ act: 'keys', keys: ['0'] })
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), true, FEEDBACK_CARD_INPUT_IGNORE_MS)).toEqual({ act: 'keys', keys: ['0'] })
+  })
+  it('the main session waits until the card was seen 600 ms ago; a sub-agent does not wait', () => {
+    expect(FEEDBACK_CARD_INPUT_IGNORE_MS).toBe(600)
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), true)).toEqual({ act: 'wait', ms: 600 })
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), true, 0)).toEqual({ act: 'wait', ms: 600 })
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), true, 599)).toEqual({ act: 'wait', ms: 1 })
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), true, 600)).toEqual({ act: 'keys', keys: ['0'] })
+    expect(feedbackDraftDismissPlan(withInput(''), withInput(''), false, 0)).toEqual({ act: 'keys', keys: ['0'] })
+    // The wait never turns a hold into a keystroke.
+    expect(feedbackDraftDismissPlan(withInput('hello'), withInput('hello'), true, 0)).toEqual({ act: 'hold', reason: 'input-occupied' })
   })
   it('a leftover digit run is cleared on a sub-agent, never on the main session', () => {
     for (const d of ['0', '0000', '2']) {
-      expect(feedbackDraftDismissPlan(withInput(d), withInput(d), false)).toEqual({ act: 'keys', keys: ['C-u', 'Down'] })
+      expect(feedbackDraftDismissPlan(withInput(d), withInput(d), false)).toEqual({ act: 'keys', keys: ['C-u', '0'] })
       expect(feedbackDraftDismissPlan(withInput(d), withInput(d), true)).toEqual({ act: 'hold', reason: 'input-occupied' })
     }
   })
@@ -72,28 +85,51 @@ describe('feedbackDraftDismissPlan', () => {
     // a continuation row that starts with a typed ❯ is text
     expect(feedbackDraftDismissPlan(modalPane(['❯ 0', '❯ more']), modalPane(['❯ 0', '❯ more']), false)).toEqual({ act: 'hold', reason: 'input-occupied' })
     // a blank row, then the real prompt row: still read
-    expect(feedbackDraftDismissPlan(modalPane(['', '❯ 00']), modalPane(['', '❯ 00']), false)).toEqual({ act: 'keys', keys: ['C-u', 'Down'] })
+    expect(feedbackDraftDismissPlan(modalPane(['', '❯ 00']), modalPane(['', '❯ 00']), false)).toEqual({ act: 'keys', keys: ['C-u', '0'] })
   })
 })
 
 describe('dismissFeedbackDraftModalIfPresent', () => {
-  beforeEach(() => { panes.queue = []; panes.last = ''; sent.length = 0 })
+  beforeEach(() => { panes.queue = []; panes.last = ''; sent.length = 0; sentAt.length = 0; capturedAt.length = 0 })
 
-  it('a sub-agent with an empty box gets C-u, then Down, as two calls, and no digit', async () => {
+  it('a sub-agent with an empty box gets one "0" and nothing else', async () => {
     panes.queue = [withInput(''), CLEAR_PANE]
     await dismissFeedbackDraftModalIfPresent(SUB)
-    expect(sent).toEqual([['C-u'], ['Down']])
-    expect(sent.flat().some(k => /\d/.test(k))).toBe(false)
+    expect(sent).toEqual([['0']])
   })
-  it('a leftover "000" is cleared the same way', async () => {
+  it('a leftover "000" is cleared first, then one "0", as two calls', async () => {
     panes.queue = [withInput('000'), CLEAR_PANE]
     await dismissFeedbackDraftModalIfPresent(SUB)
-    expect(sent).toEqual([['C-u'], ['Down']])
+    expect(sent).toEqual([['C-u'], ['0']])
   })
-  it('the main session gets only Down', async () => {
+  it('the main session gets only the "0", and not before the card was seen 600 ms earlier', async () => {
+    // Fresh card: first capture, the wait, a second capture, then the digit.
+    panes.queue = [withInput(''), withInput(''), CLEAR_PANE]
+    await dismissFeedbackDraftModalIfPresent(MAIN_CHANNELS_SESSION)
+    expect(sent).toEqual([['0']])
+    expect(sentAt[0] - capturedAt[0]).toBeGreaterThanOrEqual(FEEDBACK_CARD_INPUT_IGNORE_MS)
+  })
+  it('the main session: a card gone by the second capture gets no keystroke', async () => {
     panes.queue = [withInput(''), CLEAR_PANE]
     await dismissFeedbackDraftModalIfPresent(MAIN_CHANNELS_SESSION)
-    expect(sent).toEqual([['Down']])
+    expect(sent).toEqual([])
+  })
+  it('the main session: a card seen on an earlier pass still waits (that card may have closed since)', async () => {
+    panes.queue = [withInput('hello')]
+    await dismissFeedbackDraftModalIfPresent(MAIN_CHANNELS_SESSION)
+    expect(sent).toEqual([])
+    await new Promise((r) => setTimeout(r, FEEDBACK_CARD_INPUT_IGNORE_MS + 50))
+    panes.queue = [withInput(''), withInput(''), CLEAR_PANE]
+    capturedAt.length = 0
+    await dismissFeedbackDraftModalIfPresent(MAIN_CHANNELS_SESSION)
+    expect(sent).toEqual([['0']])
+    expect(sentAt[0] - capturedAt[0]).toBeGreaterThanOrEqual(FEEDBACK_CARD_INPUT_IGNORE_MS)
+  })
+  it('a sub-agent gets its "0" without the wait', async () => {
+    panes.queue = [withInput(''), CLEAR_PANE]
+    await dismissFeedbackDraftModalIfPresent(SUB + '-nowait')
+    expect(sent).toEqual([['0']])
+    expect(sentAt[0] - capturedAt[0]).toBeLessThan(FEEDBACK_CARD_INPUT_IGNORE_MS)
   })
   it('typed text gets no keystroke at all', async () => {
     panes.queue = [withInput('hello')]
@@ -103,18 +139,18 @@ describe('dismissFeedbackDraftModalIfPresent', () => {
   it('a dim autosuggest in an empty box reads as empty', async () => {
     panes.queue = [modalPane(['❯ \x1b[2msuggested earlier prompt\x1b[0m']), CLEAR_PANE]
     await dismissFeedbackDraftModalIfPresent(SUB)
-    expect(sent).toEqual([['C-u'], ['Down']])
+    expect(sent).toEqual([['0']])
   })
   it('a card whose option line is rendered dim is still detected and dismissed', async () => {
     const dim = modalPane(['❯ ']).replace(OPTIONS, `\x1b[2m${OPTIONS}\x1b[0m`)
     expect(dim).toContain('\x1b[2m')
     panes.queue = [dim, CLEAR_PANE]
     await dismissFeedbackDraftModalIfPresent(SUB)
-    expect(sent).toEqual([['C-u'], ['Down']])
+    expect(sent).toEqual([['0']])
   })
-  it('the opt-out follow-up is answered with Escape, never a digit', async () => {
+  it('the opt-out follow-up is answered with Escape, never a second digit', async () => {
     panes.queue = [withInput(''), OPTOUT_PANE]
     await dismissFeedbackDraftModalIfPresent(SUB)
-    expect(sent).toEqual([['C-u'], ['Down'], ['Escape']])
+    expect(sent).toEqual([['0'], ['Escape']])
   })
 })

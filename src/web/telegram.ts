@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
-import { resolveOwnerChatId } from '../owner-chat.js'
+import { ownerAlertChatOverride, resolveOwnerChatId } from '../owner-chat.js'
 import { logger } from '../logger.js'
 import { agentDir, readFileOr, findAvatarForAgent } from './agent-config.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
@@ -195,7 +195,7 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
 }
 
 export async function sendWelcomeMessage(agentName: string, token: string): Promise<void> {
-  const chatId = resolveOwnerChatId()
+  const chatId = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
   if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
   const dir = agentDir(agentName)
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
@@ -223,7 +223,7 @@ export async function sendMarveenAvatarChange(avatarPath: string): Promise<void>
   const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
   const token = tokenMatch?.[1]?.trim()
   if (!token) return
-  const chatId = resolveOwnerChatId()
+  const chatId = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
   if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
 
   try {
@@ -246,7 +246,7 @@ export async function sendMarveenAvatarChange(avatarPath: string): Promise<void>
 export async function sendAvatarChangeMessage(agentName: string, avatarPath: string): Promise<void> {
   const token = parseTelegramToken(agentName)
   if (!token) return
-  const chatId = resolveOwnerChatId()
+  const chatId = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
   if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
 
   try {
@@ -295,7 +295,7 @@ export async function sendMarveenAlert(text: string): Promise<void> {
     const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
     const token = tokenMatch?.[1]?.trim()
     if (!token) return
-    const chatId = resolveOwnerChatId()
+    const chatId = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
     if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install'); return }
     await sendTelegramMessage(token, chatId, text)
   } catch (err) {

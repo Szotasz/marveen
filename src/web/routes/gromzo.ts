@@ -13,9 +13,9 @@
 //   (GROMZOAGENTPICK1101; the rules are in ../gromzo-agents.ts. All four: the owner's session only.)
 //
 // Who may ask for the QR: ONLY the owner's dashboard session. This is stricter than
-// issuing a device key (routes/auth.ts mayIssueCredentials, DEVKEYMINT1022), which
-// lets the shared token in before the first dashboard login exists. Here that
-// first-run branch is closed on purpose (Dani's review of #2365): the shared bearer
+// issuing a device key (routes/auth.ts mayActAsOwnerOrFirstRun 'first-device', DEVKEYMINT1022),
+// which lets the shared token mint the first key before the first dashboard login exists. Here
+// that first-run branch is closed on purpose (Dani's review of #2365): the shared bearer
 // is held by every fleet agent, and the first owner_invite claims the owner's chat
 // seat on the controller once. On a fresh install the owner first sets up the
 // dashboard login, then asks for the QR.
@@ -40,11 +40,19 @@ export const OWNER_QR_SESSION_REQUIRED = {
 }
 import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
-  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, sendGromzoAvatar, type GromzoAgentDeps, type GromzoAgentOutcome,
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, sendGromzoAvatar, statusFactsOf, type GromzoAgentDeps, type GromzoAgentOutcome,
 } from '../gromzo-agents.js'
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
 import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, currentBotName } from '../../config.js'
+import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { gateManualRestart } from '../manual-restart-gate.js'
+import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import {
+  mainGromzoLaunchState, mainGromzoPanelState, mainSessionLoadsGromzo, readMainGromzoToken, restartMainAfterMxdReload,
+  restartMainForGromzoNow, switchMainGromzoOff, switchMainGromzoOn,
+} from '../main-gromzo.js'
 import type { RouteContext } from './types.js'
 
 /** The owner's dashboard session, and nothing else: a session principal, or a
@@ -65,7 +73,7 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
 const STATUS_PATH = '/api/gromzo/status'
 const OWNER_QR_PATH = '/api/gromzo/owner-qr'
 const AGENTS_PATH = '/api/gromzo/agents'
-const AGENT_ACTION_RE = /^\/api\/gromzo\/agents\/([^/]{1,64})\/(enable|disable|consent)$/
+const AGENT_ACTION_RE = /^\/api\/gromzo\/agents\/([^/]{1,64})\/(enable|disable|consent|restart)$/
 
 /** The dash.sock client (the socket path is read per call: MXD_DASH_SOCK or the default). */
 const call: MxdDashCall = (request) => mxdDashCall(request)
@@ -87,6 +95,10 @@ export function httpStatusFor(code: string): number {
     case 'reserved_slug':
     case 'bad_name':
     case 'reserved_name':
+    // GROMZONAMETAKEN1106: the controller's name refusals (passed on by mxd): the owner picks another name.
+    case 'name_taken':
+    case 'bad_display_name':
+    case 'mixed_script':
       return 409
     case 'rate_limited':
     case 'too_soon':
@@ -247,15 +259,37 @@ async function retryUntilApplied(slug: string, retryDelayMs: number, gapMs: numb
 const defaultAgentDeps: GromzoAgentDeps = {
   call: (request) => call(request),
   agents: () => listAgentNames(),
-  readFlag: (slug) => readAgentGromzo(slug),
-  writeFlag: (slug, on) => writeAgentGromzo(slug, on),
+  // GROMZOMAINAGENT1106: for the main agent the flag is its .env gromzo id and the restart is the main session's
+  // own (main-gromzo.ts); every other agent keeps its agent-config flag and its own restart.
+  readFlag: (slug) => slug === MAIN_AGENT_ID ? (() => { const t = readMainGromzoToken(PROJECT_ROOT); return t.ok && t.on })() : readAgentGromzo(slug),
+  writeFlag: (slug, on) => {
+    if (slug === MAIN_AGENT_ID) { if (on) switchMainGromzoOn(PROJECT_ROOT); else switchMainGromzoOff(PROJECT_ROOT); return }
+    writeAgentGromzo(slug, on)
+  },
+  mainLaunchState: () => {
+    const t = readMainGromzoToken(PROJECT_ROOT)
+    return mainGromzoPanelState(t.ok && t.on, mainSessionLoadsGromzo(MAIN_CHANNELS_SESSION))
+  },
   displayName: (slug) => readAgentDisplayName(slug) || slug,
+  // GROMZONAMETAKEN1106 (the owner, Samu 71820): the main agent joins Gromzo under the name the owner set for it
+  // (.env BOT_NAME, read per call like the dashboard's own label; "Marveen" when unset); every other agent under its
+  // display name.
+  gromzoName: (slug) => (slug === MAIN_AGENT_ID ? currentBotName() : readAgentDisplayName(slug) || slug),
   isRunning: (slug) => isAgentRunning(slug),
   // agentDir(slug) only for a slug slugRefusal passed (sendGromzoAvatar checks first; the list only names fleet agents).
   readAvatar: (slug) => readAgentAvatar(agentDir(slug)),
   avatarProblem: (slug) => avatarProblem(agentDir(slug)),
   // One tmux list-sessions per server for the whole list, not one sync call per agent.
   batch: (fn) => withTmuxBatch(fn),
+  // MXDAGENTSOCKID1106: the agents' token protection from the same dash status (marveen-mxd main.rs status_agents):
+  // agents.protected / agents.refused / agents.running (slugs only) and the top-level ratchet_unreadable. An older
+  // mxd has none of these: null, and the rows show nothing.
+  // One status call gives the list both the held agents and the protection.
+  statusFacts: async () => {
+    try {
+      return statusFactsOf(await call({ verb: 'status' }))
+    } catch { return { held: new Set<string>(), protection: null } }
+  },
   held: async () => {
     // dash status carries held_agents only when it is not empty (marveen-mxd link.rs status).
     try {
@@ -264,10 +298,37 @@ const defaultAgentDeps: GromzoAgentDeps = {
       return new Set(Array.isArray(h) ? h.filter((x): x is string => typeof x === 'string' && MXD_AGENT_SLUG_RE.test(x)) : [])
     } catch { return new Set() }
   },
-  restartOne: (slug) => { void restartAfterMxdReload(slug).catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: restart failed')) },
+  restartOne: (slug) => {
+    if (slug === MAIN_AGENT_ID) {
+      // The launch side stopped (marketplace or .env): nothing to load, so no restart.
+      const st = mainGromzoLaunchState()
+      if (st === 'marketplace_failed' || st === 'env_failed') return
+      // Switched off: mxd is not part of it (it keeps the main agent), so no wait and no held check; the
+      // plugin goes with the next start, through the same pane gate.
+      const tok = readMainGromzoToken(PROJECT_ROOT)
+      if (tok.ok && !tok.on) {
+        void restartMainForGromzoNow(mainRestartDeps()).catch((e) => logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo main agent: restart failed'))
+        return
+      }
+      void restartMainAfterMxdReload(mainRestartDeps()).catch((e) => logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo main agent: restart failed'))
+      return
+    }
+    void restartAfterMxdReload(slug).catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: restart failed'))
+  },
   now: () => Date.now(),
 }
 let agentDeps: GromzoAgentDeps = defaultAgentDeps
+
+/** The main session's restart for its Gromzo switch: the manual-restart pane gate, never forced. */
+function mainRestartDeps() {
+  return {
+    status: () => call({ verb: 'status' }),
+    gate: () => gateManualRestart(MAIN_CHANNELS_SESSION),
+    restart: () => hardRestartMarveenChannels(),
+    sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    mainSlug: MAIN_AGENT_ID,
+  }
+}
 
 /** Test seam: replace some of the agent switch's collaborators (null puts the real ones back). */
 export function setGromzoAgentDepsForTest(deps: Partial<GromzoAgentDeps> | null): void {
@@ -293,9 +354,20 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
   // Every action changes state (the consent check may add the agent, write its flag and restart it): POST only.
   const wantMethod = path === AGENTS_PATH ? 'GET' : 'POST'
   if (method !== wantMethod) { methodNotAllowed(res, method, [wantMethod]); return true }
+  // GROMZONAMETAKEN1106: the switch-on may carry the owner's name for Gromzo ({"name": "..."}); every other action
+  // sends an empty object, and nothing else in a body is read.
+  let bodyName: string | undefined
   if (wantMethod === 'POST') {
     if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }
-    try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+    let raw: Buffer
+    try { raw = await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+    if (action?.[2] === 'enable' && raw.length > 0) {
+      let parsed: unknown
+      try { parsed = JSON.parse(raw.toString('utf8')) } catch { failure(res, 'bad_request'); return true }
+      const n = parsed && typeof parsed === 'object' ? (parsed as { name?: unknown }).name : undefined
+      if (n !== undefined && typeof n !== 'string') { failure(res, 'bad_request'); return true }
+      bodyName = n
+    }
   }
   if (!isOwnerSession(auth, req)) {
     logger.warn({ kind: auth?.kind, path }, 'gromzo agents: refused (needs the owner session)')
@@ -303,13 +375,21 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
     return true
   }
   if (!action) {
-    json(res, { agents: await listGromzoAgents(agentDeps) })
+    json(res, await listGromzoAgentsWithStatus(agentDeps))
     return true
   }
   let slug: string
   try { slug = decodeURIComponent(action[1]!) } catch { failure(res, 'bad_request'); return true }
+  // GROMZOMAINAGENT1106: "restart now" for the main agent's Gromzo switch, when the pane was busy before.
+  if (action[2] === 'restart') {
+    if (slug !== MAIN_AGENT_ID) { failure(res, 'bad_request'); return true }
+    const st = await restartMainForGromzoNow(mainRestartDeps())
+    logger.info({ state: st }, 'gromzo main agent: restart asked from the panel')
+    json(res, { state: st })
+    return true
+  }
   try {
-    const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps)
+    const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps, bodyName)
       : action[2] === 'disable' ? await disableGromzoAgent(slug, agentDeps)
         : await checkGromzoAgent(slug, agentDeps)
     sendOutcome(res, slug, action[2]!, o)
@@ -335,7 +415,21 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
         json(res, { available: false, code })
         return true
       }
-      json(res, { available: true, running: r.running === true, linked: r.linked === true })
+      const out: Record<string, unknown> = { available: true, running: r.running === true, linked: r.linked === true }
+      // GROMZOLINKCONFIRM1106: mxd's status names a link that waits for the owner's confirmation (pending, with
+      // its seconds left) and the last refused or failed one (last_refusal.kind). Without them the card could only
+      // say "not linked yet" while the owner had 15 minutes to confirm on gromzo.com. Only these two shapes pass:
+      // a whole number of seconds and a lower-case word; no address, no id, no secret.
+      if (out.linked !== true) {
+        const pending = r.pending as { op?: unknown; expires_in?: unknown } | undefined
+        if (pending && pending.op === 'link' && typeof pending.expires_in === 'number'
+          && Number.isSafeInteger(pending.expires_in) && pending.expires_in >= 0 && pending.expires_in <= 86400) {
+          out.linkPendingExpiresIn = pending.expires_in
+        }
+        const refusal = r.last_refusal as { kind?: unknown } | undefined
+        if (refusal && typeof refusal.kind === 'string' && /^[a-z_]{1,40}$/.test(refusal.kind)) out.linkRefusal = refusal.kind
+      }
+      json(res, out)
     } catch (e) {
       const code = e instanceof MxdDashError ? e.code : 'io'
       json(res, { available: false, code })

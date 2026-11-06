@@ -18,6 +18,23 @@ export const AGENT_PUT_WRITABLE_FIELDS = [
   'modelProfile', 'customProvider',
 ] as const
 
+// APIAGENTWRITE1104: the fields that change what an agent is told (CLAUDE.md, SOUL.md), what it runs (.mcp.json: a
+// server there is a command started at the next launch), where its prompt goes (customProvider), which login or key it
+// runs under (authMode, apiKey, claudePlan) or its memory boundary (memoryIsolation). They need the owner, not the
+// shared access token every sub-agent can read. model and modelProfile stay token-writable (Samu 69185): the id is
+// validated and changes neither a target nor an instruction, and the quota and install flows set it with the token.
+export const AGENT_PUT_OWNER_FIELDS = [
+  'claudeMd', 'soulMd', 'mcpJson',
+  'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
+  'customProvider',
+] as const
+
+/** The owner-only fields present in a PUT body, in AGENT_PUT_OWNER_FIELDS order. A field set to null or '' counts:
+ *  clearing a provider or a plan changes the target too. */
+export function agentPutOwnerFields(body: Record<string, unknown>): string[] {
+  return AGENT_PUT_OWNER_FIELDS.filter((f) => body[f] !== undefined)
+}
+
 // Fields that exist on the agent but belong to a different endpoint. Listed
 // separately from "unknown" so the error can say where to go instead of just
 // refusing — a caller who gets "unsupported" with no alternative tends to go

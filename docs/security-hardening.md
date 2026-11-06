@@ -344,7 +344,7 @@ themselves, in the project `settings.json` or `settings.local.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
+            "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
             "timeout": 10
           }
         ]
@@ -420,8 +420,8 @@ python3 scripts/approval-consume.py --id <approval id> --content-hash <anchor> \
 ```
 
 `POST /api/approvals/<id>/consume` is one conditional write (approved,
-`email_send`, unconsumed, the same anchor, inside `EMAIL_APPROVAL_WINDOW_S`,
-1800 s like the gate). Of two attempts exactly one gets 200; the other gets
+`email_send`, unconsumed, the same anchor, inside the fixed 1800 s window,
+the same as the gate's; no environment variable changes it). Of two attempts exactly one gets 200; the other gets
 409 with a reason (`already_consumed`, `not_approved`, `hash_mismatch`,
 `expired`, `wrong_category`). The row records the consumer and the Message-Id
 the tool generated up front (`consumed_by`, `consumed_ref`), and every call,
@@ -436,9 +436,9 @@ because the earlier attempt may already have gone out.
 
 Approving a request (`PATCH /api/approvals/<id>` with `status=approved`, and the born-approved
 `POST /api/approvals` with `owner_approved_message_id`) goes through the same predicate as issuing
-credentials (`mayIssueCredentials`, #2163): the owner's dashboard session, also when the browser
-sends the stored access token alongside it; the bare token only before the first dashboard login
-exists. The shared token, which every agent holds, can still file a request and resolve it as
+credentials (`mayActAsOwner`, #2163): the owner's dashboard session, also when the browser
+sends the stored access token alongside it; the bare token never, not even before the first dashboard
+login exists (OWNERGATE4-1104: the 403 then carries `setup_required: true`). The shared token, which every agent holds, can still file a request and resolve it as
 `rejected` or `timeout` (that only cancels it), but no longer approve one: measured before, with it
 any agent made its own letter approved and the email gate let it through (kanban 80d0e3c6). A
 device key is not an owner session, whatever its scope.
@@ -470,7 +470,7 @@ key reads as level 1):
   so a script never reads the request as done. A retry gets the same open
   request back instead of a new one.
 - The approval is consumed once, inside the same window as an email approval
-  (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval). An edit to the memory
+  (a fixed 1800 s from the approval). An edit to the memory
   after the approval changes the anchor, and the approval no longer deletes it.
 - The anchor is the memory id plus its content version. A row deleted and later
   restored with the same id and the same content (a DB restore, a re-import)
@@ -633,7 +633,9 @@ working directory), and what the allowlist said.
 `VAULT_ACL_MODE` (Settings, audit module) decides what the allowlist
 (`store/vault-acl.json`, `{ "<secret-id>": ["agent", ...] }`) does. The dashboard and the scripts read it the same way:
 the Settings page value, else the `.env` line, else `audit`; a `VAULT_ACL_MODE=enforce` in the process environment also
-enforces and cannot be undone from the Settings page. Each side reads only its own process environment, so set the
+enforces and cannot be undone from the Settings page. The `.env` line counts only when it tightens (`enforce`): like
+every security key, VAULT_ACL_MODE is overrides-only (ENVRELAXGATE1104), and loosening it is the Settings page's,
+behind the owner login. Each side reads only its own process environment, so set the
 mode on the Settings page or in `.env`, where the dashboard and the scripts both see it. A change takes effect on the
 next read, without a restart:
 
@@ -733,9 +735,8 @@ token should reach:
   key and every secret, encrypted with a password the CALLER chose, so the
   caller can open it.
 
-Once a dashboard login exists, both take the owner's session
-(`mayIssueCredentials`, the predicate of the credential-issuing routes since
-DEVKEYMINT1022), checked before the body is read or anything is exported; any
+Both take the owner's session, also before the first dashboard login exists
+(`mayActAsOwner`, the owner gate since DEVKEYMINT1022; OWNERGATE4-1104), checked before the body is read or anything is exported; any
 other caller gets 403 `owner_session_required`. A full device key is refused
 too. The dry run (no `apply`, writes nothing) and the export without a vault
 password (no secret; it refuses rather than leak one) stay on the token. On a
@@ -797,10 +798,18 @@ and the main agent's `email_send` approval gate keeps its current reach.
   - an import after the first 1 MiB of the file.
 - **Reach:**
   - helpers past the first level;
-  - a script started after `cd dir &&`, which is resolved against the session
-    cwd, not `dir`;
-  - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+- **Closed since (JSCDSEND1104):** a script started after `cd dir &&` (or
+  `env -C dir`, `sudo -D dir`, `pushd dir`) is resolved under `dir` too. When
+  the run is addressed (`--to`/`--cc`/`--bcc` or an e-mail address in the
+  command), an undecidable `cd` (also `cd $(...)`), path or `-m`, and a missing
+  script are a send on this gate; without an address they are not, so a
+  developer's `cd $WT && python3 -m pytest` passes. A readable script that
+  sends is a send either way. The main agent's approval gate keeps those
+  branches fail-closed on every run (a false positive there is an approval
+  request, not a denial). Both gates' script-run judgement runs on one shared
+  table (`scripts/hooks/script-run-cases.json`), which holds both verdicts per
+  row.
 
 # Autonomy levels: a raise takes the owner
 
@@ -809,7 +818,7 @@ to its `maxLevel` with the fleet's one shared dashboard token, so any agent
 could set `email_send` to 3, and at 3 the mail approval gate
 (`scripts/hooks/email-approval-gate.py`) lets every send through. Once a
 dashboard login exists, a raise takes the owner's session
-(`mayIssueCredentials`); any other caller, a full device key included, gets
+(`mayActAsOwner`; OWNERGATE4-1104: also before the first login); any other caller, a full device key included, gets
 403 `owner_session_required` and nothing is written. Lowering and setting the
 same level stay on the token: they only narrow what an agent may do. A current
 level that is not a number counts as a raise. On a fresh install with no

@@ -58,6 +58,17 @@ jobs:
       # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
       # only runs by hand rots (the #1316 class), so its tests run here too.
       - run: python3 scripts/__tests__/egress-drift-scan.test.py
+      # marveen #2482: the destructive gate's wrapper handling (and its whole regression set)
+      # ran only by hand; a gate test that is not in CI rots.
+      - run: python3 scripts/__tests__/destructive-gate.test.py
+      # INSTALLDIRTYTREE1103: the install-drift repair restores files on customer
+      # machines (update.sh, the dashboard, the Bridge repair step), so its
+      # restore/leave rules run here, including a real conflicted stash pop.
+      - run: python3 scripts/__tests__/install-drift-repair.test.py
+      # MANAGEDSETTINGSWRITE1103: the one writer of the machine-wide
+      # managed-settings.json runs as root on customer machines; its refusals
+      # (invalid JSON, symlinked file, planted tmp symlink, writable dir) run here.
+      - run: python3 scripts/__tests__/managed-settings-write.test.py
       # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
       # same rot argument as the line above.
       - run: python3 scripts/__tests__/dash-audit-scan.test.py
@@ -69,6 +80,11 @@ jobs:
       # good, so its fail-direction cases are gate instruments (hermetic:
       # stubbed vault/supabase, throwaway dirs).
       - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
+      # BONIKAPUHOOK1102: the billingo-hatralek-orszem issuing gate decides which
+      # billing_errors rows may get an irreversible NAV document; its self-test
+      # only ran by hand while it lived in the scheduled-task store. Hermetic:
+      # temp dir, no network, no database.
+      - run: python3 scripts/__tests__/kiallitasi-kapu.test.py
       # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
       # queue, so an over-report sends someone to rewrite working links. The
       # over-report GROWS with every consolidation round, which is why this
@@ -85,6 +101,15 @@ jobs:
         run: |
           set -e
           for t in scripts/__tests__/outgoing-copy-gate*.test.py; do
+            echo "== $t"
+            python3 "$t"
+          done
+      # COPYGATEDRAFTFP1104: the approval gate's own tests (the script-file judge, the level, MS365) ran nowhere in CI,
+      # the same rot as above. Same form: every email-approval-gate*.test.py, an empty glob fails.
+      - name: Email approval gate tests
+        run: |
+          set -e
+          for t in scripts/__tests__/email-approval-gate*.test.py; do
             echo "== $t"
             python3 "$t"
           done
@@ -107,6 +132,10 @@ jobs:
       # throwaway dirs); the stamp-gate test never reaches the claude stub
       # above because the briefing script takes its binary from CLAUDE_BIN.
       - run: bash scripts/__tests__/keepalive-probe-install.test.sh
+      # The PATH of the periodic helper plists carries the dir tmux was found in.
+      # Both hermetic: throwaway HOME, uname/launchctl stubs, nothing is loaded.
+      - run: bash scripts/__tests__/helper-plist-path.test.sh
+      - run: bash scripts/__tests__/helper-path-edge.test.sh
       - run: bash scripts/__tests__/morning-stamp-gate.test.sh
       - run: bash scripts/__tests__/morning-briefing-api-key-only.test.sh
       - run: bash scripts/__tests__/morning-timer-park.test.sh
@@ -118,6 +147,17 @@ jobs:
       # block runs against a throwaway HOME with npm and claude stubbed on PATH.
       - run: bash scripts/__tests__/channels-native-install-no-npm.test.sh
       - run: bash scripts/__tests__/channels-native-autoupdate.test.sh
+      # INSTSTDERRTMP1104: the installers' stderr copy leaves with the process, the
+      # raw error tail is masked, and the token URL is printed only to a terminal.
+      # Hermetic: throwaway TMPDIR, the blocks are cut from the real scripts.
+      - run: bash scripts/__tests__/install-stderr-tmp.test.sh
+      # LINUXINSTPREREQ1104: install-linux.sh never goes on with a Node.js older than v20 (the
+      # distro fallback and the post-check). Hermetic: the real block with stubbed node/apt/curl/sudo.
+      - run: bash scripts/__tests__/install-linux-node-recheck.test.sh
+      # LINUXINSTPREREQ1104 PR2: the non-admin pre-check and --admin-prereq (the real block,
+      # stubbed id/sudo/python3). The container pair (install-linux-admin-prereq.container.sh)
+      # needs docker and the network, so it is run by hand, not here.
+      - run: bash scripts/__tests__/install-linux-admin-prereq.test.sh
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
@@ -162,3 +202,31 @@ jobs:
       # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
       # SKIP where the runner has no systemd user manager or its MemoryMax is not in effect.
       - run: python3 scripts/__tests__/heavy-job-gate.test.py
+
+  # EMAILGATEPY39-1104: the hooks run under the PATH's python3, which is 3.9 on a Mac without Homebrew python
+  # (/usr/bin/python3 from the command line tools). A 3.10-only form in a hook dependency broke the approval and
+  # credential gates there (fail-closed: every send, and with the credential gate every Bash call, was denied), and
+  # nothing here ran a 3.9 interpreter. This job runs the hook scripts' syntax check and the gate tests on 3.9.
+  hooks-python39:
+    # Pinned: setup-python has no 3.9 build for the newest ubuntu-latest image (measured: "The version '3.9' with
+    # architecture 'x64' was not found for Ubuntu 26.04"); 22.04 has one.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Hook scripts compile under Python 3.9
+        run: |
+          set -e
+          python3 --version
+          python3 -m py_compile scripts/hooks/*.py scripts/lib/*.py scripts/hook-load-watch.py
+      - name: Gate tests under Python 3.9
+        run: |
+          set -e
+          for t in scripts/__tests__/credential-gate.test.py scripts/__tests__/hook-load-watch.test.py \
+                   scripts/__tests__/mail-api-send-cases.test.py \
+                   scripts/__tests__/email-approval-gate*.test.py scripts/__tests__/outgoing-copy-gate*.test.py; do
+            echo "== $t"
+            python3 "$t"
+          done

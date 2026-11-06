@@ -7,7 +7,8 @@ inbound message the bot receives (the evidence owner WRITE commands need),
 strip the invisible Unicode characters a pasted or forwarded text can carry
 out of the text handed to the model, and -- only while
 TELEGRAM_TOPICS_ENABLED is on -- carry the topic of a message in and the
-answer back into it (see TOPICS_STEPS).
+answer back into it (see TOPICS_STEPS). While TELEGRAM_REPLY_BUTTONS is off
+the reply tool sends no answer buttons (see KBD_OFF_CHECK).
 
 The official plugin (claude-plugins-official/telegram/<ver>/server.ts) answers
 /status ("Paired as ...") and /help itself, inside its bot poller -- those
@@ -31,8 +32,8 @@ must not rewrite the user-level cache other Claude Code sessions load
   -- /status and /help then fall back to the plugin's own answers, or a
   forwarded command is not refused; the channel itself is not touched;
 - always exits 0: a failed patch must never stop the channel from starting
-  (the one exception is a --topics value other than on or off: exit 2, nothing
-  patched; channels.sh never passes --topics);
+  (the one exception is a --topics or --buttons value other than on or off:
+  exit 2, nothing patched; channels.sh passes neither);
 - the answer-buttons patch (c67f5f34: inline keyboard under the message, a
   tap comes back as an ordinary text message) inserts WHOLE LINES only, each
   carrying its marker, so taking it back is deleting the lines that carry
@@ -43,9 +44,10 @@ must not rewrite the user-level cache other Claude Code sessions load
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
 
-Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [<plugins cache root>]
+Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [--buttons on|off] [<plugins cache root>]
 (default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache;
-without --topics the TELEGRAM_TOPICS_ENABLED setting of this install decides)
+without --topics the TELEGRAM_TOPICS_ENABLED setting of this install decides,
+without --buttons the TELEGRAM_REPLY_BUTTONS setting, default on)
 """
 import json
 import os
@@ -249,8 +251,33 @@ KBD_TYPED = ("inbound typing indicator", re.compile(r"^( *)// Typing indicator[^
     ]))
 KBD_ANCHORS = [KBD_SCHEMA, KBD_CHECK, KBD_SEND, KBD_SET, KBD_CALLBACK, KBD_TS, KBD_OPEN, KBD_TYPED]
 KBD_PATCH = {"name": "kbd", "marker": KBD_MARKER, "anchors": KBD_ANCHORS, "mode": "insert-after",
-             "apply": lambda text: apply_kbd(text),  # defined below
+             "apply": lambda text, buttons=True: apply_kbd(text, buttons),  # defined below
              "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"}
+
+# TELEGRAM_REPLY_BUTTONS off: an owner may not want answer buttons at all (owner request, 2026-11-03: no buttons
+# to anyone, from any agent). The same kbd patch with three lines different, so switching either way is the usual
+# rebuild in place (apply_kbd): the schema says the field sends nothing; the check keeps only an EMPTY list (it
+# still takes off a keyboard the first kbd version left under the input field), so a non-empty list sends no
+# reply_markup at all; and the tool result tells the agent that its buttons were dropped. Nothing is refused: the
+# message still goes out, with the options in its text. The callback branch, the Set and the open-question lines
+# stay, so a button sent before the switch still answers once and is taken off when the answer is typed.
+KBD_OFF_NOTE = ("buttons disabled on this install (TELEGRAM_REPLY_BUTTONS off): the message went out WITHOUT "
+                "buttons; ask in plain text and let the user type the answer")
+KBD_OFF_SCHEMA = (KBD_SCHEMA[0], KBD_SCHEMA[1], "insert-after",
+    "{indent}buttons: {{ type: 'array', items: {{ type: 'string' }}, description: 'Answer buttons are DISABLED on this "
+    "install (the owner decided against them): do not pass a non-empty list. If you do, the message is still sent, "
+    "WITHOUT buttons, and the result says so. Write the options into text and let the user type the answer. An empty "
+    "list only removes a keyboard left earlier under the input field.' }}, " + KBD_MARKER + "\n")
+KBD_OFF_CHECK = (KBD_CHECK[0], KBD_CHECK[1], "insert-after",
+    _kbd_lines([
+        "const kbdDropped = Array.isArray(args.buttons) && args.buttons.length > 0",
+        "const kbdButtons = args.buttons == null || kbdDropped ? undefined : Array.isArray(args.buttons) ? ([] as string[]) "
+        ": (() => { throw new Error('buttons: a list (answer buttons are disabled on this install)') })()",
+    ]))
+KBD_OFF_RESULT = ("reply result", re.compile(r"^( *)return \{ content: \[\{ type: 'text', text: result \}\] \}\n", re.MULTILINE),
+    "insert-before", _kbd_lines(["if (kbdDropped) return { content: [{ type: 'text', text: result + ' -- " + KBD_OFF_NOTE + "' }] }"]))
+KBD_OFF_ANCHORS = [KBD_OFF_SCHEMA, KBD_OFF_CHECK, KBD_SEND, KBD_SET, KBD_CALLBACK, KBD_TS, KBD_OPEN, KBD_TYPED, KBD_OFF_RESULT]
+KBD_OFF_PATCH = {**KBD_PATCH, "anchors": KBD_OFF_ANCHORS}
 
 # A forwarded or pasted text can carry characters a person cannot see but the
 # model reads (Unicode tag characters, "ASCII smuggling") or that reorder what
@@ -374,6 +401,7 @@ PATCHES = [
 TOPICS_TAG = "// MARVEEN-PATCH(tgtopics)"
 TOPICS_ORIG = "// MARVEEN-PATCH(tgtopics-orig) "
 TOPICS_SETTING = "TELEGRAM_TOPICS_ENABLED"
+BUTTONS_SETTING = "TELEGRAM_REPLY_BUTTONS"
 # The values src/config.ts reads as on; the Settings page itself writes "1".
 TRUTHY = ("1", "true", "yes", "on")
 # What JavaScript's String.prototype.trim() removes. Python's own strip() set
@@ -449,22 +477,23 @@ def strip_kbd(text):
     return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + KBD_MARKER))
 
 
-def apply_kbd(text):
+def apply_kbd(text, buttons=True):
     """Returns (new_text, status) like apply_patch, but a file that already carries kbd lines is not skipped:
-    the lines are taken out and rebuilt, so an older version (the reply keyboard) is replaced in place and
-    a current one comes out byte-identical ('already'). Status also: 'damaged:kbd markers' (a marker that is
-    not at the end of a line; the file is left alone)."""
+    the lines are taken out and rebuilt, so an older version (the reply keyboard), or the other side of the
+    TELEGRAM_REPLY_BUTTONS switch, is replaced in place and a current one comes out byte-identical ('already').
+    Status also: 'damaged:kbd markers' (a marker that is not at the end of a line; the file is left alone)."""
+    patch = KBD_PATCH if buttons else KBD_OFF_PATCH
     if KBD_MARKER not in text:
-        return apply_patch(text, KBD_PATCH)
+        return apply_patch(text, patch)
     base = strip_kbd(text)
     if KBD_MARKER in base:
         return text, "damaged:kbd markers"
-    new, status = apply_patch(base, KBD_PATCH)
+    new, status = apply_patch(base, patch)
     if status != "patched":
         return text, status  # the old lines stay: they still work
     if new == text:
         return text, "already"
-    log("kbd lines of an older or edited version replaced")
+    log("kbd lines rebuilt (an older or edited version, or the other side of TELEGRAM_REPLY_BUTTONS)")
     return new, "patched"
 
 
@@ -505,12 +534,13 @@ def remove_topics(text):
 TOPICS_PATCH = {"name": "topics", "fallback": TOPICS_FALLBACK}
 
 
-def patch_text(text, topics=False):
+def patch_text(text, topics=False, buttons=True):
     """Returns (new_text, [(patch, status), ...]). The topics entry is there
-    when the switch is on, or when switching it off took the patch out."""
+    when the switch is on, or when switching it off took the patch out.
+    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS)."""
     results = []
     for patch in PATCHES:
-        text, status = patch["apply"](text) if "apply" in patch else apply_patch(text, patch)
+        text, status = patch["apply"](text, buttons) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     if topics:
         text, status = apply_topics(text)
@@ -533,7 +563,7 @@ def file_status(results):
     return next(st for st in statuses if st.startswith(("anchor-missing", "damaged")))
 
 
-def patch_file(path, topics=False):
+def patch_file(path, topics=False, buttons=True):
     """Returns (file status, {patch name: status})."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -541,7 +571,7 @@ def patch_file(path, topics=False):
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
         return "unreadable", {}
-    new, results = patch_text(text, topics)
+    new, results = patch_text(text, topics, buttons)
     per_patch = {p["name"]: st for p, st in results}
     for patch, status in results:
         if status.startswith("anchor-missing"):
@@ -612,14 +642,14 @@ def is_on(value):
     return str(value).strip(JS_TRIM).lower() in TRUTHY
 
 
-def topics_setting(install_dir):
-    """TELEGRAM_TOPICS_ENABLED as the dashboard settings store resolves it:
-    store/config-overrides.json, then .env, then the registry default (off)."""
+def flag_setting(install_dir, key, default):
+    """A boolean setting as the dashboard settings store resolves it:
+    store/config-overrides.json, then .env, then the registry default."""
     try:
         with open(os.path.join(install_dir, "store", "config-overrides.json"), encoding="utf-8") as f:
             overrides = json.load(f)
-        if isinstance(overrides, dict) and TOPICS_SETTING in overrides:
-            return is_on(overrides[TOPICS_SETTING])
+        if isinstance(overrides, dict) and key in overrides:
+            return is_on(overrides[key])
     except Exception:
         pass
     try:
@@ -628,30 +658,46 @@ def topics_setting(install_dir):
         # instead of failing the whole file.
         with open(os.path.join(install_dir, ".env"), encoding="utf-8", errors="replace", newline="") as f:
             env = parse_env_content(f.read())
-        if TOPICS_SETTING in env:
-            return is_on(env[TOPICS_SETTING])
+        if key in env:
+            return is_on(env[key])
     except Exception:
         pass
-    return False
+    return default
+
+
+def topics_setting(install_dir):
+    """TELEGRAM_TOPICS_ENABLED, registry default off."""
+    return flag_setting(install_dir, TOPICS_SETTING, False)
+
+
+def buttons_setting(install_dir):
+    """TELEGRAM_REPLY_BUTTONS, registry default on (the answer buttons as they are)."""
+    return flag_setting(install_dir, BUTTONS_SETTING, True)
 
 
 def main(argv):
     args = argv[1:]
     state_path = None
     topics = None
-    while len(args) >= 2 and args[0] in ("--state", "--topics"):
+    buttons = None
+    while len(args) >= 2 and args[0] in ("--state", "--topics", "--buttons"):
         if args[0] == "--state":
             state_path = args[1]
-        elif args[1] in ("on", "off"):
+        elif args[1] not in ("on", "off"):
+            # An explicit switch: anything else is a typo, and reading it as
+            # "off" would silently take a patch off (or the buttons away).
+            print(f"patch-telegram-plugin.py: {args[0]} takes on or off, got {args[1]!r}; nothing patched", file=sys.stderr)
+            return 2
+        elif args[0] == "--topics":
             topics = args[1] == "on"
         else:
-            # An explicit switch: anything else is a typo, and reading it as
-            # "off" would silently take the topics patch off.
-            print(f"patch-telegram-plugin.py: --topics takes on or off, got {args[1]!r}; nothing patched", file=sys.stderr)
-            return 2
+            buttons = args[1] == "on"
         args = args[2:]
+    install_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if topics is None:
-        topics = topics_setting(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        topics = topics_setting(install_dir)
+    if buttons is None:
+        buttons = buttons_setting(install_dir)
     root = args[0] if args else default_root()
     files = []
     base = os.path.join(root, "claude-plugins-official", "telegram")
@@ -659,17 +705,18 @@ def main(argv):
         for ver in sorted(os.listdir(base)):
             path = os.path.join(base, ver, "server.ts")
             if os.path.isfile(path):
-                status, patches = patch_file(path, topics)
+                status, patches = patch_file(path, topics, buttons)
                 files.append({"version": ver, "path": path, "status": status, "patches": patches})
     if state_path:
-        write_state(state_path, {"at": int(time.time()), "root": root, "topics": "on" if topics else "off", "files": files})
+        write_state(state_path, {"at": int(time.time()), "root": root, "topics": "on" if topics else "off",
+                                 "buttons": "on" if buttons else "off", "files": files})
     return 0
 
 
 if __name__ == "__main__":
     code = 0
     try:
-        # Non-zero only for a mistyped --topics, which channels.sh never passes.
+        # Non-zero only for a mistyped --topics or --buttons, which channels.sh never passes.
         code = main(sys.argv)
     except Exception as e:  # never stop the channel from starting
         log(f"unexpected {type(e).__name__}, nothing patched")

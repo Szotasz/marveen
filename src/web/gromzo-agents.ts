@@ -20,6 +20,10 @@
 // - agent_add_check costs mxd an install_proof challenge, and mxd answers too_soon within MIN_ADD_CHECK_S (10 s,
 //   one shared clock for every slug). The dashboard holds its own checks to one per CHECK_GAP_MS across all slugs:
 //   a faster poll from the panel gets the pending answer back without a call.
+// - GROMZONAMETAKEN1106: the name an agent gets on Gromzo. The controller refuses a name another member of the team
+//   already wears (or one it confuses with it): name_taken. The owner may then send another name with the switch.
+//   The main agent goes by the name the owner set for it (the .env BOT_NAME, as the rest of the dashboard reads it;
+//   the owner's decision, Samu 71820).
 
 import { MAIN_AGENT_ID } from '../config.js'
 import { MXD_AGENT_SLUG_RE, checkAgentAdd, requestAgentAdd, requestAgentAvatar, requestAgentRemove, type MxdDashCall } from './mxd-dash.js'
@@ -32,6 +36,9 @@ export interface GromzoAgentDeps {
   readFlag: (slug: string) => boolean
   writeFlag: (slug: string, on: boolean) => void
   displayName: (slug: string) => string
+  /** GROMZONAMETAKEN1106: the name the switch sends to Gromzo when the owner gives none (the row carries it).
+   *  Absent: the display name. The route gives the main agent its configured bot name. */
+  gromzoName?: (slug: string) => string
   isRunning: (slug: string) => boolean
   /** Runs the synchronous row building in one batch (the route: withTmuxBatch, so the run state costs one
    *  tmux call per server instead of one per agent). Optional: without it the rows are built as they are. */
@@ -45,11 +52,85 @@ export interface GromzoAgentDeps {
   /** Restarts that ONE agent, once mxd is back from its reload (fire and forget). */
   restartOne: (slug: string) => void
   now: () => number
+  /** GROMZOMAINAGENT1106: the main agent's launch state for its row (main-gromzo.ts); absent = 'idle'. */
+  mainLaunchState?: () => string
+  /** MXDAGENTSOCKID1106: the held agents and the agent.sock protection from ONE dash status call (statusFactsOf).
+   *  When given, the list uses it instead of `held`, so a list load asks mxd once. */
+  statusFacts?: () => Promise<{ held: Set<string>, protection: MxdProtection | null }>
+}
+
+/** MXDAGENTSOCKID1106: what one dash status says: held_agents (only when not empty, marveen-mxd link.rs) and the
+ *  token protection (marveen-mxd main.rs status_agents; absent from an older mxd: null). Slugs only, checked. */
+export function statusFactsOf(r: Record<string, unknown>): { held: Set<string>, protection: MxdProtection | null } {
+  const slugs = (v: unknown) => new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && MXD_AGENT_SLUG_RE.test(x)) : [])
+  const a = r.agents as Record<string, unknown> | undefined
+  const protection = a && Array.isArray(a.protected) && Array.isArray(a.refused)
+    ? { protected: slugs(a.protected), refused: slugs(a.refused), running: Array.isArray(a.running) ? slugs(a.running) : null, ratchetUnreadable: r.ratchet_unreadable === true }
+    : null
+  return { held: slugs(r.held_agents), protection }
+}
+
+/** MXDAGENTSOCKID1106: what mxd's dash status says about the agents' tokens (marveen-mxd agent_tokens). */
+export interface MxdProtection {
+  /** Agents whose tokenless hello is refused for good (the ratchet). */
+  protected: Set<string>
+  /** Agents refused with token_required in the last 10 minutes: a plugin that sends no token. */
+  refused: Set<string>
+  /** Agents mxd runs, or null while they are still starting. */
+  running: Set<string> | null
+  /** The ratchet file is unreadable: mxd counts every agent as protected (fail closed). */
+  ratchetUnreadable: boolean
+}
+
+export type GromzoProtection = 'protected' | 'unprotected' | 'refused'
+
+/** An agent running this long without its first tokened bind shows as unprotected (Samu 71321). */
+export const UNPROTECTED_AFTER_MS = 10 * 60_000
+/** slug -> when it was first seen running in mxd without protection (in memory: a dashboard restart starts over). */
+const unprotectedSince = new Map<string, number>()
+
+/** The row's protection state; null when Gromzo is off for it, mxd says nothing, or it is too early to tell. */
+export function protectionOf(slug: string, gromzo: boolean, p: MxdProtection | null, now: number): GromzoProtection | null {
+  if (!gromzo || p === null) return null
+  if (p.refused.has(slug)) return 'refused'
+  if (p.ratchetUnreadable || p.protected.has(slug)) {
+    unprotectedSince.delete(slug)
+    return 'protected'
+  }
+  if (!p.running || !p.running.has(slug)) {
+    unprotectedSince.delete(slug)
+    return null
+  }
+  const since = unprotectedSince.get(slug) ?? now
+  unprotectedSince.set(slug, since)
+  return now - since >= UNPROTECTED_AFTER_MS ? 'unprotected' : null
+}
+
+/** For the tests: forget the first-seen times. */
+export function resetProtectionClockForTest(): void {
+  unprotectedSince.clear()
+}
+
+/**
+ * GROMZONAMETAKEN1106: the controller's name rule (marveen-matrix-server NAME_RE, colleagues.ts and agent-consents.ts
+ * validName): a letter or digit first, then letters, digits, space and . , ' ( ) _ -, at most 64. The dashboard
+ * checks it before any mxd call; the team's collisions and the reserved names only the controller knows.
+ */
+export const GROMZO_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} .,'()_-]{0,63}$/u
+
+/** The codes that mean "this name cannot be used": the panel asks for another one instead of "try again later". */
+export const GROMZO_NAME_CODES: readonly string[] = ['name_taken', 'reserved_name', 'bad_name', 'bad_display_name', 'mixed_script']
+
+/** The name the switch sends when the owner gives none. */
+export function defaultGromzoName(slug: string, deps: Pick<GromzoAgentDeps, 'displayName' | 'gromzoName'>): string {
+  return deps.gromzoName ? deps.gromzoName(slug) : deps.displayName(slug)
 }
 
 export interface GromzoAgentRow {
   slug: string
   name: string
+  /** GROMZONAMETAKEN1106: the name the switch would send to Gromzo (the panel prefills its name field with it). */
+  gromzoName: string
   main: boolean
   gromzo: boolean
   running: boolean
@@ -59,6 +140,10 @@ export interface GromzoAgentRow {
   avatarProblem: AvatarProblem | null
   /** A consent is waiting for the owner in the app (until this time, ms). */
   pendingUntil: number | null
+  /** GROMZOMAINAGENT1106: the main row only: where its launch side stands (main-gromzo.ts); null on other rows. */
+  mainLaunch: string | null
+  /** MXDAGENTSOCKID1106: protected, unprotected (running 10 min without a token), refused (a plugin with no token). */
+  protection: GromzoProtection | null
 }
 
 export type GromzoAgentOutcome =
@@ -86,41 +171,68 @@ function dropExpired(now: number): void {
   for (const [slug, p] of pending) if (p.expiresAt <= now) pending.delete(slug)
 }
 
-/** Why a slug may not be switched, or null when it may. Checked before any mxd call. */
-export function slugRefusal(slug: string, deps: Pick<GromzoAgentDeps, 'agents'>): string | null {
+/**
+ * Why a slug may not be switched, or null when it may. Checked before any mxd call.
+ * GROMZOMAINAGENT1106: the main agent may be switched on, checked and switched off (`allowMain`), through the
+ * same owner consent as every agent. Its picture is still not sent (sendGromzoAvatar keeps the refusal), and its
+ * switch-off never removes it from mxd (disableGromzoAgent).
+ */
+export function slugRefusal(slug: string, deps: Pick<GromzoAgentDeps, 'agents'>, allowMain = false): string | null {
   if (!MXD_AGENT_SLUG_RE.test(slug)) return 'bad_request'
-  if (slug === MAIN_AGENT_ID) return 'main_agent'
+  if (slug === MAIN_AGENT_ID) return allowMain ? null : 'main_agent'
   if (!deps.agents().includes(slug)) return 'unknown_agent'
   return null
 }
 
 export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAgentRow[]> {
-  const held = await deps.held()
+  return (await listGromzoAgentsWithStatus(deps)).agents
+}
+
+/** The list plus mxd's fail-closed ratchet state (MXDAGENTSOCKID1106: the owner sees it, Samu 71344 (1)). */
+export async function listGromzoAgentsWithStatus(deps: GromzoAgentDeps): Promise<{ agents: GromzoAgentRow[], ratchetUnreadable: boolean }> {
+  const facts = deps.statusFacts ? await deps.statusFacts() : { held: await deps.held(), protection: null }
+  const held = facts.held
+  const prot = facts.protection
   const now = deps.now()
   dropExpired(now)
   const build = (): GromzoAgentRow[] => {
-    const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, avatarProblem: null, pendingUntil: null }]
+    // GROMZOMAINAGENT1106: the main row shows what is there (the .env id, mxd's held list, a pending consent,
+    // the launch side), no longer a fixed "always on Gromzo".
+    const rows: GromzoAgentRow[] = [{
+      slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), gromzoName: defaultGromzoName(MAIN_AGENT_ID, deps), main: true,
+      gromzo: deps.readFlag(MAIN_AGENT_ID), running: deps.isRunning(MAIN_AGENT_ID), held: held.has(MAIN_AGENT_ID),
+      avatarProblem: null, pendingUntil: pending.get(MAIN_AGENT_ID)?.expiresAt ?? null,
+      mainLaunch: deps.mainLaunchState ? deps.mainLaunchState() : 'idle',
+      protection: protectionOf(MAIN_AGENT_ID, deps.readFlag(MAIN_AGENT_ID), prot, now),
+    }]
     for (const slug of [...deps.agents()].sort()) {
       if (slug === MAIN_AGENT_ID) continue
       rows.push({
         slug,
         name: deps.displayName(slug),
+        gromzoName: defaultGromzoName(slug, deps),
         main: false,
         gromzo: deps.readFlag(slug),
         running: deps.isRunning(slug),
         held: held.has(slug),
         avatarProblem: deps.avatarProblem(slug),
         pendingUntil: pending.get(slug)?.expiresAt ?? null,
+        mainLaunch: null,
+        protection: protectionOf(slug, deps.readFlag(slug), prot, now),
       })
     }
     return rows
   }
-  return deps.batch ? deps.batch(build) : build()
+  return { agents: deps.batch ? deps.batch(build) : build(), ratchetUnreadable: prot?.ratchetUnreadable === true }
 }
 
-/** Switch on: the owner's consent first (in the app); the flag only after mxd added the agent. */
-export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
-  const refused = slugRefusal(slug, deps)
+/**
+ * Switch on: the owner's consent first (in the app); the flag only after mxd added the agent.
+ * GROMZONAMETAKEN1106: `name` is the owner's choice for Gromzo (after a name_taken); absent, the default name.
+ * A name outside the controller's rule makes no mxd call (bad_display_name, the controller's own code).
+ */
+export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps, name?: string): Promise<GromzoAgentOutcome> {
+  const refused = slugRefusal(slug, deps, true)
   if (refused) return { ok: false, code: refused }
   if (deps.readFlag(slug) && !(await deps.held()).has(slug)) return { ok: true, state: 'on' }
   const now = deps.now()
@@ -128,7 +240,18 @@ export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Pr
   const waiting = pending.get(slug)
   if (waiting) return { ok: true, state: 'pending', expiresIn: Math.max(1, Math.round((waiting.expiresAt - now) / 1000)) }
   if (pending.size > 0) return { ok: false, code: 'add_in_progress' }
-  const r = await requestAgentAdd(deps.call, slug, deps.displayName(slug))
+  const wanted = name === undefined ? defaultGromzoName(slug, deps) : name.trim()
+  if (!GROMZO_NAME_RE.test(wanted)) return { ok: false, code: 'bad_display_name' }
+  const r = await requestAgentAdd(deps.call, slug, wanted)
+  // GROMZOMAINAGENT1106: mxd already lists the main agent (its config agent, or an earlier consent whose
+  // launch side failed). No second consent: the launch side runs again (marketplace, .env id, restart).
+  // GROMZONAMETAKEN1106 (Dani 71877): not when the owner typed a name. mxd keeps the name it lists, so "added" would
+  // drop the typed one without a word; the owner gets agent_exists instead.
+  if (!r.ok && r.code === 'agent_exists' && slug === MAIN_AGENT_ID && name === undefined) {
+    deps.writeFlag(slug, true)
+    deps.restartOne(slug)
+    return { ok: true, state: 'added' }
+  }
   if (!r.ok) return { ok: false, code: r.code }
   pending.set(slug, { consentId: r.consentId, expiresAt: now + r.expiresIn * 1000 })
   return { ok: true, state: 'pending', expiresIn: r.expiresIn }
@@ -136,7 +259,7 @@ export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Pr
 
 /** The pending consent of `slug` (the id is the server's own, never the client's). */
 export async function checkGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
-  const refused = slugRefusal(slug, deps)
+  const refused = slugRefusal(slug, deps, true)
   if (refused) return { ok: false, code: refused }
   const now = deps.now()
   dropExpired(now)
@@ -161,8 +284,16 @@ export async function checkGromzoAgent(slug: string, deps: GromzoAgentDeps): Pro
 
 /** Switch off: mxd takes the agent off its list; only then the flag goes. */
 export async function disableGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
-  const refused = slugRefusal(slug, deps)
+  const refused = slugRefusal(slug, deps, true)
   if (refused) return { ok: false, code: refused }
+  // GROMZOMAINAGENT1106: the main agent's switch-off takes only its launch side back (the .env id, a restart).
+  // mxd keeps it: phase 1 never removes the main agent there (the Decisions room depends on it in phase 2).
+  if (slug === MAIN_AGENT_ID) {
+    pending.delete(slug)
+    deps.writeFlag(slug, false)
+    deps.restartOne(slug)
+    return { ok: true, state: 'removed' }
+  }
   const r = await requestAgentRemove(deps.call, slug)
   // unknown_agent: mxd does not list it, so it is off there already; the flag follows.
   if (!r.ok && r.code !== 'unknown_agent') return { ok: false, code: r.code }

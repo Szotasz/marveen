@@ -105,6 +105,17 @@ SESSION="${MAIN_AGENT_ID}-channels"
 # respawn the same CLAUDE_CONFIG_DIR the main agent is actually running under.
 CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+# INSTALLDIRTYTREE1103: the primary plugin id, mapped EXACTLY as channels.sh's
+# resolve_plugin_ids() does. It used to be "<provider>@claude-plugins-official"
+# for every provider, which is not the Slack/WhatsApp/Teams id; it also goes into
+# the --settings file below, now the only place the primary gets enabled.
+case "$CHANNEL_PROVIDER" in
+  slack)    PRIMARY_PLUGIN_ID="slack-channel@marveen-marketplace" ;;
+  whatsapp) PRIMARY_PLUGIN_ID="whatsapp@marveen-marketplace" ;;
+  teams)    PRIMARY_PLUGIN_ID="teams@marveen-marketplace" ;;
+  discord)  PRIMARY_PLUGIN_ID="discord@claude-plugins-official" ;;
+  *)        PRIMARY_PLUGIN_ID="telegram@claude-plugins-official" ;;
+esac
 # Extra co-listen plugins, derived EXACTLY as channels.sh does (see the
 # EXTRA_CHANNELS block there). Without this a watchdog respawn silently drops
 # every secondary provider: the session comes back on the primary channel only,
@@ -114,6 +125,23 @@ CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 # respawn dropped the secondary inbound for ~20 minutes while the primary kept
 # working, so neither the probes nor the agent itself noticed.
 CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+# GROMZOMAINAGENT1106: the same gromzo filter and launch exports as channels.sh. The slug is read raw from
+# .env here: MAIN_AGENT_ID above is stripped to [a-zA-Z0-9_-] for the session name, which is not mxd's rule.
+_GZ_MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+GROMZO_ENV=""
+# shellcheck source=scripts/main-gromzo-launch.sh
+if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+  # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+  CHANNEL_PLUGINS_EXTRA="$(main_gromzo_filter_ids "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+  # shellcheck disable=SC2086
+  GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+else
+  # No helper (a half-updated tree): every other extra (Slack co-listen) stays; only the gromzo id goes, since
+  # it must never start without its exports (Dani 71308 (2)).
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
@@ -123,7 +151,7 @@ unset _p
 # back with the extras disabled by the project scope.
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
 # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
-EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PRIMARY_PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
@@ -290,7 +318,7 @@ STATE_DIR_ENV=""
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
 # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

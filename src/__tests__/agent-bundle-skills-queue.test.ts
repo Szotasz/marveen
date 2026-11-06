@@ -86,7 +86,8 @@ function fakeCtx(path: string, method: string, body?: Buffer): {
   const url = new URL(`http://localhost:3420${path}`)
   const req = Object.assign(Readable.from(body === undefined ? [] : [body]), { headers: { 'content-type': 'application/gzip' }, url: path })
   return {
-    ctx: { req, res, path: url.pathname, method, url } as RouteContext,
+    // The owner's browser login: overwrite=1 needs the owner (APIAGENTWRITE1104); this file is about the queue.
+    ctx: { req, res, path: url.pathname, method, url, auth: { kind: 'session' } } as RouteContext,
     out,
   }
 }

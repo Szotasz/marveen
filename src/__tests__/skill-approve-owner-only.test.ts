@@ -2,8 +2,8 @@
 // caller with the shared dashboard token (which every agent holds) read a pending skill's hash with
 // GET /api/skills/pending/<id> and approved it, and the skill went live in the GLOBAL root the whole
 // fleet loads. Approve and reject now go through the predicate that guards issuing credentials
-// (mayIssueCredentials, #2163): the owner's session, also when the browser sends the stored token
-// alongside it; the bare token only before the first dashboard login exists.
+// (mayActAsOwner, #2163): the owner's session, also when the browser sends the stored token
+// alongside it; the bare token never, not even before the first dashboard login exists (OWNERGATE4-1104).
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -56,7 +56,7 @@ beforeEach(() => {
   _clearSessionCacheForTest()
 })
 
-describe('pending skill approve/reject: the owner session (mayIssueCredentials)', () => {
+describe('pending skill approve/reject: the owner session (mayActAsOwner)', () => {
   it('once a login exists, the shared token can still read the hash, but approving with it is 403 and nothing goes live', async () => {
     expect((await addOwner()).status).toBe(201)
     const { meta, live } = queue('planted-by-token')
@@ -110,9 +110,14 @@ describe('pending skill approve/reject: the owner session (mayIssueCredentials)'
     expect(q.getPending(other.meta.id)).toBeNull()
   })
 
-  it('before the first dashboard login exists, the token is the one credential there is: it may decide', async () => {
+  // OWNERGATE4-1104: flipped; a skill decision is no first-run path, an agent could put its own skill live.
+  it('before the first dashboard login exists, the token may NOT decide: 403 setup_required, the skill stays queued', async () => {
     const { meta, live } = queue('first-run')
-    expect((await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN)).status).toBe(200)
-    expect(existsSync(live)).toBe(true)
+    const r = await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN)
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('owner_session_required')
+    expect(r.body.setup_required).toBe(true)
+    expect(existsSync(live)).toBe(false)
+    expect(q.getPending(meta.id)).not.toBeNull()
   })
 })

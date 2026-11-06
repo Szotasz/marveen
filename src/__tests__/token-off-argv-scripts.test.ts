@@ -120,6 +120,9 @@ function bash(script: string, env: Record<string, string>, input = ''): Promise<
   return new Promise((resolve) => {
     const child = execFile('bash', [script], { env: { PATH, ...env }, timeout: 30_000 },
       (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, out: stdout + stderr }))
+    // A script may exit before it reads its stdin; the write then fails with EPIPE. Without a listener that error is
+    // unhandled and fails the whole run (Dani 66194: #2453's CI). The exit code and output still come through above.
+    child.stdin?.on('error', () => {})
     child.stdin?.end(input)
   })
 }
@@ -372,5 +375,15 @@ describe('the update path refreshes an installed post-checkout hook', () => {
     const repo = repoWith(realInstaller())
     syncHooks(repo)
     expect(readFileSync(hookPath(repo), 'utf-8').split('\n')[0]).toBe('#!/usr/bin/env bash')
+  })
+})
+
+describe('the bash() helper itself', () => {
+  it('a script that exits without reading its stdin is not an unhandled EPIPE (Dani 66194)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'epipe-'))
+    const script = join(dir, 'early-exit.sh')
+    writeFileSync(script, 'exit 3\n')
+    // far more than a pipe buffer, so the write is still going when the script is gone
+    for (let i = 0; i < 5; i++) expect((await bash(script, {}, 'y'.repeat(4 * 1024 * 1024))).code).toBe(3)
   })
 })

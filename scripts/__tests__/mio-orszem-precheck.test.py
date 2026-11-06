@@ -34,7 +34,7 @@ STATE_OK = ('{"last_run_at": 1789480000, "last_user_at": "2026-09-15 10:00:00+00
 
 
 def run(state=None, query_json=None, pat='dummy-pat-value-44chars-aaaaaaaaaaaaaaaaaaaa',
-        supabase_exit=0):
+        supabase_exit=0, vault_missing=False):
     tmp = tempfile.mkdtemp(prefix='miopre-')
     env = dict(os.environ)
 
@@ -46,10 +46,19 @@ def run(state=None, query_json=None, pat='dummy-pat-value-44chars-aaaaaaaaaaaaaa
     else:
         env['MIO_PRECHECK_STATE'] = os.path.join(tmp, 'missing.json')
 
-    # Stub vault resolver: prints X=<pat> like the real one.
+    # Stub vault resolver with the real `--value <label>` contract (VAULTRESOLVECASE1105): the raw value on stdout,
+    # exit 3 for a missing label, exit 6 for an empty value, exit 2 for any other argument shape. It records argv.
     vault = os.path.join(tmp, 'vault-stub.mjs')
+    vault_argv = os.path.join(tmp, 'vault-argv.json')
     with open(vault, 'w') as fh:
-        fh.write(f'console.log("X={pat}");\n')
+        fh.write('import { writeFileSync } from "node:fs";\n'
+                 'const a = process.argv.slice(2);\n'
+                 f'writeFileSync({vault_argv!r}, JSON.stringify(a));\n'
+                 'if (a[0] !== "--value" || a.length !== 2) process.exit(2);\n'
+                 f'if ({str(vault_missing).lower()}) {{ process.stderr.write("vault-resolve: no secret in the vault for label: " + a[1] + "\\n"); process.exit(3); }}\n'
+                 f'const v = {pat!r};\n'
+                 'if (v === "") process.exit(6);\n'
+                 'process.stdout.write(v);\n')
     env['MIO_PRECHECK_VAULT'] = vault
 
     # Stub supabase CLI: records argv (the injection probe reads it back) and
@@ -72,6 +81,7 @@ def run(state=None, query_json=None, pat='dummy-pat-value-44chars-aaaaaaaaaaaaaa
     proc = subprocess.run(['bash', SCRIPT], capture_output=True, text=True,
                           env=env, timeout=30)
     argv = open(argv_log).read() if os.path.exists(argv_log) else ''
+    proc.vault_argv = open(vault_argv).read() if os.path.exists(vault_argv) else ''
     return proc, argv
 
 
@@ -114,6 +124,19 @@ class MioOrszemPrecheck(unittest.TestCase):
         proc, _ = run(state=STATE_OK, query_json=ZERO, pat='')
         self.assertNotEqual(proc.returncode, 0)
         self.assertNotIn('SKIP', proc.stdout)
+
+    def test_missing_label_fails_open_and_names_the_exit(self):
+        # VAULTRESOLVECASE1105: with the old `| cut` pipe a missing label became an empty string with exit 0.
+        proc, _ = run(state=STATE_OK, query_json=ZERO, vault_missing=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn('SKIP', proc.stdout)
+        self.assertIn('exit 3', proc.stderr)
+
+    def test_the_vault_is_asked_with_value_and_one_label(self):
+        import json
+        proc, _ = run(state=STATE_OK, query_json=ZERO)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.vault_argv), ['--value', 'MARVEEN-CONNECTORS-PAT'])
 
     def test_pat_never_on_stdout(self):
         secret = 'sbp-SECRET-MARKER-000000000000000000000000000'

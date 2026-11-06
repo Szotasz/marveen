@@ -598,90 +598,51 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
 fi
 # LAUNCHGATE1008-END: everything below launches.
 
-# Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
-# before launch. A PR review-reset or branch-switch that reverts
-# .claude/settings.json can silently drop the entry and disable the channel
-# plugin, leaving Claude running with no active channel; this re-adds it.
-#
-# Deliberately PROJECT-SCOPED only ($INSTALL_DIR/.claude/settings.json). We do
-# NOT force-enable in the user-global ~/.claude/settings.json: that would make
-# EVERY Claude context (all sub-agent sessions) load the channel plugin, and a
-# provider that opens a single Socket-Mode connection (Slack) would then have
-# multiple sessions fighting over one workspace socket -- a duplicate-socket /
-# 409 hazard.
-_ensure_plugin_enabled() {
-  local settings_file="$1"
-  [ -f "$settings_file" ] || return 0
-  python3 - "$settings_file" "$PLUGIN_ID" <<'PYEOF'
-import json, os, sys, tempfile
-
-path, plugin_id = sys.argv[1], sys.argv[2]
-
-# SKIP-ON-PARSE-FAILURE: if the file is unreadable or not valid JSON (e.g. a
-# concurrent writer caught mid-write, or a genuinely corrupt file), NEVER fall
-# back to an empty object and write it back -- that would clobber the user's
-# hooks / model / permissions. Leave the file untouched; the next launch retries.
-try:
-    with open(path, "r") as f:
-        data = json.load(f)
-except (OSError, ValueError):
-    print("channels.sh: settings.json unreadable/invalid, guard skipped: %s" % path,
-          file=sys.stderr, flush=True)
-    sys.exit(0)
-
-if not isinstance(data, dict):
-    sys.exit(0)
-
-plugins = data.get("enabledPlugins")
-if not isinstance(plugins, dict):
-    plugins = {}
-    data["enabledPlugins"] = plugins
-
-if plugins.get(plugin_id) is True:
-    sys.exit(0)  # already enabled -> no write, no needless churn
-
-plugins[plugin_id] = True
-
-# ATOMIC write: serialize to a temp file in the SAME directory, then os.replace
-# (atomic rename on POSIX). A reader -- or the hook-registration guard (#565)
-# running concurrently -- never observes a half-written settings.json.
-dir_name = os.path.dirname(path) or "."
-fd, tmp = tempfile.mkstemp(dir=dir_name, prefix=".settings-", suffix=".tmp")
-try:
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
-except BaseException:
-    try:
-        os.unlink(tmp)
-    except OSError:
-        pass
-    raise
-
-print("channels.sh: enabled %s in %s" % (plugin_id, path), flush=True)
-PYEOF
-}
-_ensure_plugin_enabled "$INSTALL_DIR/.claude/settings.json"
-unset -f _ensure_plugin_enabled
+# INSTALLDIRTYTREE1103: the primary channel plugin is enabled through the same
+# launch-time --settings file as the co-listen extras (main_extra_settings_flag
+# below), NOT by writing the TRACKED .claude/settings.json. The self-healing
+# guard that used to live here rewrote that file with json.dump(indent=2) --
+# ~500 lines of reformatting on every Slack install -- so every customer tree
+# came up dirty and every update went down the stash path (marveen2, 11-03:
+# the stash pop conflicted inside settings.json). A --settings file outranks the
+# project scope (measured, SLACKDMVESZT1006) and only this session reads it, so
+# the review-reset / branch-switch case the guard covered is covered too: the
+# flag file is rewritten on every launch.
 
 # Build the extra --channels args from CHANNEL_PLUGINS_EXTRA (space-separated
 # plugin IDs). Each becomes an additional `plugin:<id>` token appended to the
 # --channels list. `claude --channels` accepts a space-separated plugin list,
 # so one session can co-listen on several providers (e.g. Telegram + Discord).
-# NOTE: co-listen also requires each extra plugin to be enabled in
-# .claude/settings.json enabledPlugins (true) -- CHANNEL_PLUGINS_EXTRA alone is
-# not enough; Claude Code only starts plugins marked true there.
+# NOTE: co-listen also requires each extra plugin to be ENABLED --
+# CHANNEL_PLUGINS_EXTRA alone is not enough; Claude Code only starts plugins
+# marked true. The --settings file below carries that true for the primary and
+# every extra.
+# GROMZOMAINAGENT1106: the gromzo-channel id stays only when mxd's agent.sock is usable and the main id is a
+# valid mxd slug (scripts/main-gromzo-launch.sh); its MXD_AGENT/MXD_SCOPE go in as exports of THIS launch.
+GROMZO_ENV=""
+# shellcheck source=scripts/main-gromzo-launch.sh
+if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+  # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+  CHANNEL_PLUGINS_EXTRA="$(main_gromzo_filter_ids "$MAIN_AGENT_ID" $CHANNEL_PLUGINS_EXTRA)"
+  # shellcheck disable=SC2086
+  GROMZO_ENV="$(main_gromzo_env "$MAIN_AGENT_ID" $CHANNEL_PLUGINS_EXTRA)"
+else
+  # No helper (a half-updated tree): every other extra (Slack co-listen) stays; only the gromzo id goes, since
+  # it must never start without its exports (Dani 71308 (2)).
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
-# SLACKDMVESZT1006: enable the extras for THIS session only, via a --settings
-# file (see the helper's header for why not a settings layer).
+# SLACKDMVESZT1006: enable the primary and the extras for THIS session only,
+# via a --settings file (see the helper's header for why not a settings layer).
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
 # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
-EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"
 
 # ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
 # Inbound MCP notifications from the `--channels` plugin go through a SECOND
@@ -1752,7 +1713,7 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
 env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1854,7 +1815,7 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.

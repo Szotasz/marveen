@@ -3,7 +3,7 @@
 // agent: an applied import overwrites store/autonomy-config.json (email_send to 3 switches the
 // mail approval gate off) and an export with a vault password returns the vault's master key
 // and every secret under a password the caller chose. The dry run and the plain export stay
-// on the token; the token keeps everything only for the first-run setup (no user yet).
+// on the token. OWNERGATE4-1104: before the first login the bare token gets neither (no first-run path).
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -76,12 +76,18 @@ beforeEach(() => {
   h.exports = []
 })
 
-describe('first-run setup (no dashboard user yet): the token still imports and exports', () => {
-  it('applies an import and exports with the vault', async () => {
-    expect((await applyImport(TOKEN_AUTH)).status).toBe(200)
-    expect(h.imports).toEqual([{ raw: FLEET_BODY, apply: true, vaultPassword: undefined }])
-    expect((await exportWithVault(TOKEN_AUTH)).status).toBe(200)
-    expect(h.exports).toEqual([{ vaultPassword: VAULT_PW }])
+describe('first-run setup (no dashboard user yet): the token can neither apply an import nor export the vault', () => {
+  // OWNERGATE4-1104: flipped; both are refused with setup_required and nothing is imported or exported.
+  it('an applied import and an export with the vault are refused with setup_required', async () => {
+    const i = await applyImport(TOKEN_AUTH)
+    expect(i.status).toBe(403)
+    expect(i.json().code).toBe('owner_session_required')
+    expect(i.json().setup_required).toBe(true)
+    expect(h.imports).toEqual([])
+    const e = await exportWithVault(TOKEN_AUTH)
+    expect(e.status).toBe(403)
+    expect(e.json().setup_required).toBe(true)
+    expect(h.exports).toEqual([])
   })
 })
 

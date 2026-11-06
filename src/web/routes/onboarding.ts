@@ -19,7 +19,7 @@ import {
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
 import type { RouteContext } from './types.js'
 
@@ -120,6 +120,27 @@ async function runningSessionAuthenticated(): Promise<boolean> {
     const { stdout: out } = await pending
     return /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+/m.test(out)
   } catch { return false }
+}
+
+// OWNERGATE4-1104 (review, Samu 69637): the condition of the 'onboarding-claude-auth' first-run pass. True only when
+// claudeAuthPresent finds no credential (no CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY in .env, no fleet token file,
+// no credential in ~/.claude/.credentials.json, no Keychain entry, no token in the running session) AND none of the
+// three files it reads exists while being unreadable (or, for credentials.json, not JSON). claudeAuthPresent treats
+// such a file as absent; here it counts as a stored credential (fail closed: the strict gate applies).
+async function noClaudeCredentialYet(): Promise<boolean> {
+  for (const file of [ENV_FILE, FLEET_TOKEN_FILE, HOME_CREDENTIALS]) {
+    let raw: string
+    try {
+      raw = readFileSync(file, 'utf-8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
+      return false
+    }
+    if (file === HOME_CREDENTIALS && raw.trim()) {
+      try { JSON.parse(raw) } catch { return false }
+    }
+  }
+  return !(await claudeAuthPresent())
 }
 
 async function claudeAuthPresent(): Promise<boolean> {
@@ -317,6 +338,15 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // no-implicit-restart-of-a-working-fleet behaviour and reports
   // restartNeeded instead.
   if (path === '/api/onboarding/identity' && method === 'POST') {
+    // OWNERGATE3-1104: writes OWNER_NAME / BOT_NAME / BRAND_NAME into .env and renames the owner and the agent inside
+    // the main agent's CLAUDE.md and SOUL.md (who the agent believes its owner is), and may restart the channels
+    // session; owner-only, before the body is read. The first-run wizard runs before the first dashboard login
+    // exists, and there the bare token still passes (the first-run setup, OWNERGATE4-1104, FIRST_RUN_PATHS
+    // 'onboarding-identity'), as for claude-auth below.
+    if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'onboarding-identity')) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the owner and agent names needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
     let body: { agentName?: string; ownerName?: string } = {}
     const raw = await readBodyOrRefuse(req, res)
     if (!raw) return true
@@ -392,9 +422,14 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/onboarding/claude-auth' && method === 'POST') {
     // It replaces the credential the whole fleet runs on, so the shared
     // dashboard token alone is not enough once a dashboard login exists
-    // (the first-run wizard runs before that, and is unaffected).
-    if (!mayActAsOwner(ctx.auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+    // (the first-run wizard runs before that, and is unaffected: OWNERGATE4-1104, FIRST_RUN_PATHS
+    // 'onboarding-claude-auth').
+    // OWNERGATE4-1104 (review, Samu 69637): the first-run pass only while no Claude credential is stored yet
+    // (noClaudeCredentialYet: none of the places claudeAuthPresent reads, and none of them unreadable). Once one
+    // exists, replacing it is the owner gate: the bare shared token cannot swap the credential the fleet runs on.
+    const firstCredential = await noClaudeCredentialYet()
+    if (!(firstCredential ? mayActAsOwnerOrFirstRun(ctx.auth, req, 'onboarding-claude-auth') : mayActAsOwner(ctx.auth, req))) {
+      refuseOwner(res, OWNER_SESSION_REQUIRED.error)
       return true
     }
     let body: { token?: string; apiKey?: string } = {}

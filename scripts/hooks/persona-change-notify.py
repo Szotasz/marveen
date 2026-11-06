@@ -143,11 +143,20 @@ def notify_enabled():
 
 
 def owner_chat(sd):
-    """A tulajdonos chat-azonositoja az allowFrom elso eleme.
+    """A tulajdonos chat-azonositoja: a gazda OWNER_ALERT_CHAT_ID-je (ISSUE2556X), ha be van allitva, kulonben az
+    allowFrom elso eleme.
 
     Ugyanaz a forras, amibol a fo agens is dolgozik, amikor a `chat_id: 0`
     nem oldodik fel (lasd a scheduled-task-lifecycle skillt).
     """
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+        import owner_chat as _oc  # noqa: E402
+        override, _ = _oc.alert_chat_override(os.path.join(ROOT, ".env"), "telegram")
+        if override:
+            return override
+    except Exception:
+        pass
     for path in (os.path.join(sd, "access.json"),
                  os.path.join(ROOT, ".claude", "channels", "telegram", "access.json")):
         try:

@@ -14,11 +14,13 @@ Branches proven (Marveen msgs 17900/17936):
     missing/corrupt autonomy-config, unreadable letter ($VAR body), and a
     recipient that cannot be extracted all DENY (exit 2, never 1).
   - HOOKDEPLOAD1008: a dependency that does not load (email_extract.py,
-    outgoing-copy-gate.py) or a malformed EMAIL_APPROVAL_WINDOW_S DENIES the
-    send with exit 2 (never 1), measured on a disposable copy of the hooks.
+    outgoing-copy-gate.py) DENIES the send with exit 2 (never 1), measured on a
+    disposable copy of the hooks. The approval window is fixed (1800 s): the
+    environment does not change it (ENVRELAXGATE1104).
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
+import atexit
 import json
 import os
 import re
@@ -37,6 +39,30 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
 GATE = os.path.join(HOOKS, "email-approval-gate.py")
 WINDOW = 1800
+
+
+def gate_for(store, gate):
+    """ENVRELAXGATE1104: the gate reads only <its own install>/store (and the
+    .env next to it), never a store named by the environment. So:
+      - the real gate runs from the tmp install that owns `store`: <root>/scripts
+        is linked to this repo's scripts/ (the gate takes its root from abspath,
+        not realpath, so <root> stays the root);
+      - a disposable copy (copy_hook_tree) gets its store/ and .env linked to
+        the ones of `store`, re-pointed on every run."""
+    root = os.path.dirname(os.path.abspath(store))
+    if gate == GATE:
+        link = os.path.join(root, "scripts")
+        if not os.path.lexists(link):
+            os.symlink(os.path.dirname(HOOKS), link)
+        return os.path.join(link, "hooks", "email-approval-gate.py")
+    copy_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(gate))))
+    for name, target in (("store", os.path.abspath(store)), (".env", os.path.join(root, ".env"))):
+        p = os.path.join(copy_root, name)
+        if os.path.islink(p):
+            os.unlink(p)
+        if os.path.exists(target) and not os.path.exists(p):
+            os.symlink(target, p)
+    return gate
 # Same portability constraint as the gate: this file drives the gate through
 # the HOST's python3, so its own fixtures must not need SQLite 3.38 either.
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
@@ -116,10 +142,8 @@ def make_daily_log_stub(received):
 
 
 def run_gate(store, payload, extra_env=None, gate=GATE):
-    env = dict(os.environ,
-               EMAIL_APPROVAL_GATE_STORE=store,
-               EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
-               OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+    gate = gate_for(store, gate)
+    env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
     proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
@@ -296,9 +320,8 @@ with tempfile.TemporaryDirectory() as td:
     # Marveen's #1149 review: this gate AUTHORIZES, so unlike the copy gate it
     # must fail closed on an unparseable payload too -- the docstring and the
     # code now state the same contract.
-    env = dict(os.environ, EMAIL_APPROVAL_GATE_STORE=store,
-               OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
-    proc = subprocess.run([sys.executable, GATE], input=b"this is not json",
+    env = dict(os.environ)
+    proc = subprocess.run([sys.executable, gate_for(store, GATE)], input=b"this is not json",
                           capture_output=True, env=env)
     check("fail-closed: unparseable stdin -> DENIED (exit 2, never 0/1)",
           proc.returncode == 2, f"exit={proc.returncode}")
@@ -973,13 +996,16 @@ with tempfile.TemporaryDirectory() as td:
     check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> an MCP send is decided as before (no classifier needed)",
           (copy[0], copy[2]) == (real[0], real[2]), f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
 
-    bad_window = {"EMAIL_APPROVAL_WINDOW_S": "abc"}
-    code, _, err = run_gate(store, mcp_send(), extra_env=bad_window)
-    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> send DENIED, exit 2, naming the variable",
-          code == 2 and "EMAIL_APPROVAL_WINDOW_S" in err, f"exit={code} err={err[:200]!r}")
-    code, _, err = run_gate(store, LS, extra_env=bad_window)
-    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> a non-send Bash still passes",
+    # ENVRELAXGATE1104: the window is fixed. An environment value neither breaks the gate nor stretches it.
+    code, _, err = run_gate(store, LS, extra_env={"EMAIL_APPROVAL_WINDOW_S": "abc"})
+    check("ENVRELAXGATE1104: an EMAIL_APPROVAL_WINDOW_S in the environment is ignored (a non-send Bash passes)",
           code == 0, f"exit={code} err={err[:200]!r}")
+    wstore = make_store(os.path.join(td, "window-env"), level=2)
+    _, _, err = run_gate(wstore, mcp_send(subject="Ablak"))
+    approve(wstore, anchor_from_stderr(err), resolved_ago=WINDOW + 60)
+    code, _, err = run_gate(wstore, mcp_send(subject="Ablak"), extra_env={"EMAIL_APPROVAL_WINDOW_S": "999999"})
+    check("ENVRELAXGATE1104: a longer window in the environment does not revive an expired approval",
+          code == 2 and "lejart" in err, f"exit={code} err={err[:200]!r}")
 
 print("\nMAILCCGATE1016: the owner's copy is a gate at every level")
 OWNER = "owner@example.com"
@@ -1115,7 +1141,18 @@ with tempfile.TemporaryDirectory() as td:
 # is one literal call of THIS project's own sender; every other form is levelled by
 # the hook as before (so a sender copy elsewhere, which may check nothing, never
 # goes out unlevelled).
-REPO = os.path.dirname(os.path.dirname(HOOKS))
+# ENVRELAXGATE1104: the gate reads only its own install's store, and the
+# pass-through only trusts a project root that is a REAL path (no symlink on the
+# way, _canonical_sender). So this block runs a real copy of the hook tree in a
+# tmp install whose path is already resolved (macOS: /var -> /private/var).
+PT_TD = os.path.realpath(tempfile.mkdtemp(prefix="eag-pt-"))
+atexit.register(shutil.rmtree, PT_TD, True)
+REPO = os.path.join(PT_TD, "install")
+copy_hook_tree(REPO)
+# the project's own senders, as real files: the hook recognises them by path
+for _rel in ("scripts/support-mail/" + "se" + "nd.py", "scripts/graph-mai" + "l.ts"):
+    os.makedirs(os.path.dirname(os.path.join(REPO, _rel)), exist_ok=True)
+    shutil.copy(os.path.join(os.path.dirname(os.path.dirname(HOOKS)), _rel), os.path.join(REPO, _rel))
 SENDER_REL = "scripts/support-mail/" + "se" + "nd.py"
 GRAPH_REL = "scripts/graph-mai" + "l.ts"
 SENDER_ABS = os.path.join(REPO, SENDER_REL)
@@ -1134,7 +1171,7 @@ def unconsumed_count(store):
 
 
 with tempfile.TemporaryDirectory() as td:
-    store = make_store(os.path.join(td, "pt"), level=2)
+    store = make_store(REPO, level=2)
     canonical = {
         "relative, cwd = project root": bash_payload("python3 " + SENDER_REL + LETTER),
         "absolute project path": bash_payload("python3 " + SENDER_ABS + LETTER, cwd="/"),
@@ -1443,6 +1480,16 @@ with tempfile.TemporaryDirectory() as td:
                 check(f"broken email_extract.py -> {name} at level {level} exits {want}",
                       code == want, f"exit={code} err={err[:200]!r}")
 
+
+# --- ENVRELAXGATE1104: the environment cannot choose the gate's store -------------
+with tempfile.TemporaryDirectory() as td:
+    own = make_store(os.path.join(td, "own"), level=2)
+    open_store = make_store(os.path.join(td, "elsewhere"), level=3)
+    code, _, err = run_gate(own, mcp_send(), extra_env={"EMAIL_APPROVAL_GATE_STORE": open_store})
+    check("ENVRELAXGATE1104: a level-3 store named in the environment does not open a level-2 install",
+          code == 2 and "NINCS jovahagyas" in err, f"exit={code} err={err[:200]!r}")
+    code, _, _ = run_gate(open_store, mcp_send(), extra_env={"EMAIL_APPROVAL_GATE_STORE": own})
+    check("ENVRELAXGATE1104 control: the level-3 install itself lets the send through", code == 0, f"exit={code}")
 
 print()
 if failed:

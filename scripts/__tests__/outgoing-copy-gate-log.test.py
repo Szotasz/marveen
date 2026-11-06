@@ -23,6 +23,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GATE = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from copy_gate_install import copy_gate_install, bare_install  # noqa: E402
 TELEGRAM = "mcp__plugin_telegram_telegram__reply"
 # ISO 8601 local time with a numeric offset -- never UTC in our logs.
 STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4} ")
@@ -37,10 +39,10 @@ def check(name, cond, detail=""):
 
 
 def run(payload, rules_path):
-    env = dict(os.environ, OUTGOING_COPY_GATE_RULES=rules_path)
-    proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
-                          capture_output=True, env=env)
-    log = os.path.join(os.path.dirname(rules_path), "outgoing-copy-gate.log")
+    hook, store = copy_gate_install(rules_path)
+    proc = subprocess.run([sys.executable, hook], input=json.dumps(payload).encode(),
+                          capture_output=True, env=dict(os.environ))
+    log = os.path.join(store, "outgoing-copy-gate.log")
     lines = []
     if os.path.exists(log):
         with open(log, encoding="utf-8") as fh:

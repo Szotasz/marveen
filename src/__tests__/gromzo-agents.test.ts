@@ -4,8 +4,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
-  CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, resetPendingGromzoConsents,
-  sendGromzoAvatar, slugRefusal, type GromzoAgentDeps,
+  CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgents, listGromzoAgentsWithStatus,
+  protectionOf, resetPendingGromzoConsents, resetProtectionClockForTest, sendGromzoAvatar, slugRefusal, statusFactsOf,
+  UNPROTECTED_AFTER_MS, type GromzoAgentDeps, type MxdProtection,
 } from '../web/gromzo-agents.js'
 import type { MxdDashReply, MxdDashRequest } from '../web/mxd-dash.js'
 
@@ -60,7 +61,7 @@ beforeEach(() => resetPendingGromzoConsents())
 describe('a slug is checked before any mxd call', () => {
   for (const [slug, code] of [
     ['Abel', 'bad_request'], ['../samu', 'bad_request'], ['', 'bad_request'], ['a'.repeat(33), 'bad_request'],
-    [MAIN_AGENT_ID, 'main_agent'], ['nobody', 'unknown_agent'],
+    ['nobody', 'unknown_agent'],
   ] as const) {
     it(`"${slug.slice(0, 12)}" -> ${code}, enable / check / disable make no call`, async () => {
       const w = world()
@@ -283,11 +284,127 @@ describe('the list', () => {
     expect(runs.every(Boolean)).toBe(true)
   })
 
-  it('the main agent first, always on and never switchable; then the fleet sorted, with flags', async () => {
+  it('the main agent first, its switch read like any other (GROMZOMAINAGENT1106: no fixed "always on"); then the fleet sorted', async () => {
     const w = world(['zara', 'abel', MAIN_AGENT_ID])
     w.flags.set('zara', true)
+    let rows = await listGromzoAgents(w.deps)
+    expect(rows.map((r) => [r.slug, r.main, r.gromzo])).toEqual([[MAIN_AGENT_ID, true, false], ['abel', false, false], ['zara', false, true]])
+    expect(rows[0]!.mainLaunch).toBe('idle')
+    expect(rows[1]!.mainLaunch).toBeNull()
+    w.flags.set(MAIN_AGENT_ID, true)
+    w.heldSet.add(MAIN_AGENT_ID)
+    rows = await listGromzoAgents({ ...w.deps, mainLaunchState: () => 'restart_waiting' })
+    expect(rows[0]).toMatchObject({ slug: MAIN_AGENT_ID, gromzo: true, held: true, mainLaunch: 'restart_waiting' })
+  })
+})
+
+// GROMZOMAINAGENT1106: the main agent joins Gromzo through the same owner consent as every agent.
+describe('the main agent (GROMZOMAINAGENT1106)', () => {
+  it('switch on asks the owner first; only the added check writes its flag and restarts it', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A)]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: MAIN_AGENT_ID, name: MAIN_AGENT_ID[0]!.toUpperCase() + MAIN_AGENT_ID.slice(1) }])
+    expect(w.writes).toEqual([])
+    later(w)
+    w.replies.agent_add_check = [added(MAIN_AGENT_ID)]
+    expect(await checkGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'added' })
+    expect(w.writes).toEqual([[MAIN_AGENT_ID, true]])
+    expect(w.restarted).toEqual([MAIN_AGENT_ID])
+  })
+
+  it('already in mxd (agent_exists): no second consent, the launch side runs again', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'added' })
+    expect(w.writes).toEqual([[MAIN_AGENT_ID, true]])
+    expect(w.restarted).toEqual([MAIN_AGENT_ID])
+  })
+
+  it('agent_exists with a name the owner typed stays an error: mxd keeps its listed name (Dani 71877)', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps, 'Új Név')).toEqual({ ok: false, code: 'agent_exists' })
+    expect(w.writes).toEqual([])
+    expect(w.restarted).toEqual([])
+  })
+
+  it('agent_exists for a SUB-agent stays an error (the shortcut is the main agent\'s only)', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'agent_exists' })
+    expect(w.writes).toEqual([])
+    expect(w.restarted).toEqual([])
+  })
+
+  it('switch off takes only the launch side back: no agent_remove, the flag off, a restart', async () => {
+    const w = world()
+    w.flags.set(MAIN_AGENT_ID, true)
+    expect(await disableGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'removed' })
+    expect(w.calls).toEqual([])
+    expect(w.writes).toEqual([[MAIN_AGENT_ID, false]])
+    expect(w.restarted).toEqual([MAIN_AGENT_ID])
+  })
+
+  it('its picture is still not sent (main_agent), no call', async () => {
+    const w = world()
+    w.avatars.set(MAIN_AGENT_ID, Buffer.from('x'))
+    expect(await sendGromzoAvatar(MAIN_AGENT_ID, w.deps)).toEqual({ ok: false, code: 'main_agent' })
+    expect(w.calls).toEqual([])
+  })
+
+  it('its pending consent shows on its row, and blocks a second add like any other', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 300)]
+    await enableGromzoAgent(MAIN_AGENT_ID, w.deps)
     const rows = await listGromzoAgents(w.deps)
-    expect(rows.map((r) => [r.slug, r.main, r.gromzo])).toEqual([[MAIN_AGENT_ID, true, true], ['abel', false, false], ['zara', false, true]])
+    expect(rows[0]!.pendingUntil).toBe(w.clock.t + 300_000)
+    expect(await enableGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'add_in_progress' })
+  })
+})
+
+// GROMZONAMETAKEN1106: the controller refuses a name another member of the team wears (name_taken), so the owner
+// may send another name with the switch; the main agent goes by its configured bot name (the owner, Samu 71820).
+describe('the name on Gromzo (GROMZONAMETAKEN1106)', () => {
+  it('the main agent goes by the name the route gives it (the configured bot name), not by its slug', async () => {
+    const w = world()
+    w.deps.gromzoName = (s) => (s === MAIN_AGENT_ID ? 'Marvin' : s.toUpperCase())
+    w.replies.agent_add = [addOk()]
+    await enableGromzoAgent(MAIN_AGENT_ID, w.deps)
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: MAIN_AGENT_ID, name: 'Marvin' }])
+  })
+
+  it('the row carries the name the switch would send', async () => {
+    const w = world()
+    const rows = await listGromzoAgents(w.deps)
+    expect(rows.find((r) => r.slug === MAIN_AGENT_ID)!.gromzoName).toBe(MAIN_AGENT_ID[0]!.toUpperCase() + MAIN_AGENT_ID.slice(1))
+    expect(rows.find((r) => r.slug === 'zara')!.gromzoName).toBe('Zara')
+    const named = await listGromzoAgents({ ...w.deps, gromzoName: (s) => `${s}-x` })
+    expect(named.find((r) => r.slug === 'zara')!.gromzoName).toBe('zara-x')
+  })
+
+  it('the owner\'s name goes to agent_add as given (trimmed)', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk()]
+    expect(await enableGromzoAgent('zara', w.deps, '  Zara Segéd ')).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'Zara Segéd' }])
+  })
+
+  it('a name outside the controller\'s rule: bad_display_name, no mxd call, nothing pending', async () => {
+    for (const bad of ['', '   ', '-Zara', 'Za/ra', 'x'.repeat(65), 'a\nb']) {
+      const w = world()
+      expect(await enableGromzoAgent('zara', w.deps, bad)).toEqual({ ok: false, code: 'bad_display_name' })
+      expect(w.calls).toEqual([])
+      expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'no_pending' })
+    }
+  })
+
+  it('name_taken from mxd comes back as the code, nothing pending, so the owner can retry with another name', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'name_taken' }, addOk()]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: false, code: 'name_taken' })
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps, 'Főnök Marveen')).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls.map((c) => (c as { name?: string }).name)).toEqual([MAIN_AGENT_ID[0]!.toUpperCase() + MAIN_AGENT_ID.slice(1), 'Főnök Marveen'])
   })
 })
 
@@ -385,5 +502,58 @@ describe('the agent picture (Samu 64526)', () => {
     w.avatars.set('zara', PNG)
     const rows = await listGromzoAgents(w.deps)
     expect(rows.map((r) => [r.slug, r.avatarProblem])).toEqual([[MAIN_AGENT_ID, null], ['abel', 'no_avatar'], ['samu', 'no_avatar'], ['zara', null]])
+  })
+})
+
+
+// MXDAGENTSOCKID1106: the agents' agent.sock protection on the list (Samu 71321, 71344 (1), 71418).
+describe('the token protection on the list', () => {
+  const P = (o: Partial<MxdProtection> = {}): MxdProtection => ({ protected: new Set(), refused: new Set(), running: new Set(), ratchetUnreadable: false, ...o })
+  beforeEach(() => resetProtectionClockForTest())
+
+  it('refused wins; protected; unprotected only after 10 minutes running without a token; nothing when off or unknown', () => {
+    const t0 = 5_000_000
+    expect(protectionOf('samu', true, P({ refused: new Set(['samu']), protected: new Set(['samu']) }), t0)).toBe('refused')
+    expect(protectionOf('samu', true, P({ protected: new Set(['samu']) }), t0)).toBe('protected')
+    expect(protectionOf('samu', false, P({ refused: new Set(['samu']) }), t0), 'Gromzo off: nothing').toBeNull()
+    expect(protectionOf('samu', true, null, t0), 'an older mxd: nothing').toBeNull()
+    const run = P({ running: new Set(['zara']) })
+    expect(protectionOf('zara', true, run, t0), 'first seen running').toBeNull()
+    expect(protectionOf('zara', true, run, t0 + UNPROTECTED_AFTER_MS - 1)).toBeNull()
+    expect(protectionOf('zara', true, run, t0 + UNPROTECTED_AFTER_MS)).toBe('unprotected')
+    // Not running any more resets the clock; protected resets it too.
+    expect(protectionOf('zara', true, P({ running: new Set() }), t0 + UNPROTECTED_AFTER_MS + 1)).toBeNull()
+    expect(protectionOf('zara', true, run, t0 + 2 * UNPROTECTED_AFTER_MS), 'seen again: a new 10 minutes').toBeNull()
+    // While mxd's agents are still starting (running null), no clock runs.
+    expect(protectionOf('abel', true, P({ running: null }), t0)).toBeNull()
+  })
+
+  it('an unreadable ratchet: every agent counts as protected, and the list says so', async () => {
+    expect(protectionOf('zara', true, P({ ratchetUnreadable: true, running: new Set(['zara']) }), 1)).toBe('protected')
+    const w = world()
+    w.flags.set('samu', true)
+    w.deps.statusFacts = async () => ({ held: new Set(), protection: P({ ratchetUnreadable: true, running: new Set(['samu']) }) })
+    const r = await listGromzoAgentsWithStatus(w.deps)
+    expect(r.ratchetUnreadable).toBe(true)
+    expect(r.agents.find((x) => x.slug === 'samu')!.protection).toBe('protected')
+  })
+
+  it('statusFacts replaces held: one status answer gives both, and only slugs pass', async () => {
+    const f = statusFactsOf({ ok: true, held_agents: ['zara', '../x', 7], agents: { running: ['samu', 'zara', 'Bad'], held: ['zara'], protected: ['samu'], refused: ['abel', '$x'] }, ratchet_unreadable: false })
+    expect([...f.held]).toEqual(['zara'])
+    expect(f.protection).toEqual({ protected: new Set(['samu']), refused: new Set(['abel']), running: new Set(['samu', 'zara']), ratchetUnreadable: false })
+    expect(statusFactsOf({ ok: true, agents: { running: [], held: [] } }).protection, 'an mxd before the tokens').toBeNull()
+    const w = world()
+    for (const s of ['samu', 'abel']) w.flags.set(s, true)
+    let heldCalls = 0
+    w.deps.held = async () => { heldCalls++; return new Set() }
+    w.deps.statusFacts = async () => f
+    const r = await listGromzoAgentsWithStatus(w.deps)
+    expect(heldCalls, 'the list asks mxd once').toBe(0)
+    expect(r.agents.find((x) => x.slug === 'samu')!.protection).toBe('protected')
+    expect(r.agents.find((x) => x.slug === 'abel')!.protection).toBe('refused')
+    expect(r.agents.find((x) => x.slug === 'zara')!).toMatchObject({ held: true, protection: null })
+    expect(r.ratchetUnreadable).toBe(false)
+    expect(await listGromzoAgents(w.deps)).toEqual(r.agents)
   })
 })

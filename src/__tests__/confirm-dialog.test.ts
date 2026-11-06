@@ -487,3 +487,139 @@ describe('the connector removes and deletes use it', () => {
     expect(EN).toContain(`'${key}':`)
   })
 })
+
+describe('the Vault deletes use it', () => {
+  const SITES = [
+    ['delete a secret from the Connectors list', "<span class=\"github-repo-date\">${escapeHtml(s.id)} &middot; ${date}</span>", 'vault.confirm.delete', "{ method: 'DELETE' })"],
+    ['delete an SSH key', "tbody.querySelectorAll('.ssh-key-delete-btn').forEach", 'vault.ssh.confirm.key_delete', "{ method: 'DELETE' })"],
+    ['delete an SSH server', "document.querySelectorAll('.ssh-delete-btn').forEach", 'vault.ssh.confirm.server_delete', "{ method: 'DELETE' })"],
+    ['delete a secret from the Vault page', "list.querySelectorAll('.vault-card-delete').forEach", 'vault.confirm.delete', "{ method: 'DELETE' })"],
+  ] as const
+
+  const handler = (anchor: string, request: string) => {
+    const i = APP.indexOf(anchor)
+    const j = i < 0 ? -1 : APP.indexOf(request, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + request.length)
+  }
+
+  it.each(SITES)('%s: a danger confirmDialog with its own title and button, no native confirm()', (_name, anchor, key, request) => {
+    const src = handler(anchor, request)
+    expect(src, 'handler or its request not found').not.toBe('')
+    expect(src).toContain('await confirmDialog({')
+    expect(src).toContain(`title: t('${key}_title')`)
+    expect(src).toContain(`t('${key}', { name: `)
+    expect(src).toMatch(/\bmessage(: t\(|,)/)
+    expect(src).toContain(`okLabel: t('${key}_ok')`)
+    expect(src).toContain('danger: true')
+    expect(src).not.toMatch(/(^|[^.\w])confirm\(/)
+  })
+
+  it.each(SITES)('%s: a "no" stops it -- the answer is checked before the request', (_name, anchor, _key, request) => {
+    const body = handler(anchor, request)
+    expect(body, 'handler or its request not found').not.toBe('')
+    const ask = body.indexOf('const confirmed = await confirmDialog({')
+    const guard = body.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(body.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the SSH key question names the servers that lose the key, and both lists reload after it', () => {
+    const src = handler("tbody.querySelectorAll('.ssh-key-delete-btn').forEach", 'await loadSshServers()')
+    expect(src, 'handler or its server reload not found').not.toBe('')
+    expect(src, 'the server reload must be in this handler').not.toContain('function _refreshKeySelects')
+    expect(src).toContain('_sshServers')
+    expect(src).toContain("if (servers.length) message += '\\n\\n' + t('vault.ssh.confirm.key_delete_servers', { servers: ")
+    expect(src).toContain('if (!res.ok) showToast(')
+    expect(src).toContain('await loadSshKeys()')
+    for (const lang of [HU, EN]) {
+      const line = lang.split('\n').find(l => l.includes("'vault.ssh.confirm.key_delete_servers':")) || ''
+      expect(line).toContain('{servers}')
+    }
+  })
+
+  it('the hard-coded questions and the "Törlés sikertelen" toast are gone', () => {
+    expect(APP).not.toContain('`Torlod: ${s.label}?`')
+    expect(APP).not.toContain('`Torlod: ${id}?`')
+    expect(APP).not.toContain('`Törlöd: ${id}?`')
+    expect(APP).not.toContain('Biztosan törlöd ezt a kulcsot?')
+    expect(APP).not.toContain("showToast('Törlés sikertelen')")
+  })
+
+  it('no unaccented "Torles" tooltip is left', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    expect(APP).not.toContain('title="Torles"')
+    expect(HTML).not.toContain('title="Torles"')
+  })
+
+  it('the Vault and Paths sections have no unaccented labels left, and they translate', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    for (const gone of ['titkositott', 'Kulcs nev ', 'placeholder="Ertek"', '>Hozzaad<', ' Utvonalak ']) expect(HTML).not.toContain(gone)
+    for (const key of ['connectors.vault_section', 'connectors.vault_id_ph', 'connectors.vault_value_ph', 'connectors.external_paths']) {
+      expect(HTML).toContain(`"${key}"`)
+      expect(HU).toContain(`'${key}':`)
+      expect(EN).toContain(`'${key}':`)
+    }
+  })
+
+  it.each([...new Set(SITES.flatMap(([, , key]) => [key, `${key}_title`, `${key}_ok`]))])('%s is in both languages and names the item', (key) => {
+    expect(HU).toContain(`'${key}':`)
+    expect(EN).toContain(`'${key}':`)
+    if (!key.endsWith('_title') && !key.endsWith('_ok')) {
+      for (const lang of [HU, EN]) {
+        const line = lang.split('\n').find(l => l.includes(`'${key}':`)) || ''
+        expect(line).toContain('{name}')
+      }
+    }
+  })
+})
+
+describe('the custom provider delete uses it', () => {
+  const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
+  const handler = (() => {
+    const i = APP.indexOf(anchor)
+    const end = "catch { showToast(t('providers.toast.delete_error')) }"
+    const j = i < 0 ? -1 : APP.indexOf(end, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + end.length)
+  })()
+
+  it('a danger confirmDialog with its own title and button, naming the provider, no native confirm()', () => {
+    expect(handler, 'handler not found').not.toBe('')
+    expect(handler).toContain('const confirmed = await confirmDialog({')
+    expect(handler).toContain("title: t('providers.confirm.delete_title')")
+    expect(handler).toContain("t('providers.confirm.delete', { name: (p && p.label) || id })")
+    expect(handler).toContain("okLabel: t('providers.confirm.delete_ok')")
+    expect(handler).toContain('danger: true')
+    expect(handler).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a "no" stops it -- the answer is checked before the request', () => {
+    const ask = handler.indexOf('const confirmed = await confirmDialog({')
+    const guard = handler.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the question names the agents that use the provider, from the list\'s usedBy', () => {
+    expect(handler).toContain('const users = (p && p.usedBy) || []')
+    expect(handler).toContain("if (users.length) message += '\\n\\n' + t('providers.confirm.delete_used_by', { agents: ")
+  })
+
+  it('a failed delete shows a translated toast, or the server\'s reason', () => {
+    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'))")
+    expect(handler).toContain('loadAvailableModels()')
+  })
+
+  it('the hard-coded question and error are gone, and the keys are in both languages', () => {
+    expect(APP).not.toContain('providert?`')
+    expect(APP).not.toContain("alert('Hiba a törléskor.')")
+    for (const key of ['providers.confirm.delete_title', 'providers.confirm.delete', 'providers.confirm.delete_used_by', 'providers.confirm.delete_ok', 'providers.toast.delete_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'providers.confirm.delete':"))).toContain('{name}')
+      expect(lang.split('\n').find(l => l.includes("'providers.confirm.delete_used_by':"))).toContain('{agents}')
+    }
+  })
+})

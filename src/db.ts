@@ -472,9 +472,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
   // keep their attachment identity so a respawned session can still download
   // and transcribe them; reply_to_message_id lets an inbound quote be
-  // retraced after the fact (df3b48a7) (mirrors _MIGRATION_COLUMNS in
-  // scripts/hooks/ledger_lib.py).
-  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id']) {
+  // retraced after the fact (df3b48a7); source names the channel (PROVIDERVAK908,
+  // it was missing here, so a DB only this path created had no source column);
+  // sender_id / sender_name / sender_role say who sent an inbound and in what
+  // role (LEDGERROLELABEL1104). Mirrors _MIGRATION_COLUMNS in
+  // scripts/hooks/ledger_lib.py, locked by conversation-ledger-schema.test.ts.
+  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role']) {
     const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
     if (!cols.some(c => c.name === col)) {
       db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)
@@ -1197,6 +1200,10 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
+  // UNBLOCKS925: the one named case besides STOP/urgent that may reach a busy pane. NULL for every older row and for
+  // every row whose sender did not ask; the only stored value is 'unblocks' (src/web/unblocks-interrupt.ts). Unlike
+  // urgent, the flag is the main agent's own explicit field on POST /api/messages, never inferred from the text.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN affects_current_work TEXT') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -1733,6 +1740,19 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   // Dani 66059: the sweeper rotates by the last check, so old unanswered requests cannot starve a newer one.
   try { db.exec('ALTER TABLE approval_slack_posts ADD COLUMN last_checked_ms INTEGER') } catch { /* already exists */ }
+  // APPROVALSLACK1030 B (the owner's decision of 11-04): the owner's typed reply decides too, read by the server.
+  // content_basis: what the DM showed (envelope / server_filed / description); the reaction decides only on the first
+  // two (#2452's rule), the reply on all three. reaction_mode / reply_mode: which decision this post was offered (a row
+  // from before this change was a reaction post). decided_by_ts: the owner message that decided, unique per channel, so
+  // one owner message decides one request. binding: thread / next_message. notice_ts: the server's own thread notice,
+  // the only non-owner message the thread may hold before the owner's reply.
+  for (const col of [
+    'content_basis TEXT', 'reaction_mode INTEGER NOT NULL DEFAULT 1', 'reply_mode INTEGER NOT NULL DEFAULT 0',
+    'decided_by_ts TEXT', 'binding TEXT', 'notice_ts TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_slack_posts_decided_by ON approval_slack_posts(channel, decided_by_ts) WHERE decided_by_ts IS NOT NULL')
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -4813,6 +4833,9 @@ export interface AgentMessage {
   // The SENDER's own id for a federated inbound row (the bridge's `ref`), so a completion
   // receipt can name the message the peer knows. Null for local rows and older federated ones.
   remote_ref?: string | null
+  // UNBLOCKS925: 'unblocks' when the main agent flagged the row as releasing a blocker of the recipient's current
+  // work; null or absent otherwise. Optional in the type for the same reason as urgent.
+  affects_current_work?: string | null
 }
 
 export function createAgentMessage(
@@ -4821,7 +4844,7 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null },
+  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null; affectsCurrentWork?: string | null },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
@@ -4834,9 +4857,10 @@ export function createAgentMessage(
   // per-pair budget, decidePriority). An urgent row is above high by its own column; the route stores it 0.
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
   const remoteRef = opts?.remoteRef ?? null
+  const affectsCurrentWork = opts?.affectsCurrentWork ?? null
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -4849,6 +4873,7 @@ export function createAgentMessage(
     stop_authorized: stopAuthorized,
     priority,
     remote_ref: remoteRef,
+    affects_current_work: affectsCurrentWork,
   }
 }
 
@@ -7066,8 +7091,10 @@ export function queryAuditLog(opts: {
     const logRows = db.prepare(logSql).all(...logParams) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
     for (const r of logRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, entry_type: 'log' })
 
-    // memories
-    let memSql = 'SELECT id, agent_id, content, category, keywords, created_at FROM memories WHERE 1=1'
+    // memories. A daily-log entry's `[Napló ...]` mirror (linked in daily_log_memory)
+    // is the same entry the log rows above already list, so it is left out here, the
+    // way recall leaves it out (#2428). Real memories and unmirrored log rows stay.
+    let memSql = `SELECT id, agent_id, content, category, keywords, created_at FROM memories WHERE ${NOT_MIRROR}`
     const memParams: unknown[] = []
     if (from)  { memSql += ' AND created_at >= ?'; memParams.push(from) }
     if (to)    { memSql += ' AND created_at <= ?'; memParams.push(to) }
@@ -7518,13 +7545,23 @@ export interface ApprovalSlackPostRow {
   decided_at: number | null
   decision: string | null
   last_checked_ms: number | null
+  content_basis: string | null
+  reaction_mode: number
+  reply_mode: number
+  decided_by_ts: string | null
+  binding: string | null
+  notice_ts: string | null
 }
 
-export function recordApprovalSlackPost(p: { approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string }): boolean {
+export function recordApprovalSlackPost(p: {
+  approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string
+  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean
+}): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000)).changes > 0
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000),
+    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0).changes > 0
 }
 
 /**
@@ -7551,10 +7588,41 @@ export function markApprovalSlackPostChecked(approvalId: string, atMs: number = 
   db.prepare('UPDATE approval_slack_posts SET last_checked_ms = ? WHERE approval_id = ?').run(atMs, approvalId)
 }
 
-/** Closes the row ONCE: false when it was already decided (a later reaction change does not reopen anything). */
-export function markApprovalSlackPostDecided(approvalId: string, decision: string): boolean {
-  return db.prepare('UPDATE approval_slack_posts SET decided_at = ?, decision = ? WHERE approval_id = ? AND decided_at IS NULL')
-    .run(Math.floor(Date.now() / 1000), decision, approvalId).changes > 0
+/** The server's own thread notice on [approvalId]'s post (the one non-owner message the thread may hold). */
+export function setApprovalSlackNotice(approvalId: string, ts: string): void {
+  db.prepare('UPDATE approval_slack_posts SET notice_ts = ? WHERE approval_id = ? AND notice_ts IS NULL').run(ts, approvalId)
+}
+
+export type SlackDecisionOutcome = 'recorded' | 'already_decided' | 'reply_already_used'
+
+/**
+ * One decision from Slack, in ONE transaction (APPROVALSLACK1030 B, egm M7): the post row closes once, with the owner
+ * message that decided (unique per channel: one owner message, one decision); then the request is resolved, and an
+ * approval only while it is still pending and not past its timeout (the Slack reads before this were async). The
+ * second return value says whether the request itself changed.
+ */
+export function decideApprovalFromSlack(p: {
+  approvalId: string; decision: string; status: 'approved' | 'rejected'; resolvedBy: string
+  decidedByTs?: string | null; binding?: string | null
+}): { outcome: SlackDecisionOutcome; changed: boolean } {
+  const now = Math.floor(Date.now() / 1000)
+  try {
+    return db.transaction(() => {
+      const closed = db.prepare(`
+        UPDATE approval_slack_posts SET decided_at = ?, decision = ?, decided_by_ts = ?, binding = ?
+        WHERE approval_id = ? AND decided_at IS NULL
+      `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
+      if (!closed) return { outcome: 'already_decided' as const, changed: false }
+      const changed = db.prepare(`
+        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
+        WHERE id = ? AND status = 'pending' AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
+      `).run(p.status, now, p.resolvedBy, p.approvalId, p.status, now).changes > 0
+      return { outcome: 'recorded' as const, changed }
+    })()
+  } catch (err) {
+    if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'reply_already_used', changed: false }
+    throw err
+  }
 }
 
 // The CREATE path stamps the owner-notification message id onto the row
