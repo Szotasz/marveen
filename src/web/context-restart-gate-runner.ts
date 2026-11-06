@@ -72,7 +72,7 @@ export function gateWakePrompt(name: string): string {
     // Owner request 2026-10-21: no channel notice about the fresh context (several
     // agents' channel is the owner's Telegram); only a faulty restart is reported,
     // by a sub-agent to the main agent over the inter-agent queue.
-    'A friss kontextusrol a csatornadra (Telegram) NE kuldj uzenetet. ' +
+    'A friss kontextusrol a csatornadra NE kuldj uzenetet. ' +
     (name === MAIN_AGENT_ID
       ? 'Ha az atadas hibas volt (hianyzik vagy olvashatatlan a visszatoltott blokk, vagy elveszett egy keres), azt a transzkriptben rogzitsd, a gazdanak ne kuldj uzenetet.'
       : `Csak ha az atadas hibas volt (hianyzik vagy olvashatatlan a visszatoltott blokk, vagy elveszett egy keres), azt jelezd inter-agent uzenetben a fo ugynoknek (${MAIN_AGENT_ID}), a gazdanak ne.`)

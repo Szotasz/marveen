@@ -405,9 +405,9 @@ export function resumePrompt(
     // the main agent via the queue. This prompt is the fresh session's ONLY
     // rule set, so the rule must live here.
     (name === MAIN_AGENT_ID
-      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki. ` +
+      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda csatornájára) session-meta NEM mehet ki. ` +
         `Ha az átadás hibás volt (nincs HANDOFF, olvashatatlan, vagy elveszett egy kérés), azt is ebben a transzkript-sorban rögzítsd, a gazdának ne küldj üzenetet.`
-      : `A friss kontextusról a csatornádra (Telegram) NE küldj üzenetet. ` +
+      : `A friss kontextusról a csatornádra NE küldj üzenetet. ` +
         `Csak ha az átadás hibás volt (nincs HANDOFF, olvashatatlan, vagy elveszett egy kérés), azt jelezd inter-agent üzenetben a fő ügynöknek (${MAIN_AGENT_ID}), a gazdának ne.`)
   )
 }

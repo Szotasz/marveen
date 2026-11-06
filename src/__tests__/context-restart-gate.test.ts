@@ -762,7 +762,7 @@ describe('gateWakePrompt', () => {
       const p = gateWakePrompt(name)
       expect(p).toContain('[CONTEXT-RESTART-GATE]')
       expect(p.toLowerCase()).toContain('folytasd')
-      expect(p).toContain('A friss kontextusrol a csatornadra (Telegram) NE kuldj uzenetet.')
+      expect(p).toContain('A friss kontextusrol a csatornadra NE kuldj uzenetet.')
       expect(p).not.toContain('Rovid jelzest kuldj a sajat csatornadon')
       expect(p).toContain('a gazdanak ne')
     }
