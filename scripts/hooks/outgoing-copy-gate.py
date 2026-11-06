@@ -2739,12 +2739,15 @@ _TECH_COMMON = r"""
 # CSAK a token-/ekezet-vizsgalat vaghatja ki ezeket: mindharom ag kepes egy
 # tulajdonnevet a toldalekaval egyutt elnyelni, ezert a nev-szabaly nem kapja meg.
 _TECH_SUFFIXED = r"""
-        \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
+        \d+(?:[.:,]\d+)*-[a-záéíóöőúüű]+(?![^\W\d_])   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor), csak magyar latin betu
       | \d+(?:[.:,]\d+)*[\ \u00a0\u202f]?[%‰°$€£]-[a-záéíóöőúüű]+(?![^\W\d_])   # szam + mertekegyseg-jel + toldalek (30%-ot, 2‰-es, 90°-os, 5€-t)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
       | (?:(?<![\w-])--)?\b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek), --flag alakban is
 """
+# COPYGATEHOMONUM1105 (2026-11-06): the plain number branch (the first line above) took ANY Unicode letter as its suffix
+# ([^\W\d_]+), so a Cyrillic or Greek letter in such a suffix was masked away before the homoglyph rule ran. It now
+# takes Hungarian Latin letters only, with the end of the suffix pinned, the same rule as its unit-sign sibling below.
 # ISSUE1838COPYGATE (#2543, 2026-11-05): the number branch wanted a DIGIT right before the hyphen, so a suffix after a
 # unit sign ('30%-ot', '2‰-es', '90°-os', '5€-es') was cut at the hyphen and its fragment checked as a standalone word:
 # 'ot' -> 'öt', 'es' -> 'és'. Suffixes that are not dictionary words ('20%-kal', '15%-át') passed by luck. The second

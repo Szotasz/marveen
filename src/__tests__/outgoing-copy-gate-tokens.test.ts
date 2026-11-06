@@ -177,3 +177,40 @@ describe('outgoing-copy gate tokenization: a suffix after a number and a unit si
     }
   })
 })
+
+// COPYGATEHOMONUM1105: the PLAIN number branch (number, hyphen, suffix: '8:09-es', '2-es') took any Unicode letter as
+// its suffix, so a Cyrillic or Greek letter in it was masked away before the homoglyph rule ran: the mixed word was
+// never seen (measured on develop b492429c: 0 findings). Same rule as its sibling above: Hungarian Latin only, the
+// end of the suffix pinned.
+describe('outgoing-copy gate: a homoglyph in a number suffix reaches the homoglyph rule (COPYGATEHOMONUM1105)', () => {
+  it('a non-Latin letter anywhere in the suffix after a plain number is reported', () => {
+    for (const [suffix, code] of [['\u043et', 'U+043E'], ['o\u0442', 'U+0442'], ['ka\u043b', 'U+043B'], ['o\u03c4', 'U+03C4']]) {
+      const probs = auditAll(`Szia! A díj a 30-${suffix} is elérheti, ${HU_TAIL}`)
+      expect(probs.some((p) => p.includes('homoglifa') && p.includes(code)), suffix).toBe(true)
+    }
+    const probs = auditAll(`Szia! A hívás 8:09-\u0435s kezdődik, ${HU_TAIL}`)
+    expect(probs.some((p) => p.includes('homoglifa') && p.includes('U+0435'))).toBe(true)
+  })
+
+  // The mask itself, read directly: on audit() the branch is not visible for Latin text (the accent tokenizer handles
+  // a number-hyphen suffix on its own; measured 2026-11-06, the verdicts were identical with and without the branch),
+  // so only this pin keeps the branch masking real Hungarian suffixes, accented ones included.
+  it('strip_technical masks a Hungarian number suffix whole, and leaves a non-Latin one for the homoglyph rule', () => {
+    const out = execFileSync('python3', ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE)})
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+print(json.dumps([g.strip_technical(t).strip() for t in sys.argv[1:]]))
+`, '8:09-es', '10-én', '5-ös', '2-őt', '17:06-kor', '30-\u043et', '30-o\u0442'], { encoding: 'utf-8' })
+    const got = JSON.parse(out.trim()) as string[]
+    expect(got.slice(0, 5)).toEqual(['', '', '', '', ''])
+    expect(got[5]).toContain('\u043e')
+    expect(got[6]).toContain('\u0442')
+  })
+
+  it('real Hungarian number suffixes still pass, accents included', () => {
+    expect(auditAccent(`Szia! A 8:09-es vonattal megyek, a 2-es kapunál várlak 17:06-kor, ${HU_TAIL}`)).toEqual([])
+    expect(auditAccent(`Szia! November 10-én, az 5-ös teremben a 2-őt és a 3-at is megnézzük, ${HU_TAIL}`)).toEqual([])
+    expect(auditAll(`Szia! A 2-es kapunál várlak 17:06-kor, ${HU_TAIL}`).filter((p) => p.includes('homoglifa'))).toEqual([])
+  })
+})
