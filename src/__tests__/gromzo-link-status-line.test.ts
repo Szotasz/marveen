@@ -105,7 +105,10 @@ describe('the pending link: its deadline and its re-read', () => {
   })
 
   it('the pending branch of loadStatus uses both helpers, and clears a running timer first', () => {
-    const fn = APP.slice(APP.indexOf('async function loadStatus() {'), APP.indexOf('async function loadStatus() {') + 1200)
+    // The Gromzo card's loadStatus (app.js has more than one): the one right after its own refresh handle.
+    const at = APP.indexOf('async function loadStatus() {', APP.indexOf('  let statusRefresh = null\n'))
+    expect(APP.indexOf('  let statusRefresh = null\n')).toBeGreaterThan(-1)
+    const fn = APP.slice(at, at + 1200)
     expect(fn).toContain('if (statusRefresh) { clearTimeout(statusRefresh); statusRefresh = null }')
     expect(fn).toContain("t(line.key, { until: gromzoUntilText(line.until, window._lang) })")
     expect(fn).toContain('statusRefresh = gromzoScheduleStatusRefresh(() => statusEl.isConnected, () => { statusRefresh = null; loadStatus() }, setTimeout)')
