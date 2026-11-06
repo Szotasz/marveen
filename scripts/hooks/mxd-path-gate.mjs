@@ -148,7 +148,10 @@ function codeSetsMxdEnv(code) {
 // Readers that walk a tree: rooted at a run dir's ancestor they read the token files without naming them.
 // `find` / `fd` alone list NAMES (no content, and a name is no secret): only with an action that reads or removes
 // (-exec, -ok, -delete; fd -x / -X) do they count. Measured: `find / -name x` is a common fleet lookup (~40 a week).
-function recursiveReader(cmd, words) {
+// `feeds`: the same text hands a list to a reader (`| xargs cat`, `| parallel`, `| while read f; do cat "$f"`): then a
+// find / fd that only lists names is the first half of a read (Dani 71760 (4)).
+function recursiveReader(cmd, words, feeds = false) {
+  if (feeds && ['find', 'gfind', 'fd', 'fdfind'].includes(cmd)) return true
   if (['rg', 'ag', 'ack', 'ugrep', 'ug', 'rsync', 'ditto', 'tar', 'gtar', 'bsdtar', '7z', '7za'].includes(cmd)) return true
   if (['find', 'gfind'].includes(cmd)) return words.some((w) => /^-(?:exec|execdir|ok|okdir|delete|fprint|fprintf|fls)$/.test(w))
   if (cmd === 'fd' || cmd === 'fdfind') return words.some((w) => /^(?:-[xX]|--exec|--exec-batch)$/.test(w))
@@ -172,15 +175,72 @@ const GLOB_RX = /[*?[]/
 const RUN_DIR_NAME_RX = /marveen-mxd|mxd-run/
 // The candidates a word names as a path: absolute (or ~/, $HOME/) as is, relative against every cwd the command
 // has been in. A path word, an assignment value (D=/x) and an option value (--file=/x) are each read.
-function wordValues(w) {
+function wordValues(w, ctx) {
   const vals = [w]
   const assign = /^[A-Za-z_]\w*\+?=(.*)$/s.exec(w)
   if (assign) vals.push(assign[1])
   const opt = /^--?[A-Za-z][\w-]*=(.*)$/s.exec(w)
   if (opt) vals.push(opt[1])
-  return vals.map((v) => v.replace(/\$\{HOME\}|\$HOME(?![\w])/g, homedir()))
+  return [...new Set(vals.flatMap((v) => expandVars(v, ctx)))]
     .map((v) => (v === '~' ? homedir() : v.startsWith('~/') ? join(homedir(), v.slice(2)) : v))
+    // ~+ is $PWD, ~- is $OLDPWD, ~N / ~+N / ~-N a dirs-stack entry: each is one of the cwds the command has been in,
+    // so the rest is read relative to every one of them (Dani 71760 (2))
+    .map((v) => { const m = /^~[+-]\d*(?=\/|$)|^~\d+(?=\/|$)/.exec(v); return m ? '.' + v.slice(m[0].length) : v })
     .map((v) => (v.startsWith('file://') ? v.slice('file://'.length) : v))
+}
+
+// A word's variables, as far as the command itself fixes them (Dani 71760 (1)): $HOME, and every NAME the command
+// assigns a literal value (ctx.assigns: `D=/x; cat $D/y`, `export P=...`, a prefix assignment); a NAME assigned more
+// than once yields one variant per value, capped. A variable left over that does not START the word is unknown at
+// run time and reads as `*`, so the pattern rule still sees a run-dir name around it; a leading unknown one leaves
+// the word as it is (a run-time path: the documented limit).
+const VAR_RX = /\$\{([A-Za-z_]\w*)[^}]*\}|\$([A-Za-z_]\w*)/g
+const MAX_VAR_VARIANTS = 16
+const varNames = (x) => [...x.matchAll(VAR_RX)].map((m) => m[1] ?? m[2])
+function expandVars(v, ctx) {
+  let out = [String(v).replace(/\$\{HOME\}|\$HOME(?![\w])/g, homedir())]
+  const assigns = ctx?.assigns
+  for (let round = 0; round < 4 && assigns?.size; round++) {
+    let changed = false
+    const next = []
+    for (const x of out) {
+      const names = [...new Set(varNames(x).filter((n) => assigns.has(n)))]
+      if (!names.length) { next.push(x); continue }
+      changed = true
+      let variants = [x]
+      for (const n of names) {
+        const rx = new RegExp(`\\$\\{${n}(?:[^}]*)\\}|\\$${n}(?![\\w])`, 'g')
+        variants = variants.flatMap((y) => assigns.get(n).map((val) => y.replace(rx, () => val))).slice(0, MAX_VAR_VARIANTS)
+      }
+      next.push(...variants)
+    }
+    out = [...new Set(next)].slice(0, MAX_VAR_VARIANTS)
+    if (!changed) break
+  }
+  const unknown = out.filter((x) => x.includes('$')).map((x) => x.replace(VAR_RX, (m, a, b, at) => (at === 0 ? m : '*')))
+  return [...new Set([...out, ...unknown])]
+}
+
+// The literal assignments of a text's segments, into ctx.assigns (and CDPATH into ctx.cdpaths): standalone and prefix
+// assignments, and export / declare / typeset / local / readonly NAME=value. A value is itself expanded with what is
+// known so far (`A=/run; B=$A/x`); a value that stays unknown is not recorded.
+function collectAssigns(segments, ctx) {
+  for (const seg of segments) {
+    const words = segmentWords(seg)
+    const ci = commandIndex(words)
+    const cmd = basename(words[ci] ?? '')
+    const decl = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(cmd) ? words.slice(ci + 1) : []
+    for (const w of [...words.slice(0, ci), ...decl]) {
+      const m = /^([A-Za-z_]\w*)(\+?)=(.*)$/s.exec(w)
+      if (!m) continue
+      const vals = expandVars(m[3], ctx).filter((x) => !x.includes('$'))
+      if (!vals.length) continue
+      const prev = ctx.assigns.get(m[1]) ?? []
+      const add = m[2] ? (prev.length ? prev.flatMap((q) => vals.map((x) => q + x)) : vals) : vals
+      ctx.assigns.set(m[1], [...new Set([...prev, ...add])].slice(0, MAX_VAR_VARIANTS))
+      if (m[1] === 'CDPATH') for (const x of add) for (const d of x.split(':')) if (d) ctx.cdpaths.add(d)
+    }
+  }
 }
 function candidates(v, cwds) {
   if (v === '') return []
@@ -191,7 +251,7 @@ function candidates(v, cwds) {
 // A literal path: under a run dir lexically (`..`, `//` resolved) or by its real path (symlinks, case on APFS).
 // 'under' | 'ancestor' | null.
 function literalPathVerdict(p, table, ctx) {
-  if (++ctx.pathChecks > MAX_PATH_CHECKS) throw new BudgetExceeded('path checks')
+  if (++ctx.budget.n > MAX_PATH_CHECKS) throw new BudgetExceeded('path checks')
   const lexical = nameForms(resolve(p))
   const real = pathKey(p)
   if (keyUnderRun(lexical, table) || keyUnderRun(real, table)) return 'under'
@@ -220,7 +280,7 @@ function patternVerdict(v, table, ctx, raw = v) {
     const first = segs.findIndex((s) => GLOB_RX.test(s))
     const forms = [segs]
     if (first > 0) {
-      if (++ctx.pathChecks > MAX_PATH_CHECKS) throw new BudgetExceeded('path checks')
+      if (++ctx.budget.n > MAX_PATH_CHECKS) throw new BudgetExceeded('path checks')
       const prefix = segs.slice(0, first).join('/') || '/'
       for (const f of pathKey(prefix)) forms.push([...normalizePathSegments(f), ...segs.slice(first)])
     }
@@ -248,7 +308,8 @@ function globAgainst(g, rs) {
 
 function pathVerdict(w, table, ctx) {
   let verdict = null
-  for (const v of wordValues(w)) {
+  for (const v of wordValues(w, ctx)) {
+    if (v !== w && namesRunDir(v, table)) return 'under'
     for (const c of candidates(v, ctx.cwds)) {
       const r = GLOB_RX.test(c) || /[{]/.test(c) ? patternVerdict(c, table, ctx, v) : literalPathVerdict(c, table, ctx)
       if (r === 'under') return r
@@ -276,25 +337,35 @@ function collectCwds(segments, ctx) {
   for (const seg of segments) {
     const words = segmentWords(seg)
     const ci = commandIndex(words)
-    // `-C DIR` / `--directory DIR` / `--chdir DIR` (tar, git, make, env): the command's relative words land there
-    for (const [k, w] of words.entries()) {
-      const m = /^--(?:directory|chdir)=(.+)$/s.exec(w)
-      const dir = m ? m[1] : CHDIR_OPTS.has(w) ? words[k + 1] : undefined
-      if (dir === undefined || /[$`]/.test(dir)) continue
-      for (const v of wordValues(dir)) {
-        if (isAbsolute(v)) ctx.cwds.add(resolve(v))
-        else for (const c of [...ctx.cwds]) ctx.cwds.add(resolve(c, v))
-      }
-    }
     const cmd = basename(words[ci] ?? '')
     if (cmd !== 'cd' && cmd !== 'pushd') continue
     const arg = words.slice(ci + 1).find((w) => !/^-[LPe@]+$/.test(w) && w !== '--')
     if (arg === undefined) { ctx.cwds.add(homedir()); continue }
-    if (arg === '-' || /[$`]/.test(arg)) continue
-    for (const v of wordValues(arg)) {
-      if (isAbsolute(v)) ctx.cwds.add(resolve(v))
-      else for (const c of [...ctx.cwds]) ctx.cwds.add(resolve(c, v))
-    }
+    if (arg === '-' || arg.includes('`')) continue
+    addCwd(arg, ctx, true)
+  }
+}
+// `-C DIR` / `--directory DIR` / `--chdir DIR` (tar, git, make, env): THIS command's relative words land there, and
+// only its own (a remote `ssh h 'tar -C / ...'` moves no later local command).
+function segmentChdirs(words, ctx) {
+  const local = { ...ctx, cwds: new Set(ctx.cwds) }
+  for (const [k, w] of words.entries()) {
+    const m = /^--(?:directory|chdir)=(.+)$/s.exec(w)
+    const dir = m ? m[1] : CHDIR_OPTS.has(w) ? words[k + 1] : undefined
+    if (dir === undefined || dir.includes('`')) continue
+    addCwd(dir, local, false)
+  }
+  return local.cwds.size === ctx.cwds.size ? ctx : local
+}
+// A dir the command moves into: every fully known expansion of it; a relative one against every cwd so far and, for
+// `cd` / `pushd`, against every CDPATH entry too (Dani 71760 (3)). An inherited CDPATH counts as well.
+function addCwd(word, ctx, viaCd) {
+  for (const v of wordValues(word, ctx)) {
+    if (/[$*?[]/.test(v)) continue
+    if (isAbsolute(v)) { ctx.cwds.add(resolve(v)); continue }
+    const viaCdpath = viaCd && !/^\.\.?(?:\/|$)/.test(v)
+    const bases = [...ctx.cwds, ...(viaCdpath ? [...ctx.cdpaths].filter((d) => isAbsolute(d)) : [])]
+    for (const c of bases) ctx.cwds.add(resolve(c, v))
   }
 }
 
@@ -387,6 +458,7 @@ function bashVerdict(command, table, ctx) {
         if (codeStartsEntry(body, consumers.some(isJsRunner))) return { deny: true, reason: 'entry' }
       }
     }
+    collectAssigns(segments, ctx)
     collectCwds(segments, ctx)
     const parsed = segments.map((seg) => {
       const words = segmentWords(seg)
@@ -407,14 +479,16 @@ function bashVerdict(command, table, ctx) {
     // any segment of that text counts (as written only: a relative word there is not resolved through the cwds, or
     // `npm test` next to a `grep server.ts` in the plugin dir would read as a launch -- measured)
     const textRunner = parsed.some((p) => ['xargs', 'parallel'].includes(p.cmd) && isJsRunner(p.run))
+    const feeds = parsed.some((p) => ['xargs', 'parallel', 'read'].includes(p.cmd))
     for (const { words, ci, cmd, run } of parsed) {
       if (envFormDeny(cmd, words, ci)) return { deny: true, reason: 'env' }
+      const sctx = segmentChdirs(words, ctx)
       const args = words.slice(ci + 1)
       const launcher = isLauncher(run) || isLauncher(cmd)
       const jsRunner = isJsRunner(run)
-      const recursive = recursiveReader(cmd, args)
+      const recursive = recursiveReader(cmd, args, feeds)
       for (const [k, w] of words.entries()) {
-        const v = pathVerdict(w, table, ctx)
+        const v = pathVerdict(w, table, sctx)
         if (v === 'under') return { deny: true, reason: 'run-dir' }
         // the value of tar -C / -f (a dir to chdir to, the archive) is no tree it walks
         const optValue = k > ci && NON_TREE_OPTS.has(words[k - 1])
@@ -424,8 +498,8 @@ function bashVerdict(command, table, ctx) {
         if (launcher) {
           if (codeStartsEntry(w, jsRunner)) return { deny: true, reason: 'entry' }
           if (jsRunner) {
-            for (const val of wordValues(w)) {
-              for (const c of candidates(val, ctx.cwds)) if (namesEntryPoint(resolve(c))) return { deny: true, reason: 'entry' }
+            for (const val of wordValues(w, sctx)) {
+              for (const c of candidates(val, sctx.cwds)) if (namesEntryPoint(resolve(c))) return { deny: true, reason: 'entry' }
             }
           }
         }
@@ -506,7 +580,8 @@ function mcpVerdict(input, table, ctx) {
 export function gateDecision(toolName, toolInput, opts = {}) {
   const table = runDirTable(opts.runDirs ?? RUN_DIRS)
   const cwd = typeof opts.cwd === 'string' && isAbsolute(opts.cwd) ? opts.cwd : null
-  const ctx = { cwds: new Set(cwd ? [cwd] : []), pathChecks: 0 }
+  const cdpaths = new Set(String(process.env.CDPATH ?? '').split(':').filter((d) => isAbsolute(d)))
+  const ctx = { cwds: new Set(cwd ? [cwd] : []), budget: { n: 0 }, assigns: new Map(), cdpaths }
   const name = String(toolName ?? '')
   const input = toolInput && typeof toolInput === 'object' ? toolInput : {}
   try {

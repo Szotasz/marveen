@@ -194,6 +194,72 @@ describe('DENY: symlink, .., the cd chain, the hook cwd, function and shell bodi
   })
 })
 
+describe('DENY (Dani 71760): a path the command assembles from its own literal assignments', () => {
+  const MACP = '/Library/Application Support/Marveen'
+  it.each([
+    ['a quoted prefix, braces', `D='${MACP}/mxd-'; cat "\${D}run/tokens/marveen"`],
+    ['a prefix, braces, a suffix', `D=/run/marveen; cat \${D}-mxd/tokens/samu`],
+    ['two variables', `A=/run; B=marveen-mx; cat $A/\${B}d/tokens/samu`],
+    ['the parent in a variable', `P='${MACP}'; cat "$P/mxd-${'run'}/tokens/marveen"`],
+    ['export', `export P='${MACP}' && cat "$P/mxd-${'run'}/tokens/x"`],
+    ['a value built from an earlier one', `A=/run; B=$A/marveen-${'mxd'}; cat $B/tokens/x`],
+    ['an unknown variable inside the path', `cat /run/\${X}-${'mxd'}/tokens/x`],
+    ['inside interpreter code', `D=/run/marveen; python3 -c "print(open('\${D}-${'mxd'}/tokens/a').read())"`],
+  ])('%s', (_n, cmd) => {
+    expect(bash(cmd)).toEqual({ deny: true, reason: 'run-dir' })
+  })
+})
+
+describe('DENY (Dani 71760): ~+, ~- and ~N are cwds', () => {
+  it.each([
+    ['~+ after cd (macOS)', `cd '/Library/Application Support/Marveen' && cat ~+/mxd-${'run'}/tokens/marveen`],
+    ['~+ after cd (Linux)', `cd /run && cat ~+/marveen-${'mxd'}/tokens/samu`],
+    ['~- after two cds', `cd /run; cd /tmp; cat ~-/marveen-${'mxd'}/tokens/a`],
+    ['~1 (dirs stack)', `pushd /run; pushd /tmp; cat ~1/marveen-${'mxd'}/tokens/a`],
+  ])('%s', (_n, cmd) => {
+    expect(bash(cmd)).toEqual({ deny: true, reason: 'run-dir' })
+  })
+})
+
+describe('DENY (Dani 71760): a relative cd through CDPATH', () => {
+  it.each([
+    ['a prefix CDPATH', `CDPATH='/Library/Application Support/Marveen' cd mxd-${'run'} && cat tokens/marveen`],
+    ['an exported CDPATH', `export CDPATH=/run; cd marveen-${'mxd'}; cat tokens/samu`],
+    ['a CDPATH with several entries', `CDPATH=/tmp:/run; cd marveen-${'mxd'}; cat tokens/a`],
+  ])('%s', (_n, cmd) => {
+    expect(bash(cmd).deny).toBe(true)
+  })
+})
+
+describe('DENY (Dani 71760): find / fd from an ancestor feeding a reader', () => {
+  it.each([
+    ['| xargs cat', `find '/Library/Application Support/Marveen' -type f | xargs cat`],
+    ['-print0 | xargs -0 cat', `find /run -type f -print0 | xargs -0 cat`],
+    ['| while read', `find /run -type f | while read f; do cat "$f"; done`],
+    ['fd | xargs', `fd . /run | xargs cat`],
+    ['| parallel', `find /run -name '*.token' | parallel cat`],
+  ])('%s', (_n, cmd) => {
+    expect(bash(cmd)).toEqual({ deny: true, reason: 'ancestor' })
+  })
+})
+
+describe('ALLOW controls for the 71760 rules', () => {
+  it.each([
+    ['a variable path elsewhere', 'D=/Users/someone/work; cat "$D/notes.txt"'],
+    ['a variable to a run dir PARENT, not walked', 'P=/run; ls $P'],
+    ['a leading unknown variable', 'cat "$WORK/tokens/a"'],
+    ['find elsewhere into xargs', 'find /Users/someone/src -name "*.ts" | xargs wc -l'],
+    ['find / -name with no reader', 'find / -name foo 2>/dev/null | head'],
+    ['a CDPATH elsewhere', 'CDPATH=/Users/someone cd src && ls'],
+    ['~+ elsewhere', 'cd /Users/someone && cat ~+/notes.txt'],
+    ['tar -x in the root cwd reads only its archive', 'cd / && tar -xf x.tar'],
+    ['an earlier tar -C / moves no later command', 'tar -C / -cf /tmp/a.tar home/x; find . -type f | xargs wc -l'],
+    ['a remote tar -C / moves no local command', `D=/Users/someone/arch; ssh h 'tar -C / -cf - home/x' | tar -xf - -C "$D"; cd "$D" && find . -type f | while read f; do shasum "$f"; done`],
+  ])('%s', (_n, cmd) => {
+    expect(bash(cmd)).toEqual({ deny: false })
+  })
+})
+
 describe('DENY: a recursive reader rooted at an ancestor of a run dir', () => {
   it.each([
     ['grep -r', 'grep -r token /run'],
