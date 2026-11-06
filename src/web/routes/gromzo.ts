@@ -45,7 +45,7 @@ import {
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
 import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, currentBotName } from '../../config.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { gateManualRestart } from '../manual-restart-gate.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
@@ -95,6 +95,10 @@ export function httpStatusFor(code: string): number {
     case 'reserved_slug':
     case 'bad_name':
     case 'reserved_name':
+    // GROMZONAMETAKEN1106: the controller's name refusals (passed on by mxd): the owner picks another name.
+    case 'name_taken':
+    case 'bad_display_name':
+    case 'mixed_script':
       return 409
     case 'rate_limited':
     case 'too_soon':
@@ -267,6 +271,10 @@ const defaultAgentDeps: GromzoAgentDeps = {
     return mainGromzoPanelState(t.ok && t.on, mainSessionLoadsGromzo(MAIN_CHANNELS_SESSION))
   },
   displayName: (slug) => readAgentDisplayName(slug) || slug,
+  // GROMZONAMETAKEN1106 (the owner, Samu 71820): the main agent joins Gromzo under the name the owner set for it
+  // (.env BOT_NAME, read per call like the dashboard's own label; "Marveen" when unset); every other agent under its
+  // display name.
+  gromzoName: (slug) => (slug === MAIN_AGENT_ID ? currentBotName() : readAgentDisplayName(slug) || slug),
   isRunning: (slug) => isAgentRunning(slug),
   // agentDir(slug) only for a slug slugRefusal passed (sendGromzoAvatar checks first; the list only names fleet agents).
   readAvatar: (slug) => readAgentAvatar(agentDir(slug)),
@@ -346,9 +354,20 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
   // Every action changes state (the consent check may add the agent, write its flag and restart it): POST only.
   const wantMethod = path === AGENTS_PATH ? 'GET' : 'POST'
   if (method !== wantMethod) { methodNotAllowed(res, method, [wantMethod]); return true }
+  // GROMZONAMETAKEN1106: the switch-on may carry the owner's name for Gromzo ({"name": "..."}); every other action
+  // sends an empty object, and nothing else in a body is read.
+  let bodyName: string | undefined
   if (wantMethod === 'POST') {
     if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }
-    try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+    let raw: Buffer
+    try { raw = await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+    if (action?.[2] === 'enable' && raw.length > 0) {
+      let parsed: unknown
+      try { parsed = JSON.parse(raw.toString('utf8')) } catch { failure(res, 'bad_request'); return true }
+      const n = parsed && typeof parsed === 'object' ? (parsed as { name?: unknown }).name : undefined
+      if (n !== undefined && typeof n !== 'string') { failure(res, 'bad_request'); return true }
+      bodyName = n
+    }
   }
   if (!isOwnerSession(auth, req)) {
     logger.warn({ kind: auth?.kind, path }, 'gromzo agents: refused (needs the owner session)')
@@ -370,7 +389,7 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
     return true
   }
   try {
-    const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps)
+    const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps, bodyName)
       : action[2] === 'disable' ? await disableGromzoAgent(slug, agentDeps)
         : await checkGromzoAgent(slug, agentDeps)
     sendOutcome(res, slug, action[2]!, o)

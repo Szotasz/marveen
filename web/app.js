@@ -21298,8 +21298,15 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   const local = new Map()
   let rows = []
   let pollTimer = null
+  // GROMZONAMETAKEN1106: the name the agent gets on Gromzo. A row shows a name field once the controller refused its
+  // name (at the switch-on or at the approval). The codes that mean "pick another name", never "try again later".
+  const NAME_CODES = ['name_taken', 'reserved_name', 'bad_name', 'bad_display_name', 'mixed_script']
+  const nameDraft = new Map() // slug -> what the owner typed (survives the list's re-renders)
+  const nameAsk = new Set() // slugs whose last switch-on came back with a name code
 
   function agentErr(code) {
+    // The controller says name_taken for a taken AND a reserved name: one sentence that asks for another name.
+    if (code === 'name_taken') code = 'reserved_name'
     for (const key of ['gromzo.agents.err.' + code, 'gromzo.err.' + code]) {
       const s = t(key)
       if (s !== key) return s
@@ -21350,7 +21357,18 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
     return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
   }
 
+  function nameFieldShown(row, pending) {
+    return !pending && (!row.gromzo || row.held) && nameAsk.has(row.slug)
+  }
+
+  function nameFor(row) {
+    return nameDraft.has(row.slug) ? nameDraft.get(row.slug) : (row.gromzoName || row.name || row.slug)
+  }
+
   function render() {
+    // A re-render (the poll, a reload) must not take the name field from under the owner's typing.
+    const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.gromzoName : undefined
+    const sel = focused !== undefined ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null
     listEl.replaceChildren()
     for (const row of rows) {
       const li = document.createElement('li')
@@ -21393,6 +21411,25 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
         const l = local.get(row.slug)
         const pending = (l && l.kind === 'pending') || (row.pendingUntil && row.pendingUntil > Date.now())
         const disabled = !!pending || !!(l && (l.kind === 'busy' || l.kind === 'restarting'))
+        if (nameFieldShown(row, pending)) {
+          const field = document.createElement('label')
+          field.className = 'gromzo-agent-namefield'
+          const cap = document.createElement('span')
+          cap.textContent = t('gromzo.agents.name.label')
+          const input = document.createElement('input')
+          input.type = 'text'
+          input.className = 'input'
+          input.maxLength = 64
+          input.autocomplete = 'off'
+          input.spellcheck = false
+          input.value = nameFor(row)
+          input.disabled = disabled
+          input.dataset.gromzoName = row.slug
+          input.addEventListener('input', () => nameDraft.set(row.slug, input.value))
+          input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !input.disabled) { e.preventDefault(); switchOn(row) } })
+          field.append(cap, input)
+          main.append(field)
+        }
         const label = row.name || row.slug
         const mk = (on, primary, textKey) => {
           const b = document.createElement('button')
@@ -21420,6 +21457,10 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
         li.append(actions)
       }
       listEl.append(li)
+    }
+    if (focused !== undefined) {
+      const again = [...listEl.querySelectorAll('input[data-gromzo-name]')].find((x) => x.dataset.gromzoName === focused)
+      if (again && !again.disabled) { again.focus(); if (sel) try { again.setSelectionRange(sel[0], sel[1]) } catch { /* not a text field */ } }
     }
   }
 
@@ -21484,18 +21525,33 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
     }
   }
 
-  async function post(slug, action) {
+  async function post(slug, action, body) {
     return fetch('/api/gromzo/agents/' + encodeURIComponent(slug) + '/' + action, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store',
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : '{}', cache: 'no-store',
     })
+  }
+
+  // A name code: the row keeps (or gets) its name field, prefilled with the name just refused, and says why.
+  function nameRefused(row, code, tried) {
+    nameAsk.add(row.slug)
+    if (!nameDraft.has(row.slug) && tried) nameDraft.set(row.slug, tried)
+    local.set(row.slug, { kind: 'error', text: agentErr(code) })
   }
 
   async function switchOn(row) {
     if (row.main && !confirm(t('gromzo.agents.main.confirm_on'))) return
+    const withName = nameFieldShown(row, false)
+    const name = withName ? nameFor(row).trim() : ''
     local.set(row.slug, { kind: 'busy' }); render()
     try {
-      const r = await post(row.slug, 'enable')
-      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      const r = await post(row.slug, 'enable', withName ? { name } : null)
+      if (!r.ok) {
+        const code = await codeOf(r)
+        if (NAME_CODES.includes(code)) nameRefused(row, code, name || row.gromzoName || row.name)
+        else local.set(row.slug, { kind: 'error', text: agentErr(code) })
+        render(); return
+      }
+      nameAsk.delete(row.slug)
       const b = await r.json()
       if (b.state === 'pending') local.set(row.slug, { kind: 'pending', until: Date.now() + (Number(b.expires_in) || 600) * 1000 })
       else local.delete(row.slug)
@@ -21550,6 +21606,8 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
           if (code === 'no_pending') local.delete(slug)
           // The approval belonged to another agent and mxd added THAT one (its switch here stays off).
           else if (code === 'consent_mismatch' && added) local.set(slug, { kind: 'error', text: t('gromzo.agents.err.consent_mismatch_added', { slug: added }) })
+          // The controller checks the name again when the approval is used (a member may have taken it meanwhile).
+          else if (NAME_CODES.includes(code)) { const row = rows.find((x) => x.slug === slug); if (row) nameRefused(row, code, nameFor(row)); else local.set(slug, { kind: 'error', text: agentErr(code) }) }
           else if (!['not_running', 'timeout', 'rate_limited', 'too_soon', 'unavailable', 'io'].includes(code)) local.set(slug, { kind: 'error', text: agentErr(code) })
           continue
         }

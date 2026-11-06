@@ -7690,6 +7690,9 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-agent-state.is-warn { color: var(--accent); }
 .gromzo-agent-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
 .gromzo-agent-row .btn-compact { min-height: 36px; }
+/* GROMZONAMETAKEN1106: the agent's name on Gromzo, shown on a row after a name refusal. */
+.gromzo-agent-namefield { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; font-size: 12px; color: var(--text-muted); max-width: 360px; }
+.gromzo-agent-namefield input { width: 100%; }
 
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
