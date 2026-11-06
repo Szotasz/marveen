@@ -18,24 +18,44 @@ function detect(): PlatformType {
 
 export const PLATFORM: PlatformType = detect()
 
-// Standard install locations probed when `which` cannot resolve a binary. A
-// transient PATH gap is the failure this guards against: the 04:00 auto-update
-// finalizer restarts the dashboard with only NODE_PIN_DIR prepended to PATH, so
-// /opt/homebrew/bin (where `claude` and `tmux` live) is briefly absent and
-// `which claude` fails -- even though the binary is present on disk. Probing
-// these dirs recovers the real path instead of hard-failing.
+// Standard install locations probed when `which` cannot resolve a binary: a
+// PATH that lacks the dir a binary lives in (a launch with a narrower PATH, a
+// launchd plist from an older install) would otherwise hard-fail although the
+// binary is on disk. Probing these dirs recovers the real path.
 // The user-level dirs cover the two most common `claude` install locations
 // (native installer -> ~/.local/bin, bun -> ~/.bun/bin) -- exactly the layout
 // on bootcamp/AVX-fallback boxes, which would otherwise still hard-fail during
 // a PATH gap (#632 follow-up).
-const KNOWN_BIN_DIRS = [
-  join(homedir(), '.local', 'bin'),
-  join(homedir(), '.bun', 'bin'),
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  '/usr/bin',
-  '/bin',
-]
+const FIXED_BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
+
+// ISSUE1968BREWPREFIX (#1968): a Homebrew in a custom prefix (~/homebrew, say) keeps tmux and the claude cask in
+// <prefix>/bin, which no list here has: the dashboard crash-looped on "Required binary not found on PATH: tmux".
+// The prefix is stored nowhere, but every launchd PATH the installer ever wrote starts with node@22's keg,
+// <prefix>/opt/node@22/bin (NODE_BIN_DIR), and update.sh never rewrites that plist. So <prefix>/bin is derived from
+// the PATH: the first keg entry whose <prefix>/bin exists and is not a dir the list already has. scripts/channels.sh
+// applies the same rule to the main session's PATH. Null = nothing to add (the list as before).
+export function brewPrefixBin(pathEnv: string | undefined, isDir: (p: string) => boolean = existsSync): string | null {
+  for (const dir of (pathEnv ?? '').split(':')) {
+    const m = /^(\/.+)\/opt\/node@\d{1,2}\/bin$/.exec(dir)
+    if (!m) continue
+    const bin = `${m[1]}/bin`
+    if (FIXED_BIN_DIRS.includes(bin)) continue
+    if (isDir(bin)) return bin
+  }
+  return null
+}
+
+// The probe list, worked out at call time (the PATH can change under a running process). The derived Homebrew bin
+// goes right after ~/.local/bin, the same place channels.sh puts it, so both lookups pick the same binary.
+export function knownBinDirs(pathEnv: string | undefined = process.env.PATH): string[] {
+  const brew = brewPrefixBin(pathEnv)
+  return [
+    join(homedir(), '.local', 'bin'),
+    ...(brew ? [brew] : []),
+    join(homedir(), '.bun', 'bin'),
+    ...FIXED_BIN_DIRS,
+  ]
+}
 
 // Resolve a binary to an absolute path, or null if it cannot be found on PATH
 // or in any known install dir. Never throws for a missing binary (only for an
@@ -45,7 +65,7 @@ export function tryResolveFromPath(name: string): string | null {
   try {
     return execSync(`which ${name}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch {
-    for (const dir of KNOWN_BIN_DIRS) {
+    for (const dir of knownBinDirs()) {
       const candidate = join(dir, name)
       if (existsSync(candidate)) return candidate
     }
