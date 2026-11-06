@@ -2,7 +2,7 @@
 // said only "not linked yet", and nothing said that the link waits for a confirmation on gromzo.com within 15
 // minutes. gromzoStatusLine (web/app.js) picks the line from GET /api/gromzo/status; these cases run the shipped
 // function itself, and check that every line it can pick exists in both languages.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -66,5 +66,61 @@ describe('the lines exist in both languages', () => {
       expect(t).toContain('gromzo.com')
       expect(t).toContain('{until}')
     }
+  })
+})
+
+// Dani's #2555 review: nothing pinned the 15 s re-read (removing it left every test green), and the deadline was
+// formatted hu-HU in the English text too. Both now run from the shipped functions.
+function shipped(): { untilText: (ms: number, lang: string) => string, schedule: (c: () => boolean, r: () => void, setT: typeof setTimeout) => unknown, ms: number } {
+  const ms = APP.match(/^const GROMZO_STATUS_REFRESH_MS = \d+$/m)
+  const until = APP.match(/^function gromzoUntilText\(untilMs, lang\) \{[\s\S]*?\n\}$/m)
+  const sched = APP.match(/^function gromzoScheduleStatusRefresh\(isConnected, reload, setT\) \{[\s\S]*?\n\}$/m)
+  if (!ms || !until || !sched) throw new Error('the status-refresh helpers are not in web/app.js')
+  return new Function(`${ms[0]}\n${until[0]}\n${sched[0]}\nreturn { untilText: gromzoUntilText, schedule: gromzoScheduleStatusRefresh, ms: GROMZO_STATUS_REFRESH_MS }`)()
+}
+
+describe('the pending link: its deadline and its re-read', () => {
+  const h = shipped()
+  afterEach(() => { vi.useRealTimers() })
+
+  it('reads the status again after 15 s, once, while the card is on the page', () => {
+    vi.useFakeTimers()
+    const reload = vi.fn()
+    h.schedule(() => true, reload, setTimeout)
+    vi.advanceTimersByTime(14_999)
+    expect(reload).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(reload).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(60_000)
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(h.ms).toBe(15_000)
+  })
+
+  it('a card that left the page is not read again', () => {
+    vi.useFakeTimers()
+    const reload = vi.fn()
+    h.schedule(() => false, reload, setTimeout)
+    vi.advanceTimersByTime(15_000)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('the pending branch of loadStatus uses both helpers, and clears a running timer first', () => {
+    // The Gromzo card's loadStatus (app.js has more than one): the one right after its own refresh handle.
+    const at = APP.indexOf('async function loadStatus() {', APP.indexOf('  let statusRefresh = null\n'))
+    expect(APP.indexOf('  let statusRefresh = null\n')).toBeGreaterThan(-1)
+    const fn = APP.slice(at, at + 1200)
+    expect(fn).toContain('if (statusRefresh) { clearTimeout(statusRefresh); statusRefresh = null }')
+    expect(fn).toContain("t(line.key, { until: gromzoUntilText(line.until, window._lang) })")
+    expect(fn).toContain('statusRefresh = gromzoScheduleStatusRefresh(() => statusEl.isConnected, () => { statusRefresh = null; loadStatus() }, setTimeout)')
+  })
+
+  // Measured 2026-11-06: for hour:minute hu-HU and en-GB print the same ("00:05", "14:05"), so the language switch
+  // changes no visible output; what this pins is that English never turns into a 12-hour en-US clock ("02:05 PM").
+  it('the deadline is a 24-hour clock in the UI language: hu-HU in Hungarian, en-GB in English', () => {
+    const at = new Date(2026, 10, 6, 14, 5, 0).getTime()
+    expect(h.untilText(at, 'hu')).toBe(new Date(at).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' }))
+    expect(h.untilText(at, 'en')).toBe(new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
+    expect(h.untilText(at, 'en')).toBe('14:05')
+    expect(h.untilText(at, 'en')).not.toMatch(/PM|AM/i)
   })
 })

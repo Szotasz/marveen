@@ -21130,6 +21130,17 @@ function gromzoStatusLine(s, nowMs) {
   return { key: 'gromzo.status.not_linked' }
 }
 
+// GROMZOLINKCONFIRM1106 follow-up (Dani, #2555 review): the deadline in the UI's own language (24-hour clock in both),
+// and the re-read of a pending link, both pure so the tests run the shipped code: 15 s after a pending line, once,
+// and only while the card is still on the page.
+const GROMZO_STATUS_REFRESH_MS = 15000
+function gromzoUntilText(untilMs, lang) {
+  return new Date(untilMs).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'hu-HU', { hour: '2-digit', minute: '2-digit' })
+}
+function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
+  return setT(() => { if (isConnected()) reload() }, GROMZO_STATUS_REFRESH_MS)
+}
+
 // === Gromzo card: the owner's QR code (GROMZOOWNERQR1030, MOBILRELOGINDASH1025) ===
 // POST /api/gromzo/owner-qr answers with the app's URI: the registration code while
 // the owner seat is free, afterwards a new phone's login code. The URI carries a live
@@ -21183,9 +21194,8 @@ function gromzoStatusLine(s, nowMs) {
       const s = r.ok ? await r.json() : { available: false, code: 'http_' + r.status }
       const line = gromzoStatusLine(s, Date.now())
       if (line.until) {
-        const until = new Date(line.until).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })
-        statusEl.textContent = t(line.key, { until })
-        statusRefresh = setTimeout(() => { statusRefresh = null; if (statusEl.isConnected) loadStatus() }, 15000)
+        statusEl.textContent = t(line.key, { until: gromzoUntilText(line.until, window._lang) })
+        statusRefresh = gromzoScheduleStatusRefresh(() => statusEl.isConnected, () => { statusRefresh = null; loadStatus() }, setTimeout)
       } else {
         statusEl.textContent = t(line.key, line.params)
       }
