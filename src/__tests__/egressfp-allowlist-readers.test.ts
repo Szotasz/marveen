@@ -102,8 +102,21 @@ describe('(c) git grep is a read, in its narrow form', () => {
 
 describe('(b) a definitely literal variable has no unresolved reading', () => {
   const use = 'docker run -v $F/out:/out img'
-  it('B3 exact shape (Bence 71414): assignment in a && chain, uses after it', () => {
-    allowed(`cd ${root} && F=/private/tmp/x/scratchpad/bfl-comment.txt && sed -i '' 's/^\\[Bence 11-06 10:5x\\] //' $F && head -c 80 $F; echo; python3 scripts/kartya-es-ertesites.py --id X --comment-file $F --author Bence 2>&1 | tail -3`, '/tmp')
+  const B3 = `cd ROOT && F=/private/tmp/x/scratchpad/bfl-comment.txt && sed -i '' 's/^\\[Bence 11-06 10:5x\\] //' $F && head -c 80 $F`
+  it('B3 (Bence 71414): the uses inside the && chain of the conditional assignment resolve', () => {
+    allowed(B3.replace('ROOT', root), '/tmp')
+  })
+  it('B3 in full: its last use is past a ; after a CONDITIONAL assignment, so it stays unresolved (Samu 71530)', () => {
+    deniedAllowlist(`${B3.replace('ROOT', root)}; echo; python3 scripts/kartya-es-ertesites.py --id X --comment-file $F --author Bence 2>&1 | tail -3`, '/tmp')
+  })
+  it('DENY (Samu 71530): a conditional assignment does not hold past a ;, where F is empty at run time', () => {
+    deniedAllowlist(`false && F=/tmp/x; cp /tmp/y \${F}local-hooks/a.py`)
+    deniedAllowlist(`cd ${root} && F=/tmp/x; cp /tmp/y \${F}local-hooks/a.py`, '/tmp')
+    deniedAllowlist(`false && F=/tmp/x; ${use}`)
+    // a pair without the name: conditional past a ; stays "any text" (from the root, * can be local-hooks) ...
+    deniedAllowlist(`false && F=/tmp/x; cp /tmp/y \${F}/a.py`)
+    // ... the same assignment unconditional (first in its list) resolves to the literal
+    allowed(`F=/tmp/x; cp /tmp/y \${F}/a.py`)
   })
   it('positive: an unconditional or chained literal assignment before the use', () => {
     allowed(`cd ${root} && F=/tmp/x && ${use}`, '/tmp')

@@ -599,8 +599,13 @@ export function definiteAssignments(split) {
     let orBefore = false
     while (k >= 0 && split.seps[k] !== ';') { if (split.seps[k] === '||') orBefore = true; k-- }
     if (orBefore) continue
+    // A CONDITIONAL assignment (an && before it in its own ;-list: `false && F=x`) resolves only inside that && chain.
+    // Past a ; the use runs whether or not the assignment did, with F empty: `false && F=x; cp a ${F}local-hooks/b`
+    // writes into the protected dir (Samu 71530). An unconditional one (first in its list) holds for the rest.
+    const conditional = before === '&&'
     for (let u = d.at + 1; u < split.segs.length; u++) {
       if (!['&&', ';'].includes(split.seps[u - 1])) break
+      if (conditional && split.seps[u - 1] === ';') break
       out[u].set(d.name, d.value)
     }
   }
