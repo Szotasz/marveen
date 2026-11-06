@@ -106,7 +106,7 @@ import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
-import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
+import { reapChannelOrphans, reapDetachedChannelClaudes, reapGromzoOrphans } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { notifyChannel, alertIsRedirected } from '../notify.js'
 
@@ -2362,6 +2362,13 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     } catch (err) {
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
+    // MXDAGENTSOCKID1106 (b): the gromzo plugins of the claudes killed above (and of this agent's old session)
+    // outlive them; a leftover keeps this agent's agent.sock binding and pops its messages.
+    try {
+      reapGromzoOrphans({ tmuxPath: tmuxBin() })
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-launch gromzo-orphan reap failed (continuing)')
+    }
 
     // Custom provider check runs FIRST and BEFORE resolveOpenRouterModel, so
     // an explicit customProvider field in agent-config.json takes priority over
@@ -3256,6 +3263,12 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
         }
       } catch (err) {
         logger.warn({ err, name }, 'post-stop channel-poller reap failed')
+      }
+      // MXDAGENTSOCKID1106 (b): a gromzo plugin the kill-session left behind.
+      try {
+        reapGromzoOrphans({ tmuxPath: tmuxBin() })
+      } catch (err) {
+        logger.warn({ err, name }, 'post-stop gromzo-orphan reap failed')
       }
     }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
