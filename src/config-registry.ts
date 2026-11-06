@@ -1,5 +1,7 @@
 import { homedir } from 'node:os'
 import { expandAndValidateConfigDir } from './config-dir-path.js'
+import { alertChatFormatError, alertChatProviderOf, OWNER_ALERT_CHAT_KEY } from './alert-chat-format.js'
+import { readEnvFile } from './env.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -986,6 +988,25 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
     // Where the main agent's scheduled results go: any change re-routes them, so it is overrides-only and a .env line
     // never counts (ENVRELAXGATE1104 follow-up, Samu 68119).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    // ISSUE2556X (marveen#2556): with two paired DMs and the installer's ALLOWED_CHAT_ID=0 the alert resolver refuses
+    // to guess, and every system alert was lost. This names the chat outright. Delivery only: it never makes anyone
+    // the owner (the command gate and the ledger keep ALLOWED_CHAT_ID / the sole DM entry), and the memory key stays
+    // ALLOWED_CHAT_ID.
+    key: OWNER_ALERT_CHAT_KEY,
+    type: 'string',
+    default: '',
+    description: 'Hova menjenek a rendszer-riasztások és a gazdának szóló értesítések (kvóta, lemez, beragadt munkamenet, biztonsági esemény, ütemezett feladat hibája, napi napló), a beállított csatornán (CHANNEL_PROVIDER) belül a gazda SZEMÉLYES chatjének azonosítójával: Telegramon a saját chated pozitív száma, Slacken a DM (D...) vagy a felhasználód (U...) azonosítója, Discordon a DM-csatornád azonosítója (ott az alakból nem látszik, hogy DM-e). Csoport vagy csatorna nem lehet, mert ott a riasztásokat és a jóváhagyások szövegét mindenki látná. Üresen (alapértelmezés) a mostani szabály marad: az ALLOWED_CHAT_ID, vagy ha az nincs beállítva, az egyetlen párosított DM. Akkor kell, ha a fő bothoz több ember is párosítva van, és az ALLOWED_CHAT_ID nincs kitöltve: ilyenkor a rendszer nem találgat, és e nélkül a riasztás elveszik. Csak a kézbesítést állítja: senkit nem tesz gazdává, a parancsok és az emlékek változatlanok.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    // the provider's own shape, read from the install .env as config.ts reads CHANNEL_PROVIDER (this module may not
+    // import config.ts); a wrong shape is refused here, never stored and silently ignored later
+    validate: (v: string) => alertChatFormatError(alertChatProviderOf(readEnvFile(['CHANNEL_PROVIDER'])['CHANNEL_PROVIDER']), v),
+    // Where the owner's alerts go: any change re-routes them (a security alert included), so it is overrides-only and
+    // a .env line never counts, as SCHEDULED_DELIVERY_CHANNEL (Samu 71763).
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {

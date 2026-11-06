@@ -34,7 +34,7 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # noise on the success path would otherwise become part of the chat id).
 CHAT_OK=1
 if [ -n "$TOKEN" ]; then
-  CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE")" || CHAT_OK=0
+  CHAT_ID="$(resolve_alert_chat_id "$ENV_FILE")" || CHAT_OK=0
 else
   CHAT_ID=""
 fi

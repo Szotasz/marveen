@@ -14,6 +14,8 @@ ledger-outbound.py:21 already imports its siblings.
 """
 import json
 import os
+import re
+import sys
 
 _ENV_KEY_BY_PROVIDER = {
     "slack": "SLACK_CHANNEL_ID",
@@ -128,3 +130,71 @@ def resolve_owner_chat_id(env, provider="telegram"):
     """The chat id, or None when this install has no owner chat for an alert
     (resolve_owner_chat gives the reason)."""
     return resolve_owner_chat(env, provider)[0]
+
+
+# ---------------------------------------------------------------- OWNER_ALERT_CHAT_ID (ISSUE2556X, marveen#2556)
+# The owner's alert chat, set on the dashboard's settings page: an overrides-only registry key, so it is read from
+# <install>/store/config-overrides.json only (a .env line never counts), exactly as settings-store answers it. A
+# DELIVERY target only: resolve_owner_chat / resolve_owner_chat_id are unchanged, because their non-alert callers
+# (the inbound prober, ledger-outbound's owner label) ask who the owner is, not where an alert goes. It applies only
+# when the caller's provider is the install's CHANNEL_PROVIDER. The patterns are src/alert-chat-format.ts's.
+OWNER_ALERT_CHAT_KEY = "OWNER_ALERT_CHAT_ID"
+_ALERT_CHAT_FORMATS = {
+    "telegram": re.compile(r"[1-9][0-9]{0,19}"),
+    "slack": re.compile(r"[DU][A-Z0-9]{6,}"),
+    "discord": re.compile(r"[1-9][0-9]{14,24}"),
+    "googlechat": re.compile(r"spaces/[A-Za-z0-9_-]+"),
+    "teams": re.compile(r"[A-Za-z0-9:@._-]{3,}"),
+}
+
+
+def _install_provider(env_file):
+    raw = _read_env_value(env_file, "CHANNEL_PROVIDER")
+    v = (raw or "").strip().strip("\r")
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1].strip()
+    return v if v in _ALERT_CHAT_FORMATS else "telegram"
+
+
+def alert_chat_override(env_file, provider="telegram"):
+    """(chat_id, None) when the owner set a valid OWNER_ALERT_CHAT_ID for this provider; (None, None) when it is unset
+    or the install's channel is another provider; (None, reason) when it is set but not a chat id of this provider
+    (also written to stderr: a wrong value must not fall back silently)."""
+    if provider != _install_provider(env_file):
+        return None, None
+    path = os.path.join(os.path.dirname(os.path.abspath(env_file)), "store", "config-overrides.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None, None
+    raw = data.get(OWNER_ALERT_CHAT_KEY) if isinstance(data, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        return None, None
+    v = str(raw).strip()
+    if not v or v == "0":
+        return None, None
+    if _ALERT_CHAT_FORMATS[provider].fullmatch(v):
+        return v, None
+    reason = f"{OWNER_ALERT_CHAT_KEY} is set but is not a {provider} chat id -- NOT used"
+    sys.stderr.write(f"owner_chat: {reason}\n")
+    return None, reason
+
+
+def resolve_alert_chat(env, provider="telegram"):
+    """resolve_owner_chat with the owner's OWNER_ALERT_CHAT_ID in front: for an ALERT sender only."""
+    env_file = env if isinstance(env, str) else (env.get("__env_file__") if isinstance(env, dict) else None)
+    invalid = None
+    if env_file:
+        chat, invalid = alert_chat_override(env_file, provider)
+        if chat:
+            return chat, None
+    chat, reason = resolve_owner_chat(env, provider)
+    if chat is None and invalid:
+        reason = f"{reason}; {OWNER_ALERT_CHAT_KEY} is set but invalid for {provider}"
+    return chat, reason
+
+
+def resolve_alert_chat_id(env, provider="telegram"):
+    """The alert chat id, or None (resolve_alert_chat gives the reason)."""
+    return resolve_alert_chat(env, provider)[0]

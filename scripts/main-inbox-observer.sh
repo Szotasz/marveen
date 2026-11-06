@@ -201,7 +201,7 @@ fi
 # NOT the dashboard API: this observer exists for the case where that process is
 # the thing that is down.
 alert_owner() {
-  local msg="$1" token chat tg_dir tg_env
+  local msg="$1" token chat tg_dir tg_env ov_rc
   if [ "${MAIN_INBOX_OBSERVER_ALERT_DRYRUN:-}" = "1" ]; then
     echo "ALERT_DRYRUN: $msg"; return 0
   fi
@@ -212,7 +212,15 @@ alert_owner() {
   fi
   tg_env="$tg_dir/.env"
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$tg_env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
+  # ISSUE2556X: the owner's OWNER_ALERT_CHAT_ID first (unset: exactly the old reads below)
+  . "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
+  ov_rc=0
+  chat="$(owner_alert_chat_override "$INSTALL_DIR/.env" telegram 2>/dev/null)" || ov_rc=$?
+  if [ "$ov_rc" -ne 0 ]; then
+    [ "$ov_rc" -eq 2 ] && log "OWNER_ALERT_CHAT_ID is set but is not a telegram chat id -- NOT used, the old owner chat read follows"
+    chat=""
+  fi
+  [ -z "$chat" ] && chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
   [ -z "$chat" ] && chat="$(grep -E '^TELEGRAM_CHAT_ID=' "$tg_env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
   # CHATID0: "0" is the installer placeholder, not a chat.
   [ "$chat" = "0" ] && chat=""

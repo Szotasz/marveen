@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { PROJECT_ROOT, STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
 import { shQuote } from "./ssh-tmux.js"
-import { resolveOwnerChatId } from "../owner-chat.js"
+import { ownerAlertChatOverride, resolveOwnerChatId } from "../owner-chat.js"
 import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
@@ -221,7 +221,7 @@ function finish(
   }
 
   if (action === "none") return
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
   if (!TELEGRAM_BOT_TOKEN || !ownerChat) {
     logger.warn({ task: task.name }, "command task alert suppressed: missing token, or no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)")
     return

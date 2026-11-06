@@ -57,7 +57,7 @@ BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' 
 # read let the installer's "0" placeholder through unnoticed, and never
 # fell back to a paired channel's access.json.
 . "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
-CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" || true)"
+CHAT_ID="$(resolve_alert_chat_id "$INSTALL_DIR/.env" || true)"
 
 send_telegram() {
   local text="$1"

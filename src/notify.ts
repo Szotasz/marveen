@@ -1,5 +1,5 @@
 import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID, STORE_DIR } from './config.js'
-import { normalizeChatId, resolveAlertOwnerChat } from './owner-chat.js'
+import { normalizeChatId, resolveAlertDeliveryChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -142,7 +142,7 @@ export interface ChannelSendResult {
  * the result has to describe the one send it made.
  */
 export async function sendOwnerMessage(text: string): Promise<ChannelSendResult> {
-  const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  const owner = resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
   if (!CHANNEL_TOKEN || !owner.chatId) {
     const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
@@ -226,7 +226,8 @@ export async function notifyOwner(text: string, meta?: AlertMeta): Promise<boole
 }
 
 async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
-  // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
+  // CHATID0 -- resolveAlertDeliveryChat (resolveAlertOwnerChat with the owner's OWNER_ALERT_CHAT_ID in front,
+  // ISSUE2556X), not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
   // guard used to PASS on exactly the installs that had no owner chat: the
@@ -239,7 +240,7 @@ async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
   // a single paired DM entry counts as the owner, never a group or channel,
   // and with several entries the alert is not sent (a guess would reach a
   // stranger). The reason is logged, so a skipped alert is visible.
-  const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  const owner = resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
   // The skipped send gets its delivery line here, ahead of the branch below,
   // which stays as it is (card 3ed09d25 extends that branch).
   if (!CHANNEL_TOKEN || !owner.chatId) logAlertDelivery(meta, 'owner', 'skipped')
@@ -380,7 +381,7 @@ export const notifyTelegram = notifyChannel
 // recovery path must never depend on, or be noisy about, Telegram being wired.
 export async function notifySecurityEvent(text: string): Promise<void> {
   // Silent when NEITHER channel is configured; a Slack-only install still gets it.
-  const hasTelegram = !!CHANNEL_TOKEN && !!resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
+  const hasTelegram = !!CHANNEL_TOKEN && !!resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
   if (!hasTelegram && !(await slackTargetFor('owner'))) return
   try {
     await notifyOwner(text)

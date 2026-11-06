@@ -332,6 +332,36 @@ describe('script parity with the store', () => {
     }
   })
 
+  // ISSUE2556X: OWNER_ALERT_CHAT_ID is read by three mirrors of the store (owner-chat.ts, owner-chat.sh,
+  // owner_chat.py): each must see exactly the chat the store answers (an override, never the .env line), normalised
+  // ('' and '0' are unset), for every override / .env state.
+  it('the three OWNER_ALERT_CHAT_ID mirrors (owner-chat.ts / .sh / owner_chat.py)', async () => {
+    const { readOwnerAlertChat, readOverrideValue } = await import('../owner-chat.js')
+    const { alertChatValue } = await import('../alert-chat-format.js')
+    const K = 'OWNER_ALERT_CHAT_ID'
+    const states: Array<Record<string, string> | 'unreadable' | null> = [null, 'unreadable', { K: '5556667778' }, { K: '' }, { K: '0' }, { K: ' 5556667778 ' }]
+    const envs: Array<Record<string, string>> = [{}, { K: '1111111111' }, { K: '0' }]
+    const lib = join(ROOT, 'scripts', 'lib')
+    for (const ov of states) {
+      for (const env of envs) {
+        const o = sub(ov, K)
+        const e = Object.fromEntries(Object.entries(env).map(([, v]) => [K, v]))
+        const want = alertChatValue(storeView(K, o, e)) ?? ''
+        const root = install(o, e)
+        const ts = readOwnerAlertChat('telegram', () => readOverrideValue(K, join(root, 'store', 'config-overrides.json')), 'telegram').chatId ?? ''
+        let sh = ''
+        try {
+          sh = execFileSync('bash', ['-c', '. "$1"; owner_alert_chat_override "$2" telegram 2>/dev/null', '_', join(lib, 'owner-chat.sh'), join(root, '.env')], { encoding: 'utf-8' }).trim()
+        } catch { sh = '' }
+        const py = execFileSync('python3', ['-c', `import sys\nsys.path.insert(0, sys.argv[1])\nimport owner_chat\nprint(owner_chat.alert_chat_override(sys.argv[2], "telegram")[0] or "")`, lib, join(root, '.env')], { encoding: 'utf-8' }).trim()
+        const tag = JSON.stringify([o, e])
+        expect(ts, `ts ${tag}`).toBe(want)
+        expect(sh, `sh ${tag}`).toBe(want)
+        expect(py, `py ${tag}`).toBe(want)
+      }
+    }
+  })
+
   it('ledger-capture keeps the .env for ALLOWED_CHAT_ID (no registry key)', () => {
     const hook = join(ROOT, 'scripts', 'hooks', 'ledger-capture.py')
     const py = [
@@ -353,6 +383,8 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/hooks/ledger-capture.py', // mirror, parity-tested above
     'scripts/slack-notify.mjs', // reads through dist/settings-store.js
     'scripts/morning-briefing.sh', // reads through dist/settings-store.js
+    'scripts/lib/owner-chat.sh', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
+    'scripts/lib/owner_chat.py', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
   ])
   // file -> pinned mention count (comments and messages only, measured 2026-11-04)
   const MENTION_ONLY: Record<string, number> = {
@@ -362,6 +394,9 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/self-pace-gate.mjs': 1,
     'scripts/notify.sh': 1,
     'scripts/hooks/db-write-gate.mjs': 2,
+    // ISSUE2556X: a comment and a log line; both read through owner-chat.sh / owner_chat.py (the mirrors above)
+    'scripts/main-inbox-observer.sh': 2,
+    'scripts/hooks/persona-change-notify.py': 1,
   }
   function walk(dir: string, out: string[] = []): string[] {
     for (const e of readdirSync(dir, { withFileTypes: true })) {

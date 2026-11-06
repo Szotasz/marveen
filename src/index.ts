@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { resolveOwnerChatId } from './owner-chat.js'
+import { ownerAlertChatOverride, resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { scheduleDecaySweep } from './decay-schedule.js'
@@ -542,7 +542,7 @@ async function main(): Promise<void> {
     // so a value read at startup would stay the placeholder for the life of
     // the process and the first digest would go nowhere.
     const runDigest = () => {
-      const chatId = resolveOwnerChatId()
+      const chatId = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
       if (!chatId) {
         logger.warn('Napi naplo kihagyva: nincs gazda-chat (nincs ALLOWED_CHAT_ID es nincs parositott csatorna)')
         return
