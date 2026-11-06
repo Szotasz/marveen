@@ -2563,6 +2563,7 @@ window._i18n.hu = {
   'gromzo.agents.err.reserved_slug': 'Ez az ügynöknév foglalt a Gromzóban.',
   'gromzo.agents.err.bad_name': 'Ez a név nem használható a Gromzóban: betűvel vagy számmal kezdődjön, legfeljebb 64 karakter legyen, és csak betűt, számot, szóközt és a . , \' ( ) _ - jeleket tartalmazza. Írj be másik nevet, és kapcsold be újra.',
   'gromzo.agents.err.reserved_name': 'Ez a név foglalt a Gromzóban: a csapatodban már van valaki, akit így vagy nagyon hasonlóan hívnak, vagy maga a Gromzo használja. Írj be másik nevet, és kapcsold be újra.',
+  'gromzo.agents.err.name_taken_held': 'Ez a név foglalt a Gromzóban. Ezt az ügynököt a Gromzo csak a mostani nevével kérheti újra, ezért itt nem írhatsz be másikat. Kapcsold ki, majd kapcsold be újra: akkor megadhatsz másik nevet.',
   'gromzo.agents.err.bad_display_name': 'Ez a név nem használható a Gromzóban: betűvel vagy számmal kezdődjön, legfeljebb 64 karakter legyen, és csak betűt, számot, szóközt és a . , \' ( ) _ - jeleket tartalmazza. Írj be másik nevet, és kapcsold be újra.',
   'gromzo.agents.err.mixed_script': 'A névben egy szó többféle írás betűit keveri (például latin és cirill betűt). Írd át egyféle betűvel, és kapcsold be újra.',
   'gromzo.agents.name.label': 'Név a Gromzóban',

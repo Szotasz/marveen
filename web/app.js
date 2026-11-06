@@ -21454,7 +21454,9 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
           actions.append(b)
         }
         if (row.held) actions.append(mk(true, true, 'gromzo.agents.btn.reapprove'))
-        if (row.gromzo) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
+        // A held sub-agent always gets the switch-off, flag on or not (Dani 71938): mxd lists it, the switch-off is its
+        // agent_remove, and it is the way to another name the held sentence names.
+        if (row.gromzo || (row.held && !row.main)) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
         else if (!row.held) actions.append(mk(true, true, 'gromzo.agents.btn.on'))
         li.append(actions)
       }
@@ -21537,7 +21539,11 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   function nameRefused(row, code, tried) {
     nameAsk.add(row.slug)
     if (!nameDraft.has(row.slug) && tried) nameDraft.set(row.slug, tried)
-    local.set(row.slug, { kind: 'error', text: agentErr(code) })
+    // A held sub-agent has no name field (mxd asks for it again only under its listed name): its way to another name is
+    // switching it off (agent_remove), then on again. The main agent's switch-off does not remove it from mxd, so it
+    // keeps the general sentence (Dani 71903).
+    const text = row.held && !row.main && code === 'name_taken' ? t('gromzo.agents.err.name_taken_held') : agentErr(code)
+    local.set(row.slug, { kind: 'error', text })
   }
 
   async function switchOn(row) {
