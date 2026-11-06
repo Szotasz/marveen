@@ -701,11 +701,16 @@ export function cwdAfterSegment(seg, ctx) {
   if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
   const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
   if (name === 'popd' || !arg || arg.dollar || /[$`*?[]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
-  // a ~ under a HOME the command set itself is not the real home (EGRESSHOME1106)
-  if (ctx.homeTouched && arg.value.startsWith('~')) { ctx.cwd = null; return }
+  // a ~ under a HOME the command set itself is not the real home (EGRESSHOME1106); ~+ / ~- / ~N are the cwd, the
+  // previous cwd and the dir stack (Dani 71720), never the home: unknown here
+  if ((ctx.homeTouched && arg.value.startsWith('~')) || DIR_TILDE_WORD_RX.test(arg.value)) { ctx.cwd = null; return }
   const target = expandHome(arg.value)
   ctx.cwd = target.startsWith('/') ? resolve(target) : (ctx.cwd ? resolve(ctx.cwd, target) : null)
 }
+
+// ~+, ~-, ~N, ~+N, ~-N at a word start, followed by / or the word's end (bash and zsh tilde expansion, Dani 71720)
+const DIR_TILDE_RX = /(^|[\s=:'"])~(?:[+-]?\d+|[+-])(?=\/|$|[\s;&|'"])/g
+const DIR_TILDE_WORD_RX = /^~(?:[+-]?\d+|[+-])(?:\/|$)/
 
 function substituteAssignments(text, assigns) {
   const used = [...(assigns?.keys() ?? [])].filter((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(text))
@@ -728,7 +733,9 @@ export function protectedMention(text, ctx) {
   // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve -- unless the command gives HOME
   // a value of its own (EGRESSHOME1106, Dani 71590): then $HOME, ${HOME} and a leading ~ stay unresolved (any text),
   // since `HOME=.; cp -R x/. $HOME` (or `~`) writes into the cwd, not the real home.
-  const unquoted = String(text ?? '').replace(/\$(?=['"])/g, '')
+  // A word-start ~+ (= $PWD), ~- (= $OLDPWD), ~N / ~+N / ~-N (the dir stack) is always unresolved: it is the cwd or a
+  // directory the gate does not track, so `cp -R x/. ~+` from the root writes into the root (Dani 71720).
+  const unquoted = String(text ?? '').replace(/\$(?=['"])/g, '').replace(DIR_TILDE_RX, '$1$PWD')
   const raw = ctx?.homeTouched
     ? unquoted.replace(/(^|[\s=:'"])~(?=\/|$|[\s;&|'"])/g, '$1$HOME')
     : unquoted.replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())

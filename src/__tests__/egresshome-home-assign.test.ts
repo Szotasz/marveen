@@ -49,6 +49,19 @@ describe('EGRESSHOME1106: a HOME the command sets is not the real home', () => {
     allowed(`HOMEBREW_PREFIX=/opt/homebrew; ls $HOMEBREW_PREFIX/bin`)
     allowed(`MY_HOME=/tmp/x; cp -R /tmp/stage/. $MY_HOME`)
   })
+  it('~+ / ~- / ~N / ~+N are the cwd, the previous cwd and the dir stack: unresolved, denied from the root (Dani 71720)', () => {
+    denied(`cp -R /tmp/stage/. ~+`)
+    denied(`cp -R /tmp/stage/. ~+/`)
+    denied(`cp -R /tmp/stage/. ~-`)
+    denied(`cp -R /tmp/stage/. ~1`)
+    denied(`cp -R /tmp/stage/. ~+1/`)
+    // a reader on the same word stays a read; ~ inside a word is plain text
+    allowed(`cat ~+/README.md`)
+    allowed(`cp /tmp/x /tmp/a~+b`)
+    const c: { cwd: string | null; homeTouched?: boolean } = { cwd: root, homeTouched: false }
+    cwdAfterSegment('cd ~+', c)
+    expect(c.cwd).toBeNull()
+  })
   it('cd ~ under a HOME the command set leaves the cwd unknown; with HOME untouched it is the real home', () => {
     const touched: { cwd: string | null; homeTouched?: boolean } = { cwd: root, homeTouched: true }
     cwdAfterSegment('cd ~/x', touched)
