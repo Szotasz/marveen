@@ -3588,6 +3588,8 @@ function resetWizard() {
   agentName.value = ''
   agentDesc.value = ''
   agentModel.value = 'inherit'
+  document.getElementById('agentModelCustomModelId').value = ''
+  updateCustomModelIdRow(agentModel)
   loadAvailableModels()
   loadOllamaModels()
   selectedAvatar = null
@@ -3622,12 +3624,21 @@ function updateWizardUI() {
   document.getElementById('wizardStep3').hidden = wizardStep !== 3
 }
 
+// The model ID field shows with a custom provider, as in the agent editor.
+agentModel.addEventListener('change', () => updateCustomModelIdRow(agentModel))
+
 // Step 1 -> Step 2 (generate)
 document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   const name = agentName.value.trim()
   const desc = agentDesc.value.trim()
+  // A custom provider goes in its own field with the model id typed beside it, as the agent editor saves it.
+  const modelVal = agentModel.value
+  const customProvider = modelVal.startsWith('custom:') ? modelVal.slice('custom:'.length) : null
+  const customModelInput = document.getElementById('agentModelCustomModelId')
+  const customModelId = customProvider ? customModelInput.value.trim() : ''
   if (!name) { agentName.focus(); return }
   if (!desc) { agentDesc.focus(); return }
+  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
 
   wizardStep = 2
   updateWizardUI()
@@ -3643,7 +3654,8 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       body: JSON.stringify({
         name,
         description: desc,
-        model: agentModel.value,
+        model: customProvider ? customModelId : modelVal,
+        customProvider,
         profile: document.getElementById('agentProfile').value,
       }),
     })
@@ -4425,7 +4437,11 @@ function renderAgents() {
         </div>
       </div>
       <div class="agent-card-footer">
-        <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
+        ${agent.missingCustomProvider || agent.brokenCustomModel
+          ? `<span class="agent-model-badge provider-missing" title="${escapeHtml(agent.missingCustomProvider
+              ? t('agents.model.provider_missing_card', { id: agent.missingCustomProvider })
+              : t('agents.model.custom_model_broken', { model: agent.brokenCustomModel }))}">⚠ ${escapeHtml(modelLabel)}</span>`
+          : `<span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>`}
         ${contextPctBadgeHtml(agent.name)}
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
@@ -4664,7 +4680,8 @@ async function openAgentDetail(agentName) {
       }
       sel.value = cpVal
       const modelInput = document.getElementById('editAgentModelCustomModelId')
-      if (modelInput) modelInput.value = mv
+      // A model saved as the picker value ("custom:<id>") is no model id: leave the field empty, so a save asks for one.
+      if (modelInput) modelInput.value = mv.startsWith('custom:') ? '' : mv
     } else {
       if (!Array.from(sel.options).some(o => o.value === mv)) {
         const opt = document.createElement('option')
@@ -4681,6 +4698,7 @@ async function openAgentDetail(agentName) {
     // onto a disabled option still reads back, but the order must not matter).
     if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
     updateCustomModelIdRow(sel)
+    markMissingCustomProvider(sel, customProviderId, customProviderId ? null : (mv.startsWith('custom:') ? mv : null))
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -5363,6 +5381,7 @@ async function loadAvailableModels() {
     for (const gid of cpGroupIds) {
       const g = document.getElementById(gid)
       if (!g) continue
+      g.label = '🔧 ' + t('providers.optgroup')
       g.innerHTML = ''
       if (customProviders.length === 0) { g.style.display = 'none'; continue }
       g.style.display = ''
@@ -5376,6 +5395,33 @@ async function loadAvailableModels() {
     updateCustomModelIdRow(document.getElementById('editAgentModel'))
     updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
+}
+
+// A provider deleted since the agent got it stays selected, so the agent's real setting shows, but the option and a
+// line under the picker say it is gone: the agent does not start until it gets another model.
+async function markMissingCustomProvider(sel, providerId, brokenModel = null) {
+  const warn = document.getElementById('editAgentModelProviderMissing')
+  if (!warn) return
+  warn.textContent = t('agents.model.provider_missing')
+  warn.hidden = true
+  // A model saved as the picker value with no provider beside it: say so, whatever the provider list holds.
+  // No option is marked: the provider may exist, and picking it again (with a model id) is the fix, so any change hides it.
+  if (brokenModel) {
+    warn.textContent = t('agents.model.custom_model_broken', { model: brokenModel })
+    warn.hidden = false
+    return
+  }
+  if (!providerId) return
+  const agent = currentAgent
+  let ids = null
+  try {
+    const r = await fetch('/api/custom-providers')
+    if (r.ok) ids = ((await r.json()).providers || []).map(p => p.id)
+  } catch { /* unknown: say nothing rather than a false alarm */ }
+  if (!ids || ids.includes(providerId) || currentAgent !== agent) return
+  const opt = Array.from(sel.options).find(o => o.value === `custom:${providerId}`)
+  if (opt) { opt.textContent = '🔧 ' + t('agents.model.provider_deleted', { id: providerId }); opt.dataset.deleted = '1' }
+  warn.hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
 }
 
 function updateCustomModelIdRow(selectEl) {
@@ -5583,7 +5629,9 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
 }
 
 document.getElementById('editAgentModel').addEventListener('change', () => {
-  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+  const sel = document.getElementById('editAgentModel')
+  updateCustomModelIdRow(sel)
+  document.getElementById('editAgentModelProviderMissing').hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
 })
 
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
@@ -5591,9 +5639,11 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   const selectVal = document.getElementById('editAgentModel').value
   const isCustom = selectVal.startsWith('custom:')
   const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
-  const newModel = isCustom
-    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
-    : selectVal
+  // The model id is required with a custom provider: the picker value ("custom:<id>") used to be saved as the model.
+  const customModelInput = document.getElementById('editAgentModelCustomModelId')
+  const customModelId = isCustom ? customModelInput.value.trim() : ''
+  if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
+  const newModel = isCustom ? customModelId : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
@@ -16947,7 +16997,7 @@ async function loadSettings() {
       const btn = document.createElement('button')
       btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
       btn.dataset.tab = mod
-      btn.textContent = 'Provider-ok'
+      btn.textContent = t('providers.tab')
       btn.addEventListener('click', () => activateSettingsTab(mod))
       tabNav.appendChild(btn)
 
@@ -17716,14 +17766,14 @@ async function loadClaudePlansList() {
 
 
 async function renderProvidersContent(container) {
-  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">' + escapeHtml(t('common.loading')) + '</p>'
   try {
     const res = await fetch('/api/custom-providers')
     if (!res.ok) throw new Error('fetch failed')
     const { providers } = await res.json()
     buildProvidersUI(container, providers)
   } catch {
-    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">' + escapeHtml(t('providers.load_error')) + '</p>'
   }
 }
 
@@ -17732,7 +17782,7 @@ function buildProvidersUI(container, providers) {
 
   const notice = document.createElement('p')
   notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
-  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  notice.textContent = t('providers.notice')
   container.appendChild(notice)
 
   if (providers.length > 0) {
@@ -17741,10 +17791,11 @@ function buildProvidersUI(container, providers) {
     const table = document.createElement('table')
     table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
     table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
-      <th style="text-align:left;padding:6px 8px">Név</th>
-      <th style="text-align:left;padding:6px 8px">Base URL</th>
-      <th style="text-align:left;padding:6px 8px">Auth</th>
-      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.name'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.base_url'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.auth'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.vault_key'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.used_by'))}</th>
       <th style="padding:6px 8px"></th>
     </tr></thead><tbody id="customProvidersTableBody"></tbody>`
     tableWrap.appendChild(table)
@@ -17757,10 +17808,11 @@ function buildProvidersUI(container, providers) {
         <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
         <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
         <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
-        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : `<em style="color:var(--text-muted)">${escapeHtml(t('providers.none'))}</em>`}</td>
+        <td style="padding:6px 8px">${(p.usedBy || []).length ? escapeHtml(p.usedBy.join(', ')) : `<em style="color:var(--text-muted)">${escapeHtml(t('providers.none'))}</em>`}</td>
         <td style="padding:6px 8px;text-align:right;white-space:nowrap">
-          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
-          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">${escapeHtml(t('common.btn.edit'))}</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">${escapeHtml(t('common.btn.delete'))}</button>
         </td>`
       tbody.appendChild(tr)
     }
@@ -17774,25 +17826,40 @@ function buildProvidersUI(container, providers) {
     tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.providerDelete
-        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        const p = providers.find(x => x.id === id)
+        // An agent whose provider is gone no longer starts, so name the agents that use it.
+        const users = (p && p.usedBy) || []
+        let message = t('providers.confirm.delete', { name: (p && p.label) || id })
+        if (users.length) message += '\n\n' + t('providers.confirm.delete_used_by', { agents: users.map(n => `"${n}"`).join(', ') })
+        const confirmed = await confirmDialog({
+          title: t('providers.confirm.delete_title'),
+          message,
+          okLabel: t('providers.confirm.delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         try {
           const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
-          if (!r.ok) throw new Error()
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}))
+            showToast(err.error || t('providers.toast.delete_error'))
+            return
+          }
           renderProvidersContent(container)
           loadAvailableModels()
-        } catch { alert('Hiba a törléskor.') }
+        } catch { showToast(t('providers.toast.delete_error')) }
       })
     })
   } else {
     const empty = document.createElement('p')
     empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
-    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    empty.textContent = t('providers.empty')
     container.appendChild(empty)
   }
 
   const addBtn = document.createElement('button')
   addBtn.className = 'btn-primary btn-compact'
-  addBtn.textContent = '+ Új provider'
+  addBtn.textContent = '+ ' + t('providers.new_btn')
   addBtn.addEventListener('click', () => openAddProviderModal(container))
   container.appendChild(addBtn)
 }
@@ -17810,42 +17877,42 @@ function openAddProviderModal(container, editProvider = null) {
   overlay.innerHTML = `
     <div class="modal" style="max-width:480px">
       <div class="modal-header">
-        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <h2>${escapeHtml(t(isEdit ? 'providers.modal.edit_title' : 'providers.modal.add_title'))}</h2>
         <button class="modal-close" id="addProviderModalClose">&times;</button>
       </div>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
         <div class="form-group">
-          <label class="form-label">Megjelenő név *</label>
-          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+          <label class="form-label">${escapeHtml(t('providers.field.label'))} *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="${escapeHtml(t('providers.field.label_ph'))}" value="${v('label')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
-          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
-          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
+          <label class="form-label">${escapeHtml(t('providers.field.id'))} * <small style="color:var(--text-muted)">${escapeHtml(t('providers.field.id_chars'))}</small></label>
+          <input type="text" id="cpId" class="input" placeholder="${escapeHtml(t('providers.field.id_ph'))}" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">${escapeHtml(t('providers.field.id_help'))}</small>
         </div>
         <div class="form-group">
-          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <label class="form-label">${escapeHtml(t('providers.field.base_url'))} * <small style="color:var(--text-muted)">${escapeHtml(t('providers.field.base_url_hint'))}</small></label>
           <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Auth header *</label>
+          <label class="form-label">${escapeHtml(t('providers.field.auth'))} *</label>
           <select id="cpAuthHeader" class="input">
             <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
             <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
-            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>${escapeHtml(t('providers.field.auth_none'))}</option>
           </select>
         </div>
         <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
-          <label class="form-label">Vault kulcs neve *</label>
-          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
-          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+          <label class="form-label">${escapeHtml(t('providers.field.vault_key'))} *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="${escapeHtml(t('providers.field.vault_key_ph'))}" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">${escapeHtml(t('providers.field.vault_key_help'))}</small>
         </div>
         <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
-          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+          ${escapeHtml(t('providers.modal.note'))}
         </p>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
-          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+          <button class="btn-secondary" id="addProviderCancelBtn">${escapeHtml(t('common.btn.cancel'))}</button>
+          <button class="btn-primary" id="addProviderSaveBtn">${escapeHtml(t('common.btn.save'))}</button>
         </div>
       </div>
     </div>`
@@ -17866,10 +17933,13 @@ function openAddProviderModal(container, editProvider = null) {
     const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
     const authHeader = overlay.querySelector('#cpAuthHeader').value
     const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
-    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
-      alert('Töltsd ki az összes kötelező mezőt.')
-      return
-    }
+    // Point at the first empty required field, in the form's order, as the add-server form does.
+    const missing = !label ? ['#cpLabel', 'providers.form.label_required']
+      : !id ? ['#cpId', 'providers.form.id_required']
+      : !baseUrl ? ['#cpBaseUrl', 'providers.form.base_url_required']
+      : (authHeader !== 'none' && !vaultKey) ? ['#cpVaultKey', 'providers.form.vault_key_required']
+      : null
+    if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1])); return }
     try {
       const r = await fetch('/api/custom-providers', {
         method: 'POST',
@@ -17878,13 +17948,13 @@ function openAddProviderModal(container, editProvider = null) {
       })
       if (!r.ok) {
         const err = await r.json().catch(() => ({}))
-        alert(err.error || 'Hiba a mentéskor.')
+        showToast(err.error || t('providers.toast.save_error'))
         return
       }
       overlay.remove()
       renderProvidersContent(container)
       loadAvailableModels()
-    } catch { alert('Hiba a mentéskor.') }
+    } catch { showToast(t('providers.toast.save_error')) }
   })
 }
 
