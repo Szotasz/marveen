@@ -321,6 +321,14 @@ describe('the main agent (GROMZOMAINAGENT1106)', () => {
     expect(w.restarted).toEqual([MAIN_AGENT_ID])
   })
 
+  it('agent_exists with a name the owner typed stays an error: mxd keeps its listed name (Dani 71877)', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps, 'Új Név')).toEqual({ ok: false, code: 'agent_exists' })
+    expect(w.writes).toEqual([])
+    expect(w.restarted).toEqual([])
+  })
+
   it('agent_exists for a SUB-agent stays an error (the shortcut is the main agent\'s only)', async () => {
     const w = world()
     w.replies.agent_add = [{ ok: false, error: 'agent_exists' }]
@@ -352,6 +360,51 @@ describe('the main agent (GROMZOMAINAGENT1106)', () => {
     const rows = await listGromzoAgents(w.deps)
     expect(rows[0]!.pendingUntil).toBe(w.clock.t + 300_000)
     expect(await enableGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'add_in_progress' })
+  })
+})
+
+// GROMZONAMETAKEN1106: the controller refuses a name another member of the team wears (name_taken), so the owner
+// may send another name with the switch; the main agent goes by its configured bot name (the owner, Samu 71820).
+describe('the name on Gromzo (GROMZONAMETAKEN1106)', () => {
+  it('the main agent goes by the name the route gives it (the configured bot name), not by its slug', async () => {
+    const w = world()
+    w.deps.gromzoName = (s) => (s === MAIN_AGENT_ID ? 'Marvin' : s.toUpperCase())
+    w.replies.agent_add = [addOk()]
+    await enableGromzoAgent(MAIN_AGENT_ID, w.deps)
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: MAIN_AGENT_ID, name: 'Marvin' }])
+  })
+
+  it('the row carries the name the switch would send', async () => {
+    const w = world()
+    const rows = await listGromzoAgents(w.deps)
+    expect(rows.find((r) => r.slug === MAIN_AGENT_ID)!.gromzoName).toBe(MAIN_AGENT_ID[0]!.toUpperCase() + MAIN_AGENT_ID.slice(1))
+    expect(rows.find((r) => r.slug === 'zara')!.gromzoName).toBe('Zara')
+    const named = await listGromzoAgents({ ...w.deps, gromzoName: (s) => `${s}-x` })
+    expect(named.find((r) => r.slug === 'zara')!.gromzoName).toBe('zara-x')
+  })
+
+  it('the owner\'s name goes to agent_add as given (trimmed)', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk()]
+    expect(await enableGromzoAgent('zara', w.deps, '  Zara Segéd ')).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'Zara Segéd' }])
+  })
+
+  it('a name outside the controller\'s rule: bad_display_name, no mxd call, nothing pending', async () => {
+    for (const bad of ['', '   ', '-Zara', 'Za/ra', 'x'.repeat(65), 'a\nb']) {
+      const w = world()
+      expect(await enableGromzoAgent('zara', w.deps, bad)).toEqual({ ok: false, code: 'bad_display_name' })
+      expect(w.calls).toEqual([])
+      expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'no_pending' })
+    }
+  })
+
+  it('name_taken from mxd comes back as the code, nothing pending, so the owner can retry with another name', async () => {
+    const w = world()
+    w.replies.agent_add = [{ ok: false, error: 'name_taken' }, addOk()]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: false, code: 'name_taken' })
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps, 'Főnök Marveen')).toMatchObject({ ok: true, state: 'pending' })
+    expect(w.calls.map((c) => (c as { name?: string }).name)).toEqual([MAIN_AGENT_ID[0]!.toUpperCase() + MAIN_AGENT_ID.slice(1), 'Főnök Marveen'])
   })
 })
 

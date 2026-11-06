@@ -34,7 +34,7 @@ const { tryHandleGromzo, setGromzoAgentDepsForTest, pushAvatarAfterAdd, avatarAf
 const { resetPendingGromzoConsents } = await import('../web/gromzo-agents.js')
 const { MxdDashError } = await import('../web/mxd-dash.js')
 const AVATAR_PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('PIXELBYTESPIXELBYTES')])
-const { MAIN_AGENT_ID: MAIN_ID } = await import('../config.js')
+const { MAIN_AGENT_ID: MAIN_ID, currentBotName } = await import('../config.js')
 const { requiresAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { createSession, revokeSession } = await import('../web/auth-sessions.js')
 const { isBlockedCrossOriginWrite } = await import('../web/csrf-origin.js')
@@ -418,6 +418,7 @@ describe('the agent switch routes', () => {
       readFlag: (s) => flags.get(s) ?? false,
       writeFlag: (s, on) => { flags.set(s, on) },
       displayName: (s) => s,
+      gromzoName: (s) => s,
       isRunning: () => true,
       held: async () => new Set(),
       readAvatar: (s) => (s === 'zara' ? { ok: true, bytes: AVATAR_PNG } : s === 'samu' ? { ok: false, code: 'avatar_too_large' } : { ok: false, code: 'no_avatar' }),
@@ -512,6 +513,52 @@ describe('the agent switch routes', () => {
     expect(flags.size).toBe(0)
     expect(restarted).toEqual([])
     expect(logged.join('\n')).toContain('"added":"samu"')
+  })
+
+  // GROMZONAMETAKEN1106: the switch-on may carry the owner's name for Gromzo; the controller's name refusals are 409
+  // with their own code (the panel asks for another name instead of "try again later").
+  it('enable carries {"name"} to agent_add; without one the default name goes', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    const r = await post('zara/enable', { 'Content-Type': 'application/json' }, JSON.stringify({ name: 'Zara Segéd' }))
+    expect(r.status).toBe(200)
+    expect(calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'Zara Segéd' }])
+    resetPendingGromzoConsents(); calls.length = 0
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    expect((await post('zara/enable')).status).toBe(200)
+    expect(calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'zara' }])
+  })
+
+  it('a name that is not a string, or a body that is not JSON: 400, mxd not asked', async () => {
+    for (const body of [JSON.stringify({ name: 7 }), JSON.stringify({ name: ['x'] }), '{not json']) {
+      const r = await post('zara/enable', { 'Content-Type': 'application/json' }, body)
+      expect(r.status, body).toBe(400)
+      expect(await r.json()).toEqual({ error: 'bad_request' })
+    }
+    expect(calls).toEqual([])
+  })
+
+  it('a name outside the controller\'s rule: 409 bad_display_name, mxd not asked', async () => {
+    const r = await post('zara/enable', { 'Content-Type': 'application/json' }, JSON.stringify({ name: 'Za/ra' }))
+    expect(r.status).toBe(409)
+    expect(await r.json()).toEqual({ error: 'bad_display_name' })
+    expect(calls).toEqual([])
+  })
+
+  for (const code of ['name_taken', 'bad_display_name', 'mixed_script', 'reserved_name']) {
+    it(`mxd's ${code} is a 409 carrying the code (not a 502)`, async () => {
+      replies.agent_add = [{ ok: false, error: code }]
+      const r = await post('zara/enable')
+      expect(r.status).toBe(409)
+      expect(await r.json()).toEqual({ error: code })
+    })
+  }
+
+  it('the name is read only on enable: consent and disable ignore a body name', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    await post('zara/enable')
+    replies.agent_add_check = [{ ok: true, state: 'pending' }]
+    const c = await post('zara/consent', { 'Content-Type': 'application/json' }, JSON.stringify({ name: 7 }))
+    expect(c.status).toBe(200)
   })
 
   it('no manual picture route (owner, Slack 15:48): POST .../avatar is not a route', async () => {
@@ -725,6 +772,20 @@ describe('the main agent through the agent switch routes', () => {
     expect(flags.get(MAIN_ID)).toBe(false)
     expect(restarted).toEqual([MAIN_ID])
     expect(calls).toEqual([])
+  })
+
+  // GROMZONAMETAKEN1106 (the owner, Samu 71820): the route's own default for the main agent is the configured bot
+  // name (config currentBotName: the .env BOT_NAME, "Marveen" when unset), not its slug and no machine suggestion.
+  it('the main agent\'s switch-on asks for it under the configured bot name', async () => {
+    const seen: Array<Record<string, unknown>> = []
+    setGromzoAgentDepsForTest({
+      call: async (req) => { seen.push(req); return { ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 } },
+      agents: () => ['samu', 'zara'], readFlag: () => false, writeFlag: () => {}, displayName: (s) => s,
+      isRunning: () => true, held: async () => new Set(), restartOne: () => {}, now: () => Date.now(),
+    })
+    const r = await post(encodeURIComponent(MAIN_ID) + '/enable')
+    expect(r.status).toBe(200)
+    expect(seen).toEqual([{ verb: 'agent_add', slug: MAIN_ID, name: currentBotName() }])
   })
 
   it('"restart" is the main agent\'s only: any other slug is 400, and nothing restarts', async () => {
