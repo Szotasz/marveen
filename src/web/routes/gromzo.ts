@@ -335,7 +335,21 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
         json(res, { available: false, code })
         return true
       }
-      json(res, { available: true, running: r.running === true, linked: r.linked === true })
+      const out: Record<string, unknown> = { available: true, running: r.running === true, linked: r.linked === true }
+      // GROMZOLINKCONFIRM1106: mxd's status names a link that waits for the owner's confirmation (pending, with
+      // its seconds left) and the last refused or failed one (last_refusal.kind). Without them the card could only
+      // say "not linked yet" while the owner had 15 minutes to confirm on gromzo.com. Only these two shapes pass:
+      // a whole number of seconds and a lower-case word; no address, no id, no secret.
+      if (out.linked !== true) {
+        const pending = r.pending as { op?: unknown; expires_in?: unknown } | undefined
+        if (pending && pending.op === 'link' && typeof pending.expires_in === 'number'
+          && Number.isSafeInteger(pending.expires_in) && pending.expires_in >= 0 && pending.expires_in <= 86400) {
+          out.linkPendingExpiresIn = pending.expires_in
+        }
+        const refusal = r.last_refusal as { kind?: unknown } | undefined
+        if (refusal && typeof refusal.kind === 'string' && /^[a-z_]{1,40}$/.test(refusal.kind)) out.linkRefusal = refusal.kind
+      }
+      json(res, out)
     } catch (e) {
       const code = e instanceof MxdDashError ? e.code : 'io'
       json(res, { available: false, code })

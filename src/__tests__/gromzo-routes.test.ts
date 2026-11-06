@@ -352,6 +352,46 @@ describe('GET /api/gromzo/status', () => {
     expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: false, code: 'forbidden' })
   })
 
+  // GROMZOLINKCONFIRM1106: a link that waits for the owner's confirmation, and the last refused one, reach the card.
+  it('not linked, a link waiting for confirmation: its seconds left pass, nothing else of the pending row', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: false, pending: { op: 'link', expires_in: 600, request_id: 'rq-secret' } })
+    const body = await (await fetch(origin + '/api/gromzo/status')).json()
+    expect(body).toEqual({ available: true, running: true, linked: false, linkPendingExpiresIn: 600 })
+    expect(JSON.stringify(body)).not.toContain('rq-secret')
+  })
+
+  it('an expired pending link passes as 0 seconds', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: false, pending: { op: 'link', expires_in: 0 } })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: false, linkPendingExpiresIn: 0 })
+  })
+
+  it('the last refusal passes as its kind only', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: false, last_refusal: { kind: 'owner_mismatch', at: 1793900000 } })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: false, linkRefusal: 'owner_mismatch' })
+  })
+
+  it('a pending or refusal field in any other shape is dropped', async () => {
+    for (const extra of [
+      { pending: { op: 'link', expires_in: '600' } },
+      { pending: { op: 'link', expires_in: -1 } },
+      { pending: { op: 'link', expires_in: 1.5 } },
+      { pending: { op: 'link', expires_in: 86401 } },
+      { pending: { op: 'relink', expires_in: 600 } },
+      { pending: 'link' },
+      { last_refusal: { kind: 'Owner Mismatch' } },
+      { last_refusal: { kind: '<b>x</b>' } },
+      { last_refusal: { kind: 42 } },
+    ]) {
+      fake.script.set('status', { ok: true, running: true, linked: false, ...extra })
+      expect(await (await fetch(origin + '/api/gromzo/status')).json(), JSON.stringify(extra)).toEqual({ available: true, running: true, linked: false })
+    }
+  })
+
+  it('a linked machine passes neither field, whatever mxd still holds', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true, pending: { op: 'link', expires_in: 300 }, last_refusal: { kind: 'expired' } })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: true })
+  })
+
   it('POST on status is 405', async () => {
     expect((await fetch(origin + '/api/gromzo/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(405)
   })
