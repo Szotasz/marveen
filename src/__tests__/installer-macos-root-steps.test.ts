@@ -144,8 +144,24 @@ describe('the embedded helpers, run', () => {
     return MAC.slice(start, MAC.indexOf('\n}\n', start) + 3)
   }
 
+  it('macos_mode_root_only: only the owner may write, unless sticky (Dani 72109: the group-writable branch)', () => {
+    const body = `${fn('macos_mode_root_only')}\n`
+    const run = (m: string) => spawnSync('/bin/bash', ['-c', `${body}macos_mode_root_only "$1"`, 'bash', m]).status
+    for (const m of ['0755', '0700', '0555', '0644', '1777', '1775', '1757']) expect(run(m), m).toBe(0)
+    // 0775: root-owned and admin-group-writable, the macOS case the stat-based tests cannot build without root
+    for (const m of ['0775', '0757', '0777', '0720', '0702', '2775', '4757']) expect(run(m), m).toBe(1)
+    // not four octal digits: refused, never read as a number
+    for (const m of ['', '755', '00755', '0758', 'abcd', '07 5', '-755']) expect(run(m), JSON.stringify(m)).toBe(1)
+  })
+
+  it('macos_root_only_chain decides every mode through macos_mode_root_only', () => {
+    const chain = fn('macos_root_only_chain')
+    expect(chain).toContain('macos_mode_root_only "$m" || return 1')
+    expect(chain).not.toMatch(/8#022|8#1000/)
+  })
+
   it.skipIf(process.platform !== 'darwin')('macos_root_only_path: a system file passes, a user file and a user dir chain do not', () => {
-    const body = `${fn('macos_root_only_chain')}\n${fn('macos_root_only_path')}\n`
+    const body = `${fn('macos_mode_root_only')}\n${fn('macos_root_only_chain')}\n${fn('macos_root_only_path')}\n`
     const run = (p: string) => spawnSync('/bin/bash', ['-c', `${body}macos_root_only_path "$1"`, 'bash', p]).status
     expect(run('/bin/ls')).toBe(0)
     const d = tmp()
@@ -160,7 +176,7 @@ describe('the embedded helpers, run', () => {
     const bin = join(d, 'bin')
     mkdirSync(bin)
     for (const n of ['npm', 'node']) { writeFileSync(join(bin, n), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, n), 0o755) }
-    const body = `${fn('macos_root_only_chain')}\n${fn('macos_root_only_path')}\n${fn('root_npm_install_global')}\n`
+    const body = `${fn('macos_mode_root_only')}\n${fn('macos_root_only_chain')}\n${fn('macos_root_only_path')}\n${fn('root_npm_install_global')}\n`
     // a stub /usr/bin/sudo cannot be planted; a refusal returns before it, so the run is quick and quiet
     const r = spawnSync('/bin/bash', ['-c', `${body}root_npm_install_global @anthropic-ai/claude-code; echo "rc=$?"`], {
       encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin`, HOME: d }, timeout: 20_000,
