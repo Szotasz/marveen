@@ -45,6 +45,8 @@ export interface GromzoAgentDeps {
   /** Restarts that ONE agent, once mxd is back from its reload (fire and forget). */
   restartOne: (slug: string) => void
   now: () => number
+  /** GROMZOMAINAGENT1106: the main agent's launch state for its row (main-gromzo.ts); absent = 'idle'. */
+  mainLaunchState?: () => string
 }
 
 export interface GromzoAgentRow {
@@ -59,6 +61,8 @@ export interface GromzoAgentRow {
   avatarProblem: AvatarProblem | null
   /** A consent is waiting for the owner in the app (until this time, ms). */
   pendingUntil: number | null
+  /** GROMZOMAINAGENT1106: the main row only: where its launch side stands (main-gromzo.ts); null on other rows. */
+  mainLaunch: string | null
 }
 
 export type GromzoAgentOutcome =
@@ -86,10 +90,15 @@ function dropExpired(now: number): void {
   for (const [slug, p] of pending) if (p.expiresAt <= now) pending.delete(slug)
 }
 
-/** Why a slug may not be switched, or null when it may. Checked before any mxd call. */
-export function slugRefusal(slug: string, deps: Pick<GromzoAgentDeps, 'agents'>): string | null {
+/**
+ * Why a slug may not be switched, or null when it may. Checked before any mxd call.
+ * GROMZOMAINAGENT1106: the main agent may be switched on, checked and switched off (`allowMain`), through the
+ * same owner consent as every agent. Its picture is still not sent (sendGromzoAvatar keeps the refusal), and its
+ * switch-off never removes it from mxd (disableGromzoAgent).
+ */
+export function slugRefusal(slug: string, deps: Pick<GromzoAgentDeps, 'agents'>, allowMain = false): string | null {
   if (!MXD_AGENT_SLUG_RE.test(slug)) return 'bad_request'
-  if (slug === MAIN_AGENT_ID) return 'main_agent'
+  if (slug === MAIN_AGENT_ID) return allowMain ? null : 'main_agent'
   if (!deps.agents().includes(slug)) return 'unknown_agent'
   return null
 }
@@ -99,7 +108,14 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
   const now = deps.now()
   dropExpired(now)
   const build = (): GromzoAgentRow[] => {
-    const rows: GromzoAgentRow[] = [{ slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true, gromzo: true, running: deps.isRunning(MAIN_AGENT_ID), held: false, avatarProblem: null, pendingUntil: null }]
+    // GROMZOMAINAGENT1106: the main row shows what is there (the .env id, mxd's held list, a pending consent,
+    // the launch side), no longer a fixed "always on Gromzo".
+    const rows: GromzoAgentRow[] = [{
+      slug: MAIN_AGENT_ID, name: deps.displayName(MAIN_AGENT_ID), main: true,
+      gromzo: deps.readFlag(MAIN_AGENT_ID), running: deps.isRunning(MAIN_AGENT_ID), held: held.has(MAIN_AGENT_ID),
+      avatarProblem: null, pendingUntil: pending.get(MAIN_AGENT_ID)?.expiresAt ?? null,
+      mainLaunch: deps.mainLaunchState ? deps.mainLaunchState() : 'idle',
+    }]
     for (const slug of [...deps.agents()].sort()) {
       if (slug === MAIN_AGENT_ID) continue
       rows.push({
@@ -111,6 +127,7 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
         held: held.has(slug),
         avatarProblem: deps.avatarProblem(slug),
         pendingUntil: pending.get(slug)?.expiresAt ?? null,
+        mainLaunch: null,
       })
     }
     return rows
@@ -120,7 +137,7 @@ export async function listGromzoAgents(deps: GromzoAgentDeps): Promise<GromzoAge
 
 /** Switch on: the owner's consent first (in the app); the flag only after mxd added the agent. */
 export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
-  const refused = slugRefusal(slug, deps)
+  const refused = slugRefusal(slug, deps, true)
   if (refused) return { ok: false, code: refused }
   if (deps.readFlag(slug) && !(await deps.held()).has(slug)) return { ok: true, state: 'on' }
   const now = deps.now()
@@ -129,6 +146,13 @@ export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Pr
   if (waiting) return { ok: true, state: 'pending', expiresIn: Math.max(1, Math.round((waiting.expiresAt - now) / 1000)) }
   if (pending.size > 0) return { ok: false, code: 'add_in_progress' }
   const r = await requestAgentAdd(deps.call, slug, deps.displayName(slug))
+  // GROMZOMAINAGENT1106: mxd already lists the main agent (its config agent, or an earlier consent whose
+  // launch side failed). No second consent: the launch side runs again (marketplace, .env id, restart).
+  if (!r.ok && r.code === 'agent_exists' && slug === MAIN_AGENT_ID) {
+    deps.writeFlag(slug, true)
+    deps.restartOne(slug)
+    return { ok: true, state: 'added' }
+  }
   if (!r.ok) return { ok: false, code: r.code }
   pending.set(slug, { consentId: r.consentId, expiresAt: now + r.expiresIn * 1000 })
   return { ok: true, state: 'pending', expiresIn: r.expiresIn }
@@ -136,7 +160,7 @@ export async function enableGromzoAgent(slug: string, deps: GromzoAgentDeps): Pr
 
 /** The pending consent of `slug` (the id is the server's own, never the client's). */
 export async function checkGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
-  const refused = slugRefusal(slug, deps)
+  const refused = slugRefusal(slug, deps, true)
   if (refused) return { ok: false, code: refused }
   const now = deps.now()
   dropExpired(now)
@@ -161,8 +185,16 @@ export async function checkGromzoAgent(slug: string, deps: GromzoAgentDeps): Pro
 
 /** Switch off: mxd takes the agent off its list; only then the flag goes. */
 export async function disableGromzoAgent(slug: string, deps: GromzoAgentDeps): Promise<GromzoAgentOutcome> {
-  const refused = slugRefusal(slug, deps)
+  const refused = slugRefusal(slug, deps, true)
   if (refused) return { ok: false, code: refused }
+  // GROMZOMAINAGENT1106: the main agent's switch-off takes only its launch side back (the .env id, a restart).
+  // mxd keeps it: phase 1 never removes the main agent there (the Decisions room depends on it in phase 2).
+  if (slug === MAIN_AGENT_ID) {
+    pending.delete(slug)
+    deps.writeFlag(slug, false)
+    deps.restartOne(slug)
+    return { ok: true, state: 'removed' }
+  }
   const r = await requestAgentRemove(deps.call, slug)
   // unknown_agent: mxd does not list it, so it is off there already; the flag follows.
   if (!r.ok && r.code !== 'unknown_agent') return { ok: false, code: r.code }

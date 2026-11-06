@@ -674,10 +674,9 @@ describe('the agent switch routes', () => {
     expect(rows.filter((r) => r.slug !== MAIN_ID).map((r) => [r.slug, r.avatarProblem])).toEqual([['samu', 'avatar_too_large'], ['zara', null]])
   })
 
-  it('codes map to statuses: a bad slug 400, unknown 404, the main agent 409, no pending 409, rate_limited 429, mxd down 503', async () => {
+  it('codes map to statuses: a bad slug 400, unknown 404, no pending 409, rate_limited 429, mxd down 503', async () => {
     expect((await post('Bad%20Slug/enable')).status).toBe(400)
     expect((await post('nobody/enable')).status).toBe(404)
-    expect((await post(encodeURIComponent(MAIN_ID) + '/disable')).status).toBe(409)
     expect((await post('zara/consent')).status).toBe(409)
     expect(calls).toEqual([])
     replies.agent_remove = [{ ok: false, error: 'rate_limited' }]
@@ -690,6 +689,56 @@ describe('the agent switch routes', () => {
       displayName: (s) => s, isRunning: () => true, held: async () => new Set(), restartOne: () => { throw new Error('no restart') }, now: () => Date.now(),
     })
     expect((await post('zara/disable')).status).toBe(503)
+  })
+})
+
+// GROMZOMAINAGENT1106: the main agent's switch through the same routes. Only the refusing paths of "restart" are
+// driven here: the owner-session path restarts the REAL main session (gateManualRestart + hardRestartMarveenChannels),
+// which a test must never reach; main-gromzo.test.ts covers it with injected collaborators.
+describe('the main agent through the agent switch routes', () => {
+  const calls: Array<Record<string, unknown>> = []
+  const restarted: string[] = []
+  const flags = new Map<string, boolean>()
+  beforeEach(() => {
+    calls.length = 0; restarted.length = 0; flags.clear()
+    resetPendingGromzoConsents()
+    setGromzoAgentDepsForTest({
+      call: async (req) => { calls.push(req); throw new Error('unscripted ' + req.verb) },
+      agents: () => ['samu', 'zara'],
+      readFlag: (s) => flags.get(s) ?? false,
+      writeFlag: (s, on) => { flags.set(s, on) },
+      displayName: (s) => s,
+      isRunning: () => true,
+      held: async () => new Set(),
+      restartOne: (s) => { restarted.push(s) },
+      now: () => Date.now(),
+    })
+  })
+  afterAll(() => setGromzoAgentDepsForTest(null))
+  const post = (p: string) => fetch(origin + '/api/gromzo/agents/' + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+
+  it('switch-off of the main agent: 200 removed, its flag off and a restart, and mxd is NOT asked to remove it', async () => {
+    flags.set(MAIN_ID, true)
+    const r = await post(encodeURIComponent(MAIN_ID) + '/disable')
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ state: 'removed' })
+    expect(flags.get(MAIN_ID)).toBe(false)
+    expect(restarted).toEqual([MAIN_ID])
+    expect(calls).toEqual([])
+  })
+
+  it('"restart" is the main agent\'s only: any other slug is 400, and nothing restarts', async () => {
+    expect((await post('zara/restart')).status).toBe(400)
+    expect(restarted).toEqual([])
+  })
+
+  it('"restart" sits behind the owner session like the other actions', async () => {
+    expect(requiresAuth('/api/gromzo/agents/' + MAIN_ID + '/restart', 'POST')).toBe(true)
+    for (const p of [{ kind: 'token' }, { kind: 'token', tokenAgent: 'samu', agent: 'samu' }, { kind: 'device', device: 'phone', deviceId: 1 }]) {
+      principal = p
+      expect((await post(encodeURIComponent(MAIN_ID) + '/restart')).status, JSON.stringify(p)).toBe(403)
+    }
+    expect(restarted).toEqual([])
   })
 })
 

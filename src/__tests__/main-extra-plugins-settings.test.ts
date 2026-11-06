@@ -238,8 +238,9 @@ describe('every main-session launcher carries the flag', () => {
 
   it('stuck-modal-guard.sh: the respawn line carries the flag with the respawned primary', () => {
     const sh = readFileSync(join(ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')
-    expect(sh).toContain('SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}")"')
-    expect(sh).toContain('--dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q"')
+    // GROMZOMAINAGENT1106: with the co-listen extras too, as channels.sh and the watchdog pass them.
+    expect(sh).toContain('SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"')
+    expect(sh).toContain('--dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q${EXTRA_Q}"')
   })
 })
 

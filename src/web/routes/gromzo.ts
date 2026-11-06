@@ -45,6 +45,14 @@ import {
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
 import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
+import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { gateManualRestart } from '../manual-restart-gate.js'
+import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import {
+  mainGromzoLaunchState, mainGromzoPanelState, mainSessionLoadsGromzo, readMainGromzoToken, restartMainAfterMxdReload,
+  restartMainForGromzoNow, switchMainGromzoOff, switchMainGromzoOn,
+} from '../main-gromzo.js'
 import type { RouteContext } from './types.js'
 
 /** The owner's dashboard session, and nothing else: a session principal, or a
@@ -65,7 +73,7 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
 const STATUS_PATH = '/api/gromzo/status'
 const OWNER_QR_PATH = '/api/gromzo/owner-qr'
 const AGENTS_PATH = '/api/gromzo/agents'
-const AGENT_ACTION_RE = /^\/api\/gromzo\/agents\/([^/]{1,64})\/(enable|disable|consent)$/
+const AGENT_ACTION_RE = /^\/api\/gromzo\/agents\/([^/]{1,64})\/(enable|disable|consent|restart)$/
 
 /** The dash.sock client (the socket path is read per call: MXD_DASH_SOCK or the default). */
 const call: MxdDashCall = (request) => mxdDashCall(request)
@@ -247,8 +255,17 @@ async function retryUntilApplied(slug: string, retryDelayMs: number, gapMs: numb
 const defaultAgentDeps: GromzoAgentDeps = {
   call: (request) => call(request),
   agents: () => listAgentNames(),
-  readFlag: (slug) => readAgentGromzo(slug),
-  writeFlag: (slug, on) => writeAgentGromzo(slug, on),
+  // GROMZOMAINAGENT1106: for the main agent the flag is its .env gromzo id and the restart is the main session's
+  // own (main-gromzo.ts); every other agent keeps its agent-config flag and its own restart.
+  readFlag: (slug) => slug === MAIN_AGENT_ID ? (() => { const t = readMainGromzoToken(PROJECT_ROOT); return t.ok && t.on })() : readAgentGromzo(slug),
+  writeFlag: (slug, on) => {
+    if (slug === MAIN_AGENT_ID) { if (on) switchMainGromzoOn(PROJECT_ROOT); else switchMainGromzoOff(PROJECT_ROOT); return }
+    writeAgentGromzo(slug, on)
+  },
+  mainLaunchState: () => {
+    const t = readMainGromzoToken(PROJECT_ROOT)
+    return mainGromzoPanelState(t.ok && t.on, mainSessionLoadsGromzo(MAIN_CHANNELS_SESSION))
+  },
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   isRunning: (slug) => isAgentRunning(slug),
   // agentDir(slug) only for a slug slugRefusal passed (sendGromzoAvatar checks first; the list only names fleet agents).
@@ -264,10 +281,37 @@ const defaultAgentDeps: GromzoAgentDeps = {
       return new Set(Array.isArray(h) ? h.filter((x): x is string => typeof x === 'string' && MXD_AGENT_SLUG_RE.test(x)) : [])
     } catch { return new Set() }
   },
-  restartOne: (slug) => { void restartAfterMxdReload(slug).catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: restart failed')) },
+  restartOne: (slug) => {
+    if (slug === MAIN_AGENT_ID) {
+      // The launch side stopped (marketplace or .env): nothing to load, so no restart.
+      const st = mainGromzoLaunchState()
+      if (st === 'marketplace_failed' || st === 'env_failed') return
+      // Switched off: mxd is not part of it (it keeps the main agent), so no wait and no held check; the
+      // plugin goes with the next start, through the same pane gate.
+      const tok = readMainGromzoToken(PROJECT_ROOT)
+      if (tok.ok && !tok.on) {
+        void restartMainForGromzoNow(mainRestartDeps()).catch((e) => logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo main agent: restart failed'))
+        return
+      }
+      void restartMainAfterMxdReload(mainRestartDeps()).catch((e) => logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo main agent: restart failed'))
+      return
+    }
+    void restartAfterMxdReload(slug).catch((e) => logger.error({ slug, err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: restart failed'))
+  },
   now: () => Date.now(),
 }
 let agentDeps: GromzoAgentDeps = defaultAgentDeps
+
+/** The main session's restart for its Gromzo switch: the manual-restart pane gate, never forced. */
+function mainRestartDeps() {
+  return {
+    status: () => call({ verb: 'status' }),
+    gate: () => gateManualRestart(MAIN_CHANNELS_SESSION),
+    restart: () => hardRestartMarveenChannels(),
+    sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    mainSlug: MAIN_AGENT_ID,
+  }
+}
 
 /** Test seam: replace some of the agent switch's collaborators (null puts the real ones back). */
 export function setGromzoAgentDepsForTest(deps: Partial<GromzoAgentDeps> | null): void {
@@ -308,6 +352,14 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
   }
   let slug: string
   try { slug = decodeURIComponent(action[1]!) } catch { failure(res, 'bad_request'); return true }
+  // GROMZOMAINAGENT1106: "restart now" for the main agent's Gromzo switch, when the pane was busy before.
+  if (action[2] === 'restart') {
+    if (slug !== MAIN_AGENT_ID) { failure(res, 'bad_request'); return true }
+    const st = await restartMainForGromzoNow(mainRestartDeps())
+    logger.info({ state: st }, 'gromzo main agent: restart asked from the panel')
+    json(res, { state: st })
+    return true
+  }
   try {
     const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps)
       : action[2] === 'disable' ? await disableGromzoAgent(slug, agentDeps)

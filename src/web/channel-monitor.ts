@@ -86,6 +86,7 @@ import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
+import { filterMainGromzoIds, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -1056,7 +1057,15 @@ export function readConfiguredMainModel(projectRoot: string = PROJECT_ROOT): str
 // Since BOOTSTAGGER1007 (b) the co-listen plugins are probed too
 // (checkMainColistenChannels / main-colisten-health.ts).
 export function readExtraChannelPluginIds(projectRoot: string = PROJECT_ROOT): string[] {
-  return readEnvValue(projectRoot, 'CHANNEL_PLUGINS_EXTRA').split(/\s+/).filter(Boolean)
+  // GROMZOMAINAGENT1106: the main agent's gromzo-channel id stays only with a usable agent.sock and a valid
+  // mxd slug, exactly as scripts/main-gromzo-launch.sh filters it for the shell launchers. Every caller (the
+  // three respawns, the isolated main config) then sees the same list as channels.sh.
+  return filterMainGromzoIds(readMainAgentIdRaw(projectRoot), readEnvValue(projectRoot, 'CHANNEL_PLUGINS_EXTRA').split(/\s+/).filter(Boolean))
+}
+
+/** The .env MAIN_AGENT_ID as written (the shell launchers read the same raw value for MXD_AGENT). */
+export function readMainAgentIdRaw(projectRoot: string = PROJECT_ROOT): string {
+  return readEnvValue(projectRoot, 'MAIN_AGENT_ID')
 }
 
 // Build the claude command used to (re)spawn the main channels session via
@@ -1119,7 +1128,16 @@ export function buildMainSessionRespawnCmd(opts: {
    * written at launch, and it ships slack-channel false. null/absent = no flag.
    */
   extraSettingsPath?: string | null
+  /**
+   * GROMZOMAINAGENT1106: the .env MAIN_AGENT_ID (readMainAgentIdRaw). When `extraPluginIds` carries the
+   * gromzo-channel id, the respawn exports MXD_AGENT=<this slug> and MXD_SCOPE=both for the plugin, in
+   * this command only (never a settings file). Absent: the boot-time MAIN_AGENT_ID.
+   */
+  mainAgentId?: string
 }): string {
+  const gromzoSlug = (opts.extraPluginIds ?? []).includes(MAIN_GROMZO_PLUGIN_ID)
+    ? mainGromzoSlug(opts.mainAgentId ?? MAIN_AGENT_ID)
+    : null
   return [
     // FLEETVENV923: same venv-first PATH as startAgentProcess and channels.sh.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
@@ -1171,6 +1189,8 @@ export function buildMainSessionRespawnCmd(opts: {
       : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
+    // GROMZOMAINAGENT1106: the plugin names itself with MXD_AGENT (main-gromzo-launch.ts).
+    ...(gromzoSlug ? [`&& export MXD_AGENT="${gromzoSlug}" MXD_SCOPE="both"`] : []),
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
@@ -1255,6 +1275,7 @@ export function respawnMainSessionFresh(): void {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+      mainAgentId: readMainAgentIdRaw(),
       extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
@@ -1360,6 +1381,7 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+      mainAgentId: readMainAgentIdRaw(),
     extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
@@ -1667,6 +1689,7 @@ function respawnMarveenSessionFresh(): boolean {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+      mainAgentId: readMainAgentIdRaw(),
     extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),

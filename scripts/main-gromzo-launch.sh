@@ -1,0 +1,77 @@
+# shellcheck shell=bash
+# GROMZOMAINAGENT1106: the main agent on Gromzo, for every shell launcher of the main session
+# (channels.sh, channel-watchdog.sh, stuck-modal-guard.sh). src/web/main-gromzo-launch.ts is the TS twin
+# (channel-monitor respawns, the isolated main config); a test runs both on the same inputs.
+#
+# The gromzo-channel plugin is listed in .env CHANNEL_PLUGINS_EXTRA by the dashboard once the owner has
+# approved the main agent in the app. Two rules keep it safe and quiet:
+#  - It loads only when mxd's agent.sock is usable by this user (read AND write, as for a sub-agent:
+#    agent-extra-channels.ts mxdAgentSockUsable) and the main agent's id passes mxd's slug rule. Otherwise
+#    the id is dropped from the launch: no plugin that exits at once, and a Bridge uninstall leaves nothing
+#    that half-starts.
+#  - The plugin names itself with MXD_AGENT. That goes in as an export in THIS launch command only, never
+#    into a settings.json: the shared ~/.claude/settings.json env is copied into every sub-agent's config,
+#    and a sub-agent's plugin would then say hello as the main agent (GROMZOMAINAGENT1106 EGM, design 1).
+#    MXD_SCOPE=both: the owner DM and the team, as for every Gromzo agent (owner 2026-10-31).
+
+MAIN_GROMZO_PLUGIN_ID='gromzo-channel@gromzo-local'
+
+# The plugin's own default socket (plugin/gromzo-channel; agent-extra-channels.ts MXD_AGENT_SOCK_DEFAULT).
+# MAIN_GROMZO_SOCK_PATH overrides it for the tests only.
+main_gromzo_sock() {
+  if [ -n "${MAIN_GROMZO_SOCK_PATH:-}" ]; then
+    printf '%s' "$MAIN_GROMZO_SOCK_PATH"
+  elif [ "$(uname -s)" = Darwin ]; then
+    printf '%s' '/Library/Application Support/Marveen/mxd-run/agent.sock'
+  else
+    printf '%s' '/run/marveen-mxd/agent.sock'
+  fi
+}
+
+# main_gromzo_slug <main_agent_id>: the slug (default marveen, as src/config.ts), or nothing and rc 1 when
+# it fails mxd's rule (lower-case letters, digits, '-', 1-32).
+main_gromzo_slug() {
+  local s="${1:-marveen}"
+  # The class is spelled out, never a-z: macOS /bin/bash 3.2 under a UTF-8 locale lets a range match
+  # 'B' and accented letters (measured 2026-11-06), and the launchers run with the owner's locale.
+  case "$s" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;; esac
+  [ "${#s}" -le 32 ] || return 1
+  printf '%s' "$s"
+}
+
+# main_gromzo_usable <main_agent_id>: rc 0 when the plugin may load for the main session.
+main_gromzo_usable() {
+  local sock
+  main_gromzo_slug "$1" >/dev/null || return 1
+  sock="$(main_gromzo_sock)"
+  # Read AND write, exactly mxdAgentSockUsable (accessSync R_OK|W_OK): the twin test holds the two equal.
+  [ -r "$sock" ] && [ -w "$sock" ]
+}
+
+# main_gromzo_filter_ids <main_agent_id> [id ...]: the ids, space-separated, the gromzo id dropped when it
+# may not load. Every other id passes unchanged and in order.
+main_gromzo_filter_ids() {
+  local main="$1" out="" usable=1 i
+  shift
+  main_gromzo_usable "$main" && usable=0
+  for i in "$@"; do
+    [ -n "$i" ] || continue
+    if [ "$i" = "$MAIN_GROMZO_PLUGIN_ID" ] && [ "$usable" -ne 0 ]; then continue; fi
+    out="$out $i"
+  done
+  printf '%s' "${out# }"
+}
+
+# main_gromzo_env <main_agent_id> [id ...]: the launch-command prefix when the (filtered) ids carry the
+# gromzo plugin, else nothing. Ends in "&& " like the other prefixes of the launch command.
+main_gromzo_env() {
+  local main="$1" i slug
+  shift
+  for i in "$@"; do
+    if [ "$i" = "$MAIN_GROMZO_PLUGIN_ID" ]; then
+      slug="$(main_gromzo_slug "$main")" || return 0
+      printf 'export MXD_AGENT="%s" && export MXD_SCOPE="both" && ' "$slug"
+      return 0
+    fi
+  done
+}
