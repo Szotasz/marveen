@@ -58,8 +58,8 @@ let valueMode = false
 let input
 if (argv.length > 0) {
   // Exactly ONE label (Dani, #2563 review): no line break (it would make a second input line, and two values would
-  // come out glued together), no '=', and no whitespace at either end. A space INSIDE is allowed: live vault ids
-  // carry it (5 of 191, measured by Dani, e.g. one the newsletter and broadcast skills use).
+  // come out glued together), no '=', and no whitespace at either end. A space INSIDE is allowed: vault ids may
+  // contain an inner space (POST /api/vault trims only the ends).
   if (argv[0] === '--value' && argv.length === 2 && !VALUE_LABEL.test(argv[1])) {
     // Not echoed: the argument could be a value pasted by mistake.
     process.stderr.write(`vault-resolve: the --value label must be one line, without '=' and without whitespace at either end\n`)

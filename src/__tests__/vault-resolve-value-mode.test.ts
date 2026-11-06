@@ -34,7 +34,7 @@ beforeAll(() => {
   copyFileSync(join(process.cwd(), 'scripts', 'vault-dashboard-client.mjs'), join(ROOT, 'scripts', 'vault-dashboard-client.mjs'))
   // Exact-id lookup, as the real getSecret (vault.ts: entries.find(e => e.id === id)).
   writeFileSync(join(ROOT, 'dist', 'web', 'vault.js'), `export function getSecret(id) {
-  if (id === 'KNOWN-LABEL' || id === 'ssh-key-abc123' || id === 'RESEND full access') return '${SECRET_VALUE}'
+  if (id === 'KNOWN-LABEL' || id === 'ssh-key-abc123' || id === 'NAME full access') return '${SECRET_VALUE}'
   if (id === 'EMPTY-LABEL') return ''
   return null
 }\n`)
@@ -106,8 +106,8 @@ describe('the other silent paths are loud now', () => {
     }
   })
 
-  it('a label with a space INSIDE is one label: live vault ids carry it (Dani, 5 of 191)', async () => {
-    expect(await run(['--value', 'RESEND full access'], null)).toEqual({ code: 0, stdout: SECRET_VALUE, stderr: '' })
+  it('a label with a space INSIDE is one label: vault ids may contain an inner space', async () => {
+    expect(await run(['--value', 'NAME full access'], null)).toEqual({ code: 0, stdout: SECRET_VALUE, stderr: '' })
     const r = await run(['--value', 'NO SUCH label'], null)
     expect(r.code).toBe(3)
     expect(r.stderr).toContain('no secret in the vault for label: NO SUCH label')
