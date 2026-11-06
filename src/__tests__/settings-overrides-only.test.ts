@@ -359,7 +359,7 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/vault-headers-helper.mjs': 1,
     'scripts/vault-resolve.mjs': 1,
     'scripts/watchdog.sh': 1,
-    'scripts/self-pace-gate.mjs': 1,
+    'scripts/self-pace-gate.mjs': 4, // 1 + 3 comment/message mentions of SELF_PACE_SCHEDULE_WRITERS (overrides-only since #2354 review)
     'scripts/notify.sh': 1,
     'scripts/hooks/db-write-gate.mjs': 2,
   }
