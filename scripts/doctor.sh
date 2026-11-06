@@ -318,7 +318,7 @@ fi
 # --- Gromzo token protection (MXDAGENTSOCKID1106) ---
 # Report only: a warn here never fails the run. See scripts/lib/gromzo-protection-check.sh.
 . "$INSTALL_DIR/scripts/lib/gromzo-protection-check.sh"
-GZ_CTL_SOCK="$(gromzo_mxdctl_and_sock)"
+GZ_CTL_SOCK="$(gromzo_mxdctl_and_sock "$INSTALL_DIR/.env")"
 if [ -n "$GZ_CTL_SOCK" ]; then
   echo -e "\n${BOLD}Gromzo${RESET}"
   "${GZ_CTL_SOCK%%|*}" "${GZ_CTL_SOCK#*|}" status 2>/dev/null | gromzo_protection_lines | while IFS='|' read -r level msg; do

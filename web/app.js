@@ -21448,6 +21448,8 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
 
   async function loadAgents() {
     showError('')
+    // Dani 71532 (1): a failed reload must not leave the last answer's "every agent protected" banner standing.
+    if (ratchetEl) { ratchetEl.textContent = ''; ratchetEl.hidden = true }
     try {
       const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
       if (!r.ok) {

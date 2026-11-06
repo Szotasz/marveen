@@ -2,7 +2,9 @@
 // (scripts/lib/gromzo-protection-check.sh, fed the dash status JSON) and the panel (web/app.js, the HU/EN strings).
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const ROOT = join(__dirname, '..', '..')
@@ -30,6 +32,25 @@ describe('doctor: the Gromzo protection lines', () => {
     expect(lines({ ok: true, running: true, linked: true })).toEqual(['info|mxd reports no token protection (an mxd before MXDAGENTSOCKID1106)'])
     expect(lines('not json')).toEqual(['info|mxd status is not readable JSON'])
   })
+  it('the dash.sock path honours MXD_DASH_SOCK in the install env file, as the dashboard does (Dani 71532 (2))', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'gz-doc-'))
+    const sock = join(d, 'custom-dash.sock')
+    const srv = createServer()
+    await new Promise<void>((res) => srv.listen(sock, res))
+    try {
+      const ctl = join(d, 'mxdctl'); writeFileSync(ctl, '#!/bin/sh\n'); chmodSync(ctl, 0o755)
+      const envFile = join(d, 'install.env'); writeFileSync(envFile, `OTHER=1\nMXD_DASH_SOCK="${sock}"\n`)
+      const pick = (f: string) => execFileSync('/bin/bash', ['-c', '. "$1"; gromzo_mxdctl_and_sock "$2"', 'x', LIB, f], { encoding: 'utf-8', env: { ...process.env, GROMZO_MXDCTL: ctl } })
+      expect(pick(envFile)).toBe(`${ctl}|${sock}`)
+      // No env file: the platform default (a live mxd on this host may have one), never the custom path.
+      expect(pick(join(d, 'missing.env'))).not.toContain(sock)
+      expect(readFileSync(join(ROOT, 'scripts', 'doctor.sh'), 'utf-8')).toContain('gromzo_mxdctl_and_sock "$INSTALL_DIR/.env"')
+    } finally {
+      await new Promise<void>((res) => srv.close(() => res()))
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
   it('doctor reports the section and never fails the run on it', () => {
     const doc = readFileSync(join(ROOT, 'scripts', 'doctor.sh'), 'utf-8')
     const sec = doc.slice(doc.indexOf('# --- Gromzo token protection'), doc.indexOf('# --- Spotlight'))
@@ -44,8 +65,13 @@ describe('the panel: badges and the fail-closed banner', () => {
     expect(app).toContain("if (row.protection === 'refused' || row.protection === 'unprotected') {")
     expect(app).toContain("prot.textContent = t('gromzo.agents.prot.' + row.protection)")
     expect(app).toContain("ratchetEl.textContent = body.ratchetUnreadable === true ? t('gromzo.agents.prot.ratchet_unreadable') : ''")
-    // Shown exactly when mxd says so, hidden otherwise.
+    // Shown exactly when mxd says so, hidden otherwise; and cleared at the start of every load, so a failed reload
+    // never leaves the last answer's banner standing (Dani 71532 (1)).
     expect(app).toContain('ratchetEl.hidden = body.ratchetUnreadable !== true')
+    const load = app.slice(app.indexOf("  async function loadAgents() {\n    showError('')"))
+    const reset = load.indexOf("if (ratchetEl) { ratchetEl.textContent = ''; ratchetEl.hidden = true }")
+    expect(reset).toBeGreaterThan(-1)
+    expect(reset).toBeLessThan(load.indexOf("await fetch('/api/gromzo/agents'"))
     expect(readFileSync(join(ROOT, 'web', 'index.html'), 'utf-8')).toContain('<p class="mobile-login-warn gromzo-agent-state is-error" id="gromzoAgentsRatchet" role="alert" hidden></p>\n          <ul class="gromzo-agent-list" id="gromzoAgentList">')
   })
   it('every protection key exists in HU and EN, with no dash characters', () => {

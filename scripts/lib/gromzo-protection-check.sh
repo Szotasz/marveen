@@ -4,13 +4,20 @@
 # (slugs only) and a top-level ratchet_unreadable when its protection file could not be read (fail closed: every
 # agent counts as protected). Read through the installed mxdctl, the same client the installer uses.
 
-# gromzo_mxdctl_and_sock: "<mxdctl>|<dash.sock>" for this platform, or nothing when mxd is not installed.
+# gromzo_mxdctl_and_sock [<env file>]: "<mxdctl>|<dash.sock>" for this platform, or nothing when mxd is not
+# installed. The dash.sock path honours the install's MXD_DASH_SOCK, as the dashboard does (mxd-dash.ts;
+# Dani 71532 (2)). GROMZO_MXDCTL overrides the client for the tests only.
 gromzo_mxdctl_and_sock() {
-  local ctl sock
+  local ctl sock envsock
   if [ "$(uname -s)" = Darwin ]; then
     ctl='/Library/Application Support/Marveen/mxd/mxdctl'; sock='/Library/Application Support/Marveen/mxd-run/dash.sock'
   else
     ctl='/opt/marveen-mxd/mxdctl'; sock='/run/marveen-mxd/dash.sock'
+  fi
+  [ -z "${GROMZO_MXDCTL:-}" ] || ctl="$GROMZO_MXDCTL"
+  if [ -n "${1:-}" ] && [ -f "$1" ]; then
+    envsock="$(grep -E '^MXD_DASH_SOCK=' "$1" | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')"
+    [ -z "$envsock" ] || sock="$envsock"
   fi
   [ -x "$ctl" ] && [ -S "$sock" ] && printf '%s|%s' "$ctl" "$sock"
 }
