@@ -346,8 +346,12 @@ export function substituteTemplatePlaceholders(content: string, id: TemplateIden
 
 // PERSONAESC1107: on an English install the settings template's PreCompact agent prompt is the English one. Applied to
 // the RAW template (placeholders still in), before resolveTemplatePlaceholders. Without the key the text is returned as
-// it is, byte for byte. Only a new agent's settings get it: the hook merge never adds a second PreCompact agent hook,
-// so an existing agent keeps its prompt (a stock retired one is upgraded by upgradeRetiredHookPrompts as before).
+// it is, byte for byte. Who gets it: a new agent (seeded from the template), and an agent whose settings have no
+// PreCompact agent hook yet (the merge adds the missing event). An agent that already has one keeps it: the merge
+// never adds a second agent hook, and the stock-prompt upgrade is per language (retiredHookPromptsFor), so on an
+// English install only a retired ENGLISH prompt is upgraded, never a Hungarian one. A hand opt-in therefore leaves the
+// existing agents' prompts Hungarian (a documented limit), and a later English wording reaches the English agents
+// through the "en:PreCompact" key of templates/retired-hook-prompts.json.
 export function localizeSettingsTemplate(raw: string): string {
   if (agentTextLang() !== 'en') return raw
   try {
@@ -905,6 +909,18 @@ export function upgradeRetiredHookPrompts(
 // The retired stock prompts, resolved like the template. A missing file means no
 // migration; an unreadable one is logged and also means no migration. The path is
 // a test seam only.
+// PERSONAESC1107 (EGM review): the retired stock prompts of the install's language. The file's plain event keys
+// ("PreCompact") are the Hungarian prompts; an "en:"-prefixed key ("en:PreCompact") holds the English ones. Never
+// cross-language: an English install upgrades only a retired English prompt, a Hungarian install only a Hungarian one.
+export function retiredHookPromptsFor(all: Record<string, string[]>, lang: 'hu' | 'en'): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const [key, list] of Object.entries(all)) {
+    if (lang === 'en' && key.startsWith('en:')) out[key.slice(3)] = list
+    else if (lang === 'hu' && !key.includes(':')) out[key] = list
+  }
+  return out
+}
+
 export function readRetiredHookPrompts(
   p: string = join(PROJECT_ROOT, 'templates', 'retired-hook-prompts.json'),
 ): Record<string, string[]> {
@@ -988,7 +1004,7 @@ export function ensureAgentHooks(
     // #2200: an agent still on a stock prompt from an earlier template gets the
     // current one; an edited prompt stays. Before the header pass, so a stock
     // prompt is compared as it shipped.
-    const retiredPrompts = readRetiredHookPrompts()
+    const retiredPrompts = retiredHookPromptsFor(readRetiredHookPrompts(), agentTextLang())
     if (upgradeRetiredHookPrompts(existingHooks, tplHooks, retiredPrompts)) changed = true
     // The add pass's blind spot also hides the task-state curl's X-Agent-Id header.
     if (upgradeTaskStateHeaderInHookPrompts(existingHooks)) changed = true
@@ -4347,11 +4363,13 @@ export function upgradeRetiredSkillSection(text: string, retired: string[], curr
 // migration. The path is a test seam only.
 export function readRetiredSkillSections(
   p: string = join(PROJECT_ROOT, 'templates', 'retired-claude-md-sections.json'),
+  // PERSONAESC1107: the list under this heading; the English section's old texts go under its English heading.
+  heading: string = SKILL_SECTION_HEADING,
 ): string[] {
   if (!existsSync(p)) return []
   try {
     const parsed = JSON.parse(readFileSync(p, 'utf-8')) as Record<string, unknown>
-    const list = parsed[SKILL_SECTION_HEADING]
+    const list = parsed[heading]
     return Array.isArray(list) ? list.filter((s): s is string => typeof s === 'string') : []
   } catch (err) {
     logger.warn({ err, path: p }, 'ensureSkillSectionCurrent: retired-claude-md-sections.json unreadable, the skill section is not migrated')
@@ -4395,12 +4413,12 @@ export function ensureSkillSectionCurrent(name: string, retiredPath?: string): b
   const thisForm = buildSkillSection(helper ? name : undefined, tokenFile)
   // SKILLAPPROVALOFF1101: the section as both forms read before the quarantine became a switch. It carries the agent's
   // own token path and name, so it cannot be a fixed entry of the retired file: it is rebuilt from today's form.
-  // PERSONAESC1107: an English install looks only for the English heading, and its only retired form is the other
-  // recipe form (an English section never had the older texts). Never cross-language: a Hungarian section on an
-  // English install (a key set by hand) is left alone, a documented limit.
+  // PERSONAESC1107: an English install looks only for the English heading; its retired forms are the other recipe form
+  // and the English heading's list in the retired file (where a later English wording's old text goes, EGM review).
+  // Never cross-language: a Hungarian section on an English install (a key set by hand) is left alone, a documented limit.
   const english = agentTextLang() === 'en'
   const retired = english
-    ? [otherForm]
+    ? [...readRetiredSkillSections(retiredPath, SKILL_SECTION_HEADING_EN), otherForm]
     : [...readRetiredSkillSections(retiredPath), otherForm, preQuarantineSwitchSection(otherForm), preQuarantineSwitchSection(thisForm)]
   const updated = upgradeRetiredSkillSection(existing, retired, thisForm, english ? SKILL_SECTION_HEADING_EN : SKILL_SECTION_HEADING)
   if (updated === null || updated === existing) return false

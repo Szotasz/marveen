@@ -391,6 +391,48 @@ describe('the PreCompact agent-hook prompt of a new agent on an English install'
   })
 })
 
+describe('the retired path of the English text (EGM review Major 2): per language, never cross-language', () => {
+  it('retiredHookPromptsFor: plain keys are Hungarian, "en:" keys are English, nothing crosses', () => {
+    const all = { PreCompact: ['hu-old'], 'en:PreCompact': ['en-old'], _comment: [] as string[] }
+    expect(sc.retiredHookPromptsFor(all, 'hu')).toEqual({ PreCompact: ['hu-old'], _comment: [] })
+    expect(sc.retiredHookPromptsFor(all, 'en')).toEqual({ PreCompact: ['en-old'] })
+  })
+
+  it('an English install: a retired ENGLISH skill section (the English heading\'s list) is upgraded to the current one', () => {
+    setLang('en')
+    const file = join(tmpRoot, 'agents', SHARED, 'CLAUDE.md')
+    const current = sc.buildSkillSection(SHARED, join(tmpRoot, 'store', '.dashboard-token'))
+    const old = current.replace('You are a self-improving agent.', 'You are a self-improving agent (old wording).')
+    const retiredFile = join(tmpRoot, 'retired-sections-en.json')
+    writeFileSync(retiredFile, JSON.stringify({ [en.SKILL_SECTION_HEADING_EN]: [old], '## Öntanulás és Skill rendszer': [] }), 'utf-8')
+    writeFileSync(file, `# Sub\n\n${old}\n`, 'utf-8')
+    expect(sc.ensureSkillSectionCurrent(SHARED, retiredFile)).toBe(true)
+    expect(readFileSync(file, 'utf-8')).toContain('You are a self-improving agent. You learn')
+    expect(readFileSync(file, 'utf-8')).not.toContain('(old wording)')
+  })
+
+  it('an English install: an agent on a retired HUNGARIAN stock PreCompact prompt keeps it (no switch to English)', () => {
+    const raw = readFileSync(REPO_TEMPLATE, 'utf-8')
+    mkdirSync(join(tmpRoot, 'templates'), { recursive: true })
+    writeFileSync(join(tmpRoot, 'templates', 'settings.json.template'), raw, 'utf-8')
+    const retiredRepo = readFileSync(join(__dirname, '..', '..', 'templates', 'retired-hook-prompts.json'), 'utf-8')
+    writeFileSync(join(tmpRoot, 'templates', 'retired-hook-prompts.json'), retiredRepo, 'utf-8')
+    const oldHu = sc.resolveTemplatePlaceholders((JSON.parse(retiredRepo) as { PreCompact: string[] }).PreCompact[0])
+    const scopes = { user: join(tmpRoot, 'scope-user2'), project: join(tmpRoot, 'scope-project2') }
+    for (const lang of ['en', null] as const) {
+      const agent = `retired-${lang ?? 'hu'}`
+      mkdirSync(join(tmpRoot, 'agents', agent, '.claude'), { recursive: true })
+      const settings = join(tmpRoot, 'agents', agent, '.claude', 'settings.json')
+      writeFileSync(settings, JSON.stringify({ hooks: { PreCompact: [{ hooks: [{ type: 'agent', prompt: oldHu, timeout: 180 }] }] } }), 'utf-8')
+      setLang(lang)
+      sc.ensureAgentHooks(agent, scopes)
+      const written = preCompactPrompt(readFileSync(settings, 'utf-8'))
+      if (lang === 'en') expect(written).toBe(oldHu)
+      else expect(written.startsWith('A kontextus hamarosan tömörítődik.') && written !== oldHu).toBe(true)
+    }
+  })
+})
+
 // STALENESS GUARD. A Hungarian body changed? Bring its English twin in src/web/agent-scaffold-en.ts along, then
 // update the hash here (the failing test prints the new one). The hash covers every branch combination above.
 const HU_SOURCE_HASHES: Record<string, string> = {

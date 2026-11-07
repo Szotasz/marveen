@@ -11,7 +11,7 @@
 // - The values every recipe embeds (the helper path, the dashboard origin, the token path, the payload paths) come in
 //   through `ScaffoldFrags`, built by agent-scaffold.ts, so this file imports nothing at runtime from it (no cycle).
 // - A Hungarian body that changes needs its English twin changed too: the staleness guard pins a hash of each
-//   Hungarian body next to this file's version (EN_SOURCE_HASHES in the test).
+//   Hungarian body next to this file's version (HU_SOURCE_HASHES in the test).
 
 import type { ApiPayloadKind } from './agent-scaffold.js'
 
@@ -873,6 +873,7 @@ ${helper ? R.ping : `curl -s -X POST ${f.dashboardOrigin}/api/messages \\
   --data-binary @- <<'JSON'
 {"from":"AGENT_NAME","to":"${main}","content":"Ismeretlen sender [ID] jelezett első üzenettel: [the message in short]. Ki ez, mit válaszoljak?"}
 JSON
+
 ${PING_GLOSS}`}
 
 ${helper ? R.pingNote : `The QUOTED heredoc is MANDATORY here (\`<<'JSON'\`, not \`<<JSON\` -- the latter substitutes just the same): you carry the sender's own text into the payload, and in the
@@ -957,8 +958,9 @@ Output ONLY the markdown content, no code fences.`
 // ---- the PreCompact agent-hook prompt (templates/settings.json.template), for a NEW agent on an English install ----
 // Placeholders ({{BOT_NAME}}, {{PROJECT_ROOT}}) are resolved by the same resolveTemplatePlaceholders as the template.
 // The command lines are the Hungarian prompt's, byte for byte; SAJAT_NEVED and SKILL-NEV stay as the tokens the
-// upgrade passes in agent-scaffold.ts match. An agent that already has a PreCompact prompt keeps it (the hook merge
-// never adds a second agent hook), so this reaches only agents created after the key is set.
+// upgrade passes in agent-scaffold.ts match. Who gets it, and how a later wording reaches the English agents: see
+// localizeSettingsTemplate and retiredHookPromptsFor in agent-scaffold.ts (a new agent, or one with no PreCompact agent
+// hook yet; an existing prompt is replaced only when it is a retired ENGLISH stock prompt, "en:PreCompact").
 export const PRECOMPACT_PROMPT_EN_TPL = `The context is about to be compacted. Do three things:
 
 {{BOT_NAME}}'s /api/* calls go through ONE helper: bash {{PROJECT_ROOT}}/scripts/marveen-api.sh <verb> (the verbs: bash {{PROJECT_ROOT}}/scripts/marveen-api.sh --help). The helper reads the token itself, so you need neither a raw curl nor command substitution: on a strict profile Claude Code refuses those without asking. The helper takes the text ONLY from a file: first write it into your working folder with the Write tool, and pass the file's path. Never put text on the command line.
