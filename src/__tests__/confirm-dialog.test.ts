@@ -574,6 +574,78 @@ describe('the Vault deletes use it', () => {
   })
 })
 
+describe('the pending retry cancel and the background task stop use it', () => {
+  const between = (from: string, to: string) => {
+    const i = APP.indexOf(from)
+    const j = i < 0 ? -1 : APP.indexOf(to, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  }
+  const PENDING = between("container.querySelectorAll('[data-action=\"cancel-pending\"]').forEach", '\n}\n')
+  const BG = between('async function cancelBgTask(', '\n}\n')
+  const VIEW = between('async function viewBgTask(', '\n}\n')
+
+  it('the handlers were found', () => {
+    for (const part of [PENDING, BG, VIEW]) expect(part).not.toBe('')
+  })
+
+  it('the pending retry cancel: a danger confirmDialog naming the task and its agent, no native confirm()', () => {
+    expect(PENDING).toContain('const confirmed = await confirmDialog({')
+    expect(PENDING).toContain("title: t('tasks.confirm.cancel_pending_title')")
+    expect(PENDING).toContain("t('tasks.confirm.cancel_pending', { name: (r && r.taskName) || id, agent: (r && r.agentName) || '' })")
+    expect(PENDING).toContain("okLabel: t('tasks.confirm.cancel_pending_ok')")
+    expect(PENDING).toContain('danger: true')
+    expect(PENDING).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a failed cancel says so in a translated toast instead of only the console, and the list is reloaded', () => {
+    expect(PENDING).toContain("if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))")
+    expect(PENDING).toContain("catch {\n        showToast(t('tasks.toast.cancel_pending_error'))")
+    expect(PENDING).not.toContain('console.error')
+  })
+
+  it('the background task stop: a danger confirmDialog naming the task and its agent, no native confirm()', () => {
+    expect(BG).toContain('const confirmed = await confirmDialog({')
+    expect(BG).toContain("title: t('bgTasks.cancel.title')")
+    expect(BG).toContain("t('bgTasks.cancel.confirm', { id, agent: agent || '' })")
+    expect(BG).toContain("okLabel: t('bgTasks.cancel.ok')")
+    expect(BG).toContain('danger: true')
+    expect(BG).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    expect(APP).toContain('onclick="cancelBgTask(${jsArg(task.id)}, ${jsArg(task.agent_id)})"')
+  })
+
+  it('a "no" stops both, before the request', () => {
+    for (const handler of [PENDING, BG]) {
+      const ask = handler.indexOf('const confirmed = await confirmDialog({')
+      const guard = handler.indexOf('if (!confirmed) return')
+      expect(ask).toBeGreaterThan(-1)
+      expect(guard).toBeGreaterThan(ask)
+      expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+    }
+  })
+
+  it('the hard-coded "Hiba" toasts are gone from the background task section', () => {
+    expect(BG).not.toContain("showToast('Hiba')")
+    expect(VIEW).not.toContain("showToast('Hiba')")
+    expect(BG).toContain("showToast(t('bgTasks.toast.stop_error'))")
+    expect(VIEW).toContain("showToast(t('bgTasks.load_error'))")
+  })
+
+  it('the keys are in both languages, with their placeholders', () => {
+    for (const key of ['tasks.confirm.cancel_pending', 'tasks.confirm.cancel_pending_title', 'tasks.confirm.cancel_pending_ok', 'tasks.toast.cancel_pending_error',
+      'bgTasks.cancel.confirm', 'bgTasks.cancel.title', 'bgTasks.cancel.ok', 'bgTasks.toast.stop_error', 'bgTasks.load_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      const pending = lang.split('\n').find(l => l.includes("'tasks.confirm.cancel_pending':")) ?? ''
+      expect(pending).toContain('{name}')
+      expect(pending).toContain('{agent}')
+      const bg = lang.split('\n').find(l => l.includes("'bgTasks.cancel.confirm':")) ?? ''
+      expect(bg).toContain('{id}')
+      expect(bg).toContain('{agent}')
+    }
+  })
+})
+
 describe('the custom provider delete uses it', () => {
   const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
   const handler = (() => {
