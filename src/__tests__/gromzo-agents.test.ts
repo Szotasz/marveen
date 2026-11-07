@@ -612,6 +612,18 @@ describe('D1: the final answer is kept for the panel; a new switch clears it', (
   })
 })
 
+describe('D1: an old answer never stands for a new switch', () => {
+  it('refused, then a new switch mxd refuses at once (rate_limited): the panel reads no_pending, not the old refusal', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(), { ok: false, error: 'rate_limited' }]
+    await enableGromzoAgent('zara', w.deps)
+    w.replies.agent_add_check = [{ ok: true, state: 'refused' }]
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'refused' })
+    expect(await enableGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'rate_limited' })
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: false, code: 'no_pending' })
+  })
+})
+
 describe('D1: "used" is verified in mxd\'s status, never with a second agent_add', () => {
   async function usedWorld(facts?: GromzoAgentDeps['statusFacts']) {
     const w = world()
