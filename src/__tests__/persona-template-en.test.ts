@@ -67,50 +67,84 @@ describe('the English persona templates', () => {
   }
 })
 
-describe('persona_template (scripts/lib/persona-template.sh)', () => {
+describe('persona_template and the once-decided AGENT_TEXT_LANG (scripts/lib/persona-template.sh)', () => {
+  // PERSONAESC1107 (Samu 72762 (b)): the language is decided at the FIRST render (no CLAUDE.md yet) and kept in .env;
+  // every later render only reads it. An install without the key is Hungarian.
   let dir = ''
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
-  function pick(name: string, opts: { lang?: string; dotLang?: string; en?: boolean }) {
+  type Opts = { lang?: string; dotLang?: string; en?: boolean; env?: string; claudeMd?: boolean }
+  function setup(name: string, opts: Opts) {
     dir = mkdtempSync(join(tmpdir(), 'geri-persona-'))
     mkdirSync(join(dir, 'templates', 'en'), { recursive: true })
-    writeFileSync(join(dir, 'templates', name), 'hu')
-    if (opts.en !== false) writeFileSync(join(dir, 'templates', 'en', name), 'en')
+    for (const n of new Set([name, 'CLAUDE.md.template'])) {
+      writeFileSync(join(dir, 'templates', n), 'hu')
+      if (opts.en !== false) writeFileSync(join(dir, 'templates', 'en', n), 'en')
+    }
     if (opts.dotLang !== undefined) writeFileSync(join(dir, '.lang'), opts.dotLang)
+    if (opts.env !== undefined) writeFileSync(join(dir, '.env'), opts.env)
+    if (opts.claudeMd) writeFileSync(join(dir, 'CLAUDE.md'), 'existing')
     const env: Record<string, string> = { PATH: process.env.PATH ?? '' }
     if (opts.lang !== undefined) env.MARVEEN_LANG = opts.lang
-    const r = spawnSync('bash', ['-c', `. "$1"; persona_template "$2" "$3"`, '_', join(ROOT, 'scripts/lib/persona-template.sh'), dir, name], { env, encoding: 'utf8' })
-    expect(r.status).toBe(0)
-    return r.stdout.replace(dir, '<dir>')
+    return env
   }
+  function run(script: string, env: Record<string, string>, ...args: string[]) {
+    const r = spawnSync('bash', ['-c', `. "$1"; shift; ${script}`, '_', join(ROOT, 'scripts/lib/persona-template.sh'), ...args], { env, encoding: 'utf8' })
+    expect(r.status, r.stderr).toBe(0)
+    return r.stdout.split(dir).join('<dir>')
+  }
+  const pick = (name: string, opts: Opts, mode = '') => run(`persona_template "$1" "$2" ${mode}`, setup(name, opts), dir, name)
+  const envFile = () => { try { return readFileSync(join(dir, '.env'), 'utf8') } catch { return null } }
 
-  it('English when MARVEEN_LANG=en, or when the .lang says en', () => {
-    expect(pick('CLAUDE.md.template', { lang: 'en' })).toBe('<dir>/templates/en/CLAUDE.md.template')
-    expect(pick('SOUL.md.template', { dotLang: 'en\n' })).toBe('<dir>/templates/en/SOUL.md.template')
+  it('first render (decide, no CLAUDE.md): English from MARVEEN_LANG or the .lang, and the key is written', () => {
+    expect(pick('CLAUDE.md.template', { lang: 'en', env: 'A=1\n' }, 'decide')).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(envFile()).toBe('A=1\nAGENT_TEXT_LANG=en\n')
+    expect(pick('SOUL.md.template', { dotLang: 'en\n', env: '' }, 'decide')).toBe('<dir>/templates/en/SOUL.md.template')
+    expect(envFile()).toBe('AGENT_TEXT_LANG=en\n')
   })
 
-  it('Hungarian by default, for any other language, and when the English file is missing', () => {
-    expect(pick('CLAUDE.md.template', {})).toBe('<dir>/templates/CLAUDE.md.template')
-    expect(pick('CLAUDE.md.template', { lang: 'hu' })).toBe('<dir>/templates/CLAUDE.md.template')
-    expect(pick('CLAUDE.md.template', { lang: 'de' })).toBe('<dir>/templates/CLAUDE.md.template')
-    expect(pick('CLAUDE.md.template', { lang: 'en', en: false })).toBe('<dir>/templates/CLAUDE.md.template')
+  it('first render: Hungarian (and the key hu) by default, for another language, without the English file; MARVEEN_LANG wins', () => {
+    for (const o of [{}, { lang: 'hu' }, { lang: 'de' }, { lang: 'EN' }, { lang: 'en', en: false }, { lang: 'hu', dotLang: 'en' }] as Opts[]) {
+      expect(pick('CLAUDE.md.template', { ...o, env: 'A=1' }, 'decide'), JSON.stringify(o)).toBe('<dir>/templates/CLAUDE.md.template')
+      expect(envFile(), JSON.stringify(o)).toBe('A=1\nAGENT_TEXT_LANG=hu\n')
+    }
   })
 
-  it('MARVEEN_LANG wins over the .lang', () => {
-    expect(pick('CLAUDE.md.template', { lang: 'hu', dotLang: 'en' })).toBe('<dir>/templates/CLAUDE.md.template')
+  it('the key decides every later render; nothing more is written', () => {
+    expect(pick('CLAUDE.md.template', { lang: 'hu', env: 'AGENT_TEXT_LANG=en\n' }, 'decide')).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(envFile()).toBe('AGENT_TEXT_LANG=en\n')
+    expect(pick('CLAUDE.md.template', { lang: 'en', env: 'AGENT_TEXT_LANG=hu\n' }, 'decide')).toBe('<dir>/templates/CLAUDE.md.template')
+  })
+
+  it('an existing install (CLAUDE.md there) without the key stays Hungarian, and nothing is written, even with .lang=en', () => {
+    expect(pick('CLAUDE.md.template', { lang: 'en', dotLang: 'en', env: 'A=1\n', claudeMd: true }, 'decide')).toBe('<dir>/templates/CLAUDE.md.template')
+    expect(envFile()).toBe('A=1\n')
+  })
+
+  it('read only (update.sh): the key, else Hungarian; MARVEEN_LANG and .lang are not looked at, nothing is written', () => {
+    expect(pick('CLAUDE.md.template', { env: 'AGENT_TEXT_LANG=en\n' })).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(pick('CLAUDE.md.template', { lang: 'en', dotLang: 'en', env: 'A=1\n' })).toBe('<dir>/templates/CLAUDE.md.template')
+    expect(envFile()).toBe('A=1\n')
+  })
+
+  it('as the installers call it: the substitution runs before the redirect creates CLAUDE.md, so a fresh install decides', () => {
+    const env = setup('CLAUDE.md.template', { lang: 'en', env: '' })
+    run('sed -e "" "$(persona_template "$1" CLAUDE.md.template decide)" > "$1/CLAUDE.md"', env, dir)
+    expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf8')).toBe('en')
+    expect(envFile()).toBe('AGENT_TEXT_LANG=en\n')
   })
 })
 
 describe('the installers and update.sh render the persona through it', () => {
-  const CALL = (name: string) => `"$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" ${name})"`
+  const CALL = (name: string, mode = '') => `"$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" ${name}${mode})"`
   it('install-linux.sh and install-macos.sh: CLAUDE.md and SOUL.md', () => {
     for (const f of ['install-linux.sh', 'install-macos.sh']) {
       const s = read(f)
-      expect(s, f).toContain(CALL('CLAUDE.md.template'))
-      expect(s, f).toContain(CALL('SOUL.md.template'))
+      expect(s, f).toContain(CALL('CLAUDE.md.template', ' decide'))
+      expect(s, f).toContain(CALL('SOUL.md.template', ' decide'))
       expect(s, f).not.toMatch(/"\$INSTALL_DIR\/templates\/(CLAUDE|SOUL)\.md\.template" *>/)
     }
   })
-  it('update.sh --regen-claudemd: CLAUDE.md', () => {
+  it('update.sh --regen-claudemd: CLAUDE.md, read only (it never decides the language)', () => {
     const s = read('update.sh')
     expect(s).toContain(CALL('CLAUDE.md.template') + ' > "$CLAUDE_MD"')
   })

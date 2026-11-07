@@ -66,7 +66,7 @@ O="$(esc "$OWNER_NAME")"; B="$(esc "$BOT_NAME")"; A="$(esc "$AGENT_ID")"
 
 # The persona in the install's language (PERSONAEN1107): the helper picks templates/en/ for an English install; an image
 # from before it renders the Hungarian template, as the installer did.
-persona() { if [ -f scripts/lib/persona-template.sh ]; then (. scripts/lib/persona-template.sh; persona_template "$INSTALL_DIR" "$1"); else printf '%s' "templates/$1"; fi; }
+persona() { if [ -f scripts/lib/persona-template.sh ]; then (. scripts/lib/persona-template.sh; persona_template "$INSTALL_DIR" "$1" decide); else printf '%s' "templates/$1"; fi; }
 if [ ! -f CLAUDE.md ] && [ -f templates/CLAUDE.md.template ]; then
   TZV="$(. scripts/lib/install-tz.sh; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")"
   sed -e "s/{{OWNER_NAME}}/$O/g" -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" -e "s/{{CHAT_ID}}/0/g" -e "s/{{BOT_NAME}}/$B/g" \
