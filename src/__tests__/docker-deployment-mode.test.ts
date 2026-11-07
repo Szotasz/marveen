@@ -81,6 +81,14 @@ describe('the scripts and the page', () => {
     expect(up.slice(guard, guard + 400)).toContain('exit 3')
   })
 
+  it('first-boot renders the persona in the install\'s language through the helper, with the Hungarian fallback', () => {
+    const fb = src('docker/first-boot.sh')
+    expect(fb).toContain('persona() { if [ -f scripts/lib/persona-template.sh ]; then (. scripts/lib/persona-template.sh; persona_template "$INSTALL_DIR" "$1"); else printf \'%s\' "templates/$1"; fi; }')
+    expect(fb).toContain('"$(persona CLAUDE.md.template)" > CLAUDE.md')
+    expect(fb).toContain('"$(persona SOUL.md.template)" > SOUL.md')
+    expect(fb).not.toMatch(/ templates\/(CLAUDE|SOUL)\.md\.template > /)
+  })
+
   it('the Updates page says how to update, and hides the apply button and the CLI box', () => {
     const app = src('web/app.js')
     expect(app).toContain("if (data.deployment === 'docker') {")
