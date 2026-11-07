@@ -116,6 +116,35 @@ describe('the TTS directive works without jq (#2600)', () => {
   })
 })
 
+describe('the heredoc end marker is new for every directive (Dani, #2605 review)', () => {
+  const MARKER_RE = /--data-binary @- <<'(MARVEEN_TTS_END_[0-9a-f]{16})'\n[\s\S]*?\n(MARVEEN_TTS_END_[0-9a-f]{16})\n```/
+
+  it('the opening and closing marker match, and two directives get different markers', () => {
+    const a = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const b = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const ma = a.match(MARKER_RE)
+    const mb = b.match(MARKER_RE)
+    expect(ma).not.toBeNull()
+    expect(mb).not.toBeNull()
+    expect(ma?.[1]).toBe(ma?.[2])
+    expect(mb?.[1]).toBe(mb?.[2])
+    expect(ma?.[1]).not.toBe(mb?.[1])
+    // The instruction names the same marker the command uses.
+    expect(a).toContain(`a ${ma?.[1]} sor maradjon`)
+  })
+
+  it('a reply line equal to a predictable marker stays part of the text', async () => {
+    seen = []
+    const d = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const text = ['Első sor', 'MARVEEN_TTS_END', 'MARVEEN_TTS_END_', 'Utolsó sor'].join('\n')
+    const r = await runDirective(d, text, join(root, 'bin'))
+    expect(r.stderr).toBe('')
+    expect(r.code).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].parsed?.text).toBe(text)
+  })
+})
+
 describe('parseTtsRequest', () => {
   const q = new URLSearchParams()
 

@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { STORE_DIR, WEB_PORT } from '../config.js'
@@ -51,7 +52,15 @@ function shellSingleQuote(s: string): string {
 }
 
 export const TTS_TEXT_PLACEHOLDER = 'A_VÁLASZOD_SZÖVEGE'
-export const TTS_HEREDOC_END = 'MARVEEN_TTS_END'
+export const TTS_HEREDOC_END_PREFIX = 'MARVEEN_TTS_END_'
+
+// The heredoc's end marker, NEW for every directive. A fixed marker is known in advance:
+// a reply line equal to it would end the body there, and the reply's further lines would
+// run as shell commands in the agent's session (Dani's review of #2605). The reply can be
+// steered by an inbound message, so the marker must not be guessable.
+export function newTtsHeredocEnd(): string {
+  return TTS_HEREDOC_END_PREFIX + randomBytes(8).toString('hex')
+}
 
 export interface TtsRequest {
   text: string
@@ -117,14 +126,15 @@ export function buildTtsDirective(opts: {
     // string, and the route builds the request itself (parseTtsRequest).
     const query = new URLSearchParams({ chat_id: chatId, state_dir: stateDir, voice_model: voiceModel })
     const url = `http://localhost:${WEB_PORT}/api/voice/tts?${query.toString()}`
+    const end = newTtsHeredocEnd()
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot: a ${TTS_TEXT_PLACEHOLDER} sort cseréld a válaszod szövegére, ` +
-      `szó szerint, escape nélkül (több sor is lehet); a ${TTS_HEREDOC_END} sor maradjon utolsónak, egyedül:\n` +
+      `szó szerint, escape nélkül (több sor is lehet); a ${end} sor maradjon utolsónak, egyedül:\n` +
       `\`\`\`bash\n` +
-      `curl -s -X POST ${shellSingleQuote(url)} -H "Content-Type: text/plain; charset=utf-8" -H "Authorization: Bearer ${tokenRef}" --data-binary @- <<'${TTS_HEREDOC_END}'\n` +
+      `curl -s -X POST ${shellSingleQuote(url)} -H "Content-Type: text/plain; charset=utf-8" -H "Authorization: Bearer ${tokenRef}" --data-binary @- <<'${end}'\n` +
       `${TTS_TEXT_PLACEHOLDER}\n` +
-      `${TTS_HEREDOC_END}\n` +
+      `${end}\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )
