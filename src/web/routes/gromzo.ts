@@ -40,7 +40,7 @@ export const OWNER_QR_SESSION_REQUIRED = {
 }
 import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
-  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, pendingGromzoConsentSlug, restorePendingGromzoConsents,
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, needsReauthOfPane, pendingGromzoConsentSlug, restorePendingGromzoConsents,
   sendGromzoAvatar, setPendingConsentStore, statusFactsOf, watcherDelayMs, type GromzoAgentDeps, type GromzoAgentOutcome, type PendingConsentStore,
 } from '../gromzo-agents.js'
 import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -300,7 +300,7 @@ const defaultAgentDeps: GromzoAgentDeps = {
   // GROMZOBRIDGEWIZARD1107 (Samu 72990): measured on the QA VPS, a main session without a Claude sign-in runs, shows
   // "Not logged in" and ignores its channels, while mxd lists the agent as running. The same pane check as the
   // dashboard's agent card (routes/agents.ts) tells the wizard not to call it reachable.
-  mainNeedsReauth: () => detectReauthNeeded(capturePane(MAIN_CHANNELS_SESSION)).needsReauth,
+  mainNeedsReauth: () => needsReauthOfPane(capturePane(MAIN_CHANNELS_SESSION), detectReauthNeeded),
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   // GROMZONAMETAKEN1106 (the owner, Samu 71820): the main agent joins Gromzo under the name the owner set for it
   // (.env BOT_NAME, read per call like the dashboard's own label; "Marveen" when unset); every other agent under its

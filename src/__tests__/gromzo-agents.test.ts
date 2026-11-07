@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
   CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, EXPIRY_FINAL_CHECK_MS, FAST_CHECK_WINDOW_MS,
-  LAST_RESULT_TTL_MS, LATE_FAST_WINDOW_MS, listGromzoAgents,
+  LAST_RESULT_TTL_MS, LATE_FAST_WINDOW_MS, listGromzoAgents, needsReauthOfPane,
   listGromzoAgentsWithStatus, pendingGromzoConsentSlug, protectionOf, resetPendingGromzoConsents, resetProtectionClockForTest,
   restorePendingGromzoConsents, sendGromzoAvatar, setPendingConsentStore, slugRefusal, SLOW_CHECK_GAP_MS, statusFactsOf,
   UNPROTECTED_AFTER_MS, USED_VERIFY_MS, watcherDelayMs, type GromzoAgentDeps, type MxdProtection, type PendingConsentStore,
@@ -258,11 +258,32 @@ describe('D1: the rows carry the last final answer and the main session\'s sign-
     await checkGromzoAgent('zara', w.deps)
     expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.lastResult).toBe('consent_mismatch')
   })
+  // Dani 72997 m1: the measured incident was the MAIN agent's: its row carries the expiry too.
+  it('lastResult on the MAIN row: a lapsed main-agent request says expired there', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 60)]
+    expect(await enableGromzoAgent(MAIN_AGENT_ID, w.deps)).toMatchObject({ ok: true, state: 'pending' })
+    later(w, 60_000)
+    w.replies.agent_add_check = [{ ok: true, state: 'pending' }]
+    expect(await checkGromzoAgent(MAIN_AGENT_ID, w.deps)).toEqual({ ok: true, state: 'expired' })
+    const main = (await listGromzoAgents(w.deps)).find((r) => r.main)!
+    expect(main.slug).toBe(MAIN_AGENT_ID)
+    expect(main.lastResult).toBe('expired')
+    expect(main.pendingUntil).toBeNull()
+  })
+  // Dani 72997 m3: no pane is unknown, never "signed in".
+  it('needsReauthOfPane: no pane -> null; a pane -> the detector\'s answer', () => {
+    const detect = (p: string | null) => ({ needsReauth: p === 'Not logged in' })
+    expect(needsReauthOfPane(null, detect)).toBeNull()
+    expect(needsReauthOfPane('Not logged in', detect)).toBe(true)
+    expect(needsReauthOfPane('ready', detect)).toBe(false)
+    expect(needsReauthOfPane('', detect)).toBe(false)
+  })
   it('needsReauth: the main row from the pane check, null without it; other rows always null', async () => {
     const w = world()
     let rows = await listGromzoAgents(w.deps)
     expect(rows.find((r) => r.main)?.needsReauth).toBeNull()
-    for (const v of [true, false]) {
+    for (const v of [true, false, null]) {
       w.deps.mainNeedsReauth = () => v
       rows = await listGromzoAgents(w.deps)
       expect(rows.find((r) => r.main)?.needsReauth).toBe(v)
