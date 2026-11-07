@@ -1361,32 +1361,20 @@
       <nav class="tab-nav" id="settingsTabNav" style="margin-bottom:0"></nav>
       <div id="settingsTabPanels"></div>
 
-      <!-- GROMZOOWNERQR1030: the Gromzo app's owner QR code, collapsed at the bottom of
-           Settings (the owner asked for a less prominent place for now). The first time it is the
-           registration code, afterwards the login code for a new phone. The code is
-           drawn client-side into #gromzoQr only, shown for at most 2 minutes, then
-           wiped. Rendered by setupGromzoCard() in app.js. -->
+      <!-- GROMZOOWNERQR1030: the Gromzo card, collapsed at the bottom of Settings. GROMZOBRIDGEWIZARD1107 D5a: the
+           phone hookup is the Marveen Bridge's (its "Gromzo bekötése" wizard, the owner QR inside it); the card's
+           own owner QR is gone (dash.sock never hands out the owner's codes since marveen-mxd #89, so its button
+           always ended on consent_required). The card shows the link status and the agents. setupGromzoCard() in app.js. -->
       <details class="card gromzo-card" id="gromzoCard" style="margin-top:16px">
         <summary class="gromzo-summary" data-i18n="gromzo.card.title">Gromzo (mobilapp)</summary>
-        <p class="modal-desc" data-i18n="gromzo.card.desc">Itt adhatod hozzá a telefonodat a Gromzo apphoz. Először ezzel a kóddal regisztrálsz, később ezzel jelentkezik be egy új telefon ugyanabba a fiókba.</p>
+        <p class="modal-desc" data-i18n="gromzo.card.desc">A telefonodat a Marveen Bridge-ben kötöd be: Menü (⋮), Gromzo bekötése. Ott kéred egy új telefon kódját is. Itt a kapcsolat állapotát látod, és azt, melyik ügynököd érhető el a Gromzo appban.</p>
         <p class="gromzo-status" id="gromzoStatus"></p>
         <div class="gromzo-owner-info" id="gromzoOwnerInfo" role="status" hidden>
           <p class="gromzo-owner-info-text" data-i18n="gromzo.owner_login.info">Az ügynökök kapcsolásához és a telefon hozzáadásához be kell lépned a dashboard-jelszavaddal: a tulajdonost csak a jelszó azonosítja, a Bridge vagy a hozzáférési kulcs nem. A belépés ebben az ablakban megmarad, amíg ki nem jelentkezel, vagy le nem jár.</p>
           <button class="btn-primary btn-compact" id="gromzoLoginBtn" data-i18n="gromzo.btn.login">Belépés jelszóval</button>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn-primary btn-compact" id="gromzoAddPhoneBtn" data-i18n="gromzo.btn.add_phone">Telefon hozzáadása</button>
-        </div>
-        <p class="mobile-login-warn" id="gromzoError" hidden></p>
         <div class="gromzo-owner-logout">
           <button class="btn-secondary btn-compact" id="gromzoLogoutBtn" hidden data-i18n="gromzo.btn.logout">Tulajdonosi kijelentkezés</button>
-        </div>
-        <div class="gromzo-qr-area" id="gromzoQrArea" hidden>
-          <div id="gromzoQr" class="mobile-login-qr"></div>
-          <p class="modal-desc" id="gromzoQrHint"></p>
-          <p class="gromzo-countdown" id="gromzoCountdown"></p>
-          <p class="mobile-login-warn" data-i18n="gromzo.qr.warn">A kód belépést ad a fiókodba. Csak a saját telefonoddal olvasd be, ne fotózd le és ne oszd meg.</p>
-          <button class="btn-secondary btn-compact" id="gromzoQrClose" data-i18n="gromzo.btn.hide">Kód elrejtése</button>
         </div>
         <div class="gromzo-agents" id="gromzoAgents">
           <h4 class="gromzo-agents-title" data-i18n="gromzo.agents.title">Ügynökök a Gromzóban</h4>
