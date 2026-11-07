@@ -21,9 +21,17 @@ _atl_read() {
   case "$v" in en|hu) printf '%s' "$v" ;; esac
 }
 
+# An install rendered English BEFORE the key existed (from develop, after #2596): its CLAUDE.md carries the English
+# template's heading. Without this it would turn Hungarian on the next regen (Samu 72862). A Hungarian CLAUDE.md, or
+# one without the heading, stays hu. src/web/agent-text-lang.ts renderedEnglish() is the same rule.
+_atl_rendered_en() {
+  [ -f "$1/CLAUDE.md" ] && grep -qx '## Inter-agent communication' "$1/CLAUDE.md" && [ -f "$1/templates/en/CLAUDE.md.template" ]
+}
+
 agent_text_lang() {
   local v
   v="$(_atl_read "$1")"
+  if [ -z "$v" ] && _atl_rendered_en "$1"; then v=en; fi
   printf '%s' "${v:-hu}"
 }
 
@@ -31,7 +39,17 @@ agent_text_lang_decide() {
   local dir="$1" v lang
   v="$(_atl_read "$dir")"
   if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
-  if [ -f "$dir/CLAUDE.md" ]; then printf 'hu'; return 0; fi
+  if [ -f "$dir/CLAUDE.md" ]; then
+    # An existing install: hu, unless it was rendered English; that one gets its key now, so it stays English.
+    if _atl_rendered_en "$dir"; then
+      [ -s "$dir/.env" ] && [ -n "$(tail -c1 "$dir/.env")" ] && printf '\n' >> "$dir/.env"
+      [ -f "$dir/.env" ] && printf 'AGENT_TEXT_LANG=en\n' >> "$dir/.env"
+      printf 'en'
+    else
+      printf 'hu'
+    fi
+    return 0
+  fi
   lang="${MARVEEN_LANG:-}"
   [ -n "$lang" ] || lang="$(head -1 "$dir/.lang" 2>/dev/null | tr -d '[:space:]')"
   if [ "$lang" = en ] && [ -f "$dir/templates/en/CLAUDE.md.template" ]; then lang=en; else lang=hu; fi

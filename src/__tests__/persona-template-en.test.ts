@@ -114,7 +114,7 @@ describe('persona_template and the once-decided AGENT_TEXT_LANG (scripts/lib/per
   // every later render only reads it. An install without the key is Hungarian.
   let dir = ''
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
-  type Opts = { lang?: string; dotLang?: string; en?: boolean; env?: string; claudeMd?: boolean }
+  type Opts = { lang?: string; dotLang?: string; en?: boolean; env?: string; claudeMd?: boolean | string }
   function setup(name: string, opts: Opts) {
     dir = mkdtempSync(join(tmpdir(), 'geri-persona-'))
     mkdirSync(join(dir, 'templates', 'en'), { recursive: true })
@@ -124,7 +124,7 @@ describe('persona_template and the once-decided AGENT_TEXT_LANG (scripts/lib/per
     }
     if (opts.dotLang !== undefined) writeFileSync(join(dir, '.lang'), opts.dotLang)
     if (opts.env !== undefined) writeFileSync(join(dir, '.env'), opts.env)
-    if (opts.claudeMd) writeFileSync(join(dir, 'CLAUDE.md'), 'existing')
+    if (opts.claudeMd) writeFileSync(join(dir, 'CLAUDE.md'), typeof opts.claudeMd === 'string' ? opts.claudeMd : 'existing')
     const env: Record<string, string> = { PATH: process.env.PATH ?? '' }
     if (opts.lang !== undefined) env.MARVEEN_LANG = opts.lang
     return env
@@ -166,6 +166,29 @@ describe('persona_template and the once-decided AGENT_TEXT_LANG (scripts/lib/per
     expect(pick('CLAUDE.md.template', { env: 'AGENT_TEXT_LANG=en\n' })).toBe('<dir>/templates/en/CLAUDE.md.template')
     expect(pick('CLAUDE.md.template', { lang: 'en', dotLang: 'en', env: 'A=1\n' })).toBe('<dir>/templates/CLAUDE.md.template')
     expect(envFile()).toBe('A=1\n')
+  })
+
+  // Samu 72862: an install rendered English before the key existed (from develop, after #2596) keeps English.
+  it('an existing install rendered English (the English heading) without the key: decide writes en, read only says en', () => {
+    const md = '# Bot\n\n## Inter-agent communication\n\nx\n'
+    expect(pick('CLAUDE.md.template', { env: 'A=1\n', claudeMd: md }, 'decide')).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(envFile()).toBe('A=1\nAGENT_TEXT_LANG=en\n')
+    expect(pick('CLAUDE.md.template', { env: 'A=1\n', claudeMd: md })).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(envFile()).toBe('A=1\n')
+  })
+
+  it('an existing install with the Hungarian heading, or no heading, stays Hungarian both ways, nothing written', () => {
+    for (const md of ['# Bot\n\n## Inter-agent kommunikáció\n', '# Bot\n\ntext ## Inter-agent communication\n', 'existing']) {
+      expect(pick('CLAUDE.md.template', { env: 'A=1\n', claudeMd: md }, 'decide'), md).toBe('<dir>/templates/CLAUDE.md.template')
+      expect(envFile(), md).toBe('A=1\n')
+      expect(pick('CLAUDE.md.template', { env: 'A=1\n', claudeMd: md }), md).toBe('<dir>/templates/CLAUDE.md.template')
+    }
+  })
+
+  it('a hand-edited .env: the LAST key line and either quote kind count, as the TypeScript reader takes them', () => {
+    expect(pick('CLAUDE.md.template', { env: 'AGENT_TEXT_LANG=hu\nAGENT_TEXT_LANG=en\n' })).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(pick('CLAUDE.md.template', { env: "AGENT_TEXT_LANG='en'\n" })).toBe('<dir>/templates/en/CLAUDE.md.template')
+    expect(pick('CLAUDE.md.template', { env: 'AGENT_TEXT_LANG="en"\n' })).toBe('<dir>/templates/en/CLAUDE.md.template')
   })
 
   it('as the installers call it: the substitution runs before the redirect creates CLAUDE.md, so a fresh install decides', () => {

@@ -2,7 +2,10 @@
 // sections, the new sub-agent's prompt). It is decided ONCE, at the install's first render, and kept in .env as
 // AGENT_TEXT_LANG=en|hu (scripts/lib/persona-template.sh agent_text_lang_decide); here it is only read, at call time.
 // Without the key (every install from before this): Hungarian, so those files stay byte-for-byte as they are.
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { readEnvFile } from '../env.js'
+import { PROJECT_ROOT } from '../config.js'
 
 export type AgentTextLang = 'hu' | 'en'
 
@@ -12,9 +15,26 @@ export function agentTextLangSetting(read: (keys: string[]) => Record<string, st
   return v === 'en' || v === 'hu' ? v : null
 }
 
-/** The language the agents' text is written in: the key, Hungarian without it. */
-export function agentTextLang(read: (keys: string[]) => Record<string, string> = readEnvFile): AgentTextLang {
-  return agentTextLangSetting(read) ?? 'hu'
+/**
+ * An install rendered English BEFORE the key existed (from develop, after #2596): its main CLAUDE.md carries the English
+ * template's heading (Samu 72862). The same rule as scripts/lib/persona-template.sh _atl_rendered_en, so the persona and
+ * the managed sections agree on such an install too. A Hungarian file, or one without the heading, is not English.
+ */
+export function renderedEnglish(root: string = PROJECT_ROOT): boolean {
+  try {
+    if (!existsSync(join(root, 'templates', 'en', 'CLAUDE.md.template'))) return false
+    return readFileSync(join(root, 'CLAUDE.md'), 'utf-8').split('\n').some((l) => l.replace(/\r$/, '') === '## Inter-agent communication')
+  } catch {
+    return false
+  }
+}
+
+/** The language the agents' text is written in: the key; without it, English only for an install rendered English. */
+export function agentTextLang(
+  read: (keys: string[]) => Record<string, string> = readEnvFile,
+  rendered: () => boolean = () => renderedEnglish(),
+): AgentTextLang {
+  return agentTextLangSetting(read) ?? (rendered() ? 'en' : 'hu')
 }
 
 /**
