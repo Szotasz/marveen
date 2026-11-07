@@ -1954,7 +1954,7 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
         -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
         -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
         -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-        "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
+        "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template)" > "$CLAUDE_MD"
     echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
   elif [ -f "$CLAUDE_MD" ]; then
     KNOWN_IDS=" ${MAIN_AGENT_ID} ${BOT_NAME} "
