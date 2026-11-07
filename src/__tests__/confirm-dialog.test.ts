@@ -488,6 +488,56 @@ describe('the connector removes and deletes use it', () => {
   })
 })
 
+describe('the Claude plan delete uses it', () => {
+  const between = (from: string, to: string) => {
+    const i = APP.indexOf(from)
+    const j = i < 0 ? -1 : APP.indexOf(to, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  }
+  const DEL = between('async function deleteClaudePlan(', '\n}\n')
+
+  it('the handler was found', () => {
+    expect(DEL).not.toBe('')
+  })
+
+  it('a danger confirmDialog with its own title and button, naming the plan by its label, no native confirm()', () => {
+    expect(DEL).toContain('const confirmed = await confirmDialog({')
+    expect(DEL).toContain("title: t('settings.claude_plans.confirm_delete_title')")
+    expect(DEL).toContain("t('settings.claude_plans.confirm_delete', { label: plan.label || id })")
+    expect(DEL).toContain("okLabel: t('settings.claude_plans.confirm_delete_ok')")
+    expect(DEL).toContain('danger: true')
+    expect(DEL).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a "no" stops it, before the request', () => {
+    const ask = DEL.indexOf('const confirmed = await confirmDialog({')
+    const guard = DEL.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(DEL.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the agents running on the plan are named in a second paragraph, from the rotation state', () => {
+    expect(APP).toContain("const planUsers = Object.entries(state.activePlanByAgent || {}).filter(([, id]) => id === plan.id).map(([agent]) => agent)")
+    expect(APP).toContain("delBtn.addEventListener('click', () => deleteClaudePlan(plan, planUsers))")
+    expect(DEL).toContain("if (users.length) message += '\\n\\n' + t('settings.claude_plans.confirm_delete_used_by', { agents: ")
+  })
+
+  it('the old texts are gone, and the keys are in both languages with their placeholders', () => {
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).not.toContain('regisztry')
+      for (const key of ['settings.claude_plans.confirm_delete', 'settings.claude_plans.confirm_delete_title', 'settings.claude_plans.confirm_delete_ok',
+        'settings.claude_plans.confirm_delete_used_by', 'settings.claude_plans.confirm_switch', 'settings.claude_plans.confirm_switch_title', 'settings.claude_plans.confirm_switch_ok']) {
+        expect(lang, key).toContain(`'${key}':`)
+      }
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).toContain('{label}')
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete_used_by':"))).toContain('{agents}')
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_switch':"))).toContain('{label}')
+    }
+    expect(HU.split('\n').find(l => l.includes("'settings.claude_plans.confirm_switch':"))).not.toMatch(/agent|session/)
+  })
+})
+
 describe('the Vault deletes use it', () => {
   const SITES = [
     ['delete a secret from the Connectors list', "<span class=\"github-repo-date\">${escapeHtml(s.id)} &middot; ${date}</span>", 'vault.confirm.delete', "{ method: 'DELETE' })"],
