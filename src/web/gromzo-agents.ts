@@ -39,6 +39,7 @@
 //   so finishing it needs no owner session at that moment; the route logs that the server finished it.
 
 import { MAIN_AGENT_ID } from '../config.js'
+import { logger } from '../logger.js'
 import { MXD_AGENT_SLUG_RE, checkAgentAdd, requestAgentAdd, requestAgentAvatar, requestAgentRemove, type MxdDashCall } from './mxd-dash.js'
 import type { AvatarProblem, AvatarRead } from './gromzo-avatar.js'
 
@@ -67,6 +68,9 @@ export interface GromzoAgentDeps {
   now: () => number
   /** GROMZOMAINAGENT1106: the main agent's launch state for its row (main-gromzo.ts); absent = 'idle'. */
   mainLaunchState?: () => string
+  /** GROMZOBRIDGEWIZARD1107: whether the main session shows a sign-in failure (its pane, reauth-detect.ts);
+   *  absent = unknown (the row says null). */
+  mainNeedsReauth?: () => boolean
   /** MXDAGENTSOCKID1106: the held agents and the agent.sock protection from ONE dash status call (statusFactsOf).
    *  When given, the list uses it instead of `held`, so a list load asks mxd once. */
   statusFacts?: () => Promise<{ held: Set<string>, protection: MxdProtection | null }>
@@ -157,6 +161,13 @@ export interface GromzoAgentRow {
   mainLaunch: string | null
   /** MXDAGENTSOCKID1106: protected, unprotected (running 10 min without a token), refused (a plugin with no token). */
   protection: GromzoProtection | null
+  /** GROMZOBRIDGEWIZARD1107 D1 expiry edge: the last FINAL answer of this agent's consent within LAST_RESULT_TTL_MS
+   *  (added, refused, expired, used, or an error code such as consent_mismatch); null = none. The Bridge's wizard
+   *  reads it so a lapsed request says so instead of falling back to the start button without a word. */
+  lastResult: string | null
+  /** The main row only: the main session shows a sign-in failure ("Not logged in", 401, ...; reauth-detect.ts), so
+   *  it cannot answer on Gromzo even when mxd runs it. null on other rows and when unknown. */
+  needsReauth: boolean | null
 }
 
 export type GromzoAgentOutcome =
@@ -181,6 +192,13 @@ export const USED_VERIFY_MS = 2 * 60_000
 /** The watcher's pace: CHECK_GAP_MS for this long after the ask, then once a minute. */
 export const FAST_CHECK_WINDOW_MS = 5 * 60_000
 export const SLOW_CHECK_GAP_MS = 60_000
+/** D1 expiry edge (Ábel 72981, Samu 72983): measured on the QA VPS, an approval 39 s before the local expiry was lost,
+ *  because the once-a-minute watcher did not ask in time and the lapse dropped the consent without asking mxd. Now
+ *  the last LATE_FAST_WINDOW_MS before the expiry is checked at CHECK_GAP_MS again, and a lapsed consent is kept
+ *  EXPIRY_FINAL_CHECK_MS longer for one final mxd check: only mxd's answer (or the end of that window) makes it
+ *  "expired". */
+export const LATE_FAST_WINDOW_MS = 90_000
+export const EXPIRY_FINAL_CHECK_MS = 60_000
 /** A check in flight (the panel's or the watcher's): another one waits for the next round. */
 let checking = false
 
@@ -211,6 +229,12 @@ function remember(slug: string, outcome: GromzoAgentOutcome, now: number): Gromz
   lastResult.set(slug, { outcome, at: now })
   return outcome
 }
+/** The row's view of the last final answer: its state, or its error code; null when none within the TTL. */
+function lastResultOf(slug: string, now: number): string | null {
+  const last = lastResult.get(slug)
+  if (!last || now - last.at >= LAST_RESULT_TTL_MS) return null
+  return last.outcome.ok ? last.outcome.state : last.outcome.code
+}
 
 const CONSENT_ID_SHAPE = /^[A-Za-z0-9_-]{8,128}$/
 /**
@@ -227,7 +251,8 @@ export function restorePendingGromzoConsents(deps: Pick<GromzoAgentDeps, 'agents
     const slug = o?.slug, consentId = o?.consentId, expiresAt = o?.expiresAt, startedAt = o?.startedAt
     if (typeof slug !== 'string' || slugRefusal(slug, deps, true)) continue
     if (typeof consentId !== 'string' || !CONSENT_ID_SHAPE.test(consentId)) continue
-    if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt) || expiresAt <= now) continue
+    // A lapsed entry still inside its final-check window comes back too: its one final mxd check is still owed.
+    if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt) || expiresAt + EXPIRY_FINAL_CHECK_MS <= now) continue
     if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt > now) continue
     pending.clear()
     pending.set(slug, { consentId, expiresAt, startedAt })
@@ -245,11 +270,17 @@ export function pendingGromzoConsentSlug(): string | null {
   return null
 }
 
-/** When the watcher should check next: CHECK_GAP_MS in the first FAST_CHECK_WINDOW_MS, then SLOW_CHECK_GAP_MS. */
+/** When the watcher should check next: CHECK_GAP_MS in the first FAST_CHECK_WINDOW_MS, in the last
+ *  LATE_FAST_WINDOW_MS before the expiry and after it (the final check); in between SLOW_CHECK_GAP_MS, cut short so
+ *  the late window is never stepped over. */
 export function watcherDelayMs(now: number): number | null {
   for (const p of pending.values()) {
     if (p.verifyUntil !== undefined) return CHECK_GAP_MS
-    return now - p.startedAt < FAST_CHECK_WINDOW_MS ? CHECK_GAP_MS : SLOW_CHECK_GAP_MS
+    if (now - p.startedAt < FAST_CHECK_WINDOW_MS) return CHECK_GAP_MS
+    // From expiry - LATE_FAST_WINDOW_MS on (and after the expiry) lateFrom - now <= 0, so this is CHECK_GAP_MS; before
+    // it the slow gap, cut short at the window's start.
+    const lateFrom = p.expiresAt - LATE_FAST_WINDOW_MS
+    return Math.max(CHECK_GAP_MS, Math.min(SLOW_CHECK_GAP_MS, lateFrom - now))
   }
   return null
 }
@@ -268,11 +299,22 @@ export function resetPendingGromzoConsents(): void {
   consentStore = null
 }
 
+/** The consent of `slug` is over without an approval: dropped, kept as the final answer, and logged (the owner's
+ *  panel and the log say "expired" instead of a silent start button). */
+function expire(slug: string, now: number, why: string): GromzoAgentOutcome {
+  dropPending(slug)
+  logger.info({ slug, why }, 'gromzo agents: the approval request expired (no approval reached the server in time)')
+  return remember(slug, { ok: true, state: 'expired' }, now)
+}
+
+/** Drops a consent only past its final-check window (D1 expiry edge): a lapsed one is kept EXPIRY_FINAL_CHECK_MS
+ *  for one final mxd check, so an approval in the last seconds is not lost to the local clock. A consent whose
+ *  "used" is being verified keeps its own clock (verifyUsed). */
 function dropExpired(now: number): void {
   for (const [slug, p] of pending) {
-    if (p.expiresAt > now) continue
-    dropPending(slug)
-    remember(slug, { ok: true, state: 'expired' }, now)
+    if (p.verifyUntil !== undefined) continue
+    if (p.expiresAt + EXPIRY_FINAL_CHECK_MS > now) continue
+    expire(slug, now, 'final_check_window_over')
   }
 }
 
@@ -309,6 +351,8 @@ export async function listGromzoAgentsWithStatus(deps: GromzoAgentDeps): Promise
       avatarProblem: null, pendingUntil: pending.get(MAIN_AGENT_ID)?.expiresAt ?? null,
       mainLaunch: deps.mainLaunchState ? deps.mainLaunchState() : 'idle',
       protection: protectionOf(MAIN_AGENT_ID, deps.readFlag(MAIN_AGENT_ID), prot, now),
+      lastResult: lastResultOf(MAIN_AGENT_ID, now),
+      needsReauth: deps.mainNeedsReauth ? deps.mainNeedsReauth() : null,
     }]
     for (const slug of [...deps.agents()].sort()) {
       if (slug === MAIN_AGENT_ID) continue
@@ -324,6 +368,8 @@ export async function listGromzoAgentsWithStatus(deps: GromzoAgentDeps): Promise
         pendingUntil: pending.get(slug)?.expiresAt ?? null,
         mainLaunch: null,
         protection: protectionOf(slug, deps.readFlag(slug), prot, now),
+        lastResult: lastResultOf(slug, now),
+        needsReauth: null,
       })
     }
     return rows
@@ -382,15 +428,20 @@ export async function checkGromzoAgent(slug: string, deps: GromzoAgentDeps): Pro
   if (checking) return stillPending
   if (p.verifyUntil !== undefined) return verifyUsed(slug, p, deps, now, stillPending)
   if (lastCheckAt !== 0 && now - lastCheckAt < CHECK_GAP_MS) return stillPending
+  // D1 expiry edge: past the local expiry this is the final check; mxd's answer decides, not the local clock.
+  const lapsed = now >= p.expiresAt
   lastCheckAt = now
   checking = true
   let r: Awaited<ReturnType<typeof checkAgentAdd>>
   try { r = await checkAgentAdd(deps.call, p.consentId) } finally { checking = false }
   // too_soon: mxd's own gap (another caller, a clock step); nothing was asked, so the consent is still pending.
   if (!r.ok && r.code === 'too_soon') return stillPending
-  // Any other failure (mxd reloading or down, rate_limited, a refused pair) keeps the consent: the next check asks again.
+  // Any other failure (mxd reloading or down, rate_limited, a refused pair) keeps the consent: the next check asks
+  // again (past the expiry until the final-check window ends, dropExpired).
   if (!r.ok) return { ok: false, code: r.code }
-  if (r.state === 'pending') return stillPending
+  // Still pending at mxd after the local expiry: nobody approved in time.
+  if (r.state === 'pending') return lapsed ? expire(slug, now, 'pending_after_expiry') : stillPending
+  if (r.state === 'expired') return expire(slug, now, 'mxd_expired')
   // D1: "used" is not the end: a check whose reply was lost (mxd reloads right after it adds) spent the consent and
   // added the agent. Look for it in mxd's status for a while before the answer is final.
   if (r.state === 'used') {
