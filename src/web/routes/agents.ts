@@ -117,6 +117,7 @@ import {
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
+import { agentTextLang } from '../agent-text-lang.js'
 import {
   isAgentRunning,
   agentRunState,
@@ -254,10 +255,9 @@ const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'disc
 // separate copies of "awaiting regeneration" had to be removed once already.
 export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 
-// Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
-// with accents, because that is what they stand in for: the generators produce
-// Hungarian agent personalities (see agent-scaffold.ts, whose SOUL prompt states
-// "Write ALL Hungarian text with proper accents"). Deliberately NOT an imitation
+// Minimal placeholders used when generateClaudeMd/generateSoulMd fail, in the language
+// of what they stand in for: the generators write Hungarian, or English on an install
+// whose AGENT_TEXT_LANG is en (PERSONAESC1107; the English twins below, same rules). Deliberately NOT an imitation
 // of a generated personality -- the first line says it is a template, so a
 // stand-in never silently becomes the agent's identity.
 //
@@ -269,6 +269,7 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 // PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
 // points at editing, which is what actually exists.
 function fallbackClaudeMd(name: string, description: string, model: string): string {
+  if (agentTextLang() === 'en') return fallbackClaudeMdEn(name, description, model)
   return `# ${name}
 
 > **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
@@ -293,6 +294,7 @@ ${model}
 }
 
 function fallbackSoulMd(name: string, description: string): string {
+  if (agentTextLang() === 'en') return fallbackSoulMdEn(name, description)
   return `# ${name} - SOUL
 
 > **FIGYELEM: ez egy SABLON.** A generálás nem sikerült, ez helyőrző szöveg.
@@ -301,6 +303,43 @@ ${description}
 
 Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
 itt írhatod meg.
+`
+}
+
+// The English twins: "agent" throughout, and no promise of regeneration either.
+export function fallbackClaudeMdEn(name: string, description: string, model: string): string {
+  return `# ${name}
+
+> **NOTE: this is a TEMPLATE.** Generating the agent's personality failed when it
+> was created, so this file is a placeholder. The agent can be used, but its own
+> CLAUDE.md has not been written yet. Rewrite it here, or on the agent's page.
+
+## Role
+
+${description}
+
+## Principles
+
+- Execution. Do not explain what you are going to do, just do it.
+- Short answers, to the point.
+- If you do not know something, say so plainly.
+- Code, comments and technical documentation in English; with the user, the user's language (English by default).
+
+## Model
+
+${model}
+`
+}
+
+export function fallbackSoulMdEn(name: string, description: string): string {
+  return `# ${name} - SOUL
+
+> **NOTE: this is a TEMPLATE.** Generation failed, this is placeholder text.
+
+${description}
+
+Default tone: concise, precise, no exaggeration. You can write the detailed personality
+here.
 `
 }
 
