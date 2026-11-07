@@ -16476,6 +16476,8 @@ async function renderAuthCard() {
   const body = document.getElementById('authCardBody')
   if (!body) return
   const status = await fetchAuthStatus()
+  // ONBOARDFOLLOW1107: the card may have left the page while the status was on its way; a newer render owns it then.
+  if (!body.isConnected) return
   if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
   if (status.setup_required) { renderCreateLoginForm(body) }
   else if (status.method === 'session') { renderSessionPanel(body, status) }
@@ -17021,10 +17023,16 @@ function wireFleetFreeze() {
   setInterval(pollFleetFreeze, FLEET_FREEZE_POLL_MS)
 }
 
+// ONBOARDFOLLOW1107: Settings can be loaded again while a run still waits for /api/settings (opened twice, a language
+// switch). Only the newest run may touch the panels after its await: an older one clearing #settingsTabPanels would tear
+// out the auth card the newer run moved into the Security panel (the card left the page, and the pending renderAuthCard
+// wrote into a detached body). tests/browser/settings-load-race.spec.ts.
+let settingsLoadGen = 0
 async function loadSettings() {
   const tabNav = document.getElementById('settingsTabNav')
   const tabPanels = document.getElementById('settingsTabPanels')
   if (!tabNav || !tabPanels) return
+  const gen = ++settingsLoadGen
 
   // Park the auth card back outside the panels before wiping them: a previous
   // loadSettings run moved it INTO the Security panel, and clearing
@@ -17048,6 +17056,7 @@ async function loadSettings() {
     const res = await fetch('/api/settings')
     if (!res.ok) throw new Error('fetch failed')
     const { settings, overridesFile } = await res.json()
+    if (gen !== settingsLoadGen) return // a newer run owns the panels now
 
     // ENVRELAXGATE1104 step 2: an unreadable config-overrides.json drops every saved value, a tightening one too.
     const overridesBanner = document.getElementById('settingsOverridesBanner')
@@ -17265,6 +17274,7 @@ async function loadSettings() {
       }
     }
   } catch (err) {
+    if (gen !== settingsLoadGen) return // a stale run's failure must not wipe the newer run's panels either
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
 }
