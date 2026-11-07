@@ -19932,7 +19932,7 @@ function openIdeaEdit(id) {
 
 async function saveIdea() {
   const title = document.getElementById('ideaTitleInput').value.trim()
-  if (!title) { showToast(t('common.title') + ' ' + t('common.error'), 'error'); return }
+  if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'error'); return }
   const impactRaw = document.getElementById('ideaImpactInput').value
   const effortRaw = document.getElementById('ideaEffortInput').value
   const body = {
@@ -19944,11 +19944,17 @@ async function saveIdea() {
     impact: impactRaw ? parseInt(impactRaw) : null,
     effort: effortRaw ? parseInt(effortRaw) : null,
   }
-  if (ideaEditId) {
-    await fetch(`/api/ideas/${ideaEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  } else {
-    await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, status: 'new' }) })
-  }
+  // A failed save keeps the modal open with what was typed, and says so.
+  try {
+    const res = ideaEditId
+      ? await fetch(`/api/ideas/${encodeURIComponent(ideaEditId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      : await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, status: 'new' }) })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(err.error || t('ideas.toast.save_error'), 'error')
+      return
+    }
+  } catch { showToast(t('ideas.toast.save_error'), 'error'); return }
   closeModal(document.getElementById('ideaModalOverlay'))
   loadIdeasPage()
 }

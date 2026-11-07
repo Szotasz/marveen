@@ -1342,6 +1342,7 @@ window._i18n.en = {
   'ideas.promote.detail':        'Detail elaboration (Waiting)',
   'ideas.promote.plan':          'Plan (Planned)',
   'ideas.toast.save_error':      'Error saving',
+  'ideas.form.title_required':   'Enter a title for the idea.',
   'ideas.toast.delete_error':    'Error deleting',
   'ideas.confirm.delete_title':  'Delete idea',
   'ideas.confirm.delete':        'Delete this idea: "{title}"?',

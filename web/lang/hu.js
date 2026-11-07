@@ -1719,6 +1719,7 @@ window._i18n.hu = {
   'ideas.promote.detail':        'Részlet kidolgozás (Várakozik)',
   'ideas.promote.plan':          'Terv (Tervezett)',
   'ideas.toast.save_error':      'Hiba a mentés során',
+  'ideas.form.title_required':   'Add meg az ötlet címét.',
   'ideas.toast.delete_error':    'Hiba a törlés során',
   'ideas.confirm.delete_title':  'Ötlet törlése',
   'ideas.confirm.delete':        'Biztosan törlöd ezt az ötletet: "{title}"?',
