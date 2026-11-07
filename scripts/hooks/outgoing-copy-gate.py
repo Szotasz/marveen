@@ -2136,9 +2136,357 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
     return False
 
 
+# ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal. The script path was
+# undecidable, so on this gate every such run asked for an approval (10 harmless calls a day in the reporter's fleet).
+# _bind_literal_vars puts the value in place of `$D` / `${D}` on the RAW command, before anything else reads it, and
+# ONLY where the value at run time is certain. Anything it cannot prove keeps the variable, i.e. today's fail-closed
+# verdict. The proof, all of it required:
+#   - the assignment is a segment of its own (`D=v`, `export D=v`), at depth 0, run unconditionally (at the start or
+#     after `;` / a newline) or in a pure `&&` chain that reaches the use; its own end is `;`, a newline, `&&`, `||` or
+#     the end (a `|` or `&` puts it in a subshell, and a subshell's assignment is lost);
+#   - the value is a plain literal (no `$`, backtick, quote, glob or white space) and the name is assigned ONCE in the
+#     whole command (a prefix `D=v cmd`, `D+=`, `D[i]=`, a second assignment, one inside `( )` or `$( )` all count);
+#   - the command holds no other way to set a variable or to run a block: unset, read, for, select, declare, typeset,
+#     local, readonly, mapfile, readarray, getopts, eval, source / `.`, let, printf -v, export of anything else, an
+#     IFS assignment, `${D=..}` / `${D:=..}`, and no control word (if, while, case, `{`, function, ...);
+#   - the use comes AFTER the assignment and is not single-quoted or escaped (`'$D'` is the literal text `$D`);
+#   - a `cd $D` / `pushd $D` word is left alone (_assigned_cd_dirs has its own, older rule for it).
+# Heredoc bodies are not touched (B below judges a body only when the shell does not expand it). The JS twin
+# (email-send-gate.mjs :: bindLiteralVars) does the same; script-run-cases.json binds the two.
+_BIND_BLOCK_WORDS = frozenset((
+    "unset", "read", "for", "select", "declare", "typeset", "local", "readonly", "mapfile", "readarray", "getopts",
+    "eval", "source", "let", "if", "then", "else", "elif", "fi", "while", "until", "do", "done", "case", "esac",
+    "function", "{", "}", "[[", "]]", "coproc", "alias",
+))
+_BIND_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+_BIND_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\!~#]+$""")
+_BIND_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=")
+
+
+def _heredoc_body_spans(cmd: str):
+    """The (start, end) of every heredoc body in `cmd` (the text between the opener line and the closing tag)."""
+    return [(m.end(1) + 1, m.end() - len(m.group(2))) for m in _HEREDOC.finditer(cmd)]
+
+
+def _bind_scan(cmd: str):
+    """Segments of the raw command: a list of dicts {words, sep_before, sep_after, depth}. A word is a dict
+    {text (unquoted), quoted (bool), refs [(name, start, end)], start}. Also the set of names that must never be
+    bound (single-quoted or escaped `$NAME`, `${NAME=..}`). Returns None when the command cannot be read."""
+    spans = _heredoc_body_spans(cmd)
+    segs, blocked = [], set()
+    cur = {"words": [], "sep_before": None, "depth": 0}
+    word = None
+    depth = 0
+    stack = []  # "s" for $( , "p" for ( , "b" for a backtick
+    q = None
+    i, n = 0, len(cmd)
+
+    def new_word(pos):
+        return {"text": "", "quoted": False, "escaped": False, "refs": [], "start": pos}
+
+    def end_word():
+        nonlocal word
+        if word is not None:
+            cur["words"].append(word)
+            word = None
+
+    def end_seg(sep):
+        nonlocal cur
+        end_word()
+        cur["sep_after"] = sep
+        if cur["words"]:
+            segs.append(cur)
+        elif segs and sep is not None:
+            pass
+        cur = {"words": [], "sep_before": sep, "depth": depth}
+
+    while i < n:
+        skip = next((e for s, e in spans if s == i), None)
+        if skip is not None:
+            i = skip  # a heredoc body: data, not shell
+            continue
+        ch = cmd[i]
+        if q == "'":
+            if ch == "'":
+                q = None
+            else:
+                if ch == "$":
+                    m = _BIND_NAME.match(cmd, i + 1) or (cmd.startswith("{", i + 1) and _BIND_NAME.match(cmd, i + 2))
+                    if m:
+                        blocked.add(m.group(0))
+                word["text"] += ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            if cmd[i + 1] == "$":
+                m = _BIND_NAME.match(cmd, i + 2) or (cmd.startswith("{", i + 2) and _BIND_NAME.match(cmd, i + 3))
+                if m:
+                    blocked.add(m.group(0))
+            if word is None:
+                word = new_word(i)
+            word["escaped"] = True  # inside "..." a backslash may stay: the value is not certain, never bound
+            word["text"] += cmd[i + 1]
+            i += 2
+            continue
+        if ch == "$" and (i + 1 < n) and (cmd[i + 1] == "{" or _BIND_NAME.match(cmd, i + 1)):
+            if word is None:
+                word = new_word(i)
+            if cmd[i + 1] == "{":
+                m = _BIND_NAME.match(cmd, i + 2)
+                if m and m.end() < n and cmd[m.end()] == "}":
+                    word["refs"].append((m.group(0), i, m.end() + 1))
+                    word["text"] += cmd[i:m.end() + 1]
+                    i = m.end() + 1
+                    continue
+                if m and (cmd.startswith(":=", m.end()) or cmd.startswith("=", m.end())):
+                    blocked.add(m.group(0))
+                word["text"] += ch
+                i += 1
+                continue
+            m = _BIND_NAME.match(cmd, i + 1)
+            word["refs"].append((m.group(0), i, m.end()))
+            word["text"] += cmd[i:m.end()]
+            i = m.end()
+            continue
+        if q == '"':
+            if ch == '"':
+                q = None
+            elif ch == "`" or (ch == "$" and cmd.startswith("$(", i)):
+                return None  # a substitution inside double quotes: not read here
+            else:
+                word["text"] += ch
+            i += 1
+            continue
+        if ch in "'\"":
+            if word is None:
+                word = new_word(i)
+            word["quoted"] = True
+            q = ch
+            i += 1
+            continue
+        if ch == "#" and word is None:
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch in " \t":
+            end_word()
+            i += 1
+            continue
+        if ch == "\n" or ch == ";":
+            end_seg(";")
+            i += 1
+            continue
+        if ch == "`":
+            if stack and stack[-1] == "b":
+                stack.pop()
+            else:
+                stack.append("b")
+            depth = len(stack)
+            end_seg("(")
+            i += 1
+            continue
+        if cmd.startswith("$(", i):
+            stack.append("s")
+            depth = len(stack)
+            end_seg("(")
+            i += 2
+            continue
+        if ch == "(":
+            stack.append("p")
+            depth = len(stack)
+            end_seg("(")
+            i += 1
+            continue
+        if ch == ")":
+            if stack:
+                stack.pop()
+            depth = len(stack)
+            end_seg(")")
+            i += 1
+            continue
+        if ch in "&|":
+            prev = cmd[i - 1] if i else ""
+            nxt = cmd[i + 1] if i + 1 < n else ""
+            if ch == "&" and (prev in "<>" or nxt == ">"):
+                if word is None:
+                    word = new_word(i)
+                word["text"] += ch  # a redirect (2>&1, &>), not a background run
+                i += 1
+                continue
+            if ch == "|" and prev == ">":
+                word["text"] += ch  # >| is a redirect
+                i += 1
+                continue
+            if cmd.startswith("&&", i) or cmd.startswith("||", i):
+                end_seg(cmd[i:i + 2])
+                i += 2
+                continue
+            end_seg("|&" if cmd.startswith("|&", i) else ch)
+            i += 2 if cmd.startswith("|&", i) else 1
+            continue
+        if word is None:
+            word = new_word(i)
+        word["text"] += ch
+        i += 1
+    if q:
+        return None
+    end_seg(None)
+    return segs, blocked
+
+
+def _bind_literal_vars(cmd: str) -> str:
+    """ISSUE2582 (A): see the note above. Returns `cmd` with the provable uses of literal variables filled in."""
+    if "$" not in cmd or "=" not in cmd:
+        return cmd
+    scanned = _bind_scan(cmd)
+    if scanned is None:
+        return cmd
+    segs, blocked = scanned
+    counts = {}
+    for seg in segs:
+        heads = seg["words"]
+        for k, w in enumerate(heads):
+            if not w["quoted"] and w["text"] in _BIND_BLOCK_WORDS:
+                return cmd
+            m = _BIND_ASSIGN.match(w["text"])
+            if m:
+                counts[m.group(1)] = counts.get(m.group(1), 0) + (2 if (m.group(2) or m.group(3)) else 1)
+        first = next((w["text"] for w in heads if not _BIND_ASSIGN.match(w["text"])), None)
+        if first == ".":
+            return cmd
+        if first == "printf" and any(w["text"].startswith("-v") for w in heads):
+            return cmd
+        if first == "export" and not all(_BIND_ASSIGN.match(w["text"]) for w in heads[1:]):
+            return cmd
+    if "IFS" in counts:
+        return cmd
+    binds = {}  # name -> (segment index, value, conditional)
+    for idx, seg in enumerate(segs):
+        words = seg["words"]
+        assigns = words[1:] if words and words[0]["text"] == "export" and not words[0]["quoted"] else words
+        if not assigns or not all(_BIND_ASSIGN.match(w["text"]) for w in assigns):
+            continue
+        if seg["depth"] != 0 or seg["sep_after"] not in (None, ";", "&&", "||"):
+            continue
+        if seg["sep_before"] in (None, ";"):
+            conditional = False
+        elif seg["sep_before"] == "&&":
+            conditional = True
+        else:
+            continue
+        for w in assigns:
+            name, value = w["text"].split("=", 1)
+            if (counts.get(name) != 1 or name in blocked or w["refs"] or w["escaped"]
+                    or not _BIND_LITERAL.match(value)):
+                continue
+            binds[name] = (idx, value, conditional)
+    if not binds:
+        return cmd
+    edits = []
+    for idx, seg in enumerate(segs):
+        words = seg["words"]
+        for k, w in enumerate(words):
+            prev = words[k - 1]["text"] if k else None
+            prev2 = words[k - 2]["text"] if k > 1 else None
+            if prev in ("cd", "pushd") or (prev == "--" and prev2 in ("cd", "pushd")):
+                continue
+            for name, start, end in w["refs"]:
+                b = binds.get(name)
+                if b is None or idx <= b[0]:
+                    continue
+                if b[2] and any(segs[j]["sep_after"] != "&&" for j in range(b[0], idx)):
+                    continue
+                edits.append((start, end, b[1]))
+    for start, end, value in sorted(edits, reverse=True):
+        cmd = cmd[:start] + value + cmd[end:]
+    return cmd
+
+
+# ISSUE2582 (B): `cat > /x/new.py <<'EOF' ... EOF` and then `python3 /x/new.py` in the same command. The file does not
+# exist yet when the gate runs, and a missing script is a send on this gate (JSCDSEND1104). The script that runs is the
+# heredoc body, so the body is what is judged -- with the same reader as a file on disk, local imports included. Only
+# when the body is certainly what the file holds at run time:
+#   - the opener is exactly `cat > P <<TAG`, `cat <<TAG > P` or `tee P <<TAG` (optionally `> /dev/null` after tee),
+#     at the start of its line or after a quote-free `...;` (the `;` makes the write unconditional), nothing after it:
+#     a `>>` / `tee -a` appends, so the old content would run too;
+#   - the tag is quoted (`<<'EOF'`) or the body has no `$` and no backtick (an unquoted body is expanded by the shell);
+#   - P is absolute after (A), or relative in a command with no cd / pushd / env -C;
+#   - no control word (if, then, while, do, case, for, function, `{`, ...) stands outside the bodies;
+#   - P is named exactly twice in the command: the write and one run. Another write, a cp, mv or sed -i on it, or a
+#     second run would change what runs, so they keep today's verdict.
+# Every other case reads the disk as before (and a missing file stays fail-closed).
+_WRITTEN_OPENER = re.compile(
+    r"""^(?:[^\n'"`\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
+    r"""|cat[ \t]+<<-?[ \t]*(?P<q2>'?)(?P<t2>\w+)(?P=q2)[ \t]+>[ \t]*(?P<p2>[^\s'"<>;&|$`]+)"""
+    r"""|tee[ \t]+(?P<p3>[^\s'"<>;&|$`-][^\s'"<>;&|$`]*)(?:[ \t]+>[ \t]*/dev/null)?[ \t]+<<-?[ \t]*(?P<q3>'?)(?P<t3>\w+)(?P=q3)"""
+    r""")[ \t]*$""")
+
+
+_WRITTEN_CONTROL = re.compile(r"(?:^|[\s;&|(])(?:if|then|else|elif|while|until|do|case|function|for|select|\{)(?=[\s;]|$)")
+
+
+def _written_scripts(cmd: str, cwd):
+    """ISSUE2582 (B): {absolute path: heredoc body} for the scripts this command writes and then runs (see above)."""
+    out = {}
+    # a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
+    if _WRITTEN_CONTROL.search(_outside_bodies(cmd, 0, len(cmd))):
+        return out
+    has_cd = bool(re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)", cmd))
+    for m in _HEREDOC.finditer(cmd):
+        line_start = cmd.rfind("\n", 0, m.start()) + 1
+        opener = cmd[line_start:m.end(1)]
+        w = _WRITTEN_OPENER.match(opener)
+        if not w:
+            continue
+        path = w.group("p1") or w.group("p2") or w.group("p3")
+        quoted = bool(w.group("q1") or w.group("q2") or w.group("q3"))
+        body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        if not quoted and ("$" in body or "`" in body):
+            continue
+        if os.path.isabs(path):
+            ab = os.path.normpath(path)
+        elif not has_cd and isinstance(cwd, str) and os.path.isabs(cwd):
+            ab = os.path.normpath(os.path.join(cwd, path))
+        else:
+            continue
+        # the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
+        if re.search(r"(?:&&|\|\||\||\\)\s*$", cmd[:line_start]):
+            continue
+        # counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py
+        mention = re.compile(r"(?<![\w.-])" + re.escape(os.path.basename(path)) + r"(?![\w.-])")
+        before = _outside_bodies(cmd, 0, line_start)
+        after = _outside_bodies(cmd, m.end() - len(m.group(2)), len(cmd))
+        if (mention.search(before) or len(mention.findall(opener)) != 1 or len(mention.findall(after)) != 1
+                or ab in out):
+            out.pop(ab, None)
+            continue
+        out[ab] = body
+    return out
+
+
+def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
+    """cmd[lo:hi] with every heredoc body cut out (a body is data: a path named there is no shell word)."""
+    out, pos = [], lo
+    for s, e in _heredoc_body_spans(cmd):
+        if e <= lo or s >= hi:
+            continue
+        out.append(cmd[pos:max(s, lo)])
+        pos = min(e, hi)
+    out.append(cmd[pos:hi])
+    return "".join(out)
+
+
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    cmd = _bind_literal_vars(cmd)
+    written = _written_scripts(cmd, cwd)
+    if written:
+        disk_read = read_script
+
+        def read_script(path, limit=_SCRIPT_READ_LIMIT):  # noqa: F811 -- ISSUE2582 (B): the written body wins
+            body = written.get(os.path.normpath(path)) if isinstance(path, str) else None
+            return body[:limit] if body is not None else disk_read(path, limit)
     cmd = _resolve_deterministic_subst(cmd, cwd)
     try:
         segments = _segments_tokens(cmd)

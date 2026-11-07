@@ -33,7 +33,7 @@
 
 import { closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 // HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
@@ -1500,8 +1500,271 @@ function assignedCdDirs(segments) {
   return out
 }
 
+// ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal is filled in where its value
+// at run time is certain; everything else keeps the variable (today's verdict). The full proof is at the python twin's
+// _bind_literal_vars (outgoing-copy-gate.py); the two agree, script-run-cases.json binds them.
+const BIND_BLOCK_WORDS = new Set([
+  'unset', 'read', 'for', 'select', 'declare', 'typeset', 'local', 'readonly', 'mapfile', 'readarray', 'getopts',
+  'eval', 'source', 'let', 'if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'case', 'esac',
+  'function', '{', '}', '[[', ']]', 'coproc', 'alias',
+])
+const BIND_NAME = /[A-Za-z_][A-Za-z_0-9]*/y
+const BIND_LITERAL = /^[^\s$`'"()|;&<>*?[\]{}\\!~#]+$/
+const BIND_ASSIGN = /^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=/
+function bindName(s, at) {
+  BIND_NAME.lastIndex = at
+  const m = BIND_NAME.exec(s)
+  return m ? { name: m[0], end: at + m[0].length } : null
+}
+function heredocBodySpans(cmd) {
+  return [...cmd.matchAll(new RegExp(HEREDOC_RE.source, 'g'))].map((m) => [m.index + m[1].length + 1, m.index + m[0].length - m[2].length])
+}
+function bindScan(cmd) {
+  const spans = heredocBodySpans(cmd)
+  const segs = []
+  const blocked = new Set()
+  const stack = []
+  let depth = 0
+  let cur = { words: [], sepBefore: null, depth: 0 }
+  let word = null
+  let q = null
+  const newWord = (pos) => ({ text: '', quoted: false, escaped: false, refs: [], start: pos })
+  const endWord = () => { if (word !== null) { cur.words.push(word); word = null } }
+  const endSeg = (sep) => {
+    endWord()
+    cur.sepAfter = sep
+    if (cur.words.length) segs.push(cur)
+    cur = { words: [], sepBefore: sep, depth }
+  }
+  const n = cmd.length
+  let i = 0
+  while (i < n) {
+    const span = spans.find(([s]) => s === i)
+    if (span) { i = span[1]; continue } // a heredoc body: data, not shell
+    const ch = cmd[i]
+    if (q === "'") {
+      if (ch === "'") q = null
+      else {
+        if (ch === '$') {
+          const m = bindName(cmd, i + 1) ?? (cmd[i + 1] === '{' ? bindName(cmd, i + 2) : null)
+          if (m) blocked.add(m.name)
+        }
+        word.text += ch
+      }
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < n) {
+      if (cmd[i + 1] === '$') {
+        const m = bindName(cmd, i + 2) ?? (cmd[i + 2] === '{' ? bindName(cmd, i + 3) : null)
+        if (m) blocked.add(m.name)
+      }
+      if (word === null) word = newWord(i)
+      word.escaped = true // inside "..." a backslash may stay: the value is not certain, never bound
+      word.text += cmd[i + 1]
+      i += 2
+      continue
+    }
+    if (ch === '$' && i + 1 < n && (cmd[i + 1] === '{' || bindName(cmd, i + 1))) {
+      if (word === null) word = newWord(i)
+      if (cmd[i + 1] === '{') {
+        const m = bindName(cmd, i + 2)
+        if (m && cmd[m.end] === '}') {
+          word.refs.push([m.name, i, m.end + 1])
+          word.text += cmd.slice(i, m.end + 1)
+          i = m.end + 1
+          continue
+        }
+        if (m && (cmd.startsWith(':=', m.end) || cmd.startsWith('=', m.end))) blocked.add(m.name)
+        word.text += ch
+        i++
+        continue
+      }
+      const m = bindName(cmd, i + 1)
+      word.refs.push([m.name, i, m.end])
+      word.text += cmd.slice(i, m.end)
+      i = m.end
+      continue
+    }
+    if (q === '"') {
+      if (ch === '"') q = null
+      else if (ch === '`' || cmd.startsWith('$(', i)) return null // a substitution inside double quotes: not read here
+      else word.text += ch
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      if (word === null) word = newWord(i)
+      word.quoted = true
+      q = ch
+      i++
+      continue
+    }
+    if (ch === '#' && word === null) {
+      while (i < n && cmd[i] !== '\n') i++
+      continue
+    }
+    if (ch === ' ' || ch === '\t') { endWord(); i++; continue }
+    if (ch === '\n' || ch === ';') { endSeg(';'); i++; continue }
+    if (ch === '`') {
+      if (stack.length && stack[stack.length - 1] === 'b') stack.pop()
+      else stack.push('b')
+      depth = stack.length
+      endSeg('(')
+      i++
+      continue
+    }
+    if (cmd.startsWith('$(', i)) { stack.push('s'); depth = stack.length; endSeg('('); i += 2; continue }
+    if (ch === '(') { stack.push('p'); depth = stack.length; endSeg('('); i++; continue }
+    if (ch === ')') { if (stack.length) stack.pop(); depth = stack.length; endSeg(')'); i++; continue }
+    if (ch === '&' || ch === '|') {
+      const prev = i ? cmd[i - 1] : ''
+      const nxt = i + 1 < n ? cmd[i + 1] : ''
+      if (ch === '&' && (prev === '<' || prev === '>' || nxt === '>')) {
+        if (word === null) word = newWord(i)
+        word.text += ch // a redirect (2>&1, &>), not a background run
+        i++
+        continue
+      }
+      if (ch === '|' && prev === '>') { word.text += ch; i++; continue } // >| is a redirect
+      if (cmd.startsWith('&&', i) || cmd.startsWith('||', i)) { endSeg(cmd.slice(i, i + 2)); i += 2; continue }
+      const pipeAmp = cmd.startsWith('|&', i)
+      endSeg(pipeAmp ? '|&' : ch)
+      i += pipeAmp ? 2 : 1
+      continue
+    }
+    if (word === null) word = newWord(i)
+    word.text += ch
+    i++
+  }
+  if (q) return null
+  endSeg(null)
+  return { segs, blocked }
+}
+export function bindLiteralVars(cmd) {
+  if (!cmd.includes('$') || !cmd.includes('=')) return cmd
+  const scanned = bindScan(cmd)
+  if (scanned === null) return cmd
+  const { segs, blocked } = scanned
+  const counts = new Map()
+  for (const seg of segs) {
+    const words = seg.words
+    for (const w of words) {
+      if (!w.quoted && BIND_BLOCK_WORDS.has(w.text)) return cmd
+      const m = BIND_ASSIGN.exec(w.text)
+      if (m) counts.set(m[1], (counts.get(m[1]) ?? 0) + (m[2] || m[3] ? 2 : 1))
+    }
+    const first = words.find((w) => !BIND_ASSIGN.test(w.text))?.text ?? null
+    if (first === '.') return cmd
+    if (first === 'printf' && words.some((w) => w.text.startsWith('-v'))) return cmd
+    if (first === 'export' && !words.slice(1).every((w) => BIND_ASSIGN.test(w.text))) return cmd
+  }
+  if (counts.has('IFS')) return cmd
+  const binds = new Map() // name -> [segment index, value, conditional]
+  segs.forEach((seg, idx) => {
+    const words = seg.words
+    const assigns = words.length && words[0].text === 'export' && !words[0].quoted ? words.slice(1) : words
+    if (!assigns.length || !assigns.every((w) => BIND_ASSIGN.test(w.text))) return
+    if (seg.depth !== 0 || ![null, ';', '&&', '||'].includes(seg.sepAfter)) return
+    let conditional
+    if (seg.sepBefore === null || seg.sepBefore === ';') conditional = false
+    else if (seg.sepBefore === '&&') conditional = true
+    else return
+    for (const w of assigns) {
+      const eq = w.text.indexOf('=')
+      const name = w.text.slice(0, eq)
+      const value = w.text.slice(eq + 1)
+      if (counts.get(name) !== 1 || blocked.has(name) || w.refs.length || w.escaped || !BIND_LITERAL.test(value)) continue
+      binds.set(name, [idx, value, conditional])
+    }
+  })
+  if (!binds.size) return cmd
+  const edits = []
+  segs.forEach((seg, idx) => {
+    const words = seg.words
+    words.forEach((w, k) => {
+      const prev = k ? words[k - 1].text : null
+      const prev2 = k > 1 ? words[k - 2].text : null
+      if (prev === 'cd' || prev === 'pushd' || (prev === '--' && (prev2 === 'cd' || prev2 === 'pushd'))) return
+      for (const [name, start, end] of w.refs) {
+        const b = binds.get(name)
+        if (b === undefined || idx <= b[0]) continue
+        if (b[2] && segs.slice(b[0], idx).some((s) => s.sepAfter !== '&&')) continue
+        edits.push([start, end, b[1]])
+      }
+    })
+  })
+  let out = cmd
+  for (const [start, end, value] of edits.sort((a, b) => b[0] - a[0])) out = out.slice(0, start) + value + out.slice(end)
+  return out
+}
+
+// ISSUE2582 (B): a script written by a heredoc and then run in the same command is judged by its body (see the python
+// twin's _written_scripts for the exact conditions); every other case reads the disk as before.
+const WRITTEN_OPENER = new RegExp(
+  String.raw`^(?:[^\n'"\x60\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
+  String.raw`|cat[ \t]+<<-?[ \t]*(?<q2>'?)(?<t2>\w+)\k<q2>[ \t]+>[ \t]*(?<p2>[^\s'"<>;&|$\x60]+)` +
+  String.raw`|tee[ \t]+(?<p3>[^\s'"<>;&|$\x60-][^\s'"<>;&|$\x60]*)(?:[ \t]+>[ \t]*\/dev\/null)?[ \t]+<<-?[ \t]*(?<q3>'?)(?<t3>\w+)\k<q3>` +
+  String.raw`)[ \t]*$`)
+function outsideBodies(cmd, lo, hi) {
+  let out = ''
+  let pos = lo
+  for (const [s, e] of heredocBodySpans(cmd)) {
+    if (e <= lo || s >= hi) continue
+    out += cmd.slice(pos, Math.max(s, lo))
+    pos = Math.min(e, hi)
+  }
+  return out + cmd.slice(pos, hi)
+}
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const WRITTEN_CONTROL = /(?:^|[\s;&|(])(?:if|then|else|elif|while|until|do|case|function|for|select|\{)(?=[\s;]|$)/
+export function writtenScripts(cmd, cwd) {
+  const out = new Map()
+  // a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
+  if (WRITTEN_CONTROL.test(outsideBodies(cmd, 0, cmd.length))) return out
+  const hasCd = /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)/.test(cmd)
+  for (const m of cmd.matchAll(new RegExp(HEREDOC_RE.source, 'g'))) {
+    const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
+    const openerEnd = m.index + m[1].length
+    const opener = cmd.slice(lineStart, openerEnd)
+    const w = WRITTEN_OPENER.exec(opener)
+    if (!w) continue
+    const g = w.groups
+    const path = g.p1 ?? g.p2 ?? g.p3
+    const quoted = Boolean(g.q1 || g.q2 || g.q3)
+    const bodyEnd = m.index + m[0].length - m[2].length
+    const body = cmd.slice(openerEnd + 1, bodyEnd)
+    if (!quoted && (body.includes('$') || body.includes('`'))) continue
+    let abs
+    if (isAbsolute(path)) abs = normalize(path)
+    else if (!hasCd && typeof cwd === 'string' && isAbsolute(cwd)) abs = normalize(join(cwd, path))
+    else continue
+    // the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
+    if (/(?:&&|\|\||\||\\)\s*$/.test(cmd.slice(0, lineStart))) continue
+    // counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py
+    const mention = new RegExp(String.raw`(?<![\w.-])` + reEscape(basename(path)) + String.raw`(?![\w.-])`, 'g')
+    const count = (s) => (s.match(mention) || []).length
+    if (count(outsideBodies(cmd, 0, lineStart)) || count(opener) !== 1 || count(outsideBodies(cmd, bodyEnd, cmd.length)) !== 1 ||
+        out.has(abs)) {
+      out.delete(abs)
+      continue
+    }
+    out.set(abs, body)
+  }
+  return out
+}
+
 export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
-  const cmd = resolveDeterministicSubst(cmdIn, cwd)
+  const bound = bindLiteralVars(cmdIn)
+  const written = writtenScripts(bound, cwd)
+  if (written.size) {
+    const diskRead = readScript
+    readScript = (path, limit = SCRIPT_READ_LIMIT) => {
+      const body = typeof path === 'string' ? written.get(normalize(path)) : undefined
+      return body !== undefined ? body.slice(0, limit) : diskRead(path, limit)
+    }
+  }
+  const cmd = resolveDeterministicSubst(bound, cwd)
   let segments
   try {
     segments = segmentsTokens(stripShellComments(cmd.replace(HEREDOC_RE, '$1')))
