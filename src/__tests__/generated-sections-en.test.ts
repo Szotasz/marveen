@@ -47,7 +47,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     ...real,
     agentDir: (name: string) => join(tmpRoot, 'agents', name),
     agentConfigRoot: () => join(tmpRoot, 'agents'),
-    listAgentNames: () => ['own-token-sub', 'shared-token-sub'],
+    listAgentNames: () => ['own-token-sub', 'shared-token-sub', 'curl-sub'],
     readAgentCapabilities: () => [],
   }
 })
@@ -66,6 +66,11 @@ vi.mock('../web/agent-team.js', async (importOriginal) => {
     resolveAgentSecurityProfile: () => 'default',
   }
 })
+// The generators' prompts are captured, not sent.
+const captured = { prompt: '' }
+vi.mock('../agent.js', () => ({
+  runAgent: async (prompt: string) => { captured.prompt = prompt; return { text: '# Generated\n' } },
+}))
 vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8'),
 }))
@@ -76,8 +81,10 @@ const en = await import('../web/agent-scaffold-en.js')
 const MAIN = 'agent-a'
 const OWN = 'own-token-sub'
 const SHARED = 'shared-token-sub'
-for (const n of [OWN, SHARED]) mkdirSync(join(tmpRoot, 'agents', n), { recursive: true })
+const CURL = 'curl-sub'
+for (const n of [OWN, SHARED, CURL]) mkdirSync(join(tmpRoot, 'agents', n, '.claude'), { recursive: true })
 writeFileSync(join(tmpRoot, 'agents', OWN, '.dashboard-token'), 'c'.repeat(64), { mode: 0o600 })
+writeFileSync(join(tmpRoot, 'agents', CURL, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }), 'utf-8')
 
 function setLang(lang: 'hu' | 'en' | null): void {
   if (lang === null) rmSync(join(tmpRoot, '.env'), { force: true })
@@ -101,6 +108,8 @@ const CASES: Array<{ id: string; build: () => string }> = [
   ...NAMES.flatMap((n) => B.map((h) => ({ id: `memory-search-label:${n}:helper=${h}`, build: () => sc.buildMemorySearchLabelBody(n, h) }))),
   ...NAMES.map((n) => ({ id: `strict-api:${n}`, build: () => sc.buildStrictApiBody(n) })),
   ...NAMES.map((n) => ({ id: `api-helper:${n}`, build: () => sc.buildApiHelperBody(n) })),
+  { id: 'skill-section:curl', build: () => sc.buildSkillSection(undefined, join(tmpRoot, 'store', '.dashboard-token')) },
+  { id: 'skill-section:helper', build: () => sc.buildSkillSection(OWN, join(tmpRoot, 'agents', OWN, '.dashboard-token')) },
 ]
 
 /** Placeholders and example values the agent copies into a text someone reads: translated on purpose (plan v2, 2). */
@@ -119,8 +128,16 @@ const TRANSLATED_SPANS: Array<[hu: string, en: string]> = [
   ['<sajat-neved>', '<your-own-name>'],
   ['<a-te-neved>', '<your-name>'],
   ['<név>', '<name>'],
+  ['"content":"MIT"', '"content":"WHAT"'],
+  ['## HH:MM -- Tema', '## HH:MM -- Topic'],
+  ['Mi tortent, mi lett az eredmeny', 'What happened, what the result was'],
+  ['"miért kell, mit javít"', '"why it is needed, what it fixes"'],
+  ['[üzenet röviden]', '[the message in short]'],
+  ['<tool_nev>', '<tool_name>'],
 ]
 const translate = (span: string) => TRANSLATED_SPANS.reduce((s, [hu, e]) => s.split(hu).join(e), span)
+
+const CODE_LINE = /^(bash |curl |node |grep |mkdir |python3 |cat |SKILLEOF$|JSON$|\{"from"|  -H |  --data-binary )/
 
 /** The fenced lines and the inline backtick spans of a body, sorted (a translated sentence may reorder its spans). */
 function codeSpans(text: string): string[] {
@@ -130,8 +147,8 @@ function codeSpans(text: string): string[] {
     if (line.trimStart().startsWith('```')) { inFence = !inFence; out.push(line.trim()); continue }
     if (inFence) { out.push(line); continue }
     for (const m of line.matchAll(/`([^`]+)`/g)) out.push(m[1])
-    // A bare recipe line outside a fence (the level-2 helper recipes are not fenced).
-    if (/^(bash |curl |node )/.test(line)) out.push(line)
+    // A bare recipe line outside a fence (the level-2 helper recipes, the creation prompt, the skill section).
+    if (CODE_LINE.test(line)) out.push(line)
   }
   return out.sort()
 }
@@ -141,10 +158,12 @@ function prose(text: string): string {
   let inFence = false
   return text.split('\n').filter((line) => {
     if (line.trimStart().startsWith('```')) { inFence = !inFence; return false }
-    return !inFence && !/^(bash |curl |node )/.test(line)
+    return !inFence && !CODE_LINE.test(line)
   }).map((l) => l.replace(/`[^`]+`/g, ' ')).join('\n')
 }
 
+const PROTOCOL_HU = ['Ismeretlen sender [ID] jelezett első üzenettel', 'Ki ez, mit válaszoljak?', '[Napló ']
+const stripProtocol = (t: string) => PROTOCOL_HU.reduce((x, tok) => x.split(tok).join(' '), t)
 const HU_ACCENT = /[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/
 // Accent-free Hungarian words that would slip past the accent check.
 const HU_WORDS = /\b(hogy|vagy|csak|kell|mert|nincs|soha|akkor|amit|majd|neked|tehat|ezert|ugyanaz|mielott|eloszor)\b/i
@@ -167,7 +186,7 @@ describe('generated sections: the English twin of every Hungarian body', () => {
       const enBody = c.build()
       expect(enBody).not.toBe(hu)
       expect(codeSpans(enBody)).toEqual(codeSpans(hu).map(translate).sort())
-      const p = prose(enBody)
+      const p = stripProtocol(prose(enBody))
       const accented = p.split('\n').filter((l) => HU_ACCENT.test(l))
       expect(accented).toEqual([])
       expect(p.match(HU_WORDS)).toBeNull()
@@ -222,6 +241,93 @@ describe('generated sections: the English twin of every Hungarian body', () => {
   })
 })
 
+async function claudeMdPrompt(name: string): Promise<string> {
+  captured.prompt = ''
+  const out = await sc.generateClaudeMd(name, 'Test agent', 'test-model')
+  return `${captured.prompt}\n=== appended ===\n${out}`
+}
+
+describe('the new sub-agent\'s CLAUDE.md prompt and SOUL/SKILL prompts in English', () => {
+  for (const n of [OWN, SHARED, CURL]) {
+    it(`${n}: the same recipes in both languages, English prose, English appended blocks`, async () => {
+      setLang(null)
+      const hu = await claudeMdPrompt(n)
+      setLang('en')
+      const enP = await claudeMdPrompt(n)
+      expect(codeSpans(enP)).toEqual(codeSpans(hu).map(translate).sort())
+      const p = stripProtocol(prose(enP))
+      expect(p.split('\n').filter((l) => HU_ACCENT.test(l))).toEqual([])
+      expect(p.match(HU_WORDS)).toBeNull()
+      expect(enP).toContain('## Memory system')
+      expect(enP).toContain(en.SKILL_SECTION_HEADING_EN)
+      expect(enP).toContain('## The other agents of the fleet')
+      expect(enP).toContain('## Autonomy and approval')
+      // The ping frame stays word for word, the one the English main persona quotes.
+      expect(enP).toContain('Ismeretlen sender [ID] jelezett első üzenettel:')
+      expect(enP).not.toContain('Hungarian with')
+    })
+  }
+
+  it('the curl-recipe agent really is on curl recipes, the others on the helper (the cases cover both forms)', async () => {
+    setLang('en')
+    expect(await claudeMdPrompt(CURL)).toContain('curl -s -X POST')
+    expect(await claudeMdPrompt(SHARED)).toContain('marveen-api.sh memory-save AGENT_NAME')
+    expect(await claudeMdPrompt(OWN)).toContain('The helper sends your OWN token (AGENT_TOKENS)')
+  })
+
+  it('the strict intro is English too', () => {
+    const f = sc.scaffoldFrags(OWN)
+    for (const strict of [true, false]) {
+      const r = en.strictPromptRecipesEn(strict, f)
+      const text = stripProtocol(Object.values(r).join('\n'))
+      expect(text.split('\n').filter((l) => HU_ACCENT.test(l))).toEqual([])
+    }
+  })
+
+  it('SOUL.md and SKILL.md prompts: English on en, the Hungarian ones without the key', async () => {
+    setLang('en')
+    await sc.generateSoulMd(OWN, 'x')
+    expect(captured.prompt).toContain('Write the SOUL.md in English.')
+    expect(captured.prompt).not.toContain('Hungarian')
+    await sc.generateSkillMd('demo', 'x')
+    expect(captured.prompt).toContain('Write the SKILL.md in English.')
+    expect(captured.prompt).not.toMatch(/Hungarian with|Write ALL Hungarian/)
+    setLang(null)
+    await sc.generateSoulMd(OWN, 'x')
+    expect(captured.prompt).toContain('Write ALL Hungarian text with proper accents')
+  })
+
+  it('the skill section migration on an English install: the other recipe form is upgraded, a Hungarian section is left alone', () => {
+    setLang('en')
+    const file = join(tmpRoot, 'agents', SHARED, 'CLAUDE.md')
+    const curlForm = sc.buildSkillSection(undefined, join(tmpRoot, 'store', '.dashboard-token'))
+    writeFileSync(file, `# Sub\n\n${curlForm}\n\n## After\n\nkept\n`, 'utf-8')
+    expect(sc.ensureSkillSectionCurrent(SHARED)).toBe(true)
+    const up = readFileSync(file, 'utf-8')
+    expect(up).toContain(`marveen-api.sh skill-propose SKILL-NEV`)
+    expect(up).not.toContain('/api/skills/propose -H')
+    expect(up).toContain('## After\n\nkept\n')
+    expect(sc.ensureSkillSectionCurrent(SHARED)).toBe(false)
+    // A Hungarian section (the key set by hand on an older agent): never cross-language.
+    setLang(null)
+    const huForm = sc.buildSkillSection(undefined, join(tmpRoot, 'store', '.dashboard-token'))
+    setLang('en')
+    writeFileSync(file, `# Sub\n\n${huForm}\n`, 'utf-8')
+    expect(sc.ensureSkillSectionCurrent(SHARED)).toBe(false)
+    expect(readFileSync(file, 'utf-8')).toBe(`# Sub\n\n${huForm}\n`)
+  })
+
+  it('creation prompt staleness guard: the Hungarian prompt is the one the English twin was written against', async () => {
+    setLang(null)
+    const h = createHash('sha256')
+    for (const n of [OWN, SHARED, CURL]) h.update(`${n}\n${(await claudeMdPrompt(n)).split(tmpRoot).join('<ROOT>')}\n`)
+    await sc.generateSoulMd('x', 'x'); h.update(captured.prompt)
+    await sc.generateSkillMd('x', 'x'); h.update(captured.prompt)
+    const digest = h.digest('hex').slice(0, 16)
+    expect(HU_SOURCE_HASHES['claude-md-prompt'], `claude-md-prompt: the Hungarian prompt changed; update its English twin, then set the hash to '${digest}'`).toBe(digest)
+  })
+})
+
 // STALENESS GUARD. A Hungarian body changed? Bring its English twin in src/web/agent-scaffold-en.ts along, then
 // update the hash here (the failing test prints the new one). The hash covers every branch combination above.
 const HU_SOURCE_HASHES: Record<string, string> = {
@@ -231,7 +337,9 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'background-checkpoint': '04505f8789507f70',
   'evidence': '9dff6e8bd9b8d64c',
   'fleet-auth': '93c48bc9916ec0da',
-  'fleet-roster': '1150d059b61e7362',
+  'fleet-roster': '4849b0f0ec0dab70',
+  'skill-section': 'ccb3df74b18e6c8f',
+  'claude-md-prompt': 'e74c8fc962126244',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
   'message-close': '835ee6c92d6e0a7a',

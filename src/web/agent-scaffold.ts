@@ -24,6 +24,8 @@ import {
   type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
   buildBackgroundCheckpointBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
   buildMemorySearchLabelBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
+  type PromptRecipes, strictPromptRecipesEn, SKILL_SECTION_HEADING_EN, buildSkillSectionEn, buildClaudeMdPromptEn,
+  buildSoulPromptEn, buildSkillPromptEn,
 } from './agent-scaffold-en.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
@@ -4310,8 +4312,8 @@ export function findSection(text: string, heading: string): { start: number; end
 }
 
 /** The CLAUDE.md with an unedited retired skill section replaced by `current`, or null when nothing changes. */
-export function upgradeRetiredSkillSection(text: string, retired: string[], current: string): string | null {
-  const at = findSection(text, SKILL_SECTION_HEADING)
+export function upgradeRetiredSkillSection(text: string, retired: string[], current: string, heading: string = SKILL_SECTION_HEADING): string | null {
+  const at = findSection(text, heading)
   if (!at) return null
   const norm = normalizeSectionWhitespace(text.slice(at.start, at.end))
   if (norm === normalizeSectionWhitespace(current)) return null
@@ -4373,8 +4375,14 @@ export function ensureSkillSectionCurrent(name: string, retiredPath?: string): b
   const thisForm = buildSkillSection(helper ? name : undefined, tokenFile)
   // SKILLAPPROVALOFF1101: the section as both forms read before the quarantine became a switch. It carries the agent's
   // own token path and name, so it cannot be a fixed entry of the retired file: it is rebuilt from today's form.
-  const retired = [...readRetiredSkillSections(retiredPath), otherForm, preQuarantineSwitchSection(otherForm), preQuarantineSwitchSection(thisForm)]
-  const updated = upgradeRetiredSkillSection(existing, retired, thisForm)
+  // PERSONAESC1107: an English install looks only for the English heading, and its only retired form is the other
+  // recipe form (an English section never had the older texts). Never cross-language: a Hungarian section on an
+  // English install (a key set by hand) is left alone, a documented limit.
+  const english = agentTextLang() === 'en'
+  const retired = english
+    ? [otherForm]
+    : [...readRetiredSkillSections(retiredPath), otherForm, preQuarantineSwitchSection(otherForm), preQuarantineSwitchSection(thisForm)]
+  const updated = upgradeRetiredSkillSection(existing, retired, thisForm, english ? SKILL_SECTION_HEADING_EN : SKILL_SECTION_HEADING)
   if (updated === null || updated === existing) return false
   atomicWriteFileSync(claudeMdPath, updated)
   return true
@@ -5187,7 +5195,8 @@ export function ensureStrictApiSection(name: string): void {
 // #2232: the helper recipes a strict-profile agent gets in place of the curl lines of the creation prompt below;
 // since VOICETOKENLEAK1101 PR-A2 every agent whose settings allow the helper (agentUsesApiHelper) gets them too, with
 // a neutral intro (the dontAsk sentence is strict-only). One fixed payload file per recipe kind, in the agent's dir.
-function strictPromptRecipes(name: string, strict = true) {
+function strictPromptRecipes(name: string, strict = true): PromptRecipes {
+  if (agentTextLang() === 'en') return strictPromptRecipesEn(strict, scaffoldFrags(name))
   const mem = shellWord(apiPayloadPath(name, 'memoria'))
   const log = shellWord(apiPayloadPath(name, 'naplo'))
   const msg = shellWord(apiPayloadPath(name, 'uzenet'))
@@ -5233,6 +5242,12 @@ function strictSkillProposeRecipe(name: string): string {
 // The token file is the agent's own (dashboardTokenPathFor, #2325), as in every other
 // recipe of the CLAUDE.md.
 export function buildSkillSection(strictAgent?: string, tokenFile: string = mainTokenPath()): string {
+  if (agentTextLang() === 'en') {
+    return buildSkillSectionEn({
+      strictRecipe: strictAgent ? { draft: join(agentDir(strictAgent), 'skill-javaslat.md'), reason: join(agentDir(strictAgent), 'skill-javaslat-indok.txt') } : null,
+      tokenFile, f: scaffoldFrags(strictAgent ?? MAIN_AGENT_ID),
+    })
+  }
   return `## Öntanulás és Skill rendszer
 
 Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
@@ -5306,7 +5321,13 @@ export async function generateClaudeMd(name: string, description: string, model:
   const R = strictPromptRecipes(name, strict)
   // The generated sections (autonomy, skill) are rendered as on every start: helper recipes unless the settings deny it.
   const helper = agentUsesApiHelper(name)
-  const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
+  const prompt = agentTextLang() === 'en'
+    ? buildClaudeMdPromptEn({
+        name, description, model, ownerName: OWNER_NAME, appTz: APP_TZ, driveFolder: ownerDriveFolder,
+        agentsDir: join(PROJECT_ROOT, 'agents'), helper, R, skillSection: buildSkillSection(helper ? name : undefined, tokenPath),
+        f: scaffoldFrags(name),
+      })
+    : `You are creating the CLAUDE.md (project instructions) file for an AI agent.
 Agent name: ${name}
 Description of what the agent should do: ${description}
 Model: ${model}
@@ -5506,7 +5527,7 @@ function blockedHint(target: string, reason: string): string {
 }
 
 export async function generateSoulMd(name: string, description: string): Promise<string> {
-  const prompt = `You are creating the SOUL.md (personality definition) for an AI agent.
+  const prompt = agentTextLang() === 'en' ? buildSoulPromptEn(name, description, OWNER_NAME) : `You are creating the SOUL.md (personality definition) for an AI agent.
 Agent name: ${name}
 Description: ${description}
 
@@ -5534,7 +5555,7 @@ Output ONLY the markdown content, no code fences.`
 }
 
 export async function generateSkillMd(skillName: string, description: string): Promise<string> {
-  const prompt = `You are creating a SKILL.md file for a Claude Code skill. Follow this exact format:
+  const prompt = agentTextLang() === 'en' ? buildSkillPromptEn(skillName, description, OWNER_NAME) : `You are creating a SKILL.md file for a Claude Code skill. Follow this exact format:
 
 Skill name: ${skillName}
 What the user described: ${description}
