@@ -3773,6 +3773,9 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 
 // === Toast ===
 function showToast(msg, duration = 3000) {
+  // Some callers pass a type word ('error') where the duration goes. The delay was then NaN, which setTimeout runs
+  // at once: the toast was gone before it could be seen. Anything but a finite number means the default.
+  if (typeof duration !== 'number' || !Number.isFinite(duration)) duration = 3000
   toast.textContent = msg
   toast.classList.add('visible')
   setTimeout(() => toast.classList.remove('visible'), toastDuration(msg, duration))
@@ -19932,7 +19935,7 @@ function openIdeaEdit(id) {
 
 async function saveIdea() {
   const title = document.getElementById('ideaTitleInput').value.trim()
-  if (!title) { showToast(t('common.title') + ' ' + t('common.error'), 'error'); return }
+  if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'error'); return }
   const impactRaw = document.getElementById('ideaImpactInput').value
   const effortRaw = document.getElementById('ideaEffortInput').value
   const body = {
@@ -19944,18 +19947,39 @@ async function saveIdea() {
     impact: impactRaw ? parseInt(impactRaw) : null,
     effort: effortRaw ? parseInt(effortRaw) : null,
   }
-  if (ideaEditId) {
-    await fetch(`/api/ideas/${ideaEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  } else {
-    await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, status: 'new' }) })
-  }
+  // A failed save keeps the modal open with what was typed, and says so.
+  try {
+    const res = ideaEditId
+      ? await fetch(`/api/ideas/${encodeURIComponent(ideaEditId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      : await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, status: 'new' }) })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(err.error || t('ideas.toast.save_error'), 'error')
+      return
+    }
+  } catch { showToast(t('ideas.toast.save_error'), 'error'); return }
   closeModal(document.getElementById('ideaModalOverlay'))
   loadIdeasPage()
 }
 
 async function deleteIdeaItem(id) {
-  if (!confirm(t('kanban.confirm.delete'))) return
-  await fetch(`/api/ideas/${id}`, { method: 'DELETE' })
+  const idea = ideasAll.find(i => i.id === id) || ideas.find(i => i.id === id)
+  // The server deletes the idea's attachments (and their files) and its comments with it, so say so.
+  const confirmed = await confirmDialog({
+    title: t('ideas.confirm.delete_title'),
+    message: t('ideas.confirm.delete', { title: (idea && idea.title) || id }) + '\n\n' + t('ideas.confirm.delete_children'),
+    okLabel: t('ideas.confirm.delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(err.error || t('ideas.toast.delete_error'), 'error')
+      return
+    }
+  } catch { showToast(t('ideas.toast.delete_error'), 'error'); return }
   loadIdeasPage()
 }
 
@@ -19965,7 +19989,9 @@ async function openIdeaDetail(id) {
   const idea = ideas.find(i => i.id === id)
   if (!idea) return
   ideaDetailId = id
-  const statusLabel = STATUS_LABELS[idea.status] || idea.status
+  // STATUS_LABELS holds functions (the language can change): call it, as the list does.
+  const statusLabelFn = STATUS_LABELS[idea.status]
+  const statusLabel = typeof statusLabelFn === 'function' ? statusLabelFn() : (statusLabelFn || idea.status)
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
@@ -20007,7 +20033,7 @@ async function loadIdeaAttachments(id) {
           <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
         </div>
         <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
-        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))})">${t('ideas.detail.attach.delete')}</button>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))}, ${jsArg(a.filename)})">${t('ideas.detail.attach.delete')}</button>
       </div>`).join('')
   } catch {
     list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
@@ -20046,8 +20072,14 @@ document.getElementById('ideaAttachmentInput')?.addEventListener('change', async
   }
 })
 
-async function deleteIdeaAttachmentItem(encodedId) {
-  if (!confirm(t('ideas.detail.attach.confirm_delete'))) return
+async function deleteIdeaAttachmentItem(encodedId, filename) {
+  const confirmed = await confirmDialog({
+    title: t('ideas.detail.attach.confirm_delete_title'),
+    message: t('ideas.detail.attach.confirm_delete', { name: filename || '' }),
+    okLabel: t('ideas.detail.attach.confirm_delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/ideas/attachments/${encodedId}`, { method: 'DELETE' })
     if (!res.ok) throw new Error('HTTP ' + res.status)
