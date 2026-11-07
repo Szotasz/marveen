@@ -40,12 +40,15 @@ export const OWNER_QR_SESSION_REQUIRED = {
 }
 import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
-  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, sendGromzoAvatar, statusFactsOf, type GromzoAgentDeps, type GromzoAgentOutcome,
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, pendingGromzoConsentSlug, restorePendingGromzoConsents,
+  sendGromzoAvatar, setPendingConsentStore, statusFactsOf, watcherDelayMs, type GromzoAgentDeps, type GromzoAgentOutcome, type PendingConsentStore,
 } from '../gromzo-agents.js'
+import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
 import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, currentBotName } from '../../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, currentBotName } from '../../config.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { gateManualRestart } from '../manual-restart-gate.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
@@ -330,6 +333,85 @@ function mainRestartDeps() {
   }
 }
 
+// --- GROMZOBRIDGEWIZARD1107 D1: the server sees an approval through ------------------------------------------------
+// The pending consent is kept in store/ (0600; the consent id is the server's own, never the client's), and a watcher
+// checks it without the panel (gromzo-agents.ts: the pace, "used", the final answers). Wired by initGromzoConsentWatch
+// from web.ts only: a route test never touches the real store.
+
+/** The saved pending consent: store/gromzo-agent-consent.json, mode 0600, written whole through a temp file. */
+export function fileConsentStore(path = join(STORE_DIR, 'gromzo-agent-consent.json')): PendingConsentStore {
+  return {
+    read: () => {
+      try { return JSON.parse(readFileSync(path, 'utf8')) } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []
+        logger.warn({ err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: the saved approval could not be read (none restored)')
+        return []
+      }
+    },
+    write: (entries) => {
+      try {
+        if (entries.length === 0) { rmSync(path, { force: true }); return }
+        const tmp = `${path}.${process.pid}.tmp`
+        writeFileSync(tmp, JSON.stringify(entries), { mode: 0o600 })
+        chmodSync(tmp, 0o600)
+        renameSync(tmp, path)
+      } catch (e) {
+        // The consent stays in memory: the switch still works while this dashboard runs, only a restart would lose it.
+        logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: the pending approval could NOT be saved (kept in memory)')
+      }
+    },
+  }
+}
+
+let watchOn = false
+let watchTimer: ReturnType<typeof setTimeout> | null = null
+
+/** One round of the server's own check of the pending consent (null: nothing pending, or the check failed and the
+ *  consent is kept). Exported for the tests. */
+export async function consentWatchTick(deps: GromzoAgentDeps = agentDeps): Promise<GromzoAgentOutcome | null> {
+  const slug = pendingGromzoConsentSlug()
+  if (!slug) return null
+  try {
+    const o = await checkGromzoAgent(slug, deps)
+    if (o.ok && o.state === 'pending') return o
+    if (o.ok && o.state === 'added') logger.info({ slug, by: 'server' }, 'gromzo agents: the owner approved in the app; the server finished the switch (no panel needed)')
+    else logger.info({ slug, ...(o.ok ? { state: o.state } : { code: o.code }) }, 'gromzo agents: the server check got an answer')
+    return o
+  } catch (e) {
+    logger.warn({ slug, code: e instanceof MxdDashError ? e.code : 'io' }, 'gromzo agents: the server check failed (the approval is kept, asked again)')
+    return null
+  }
+}
+
+/** Arms the next server check when a consent is pending and the watcher runs (a no-op otherwise). */
+export function scheduleConsentWatch(): void {
+  if (!watchOn || watchTimer) return
+  const delay = watcherDelayMs(Date.now())
+  if (delay === null) return
+  watchTimer = setTimeout(() => {
+    watchTimer = null
+    void consentWatchTick().finally(scheduleConsentWatch)
+  }, delay)
+  watchTimer.unref?.()
+}
+
+/** From web.ts at start: the saved consent comes back, and (with the background services on) the watcher runs. A
+ *  WEB_ONLY or second instance keeps the store but runs no watcher: finishing a switch restarts a live session. */
+export function initGromzoConsentWatch(opts: { watch: boolean }): void {
+  setPendingConsentStore(fileConsentStore())
+  const restored = restorePendingGromzoConsents(agentDeps)
+  if (restored) logger.info({ slug: restored }, 'gromzo agents: a pending approval came back after a restart')
+  watchOn = opts.watch
+  scheduleConsentWatch()
+}
+
+/** Test seam: the watcher off and its timer gone. */
+export function stopGromzoConsentWatchForTest(): void {
+  watchOn = false
+  if (watchTimer) clearTimeout(watchTimer)
+  watchTimer = null
+}
+
 /** Test seam: replace some of the agent switch's collaborators (null puts the real ones back). */
 export function setGromzoAgentDepsForTest(deps: Partial<GromzoAgentDeps> | null): void {
   agentDeps = deps ? { ...defaultAgentDeps, ...deps } : defaultAgentDeps
@@ -392,6 +474,8 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
     const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps, bodyName)
       : action[2] === 'disable' ? await disableGromzoAgent(slug, agentDeps)
         : await checkGromzoAgent(slug, agentDeps)
+    // D1: a new pending consent is watched by the server from now on (the panel may close).
+    if (action[2] === 'enable' && o.ok && o.state === 'pending') scheduleConsentWatch()
     sendOutcome(res, slug, action[2]!, o)
   } catch (e) {
     const code = e instanceof MxdDashError ? e.code : 'io'

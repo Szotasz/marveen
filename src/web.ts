@@ -103,7 +103,7 @@ import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
-import { tryHandleGromzo } from './web/routes/gromzo.js'
+import { initGromzoConsentWatch, tryHandleGromzo } from './web/routes/gromzo.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
@@ -450,6 +450,10 @@ export function startWebServer(port = 3420): http.Server {
   const servicesOff = !services.run
   if (servicesOff && !webOnly) logger.warn({ reason: services.reason }, 'Second instance: background services disabled (start it with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1 in the environment to run them)')
   if (services.override) logger.warn({ reason: services.reason }, 'Second instance with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1: background services RUN (schedule runner included)')
+
+  // GROMZOBRIDGEWIZARD1107 D1: a pending Gromzo approval comes back after a restart; the server checks it on its own only
+  // with the background services on (finishing a switch restarts a live session).
+  initGromzoConsentWatch({ watch: !servicesOff })
 
   const routerInterval = servicesOff ? undefined : startMessageRouter()
   if (!servicesOff) logger.info('Agent message router started (5s poll)')
