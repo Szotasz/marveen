@@ -341,6 +341,35 @@ run_guard() {
     return 0
   fi
 
+  # PEERSESSION1025: a NON-main session is never respawned from here. The
+  # RESPAWN_CMD below is the MAIN channels agent's command line (its model, its
+  # CLAUDE_CONFIG_DIR, --channels <plugin>), so running it in a peer agent's pane
+  # would not restore that peer -- it would start a SECOND channels agent, and the
+  # shared bot.pid handover then kills the main agent's poller (the same outage
+  # shape CLAUDE.md documents for a child `claude` in a channel-owning session).
+  # Escape is safe on any pane and already ran above; past that, a peer pane is an
+  # owner-visible problem, not something to recover blind. Measured 2026-10-25:
+  # the autocompact dialog opens on peer panes too (peet: 58,5 and 55 minutes
+  # of blocked delivery), which is why per-session instances of this guard exist.
+  local MAIN_SESSION_ID MAIN_SESSION="" bstamp_peer
+  MAIN_SESSION_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  MAIN_SESSION_ID="${MAIN_SESSION_ID//[^a-zA-Z0-9_-]/}"
+  [ -n "$MAIN_SESSION_ID" ] && MAIN_SESSION="${MAIN_SESSION_ID}-channels"
+  # FAIL CLOSED: respawn only when the main session is POSITIVELY identified and
+  # is the one being watched. An unreadable .env leaves MAIN_SESSION empty, and
+  # the first version of this guard then fell through to the respawn -- the clean
+  # worktree (no .env) caught it, the live install would not have.
+  if [ -z "$MAIN_SESSION" ] || [ "$SESSION" != "$MAIN_SESSION" ]; then
+    log "stuck modal not cleared by Escape on session $SESSION (not the identified main session '"'"'${MAIN_SESSION:-unknown}'"'"') -- no respawn (RESPAWN_CMD is the main agent command line); alerting instead"
+    bstamp_peer=0; [ -f "$BACKOFF_STAMP" ] && bstamp_peer="$(file_mtime "$BACKOFF_STAMP")"
+    if [ $(( now - bstamp_peer )) -ge 3600 ]; then
+      if alert_owner "A ${SESSION} pane egy nyitott dialogus mogott all, es ${MAX_ESCAPES} Escape sem zarta be. Ez peer agens, ezert automatikus respawn NEM tortent. Ellenorizd: tmux attach -t ${SESSION}"; then
+        date +%s > "$BACKOFF_STAMP" 2>/dev/null || true
+      fi
+    fi
+    return 0
+  fi
+
   local MAIN_MODEL="" MODEL_FLAG="" CLAUDE_Q
   # RESPAWNMODEL807: ask the ONE resolver (all three layers: .env override >
   # settings.json > shipped distribution default) instead of keeping a fourth
