@@ -286,6 +286,12 @@ export function readMainOauthToken(envText: string, tokenFile: string): string {
   } catch { return '' }
 }
 
+/** VAULTUNREAD1107 (Dani 72334, Samu 72337): api mode and the vault cannot be read. Not "no key": the launch keeps the
+ *  previous decision's files and the owner is told (channels.sh), instead of a silent switch to the subscription. */
+export class MainAuthVaultUnreadable extends Error {
+  readonly code = 'vault-unreadable'
+}
+
 /** The live inputs for the main agent (read at every launch: a key or token added later counts at once). */
 export function gatherMainAuthInputs(cfgKind: MainCfgKind, cfgDir: string | null, opts: { projectRoot?: string; mainAgentId?: string } = {}): MainAuthInputs {
   const root = opts.projectRoot ?? PROJECT_ROOT
@@ -303,7 +309,7 @@ export function gatherMainAuthInputs(cfgKind: MainCfgKind, cfgDir: string | null
     // getSecret fails closed (e.g. the Keychain is not reachable from a launchd job). For api mode that is NOT "no
     // key": deciding on it would unstamp the owner's approval and send a false "no key stored". Give up instead;
     // the caller keeps the files of the last launch (channels.sh: its bash fallback).
-    if (authMode === 'api') throw new Error(`main-auth: the vault is unreadable (${err instanceof Error ? err.name : 'error'}), this launch keeps the last decision`)
+    if (authMode === 'api') throw new MainAuthVaultUnreadable(`main-auth: the vault is unreadable (${err instanceof Error ? err.name : 'error'}), this launch keeps the last decision`)
     vaultKey = ''
   }
   return {

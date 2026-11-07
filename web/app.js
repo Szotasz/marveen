@@ -4290,6 +4290,12 @@ function applyMarveenReadonlyMode(readOnly) {
   if (authModeGroup) authModeGroup.hidden = readOnly
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
+  // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
+  const mainAuthGroup = document.getElementById('mainAuthGroup')
+  if (mainAuthGroup) {
+    mainAuthGroup.hidden = !readOnly
+    if (readOnly) loadMainAuthPanel()
+  }
   const note = document.getElementById('marveenReadonlyNote')
   if (note) note.hidden = !readOnly
 }
@@ -5037,10 +5043,113 @@ function updateProcessControl(agent) {
 // RESTARTFORCEUI1018: the server refuses a manual main restart while the pane is busy or unreadable (409
 // restart-blocked, manual-restart-gate.ts), so a click never cuts a running turn by accident. A stuck main
 // agent can read busy for good, so the refusal is not the end: a second confirm sends an explicit force.
+// MAINAUTHSWITCH1107 (APIKULCSINDITAS1004 D): the main agent's authentication switch. Reads the main agent's detail
+// (authMode, hasApiKey, mainAuthLaunched = what the last launch ran on), saves through the owner-gated PUT, then
+// restarts through the same gated path as the restart button.
+function mainAuthSelected() {
+  return document.querySelector('input[name="mainAuthMode"]:checked')?.value || 'shared'
+}
+function renderMainAuthSections() {
+  const api = mainAuthSelected() === 'api'
+  document.getElementById('mainAuthApiSection').hidden = !api
+}
+function mainAuthRunningText(d) {
+  const l = d && d.mainAuthLaunched
+  if (!l || !l.effective) return t('agents.main_auth.running_unknown')
+  const base = t('agents.main_auth.running_' + l.effective)
+  if (l.configured === 'api' && l.effective !== 'api' && l.conflict) {
+    const reason = t('agents.main_auth.reason_' + String(l.conflict).replace(/-/g, '_'))
+    return t('agents.main_auth.not_honoured').replace('{reason}', reason) + ' ' + base
+  }
+  return base
+}
+async function loadMainAuthPanel() {
+  const group = document.getElementById('mainAuthGroup')
+  if (!group) return
+  document.getElementById('mainAuthError').hidden = true
+  document.getElementById('mainAuthApiKey').value = ''
+  let d = null
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`)
+    if (res.ok) d = await res.json()
+  } catch { /* shown as unknown */ }
+  const mode = d && d.authMode === 'api' ? 'api' : 'shared'
+  for (const r of document.querySelectorAll('input[name="mainAuthMode"]')) r.checked = r.value === mode
+  const status = document.getElementById('mainAuthKeyStatus')
+  status.textContent = d && d.hasApiKey ? t('agents.main_auth.key_stored') : t('agents.main_auth.key_missing')
+  status.style.color = d && d.hasApiKey ? 'var(--success)' : 'var(--warning)'
+  document.getElementById('mainAuthRunning').textContent = mainAuthRunningText(d)
+  renderMainAuthSections()
+}
+document.querySelectorAll('input[name="mainAuthMode"]').forEach((r) => r.addEventListener('change', renderMainAuthSections))
+
+document.getElementById('mainAuthApplyBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('mainAuthApplyBtn')
+  const errorDiv = document.getElementById('mainAuthError')
+  errorDiv.hidden = true
+  const mode = mainAuthSelected()
+  const payload = { authMode: mode }
+  const key = document.getElementById('mainAuthApiKey').value.trim()
+  if (mode === 'api' && key) payload.apiKey = key
+  btn.disabled = true
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      errorDiv.textContent = refusalReason(res, reply.body)
+      errorDiv.hidden = false
+      return
+    }
+    document.getElementById('mainAuthApiKey').value = ''
+    if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'))
+    const restarted = await restartMainAgentGated()
+    showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'))
+    setTimeout(() => { loadMainAuthPanel() }, 20000)
+    loadMainAuthPanel()
+  } catch (err) {
+    errorDiv.textContent = err && err.message ? err.message : String(err)
+    errorDiv.hidden = false
+  } finally {
+    btn.disabled = false
+  }
+})
+
+
+
 function postMarveenRestart(force) {
   return force
     ? fetch('/api/marveen/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }) })
     : fetch('/api/marveen/restart', { method: 'POST' })
+}
+
+// The main agent's gated restart: a busy or unreadable pane asks before forcing (the restart button and the
+// MAINAUTHSWITCH1107 switch share it). Resolves true when restarted, false when the owner declined the force;
+// throws on a failed restart.
+async function restartMainAgentGated() {
+  let res = await postMarveenRestart(false)
+  if (res.status === 409) {
+    const blocked = await res.clone().json().catch(() => ({}))
+    if (blocked.error === 'restart-blocked') {
+      const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
+      const forced = await confirmDialog({
+        title: t('agents.confirm.hard_restart_title'),
+        message: t(key),
+        okLabel: t('agents.confirm.force_restart_ok'),
+        danger: true,
+      })
+      if (!forced) { showToast(t('agents.toast.restart_not_forced')); return false }
+      res = await postMarveenRestart(true)
+    }
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || t('agents.toast.restart_failed'))
+  }
+  return true
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
@@ -5054,26 +5163,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    let res = await postMarveenRestart(false)
-    if (res.status === 409) {
-      const blocked = await res.clone().json().catch(() => ({}))
-      if (blocked.error === 'restart-blocked') {
-        const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        const forced = await confirmDialog({
-          title: t('agents.confirm.hard_restart_title'),
-          message: t(key),
-          okLabel: t('agents.confirm.force_restart_ok'),
-          danger: true,
-        })
-        if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
-        res = await postMarveenRestart(true)
-      }
-    }
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('agents.toast.restart_failed'))
-    }
-    showToast(t('agents.toast.marveen_restarted'))
+    if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {

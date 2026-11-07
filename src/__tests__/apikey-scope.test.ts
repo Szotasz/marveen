@@ -268,18 +268,20 @@ describe('the owner-facing texts (doctor line, one-time notice)', () => {
         expect(t).not.toMatch(/sk-ant-/)
       }
     }
-    expect(notice('subscription', 'en')).toContain('authMode=api')
-    expect(notice('subscription', 'hu')).toContain('authMode=api')
     // Samu 72311: the notice tells the truth for the version it ships in. B alone: the main agent still got the key.
     // MAINAUTH1107 (A): the main agent no longer gets it either, unless its own authMode is api (the switch's sentence
     // and a new notice stamp come with D).
-    expect(notice('subscription', 'en')).toContain('only agents set to authMode=api get it, the main agent included')
-    expect(notice('subscription', 'hu')).toContain('csak az authMode=api beállítású ügynökök kapják meg, a fő ügynök is csak így')
+    // MAINAUTHSWITCH1107 (D, Marveen copy round 72333): no config word for the owner; the switch named where it is
+    expect(notice('subscription', 'en')).toContain('only the agents whose authentication is set to the API key on the dashboard get it')
+    expect(notice('subscription', 'en')).toContain('on its card, Settings tab, in the Authentication group')
+    expect(notice('subscription', 'hu')).toContain('amelyeknél a dashboardon API-kulcsos hitelesítés van beállítva')
+    expect(notice('subscription', 'hu')).toContain('a kártyája Beállítások fülén, a Hitelesítés csoportban van')
+    for (const l of ['en', 'hu'] as const) expect(notice('subscription', l)).not.toContain('authMode=api')
     expect(notice('none', 'hu')).toBe('')
   })
   it('channels.sh sends it once: the stamp only after notify.sh succeeded, in the background', () => {
     const src = readFileSync(join(REPO, 'scripts', 'channels.sh'), 'utf-8')
     expect(src).toContain('( bash "$INSTALL_DIR/scripts/notify.sh" "$_notice_text" >/dev/null 2>&1 && : > "$_notice_stamp" ) &')
-    expect(src).toContain('_notice_stamp="$INSTALL_DIR/store/.notice-apikey-scope-1107"')
+    expect(src).toContain('_notice_stamp="$INSTALL_DIR/store/.notice-apikey-scope-switch-1107"')
   })
 })

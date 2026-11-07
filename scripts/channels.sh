@@ -1319,6 +1319,18 @@ EOF_MA
     # A credential file that could not be written was removed by main-auth: then the bash writer below is the one
     # that hands the pane its credential (B's rule), as when node is missing.
     case ",$MAIN_AUTH_FAILED," in *,pane-auth,*|*,post,*) MAIN_AUTH_APPLIED="" ;; esac
+    # VAULTUNREAD1107 (Dani 72334, Samu 72337): api mode, but the vault could not be read, so nothing was decided or
+    # written. Documented fallback, not fail-closed (that would take the owner's channel down): the previous launch's
+    # files stay (its decision, its key reference), and with none yet, B's rule below (the subscription). Loud: a
+    # WARN line here and one owner notice further down (MAIN_AUTH_CONFIGURED=api, conflict vault-unreadable).
+    if [ "$MAIN_AUTH_EFFECTIVE" = kept ]; then
+      if [ -f "$INSTALL_DIR/store/.channels-pane-auth" ]; then
+        MAIN_AUTH_EFFECTIVE="$(sed -n 's/.*"effective": *"\([a-z]*\)".*/\1/p' "$INSTALL_DIR/store/.main-auth-launched" 2>/dev/null | head -1)"
+      else
+        MAIN_AUTH_APPLIED=""; MAIN_AUTH_EFFECTIVE=""
+      fi
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-auth: the vault is unreadable in api mode -- $( [ "${MAIN_AUTH_APPLIED:-}" = 1 ] && echo "keeping the previous launch's credential files (effective=${MAIN_AUTH_EFFECTIVE:-unknown})" || echo "no previous files, falling back to the subscription rule")" >> "$INSTALL_DIR/store/channels-failures.log"
+    fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-auth configured=$MAIN_AUTH_CONFIGURED effective=$MAIN_AUTH_EFFECTIVE conflict=$MAIN_AUTH_CONFLICT failed=$MAIN_AUTH_FAILED applied=${MAIN_AUTH_APPLIED:-0}" >> "$INSTALL_DIR/store/channels-failures.log"
     unset _ma_tag
   fi
@@ -1641,7 +1653,9 @@ env -u "$STATE_ENV_VAR" $TMUX start-server 2>/dev/null || true
 # what to do, through the usual alert path. The stamp is written only after notify.sh succeeded (a failed send is
 # tried again on the next start). In the background: a slow channel must not hold the launch. The key's value is
 # never in the text (the sentence names the variable), never in argv, never in a log.
-_notice_stamp="$INSTALL_DIR/store/.notice-apikey-scope-1107"
+# MAINAUTHSWITCH1107: a new stamp name. Develop installs already sent B's text (without the switch) under the old
+# name; the release text names the switch, and each install hears it once.
+_notice_stamp="$INSTALL_DIR/store/.notice-apikey-scope-switch-1107"
 if [ ! -e "$_notice_stamp" ] && grep -qE '^ANTHROPIC_API_KEY=.' "$INSTALL_DIR/.env" 2>/dev/null \
    && declare -F auth_key_mode_notice >/dev/null; then
   _notice_text="$(auth_key_mode_notice "$KEY_MODE" "$(cat "$INSTALL_DIR/.lang" 2>/dev/null || echo hu)")"
