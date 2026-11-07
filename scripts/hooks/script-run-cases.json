@@ -275,6 +275,19 @@
     {"name": "ISSUE2582 Dani 72479 (A) kept: export of a computed name", "cmd": "SD=okdir; A=S; B=D; export \"$A$B\"=evil; python3 $SD/hello.py", "main": true, "sub": true},
     {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: export of a computed name", "cmd": "SD=okdir; A=S; B=D; export \"$A$B\"=evil; python3 $SD/send.py", "main": true, "sub": true},
     {"name": "ISSUE2582 Dani 72479 (A) kept: zsh set -A with a computed name", "cmd": "SD=okdir; A=S; B=D; set -A \"$A$B\" evil; python3 $SD/hello.py", "main": true, "sub": true},
-    {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: zsh set -A with a computed name", "cmd": "SD=okdir; A=S; B=D; set -A \"$A$B\" evil; python3 $SD/send.py", "main": true, "sub": true}
+    {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: zsh set -A with a computed name", "cmd": "SD=okdir; A=S; B=D; set -A \"$A$B\" evil; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X): printf -v \"$X\"", "cmd": "SD=okdir; printf -v \"$X\" %s evil; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X), sender pair: printf -v \"$X\"", "cmd": "SD=okdir; printf -v \"$X\" %s evil; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X): $(( $X = 1 ))", "cmd": "SD=okdir; : $(( $X = 1 )); python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X), sender pair: $(( $X = 1 ))", "cmd": "SD=okdir; : $(( $X = 1 )); python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X): zsh ${(P)X::=...}", "cmd": "SD=okdir; : ${(P)X::=evil}; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X), sender pair: zsh ${(P)X::=...}", "cmd": "SD=okdir; : ${(P)X::=evil}; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X): an array subscript ${x[$X=1]}", "cmd": "SD=okdir; x=(1); : ${x[$X=1]}; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X), sender pair: an array subscript ${x[$X=1]}", "cmd": "SD=okdir; x=(1); : ${x[$X=1]}; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X): [[ 1 -eq $X=1 ]]", "cmd": "SD=okdir; [[ 1 -eq $X=1 ]]; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X), sender pair: [[ 1 -eq $X=1 ]]", "cmd": "SD=okdir; [[ 1 -eq $X=1 ]]; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X): export \"$X\"=...", "cmd": "SD=okdir; export \"$X\"=evil; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A) kept, the name from outside ($X), sender pair: export \"$X\"=...", "cmd": "SD=okdir; export \"$X\"=evil; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A): a name assigned twice is skipped alone, the other name still binds", "cmd": "S=okdir; D=a; D=b; python3 $S/hello.py", "main": false, "sub": false}
   ]
 }
