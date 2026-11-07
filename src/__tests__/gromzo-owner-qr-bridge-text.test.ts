@@ -1,12 +1,10 @@
-// DASHSOCKPEER1106 (Samu 72098, 72101; Dani 72099): marveen-mxd #89 took the owner's codes off dash.sock, so the
-// dashboard's owner QR card always gets consent_required (mxd link.rs owner_secret_gate). The SAME code still comes from
-// an agent's owner approval on a machine with a Bridge key (mxd link.rs owner_qr_proof), and the agents panel used to
-// fall back to the shared gromzo.err.consent_required. So the shared key stays as it was, and each surface gets its own:
-//  - the owner QR card: gromzo.qr.err.consent_required, the step (the phone QR is in the Marveen Bridge, the menu item
-//    named as both shipped Bridges show it, 0.3.8 and 1.0.16, measured from their app.asar);
-//  - the agents panel: gromzo.agents.err.consent_required, today's meaning (mxd cannot verify a Bridge consent yet: no
-//    step for the owner exists, so "contact support" stays).
-// The REAL errorText and agentErr from web/app.js run here with a t() over the real hu/en dictionaries.
+// GROMZOBRIDGEWIZARD1107 D5a: the dashboard's Gromzo card after the Bridge wizard (marveen-bridge #56, installer #145).
+// The phone hookup, the owner QR and a new phone's code are the Marveen Bridge's (Menu, "Gromzo bekötése" /
+// "Connect Gromzo"). The card's own owner QR is gone: since marveen-mxd #89 dash.sock never hands out the owner's codes,
+// so its "Add a phone" button always ended on consent_required, and that sentence named a Bridge menu item ("Gromzo app
+// a telefonra (QR)") that no Bridge main has any more. Pinned here: the card has no QR surface left, its texts point at
+// the wizard, and the agents panel keeps its own consent_required sentence (DASHSOCKPEER1106, Samu 72101).
+// The REAL agentErr from web/app.js runs here with a t() over the real hu/en dictionaries.
 import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -18,6 +16,7 @@ const ROOT = join(__dirname, '../..')
 let hu: Record<string, string>
 let en: Record<string, string>
 const APP = readFileSync(join(ROOT, 'web/app.js'), 'utf8')
+const INDEX = readFileSync(join(ROOT, 'web/index.html'), 'utf8')
 
 /** A named function's full source from app.js (balanced braces from its `function name(` line). */
 function fnSource(name: string): string {
@@ -54,39 +53,54 @@ beforeAll(async () => {
 const OLD_HU = 'Ezen a gépen Bridge-kulcs van beállítva, ezért a dashboard most nem kérhet tulajdonosi kódot. Szólj a támogatásnak.'
 const OLD_EN = 'A Bridge key is configured on this machine, so the dashboard cannot request an owner code right now. Contact support.'
 
-describe('the owner QR card on consent_required: the step is in the Bridge (its own key)', () => {
-  it('the card shows its own sentence: the Bridge, its Menu and the menu item exactly as shipped (hu, en)', () => {
-    const h = real('errorText', hu)('consent_required')
-    const e = real('errorText', en)('consent_required')
-    expect(h).toBe(hu['gromzo.qr.err.consent_required'])
-    expect(e).toBe(en['gromzo.qr.err.consent_required'])
-    expect(h).toContain('Marveen Bridge')
-    expect(h).toContain('Menü')
-    expect(h).toContain('Gromzo app a telefonra (QR)')
-    expect(e).toContain('Marveen Bridge')
-    expect(e).toContain('Menu')
-    expect(e).toContain('Gromzo app on your phone (QR)')
-    for (const s of [h, e]) {
-      expect(s).not.toMatch(/támogat|support/i)
-      expect(s).not.toMatch(/\u2014|\u2013/)
+describe('D5a: the card has no owner QR of its own; it points at the Bridge wizard', () => {
+  it('no add-phone button, no QR area, no owner-qr call, nothing to wipe', () => {
+    for (const id of ['gromzoAddPhoneBtn', 'gromzoQrArea', 'gromzoQr', 'gromzoQrClose', 'gromzoCountdown', 'gromzoError']) {
+      expect(INDEX.includes(`id="${id}"`)).toBe(false)
+    }
+    expect(APP).not.toMatch(/\/api\/gromzo\/owner-qr/)
+    expect(APP).not.toMatch(/clearGromzoQr|gromzoAddPhoneBtn/)
+    // the card still shows the link status (the agents panel is its own module)
+    expect(APP).toMatch(/window\.loadGromzoCard = loadStatus/)
+    expect(INDEX).toMatch(/id="gromzoStatus"/)
+  })
+
+  it('no text of the old QR surface is left in either language', () => {
+    for (const d of [hu, en]) {
+      const left = Object.keys(d).filter((k) => k.startsWith('gromzo.qr.') || k === 'gromzo.btn.add_phone' || k === 'gromzo.btn.hide')
+      expect(left).toEqual([])
     }
   })
 
-  it('every other code still reads the shared key, and an unknown one the generic sentence', () => {
-    expect(real('errorText', hu)('not_linked')).toBe(hu['gromzo.err.not_linked'])
-    expect(real('errorText', en)('not_linked')).toBe(en['gromzo.err.not_linked'])
-    expect(real('errorText', en)('brand_new_code')).toBe(en['gromzo.err.generic']!.replace('{code}', 'brand_new_code'))
+  it('the card and the Bridge-pointing sentences name the wizard, never a retired menu item (hu, en)', () => {
+    const keys = ['gromzo.card.desc', 'gromzo.status.link_expired', 'gromzo.status.link_owner_mismatch', 'gromzo.agents.main.marketplace_failed']
+    for (const k of keys) {
+      expect(hu[k]).toContain('Marveen Bridge')
+      expect(hu[k]).toContain('Gromzo bekötése')
+      expect(en[k]).toContain('Marveen Bridge')
+      expect(en[k]).toContain('Connect Gromzo')
+    }
+    expect(hu['gromzo.card.desc']).toContain('Menü (⋮)')
+    expect(en['gromzo.card.desc']).toContain('Menu (⋮)')
+    const all = [...Object.entries(hu), ...Object.entries(en)].filter(([k]) => k.startsWith('gromzo.')).map(([, v]) => v).join('\n')
+    for (const gone of ['Gromzo app a telefonra', 'Gromzo app on your phone', 'Gromzo-lapján', 'Gromzo tab', 'Telefon hozzáadása', 'Add a phone']) {
+      expect(all).not.toContain(gone)
+    }
+    // the owner sign-in is for the agents only now
+    expect(hu['gromzo.owner_login.info']).not.toMatch(/telefon/)
+    expect(en['gromzo.owner_login.info']).not.toMatch(/phone/)
+    expect(all).not.toMatch(/\u2014|\u2013/)
   })
 })
 
 describe('the agents panel on consent_required: today\'s meaning (its own key)', () => {
-  it('shows the agent sentence, never the owner QR step', () => {
+  it('shows the agent sentence (today\'s meaning), not a Bridge step', () => {
     const h = real('agentErr', hu)('consent_required')
     const e = real('agentErr', en)('consent_required')
     expect(h).toBe(OLD_HU)
     expect(e).toBe(OLD_EN)
-    expect(h).not.toBe(hu['gromzo.qr.err.consent_required'])
-    expect(e).not.toBe(en['gromzo.qr.err.consent_required'])
+    expect(h).not.toMatch(/Bridge-ben kéred/)
+    expect(e).not.toMatch(/in the Marveen Bridge/)
   })
 
   it('the shared key is unchanged (Samu 72101: do not rewrite it)', () => {
