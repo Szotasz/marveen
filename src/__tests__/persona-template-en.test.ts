@@ -15,8 +15,26 @@ const PAIRS = [
   ['templates/SOUL.md.template', 'templates/en/SOUL.md.template'],
 ] as const
 
-const fences = (s: string) => s.match(/^```[\s\S]*?^```/gm) ?? []
-const withoutFences = (s: string) => s.replace(/^```[\s\S]*?^```/gm, '')
+// PERSONAESC1107 (Marveen 72742): the spans translated ON PURPOSE (no code reads them; the owner and the agent do).
+// Each English text must be in the English template once, its Hungarian original in the Hungarian one once; the parity
+// below compares the English template with these put back, so every other byte of code still has to match.
+const INTENDED: ReadonlyArray<readonly [string, string, string]> = [
+  ['templates/en/CLAUDE.md.template',
+    "`Egy sub-ágenshez ismeretlen, NEM párosított sender [ID] írt: '...'. Jóváhagyod?`",
+    "`An unknown, NOT paired sender [ID] wrote to a sub-agent: '...'. Do you approve?`"],
+  ['templates/en/CLAUDE.md.template',
+    '   # A SAJÁT csatornád configja a munkakönyvtáradban van (<cwd>/.claude/channels/...: a Főnöknél a projekt gyökere, sub-ágensnél az agents/<név> mappa).',
+    "   # YOUR OWN channel's config is in your working directory (<cwd>/.claude/channels/...: the project root for the main agent, the agents/<name> folder for a sub-agent)."],
+  ['templates/en/CLAUDE.md.template',
+    '   # A $HOME/.claude/channels csak tartalék: Marveen-telepítésben ott nincs ilyen fájl, ezért a vak $HOME-olvasás hamis "NEM"-et vagy hibát ad.',
+    '   # $HOME/.claude/channels is only a fallback: a Marveen install has no such file there, so a blind $HOME read gives a false "NEM" (no) or an error.'],
+]
+const restored = (en: string, E: string) =>
+  INTENDED.filter(([f]) => f === en).reduce((acc, [, hu, eng]) => acc.split(eng).join(hu), E)
+
+// Indented fences too (a code block inside a list item): the first version matched only column-0 fences.
+const fences = (s: string) => s.match(/^[ \t]*```[\s\S]*?^[ \t]*```/gm) ?? []
+const withoutFences = (s: string) => s.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, '')
 const inline = (s: string) => withoutFences(s).match(/`[^`\n]+`/g) ?? []
 const placeholders = (s: string) => (s.match(/\{\{[A-Z_]+\}\}/g) ?? []).sort()
 const headings = (s: string) => (withoutFences(s).match(/^#{1,6} /gm) ?? []).map((h) => h.trim())
@@ -24,12 +42,20 @@ const headings = (s: string) => (withoutFences(s).match(/^#{1,6} /gm) ?? []).map
 describe('the English persona templates', () => {
   for (const [hu, en] of PAIRS) {
     it(`${en}: the code fences, the inline code, the placeholders and the headings match ${hu}`, () => {
-      const H = read(hu), E = read(en)
+      const H = read(hu), E = restored(en, read(en))
       expect(fences(E)).toEqual(fences(H))
       expect(inline(E)).toEqual(inline(H))
       expect(placeholders(E)).toEqual(placeholders(H))
       expect(headings(E)).toEqual(headings(H))
       expect(E.split('\n').length).toBe(H.split('\n').length)
+    })
+
+    it(`${en}: every intentionally translated span is there once, its Hungarian original once in ${hu}`, () => {
+      for (const [f, huText, enText] of INTENDED.filter(([f]) => f === en)) {
+        expect(read(f).split(enText).length - 1, enText).toBe(1)
+        expect(read(f), enText).not.toContain(huText)
+        expect(read(hu).split(huText).length - 1, huText).toBe(1)
+      }
     })
 
     it(`${en}: no em or en dash, and the language line names the owner's language`, () => {

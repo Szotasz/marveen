@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   renderFederationBlock,
   renderRoutingDirective,
@@ -155,6 +157,22 @@ describe('applyFederationBlock (line-exact surgery)', () => {
     const nextHeading = lines.findIndex((l) => l.startsWith('## Öntanulás'))
     expect(begin).toBeGreaterThan(interagent)
     expect(begin).toBeLessThan(nextHeading)
+  })
+
+  // PERSONAESC1107: the English persona names the section "## Inter-agent communication"; the block goes after it too,
+  // in the real English template (it fell to EOF before).
+  it('inserts after the English Inter-agent section of the English persona template', () => {
+    const EN = readFileSync(join(__dirname, '..', '..', 'templates', 'en', 'CLAUDE.md.template'), 'utf8')
+    const next = applyFederationBlock(EN, block)
+    expect(next).not.toBeNull()
+    const lines = next!.split('\n')
+    const begin = lines.indexOf(FEDERATION_BLOCK_BEGIN)
+    const interagent = lines.findIndex((l) => l.trim() === '## Inter-agent communication')
+    const nextHeading = lines.findIndex((l, i) => i > interagent && l.startsWith('## '))
+    expect(interagent).toBeGreaterThan(-1)
+    expect(begin).toBeGreaterThan(interagent)
+    expect(begin).toBeLessThan(nextHeading)
+    expect(next!.trimEnd().endsWith(FEDERATION_BLOCK_END)).toBe(false)
   })
 
   it('appends at EOF when the heading is missing (hand-edited persona)', () => {
