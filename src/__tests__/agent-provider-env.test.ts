@@ -46,6 +46,17 @@ describe('resolveProviderEnv', () => {
     expect(r.exportsStr).not.toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
   })
 
+  it('forces CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for OpenRouter deepseek/deepseek-v4* -- OpenRouter lists 1,048,576 but the CLI caps unknown ids at 200k', () => {
+    const r = resolveProviderEnv('deepseek/deepseek-v4.1-flash', () => `"$(cat '/tmp/ref')"`)
+    expect(r.provider).toBe('openrouter')
+    expect(r.exportsStr).toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000')
+  })
+
+  it('does NOT force the override for other OpenRouter models or the direct-API deepseek-v4-pro', () => {
+    expect(resolveProviderEnv('qwen/qwen3-coder', () => null).exportsStr).not.toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
+    expect(resolveProviderEnv('deepseek-v4-pro', () => null).exportsStr).not.toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
+  })
+
   it('routes provider/model ids (containing "/") to OpenRouter, not minimax or ollama', () => {
     const seen: string[] = []
     const r = resolveProviderEnv('minimax/minimax-m3', (id) => {
