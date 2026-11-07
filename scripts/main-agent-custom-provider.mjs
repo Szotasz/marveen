@@ -188,9 +188,10 @@ if (apiKeyForStamp) {
 
 // Output the env prefix:
 //   1. Unset the inherited fleet OAuth token FIRST. The tmux server carries it
-//      in the global env; every new session inherits it. The Claude CLI prefers
-//      CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN,
-//      so the inherited token would be sent to the custom endpoint -> 401.
+//      in the global env; every new session inherits it. Two credentials on one
+//      launch is ambiguous (a custom endpoint got the fleet token -> 401). The
+//      precedence itself is the docs' one: ANTHROPIC_API_KEY outranks the OAuth
+//      token (measured 2026-11-07, CLI 2.1.319, APIKEYSCOPE1107).
 //   2. Export baseUrl, auth credential, model. ANTHROPIC_MODEL is authoritative
 //      for non-Claude model ids: the TUI validates --model against the Anthropic
 //      catalog and silently falls back for unknown values, but ANTHROPIC_MODEL

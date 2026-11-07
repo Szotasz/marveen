@@ -22,8 +22,15 @@ function survivors(prefix: string, tail = ''): string[] {
 const base: InheritedAuthUnsetInput = { needsFleetOauth: true, isOwnTeam: false, configuredConfigDir: false, ownTokenFile: false }
 
 describe('inherited credentials a sub-agent launch strips (executed)', () => {
-  it('a fleet agent keeps both: it runs on what the server carries', () => {
-    expect(survivors(inheritedAuthUnset(base))).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'])
+  // APIKEYSCOPE1107: on a subscription install (the default when the mode is not given) a host API key is an extra
+  // that outranks the fleet token, so a fleet agent drops it; on a key-only install the key IS the fleet credential.
+  it('a fleet agent on a subscription install keeps the token and drops the key', () => {
+    expect(survivors(inheritedAuthUnset(base))).toEqual(['CLAUDE_CODE_OAUTH_TOKEN'])
+    expect(survivors(inheritedAuthUnset({ ...base, keyMode: 'subscription' }))).toEqual(['CLAUDE_CODE_OAUTH_TOKEN'])
+  })
+
+  it('a fleet agent on a key-only install keeps both: the key is the install\'s credential', () => {
+    expect(survivors(inheritedAuthUnset({ ...base, keyMode: 'keyonly' }))).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'])
   })
 
   it('an operator-configured config dir (own /login) drops both', () => {
@@ -49,7 +56,7 @@ describe('the binding in startAgentProcess', () => {
   const SRC = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 
   it('byoUnsetEnv comes from inheritedAuthUnset with the real inputs', () => {
-    expect(SRC).toMatch(/const byoUnsetEnv = inheritedAuthUnset\(\{ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null \}\)/)
+    expect(SRC).toMatch(/const byoUnsetEnv = inheritedAuthUnset\(\{ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null, keyMode \}\)/)
   })
 
   it('configuredConfigDir is taken BEFORE the auto-isolation can set claudeConfigDir', () => {

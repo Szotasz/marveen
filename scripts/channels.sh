@@ -101,6 +101,22 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
 fi
+# APIKEYSCOPE1107 (APIKULCSINDITAS1004 B): the install's auth mode (scripts/lib/auth-key-mode.sh; the dashboard's
+# src/web/auth-key-mode.ts decides the same way from the same two inputs, a parity test keeps them equal):
+#   subscription: an OAuth token exists; an ANTHROPIC_API_KEY next to it is an EXTRA that must not reach the fleet
+#                 (it outranks the token: every pane would stop at "Detected a custom API key", every `claude -p` in a
+#                 pane would bill it; measured 2026-11-07, Claude Code 2.1.319);
+#   keyonly:      no OAuth token, the key IS the install's credential and stays the fleet's;
+#   none:         neither.
+# A missing lib = subscription: the key is then simply not distributed (the safe side).
+KEY_MODE=subscription
+if . "$INSTALL_DIR/scripts/lib/auth-key-mode.sh" 2>/dev/null; then
+  KEY_MODE="$(auth_key_mode "$INSTALL_DIR")"
+fi
+# A new-session that happens to CREATE the tmux server hands it this shell's env as the global env: off key-only, the
+# key stays out of it (the main pane gets its key from the pane-auth file anyway).
+_AKM_ENV_UNSET=""
+[ "$KEY_MODE" = keyonly ] || _AKM_ENV_UNSET="-u ANTHROPIC_API_KEY"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
@@ -1557,8 +1573,14 @@ _tmux_set_auth_globals() {
   if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
   fi
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  # APIKEYSCOPE1107: the key goes into the SERVER global env (and with it into every new pane) only on a key-only
+  # install. Otherwise it is removed from there, so a server that still carries it from an older version is cleaned
+  # on this start (panes already running keep their copy until they restart). The main session itself gets its key
+  # from the pane-auth file below, and the respawn paths source that file too.
+  if [ "$KEY_MODE" = keyonly ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+  else
+    $TMUX set-environment -g -u ANTHROPIC_API_KEY 2>/dev/null || true
   fi
   # Propagate the prompt-suggestion disable to every sub-agent tmux session.
   $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
@@ -1588,6 +1610,20 @@ _tmux_set_auth_globals() {
 # session's channel dir, and the server process itself matches the reap's env
 # needle for its whole life (measured with tmux 3.4 on an isolated socket).
 env -u "$STATE_ENV_VAR" $TMUX start-server 2>/dev/null || true
+# APIKEYSCOPE1107 (Samu 72223): ONCE after the update, when .env holds an API key, the owner hears what changed and
+# what to do, through the usual alert path. The stamp is written only after notify.sh succeeded (a failed send is
+# tried again on the next start). In the background: a slow channel must not hold the launch. The key's value is
+# never in the text (the sentence names the variable), never in argv, never in a log.
+_notice_stamp="$INSTALL_DIR/store/.notice-apikey-scope-1107"
+if [ ! -e "$_notice_stamp" ] && grep -qE '^ANTHROPIC_API_KEY=.' "$INSTALL_DIR/.env" 2>/dev/null \
+   && declare -F auth_key_mode_notice >/dev/null; then
+  _notice_text="$(auth_key_mode_notice "$KEY_MODE" "$(cat "$INSTALL_DIR/.lang" 2>/dev/null || echo hu)")"
+  if [ -n "$_notice_text" ]; then
+    ( bash "$INSTALL_DIR/scripts/notify.sh" "$_notice_text" >/dev/null 2>&1 && : > "$_notice_stamp" ) &
+  fi
+  unset _notice_text
+fi
+unset _notice_stamp
 _tmux_set_auth_globals
 
 # Layer 1 of CHANNELSAUTHRACE923, WITHOUT the secret in any argv (TOKENARGV929).
@@ -1736,7 +1772,7 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # the server's global environment, so every sub-agent session inherited the
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
-env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
+env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
   "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
@@ -1838,7 +1874,7 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
         # invasive change (a stable fallback dir + a seeded ~/.claude.json project
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
-        env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
+        env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
           "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
