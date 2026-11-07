@@ -70,7 +70,15 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
   const sharedToken = auth?.kind === 'token' && !auth.tokenAgent
   const fullDeviceKey = auth?.kind === 'device' && auth.scope === 'full'
   if (!sharedToken && !fullDeviceKey) return false
-  return ownerCookieSession(req) !== null
+  const owner = ownerCookieSession(req)
+  if (owner === null) return false
+  // GROMZOBRIDGEWIZARD1107 D2: an action the Bridge makes with its key beside the owner's cookie leaves one audit line
+  // naming the owner (as auth.ts bridgeOwnerAudited does for the other owner gates). Reads are not logged: the panel
+  // polls them.
+  if (fullDeviceKey && req.method !== 'GET' && req.method !== 'HEAD') {
+    logger.info({ owner, auth: 'device', device: auth.device, method: req.method, path: req.url?.split('?')[0] }, 'gromzo: owner action on a Bridge key: the owner session beside it')
+  }
+  return true
 }
 
 const STATUS_PATH = '/api/gromzo/status'
@@ -492,8 +500,13 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
 
   if (path === STATUS_PATH) {
     if (method !== 'GET') { methodNotAllowed(res, method, ['GET']); return true }
+    // GROMZOBRIDGEWIZARD1107 Q2: ?owner=1 asks mxd whether the team's owner has registered (marveen-mxd status
+    // {owner:true}: a bool, cached there; a plain status never asks). An mxd from before that field refuses the
+    // request: the plain status is asked again, and ownerSeat is simply absent.
+    const wantOwner = ctx.url.searchParams.get('owner') === '1'
     try {
-      const r = await call({ verb: 'status' })
+      let r = await call(wantOwner ? { verb: 'status', owner: true } : { verb: 'status' })
+      if (wantOwner && r.ok !== true) r = await call({ verb: 'status' })
       if (r.ok !== true) {
         const code = typeof r.error === 'string' && /^[a-z0-9_]{1,40}$/.test(r.error) ? r.error : 'refused'
         json(res, { available: false, code })
@@ -512,6 +525,11 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
         }
         const refusal = r.last_refusal as { kind?: unknown } | undefined
         if (refusal && typeof refusal.kind === 'string' && /^[a-z_]{1,40}$/.test(refusal.kind)) out.linkRefusal = refusal.kind
+      }
+      // Only a bool passes (never an id); a failure only as a lower-case code.
+      if (wantOwner && out.linked === true) {
+        if (typeof r.owner_seat === 'boolean') out.ownerSeat = r.owner_seat
+        else if (typeof r.owner_seat_error === 'string' && /^[a-z0-9_]{1,40}$/.test(r.owner_seat_error)) out.ownerSeatError = r.owner_seat_error
       }
       json(res, out)
     } catch (e) {

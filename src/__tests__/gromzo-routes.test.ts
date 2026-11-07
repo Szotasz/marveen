@@ -187,6 +187,26 @@ describe('the Bridge: a full device key plus the owner session cookie', () => {
     expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
   })
 
+  // GROMZOBRIDGEWIZARD1107 D2: an action the Bridge makes on its key beside the owner's cookie leaves one audit line
+  // naming the owner; a read (the list, polled) does not; a session principal (a browser) is not logged this way.
+  it('a Bridge-key owner ACTION writes one audit line naming the owner and the device; a read writes none', async () => {
+    principal = FULL
+    logged.length = 0
+    expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
+    expect(logged.filter((l) => l.includes('owner action on a Bridge key'))).toEqual([])
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    const audit = logged.filter((l) => l.includes('owner action on a Bridge key'))
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toContain('"owner":"owner"')
+    expect(audit[0]).toContain('"device":"Macbookom"')
+    expect(audit[0]).toContain('"path":"/api/gromzo/owner-qr"')
+    expect(audit[0]).not.toContain(sid)
+    principal = { kind: 'session', user: 'owner' }
+    logged.length = 0
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(logged.filter((l) => l.includes('owner action on a Bridge key'))).toEqual([])
+  })
+
   it('the key plus a revoked (logged out), unknown or other-named cookie: 403', async () => {
     principal = FULL
     revokeSession(sid)
@@ -333,6 +353,34 @@ describe('the page that draws the secret', () => {
 })
 
 describe('GET /api/gromzo/status', () => {
+  // GROMZOBRIDGEWIZARD1107 Q2: ?owner=1 asks mxd for the owner seat (status {owner:true}); only a bool passes.
+  it('?owner=1: mxd is asked with owner:true, and only the bool passes; a plain status does not ask', async () => {
+    const asked: unknown[] = []
+    fake.script.set('status', (req) => { asked.push(req.owner); return { ok: true, running: true, linked: true, ...(req.owner === true ? { owner_seat: true } : {}) } })
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: true, ownerSeat: true })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: true })
+    expect(asked).toEqual([true, undefined])
+  })
+  it('?owner=1: an id-shaped or non-bool owner_seat never passes; an error passes only as a code; not linked: nothing', async () => {
+    for (const [reply, want] of [
+      [{ owner_seat: '@owner:chat.example' }, {}],
+      [{ owner_seat: 1 }, {}],
+      [{ owner_seat_error: 'unauthorized' }, { ownerSeatError: 'unauthorized' }],
+      [{ owner_seat_error: 'Bad Thing @x' }, {}],
+    ] as const) {
+      fake.script.set('status', { ok: true, running: true, linked: true, ...reply })
+      expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json(), JSON.stringify(reply)).toEqual({ available: true, running: true, linked: true, ...want })
+    }
+    fake.script.set('status', { ok: true, running: true, linked: false, owner_seat: true })
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: false })
+  })
+  it('?owner=1 on an mxd from before the field (it refuses the request): the plain status, no ownerSeat', async () => {
+    fake.seen.length = 0
+    fake.script.set('status', (req) => (req.owner !== undefined ? { ok: false, error: 'bad_request' } : { ok: true, running: true, linked: true }))
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: true })
+    expect(fake.seen).toEqual(['status', 'status'])
+  })
+
   it('linked and running', async () => {
     fake.script.set('status', { ok: true, running: true, linked: true, pending: { op: 'link', expires_in: 5 } })
     const r = await fetch(origin + '/api/gromzo/status')
