@@ -304,10 +304,15 @@ describe('#2427 the owner-session text is a working path, also in the Bridge', (
     }
   })
 
-  it.each(['hu', 'en'] as const)('%s: says the Bridge opens with its key and that it repeats after a restart', (lang) => {
+  // ONBOARDOWNERPW1107 (M3, measured 2026-11-07 on a WEB_ONLY instance in a persistent Chromium profile, the Bridge's
+  // engine): the owner cookie (host-only, Max-Age 30 days) survives the profile reopening on another local port with
+  // the key URL, and the gates take the key plus the cookie; neither Bridge repo clears the partition. So the text no
+  // longer says to repeat the sign-in after a restart; it names the session's real limits (auth-sessions.ts TTLs).
+  it.each(['hu', 'en'] as const)('%s: says the Bridge opens with its key and that the sign-in stays after a reopen', (lang) => {
     const text = DICTS[lang]['common.owner_session_required']
     expect(text).toContain('Bridge')
-    expect(text).toMatch(lang === 'hu' ? /következő indításkor vagy újrakapcsolódáskor/ : /next start or reconnect/)
+    expect(text).toMatch(lang === 'hu' ? /a Bridge újranyitása után is megmarad/ : /stays in this window after the Bridge reopens/)
+    expect(text).not.toMatch(lang === 'hu' ? /meg kell ismételni/ : /repeat this/)
   })
 })
 

@@ -53,7 +53,8 @@ describe('PRVERIFY883: half-configured Slack (token present, managed-settings no
   })
 
   it('the wizard surfaces the sudo command on step 3 when the status carries one', () => {
-    expect(APP).toMatch(/step === 3 && s\.sudoCommand/)
+    // ONBOARDOWNERPW1107: the bot step is onboarding step 3 (`base`); the bar shows it as 4 behind the login step.
+    expect(APP).toMatch(/base === 3 && s\.sudoCommand/)
     expect(APP).toContain('showSudoModal(s.sudoCommand')
   })
 
