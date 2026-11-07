@@ -17579,7 +17579,12 @@ async function resumeClaudePlanLogin() {
 // POST /api/claude-plans/rotate for the main agent (agentId defaults to it
 // server-side). Restarts the main agent's session, hence the confirm.
 async function switchToClaudePlan(plan) {
-  if (!confirm(t('settings.claude_plans.confirm_switch', { label: plan.label }))) return
+  const confirmed = await confirmDialog({
+    title: t('settings.claude_plans.confirm_switch_title'),
+    message: t('settings.claude_plans.confirm_switch', { label: plan.label }),
+    okLabel: t('settings.claude_plans.confirm_switch_ok'),
+  })
+  if (!confirmed) return
   try {
     const res = await fetch('/api/claude-plans/rotate', {
       method: 'POST',
@@ -17599,8 +17604,17 @@ async function switchToClaudePlan(plan) {
   await loadClaudePlansList()
 }
 
-async function deleteClaudePlan(id) {
-  if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
+async function deleteClaudePlan(plan, users = []) {
+  const id = plan.id
+  let message = t('settings.claude_plans.confirm_delete', { label: plan.label || id })
+  if (users.length) message += '\n\n' + t('settings.claude_plans.confirm_delete_used_by', { agents: users.map(n => `"${n}"`).join(', ') })
+  const confirmed = await confirmDialog({
+    title: t('settings.claude_plans.confirm_delete_title'),
+    message,
+    okLabel: t('settings.claude_plans.confirm_delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   // OWNERGATE2-1104: the server may refuse (403 owner_session_required); show why instead of a silent no-op.
   try {
     const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -17843,7 +17857,9 @@ async function loadClaudePlansList() {
       delBtn.className = 'claude-plan-delete'
       delBtn.title = t('common.btn.delete')
       delBtn.textContent = '×'
-      delBtn.addEventListener('click', () => deleteClaudePlan(plan.id))
+      // The agents running on this plan lose their credential with it (the token leaves the vault): name them.
+      const planUsers = Object.entries(state.activePlanByAgent || {}).filter(([, id]) => id === plan.id).map(([agent]) => agent)
+      delBtn.addEventListener('click', () => deleteClaudePlan(plan, planUsers))
       actions.appendChild(delBtn)
       row.appendChild(actions)
 

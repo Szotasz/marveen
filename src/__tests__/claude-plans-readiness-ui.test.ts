@@ -68,6 +68,7 @@ describe('switchToClaudePlan (manual switch / first assignment)', () => {
   function load(confirmAnswer: boolean) {
     const calls: Array<{ url: string; init: any }> = []
     const toasts: string[] = []
+    const dialogs: any[] = []
     let reloaded = 0
     const fetchStub = async (url: string, init: any) => {
       calls.push({ url, init })
@@ -75,16 +76,16 @@ describe('switchToClaudePlan (manual switch / first assignment)', () => {
     }
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const fn = new Function(
-      't', 'confirm', 'fetch', 'showToast', 'loadClaudePlansList',
+      't', 'confirmDialog', 'fetch', 'showToast', 'loadClaudePlansList',
       `${extractFn('switchToClaudePlan')}; return switchToClaudePlan`,
     )(
       (k: string) => k,
-      () => confirmAnswer,
+      async (opts: any) => { dialogs.push(opts); return confirmAnswer },
       fetchStub,
       (m: string) => { toasts.push(m) },
       async () => { reloaded++ },
     ) as (plan: { id: string; label: string }) => Promise<void>
-    return { fn, calls, toasts, reloaded: () => reloaded }
+    return { fn, calls, toasts, dialogs, reloaded: () => reloaded }
   }
 
   it('confirmed: POSTs the plan id as targetPlanId to the rotate route', async () => {
@@ -95,6 +96,17 @@ describe('switchToClaudePlan (manual switch / first assignment)', () => {
     expect(h.calls[0].init.method).toBe('POST')
     expect(JSON.parse(h.calls[0].init.body)).toEqual({ targetPlanId: 'claude7' })
     expect(h.reloaded()).toBe(1)
+  })
+
+  it('asks in the app\'s own dialog, with its own title and button, naming the plan', async () => {
+    const h = load(false)
+    await h.fn({ id: 'claude7', label: 'Claude 7' })
+    expect(h.dialogs).toEqual([{
+      title: 'settings.claude_plans.confirm_switch_title',
+      message: 'settings.claude_plans.confirm_switch',
+      okLabel: 'settings.claude_plans.confirm_switch_ok',
+    }])
+    expect(extractFn('switchToClaudePlan')).not.toMatch(/(^|[^.\w])confirm\(/)
   })
 
   it('declined confirm: no request at all (it restarts the main agent)', async () => {
