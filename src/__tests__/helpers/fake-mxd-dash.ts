@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-export type FakeAnswer = Record<string, unknown> | { raw: string } | 'hang'
+export type FakeAnswer = Record<string, unknown> | { raw: string } | 'hang' | ((request: Record<string, unknown>) => Record<string, unknown>)
 
 export interface FakeMxdDash {
   path: string
@@ -38,9 +38,11 @@ export async function startFakeMxdDash(): Promise<FakeMxdDash> {
       const line = buf.slice(0, nl)
       buf = buf.slice(nl + 1)
       let verb = '?'
-      try { verb = String(JSON.parse(line).verb) } catch { /* bad request */ }
+      let request: Record<string, unknown> = {}
+      try { request = JSON.parse(line); verb = String(request.verb) } catch { /* bad request */ }
       seen.push(verb)
-      const a = script.get(verb) ?? { ok: false, error: 'unknown_verb' }
+      const scripted = script.get(verb) ?? { ok: false, error: 'unknown_verb' }
+      const a = typeof scripted === 'function' ? scripted(request) : scripted
       if (a === 'hang') return
       if ('raw' in a && typeof a.raw === 'string') { c.write(a.raw); return }
       c.write(JSON.stringify(a) + '\n')

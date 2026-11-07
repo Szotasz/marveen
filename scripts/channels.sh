@@ -101,6 +101,22 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
 fi
+# APIKEYSCOPE1107 (APIKULCSINDITAS1004 B): the install's auth mode (scripts/lib/auth-key-mode.sh; the dashboard's
+# src/web/auth-key-mode.ts decides the same way from the same two inputs, a parity test keeps them equal):
+#   subscription: an OAuth token exists; an ANTHROPIC_API_KEY next to it is an EXTRA that must not reach the fleet
+#                 (it outranks the token: every pane would stop at "Detected a custom API key", every `claude -p` in a
+#                 pane would bill it; measured 2026-11-07, Claude Code 2.1.319);
+#   keyonly:      no OAuth token, the key IS the install's credential and stays the fleet's;
+#   none:         neither.
+# A missing lib = subscription: the key is then simply not distributed (the safe side).
+KEY_MODE=subscription
+if . "$INSTALL_DIR/scripts/lib/auth-key-mode.sh" 2>/dev/null; then
+  KEY_MODE="$(auth_key_mode "$INSTALL_DIR")"
+fi
+# A new-session that happens to CREATE the tmux server hands it this shell's env as the global env: off key-only, the
+# key stays out of it (the main pane gets its key from the pane-auth file anyway).
+_AKM_ENV_UNSET=""
+[ "$KEY_MODE" = keyonly ] || _AKM_ENV_UNSET="-u ANTHROPIC_API_KEY"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
@@ -684,7 +700,31 @@ unset TMUX
 # a Mac that also had an older shared claude there ran the main session on that
 # one while the sub-agents ran the native build, and claude_is_native looked at
 # the wrong binary. Every other directory keeps its relative order.
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+# ISSUE1968BREWPREFIX (#1968): a Homebrew in a custom prefix (~/homebrew, say) keeps tmux, the claude cask and npm
+# in <prefix>/bin, which the fixed list below does not have: channels crash-looped on "claude not found". The prefix
+# is not stored anywhere, but every launchd PATH the installer ever wrote starts with node@22's keg,
+# <prefix>/opt/node@22/bin (NODE_BIN_DIR), and update.sh never rewrites that plist. So <prefix>/bin is derived from
+# the inherited PATH: the first keg entry whose <prefix>/bin exists and is not one the list already has. It goes
+# right after ~/.local/bin (the native claude still wins). No keg entry = the list exactly as before.
+# src/platform.ts knownBinDirs() applies the same rule for the dashboard.
+BREW_PREFIX_BIN=""
+while IFS= read -r -d : _bp_dir; do
+  case "$_bp_dir" in
+    /*/opt/node@[0-9]/bin|/*/opt/node@[0-9][0-9]/bin) ;;
+    *) continue ;;
+  esac
+  _bp_bin="${_bp_dir%/opt/node@*/bin}/bin"
+  case "$_bp_bin" in
+    /opt/homebrew/bin|/usr/local/bin) continue ;;
+  esac
+  if [ -d "$_bp_bin" ]; then
+    BREW_PREFIX_BIN="$_bp_bin:"
+    break
+  fi
+done <<< "${PATH:-}:"
+unset _bp_dir _bp_bin
+export PATH="$HOME/.local/bin:${BREW_PREFIX_BIN}/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+# /ISSUE1968BREWPREFIX
 
 # FLEETVENV923: the fleet Python venv's bin/ goes FIRST, when it is set and
 # exists, so the main session's `python3` (and markitdown & co.) come from the
@@ -1089,7 +1129,16 @@ claude_native_update() {
   return 1
 }
 
-if ! command -v claude >/dev/null 2>&1; then
+# HOSTINGERDOCKER1107: in the container the image owns the claude version (Dockerfile CLAUDE_CODE_VERSION, npm-global
+# in /usr/local, outside the volumes): no self-heal install and no daily update here. A newer claude is a newer image.
+marveen_in_docker() {
+  [ -f "$INSTALL_DIR/.env" ] && grep -qx 'MARVEEN_DEPLOYMENT=docker' "$INSTALL_DIR/.env"
+}
+if marveen_in_docker; then
+  command -v claude >/dev/null 2>&1 \
+    || echo "$(date '+%F %T') claude MISSING in the container: the image is broken (no self-heal install in Docker mode)" >&2
+  echo "$(date '+%F %T') claude update SKIPPED: Docker mode, the image owns the version" >&2
+elif ! command -v claude >/dev/null 2>&1; then
   if ! claude_relink_native; then
     claude_install "binary missing -- self-heal"
   fi
@@ -1189,6 +1238,8 @@ CFG_ENV=""
 CUSTOM_PROVIDER_ENV=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
+# MAINAUTH1107: set only by the main-auth contract line below, never inherited from the environment.
+MAIN_AUTH_APPLIED=""; MAIN_AUTH_CONFIGURED=""; MAIN_AUTH_EFFECTIVE=""; MAIN_AUTH_CONFLICT=""; MAIN_AUTH_FAILED=""
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # The helper's stdout is a CONTRACT ("<mode>\t<path>", or nothing), but it
   # imports a dist module that logs through pino -- whose default destination is
@@ -1256,7 +1307,43 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token"))\" && "
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
+    # MAINCFGDIRUNSET1107: the plugin patchers further down run with the dir THIS session launches from; the
+    # _cfg_* names are unset at the end of this block, so they used to get an empty CLAUDE_CONFIG_DIR.
+    _MAIN_CFG_DIR="$_cfg_dir"
   fi
+  # MAINAUTH1107 (APIKULCSINDITAS1004 A): which credential the main pane runs on, decided and applied in ONE place
+  # (src/web/main-auth.ts) by every launch path: this boot, the dashboard's respawns and the two watchdogs. It writes
+  # the pane-auth file, the post-file (sourced right after CFG_ENV) and the key approval. Only the config-dir mode
+  # the launch REALLY uses counts (CFG_ENV set), so a mode line whose dir is missing is the shared root here too.
+  # No contract line (no node / stale dist) = the bash fallback below (B's rule), never a guess.
+  _ma_mode=""; _ma_dir=""
+  if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
+  _ma_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2 || true)"
+  _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
+  if [ -n "$_ma_line" ]; then
+    IFS='	' read -r _ma_tag MAIN_AUTH_CONFIGURED MAIN_AUTH_EFFECTIVE MAIN_AUTH_CONFLICT MAIN_AUTH_FAILED <<EOF_MA
+$_ma_line
+EOF_MA
+    MAIN_AUTH_APPLIED=1
+    # A credential file that could not be written was removed by main-auth: then the bash writer below is the one
+    # that hands the pane its credential (B's rule), as when node is missing.
+    case ",$MAIN_AUTH_FAILED," in *,pane-auth,*|*,post,*) MAIN_AUTH_APPLIED="" ;; esac
+    # VAULTUNREAD1107 (Dani 72334, Samu 72337): api mode, but the vault could not be read, so nothing was decided or
+    # written. Documented fallback, not fail-closed (that would take the owner's channel down): the previous launch's
+    # files stay (its decision, its key reference), and with none yet, B's rule below (the subscription). Loud: a
+    # WARN line here and one owner notice further down (MAIN_AUTH_CONFIGURED=api, conflict vault-unreadable).
+    if [ "$MAIN_AUTH_EFFECTIVE" = kept ]; then
+      if [ -f "$INSTALL_DIR/store/.channels-pane-auth" ]; then
+        MAIN_AUTH_EFFECTIVE="$(sed -n 's/.*"effective": *"\([a-z]*\)".*/\1/p' "$INSTALL_DIR/store/.main-auth-launched" 2>/dev/null | head -1)"
+      else
+        MAIN_AUTH_APPLIED=""; MAIN_AUTH_EFFECTIVE=""
+      fi
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-auth: the vault is unreadable in api mode -- $( [ "${MAIN_AUTH_APPLIED:-}" = 1 ] && echo "keeping the previous launch's credential files (effective=${MAIN_AUTH_EFFECTIVE:-unknown})" || echo "no previous files, falling back to the subscription rule")" >> "$INSTALL_DIR/store/channels-failures.log"
+    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-auth configured=$MAIN_AUTH_CONFIGURED effective=$MAIN_AUTH_EFFECTIVE conflict=$MAIN_AUTH_CONFLICT failed=$MAIN_AUTH_FAILED applied=${MAIN_AUTH_APPLIED:-0}" >> "$INSTALL_DIR/store/channels-failures.log"
+    unset _ma_tag
+  fi
+  unset _ma_line _ma_mode _ma_dir
   # LOUD REGRESSION GUARD, in two triggers. Both mean the same thing: this boot
   # resolved to the shared ~/.claude, so the main agent rides the rotating
   # shared credential session -- exactly how the 2026-07-27 evening 401 outage
@@ -1273,7 +1360,8 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # carrying one and still landing on the shared root means the setting is
   # missing, not that isolation was declined. This is the shape issue #835 is
   # about, and trigger 2 is structurally blind to it.
-  if [ -z "$CFG_ENV" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  # MAINAUTH1107: neither trigger fires for a main agent on an API key: it does not ride the shared login at all.
+  if [ -z "$CFG_ENV" ] && [ "${MAIN_AUTH_EFFECTIVE:-}" != api ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
     if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
       _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
@@ -1299,7 +1387,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # root -- so the isolation setting was LOST, e.g. store/config-overrides.json
   # deleted with no .env key backing it. Needing that dir is what makes this
   # trigger blind on a fresh install, hence trigger 1.
-  if [ -z "$CFG_ENV" ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
+  if [ -z "$CFG_ENV" ] && [ "${MAIN_AUTH_EFFECTIVE:-}" != api ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although isolated dir $INSTALL_DIR/.channels-config exists -- MAIN_AGENT_ISOLATED_CONFIG resolution came back empty (overrides/.env key lost?). Auth rides the rotating shared session and can 401." >> "$INSTALL_DIR/store/channels-failures.log"
     if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
       _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
@@ -1533,8 +1621,14 @@ _tmux_set_auth_globals() {
   if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
   fi
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  # APIKEYSCOPE1107: the key goes into the SERVER global env (and with it into every new pane) only on a key-only
+  # install. Otherwise it is removed from there, so a server that still carries it from an older version is cleaned
+  # on this start (panes already running keep their copy until they restart). The main session itself gets its key
+  # from the pane-auth file below, and the respawn paths source that file too.
+  if [ "$KEY_MODE" = keyonly ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+  else
+    $TMUX set-environment -g -u ANTHROPIC_API_KEY 2>/dev/null || true
   fi
   # Propagate the prompt-suggestion disable to every sub-agent tmux session.
   $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
@@ -1564,6 +1658,44 @@ _tmux_set_auth_globals() {
 # session's channel dir, and the server process itself matches the reap's env
 # needle for its whole life (measured with tmux 3.4 on an isolated socket).
 env -u "$STATE_ENV_VAR" $TMUX start-server 2>/dev/null || true
+# APIKEYSCOPE1107 (Samu 72223): ONCE after the update, when .env holds an API key, the owner hears what changed and
+# what to do, through the usual alert path. The stamp is written only after notify.sh succeeded (a failed send is
+# tried again on the next start). In the background: a slow channel must not hold the launch. The key's value is
+# never in the text (the sentence names the variable), never in argv, never in a log.
+# MAINAUTHSWITCH1107: a new stamp name. Develop installs already sent B's text (without the switch) under the old
+# name; the release text names the switch, and each install hears it once.
+_notice_stamp="$INSTALL_DIR/store/.notice-apikey-scope-switch-1107"
+if [ ! -e "$_notice_stamp" ] && grep -qE '^ANTHROPIC_API_KEY=.' "$INSTALL_DIR/.env" 2>/dev/null \
+   && declare -F auth_key_mode_notice >/dev/null; then
+  _notice_text="$(auth_key_mode_notice "$KEY_MODE" "$(cat "$INSTALL_DIR/.lang" 2>/dev/null || echo hu)")"
+  if [ -n "$_notice_text" ]; then
+    ( bash "$INSTALL_DIR/scripts/notify.sh" "$_notice_text" >/dev/null 2>&1 && : > "$_notice_stamp" ) &
+  fi
+  unset _notice_text
+fi
+unset _notice_stamp
+# MAINAUTH1107: the owner chose the API key for the main agent and this start does not honour it (a conflict, or the
+# key approval could not be written): tell them once per distinct cause, through the usual alert path (notify.sh, not
+# the main agent: it may be the broken one). The marker is written only after a successful send; a resolved problem
+# removes it, so the same cause coming back later is told again.
+_ma_alert="$INSTALL_DIR/store/.main-auth-alerted"
+if [ "${MAIN_AUTH_CONFIGURED:-}" = api ] && declare -F main_auth_problem_notice >/dev/null; then
+  # (MAIN_AUTH_CONFIGURED is set by the contract line only; a write failure that sent the pane to the bash fallback
+  # keeps it, so the owner hears about that too.)
+  _ma_cause="${MAIN_AUTH_CONFLICT:--}|${MAIN_AUTH_FAILED:--}"
+  _ma_text="$(main_auth_problem_notice "${MAIN_AUTH_CONFLICT:--}" "${MAIN_AUTH_FAILED:--}" "$(cat "$INSTALL_DIR/.lang" 2>/dev/null || echo hu)")"
+  if [ -n "$_ma_text" ]; then
+    if [ "$(cat "$_ma_alert" 2>/dev/null)" != "$_ma_cause" ]; then
+      ( bash "$INSTALL_DIR/scripts/notify.sh" "$_ma_text" >/dev/null 2>&1 && printf '%s' "$_ma_cause" > "$_ma_alert" ) &
+    fi
+  else
+    rm -f "$_ma_alert" 2>/dev/null || true
+  fi
+  unset _ma_cause _ma_text
+elif [ "${MAIN_AUTH_APPLIED:-}" = 1 ]; then
+  rm -f "$_ma_alert" 2>/dev/null || true
+fi
+unset _ma_alert
 _tmux_set_auth_globals
 
 # Layer 1 of CHANNELSAUTHRACE923, WITHOUT the secret in any argv (TOKENARGV929).
@@ -1582,7 +1714,19 @@ _tmux_set_auth_globals
 # The file is rewritten on every launch; store/ is gitignored.
 AUTH_PANE_ENV=""
 _auth_file="$INSTALL_DIR/store/.channels-pane-auth"
-if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+# MAINAUTH1107: the post-file is sourced right after CFG_ENV in both new-session lines below (and in every respawn).
+AUTH_POST_ENV="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
+# The fallback writer below hands the main pane the key only on a key-only install (B's rule): on a subscription
+# install an unapproved key would stop the pane at "Detected a custom API key".
+_auth_key_for_pane=""
+[ "$KEY_MODE" = keyonly ] && _auth_key_for_pane="${ANTHROPIC_API_KEY:-}"
+if [ "${MAIN_AUTH_APPLIED:-}" = 1 ]; then
+  # main-auth wrote the file for this mode (and removed it when the mode needs none).
+  [ -f "$_auth_file" ] && AUTH_PANE_ENV=". $(sh_single_quote "$_auth_file") && "
+elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "$_auth_key_for_pane" ]; then
+  # Fallback (no main-auth): a post-file from an earlier main-auth run would follow a mode this boot did not decide,
+  # and its launch record would tell the reauth-healer the pane runs on a key.
+  rm -f "$INSTALL_DIR/store/.channels-pane-auth-post" "$INSTALL_DIR/store/.main-auth-launched" 2>/dev/null || true
   _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   # Written to a NEW file (mktemp: 0600, O_EXCL, never follows a symlink) and
   # renamed over the final name, so the value never lands in a pre-existing
@@ -1617,8 +1761,8 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
       if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
         printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")" >> "$_auth_tmp" || exit 1
       fi
-      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-        printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")" >> "$_auth_tmp" || exit 1
+      if [ -n "$_auth_key_for_pane" ]; then
+        printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$_auth_key_for_pane")" >> "$_auth_tmp" || exit 1
       fi
     ) 2>/dev/null; then _auth_ok=1; else _auth_ok=0; fi
     if [ "$_auth_ok" != 1 ] || [ ! -s "$_auth_tmp" ]; then
@@ -1636,9 +1780,10 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
   unset -f _q
   unset _auth_tmp
 else
-  rm -f "$_auth_file" 2>/dev/null || true
+  [ "${MAIN_AUTH_APPLIED:-}" = 1 ] || rm -f "$INSTALL_DIR/store/.main-auth-launched" 2>/dev/null || true
+  rm -f "$_auth_file" "$INSTALL_DIR/store/.channels-pane-auth-post" 2>/dev/null || true
 fi
-unset _auth_file
+unset _auth_file _auth_key_for_pane
 
 # Owner commands (ELSOKOR922 spec D-4): the Telegram plugin answers /status
 # and /help itself, so those two never reach the session's command hook. Take
@@ -1651,7 +1796,7 @@ unset _auth_file
 # top. The outcome lands in store/telegram-plugin-patch.json for /status.
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ -n "$CFG_ENV" ]; then
-    CLAUDE_CONFIG_DIR="$_cfg_dir" python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+    CLAUDE_CONFIG_DIR="$_MAIN_CFG_DIR" python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
   else
     python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
   fi
@@ -1665,7 +1810,7 @@ fi
 case " $CHANNEL_PROVIDER $CHANNEL_PLUGINS_EXTRA " in
   *" discord "*|*" discord@"*)
     if [ -n "$CFG_ENV" ]; then
-      CLAUDE_CONFIG_DIR="$_cfg_dir" python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+      CLAUDE_CONFIG_DIR="$_MAIN_CFG_DIR" python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
     else
       python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
     fi
@@ -1712,8 +1857,8 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # the server's global environment, so every sub-agent session inherited the
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
-env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1814,8 +1959,8 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
         # invasive change (a stable fallback dir + a seeded ~/.claude.json project
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
-        env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+        env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.

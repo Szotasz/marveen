@@ -31,6 +31,7 @@ import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'
 import { createAgentMessage } from '../db.js'
+import { decideMainAuth, gatherMainAuthInputs } from './main-auth.js'
 import { getEffectiveSettingSource, getOverridesFileState, type OverridesFileState, type SettingSource } from '../settings-store.js'
 import {
   ensureMainAgentIsolatedConfigDir,
@@ -194,6 +195,16 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
           // a stock install would name the wrong state -- the failure this module exists to end.
           ? 'main-agent respawn: shared ~/.claude, fleet token exported as CLAUDE_CODE_OAUTH_TOKEN (outranks the /login session per the documented precedence) -- nothing to warn about'
           : 'main-agent respawn: shared ~/.claude (no isolation configured, no fleet token) -- expected for a stock install')
+      return
+    }
+    // MAINAUTH1107: both triggers are about the rotating shared LOGIN; a main agent that runs on an API key does not
+    // use it (main-auth unsets the token after the config branch), so the advice to isolate would be wrong. The same
+    // test as channels.sh's triggers: the EFFECTIVE mode (a configured api that fell back still rides the login).
+    // Both triggers fire on the shared root only, hence 'shared'.
+    let onKey = false
+    try { onKey = decideMainAuth(gatherMainAuthInputs('shared', null)).effective === 'api' } catch { onKey = false }
+    if (onKey) {
+      line(`main-agent respawn: ${d.trigger} on the shared ~/.claude, but the main agent runs on an API key (authMode=api) -- no notice`)
       return
     }
     const facts = d.trigger === 'isolation-lost' ? readIsolationSettingFacts() : null

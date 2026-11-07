@@ -30,6 +30,7 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME, WEB_PORT } from '../../config.js
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { agentFacingLang } from '../agent-text-lang.js'
 import { agentDir } from '../agent-config.js'
 import { shellWord } from '../sanitize.js'
 import { catalogAgentNames } from './local-catalog.js'
@@ -40,7 +41,9 @@ export const FEDERATION_BLOCK_END = '<!-- MARVEEN-FEDERATION:END -->'
 export const FEDERATION_POLICY_ANCHOR = '<!-- MARVEEN-FEDERATION:POLICY -->'
 // Insert after this template section when present (EOF-fallback otherwise --
 // hand-edited or migrated installs may lack the heading).
-const INTERAGENT_HEADING = '## Inter-agent kommunikáció'
+// PERSONAESC1107: the English persona (templates/en/CLAUDE.md.template) names the same section in English; without it
+// the block fell to the end of an English install's CLAUDE.md.
+export const INTERAGENT_HEADINGS: readonly string[] = ['## Inter-agent kommunikáció', '## Inter-agent communication']
 
 export interface OnboardingIdentity {
   botName: string
@@ -312,7 +315,7 @@ export function applyFederationBlock(content: string, block: string | null): str
   }
   // Insert: after the inter-agent section when the heading exists (i.e.
   // before the NEXT '## ' heading), else append at EOF.
-  const headingIdx = lines.findIndex((l) => l.trim() === INTERAGENT_HEADING)
+  const headingIdx = lines.findIndex((l) => INTERAGENT_HEADINGS.includes(l.trim()))
   if (headingIdx !== -1) {
     let insertAt = lines.length
     for (let i = headingIdx + 1; i < lines.length; i++) {
@@ -324,12 +327,9 @@ export function applyFederationBlock(content: string, block: string | null): str
   return `${content.replace(/\n*$/, '')}\n\n${block}\n`
 }
 
+// PERSONAESC1107: AGENT_TEXT_LANG when set, else DASHBOARD_LANG as before (agent-text-lang.ts agentFacingLang).
 function resolveLang(): 'hu' | 'en' {
-  try {
-    return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu'
-  } catch {
-    return 'hu'
-  }
+  return agentFacingLang(() => getEffectiveSettingValue('DASHBOARD_LANG'))
 }
 
 /** Apply a block to one CLAUDE.md file. Returns true when the file changed.

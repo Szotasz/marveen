@@ -467,7 +467,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (!mayActAsOwnerOrFirstRun(auth, req, 'first-login')) {
+    // ONBOARDOWNERPW1107: which branch let the request through is decided ONCE, here (mayActAsOwner writes its audit
+    // line on a pass, so it is not asked twice): the owner's proof, or the first-run pass, which holds only while no
+    // login exists and is counted again right before the insert below.
+    const asOwner = mayActAsOwner(auth, req)
+    if (!asOwner && !mayActAsOwnerOrFirstRun(auth, req, 'first-login')) {
       json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
@@ -495,7 +499,25 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const hash = await hashPassword(password)
-    const created = createDashboardUser(username, hash)
+    // ONBOARDOWNERPW1107: the first-run pass was decided when the request arrived; the body read and the hash were
+    // awaited since. It holds only while no login exists, so count again here, AFTER the last await and right before
+    // the (synchronous, better-sqlite3) insert: two racing windows create one first login, and a request that held
+    // its body open is refused once a login exists. The owner's proof (asOwner) needs no recount.
+    if (!asOwner && countDashboardUsers(true) !== 0) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
+    let created: ReturnType<typeof createDashboardUser>
+    try {
+      created = createDashboardUser(username, hash)
+    } catch (err) {
+      // The same name added twice at once: the UNIQUE index answers, as a 409 like the check above, not a 500.
+      if ((err as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        json(res, { error: 'User already exists' }, 409)
+        return true
+      }
+      throw err
+    }
     logger.info({ username: created.username }, 'dashboard user created')
     // BRIDGEFIRSTLOGIN1106: the first login made with a device key (the first-run branch: a key, no owner session) is
     // told to the owner's channel, Slack first (notifySecurityEvent -> notifyOwner). With no channel set up yet (a

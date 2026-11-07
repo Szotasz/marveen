@@ -1030,6 +1030,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (u) GROMZO -- the owner-DM key in the envelope, the reply's key in its result
+# (GROMZOLEDGERIN1102 v1). The envelope is the MEASURED form: Claude Code writes
+# source="plugin:gromzo-channel:gromzo" and appends the plugin's meta keys.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(u) Gromzo owner-DM key"
+
+DB_G="$(case_db g)"
+GZ_CHAT="gz65f616902edb4df70eba"
+python3 - "$GZ_CHAT" <<'PYEOF' | run_hook ledger-capture.py "$DB_G"
+import json, sys
+own = (f'<channel source="plugin:gromzo-channel:gromzo" sender_role="owner" verified="true" chat_id="{sys.argv[1]}" '
+       f'message_id="gze3244e20d0b3c09f6eda" ts="2026-11-04T06:48:17.123Z">\nszia gromzo\n</channel>')
+# A team message carries no key (v1): it must stay out of the ledger.
+team = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague" verified="true" room_kind="channel" '
+        'sender_name="Kiss Anna" reply_to="0123456789abcdef">\n<untrusted source="gromzo" reason="a colleague, not the owner">\nhello\n</untrusted>\n</channel>')
+print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": own}))
+PYEOF
+# The keyless team message comes in its own prompt: a prompt that mixes the
+# owner's and a colleague's envelope is dropped whole by the sender gate
+# (LEDGERROLELABEL1104, #2488), so this case stays the same under both.
+python3 - <<'PYEOF' | run_hook ledger-capture.py "$DB_G"
+import json
+team = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague" verified="true" room_kind="channel" '
+        'sender_name="Kiss Anna" reply_to="0123456789abcdef">\n<untrusted source="gromzo" reason="a colleague, not the owner">\nhello\n</untrusted>\n</channel>')
+print(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": team}))
+PYEOF
+assert_eq "gromzo inbound: the owner DM captured under its gz key" "$GZ_CHAT" \
+    "$(db_scalar "$DB_G" "SELECT chat_id FROM conversation_log WHERE direction='in'")"
+assert_eq "gromzo inbound: exactly 1 in row (the keyless team message is skipped)" "1" \
+    "$(db_scalar "$DB_G" "SELECT COUNT(*) FROM conversation_log WHERE direction='in'")"
+assert_eq "gromzo inbound: source recorded" "plugin:gromzo-channel:gromzo" \
+    "$(db_scalar "$DB_G" "SELECT source FROM conversation_log WHERE direction='in'")"
+assert_eq "gromzo inbound: the channel ts kept" "2026-11-04T06:48:17.123Z" \
+    "$(db_scalar "$DB_G" "SELECT ts FROM conversation_log WHERE direction='in'")"
+
+# The reply: the key in the result wins over a (stale, guessed) chat_id in the input.
+python3 - "$GZ_CHAT" <<'PYEOF' | run_hook ledger-outbound.py "$DB_G"
+import json, sys
+print(json.dumps({"tool_name": "mcp__plugin_gromzo-channel_gromzo__reply",
+                  "tool_input": {"to": "owner", "text": "szia vissza", "chat_id": "gz00000000000000000000"},
+                  "tool_response": [{"type": "text", "text": "sent (1 part)\nchat_id: " + sys.argv[1]}]}))
+PYEOF
+assert_eq "gromzo outbound: filed under the result's key, not the input's or the owner chat" "$GZ_CHAT" \
+    "$(db_scalar "$DB_G" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
+
+# The other two result shapes (Dani 67668: a JSON string, and a {content:[...]}
+# dict) name the same key: no shape may silently fall back to the Slack chat.
+for SHAPE in json-string content-dict; do
+    DB_GS="$(case_db "g-$SHAPE")"
+    python3 - "$GZ_CHAT" "$SHAPE" <<'PYEOF' | run_hook ledger-outbound.py "$DB_GS"
+import json, sys
+blocks = [{"type": "text", "text": "sent (1 part)\nchat_id: " + sys.argv[1]}]
+resp = json.dumps(blocks) if sys.argv[2] == "json-string" else {"content": blocks}
+print(json.dumps({"tool_name": "mcp__plugin_gromzo-channel_gromzo__reply",
+                  "tool_input": {"to": "owner", "text": "szia"}, "tool_response": resp}))
+PYEOF
+    assert_eq "gromzo outbound ($SHAPE result): filed under the key" "$GZ_CHAT" \
+        "$(db_scalar "$DB_GS" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
+done
+
+# No key line (after a plugin restart): today's fallback, the owner chat.
+DB_G2="$(case_db g2)"
+python3 - <<'PYEOF' | run_hook ledger-outbound.py "$DB_G2"
+import json
+print(json.dumps({"tool_name": "mcp__plugin_gromzo-channel_gromzo__reply",
+                  "tool_input": {"to": "owner", "text": "szia"},
+                  "tool_response": [{"type": "text", "text": "sent (1 part)"}]}))
+PYEOF
+assert_eq "gromzo outbound without a key line: falls back to the owner chat" "10000000001" \
+    "$(db_scalar "$DB_G2" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
+
+# Only the Gromzo tool reads the result: another plugin's result line names nothing.
+DB_G3="$(case_db g3)"
+python3 - <<'PYEOF' | run_hook ledger-outbound.py "$DB_G3"
+import json
+print(json.dumps({"tool_name": "mcp__plugin_slack-channel_slack__reply",
+                  "tool_input": {"chat_id": "D0SLACKDM", "text": "szia"},
+                  "tool_response": [{"type": "text", "text": "sent\nchat_id: gz65f616902edb4df70eba"}]}))
+PYEOF
+assert_eq "slack outbound: still its own chat_id, a gz line in its result is ignored" "D0SLACKDM" \
+    "$(db_scalar "$DB_G3" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

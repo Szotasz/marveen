@@ -43,6 +43,7 @@ import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { paneRunsClaude, scheduleHardRestartVerify } from './hard-restart-verify.js'
 import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, type SupervisorWait } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
+import { cfgKindFromDecision, mainAuthConflictText, prepareMainAuth } from './main-auth.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers, reapGromzoOrphans, scheduleGromzoOrphanReap } from './channel-poller-reap.js'
@@ -107,6 +108,33 @@ const claudeBin = makeLazyBinResolver('claude')
 // header and PR #1304 review (c).
 const RESOLVE_PLAN_TOKEN_PATH = join(PROJECT_ROOT, 'scripts', 'resolve-plan-token-env.mjs')
 const CHANNELS_FAILURES_LOG_PATH = join(PROJECT_ROOT, 'store', 'channels-failures.log')
+// APIKEYSCOPE1107: the 0600 file channels.sh writes for the main pane (TOKENARGV929): the token, and the key whenever
+// .env has one (the main agent's own mode is a later change). A respawn sources it too (below), since the key no
+// longer rides the tmux global env off a key-only install.
+export const PANE_AUTH_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth')
+// MAINAUTH1107: sourced right AFTER the config branch (api: the token unset, subscription: the key unset), so neither
+// CFG_ENV nor the tmux global env can add the other credential back. Written by main-auth.ts for every launch.
+export const PANE_AUTH_POST_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth-post')
+
+/** MAINAUTH1107: the config decision of a dashboard respawn, with the main agent's credential decided and written for
+ *  it first (pane-auth file, post-file, key approval). A respawn-pane does not run channels.sh, so without this a
+ *  mode the owner switched would not reach the pane until the next channels.sh boot. A failed step is logged loudly;
+ *  the respawn still goes ahead (a pane that comes up is the better outcome than none, and the owner sees why). */
+export function mainRespawnConfigWithAuth(): MainConfigDecision {
+  const config = resolveMainConfigDecision()
+  try {
+    const { decision, result } = prepareMainAuth(cfgKindFromDecision(config), config.isolatedConfigDir)
+    const conflict = mainAuthConflictText(decision.conflict)
+    if (!result.ok || (decision.configured === 'api' && conflict)) {
+      logger.error({ configured: decision.configured, effective: decision.effective, conflict, failed: result.failed }, 'main-auth: the main agent does not run on the credential its mode asks for')
+    } else {
+      logger.info({ configured: decision.configured, effective: decision.effective }, 'main-auth applied for the respawn')
+    }
+  } catch (err) {
+    logger.error({ err }, 'main-auth: could not decide the main agent credential; the respawn keeps the files of the last launch')
+  }
+  return config
+}
 
 // How long the agent's claude process has been running. Returns -1 when it
 // cannot be determined, which the restart policy treats as "do not restart".
@@ -1161,6 +1189,11 @@ export function buildMainSessionRespawnCmd(opts: {
     // ROOTRESPAWN1001: the recovery respawn on a root host died with "cannot be used
     // with root/sudo privileges" whenever the tmux server lacked IS_SANDBOX.
     `&& ${ROOT_SANDBOX_ENV}`,
+    // APIKEYSCOPE1107: the main session's credentials from the same pane-auth file channels.sh launched it with,
+    // not only from the tmux server global env (where a subscription install's key no longer is). BEFORE the config
+    // branch, so an own-login dir unsets both again and an isolated/token dir exports its own token over it. A
+    // missing file keeps the chain going.
+    `&& { [ ! -f ${shSingleQuote(PANE_AUTH_PATH)} ] || . ${shSingleQuote(PANE_AUTH_PATH)}; }`,
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
@@ -1182,8 +1215,8 @@ export function buildMainSessionRespawnCmd(opts: {
           // The pane inherits the tmux global env, which carries the fleet
           // token, and an env token outranks the dir's own login (the
           // inference-only setup-token hid the claude.ai connectors,
-          // measured 2026-10-16) -- so drop it explicitly. channels.sh also puts
-          // ANTHROPIC_API_KEY in the tmux global env when .env has one, and that
+          // measured 2026-10-16) -- so drop it explicitly. The pane-auth file sourced above
+          // (and, on a key-only install, the tmux global env) carries ANTHROPIC_API_KEY, and that
           // outranks a /login credential as well (Claude Code docs, "Authentication
           // precedence"): this dir authenticates with its own login only.
           ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]
@@ -1193,6 +1226,8 @@ export function buildMainSessionRespawnCmd(opts: {
       : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
+    // MAINAUTH1107: the post-file right AFTER the config branch (a static piece: no mode logic in this builder).
+    `&& { [ ! -f ${shSingleQuote(PANE_AUTH_POST_PATH)} ] || . ${shSingleQuote(PANE_AUTH_POST_PATH)}; }`,
     // GROMZOMAINAGENT1106: the plugin names itself with MXD_AGENT (main-gromzo-launch.ts).
     // MXDAGENTSOCKID1106: and its token file, so a protected main agent's hello is not refused.
     ...(gromzoSlug ? [`&& export MXD_AGENT="${gromzoSlug}" MXD_SCOPE="both"`] : []),
@@ -1288,7 +1323,7 @@ export function respawnMainSessionFresh(): void {
       // The main session always starts a new conversation -- this is the whole
       // point of the nightly restart (drop the accumulated context).
       continueSession: false,
-      config: resolveMainConfigDecision(),
+      config: mainRespawnConfigWithAuth(),
     })
     // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
     // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
@@ -1398,7 +1433,7 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       // isolated CLAUDE_CONFIG_DIR (macOS), else it re-authenticates from the
       // rotating Keychain and 401s. Returns null when isolation is off/no token,
       // preserving the prior shared-root behaviour.
-      config: resolveMainConfigDecision(),
+      config: mainRespawnConfigWithAuth(),
     })
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
@@ -1707,7 +1742,7 @@ function respawnMarveenSessionFresh(): boolean {
       // Same channels.sh-bypass concern as resumeMarveenSession: this fresh
       // respawn also skips channels.sh, so it must carry the isolated config
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
-      config: resolveMainConfigDecision(),
+      config: mainRespawnConfigWithAuth(),
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.

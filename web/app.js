@@ -262,6 +262,24 @@ function mainAgentId() {
 
   window.mvShowLogin = (opts) => showLoginOverlay(opts)
 
+  // ONBOARDOWNERPW1107: the onboarding wizard's own sign-in (its first step). On the unwrapped fetch, like the overlay
+  // above: through the wrapper a wrong password's 401 would wipe the stored token or Bridge key and open the full-screen
+  // login. Returns only the outcome; the caller clears its password fields.
+  window.mvPasswordLogin = async (username, password) => {
+    try {
+      const r = await originalFetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      let retryAfter = 0
+      if (r.status === 429) { try { retryAfter = (await r.json()).retry_after_s || 0 } catch { /* ignore */ } }
+      return { ok: r.ok, status: r.status, retryAfter }
+    } catch {
+      return { ok: false, status: 0, retryAfter: 0 }
+    }
+  }
+
   // BRIDGEPWLOGIN1101 (Samu 64763, plan A; the moment: Samu 65968): the Bridge opens the dashboard with its device key,
   // which never makes the owner. Most Bridge use needs no owner session, so nothing is offered on load: the offer comes
   // when an owner action is first refused (403 owner_session_required, maybeOfferOnOwnerRefusal in the fetch wrapper),
@@ -281,6 +299,8 @@ function mainAgentId() {
   }
   async function offerOwnerLoginOnce() {
     try { if (sessionStorage.getItem(LOGIN_LATER_KEY) === '1') return } catch { /* storage blocked: offer it */ }
+    // ONBOARDOWNERPW1107: while the onboarding wizard is open, its first step is the sign-in; no second form over it.
+    if (typeof document !== 'undefined' && document.getElementById('onboardingOverlay')?.classList.contains('active')) return
     if (!sessionToken) return
     let s = null
     try {
@@ -421,8 +441,6 @@ function switchPage(pageId) {
   if (pageId !== 'agents') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
-  // GROMZOOWNERQR1030: the owner QR never outlives the Settings page.
-  if (pageId !== 'settings' && typeof window.clearGromzoQr === 'function') window.clearGromzoQr()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
@@ -4290,6 +4308,12 @@ function applyMarveenReadonlyMode(readOnly) {
   if (authModeGroup) authModeGroup.hidden = readOnly
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
+  // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
+  const mainAuthGroup = document.getElementById('mainAuthGroup')
+  if (mainAuthGroup) {
+    mainAuthGroup.hidden = !readOnly
+    if (readOnly) loadMainAuthPanel()
+  }
   const note = document.getElementById('marveenReadonlyNote')
   if (note) note.hidden = !readOnly
 }
@@ -5037,10 +5061,113 @@ function updateProcessControl(agent) {
 // RESTARTFORCEUI1018: the server refuses a manual main restart while the pane is busy or unreadable (409
 // restart-blocked, manual-restart-gate.ts), so a click never cuts a running turn by accident. A stuck main
 // agent can read busy for good, so the refusal is not the end: a second confirm sends an explicit force.
+// MAINAUTHSWITCH1107 (APIKULCSINDITAS1004 D): the main agent's authentication switch. Reads the main agent's detail
+// (authMode, hasApiKey, mainAuthLaunched = what the last launch ran on), saves through the owner-gated PUT, then
+// restarts through the same gated path as the restart button.
+function mainAuthSelected() {
+  return document.querySelector('input[name="mainAuthMode"]:checked')?.value || 'shared'
+}
+function renderMainAuthSections() {
+  const api = mainAuthSelected() === 'api'
+  document.getElementById('mainAuthApiSection').hidden = !api
+}
+function mainAuthRunningText(d) {
+  const l = d && d.mainAuthLaunched
+  if (!l || !l.effective) return t('agents.main_auth.running_unknown')
+  const base = t('agents.main_auth.running_' + l.effective)
+  if (l.configured === 'api' && l.effective !== 'api' && l.conflict) {
+    const reason = t('agents.main_auth.reason_' + String(l.conflict).replace(/-/g, '_'))
+    return t('agents.main_auth.not_honoured').replace('{reason}', reason) + ' ' + base
+  }
+  return base
+}
+async function loadMainAuthPanel() {
+  const group = document.getElementById('mainAuthGroup')
+  if (!group) return
+  document.getElementById('mainAuthError').hidden = true
+  document.getElementById('mainAuthApiKey').value = ''
+  let d = null
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`)
+    if (res.ok) d = await res.json()
+  } catch { /* shown as unknown */ }
+  const mode = d && d.authMode === 'api' ? 'api' : 'shared'
+  for (const r of document.querySelectorAll('input[name="mainAuthMode"]')) r.checked = r.value === mode
+  const status = document.getElementById('mainAuthKeyStatus')
+  status.textContent = d && d.hasApiKey ? t('agents.main_auth.key_stored') : t('agents.main_auth.key_missing')
+  status.style.color = d && d.hasApiKey ? 'var(--success)' : 'var(--warning)'
+  document.getElementById('mainAuthRunning').textContent = mainAuthRunningText(d)
+  renderMainAuthSections()
+}
+document.querySelectorAll('input[name="mainAuthMode"]').forEach((r) => r.addEventListener('change', renderMainAuthSections))
+
+document.getElementById('mainAuthApplyBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('mainAuthApplyBtn')
+  const errorDiv = document.getElementById('mainAuthError')
+  errorDiv.hidden = true
+  const mode = mainAuthSelected()
+  const payload = { authMode: mode }
+  const key = document.getElementById('mainAuthApiKey').value.trim()
+  if (mode === 'api' && key) payload.apiKey = key
+  btn.disabled = true
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      errorDiv.textContent = refusalReason(res, reply.body)
+      errorDiv.hidden = false
+      return
+    }
+    document.getElementById('mainAuthApiKey').value = ''
+    if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'))
+    const restarted = await restartMainAgentGated()
+    showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'))
+    setTimeout(() => { loadMainAuthPanel() }, 20000)
+    loadMainAuthPanel()
+  } catch (err) {
+    errorDiv.textContent = err && err.message ? err.message : String(err)
+    errorDiv.hidden = false
+  } finally {
+    btn.disabled = false
+  }
+})
+
+
+
 function postMarveenRestart(force) {
   return force
     ? fetch('/api/marveen/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }) })
     : fetch('/api/marveen/restart', { method: 'POST' })
+}
+
+// The main agent's gated restart: a busy or unreadable pane asks before forcing (the restart button and the
+// MAINAUTHSWITCH1107 switch share it). Resolves true when restarted, false when the owner declined the force;
+// throws on a failed restart.
+async function restartMainAgentGated() {
+  let res = await postMarveenRestart(false)
+  if (res.status === 409) {
+    const blocked = await res.clone().json().catch(() => ({}))
+    if (blocked.error === 'restart-blocked') {
+      const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
+      const forced = await confirmDialog({
+        title: t('agents.confirm.hard_restart_title'),
+        message: t(key),
+        okLabel: t('agents.confirm.force_restart_ok'),
+        danger: true,
+      })
+      if (!forced) { showToast(t('agents.toast.restart_not_forced')); return false }
+      res = await postMarveenRestart(true)
+    }
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || t('agents.toast.restart_failed'))
+  }
+  return true
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
@@ -5054,26 +5181,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    let res = await postMarveenRestart(false)
-    if (res.status === 409) {
-      const blocked = await res.clone().json().catch(() => ({}))
-      if (blocked.error === 'restart-blocked') {
-        const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        const forced = await confirmDialog({
-          title: t('agents.confirm.hard_restart_title'),
-          message: t(key),
-          okLabel: t('agents.confirm.force_restart_ok'),
-          danger: true,
-        })
-        if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
-        res = await postMarveenRestart(true)
-      }
-    }
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('agents.toast.restart_failed'))
-    }
-    showToast(t('agents.toast.marveen_restarted'))
+    if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {
@@ -14771,7 +14879,12 @@ async function loadUpdates() {
     renderUpdatesVersion(data)
     updateBranchDriftUI(data)
     renderBranchNotice(data)
-    if (data.error) {
+    if (data.deployment === 'docker') {
+      // HOSTINGERDOCKER1107: the image owns the version (no git checkout here): say how to update instead of a failure.
+      summary.className = 'updates-summary'
+      summary.textContent = t('updates.docker_managed')
+      applyBtn.hidden = true
+    } else if (data.error) {
       summary.className = 'updates-summary error'
       summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}`
       applyBtn.hidden = true
@@ -14844,6 +14957,8 @@ async function renderCliUpdateOffer(fresh) {
   if (!box) return
   let d
   try { d = await (await fetch('/api/updates/cli' + (fresh ? '?fresh=1' : ''))).json() } catch { box.hidden = true; return }
+  // HOSTINGERDOCKER1107: in the container the claude CLI comes with the image; nothing to install from here.
+  if (d.deployment === 'docker') { box.hidden = true; return }
   const esc = escapeHtmlUpdates
   const lines = []
   lines.push(`<strong>${esc(t('updates.cli.title'))}</strong>`)
@@ -15109,29 +15224,52 @@ async function initOnboarding() {
   if (onboardingDismissed()) return
   const s = await fetchOnboardingStatus()
   if (!s || !s.needsOnboarding) return
-  renderOnboarding(s)
+  renderOnboarding(s, await fetchOnboardingAuth())
 }
 async function refreshOnboarding() {
   const s = await fetchOnboardingStatus()
-  if (s) renderOnboarding(s)
+  if (s) renderOnboarding(s, await fetchOnboardingAuth())
+}
+// ONBOARDOWNERPW1107 (owner decision, 11-07): the wizard's FIRST step is the dashboard login, so every later step runs
+// in the owner's session (the Bridge key or the token plus the owner cookie) and never stops on a "go to Settings"
+// text. owner_session is in the status only for a caller that could hold it (the shared token, a FULL device key, a
+// session); false means this window can become the owner by creating or signing in to the login. An operator key or a
+// sub-agent token gets no such field, so no sign-in step it could never complete; an unreadable status skips the step
+// too, and the server's gate decides.
+async function fetchOnboardingAuth() {
+  try {
+    const r = await fetch('/api/auth/status', { cache: 'no-store' })
+    return r.ok ? await r.json() : null
+  } catch {
+    return null
+  }
+}
+function onboardingNeedsLogin(auth) {
+  return !!auth && auth.owner_session === false
+}
+// The bar's step for an onboarding step (onboardingCurrentStep, 1-4): the login is 1, the rest move one along.
+function onboardingDisplayStep(base, auth) {
+  return onboardingNeedsLogin(auth) ? 1 : base + 1
 }
 let onboardingChannelProvider = 'telegram'
 let onboardingAgentId = null
 // The step-3 tab is a static HTML label ("Telegram bot") that renderStaticI18n's generic data-i18n sweep would otherwise reset
 // to the Telegram wording on every language switch, so both call sites re-apply the provider-specific text here.
 function applyOnboardingProviderTab() {
-  const el = document.querySelector('#onboardingSteps .onboarding-step[data-ostep="3"] span:last-child')
+  const el = document.querySelector('#onboardingSteps .onboarding-step[data-ostep="4"] span:last-child')
   if (el) el.textContent = onboardingChannelProvider === 'slack' ? t('onboarding.step2.tab_slack') : t('onboarding.step2.tab')
 }
-function renderOnboarding(s) {
+function renderOnboarding(s, auth) {
   if (onboardingDismissed()) return
   const overlay = document.getElementById('onboardingOverlay')
   if (!overlay) return
   if (s.channelProvider) onboardingChannelProvider = s.channelProvider
   if (s.agentId) onboardingAgentId = s.agentId
   applyOnboardingProviderTab()
-  const step = onboardingCurrentStep(s)
-  if (step === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
+  const base = onboardingCurrentStep(s)
+  if (base === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
+  const loginStep = onboardingNeedsLogin(auth)
+  const step = onboardingDisplayStep(base, auth)
   overlay.hidden = false
   overlay.classList.add('active')
   document.body.style.overflow = 'hidden'
@@ -15144,20 +15282,121 @@ function renderOnboarding(s) {
   // of step 4 -- say so, or a fresh installer reads step 2's "saved" as "done"
   // and every later "bot token not found" as a failure (BK bootcamp, 07-28).
   const flowNote = document.getElementById('onbFlowNote')
-  if (flowNote) flowNote.textContent = step === 4 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
+  if (flowNote) flowNote.textContent = step === 5 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
   const body = document.getElementById('onboardingBody')
-  if (step === 1) body.innerHTML = onbIdentityHtml(s)
-  else if (step === 2) body.innerHTML = onbStep1Html(s)
-  else if (step === 3) body.innerHTML = onbStep2Html(s)
+  if (loginStep) {
+    body.innerHTML = onbLoginHtml(auth)
+    wireOnboardingLogin(auth)
+    return
+  }
+  if (base === 1) body.innerHTML = onbIdentityHtml(s)
+  else if (base === 2) body.innerHTML = onbStep1Html(s)
+  else if (base === 3) body.innerHTML = onbStep2Html(s)
   else body.innerHTML = onbStep3Html(s)
-  wireOnboarding(step)
+  wireOnboarding(base)
   // Step 3, token already on disk, managed-settings.json still missing: the status GET already knows this (no probe/write/restart triggered),
   // so show the sudo command right away instead of waiting for a Save click. Retry just re-polls status -- no token POST, no channel restart.
-  if (step === 3 && s.sudoCommand) showSudoModal(s.sudoCommand, () => refreshOnboarding())
+  if (base === 3 && s.sudoCommand) showSudoModal(s.sudoCommand, () => refreshOnboarding())
 }
 function onbMsg(text, isErr) {
   const el = document.getElementById('onbMsg')
   if (el) { el.textContent = text; el.className = 'onb-msg' + (isErr ? ' err' : ' ok') }
+}
+// ONBOARDOWNERPW1107: the login step, three forms. (a) no login yet: create it, then sign in with it at once;
+// (b) a login exists but this window holds no owner session: sign in; (c) only disabled logins: neither works over HTTP,
+// the machine-local CLI is the way. Own ids (onbLogin*): the Settings auth card has its own create form.
+function onbLoginHtml(auth) {
+  if (auth && auth.setup_required) {
+    return `<p>${escapeHtml(t('onboarding.login.create_desc'))}</p>`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.username'))}</label>`
+      + `<input id="onbLoginUser" type="text" class="onb-input" maxlength="64" autocomplete="username" autocapitalize="off" spellcheck="false">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.card.new_password'))}</label>`
+      + `<input id="onbLoginPass" type="password" class="onb-input" autocomplete="new-password">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.card.repeat_password'))}</label>`
+      + `<input id="onbLoginPass2" type="password" class="onb-input" autocomplete="new-password">`
+      + `<button class="btn-primary btn-compact" id="onbLoginCreateBtn">${escapeHtml(t('onboarding.login.create_btn'))}</button>`
+      + `<div id="onbMsg" class="onb-msg"></div>`
+  }
+  if (auth && auth.login_available) {
+    return `<p>${escapeHtml(t('onboarding.login.signin_desc'))}</p>`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.username'))}</label>`
+      + `<input id="onbLoginUser" type="text" class="onb-input" maxlength="64" autocomplete="username" autocapitalize="off" spellcheck="false">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.password'))}</label>`
+      + `<input id="onbLoginPass" type="password" class="onb-input" autocomplete="current-password">`
+      + `<button class="btn-primary btn-compact" id="onbLoginSignInBtn">${escapeHtml(t('auth.login.submit'))}</button>`
+      + `<div id="onbMsg" class="onb-msg"></div>`
+  }
+  return `<p>${escapeHtml(t('onboarding.login.disabled_only'))}</p><div id="onbMsg" class="onb-msg"></div>`
+}
+// The sign-in after a create, or on its own. On success the page reloads, like the login overlay: the cookie and the
+// stored token or key stay, and the wizard comes back on its next step with the whole page in the owner's session.
+async function onbSignIn(username, password) {
+  const r = await window.mvPasswordLogin(username, password)
+  if (r.ok) { window.location.reload(); return true }
+  if (r.status === 429) onbMsg(t('auth.login.err_throttled') + (r.retryAfter ? ` (${r.retryAfter}s)` : ''), true)
+  else if (r.status === 401) onbMsg(t('auth.login.err_invalid'), true)
+  else onbMsg(t('auth.login.err_network'), true)
+  return false
+}
+function wireOnboardingLogin(auth) {
+  const field = (id) => document.getElementById(id)
+  const clearPasswords = () => { for (const id of ['onbLoginPass', 'onbLoginPass2']) { const el = field(id); if (el) el.value = '' } }
+  const createBtn = field('onbLoginCreateBtn')
+  if (createBtn) createBtn.addEventListener('click', async () => {
+    const username = (field('onbLoginUser').value || '').trim()
+    const p1 = field('onbLoginPass').value || ''
+    const p2 = field('onbLoginPass2').value || ''
+    if (!username || !p1) { onbMsg(t('auth.login.err_empty'), true); return }
+    if (p1 !== p2) { onbMsg(t('auth.card.err_mismatch'), true); return }
+    createBtn.disabled = true; onbMsg(t('onboarding.saving'))
+    try {
+      const r = await fetch('/api/auth/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password: p1 }) })
+      const d = await r.json().catch(() => ({}))
+      if (r.ok) {
+        const signedIn = await onbSignIn(username, p1)
+        clearPasswords()
+        if (!signedIn) {
+          // The login exists, this window is not signed in: the step turns into the sign-in form.
+          await refreshOnboarding()
+          onbMsg(t('onboarding.login.created_signin'), true)
+        }
+        return
+      }
+      clearPasswords()
+      if (r.status === 403 || r.status === 409) {
+        // Another window created the login meanwhile (the server creates only one): sign in with it instead.
+        await refreshOnboarding()
+        onbMsg(t('onboarding.login.taken_signin'), true)
+        return
+      }
+      createBtn.disabled = false
+      onbMsg(d.error || t('auth.card.err_generic'), true)
+    } catch {
+      clearPasswords()
+      createBtn.disabled = false
+      onbMsg(t('auth.login.err_network'), true)
+    }
+  })
+  const signInBtn = field('onbLoginSignInBtn')
+  if (signInBtn) signInBtn.addEventListener('click', async () => {
+    const username = (field('onbLoginUser').value || '').trim()
+    const password = field('onbLoginPass').value || ''
+    if (!username || !password) { onbMsg(t('auth.login.err_empty'), true); return }
+    signInBtn.disabled = true
+    const ok = await onbSignIn(username, password)
+    clearPasswords()
+    if (!ok) signInBtn.disabled = false
+  })
+}
+// ONBOARDOWNERPW1107: an owner refusal inside the wizard. When this window can become the owner, the wizard goes back
+// to its login step (true). Otherwise (an operator key, a sub-agent token, an unreadable status, or a session the gate
+// still refused) the caller shows the server's own reason, and nothing jumps to Settings: ownerSessionText would open
+// the Settings page and hide the wizard, the very stop the owner ruled out.
+async function onbOwnerRefused(d) {
+  if (!d || d.code !== 'owner_session_required') return false
+  if (!onboardingNeedsLogin(await fetchOnboardingAuth())) return false
+  await refreshOnboarding()
+  return true
 }
 function onbIdentityHtml(s) {
   return `<p>${escapeHtml(t('onboarding.identity.desc'))}</p>`
@@ -15230,8 +15469,8 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentName, ownerName }) })
         const d = await res.json().catch(() => ({}))
-        // OWNERGATE3-1104: an owner-session refusal is shown in the page language (ownerSessionText).
-        if (!res.ok) { idBtn.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
+        // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+        if (!res.ok) { idBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
         // The name is live in the .env now -- repaint the chrome from
         // /api/marveen so the sidebar/title reflect it immediately, and
         // surface the automatic channels restart (same pattern as the
@@ -15255,7 +15494,7 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { authBtn.disabled = false; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
+        if (!res.ok) { authBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
         // Fresh-install path: the server restarts the (previously
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
@@ -15315,8 +15554,8 @@ function wireOnboarding(step) {
           showSudoModal(d.sudoCommand, () => botBtn.click())
           return
         }
-        // OWNERGATE2-1104: an owner refusal is said in the page language (ownerSessionText); setup_required also opens the create-login form.
-        if (!res.ok) { botBtn.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
+        // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+        if (!res.ok) { botBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
         // The server restarts the channels session so the new bot token goes
         // live. Do NOT advance on a timer: the restart response is a dispatch
         // receipt, and the cold start is ~minutes. Wait for the MEASURED
@@ -15386,9 +15625,8 @@ function wireOnboarding(step) {
           try {
             const res = await fetch(`/api/agents/${encodeURIComponent(onboardingAgentId || mainAgentId())}/channels/${onboardingChannelProvider}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: b.dataset.code }) })
             const d = await res.json().catch(() => ({}))
-            // OWNERGATE2-1104: only the channel's FIRST pairing keeps the token before a login exists; a later one is refused
-            // with setup_required, which ownerSessionText says in the page language and answers by opening the create-login form.
-            if (!res.ok) { b.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
+            // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+            if (!res.ok) { b.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
             onbMsg(t('onboarding.step3.approved'))
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
@@ -16238,6 +16476,8 @@ async function renderAuthCard() {
   const body = document.getElementById('authCardBody')
   if (!body) return
   const status = await fetchAuthStatus()
+  // ONBOARDFOLLOW1107: the card may have left the page while the status was on its way; a newer render owns it then.
+  if (!body.isConnected) return
   if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
   if (status.setup_required) { renderCreateLoginForm(body) }
   else if (status.method === 'session') { renderSessionPanel(body, status) }
@@ -16696,7 +16936,17 @@ function wireAuthBanner() {
     banner.hidden = true
   })
   // Land on the Security tab, where the auth card lives now (openCreateLoginSettings, shared with the 403 setup_required path).
-  if (go) go.addEventListener('click', () => { openCreateLoginSettings() })
+  // ONBOARDOWNERPW1107 (Samu 72423): while the onboarding is unfinished, the banner takes the owner back to the wizard,
+  // which opens on its login step (a closed wizard is reopened); otherwise to the Security tab as before.
+  if (go) go.addEventListener('click', async () => {
+    const s = await fetchOnboardingStatus()
+    if (s && s.needsOnboarding) {
+      try { localStorage.removeItem(ONBOARDING_DISMISS_KEY) } catch { /* storage blocked */ }
+      renderOnboarding(s, await fetchOnboardingAuth())
+      return
+    }
+    openCreateLoginSettings()
+  })
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -16773,10 +17023,16 @@ function wireFleetFreeze() {
   setInterval(pollFleetFreeze, FLEET_FREEZE_POLL_MS)
 }
 
+// ONBOARDFOLLOW1107: Settings can be loaded again while a run still waits for /api/settings (opened twice, a language
+// switch). Only the newest run may touch the panels after its await: an older one clearing #settingsTabPanels would tear
+// out the auth card the newer run moved into the Security panel (the card left the page, and the pending renderAuthCard
+// wrote into a detached body). tests/browser/settings-load-race.spec.ts.
+let settingsLoadGen = 0
 async function loadSettings() {
   const tabNav = document.getElementById('settingsTabNav')
   const tabPanels = document.getElementById('settingsTabPanels')
   if (!tabNav || !tabPanels) return
+  const gen = ++settingsLoadGen
 
   // Park the auth card back outside the panels before wiping them: a previous
   // loadSettings run moved it INTO the Security panel, and clearing
@@ -16800,6 +17056,7 @@ async function loadSettings() {
     const res = await fetch('/api/settings')
     if (!res.ok) throw new Error('fetch failed')
     const { settings, overridesFile } = await res.json()
+    if (gen !== settingsLoadGen) return // a newer run owns the panels now
 
     // ENVRELAXGATE1104 step 2: an unreadable config-overrides.json drops every saved value, a tightening one too.
     const overridesBanner = document.getElementById('settingsOverridesBanner')
@@ -17017,6 +17274,7 @@ async function loadSettings() {
       }
     }
   } catch (err) {
+    if (gen !== settingsLoadGen) return // a stale run's failure must not wipe the newer run's panels either
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
 }
@@ -21141,51 +21399,14 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   return setT(() => { if (isConnected()) reload() }, GROMZO_STATUS_REFRESH_MS)
 }
 
-// === Gromzo card: the owner's QR code (GROMZOOWNERQR1030, MOBILRELOGINDASH1025) ===
-// POST /api/gromzo/owner-qr answers with the app's URI: the registration code while
-// the owner seat is free, afterwards a new phone's login code. The URI carries a live
-// secret, so: it is drawn client-side into #gromzoQr (an SVG of modules, no text,
-// no attribute holding it), shown for at most 2 minutes (or less if the code expires
-// sooner), then wiped; closing the panel and leaving the page wipe it too. Nothing
-// is stored, nothing is copyable, the request is no-store.
+// === Gromzo card: the link status (GROMZOOWNERQR1030; GROMZOBRIDGEWIZARD1107 D5a) ===
+// The phone hookup and a new phone's code are the Marveen Bridge's ("Gromzo bekötése" wizard). The card's own owner
+// QR is gone: dash.sock never hands out the owner's codes (marveen-mxd #89), so it always ended on consent_required.
+// The card keeps the link status line; the agents are setupGromzoAgents below.
 ;(function setupGromzoCard() {
   const card = document.getElementById('gromzoCard')
   if (!card) return
   const statusEl = document.getElementById('gromzoStatus')
-  const btn = document.getElementById('gromzoAddPhoneBtn')
-  const errEl = document.getElementById('gromzoError')
-  const area = document.getElementById('gromzoQrArea')
-  const qrBox = document.getElementById('gromzoQr')
-  const hintEl = document.getElementById('gromzoQrHint')
-  const cdEl = document.getElementById('gromzoCountdown')
-  const closeBtn = document.getElementById('gromzoQrClose')
-  const SHOW_MAX_S = 120
-  let timer = null
-
-  function clearQr(expiredNote) {
-    if (timer) { clearInterval(timer); timer = null }
-    qrBox.replaceChildren()
-    hintEl.textContent = ''
-    cdEl.textContent = ''
-    area.hidden = true
-    btn.disabled = false
-    if (expiredNote) showError(t('gromzo.qr.expired'))
-  }
-
-  function showError(msg) {
-    errEl.textContent = msg
-    errEl.hidden = !msg
-  }
-
-  // DASHSOCKPEER1106: the owner QR card's own sentence first (gromzo.qr.err.*: consent_required says to ask in the
-  // Bridge), then the shared gromzo.err.* one; the agents panel keeps its own lookup (agentErr).
-  function errorText(code) {
-    for (const key of ['gromzo.qr.err.' + code, 'gromzo.err.' + code]) {
-      const s = t(key)
-      if (s !== key) return s
-    }
-    return t('gromzo.err.generic', { code })
-  }
 
   // While a link waits for the owner's confirmation the line is read again, so the card turns to "linked" on its
   // own once the owner confirms (or to "expired" when the 15 minutes run out). Only while the card is on the page.
@@ -21208,81 +21429,6 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
     }
   }
   window.loadGromzoCard = loadStatus
-
-  async function requestQr() {
-    clearQr(false)
-    showError('')
-    if (typeof qrcode !== 'function') { showError(t('gromzo.qr.lib_error')); return }
-    btn.disabled = true
-    statusEl.textContent = t('gromzo.qr.generating')
-    let data = null
-    try {
-      const r = await fetch('/api/gromzo/owner-qr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-        cache: 'no-store',
-      })
-      if (!r.ok) {
-        let code = 'http_' + r.status
-        let wait = null
-        try {
-          const b = await r.json()
-          code = String(b.code || b.error || code)
-          if (Number.isInteger(b.retry_after) && b.retry_after > 0) wait = b.retry_after
-        } catch { /* keep the HTTP code */ }
-        // GROMZORESETWAIT1031: during the identity reset lock, when the code can be asked again.
-        // owner_session_required: the card's own notice says it, with the login button (no second message).
-        if (code === 'owner_session_required' && typeof window.gromzoOwnerLogin === 'function') window.gromzoOwnerLogin(true)
-        else showError(code === 'identity_reset_in_progress' && wait !== null
-          ? t('gromzo.err.identity_reset_wait', { min: Math.max(1, Math.ceil(wait / 60)) })
-          : errorText(code))
-        btn.disabled = false
-        loadStatus()
-        return
-      }
-      data = await r.json()
-    } catch (e) {
-      showError(t('gromzo.err.generic', { code: 'network' }))
-      btn.disabled = false
-      loadStatus()
-      return
-    }
-    loadStatus()
-    const ttl = Math.max(1, Math.min(SHOW_MAX_S, Number(data && data.expires_in) || SHOW_MAX_S))
-    const hint = t(data && data.kind === 'login' ? 'gromzo.qr.login_hint' : 'gromzo.qr.join_hint')
-    try {
-      const qr = qrcode(0, 'M')
-      qr.addData(String(data && data.uri || ''))
-      qr.make()
-      qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })
-    } catch (e) {
-      data = null
-      showError(t('gromzo.err.generic', { code: 'qr' }))
-      btn.disabled = false
-      return
-    }
-    data = null // the URI is in no variable past this point, only in the drawing
-    hintEl.textContent = hint
-    area.hidden = false
-    const until = Date.now() + ttl * 1000
-    const tick = () => {
-      const left = Math.ceil((until - Date.now()) / 1000)
-      if (left <= 0) { clearQr(true); return }
-      cdEl.textContent = t('gromzo.qr.countdown', { sec: left })
-    }
-    tick()
-    timer = setInterval(tick, 1000)
-  }
-
-  btn.addEventListener('click', requestQr)
-  closeBtn.addEventListener('click', () => clearQr(false))
-  // The card is a collapsed <details>: folding it away wipes the code as well.
-  card.addEventListener('toggle', () => { if (!card.open) clearQr(false) })
-  window.addEventListener('pagehide', () => clearQr(false))
-  // A hidden tab wipes it too; leaving the Settings page does (switchPage).
-  document.addEventListener('visibilitychange', () => { if (document.hidden) clearQr(false) })
-  window.clearGromzoQr = () => clearQr(false)
 })()
 
 // === Gromzo card: which agents are on Gromzo (GROMZOAGENTPICK1101) ===

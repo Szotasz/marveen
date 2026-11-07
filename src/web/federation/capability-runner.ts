@@ -16,6 +16,7 @@
 import { logger } from '../../logger.js'
 import { runAgent } from '../../agent.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { agentFacingLang } from '../agent-text-lang.js'
 import { getFederationConfig } from './config.js'
 import { catalogAgentNames } from './local-catalog.js'
 import {
@@ -38,12 +39,9 @@ const COLD_START_BATCH = 3
 
 let inflight: Promise<void> | null = null
 
+// PERSONAESC1107: AGENT_TEXT_LANG when set, else DASHBOARD_LANG as before (agent-text-lang.ts agentFacingLang).
 function resolveLang(): 'hu' | 'en' {
-  try {
-    return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu'
-  } catch {
-    return 'hu'
-  }
+  return agentFacingLang(() => getEffectiveSettingValue('DASHBOARD_LANG'))
 }
 
 async function runOnce(): Promise<void> {

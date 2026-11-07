@@ -1,0 +1,49 @@
+# HOSTINGERDOCKER1107: the build context is the code only. Everything the .gitignore keeps out as runtime state stays
+# out of the image too (it lives in the /opt/marveen volume), and no secret is ever baked in.
+
+.git
+node_modules
+dist
+
+# runtime state (see .gitignore)
+.env
+.env.*
+!.env.example
+store
+workspace
+agents
+reports
+backups
+.channels-config
+mcp-servers
+.mcp.json
+mcp-catalog.local.json
+.uploads
+.lang
+CLAUDE.md
+SOUL.md
+HANDOFF.md
+DREAM.md
+scheduled-tasks.json
+agent-config.json
+.config
+.fakehome
+local-hooks
+transcripts
+evidence
+.evidence
+.pre-ship-evidence
+.session-capture
+.external-ops-last-run
+*.db
+*.db-*
+*.log
+*.pid
+
+# local tooling and test output
+.gitnexus
+.netlify
+.playwright-mcp
+test-results
+.DS_Store
+__pycache__

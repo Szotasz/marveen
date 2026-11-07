@@ -187,6 +187,26 @@ describe('the Bridge: a full device key plus the owner session cookie', () => {
     expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
   })
 
+  // GROMZOBRIDGEWIZARD1107 D2: an action the Bridge makes on its key beside the owner's cookie leaves one audit line
+  // naming the owner; a read (the list, polled) does not; a session principal (a browser) is not logged this way.
+  it('a Bridge-key owner ACTION writes one audit line naming the owner and the device; a read writes none', async () => {
+    principal = FULL
+    logged.length = 0
+    expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
+    expect(logged.filter((l) => l.includes('owner action on a Bridge key'))).toEqual([])
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    const audit = logged.filter((l) => l.includes('owner action on a Bridge key'))
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toContain('"owner":"owner"')
+    expect(audit[0]).toContain('"device":"Macbookom"')
+    expect(audit[0]).toContain('"path":"/api/gromzo/owner-qr"')
+    expect(audit[0]).not.toContain(sid)
+    principal = { kind: 'session', user: 'owner' }
+    logged.length = 0
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(logged.filter((l) => l.includes('owner action on a Bridge key'))).toEqual([])
+  })
+
   it('the key plus a revoked (logged out), unknown or other-named cookie: 403', async () => {
     principal = FULL
     revokeSession(sid)
@@ -333,6 +353,34 @@ describe('the page that draws the secret', () => {
 })
 
 describe('GET /api/gromzo/status', () => {
+  // GROMZOBRIDGEWIZARD1107 Q2: ?owner=1 asks mxd for the owner seat (status {owner:true}); only a bool passes.
+  it('?owner=1: mxd is asked with owner:true, and only the bool passes; a plain status does not ask', async () => {
+    const asked: unknown[] = []
+    fake.script.set('status', (req) => { asked.push(req.owner); return { ok: true, running: true, linked: true, ...(req.owner === true ? { owner_seat: true } : {}) } })
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: true, ownerSeat: true })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: true })
+    expect(asked).toEqual([true, undefined])
+  })
+  it('?owner=1: an id-shaped or non-bool owner_seat never passes; an error passes only as a code; not linked: nothing', async () => {
+    for (const [reply, want] of [
+      [{ owner_seat: '@owner:chat.example' }, {}],
+      [{ owner_seat: 1 }, {}],
+      [{ owner_seat_error: 'unauthorized' }, { ownerSeatError: 'unauthorized' }],
+      [{ owner_seat_error: 'Bad Thing @x' }, {}],
+    ] as const) {
+      fake.script.set('status', { ok: true, running: true, linked: true, ...reply })
+      expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json(), JSON.stringify(reply)).toEqual({ available: true, running: true, linked: true, ...want })
+    }
+    fake.script.set('status', { ok: true, running: true, linked: false, owner_seat: true })
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: false })
+  })
+  it('?owner=1 on an mxd from before the field (it refuses the request): the plain status, no ownerSeat', async () => {
+    fake.seen.length = 0
+    fake.script.set('status', (req) => (req.owner !== undefined ? { ok: false, error: 'bad_request' } : { ok: true, running: true, linked: true }))
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: true })
+    expect(fake.seen).toEqual(['status', 'status'])
+  })
+
   it('linked and running', async () => {
     fake.script.set('status', { ok: true, running: true, linked: true, pending: { op: 'link', expires_in: 5 } })
     const r = await fetch(origin + '/api/gromzo/status')
@@ -845,5 +893,95 @@ describe('the held list from the real dash status (fake dash.sock)', () => {
       rows = (await r.json()).agents
       expect(rows.some((x) => x.held)).toBe(false)
     } finally { env.MXD_DASH_SOCK = fake.path }
+  })
+})
+
+// GROMZOQRAUDITLOG1107: every owner-QR line names who asked (how the caller authenticated, the owner's login, the Bridge
+// device) and the mxd verbs asked, so a code's issue is traceable from the dashboard log alone (on 11-07 only sudo's
+// and sshd's logs told it). Never a secret, the session id, a token or an address.
+describe('the owner QR log names the caller', () => {
+  const FULL = { kind: 'device', device: 'Macbookom', deviceId: 3, scope: 'full' }
+  let sid = ''
+  beforeEach(() => {
+    const u = createDashboardUser('owner', 'x')
+    sid = createSession({ userId: u.id, username: u.username })
+  })
+  const withCookie = (c: string) => ({ 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE_NAME}=${c}` })
+  const qrLines = () => logged.filter((l) => l.includes('owner QR')).map((l) => JSON.parse(l)[0] as Record<string, unknown>)
+
+  it('issued, join: the session owner and the one verb asked', async () => {
+    fake.script.set('owner_invite', INVITE_OK)
+    expect((await postQr()).status).toBe(200)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite', kind: 'join', expires_in: 600 }])
+  })
+
+  it('issued, login: both verbs in order', async () => {
+    fake.script.set('owner_invite', { ok: false, error: 'owner_invite_already_issued' })
+    fake.script.set('owner_login_code', LOGIN_OK)
+    expect((await postQr()).status).toBe(200)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite>owner_login_code', kind: 'login', expires_in: 120 }])
+  })
+
+  it('refused by mxd: the caller and the verb that refused', async () => {
+    fake.script.set('owner_invite', { ok: false, error: 'consent_required' })
+    expect((await postQr()).status).toBe(409)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite', code: 'consent_required' }])
+  })
+
+  it('dash.sock unreachable: the caller and the verb that failed', async () => {
+    env.MXD_DASH_SOCK = fake.path + '.missing'
+    try {
+      expect((await postQr()).status).toBeGreaterThanOrEqual(500)
+    } finally { env.MXD_DASH_SOCK = fake.path }
+    const [line] = qrLines()
+    expect(line).toMatchObject({ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite' })
+    expect(typeof line?.code).toBe('string')
+  })
+
+  it('the Bridge: a full device key beside the owner cookie names the device and the owner', async () => {
+    principal = FULL
+    fake.script.set('owner_invite', INVITE_OK)
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'device_full', device: 'Macbookom', owner: 'owner', asked: 'owner_invite', kind: 'join', expires_in: 600 }])
+  })
+
+  it('the shared token beside the owner cookie', async () => {
+    principal = { kind: 'token' }
+    fake.script.set('owner_invite', INVITE_OK)
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(qrLines()[0]).toMatchObject({ auth: 'shared_token', owner: 'owner', kind: 'join' })
+  })
+
+  it('refused before mxd: a sub-agent token, a key without the cookie, nobody', async () => {
+    for (const [p, want] of [
+      [{ kind: 'token', tokenAgent: 'samu', agent: 'samu' }, { auth: 'agent_token', owner: '-' }],
+      [FULL, { auth: 'device_full', device: 'Macbookom', owner: '-' }],
+      [{ kind: 'none' }, { auth: 'none' }],
+    ] as const) {
+      principal = p as never
+      logged.length = 0
+      expect((await postQr()).status).toBe(403)
+      expect(qrLines(), JSON.stringify(p)).toEqual([{ via: 'dashboard', ...want, kind: (p as { kind: string }).kind }])
+    }
+    expect(fake.seen).toEqual([])
+  })
+
+  it('the canary: no secret, session id, cookie or address on any owner QR line', async () => {
+    principal = FULL
+    fake.script.set('owner_invite', INVITE_OK)
+    await postQr(withCookie(sid))
+    fake.script.set('owner_invite', { ok: false, error: 'owner_invite_already_issued' })
+    fake.script.set('owner_login_code', LOGIN_OK)
+    await postQr(withCookie(sid))
+    fake.script.set('owner_login_code', { ok: false, error: 'rate_limited' })
+    await postQr(withCookie(sid))
+    principal = { kind: 'session', user: 'owner' }
+    await postQr()
+    const lines = logged.filter((l) => l.includes('owner QR'))
+    expect(lines.length).toBe(4)
+    const all = lines.join('\n')
+    for (const s of [INVITE_OK.owner_secret, LOGIN_OK.login_secret, 'INVITESECRET', 'LOGINSECRET', 'marveen://', sid, SESSION_COOKIE_NAME, '127.0.0.1', 'chat.gromzo.com']) {
+      expect(all, s).not.toContain(s)
+    }
   })
 })

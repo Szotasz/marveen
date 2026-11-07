@@ -340,6 +340,6 @@ describe('the dashboard side: the report and the banner text', () => {
     expect(fn).toContain('UPDATE_CONFLICT_DISMISS_PREFIX + g.at')
     expect(app).toContain('    updateBranchDriftUI(data)\n    updateConflictGuardUI(data)')
     const route = readFileSync(join(__dirname, '..', 'web', 'routes', 'updates.ts'), 'utf-8')
-    expect(route).toContain('json(res, { ...getUpdateStatus(), conflictGuard: readConflictGuard(STORE_DIR) })')
+    expect(route).toContain('json(res, { ...getUpdateStatus(), conflictGuard: readConflictGuard(STORE_DIR), deployment: deployment() })')
   })
 })

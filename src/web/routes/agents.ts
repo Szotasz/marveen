@@ -117,6 +117,7 @@ import {
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
+import { agentTextLang } from '../agent-text-lang.js'
 import {
   isAgentRunning,
   agentRunState,
@@ -133,7 +134,16 @@ import {
   delay,
   resolveAgentProvider,
   sharedEnvAuthKeysCopiedTo,
+  resolveMainAgentConfigDir,
+  resolveMainAgentRotatedConfigDir,
+  resolveMainAgentRotatedTokenSecretId,
+  explicitConfigDirLacksOwnLogin,
+  FLEET_OAUTH_TOKEN_PATH,
 } from '../agent-process.js'
+import { checkMainAuthSwitch } from '../main-auth-switch.js'
+import { readMainAuthLaunched } from '../main-auth.js'
+import { hostApiKey } from '../auth-key-mode.js'
+import { liveProbeAuth } from '../claude-credentials-guard.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
@@ -245,10 +255,9 @@ const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'disc
 // separate copies of "awaiting regeneration" had to be removed once already.
 export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 
-// Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
-// with accents, because that is what they stand in for: the generators produce
-// Hungarian agent personalities (see agent-scaffold.ts, whose SOUL prompt states
-// "Write ALL Hungarian text with proper accents"). Deliberately NOT an imitation
+// Minimal placeholders used when generateClaudeMd/generateSoulMd fail, in the language
+// of what they stand in for: the generators write Hungarian, or English on an install
+// whose AGENT_TEXT_LANG is en (PERSONAESC1107; the English twins below, same rules). Deliberately NOT an imitation
 // of a generated personality -- the first line says it is a template, so a
 // stand-in never silently becomes the agent's identity.
 //
@@ -260,6 +269,7 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 // PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
 // points at editing, which is what actually exists.
 function fallbackClaudeMd(name: string, description: string, model: string): string {
+  if (agentTextLang() === 'en') return fallbackClaudeMdEn(name, description, model)
   return `# ${name}
 
 > **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
@@ -284,6 +294,7 @@ ${model}
 }
 
 function fallbackSoulMd(name: string, description: string): string {
+  if (agentTextLang() === 'en') return fallbackSoulMdEn(name, description)
   return `# ${name} - SOUL
 
 > **FIGYELEM: ez egy SABLON.** A generálás nem sikerült, ez helyőrző szöveg.
@@ -292,6 +303,43 @@ ${description}
 
 Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
 itt írhatod meg.
+`
+}
+
+// The English twins: "agent" throughout, and no promise of regeneration either.
+export function fallbackClaudeMdEn(name: string, description: string, model: string): string {
+  return `# ${name}
+
+> **NOTE: this is a TEMPLATE.** Generating the agent's personality failed when it
+> was created, so this file is a placeholder. The agent can be used, but its own
+> CLAUDE.md has not been written yet. Rewrite it here, or on the agent's page.
+
+## Role
+
+${description}
+
+## Principles
+
+- Execution. Do not explain what you are going to do, just do it.
+- Short answers, to the point.
+- If you do not know something, say so plainly.
+- Code, comments and technical documentation in English; with the user, the user's language (English by default).
+
+## Model
+
+${model}
+`
+}
+
+export function fallbackSoulMdEn(name: string, description: string): string {
+  return `# ${name} - SOUL
+
+> **NOTE: this is a TEMPLATE.** Generation failed, this is placeholder text.
+
+${description}
+
+Default tone: concise, precise, no exaggeration. You can write the detailed personality
+here.
 `
 }
 
@@ -796,6 +844,8 @@ function getAgentDetail(name: string): AgentDetail {
     hasAvatar: findAvatarForAgent(name) !== null,
     nickname: nicknameFor(name),
     hasApiKey: getSecret(`agent-${name}-api-key`) !== null,
+    // MAINAUTHSWITCH1107: what the main pane's last launch ran on (configured, effective, conflict); no value in it
+    ...(isMainChannelsAgent(name) ? { mainAuthLaunched: readMainAuthLaunched() } : {}),
   }
 }
 
@@ -2896,7 +2946,60 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     if (isMainChannelsAgent(name)) {
-      json(res, { error: 'Main agent configuration is read-only through the dashboard API' }, 400)
+      // MAINAUTHSWITCH1107 (APIKULCSINDITAS1004 D): read-only except the authentication switch (authMode + apiKey),
+      // for the owner. main-auth-switch.ts decides; this does the I/O. The restart is the caller's next call (the
+      // existing /restart with its gate), so a busy pane is never cut by a save.
+      let mdata: unknown
+      try { mdata = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Main agent PUT: invalid JSON body' }, 400); return true }
+      const onlySwitchFields = mdata !== null && typeof mdata === 'object' && !Array.isArray(mdata)
+        && Object.keys(mdata as Record<string, unknown>).every((k) => k === 'authMode' || k === 'apiKey')
+      if (!onlySwitchFields) {
+        json(res, { error: 'Main agent configuration is read-only through the dashboard API, except authMode and apiKey' }, 400)
+        return true
+      }
+      if (!mayActAsOwner(ctx.auth, req)) {
+        refuseOwner(res, "Changing the main agent's authentication needs the dashboard login (an owner session): it decides which account its prompts are billed to.")
+        return true
+      }
+      let vaultKey: string | null
+      try { vaultKey = getSecret(`agent-${name}-api-key`) } catch {
+        json(res, { error: 'The vault cannot be read right now, so the stored key is unknown; nothing was changed', code: 'vault-unreadable' }, 503)
+        return true
+      }
+      const explicit = resolveMainAgentConfigDir()
+      const fleetTokenUsable = (() => { try { return statSync(FLEET_OAUTH_TOKEN_PATH).size > 0 } catch { return false } })()
+      const verdict = checkMainAuthSwitch(mdata, {
+        // the same rule as main-agent-isolated-config.mjs: an explicit dir with no login of its own runs isolated
+        explicitConfigDir: explicit !== null && !(explicitConfigDirLacksOwnLogin(explicit) && fleetTokenUsable),
+        rotatedConfigDir: explicit === null && resolveMainAgentRotatedConfigDir() !== null,
+        rotatedTokenPlan: explicit === null && resolveMainAgentRotatedTokenSecretId() !== null,
+        customProvider: !!readAgentCustomProvider(name),
+        keyAvailable: !!vaultKey || hostApiKey(join(PROJECT_ROOT, '.env')).trim() !== '',
+      })
+      if (!verdict.ok) { json(res, { error: verdict.error, code: verdict.code }, verdict.status); return true }
+      // A new key is checked with one tiny live call before anything is stored (as the onboarding does): only a
+      // key the API REJECTS is refused; an inconclusive probe (no binary, network) stores it, marked unverified.
+      let probe: 'ok' | 'auth-rejected' | 'inconclusive' | null = null
+      if (verdict.newKey) {
+        probe = await liveProbeAuth({ ANTHROPIC_API_KEY: verdict.newKey })
+        if (probe === 'auth-rejected') {
+          json(res, { error: 'The API key was rejected by the API (a test call failed); nothing was changed', code: 'key-rejected' }, 400)
+          return true
+        }
+      }
+      try {
+        mkdirSync(agentDir(name), { recursive: true })
+        if (verdict.newKey) setSecret(`agent-${name}-api-key`, `API key for the main agent (${name})`, verdict.newKey)
+        writeAgentAuthMode(name, verdict.mode)
+        // as for sub-agents (below): leaving api takes the key out of the vault
+        if (verdict.mode !== 'api') deleteSecret(`agent-${name}-api-key`)
+      } catch (err) {
+        logger.error({ err: err instanceof Error ? err.message : String(err) }, 'main auth switch: could not save')
+        json(res, { error: 'Could not save the main agent authentication', code: 'write-failed' }, 500)
+        return true
+      }
+      logger.warn({ mode: verdict.mode, newKey: !!verdict.newKey, probe }, 'main auth switch: saved by the owner; takes effect at the next main launch')
+      json(res, { ok: true, authMode: verdict.mode, verified: probe === null ? null : probe === 'ok', restartRequired: true })
       return true
     }
     const body = await readBody(req)

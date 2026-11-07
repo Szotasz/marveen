@@ -1469,7 +1469,12 @@ describe.skipIf(sh === '')('channels.sh wiring (review #1529, point 1)', () => {
   })
 
   it('an isolated/explicit config dir is handed to the patcher, so it writes the cache the session launches from', () => {
-    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_cfg_dir" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
+    // MAINCFGDIRUNSET1107: the _cfg_* names are unset before the patchers run, so they read a stable copy that is
+    // set where the config dir is decided (the old pin held the empty $_cfg_dir in place).
+    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_MAIN_CFG_DIR" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
+    const setAt = code.indexOf('_MAIN_CFG_DIR="$_cfg_dir"')
+    expect(setAt).toBeGreaterThan(-1)
+    expect(setAt).toBeLessThan(code.indexOf('unset _cfg_raw _cfg_line _cfg_mode _cfg_dir'))
   })
 })
 

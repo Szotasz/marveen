@@ -40,12 +40,16 @@ export const OWNER_QR_SESSION_REQUIRED = {
 }
 import { mxdDashCall, MxdDashError, MXD_AGENT_SLUG_RE, requestOwnerQr, type MxdDashCall, type OwnerQr } from '../mxd-dash.js'
 import {
-  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, sendGromzoAvatar, statusFactsOf, type GromzoAgentDeps, type GromzoAgentOutcome,
+  checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, listGromzoAgentsWithStatus, pendingGromzoConsentSlug, restorePendingGromzoConsents,
+  sendGromzoAvatar, setPendingConsentStore, statusFactsOf, watcherDelayMs, type GromzoAgentDeps, type GromzoAgentOutcome, type PendingConsentStore,
 } from '../gromzo-agents.js'
+import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
-import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, currentBotName } from '../../config.js'
+import { capturePane, isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
+import { detectReauthNeeded } from '../reauth-detect.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, currentBotName } from '../../config.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { gateManualRestart } from '../manual-restart-gate.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
@@ -67,7 +71,30 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
   const sharedToken = auth?.kind === 'token' && !auth.tokenAgent
   const fullDeviceKey = auth?.kind === 'device' && auth.scope === 'full'
   if (!sharedToken && !fullDeviceKey) return false
-  return ownerCookieSession(req) !== null
+  const owner = ownerCookieSession(req)
+  if (owner === null) return false
+  // GROMZOBRIDGEWIZARD1107 D2: an action the Bridge makes with its key beside the owner's cookie leaves one audit line
+  // naming the owner (as auth.ts bridgeOwnerAudited does for the other owner gates). Reads are not logged: the panel
+  // polls them.
+  if (fullDeviceKey && req.method !== 'GET' && req.method !== 'HEAD') {
+    logger.info({ owner, auth: 'device', device: auth.device, method: req.method, path: req.url?.split('?')[0] }, 'gromzo: owner action on a Bridge key: the owner session beside it')
+  }
+  return true
+}
+
+/** GROMZOQRAUDITLOG1107: who asked for the owner QR, on every one of its log lines (issued, refused, failed):
+ *  how the caller authenticated, the owner's dashboard login when it is known (the session's own, or the
+ *  owner cookie beside a token or a Bridge key) and the Bridge device's name. Never the cookie, a token, a
+ *  key or an address. The Bridge's root step (mxdctl on admin.sock) never comes here: mxd logs that one. */
+export function ownerQrCaller(auth: RouteContext['auth'], req: http.IncomingMessage): Record<string, string> {
+  const via = 'dashboard'
+  switch (auth?.kind) {
+    case 'session': return { via, auth: 'session', owner: auth.user ?? '-' }
+    case 'device': return { via, auth: `device_${auth.scope}`, device: auth.device ?? '-', owner: ownerCookieSession(req) ?? '-' }
+    case 'token': return { via, auth: auth.tokenAgent ? 'agent_token' : 'shared_token', owner: ownerCookieSession(req) ?? '-' }
+    case 'federation': return { via, auth: 'federation' }
+    default: return { via, auth: 'none' }
+  }
 }
 
 const STATUS_PATH = '/api/gromzo/status'
@@ -270,6 +297,10 @@ const defaultAgentDeps: GromzoAgentDeps = {
     const t = readMainGromzoToken(PROJECT_ROOT)
     return mainGromzoPanelState(t.ok && t.on, mainSessionLoadsGromzo(MAIN_CHANNELS_SESSION))
   },
+  // GROMZOBRIDGEWIZARD1107 (Samu 72990): measured on the QA VPS, a main session without a Claude sign-in runs, shows
+  // "Not logged in" and ignores its channels, while mxd lists the agent as running. The same pane check as the
+  // dashboard's agent card (routes/agents.ts) tells the wizard not to call it reachable.
+  mainNeedsReauth: () => detectReauthNeeded(capturePane(MAIN_CHANNELS_SESSION)).needsReauth,
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   // GROMZONAMETAKEN1106 (the owner, Samu 71820): the main agent joins Gromzo under the name the owner set for it
   // (.env BOT_NAME, read per call like the dashboard's own label; "Marveen" when unset); every other agent under its
@@ -328,6 +359,98 @@ function mainRestartDeps() {
     sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
     mainSlug: MAIN_AGENT_ID,
   }
+}
+
+// --- GROMZOBRIDGEWIZARD1107 D1: the server sees an approval through ------------------------------------------------
+// The pending consent is kept in store/ (0600; the consent id is the server's own, never the client's), and a watcher
+// checks it without the panel (gromzo-agents.ts: the pace, "used", the final answers). Wired by initGromzoConsentWatch
+// from web.ts only: a route test never touches the real store.
+
+/** The saved pending consent: store/gromzo-agent-consent.json, mode 0600, written whole through a temp file. */
+export function fileConsentStore(path = join(STORE_DIR, 'gromzo-agent-consent.json')): PendingConsentStore {
+  return {
+    read: () => {
+      try { return JSON.parse(readFileSync(path, 'utf8')) } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []
+        logger.warn({ err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: the saved approval could not be read (none restored)')
+        return []
+      }
+    },
+    write: (entries) => {
+      try {
+        if (entries.length === 0) { rmSync(path, { force: true }); return }
+        const tmp = `${path}.${process.pid}.tmp`
+        writeFileSync(tmp, JSON.stringify(entries), { mode: 0o600 })
+        chmodSync(tmp, 0o600)
+        renameSync(tmp, path)
+      } catch (e) {
+        // The consent stays in memory: the switch still works while this dashboard runs, only a restart would lose it.
+        logger.error({ err: e instanceof Error ? e.message : String(e) }, 'gromzo agents: the pending approval could NOT be saved (kept in memory)')
+      }
+    },
+  }
+}
+
+let watchOn = false
+let watchTimer: ReturnType<typeof setTimeout> | null = null
+/** The watcher's "still waiting" line: at most this often (the fast pace checks every 11 s). */
+export const PENDING_LOG_GAP_MS = 60_000
+let lastPendingLogAt = 0
+
+/** One round of the server's own check of the pending consent (null: nothing pending, or the check failed and the
+ *  consent is kept). Exported for the tests. */
+export async function consentWatchTick(deps: GromzoAgentDeps = agentDeps): Promise<GromzoAgentOutcome | null> {
+  const slug = pendingGromzoConsentSlug()
+  if (!slug) return null
+  try {
+    const o = await checkGromzoAgent(slug, deps)
+    if (o.ok && o.state === 'pending') {
+      // D1 expiry edge (b): the pending answer is logged too, at most once per PENDING_LOG_GAP_MS, so the log shows
+      // the watcher ran (before, a pending round left no line and a lost approval looked like a watcher that never ran).
+      const now = Date.now()
+      if (now - lastPendingLogAt >= PENDING_LOG_GAP_MS) {
+        lastPendingLogAt = now
+        logger.info({ slug, expiresIn: o.expiresIn }, 'gromzo agents: the server check: still waiting for the owner\'s approval')
+      }
+      return o
+    }
+    if (o.ok && o.state === 'added') logger.info({ slug, by: 'server' }, 'gromzo agents: the owner approved in the app; the server finished the switch (no panel needed)')
+    else logger.info({ slug, ...(o.ok ? { state: o.state } : { code: o.code }) }, 'gromzo agents: the server check got an answer')
+    return o
+  } catch (e) {
+    logger.warn({ slug, code: e instanceof MxdDashError ? e.code : 'io' }, 'gromzo agents: the server check failed (the approval is kept, asked again)')
+    return null
+  }
+}
+
+/** Arms the next server check when a consent is pending and the watcher runs (a no-op otherwise). */
+export function scheduleConsentWatch(): void {
+  if (!watchOn || watchTimer) return
+  const delay = watcherDelayMs(Date.now())
+  if (delay === null) return
+  watchTimer = setTimeout(() => {
+    watchTimer = null
+    void consentWatchTick().finally(scheduleConsentWatch)
+  }, delay)
+  watchTimer.unref?.()
+}
+
+/** From web.ts at start: the saved consent comes back, and (with the background services on) the watcher runs. A
+ *  WEB_ONLY or second instance keeps the store but runs no watcher: finishing a switch restarts a live session. */
+export function initGromzoConsentWatch(opts: { watch: boolean }): void {
+  setPendingConsentStore(fileConsentStore())
+  const restored = restorePendingGromzoConsents(agentDeps)
+  if (restored) logger.info({ slug: restored }, 'gromzo agents: a pending approval came back after a restart')
+  watchOn = opts.watch
+  scheduleConsentWatch()
+}
+
+/** Test seam: the watcher off and its timer gone. */
+export function stopGromzoConsentWatchForTest(): void {
+  watchOn = false
+  if (watchTimer) clearTimeout(watchTimer)
+  watchTimer = null
+  lastPendingLogAt = 0
 }
 
 /** Test seam: replace some of the agent switch's collaborators (null puts the real ones back). */
@@ -392,6 +515,8 @@ async function handleAgents(ctx: RouteContext): Promise<boolean> {
     const o = action[2] === 'enable' ? await enableGromzoAgent(slug, agentDeps, bodyName)
       : action[2] === 'disable' ? await disableGromzoAgent(slug, agentDeps)
         : await checkGromzoAgent(slug, agentDeps)
+    // D1: a new pending consent is watched by the server from now on (the panel may close).
+    if (action[2] === 'enable' && o.ok && o.state === 'pending') scheduleConsentWatch()
     sendOutcome(res, slug, action[2]!, o)
   } catch (e) {
     const code = e instanceof MxdDashError ? e.code : 'io'
@@ -408,8 +533,13 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
 
   if (path === STATUS_PATH) {
     if (method !== 'GET') { methodNotAllowed(res, method, ['GET']); return true }
+    // GROMZOBRIDGEWIZARD1107 Q2: ?owner=1 asks mxd whether the team's owner has registered (marveen-mxd status
+    // {owner:true}: a bool, cached there; a plain status never asks). An mxd from before that field refuses the
+    // request: the plain status is asked again, and ownerSeat is simply absent.
+    const wantOwner = ctx.url.searchParams.get('owner') === '1'
     try {
-      const r = await call({ verb: 'status' })
+      let r = await call(wantOwner ? { verb: 'status', owner: true } : { verb: 'status' })
+      if (wantOwner && r.ok !== true) r = await call({ verb: 'status' })
       if (r.ok !== true) {
         const code = typeof r.error === 'string' && /^[a-z0-9_]{1,40}$/.test(r.error) ? r.error : 'refused'
         json(res, { available: false, code })
@@ -429,6 +559,11 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
         const refusal = r.last_refusal as { kind?: unknown } | undefined
         if (refusal && typeof refusal.kind === 'string' && /^[a-z_]{1,40}$/.test(refusal.kind)) out.linkRefusal = refusal.kind
       }
+      // Only a bool passes (never an id); a failure only as a lower-case code.
+      if (wantOwner && out.linked === true) {
+        if (typeof r.owner_seat === 'boolean') out.ownerSeat = r.owner_seat
+        else if (typeof r.owner_seat_error === 'string' && /^[a-z0-9_]{1,40}$/.test(r.owner_seat_error)) out.ownerSeatError = r.owner_seat_error
+      }
       json(res, out)
     } catch (e) {
       const code = e instanceof MxdDashError ? e.code : 'io'
@@ -442,26 +577,30 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
   if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }
   // Drain the (empty) body; nothing in it is used.
   try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+  const caller = ownerQrCaller(auth, req)
   if (!isOwnerSession(auth, req)) {
-    logger.warn({ kind: auth?.kind }, 'gromzo: owner QR refused (needs the owner session)')
+    logger.warn({ ...caller, kind: auth?.kind }, 'gromzo: owner QR refused (needs the owner session)')
     json(res, OWNER_QR_SESSION_REQUIRED, 403)
     return true
   }
+  // The verbs asked of mxd, in order (owner_invite, then owner_login_code on a taken seat): which code was asked for.
+  const asked: string[] = []
+  const tracked: MxdDashCall = (request) => { asked.push(request.verb); return call(request) }
   let result
   try {
-    result = await requestOwnerQr(call)
+    result = await requestOwnerQr(tracked)
   } catch (e) {
     const code = e instanceof MxdDashError ? e.code : 'io'
-    logger.warn({ code }, 'gromzo: owner QR failed (dash.sock)')
+    logger.warn({ ...caller, asked: asked.join('>'), code }, 'gromzo: owner QR failed (dash.sock)')
     failure(res, code)
     return true
   }
   if (!result.ok) {
-    logger.warn({ code: result.code }, 'gromzo: owner QR refused by mxd')
+    logger.warn({ ...caller, asked: asked.join('>'), code: result.code }, 'gromzo: owner QR refused by mxd')
     failure(res, result.code, result.retryAfter)
     return true
   }
-  logger.info({ kind: result.qr.kind, expires_in: result.qr.expires_in }, 'gromzo: owner QR issued (the secret is not logged)')
+  logger.info({ ...caller, asked: asked.join('>'), kind: result.qr.kind, expires_in: result.qr.expires_in }, 'gromzo: owner QR issued (the secret is not logged)')
   sendOwnerQr(res, result.qr)
   return true
 }
