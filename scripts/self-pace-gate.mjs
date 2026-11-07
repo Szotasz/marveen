@@ -1671,6 +1671,9 @@ export function normalizePathSegments(word) {
 // opts.parentCtx: the command cd's into a store parent, so a bare glob word
 // (`s*`) may be resolved relative to it.
 export function scheduleSurfaceRefs(text, opts) {
+  return scheduleSurfaceRefsAll(text, opts)
+}
+function scheduleSurfaceRefsAll(text, opts) {
   const vs = scheduleSurfaceVariants(text)
   // The security surface (db-write-gate): an SQL write on a security table is
   // the strong reference, the database file keeps its own narrower rule; the
@@ -1757,7 +1760,8 @@ const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // can redefine). And the file's CONTENT must look like a token, read when the
 // gate decides: a token file with a CR/LF in it would put a second, pipelined
 // request (a POST) inside the "GET". Missing or unreadable = refused.
-const TOKEN_CONTENT_RX = /^[A-Za-z0-9._~+/=-]+\n?$/
+// no leading `-` (v8): a token that reached a curl word could otherwise be read as an option
+const TOKEN_CONTENT_RX = /^[A-Za-z0-9._~+/=][A-Za-z0-9._~+/=-]*\n?$/
 export function tokenFileContentOk(path) {
   try { return TOKEN_CONTENT_RX.test(readFileSync(path, 'utf-8')) } catch { return false }
 }
@@ -1796,6 +1800,509 @@ function resolveCatSubst(cmd, opts) {
 // still refuse it there and as a URL's start. There is no "inside the store"
 // case to guard any more: a cd/pushd/popd into the store denies the whole
 // command (scheduleSurfaceDeny, rule 1).
+// The fleet's own bus recipe (the closing PUT / the message POST) builds its JSON body with a FIXED python snippet inside the
+// data value, `--data-binary "$(python3 -c 'import json,sys; print(json.dumps({"status":"done","result":sys.argv[1]}))'
+// '<text>')"`. The quoted substitution is not a plain word (readWord refuses a `$(` inside "..."), so a result text that
+// merely NAMES the schedule API denied the whole message (measured with and without the flag). It is
+// rewritten to the single-quoted literal it evaluates to ONLY when (a) the python code is exactly a json.dumps of a dict
+// literal whose values are string/true/false/null constants or sys.argv[N] -- no other expression can run, (b) every
+// argument is a single-quoted word (no expansion) separated by blanks (space/tab) ONLY -- a newline inside the substitution is a
+// command separator, so the words after it run as their own command -- that carries no `$` and no backtick (the single-quoted result is inert only for
+// a consumer that treats it as DATA; an `eval` re-reads the json.dumps output as shell and would run a `$(...)` in it),
+// and (c) it is the VALUE of a data option (-d / --data / --data-raw /
+// --data-binary), never a URL or a header. Anything else is left alone and judged as before.
+const JSON_DUMP_CODE_RX = /^import json,\s*sys;\s*print\(json\.dumps\(\{(?:\s*"[A-Za-z_]\w*"\s*:\s*(?:"[^"\\$`]*"|true|false|null|sys\.argv\[[1-9]\])\s*,?)+\s*\}(?:\s*,\s*ensure_ascii\s*=\s*(?:True|False))?\)\)$/
+const JSON_DUMP_SUBST_RX = /((?:^|[ \t])(?:-d|--data(?:-raw|-binary)?)(?:[ \t]+|=))"\$\([ \t]*(?:\/usr\/bin\/)?python3[ \t]+(?:-I[ \t]+)?-c[ \t]+'([^']*)'((?:[ \t]+'[^'$`]*')*)[ \t]*\)"/g
+// The rewrite must NOT run inside a heredoc body: a body handed to an interpreter (`python3 - <<EOF`, node, bash) is code
+// that RUNS, and a recipe-shaped substitution in it would be rewritten to a data word and blanked, hiding a real
+// `tmux send-keys` next to it from the naive layer. A recipe is a command-line form, never body text.
+// Where a body starts and ends is the shell's business (line continuation, quoted or escaped delimiters, `<<-` tabs, a
+// delimiter that only looks closed), and every rule this gate re-implements for it is a way to be wrong; so the rewrite is
+// FAIL-CLOSED instead: it stops at the first `<<` that is not a here-string (`<<<`), wherever that sits (inside quotes too,
+// and also when a backslash-newline splits the operator: the shell removes that pair before it reads `<<`),
+// and nothing after it is rewritten. The price: a recipe AFTER a heredoc is judged unresolved (denied when its text names the
+// schedule surface); a recipe BEFORE one, and one after a here-string, still resolve.
+// An ESCAPED `<` is a literal word, not an operator: `\<<<'PY'` is a literal `<` followed by a real `<<'PY'` heredoc, so the
+// lookbehind only excludes an UNESCAPED `<` (a real here-string's first or second `<`). `\\<<<` (an escaped backslash, then
+// a real here-string) is cut as well: it over-cuts, which is the fail-closed side.
+const HEREDOC_CUT_RX = /(?<!(?<!\\)<)<(?:\\\r?\n)*<(?!<)/
+// True when the character at `k` starts a shell word: nothing in front of it, or a blank / separator / `(`. A backslash-newline
+// pair in front is REMOVED by the shell (`x\<newline>#y` is the one word `x#y`, whose # is no comment), so it is skipped
+// before the look-back; an escaped backslash in front of a newline (`\\<newline>`) is no continuation.
+// The shell's blanks are the SPACE and the TAB (and the newline, which ends the command): a CR, a VT, a FF or a Unicode space in front
+// of a `#` is a word character, so that `#` opens no comment. The JS `\s` class counts them all as white space, which is why it is not
+// used for a word boundary here or in hasUnspelledCommandWord.
+function wordStartAt(src, k) {
+  let j = k - 1
+  while (j >= 1 && src[j] === '\n') {
+    let b = j - 1
+    if (src[b] === '\r') b--
+    let n = 0
+    for (let m = b; m >= 0 && src[m] === '\\'; m--) n++
+    if (n % 2 === 0) break
+    j = b - 1
+  }
+  return j < 0 || /[ \t\n;|&(]/.test(src[j])
+}
+// True when `upTo` sits at the shell's TOP LEVEL of `src`: nothing opened in front of it is still open (a quote, a `$(`, a `(`, a
+// backtick). The rewrite below turns "$(...)" into one inert word, which is only true when the opening `"` really OPENS a word: in
+// `bash -c 'shift 3; "$@"' "x -d "$(...)""` the `"` in front of `$(` CLOSES the earlier word, the substitution is unquoted, its output
+// is split into words and RUNS -- while the rewritten text hid it from both layers. Anything the scan cannot close
+// (an unterminated quote, a `$(` or a quote that spans `upTo`) is "not at the top level": the text is then judged as written.
+// Returns the start index of the shell segment `upTo` sits in (the recipe's owner is that segment's first word), or -1 when it is not top level.
+// True when the character in front of src[k] is the operator character `ch`: a backslash-newline pair in between is removed by the
+// shell before it reads an operator (`>\<newline>&` is `>&`), and an ESCAPED character is a literal (`\>&` is a literal `>` and a
+// real `&`; an odd run of backslashes escapes, an even one does not).
+function prevIsOp(src, k, ch) {
+  let j = k - 1
+  while (j >= 1 && src[j] === '\n') {
+    let n = 0
+    for (let m = j - 1; m >= 0 && src[m] === '\\'; m--) n++
+    if (n % 2 === 0) break
+    j -= 2
+  }
+  if (j < 0 || src[j] !== ch) return false
+  let n = 0
+  for (let m = j - 1; m >= 0 && src[m] === '\\'; m--) n++
+  return n % 2 === 0
+}
+function topLevelScan(src, upTo) {
+  let segStart = 0
+  for (let k = 0; k < upTo; k++) {
+    const c = src[k]
+    if (c === '\\') { k++; continue }
+    // a `#` at the start of a word begins a comment up to the end of the line: a quote inside it opens nothing
+    if (c === '#' && wordStartAt(src, k)) { const e = src.indexOf('\n', k); if (e === -1 || e >= upTo) return -1; segStart = e + 1; k = e; continue }
+    if (c === "'") { const e = src.indexOf("'", k + 1); if (e === -1 || e >= upTo) return -1; k = e; continue }
+    if (c === '"') { const e = dquoteEnd(src, k + 1); if (e === -1 || e >= upTo) return -1; k = e; continue }
+    if (c === '$' && src[k + 1] === "'") {
+      let j = k + 2
+      while (j < src.length && src[j] !== "'") j += src[j] === '\\' ? 2 : 1
+      if (j >= src.length || j >= upTo) return -1
+      k = j; continue
+    }
+    if (c === '$' && src[k + 1] === '(') { const e = substEnd(src, k + 2); if (e === -1 || e >= upTo) return -1; k = e; continue }
+    if (c === '(') { const e = substEnd(src, k + 1); if (e === -1 || e >= upTo) return -1; k = e; continue }
+    if (c === '`') { const e = src.indexOf('`', k + 1); if (e === -1 || e >= upTo) return -1; k = e; continue }
+    // a command separator at the top level starts a new segment (the same set SEGMENT_SEP_RX splits on, but `2>&1`, `&>` and `>|` are redirections, not separators)
+    // `>|` is the clobbering redirection, not a pipe: the file name behind it owns nothing
+    if (c === '\n' || c === ';' || (c === '|' && !prevIsOp(src, k, '>')) || (c === '&' && !prevIsOp(src, k, '<') && !prevIsOp(src, k, '>') && src[k + 1] !== '>')) segStart = k + 1
+  }
+  return segStart
+}
+// The recipe is a curl command line, so the rewrite needs a curl OWNER: the option's command is the first word of its own
+// shell segment, `curl` or `/usr/bin/curl`. Any other owner (`python3 -c 'exec(...)' -d "$(...)"`, a wrapper such as `env` /
+// `command`, a group `{ curl ...; }`, an env prefix) may execute the value of its -d, and the rewritten word is blanked from the
+// naive layer, so what it carries would be invisible. Anything not recognised is left alone and judged
+// as before: fail closed, the price is a denied text that names the surface.
+const CURL_OWNER_RX = /^(?:\/usr\/bin\/)?curl(?=[ \t\r\n]|$)/
+// The recipe also relies on `python3` (and `curl`) being the real programs. A command that defines a function, an alias, a hash
+// entry, a PATH, or pulls in code (source, `.`, eval) outside the recipe itself may have replaced them, so the "fixed json.dumps
+// snippet" is then whatever that definition does with its arguments. PYTHON* (PYTHONPATH, PYTHONHOME, ...) is the same for the
+// module lookup: `import json` would load another file. The text outside the recipe matches is checked; the recipes' own
+// single-quoted arguments are inert and are not (a result text may say "function", "PATH" or "()"), and that holds for EVERY
+// valid recipe in the command, not only the one being rewritten.
+// `trap` is on the list because its body is shell code that runs in THIS shell, inside a quoted word the scan below does not parse: a
+// body such as `p=PA;t=TH;export "$p$t=/tmp/x"` builds the name PATH out of two pieces no regex here can see, and `python3` then
+// resolves to whatever sits in /tmp/x. An ambiguous command is not rewritten (fail closed): the original text goes through the
+// ordinary checks, and the recipe's own `$( )` body is decided as a command of its own.
+// KNOWN LIMIT, stated like the script-file one in the header of this section: `python3 -c` puts the working directory first on
+// sys.path, so a `json.py` an EARLIER call wrote into the current directory would run in place of the stdlib module. That is the
+// same "script file written earlier" the gate allows on purpose (the Write tool can write any file); it is not visible in the
+// command text. `python3 -I -c` closes it for the recipes that use it and is accepted as the interpreter; the bare `python3 -c` stays
+// accepted too (a gate change must not force a fleet-wide recipe rewrite; moving the shared recipes to -I is a separate step).
+const COMMAND_SHADOW_RX = /\b(?:function|alias|unalias|hash|enable|builtin|shopt|typeset|declare|readonly|source|eval|trap|PATH|BASH_ENV|ENV|PYTHON\w*)\b|\(\s*\)|(?:^|[;&|\n(]\s*)\.[ \t]/
+// ... but that regex reads the RAW text (it also runs on a copy without quotes and backslashes, which closes a split variable NAME
+// such as `PA""TH=` or `PY\THONPATH` used as an argument), so a command word split by quotes or an escape (`ha""sh`, `h\ash`, `h\<newline>ash`) or built by an
+// expansion (`$x`, `$(echo hash)`) is not seen. The command word of every top-level segment of the text outside the recipes must
+// therefore be a plain literal word (letters, digits, `_./+-`); behind an env assignment or a control keyword (`!`, `if`, `then`,
+// `do`, `{` ...) the next word counts. A wrapper (`command`, `env`, `time`, `case` ...) and the dot command are not resolved. A redirection first in the segment, a quote, an escape or an expansion in that word
+// means its name is unknown: the rewrite is not applied (fail closed). A group `( ... )` is the
+// command by itself. The scan reads quotes, `$(...)`, backticks and comments the way topLevelScan does.
+const COMMAND_WORD_PLAIN_RX = /^[A-Za-z0-9_.\/+-]+$/
+const COMMAND_WORD_SKIP_RX = /^(?:[A-Za-z_]\w*=[\s\S]*|!|if|then|else|elif|do|while|until|\{|\})$/
+// harmless as a command word: the test builtins and `:` (they define nothing and run nothing)
+const COMMAND_WORD_HARMLESS = new Set(['[', '[[', ':'])
+// a command word whose REAL command follows it (or that the scan cannot follow): not resolved, fail closed
+const COMMAND_WORD_WRAPPERS = new Set(['command', 'builtin', 'exec', 'env', 'nohup', 'nice', 'time', 'xargs', 'sudo', 'doas', 'timeout', 'case', 'select', 'coproc', 'watch', 'stdbuf'])
+// The ARGUMENTS of a builtin that takes a variable NAME as one (`export PATH=...`, `read PATH`, `printf -v PATH`, `mapfile PATH`,
+// `getopts o PATH`) are read as well: a name built by an ANSI-C quote (`$'PA\x54H'`), an empty expansion (`PA${x}TH`, `PA$(:)TH`) or a
+// brace expansion (`PA{,}TH`) passes both keyword regexes, which only undo quotes and backslashes. The name
+// part of such an argument (up to the first `=`) must be a plain IDENTIFIER, or the rewrite is not applied (fail closed); the
+// value is free. Anything else is a shape the parser cannot identify for sure, and it is denied, not enumerated: a digit, a dash, an
+// empty part (`export =$y$z` is no assignment, so its unquoted value splits into new NAME arguments), a glob, a quote, an expansion
+// (none of them is an identifier). A redirection and its target are no argument of the builtin (a closing one, `>&-`, has no target).
+// The value of a `read` / `mapfile` option and the option string of `getopts` are no name, but they are words: one that may SPLIT
+// into several (an unquoted expansion, a glob) puts a later piece in a name position, so it must be a plain literal, a single-quoted
+// word, or a double-quoted word whose only expansions are plain scalars (`"$x"`, `"${x}"`): `"$@"`, `"${a[@]}"` and `"${!P@}"` split
+// even inside double quotes, and an empty `"$@"` is no word at all. A `mapfile -C` callback is code and denies. `for v do BODY; done` has no `;` in front of its `do`:
+// there the `do` opens command position again.
+const NAME_ARG_BUILTINS = new Set(['export', 'read', 'mapfile', 'readarray', 'getopts'])
+const NAME_PART_RX = /^[A-Za-z_][A-Za-z0-9_]*\+?$/
+// the only options of `export` (`-f` function names, `-n` unexport, `-p` listing) and the end-of-options word; they take no value
+const EXPORT_OPTION_RX = /^(?:--|-[fnp]+)$/
+// a word that cannot split into several: a plain literal, a single-quoted word, or a double-quoted one with no inner double quote, no escape,
+// no command substitution or backtick, and only plain scalar expansions (`$x`, `${x}`: the `@`, `*`, `!` and `[` forms are left out
+// because `"$@"`, `"${a[@]}"` and `"${!P@}"` split, or vanish, inside double quotes). The anchors rule out a mixed word such as `"a"$x"b"`.
+const INERT_VALUE_RX = /^(?:[A-Za-z0-9_.%\/+:@,=-]+|'[^']*'|"(?:[^"\\$`]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})*")$/
+// `>&-` and `<&-` close a descriptor and take NO target: only the forms that wait for a target set redirNext
+const REDIRECTION_ONLY_RX = /^[0-9]*(?:&>>?|<<<|<<-?|<>|<&|>&|>>|>\||<|>)$/
+const REDIRECTION_START_RX = /^[0-9]*(?:&>|[<>])/
+// A literal name that sticks to its option (`-vPATH`, `-aPATH`) has no word boundary in front of it, so the keyword regex never sees
+// it: such a name must not END like a protected one.
+const ATTACHED_PROTECTED_RX = /(?:PATH|ENV|PYTHON\w*)$/
+// The options of `read` / `mapfile` that take a VALUE (the next word, or the rest of the option word): the value is no variable name
+// (`read -d '' X`, `read -p "Name: " x`). `read -a` is the exception: its value IS the array name.
+const OPTION_VALUE_LETTERS = new Map([['read', 'dinNptu'], ['mapfile', 'dnOsuc'], ['readarray', 'dnOsuc']])
+// Whether a word can be an OPTION is decided by the shell AFTER quote removal and expansion, so the raw text is no judge: `"-v"`,
+// `-"v"`, `$d`, `{-v,x}`, `\-v`, `$'-v'` and `""-v` are all `-v` to printf. 'plain': the word cannot start with a dash
+// (it starts with a literal that is no dash, or with a quote followed by such a character); 'dash': a literal option word; 'unknown':
+// anything the scan cannot tell (an expansion, an escape, a brace, a glob, a quote followed by a dash or an expansion).
+const OPTIONLESS_START_RX = /^[A-Za-z0-9_.%\/+:@,]/
+const QUOTED_PLAIN_RX = /^['"][^-$`\\'"]/
+const leadWordKind = (w) => {
+  if (OPTIONLESS_START_RX.test(w) || QUOTED_PLAIN_RX.test(w)) return 'plain'
+  if (w === '--' || /^-[A-Za-z0-9]*$/.test(w)) return 'dash'
+  return 'unknown'
+}
+// The option string of `getopts` (its first operand) must be fully literal, or quoted without an expansion: an unquoted expansion or a
+// glob in a word that merely STARTS with a letter splits into several words and moves the variable name one place on.
+const GETOPTS_STRING_RX = /^(?:[A-Za-z0-9_:]+|'[^'-][^']*'|"[^-$`\\"][^$`\\"]*")$/
+// (measured, bash 5.2.15) a `%n` conversion in printf's FORMAT stores the byte count in the variable its argument
+// NAMES (`printf '%s%n' x "${p}TH"` sets PATH=1), a name no check above sees. A format that holds a %n (after `%%` is taken out), or
+// that the scan cannot read (an expansion, a mixed or unquoted escaped word), is not rewritten. A backslash escape cannot make a %n:
+// printf reads the conversion from the raw format, and an unquoted `\n` is excluded with the rest of the unquoted escapes.
+const PRINTF_FORMAT_READABLE_RX = /^(?:[A-Za-z0-9_.%\/+:@,=-]+|'[^']*'|"(?:[^"\\$`]|\\.)*")$/
+// fail closed on the spec between `%` and the `n`: any run of non-letters (flags such as `'`, width, precision, `*`)
+const PRINTF_N_RX = /%[^%a-zA-Z]*[hlLqjzt]*n/
+const printfFormatAssigns = (w) => !PRINTF_FORMAT_READABLE_RX.test(w) || PRINTF_N_RX.test(w.replace(/%%/g, ''))
+// the same class: arithmetic evaluation assigns to a name, and the name may be built at run time or sit in the VALUE
+// of a variable the arithmetic reads (bash evaluates that value as an expression too). Measured on bash 5.2.15: `let`, `((...))`,
+// `$((...))`, `$[...]`, a `[[ ... -eq ... ]]` operand, an array subscript and a `${x:offset}` each set PATH=1. Text outside the recipes
+// that may evaluate arithmetic is not rewritten, `for ((...))` included (fail closed). `[[ -f x ]]` and the defaults `${x:-y}`,
+// `${x:=y}`, `${x:?y}`, `${x:+y}` evaluate nothing and stay open.
+// v3: a NAME held in a variable reaches the same subscript arithmetic without any `name[` in the text: the indirect
+// expansion `${!n}`, `test -v` / `[ -v ]` / `[[ -v ]]`, `unset` and `wait -p` take a name such as `a[PATH=1]` (or PATH itself, for
+// wait -p) from a variable. Those forms are not rewritten either.
+const ARITH_EVAL_RX = /\blet\b|\bunset\b|\(\(|\$\[|\$\{!|\[\[(?:(?!\]\])[\s\S])*?\s-(?:eq|ne|lt|le|gt|ge|v)\b|(?:\btest|(?:^|[\s;&|(!])\[)\s(?:[^\n;&|]*\s)?-v\b|\bwait\b[^\n;&|]*\s-[A-Za-z]*p|\w\[|\$\{[^}]*(?::(?![-=?+])|\[)/
+// a STRUCTURAL allowlist instead of the open-ended deny lists. Three review rounds found a new way, each
+// time, to write a variable by a name the text never spells (printf %n, arithmetic, ${!n}, `test $'-v'`, ${x@P}, PS4 with
+// set -x, jobs -x ...): every one of them needs an expansion, a quote trick, an assignment or a builtin. So the text around a
+// rewritten recipe, and the whole create command, is accepted only when the shell can do nothing there but run a few
+// known commands with literal words. Anything else is not rewritten (fail closed: the command is judged as written).
+//   - command words: only the given set (exact, unquoted), behind the structure keywords `!` `if` `then` `else` `elif` `fi`
+//     `{` `}`; no assignment word, no other builtin, no function, no wrapper;
+//   - words: plain characters (letters, digits, `_@%+=:,./-`), single-quoted parts, and double-quoted parts with no `$`,
+//     backtick or backslash -- except the token read `$(cat <literal path>)` inside double quotes, which runs `cat` only;
+//   - printf: the format (behind an optional `--`) is a literal word that does not start with `-` and holds no %n conversion;
+//   - blanks are the space and the tab, separators `;` `|` `&` `&&` `||` and the newline, a `#` at a word start opens a
+//     comment;
+//   - nothing may write a file (a file written in front of the recipe can replace
+//     the python3 it runs): an output redirection goes to /dev/null only, a descriptor copy (`N>&M`, `>&-`) to a number or `-`
+//     only; curl takes only the non-writing options below, and `-K -` / `--config -` only when its stdin is the pipe from
+//     EXACTLY the recipe's header printf right in front of it (`printf 'header = "Authorization: Bearer %s"\n'
+//     "$(cat <accepted token file>)"`, the stdinAuthHeaderOnly shape: one header line, no output, URL or data line; the file is
+//     acceptedTokenFile's, so opts carries the same projectRoot and selfAgent), never a file or an
+//     inherited descriptor (`0<&3`); and at most ONE curl without `-q` / `--disable` first
+//     (an earlier curl reading a ~/.curlrc with an `output` line would write a file before the recipe runs; that ~/.curlrc
+//     itself is a file an EARLIER call wrote, the documented residual); curl's words are judged as curl
+//     gets them, after the shell's quote removal (`'-o'`, `"-K"` are options too);
+//   - v7 (F1): the token read `"$(cat <path>)"` stands only as the header printf's second word or as a curl -H / --header
+//     value, and only from an accepted token file (acceptedTokenFile); in any other word it denies;
+//   - every other character ($, backtick, backslash, `( ) [ ] * ? ~`, `! { }` inside a word, any other white space) denies;
+//   - `cd <literal path> && ...` is plain too (the fleet writes the recipe so): `cd` with exactly one plain,
+//     unquoted path that does not start with `-`, no redirection, and `&&` right behind it. (A `json.py` an EARLIER call wrote
+//     into that directory is the documented residual of the recipe rewrite, see KNOWN LIMIT there.)
+//   - v5: a line continuation (backslash-newline outside quotes) is removed as the shell removes it, and a newline right after
+//     `|`, `&&` or `||` continues the same pipeline or list (the multi-line recipe the fleet writes); any other backslash denies
+//     (an escaped `\-o` would reach curl as `-o`).
+// Returns the number of commands, or -1 when the text is not plain (the create path wants exactly one command).
+const PLAIN_REWRITE_COMMANDS = new Set(['curl', '/usr/bin/curl', 'printf', 'echo', 'true', 'false', 'ls', 'cat', 'cd'])
+const PLAIN_CREATE_COMMANDS = new Set(['curl', '/usr/bin/curl'])
+const PLAIN_KEYWORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'fi', '{', '}'])
+const PLAIN_CHAR_RX = /[A-Za-z0-9_@%+=:,./-]/
+const TOKEN_CAT_RX = /\$\(cat ([A-Za-z0-9_./-]+)\)/g
+const PLAIN_REDIRECT_RX = /^(?:[0-9]?(?:>>|>\||>&|<&|>|<)|&>>?)/
+const PLAIN_CD_PATH_RX = /^[A-Za-z0-9_@%+=:,./][A-Za-z0-9_@%+=:,./-]*$/
+const PLAIN_AUTH_PRINTF_FORMAT = `'header = "Authorization: Bearer %s"\\n'`
+const PLAIN_AUTH_PRINTF_TOKEN_RX = /^"\$\(cat ([A-Za-z0-9_./-]+)\)"$/
+const PLAIN_FORMAT_RX = /^(?:'[^']*'|"[^"$`\\]*"|[A-Za-z0-9_@%+=:,./-]+)$/
+const PLAIN_CURL_SHORT = 'sSfLiIkvgGNq46'
+const PLAIN_CURL_SHORT_ARG = 'XHdmK'
+const PLAIN_CURL_LONG_NOARG = new Set(['--silent', '--show-error', '--fail', '--fail-with-body', '--location', '--include',
+  '--insecure', '--verbose', '--globoff', '--get', '--compressed', '--no-progress-meter', '--no-buffer', '--disable'])
+const PLAIN_CURL_LONG_ARG = new Set(['--request', '--header', '--data', '--data-raw', '--data-binary', '--json', '--max-time',
+  '--connect-timeout', '--retry', '--retry-delay', '--retry-max-time', '--config', '--url'])
+const unquoted = (a) => a.replace(/'[^']*'|"[^"]*"/g, '')
+// the word as the program gets it, after the shell's quote removal (a quoted '-o' is curl's -o)
+const dequote = (a) => a.replace(/'([^']*)'|"([^"]*)"/g, (_m, s, d) => s ?? d)
+// curl's option words: only the known, non-writing ones. Returns -1 for anything else, 1 when it reads a config from stdin
+// (`-K -` / `--config -`, the only config value let through), 0 otherwise. headerAt gets the index of every word that is the
+// value of a -H / --header, as curl pairs options and values (v8: not the word in front, `-X -H x` is -X's value)
+function plainCurlArgs(args, headerAt = new Set()) {
+  let config = 0
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j]
+    if (!a.startsWith('-') || a === '-') continue
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=')
+      const name = eq === -1 ? a : a.slice(0, eq)
+      if (PLAIN_CURL_LONG_NOARG.has(name) && eq === -1) continue
+      if (!PLAIN_CURL_LONG_ARG.has(name)) return -1
+      const value = eq === -1 ? args[++j] : a.slice(eq + 1)
+      if (value === undefined) return -1
+      if (name === '--header' && eq === -1) headerAt.add(j)
+      if (name === '--config') { if (value !== '-') return -1; config = 1 }
+      continue
+    }
+    for (let q = 1; q < a.length; q++) {
+      if (PLAIN_CURL_SHORT.includes(a[q])) continue
+      if (!PLAIN_CURL_SHORT_ARG.includes(a[q])) return -1
+      const value = q + 1 < a.length ? a.slice(q + 1) : args[++j]
+      if (value === undefined) return -1
+      if (a[q] === 'H' && q + 1 === a.length) headerAt.add(j)
+      if (a[q] === 'K') { if (value !== '-') return -1; config = 1 }
+      break
+    }
+  }
+  return config
+}
+function plainShellText(text, commands, opts) {
+  const segs = [{ words: [], sep: '' }]
+  let w = null
+  const end = () => { if (w !== null) { segs[segs.length - 1].words.push(w); w = null } }
+  for (let k = 0; k < text.length; k++) {
+    const c = text[k]
+    if (c === '\\' && text[k + 1] === '\n') { k++; continue } // a line continuation: the shell joins the two lines
+    if (c === ' ' || c === '\t') { end(); continue }
+    if (c === '&' && (text[k - 1] === '>' || text[k - 1] === '<' || text[k + 1] === '>')) { w = (w ?? '') + c; continue }
+    if (c === '|' && text[k - 1] === '>') { w = (w ?? '') + c; continue } // `>|` is a redirection, not a pipe
+    if (c === '\n' || c === ';' || c === '|' || c === '&') {
+      end()
+      // a newline right after `|`, `&&`, `||` or `|&` continues that pipeline or list: no new command starts there
+      const cur = segs[segs.length - 1]
+      if (c === '\n' && cur.words.length === 0 && ['|', '&&', '||', '|&'].includes(cur.sep)) continue
+      // `||`, `&&` and `|&` are one separator each: only a single `|` makes the next command read this one's output
+      const two = (c === '|' || c === '&') && (text[k + 1] === '|' || text[k + 1] === '&')
+      segs.push({ words: [], sep: two ? c + text[++k] : c })
+      continue
+    }
+    if (c === '#' && w === null) { const e = text.indexOf('\n', k); if (e === -1) break; k = e - 1; continue }
+    if (c === "'") {
+      const e = text.indexOf("'", k + 1)
+      if (e === -1) return -1
+      w = (w ?? '') + text.slice(k, e + 1); k = e; continue
+    }
+    if (c === '"') {
+      const e = text.indexOf('"', k + 1)
+      if (e === -1 || /[$`\\]/.test(text.slice(k + 1, e).replace(TOKEN_CAT_RX, ''))) return -1
+      w = (w ?? '') + text.slice(k, e + 1); k = e; continue
+    }
+    if (PLAIN_CHAR_RX.test(c) || c === '>' || c === '<' || PLAIN_KEYWORDS.has(c)) { w = (w ?? '') + c; continue }
+    return -1
+  }
+  end()
+  let n = 0
+  let rcCurls = 0 // curl commands that may read a ~/.curlrc (no -q / --disable as the first argument)
+  let prevAuth = false // the segment right in front is exactly the recipe's header printf
+  for (let si = 0; si < segs.length; si++) {
+    const seg = segs[si]
+    const authPiped = seg.sep === '|' && prevAuth
+    prevAuth = false
+    let i = 0
+    while (i < seg.words.length && PLAIN_KEYWORDS.has(seg.words[i])) i++
+    if (i === seg.words.length) continue
+    const cmd = seg.words[i]
+    if (!commands.has(cmd)) return -1
+    n++
+    const args = []
+    let input = false
+    const words = seg.words.slice(i + 1)
+    for (let j = 0; j < words.length; j++) {
+      const a = words[j]
+      if (/[!{}]/.test(unquoted(a))) return -1
+      const op = PLAIN_REDIRECT_RX.exec(a)
+      if (!op) {
+        if (/[<>]/.test(unquoted(a))) return -1
+        args.push(a)
+        continue
+      }
+      const target = a.length > op[0].length ? a.slice(op[0].length) : words[++j]
+      if (target === undefined || /[<>!{}]/.test(unquoted(target)) || target.includes('$(')) return -1
+      if (op[0].includes('<')) input = true // any input redirection, a descriptor copy (`0<&3`) too
+      if (/[<>]&$/.test(op[0])) { if (!/^(?:[0-9]+|-)$/.test(target)) return -1; continue } // a descriptor copy or close
+      if (op[0].includes('>')) { if (target !== '/dev/null') return -1; continue } // an output: no file gets written
+      // `<` from a literal file (input is set above)
+    }
+    // the token read `"$(cat <path>)"` only where the recipe puts it -- the header printf's second word
+    // and the value of a curl -H / --header -- and only from an accepted token file: anywhere else its run-time content could
+    // be a curl option or a URL
+    const isCurl = cmd === 'curl' || cmd === '/usr/bin/curl'
+    const headerAt = new Set() // v8: the real -H / --header values, from curl's own option and value pairing
+    if (isCurl && plainCurlArgs(args.map(dequote), headerAt) < 0) return -1
+    for (let k = 0; k < args.length; k++) {
+      if (!args[k].includes('$(')) continue
+      const at = cmd === 'printf' ? k === 1 && args.length === 2 && args[0] === PLAIN_AUTH_PRINTF_FORMAT
+        : isCurl && headerAt.has(k)
+      if (!at || ![...args[k].matchAll(TOKEN_CAT_RX)].every((m) => acceptedTokenFile(m[1], opts))) return -1
+    }
+    // `cd <literal path> &&`: one plain path argument, no redirection, and the `&&` right behind it
+    if (cmd === 'cd' && (args.length !== 1 || args.length !== words.length || !PLAIN_CD_PATH_RX.test(args[0]) || segs[si + 1]?.sep !== '&&')) return -1
+    // the header printf of the bus recipe, word for word and nothing else in its segment (no redirection either), and the file
+    // it reads is an accepted token file (a relative path, `cat -` or a multi-line file could put an `output` or
+    // `url` line into the config, the same check stdinAuthHeaderOnly makes through resolveCatSubst)
+    const tokenCat = cmd === 'printf' && words.length === 2 && words[0] === PLAIN_AUTH_PRINTF_FORMAT && PLAIN_AUTH_PRINTF_TOKEN_RX.exec(words[1])
+    prevAuth = !!tokenCat && acceptedTokenFile(tokenCat[1], opts)
+    if (cmd === 'printf') {
+      const f = args[0] === '--' ? args[1] : args[0] // the format comes first: an option (-v) in front of it is no plain form
+      if (f === undefined || !PLAIN_FORMAT_RX.test(f)) return -1
+      const v = /^['"]/.test(f) ? f.slice(1, -1) : f
+      if (v.startsWith('-') || PRINTF_N_RX.test(v.replace(/%%/g, ''))) return -1
+    }
+    if (cmd === 'curl' || cmd === '/usr/bin/curl') {
+      const cargs = args.map(dequote) // curl's own view of its words
+      const config = plainCurlArgs(cargs)
+      if (config < 0) return -1
+      // a config read from stdin only from the printf piped right into it, never from a file
+      if (config === 1 && (!authPiped || input)) return -1
+      // the -q rule reads the word as written: a quoted '-q' counts as a curl that may read a ~/.curlrc (stricter)
+      if (args[0] !== '-q' && args[0] !== '--disable' && ++rcCurls > 1) return -1
+    }
+  }
+  return n
+}
+const nameIsLiteral = (w, attached = false) => {
+  const i = w.indexOf('=')
+  const part = i === -1 ? w : w.slice(0, i)
+  return NAME_PART_RX.test(part) && !(attached && ATTACHED_PROTECTED_RX.test(part))
+}
+function hasUnspelledCommandWord(src) {
+  let seen = false
+  let ws = -1
+  let cmd = ''
+  let nameNext = false
+  let redirNext = false
+  let valueNext = false
+  let getoptsPos = 0
+  let printfFmt = false
+  // an option word of read / mapfile / readarray: true when it hides an unknown option or a built array name
+  const optionWord = (w) => {
+    if (!/^-[A-Za-z0-9]+$/.test(w)) return true
+    const letters = OPTION_VALUE_LETTERS.get(cmd)
+    for (let i = 1; i < w.length; i++) {
+      const rest = w.slice(i + 1)
+      // `mapfile -C` names a CALLBACK the shell evaluates: its value is code, not data
+      if (cmd !== 'read' && w[i] === 'C') return true
+      if (cmd === 'read' && w[i] === 'a') return rest ? !nameIsLiteral(rest, true) : false // the next word is a name: read as any argument
+      if (letters.includes(w[i])) { if (!rest) valueNext = true; return false }
+    }
+    return false
+  }
+  // an argument of the command word `cmd`: true when the rewrite must not be applied
+  const argUnspelled = (w) => {
+    if (redirNext) { redirNext = false; return false }
+    if (REDIRECTION_ONLY_RX.test(w)) { redirNext = true; return false }
+    if (REDIRECTION_START_RX.test(w)) return false
+    if (cmd === 'for' && w === 'do') { seen = false; return false }
+    if (valueNext) { valueNext = false; return !INERT_VALUE_RX.test(w) }
+    if (nameNext) { nameNext = false; return !nameIsLiteral(w) }
+    // an option-looking word (`getopts -- x NAME`) would shift the position of the name: unknown, fail closed
+    if (cmd === 'getopts') {
+      getoptsPos++
+      // the option string: a word that is or may be an option (`getopts -- x NAME`, `"--"`, `$d`) shifts the position of the name
+      if (getoptsPos === 1) return !GETOPTS_STRING_RX.test(w)
+      return getoptsPos === 2 && !nameIsLiteral(w)
+    }
+    if (cmd === 'printf') {
+      if (printfFmt === 'args') return false // after the format word nothing is an option
+      if (printfFmt === 'fmt') { printfFmt = 'args'; return printfFormatAssigns(w) } // the word after `--`
+      const kind = leadWordKind(w)
+      if (kind === 'plain') { printfFmt = 'args'; return printfFormatAssigns(w) }
+      if (w === '--') { printfFmt = 'fmt'; return false }
+      if (w === '-v') { nameNext = true; return false }
+      if (w.startsWith('-v')) return !nameIsLiteral(w.slice(2), true)
+      return kind === 'unknown'
+    }
+    if (!NAME_ARG_BUILTINS.has(cmd)) return false
+    if (w[0] === '-' && OPTION_VALUE_LETTERS.has(cmd)) return optionWord(w)
+    if (cmd === 'export' && EXPORT_OPTION_RX.test(w)) return false
+    return !nameIsLiteral(w)
+  }
+  const endWord = (e) => {
+    const w = src.slice(ws, e)
+    ws = -1
+    if (seen) return argUnspelled(w)
+    if (COMMAND_WORD_SKIP_RX.test(w)) return false
+    seen = true
+    cmd = w
+    nameNext = false
+    redirNext = false
+    valueNext = false
+    getoptsPos = 0
+    printfFmt = false
+    if (COMMAND_WORD_HARMLESS.has(w)) return false
+    if (!COMMAND_WORD_PLAIN_RX.test(w)) return true
+    // the dot command sources a file (the keyword regex only sees it after a separator), a wrapper hides the real command
+    return w === '.' || COMMAND_WORD_WRAPPERS.has(w.slice(w.lastIndexOf('/') + 1))
+  }
+  for (let k = 0; k < src.length; k++) {
+    const c = src[k]
+    if (c === '\\') {
+      if (src[k + 1] === '\n') { k++; continue }
+      if (ws === -1) ws = k
+      k++; continue
+    }
+    if (c === '#' && ws === -1) { const e = src.indexOf('\n', k); if (e === -1) break; k = e - 1; continue }
+    if (c === "'") { const e = src.indexOf("'", k + 1); if (e === -1) return true; if (ws === -1) ws = k; k = e; continue }
+    if (c === '"') { const e = dquoteEnd(src, k + 1); if (e === -1) return true; if (ws === -1) ws = k; k = e; continue }
+    if (c === '$' && src[k + 1] === "'") {
+      let j = k + 2
+      while (j < src.length && src[j] !== "'") j += src[j] === '\\' ? 2 : 1
+      if (j >= src.length) return true
+      if (ws === -1) ws = k
+      k = j; continue
+    }
+    if (c === '$' && src[k + 1] === '(') { const e = substEnd(src, k + 2); if (e === -1) return true; if (ws === -1) ws = k; k = e; continue }
+    if (c === '`') { const e = src.indexOf('`', k + 1); if (e === -1) return true; if (ws === -1) ws = k; k = e; continue }
+    if (c === '(') {
+      if (ws !== -1) return true
+      const e = substEnd(src, k + 1)
+      if (e === -1) return true
+      // behind `for` the group is its arithmetic header `for ((...)) do`: the command word stays `for`, so that `do` is recognised
+      if (!seen) cmd = '('
+      seen = true
+      k = e; continue
+    }
+    // the shell's blanks: the space and the tab only (a CR, a VT, a FF, a Unicode space is a word character; the newline is below)
+    if (c === ' ' || c === '\t') { if (ws !== -1 && endWord(k)) return true; continue }
+    if (c === '\n' || c === ';' || (c === '|' && !prevIsOp(src, k, '>')) || (c === '&' && !prevIsOp(src, k, '<') && !prevIsOp(src, k, '>') && src[k + 1] !== '>')) {
+      if (ws !== -1 && endWord(k)) return true
+      seen = false
+      continue
+    }
+    if (ws === -1) ws = k
+  }
+  return ws !== -1 && endWord(src.length)
+}
+export function resolveJsonDumpSubst(cmd, opts) {
+  const src = String(cmd ?? '')
+  const cut = src.search(HEREDOC_CUT_RX)
+  const head = cut === -1 ? src : src.slice(0, cut)
+  const rewritten = head.replace(JSON_DUMP_SUBST_RX, (full, flag, code, args, offset) => {
+    if (!JSON_DUMP_CODE_RX.test(code)) return full
+    const segStart = topLevelScan(head, offset + flag.length - flag.trimStart().length)
+    if (segStart === -1) return full
+    if (!CURL_OWNER_RX.test(head.slice(segStart).replace(/^(?:\s|\\\r?\n)+/, ''))) return full
+    const outside = head.replace(JSON_DUMP_SUBST_RX, (m, f, c) => (JSON_DUMP_CODE_RX.test(c) ? ' ' : m))
+    if (COMMAND_SHADOW_RX.test(outside) || COMMAND_SHADOW_RX.test(outside.replace(/\\\n|["'\\]/g, '')) || hasUnspelledCommandWord(outside)) return full
+    if (ARITH_EVAL_RX.test(outside) || ARITH_EVAL_RX.test(outside.replace(/\\\n|["'\\]/g, ''))) return full
+    if (plainShellText(outside, PLAIN_REWRITE_COMMANDS, opts) < 0) return full // v4: the structural allowlist
+    const text = [...args.matchAll(/'([^']*)'/g)].map((m) => m[1]).join(' ')
+    return `${flag}'${text}'`
+  })
+  return rewritten + (cut === -1 ? '' : src.slice(cut))
+}
+
 const FLAT_SUBST_RX = /\$\(([^()'"`$\\]*)\)/g
 function resolveFlatSubst(cmd, opts) {
   return cmd.replace(FLAT_SUBST_RX, (full, inner) => {
@@ -1813,7 +2320,10 @@ function resolveFlatSubst(cmd, opts) {
 // db-write-gate read `echo x >| <protected>` as `echo x >` piped into running the protected path, and let it through).
 const SEGMENT_SEP_RX = /\|\||&&|\|&|;;|[;\n]|(?<!>)\||(?<![<>])&(?!>)/g
 export function shellSegments(command, opts) {
-  const src = resolveFlatSubst(resolveCatSubst(resolveLiteralHeredocSubst(String(command ?? '')), opts), opts)
+  const literal = resolveLiteralHeredocSubst(String(command ?? ''))
+  // The bus recipe's json.dumps rewrite is the schedule surface's: the security surface (db-write-gate) reads the command
+  // as it always did, so a recipe whose text names a security table stays denied there.
+  const src = resolveFlatSubst(resolveCatSubst(opts?.surface === 'security' ? literal : resolveJsonDumpSubst(literal, opts), opts), opts)
     .replace(/\\\r?\n/g, ' ')
   const heredocs = []
   const comments = []
@@ -1845,7 +2355,7 @@ export function shellSegments(command, opts) {
   return segs
 }
 
-// Plain-word parser for one segment. Returns [{ value, dollar, star, ansi }] or
+// Plain-word parser for one segment. Returns [{ value, dollar, star, ansi, sq }] or
 // null when the segment is not a plain word list: a command or process
 // substitution, grouping, brace expansion, a here-string. Redirections are
 // parsed, not rejected: an output target lands on `words.redirects` (the caller
@@ -1855,6 +2365,7 @@ const HEREDOC_OP_RX = /<<-?\s*(?:'[^']*'|"[^"]*"|[A-Za-z_]\w*)/g
 const REDIRECT_OP_RX = /^(?:\d|&)?(?:>>|>\||>|<(?![<(]))/
 
 function readWord(s, i) {
+  const start = i
   let value = ''
   let dollar = false // an UNQUOTED expansion: word splitting can turn it into several words
   let star = false // an unquoted * or [ glob
@@ -1900,7 +2411,10 @@ function readWord(s, i) {
     if (c === '*' || c === '[') star = true
     value += c; i++
   }
-  return { word: { value, dollar, star, ansi }, i }
+  // sq: the whole word is ONE single-quoted part ('...'): no expansion, escape or glob, so `value` is the very bytes
+  // the program gets (the schedule create body, #2354 review)
+  const sq = s[start] === "'" && i === s.indexOf("'", start + 1) + 1
+  return { word: { value, dollar, star, ansi, sq }, i }
 }
 
 export function shellWords(text) {
@@ -1974,9 +2488,11 @@ const CURL_ARG_OPTS = new Map([
 ])
 
 function parseCurl(words) {
-  const out = { urls: [], kinds: new Set(), dataIdx: new Set(), stdinData: false, sent: [], noCurlrc: false }
+  const out = { urls: [], kinds: new Set(), dataIdx: new Set(), stdinData: false, sent: [], methods: [], configs: [], noCurlrc: false }
   const record = (kind, idx, value) => {
     out.kinds.add(kind)
+    if (kind === 'method') out.methods.push(value)
+    if (kind === 'config') out.configs.push(value)
     if (kind === 'header') out.sent.push({ value, ansi: words[idx].ansi })
     if (kind === 'data') {
       out.dataIdx.add(idx)
@@ -2058,6 +2574,90 @@ function isPlainCurlGet(words) {
   const u = p.urls[0]
   if (u.star) return false
   return /^https?:\/\//i.test(u.value)
+}
+
+// SCHEDWRITE1023, the ONE request `--allow-schedule-write` opens: a curl POST that creates a
+// schedule, i.e. `POST <origin>/api/schedules` exactly (the create route). PUT (edit), PATCH,
+// DELETE (cancel) and the POST sub-routes (/toggle, /run) are other operations on schedules and
+// stay denied, as does every other HTTP client: its method is not provable from the command text.
+// Proved from the option grammar, like form (a) -- including -q FIRST (no curlrc): an option parseCurl does not know, an expansion,
+// a config file (-K), a file output (-o -D -c -w), a body kind (-F -T: -T is a PUT) or a method
+// other than the exact string POST makes it null/false. With no -X the request must carry data
+// (curl turns that into a POST). A header naming a method override is not inert here.
+const SCHEDULE_POST_URL_RX = /^https?:\/\/[^/\s$?#]+\/api\/schedules$/i
+const SCHEDULE_POST_KINDS = new Set(['header', 'safe', 'method', 'data', 'url'])
+function isCurlSchedulePost(words) {
+  const p = parseCurl(words)
+  if (!p) return false
+  // ~/.curlrc is read before the command line and can add `request = ...` / `output = ...` to this POST:
+  // like the plain GET, the create POST proves its shape only with -q / --disable as the very first argument.
+  if (!p.noCurlrc) return false
+  if (words.some((w) => w.value === '--get' || /^-[A-Za-z]*G/.test(w.value))) return false // -G turns the data into a GET query
+  for (const k of p.kinds) if (!SCHEDULE_POST_KINDS.has(k)) return false
+  if (!p.sent.every(headerValueIsInert) || p.sent.some((h) => /method/i.test(h.value))) return false
+  if (p.methods.some((m) => m !== 'POST')) return false
+  if (!p.methods.length && !p.kinds.has('data')) return false // no body, no -X: a GET
+  if (p.urls.length !== 1) return false
+  const u = p.urls[0]
+  return !u.star && !u.dollar && SCHEDULE_POST_URL_RX.test(u.value)
+}
+
+// The create handler takes `agent`, `targetSession` and `forceSend` from the body, and the API does not know its
+// caller: opened as is, the route would let a listed sub-agent create a schedule for ANOTHER agent (the main agent by
+// default) or for any session. So the gate proves the body (#2354 review): exactly ONE data option, written in the
+// ORIGINAL command as one single-quoted word right after -d / --data / --data-raw / --data-binary / --json -- not a
+// file (@x), not stdin, not a substitution (the json.dumps and heredoc rewrites in shellSegments would show this check
+// a different text than curl sends), and the data word itself is that single-quoted word, not a double-quoted,
+// escaped or unquoted twin of it ("$X" or ${X} expands, an unquoted ? globs, both behind a
+// matching literal elsewhere) -- in a command of ONE line: no backslash-newline (shellSegments joins it with a space,
+// which the shell does not) and no raw line break, in the body either -- that parses as a JSON object whose `agent` is the hook's own agent and which
+// carries neither `targetSession` nor `forceSend` (key present at all, any value). Anything else stays denied.
+// no dot: the hook knows its agent only through selfAgentFromProjectDir / acceptedTokenFile, which take no dot
+const AGENT_NAME_RX = /^[A-Za-z0-9][A-Za-z0-9_-]{0,49}$/
+const SCHEDULE_BODY_LITERAL_RX = /(?:^|[ \t])(?:-d|--data|--data-raw|--data-binary|--json)[ \t]+'([^']*)'/g
+const SCHEDULE_BODY_OPTS = new Set(['-d', '--data', '--data-raw', '--data-binary', '--json'])
+function scheduleCreateBodyOk(original, words, selfAgent, opts) {
+  if (typeof selfAgent !== 'string' || !AGENT_NAME_RX.test(selfAgent)) return false
+  // The two rewrites that turn agent-written TEXT into a literal word (the json.dumps argv form and the quoted-heredoc
+  // substitution) would show this check a body curl never sends: a command they change opens nothing (#2354: a matching literal in a comment next to a rewritten body). The other rewrites leave a NUL
+  // marker (token, opaque $(...)), which no typed literal can equal.
+  const src = String(original ?? '')
+  if (resolveJsonDumpSubst(src) !== src || resolveLiteralHeredocSubst(src) !== src) return false
+  // v7: opts, so the documented token header (-H "Authorization: Bearer $(cat <accepted token file>)") is checked against the same files
+  if (plainShellText(src, PLAIN_CREATE_COMMANDS, opts) !== 1) return false // v4: the create command is ONE plain curl, nothing around it
+  // v3: JS \s is wider than the shell's blanks; any white space but the space and the tab (CR, LF, VT, FF, NBSP,
+  // U+2028, BOM ...) is no word break for bash, so it denies here
+  if (/[^\S \t]/.test(src)) return false
+  const p = parseCurl(words)
+  if (!p || p.dataIdx.size !== 1) return false
+  const k = [...p.dataIdx][0]
+  const w = words[k]
+  if (w.dollar || w.ansi || w.star) return false
+  if (!w.sq) return false
+  if (!SCHEDULE_BODY_OPTS.has(words[k - 1]?.value)) return false
+  const literals = [...src.matchAll(SCHEDULE_BODY_LITERAL_RX)].map((m) => m[1])
+  if (literals.length !== 1 || literals[0] !== w.value) return false
+  let body
+  try { body = JSON.parse(w.value) } catch { return false }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false
+  // a body that names the `agent` key more than once (an escaped spelling is the same
+  // key) is denied, whichever value comes last. Every string token is matched in order, so a quoted "agent": inside a
+  // value is no key; a nested object's `agent` key counts too (fail closed).
+  const keys = [...w.value.matchAll(/"((?:[^"\\]|\\.)*)"(\s*:)?/g)].filter((m) => m[2]).map((m) => JSON.parse(`"${m[1]}"`))
+  if (keys.filter((key) => key === 'agent').length !== 1) return false
+  if (Object.hasOwn(body, 'targetSession') || Object.hasOwn(body, 'forceSend')) return false
+  return body.agent === selfAgent
+}
+
+// The segment-level half of the same exemption: the segment's message-data-free text must reference the schedule
+// API and nothing else of the surface (no directory, registry tool, schedule SQL, database file, tainted variable
+// or stray token-file mention), the command itself must be the curl POST above, and its body the one proved above.
+function isScheduleCreateSegment(residue, words, tainted, opts, tokenMention, original) {
+  const r = scheduleSurfaceRefsAll(residue, opts)
+  if (!r.api || r.dir || r.cli || r.sql || r.db) return false
+  if ([...tainted].some((v) => new RegExp(`\\$\\{?${v}(?!\\w)`).test(residue))) return false
+  if (tokenMention(residue)) return false
+  return isCurlSchedulePost(words) && scheduleCreateBodyOk(original, words, opts.selfAgent, opts)
 }
 
 // Form (b): commands that can neither write a file (other than through a
@@ -2168,7 +2768,7 @@ const GH_PROSE_FILE_FLAGS = new Set(['--body-file', '--notes-file', '-F'])
 // Form (c): the segment's text with its LITERAL message data removed. The data
 // words are found by the carrier's own grammar; anything not recognised keeps
 // the full text, so the reference stays and the segment is denied.
-export function dataResidue(seg, words, name, opts) {
+export function dataResidue(seg, words, name, opts, stdinHeaderOnly = false) {
   const keep = (drop) => words.filter((_, i) => !drop.has(i)).map((w) => w.value).join(' ')
   // The kanban write tool (security surface only): its --title is card text, and
   // the tool writes kanban_cards / kanban_comments, never a security table. Run
@@ -2186,7 +2786,10 @@ export function dataResidue(seg, words, name, opts) {
   }
   if (name === 'curl') {
     const p = parseCurl(words)
-    if (!p || p.kinds.has('config')) return seg.text
+    if (!p) return seg.text
+    // a config the gate cannot see keeps the whole segment in the judgement -- except `-K -` fed by exactly the fleet's
+    // `printf 'header = "Authorization: Bearer %s"\n' "$(cat <token file>)" |`, whose config is one header line
+    if (p.kinds.has('config') && !(stdinHeaderOnly && p.configs.length > 0 && p.configs.every((c) => c === '-'))) return seg.text
     return [keep(p.dataIdx), ...(p.stdinData ? [] : seg.bodies)].join('\n')
   }
   if (name === 'git') {
@@ -2240,6 +2843,17 @@ export function dataResidue(seg, words, name, opts) {
   return seg.text
 }
 
+// Is segment k fed through a pipe by exactly `printf 'header = "Authorization: Bearer %s"\n' <accepted token file substitution>`?
+// That is the fleet recipe's `curl -K -` config: one Authorization header, no URL, no method, no data.
+const AUTH_HEADER_CONFIG_FORMAT = 'header = "Authorization: Bearer %s"\\n'
+function stdinAuthHeaderOnly(segs, k) {
+  const prev = k > 0 ? segs[k - 1] : null
+  if (!prev || prev.sep !== '|' || prev.bodies.length) return false
+  const w = shellWords(prev.own)
+  return !!w && w.length === 3 && w.redirects.length === 0 && commandName(w) === 'printf'
+    && w[1].value === AUTH_HEADER_CONFIG_FORMAT && w[2].value === TOKEN_NONCE
+}
+
 // The registry tool's read-only use: `node|tsx <path>/schedule-registry-cli.(js|ts)
 // status|verify ...` or `npx [--no-install|-y] tsx <path> status|verify ...`.
 // No runner option before the script (`node --import X`, `-e`), no expansion
@@ -2273,8 +2887,51 @@ function isGitSourceCommand(words, name) {
 // an SQL write through a script file is a stated limit.
 const DB_FILE_WRITERS = new Set(['cp', 'mv', 'tee', 'dd', 'rm', 'ln', 'truncate', 'install', 'rsync', 'shred', 'unlink', 'touch', 'scp', 'tar', 'unzip', 'patch'])
 const SQLITE_FILE_DOT_RX = /(?:^|[\s'"])\.(?:read|restore|import|load|shell|system|clone|backup|save)\b|(?:^|\s)-init\b/
-function dbSegmentWrites(words, name, text) {
+// A downloader's file-output options write a file of the caller's choosing, the database file
+// included: `curl -o store/claudeclaw.db URL`. This runs only on a segment that names the database,
+// so every spelling that can take a path counts, fail-closed: curl clusters (-sSo f, -ofile), the
+// long names and their unique prefixes (curl accepts --out for --output), and the options that save
+// a trace, a header dump, a cookie jar or a remote-named file, and a config file. A short option that takes a value
+// ends the cluster scan: the rest of the word is that value (-XDELETE is not -D).
+// w: -w/--write-out takes `%output{<file>}`; --hsts and --alt-svc keep a cache file they write back
+const CURL_OUT_SHORT = 'oDcOKw' // K: a config file (also from stdin) can say `output = <file>`
+const CURL_ARG_SHORT = 'AbCdeEFHmPQrtTuUwxXyYz'
+const CURL_OUT_LONG = ['output', 'dump-header', 'cookie-jar', 'remote-name', 'trace', 'stderr', 'etag-save', 'libcurl', 'config',
+  'write-out', 'hsts', 'alt-svc']
+const WGET_OUT_SHORT = 'OoaP'
+const WGET_OUT_LONG = ['output-document', 'output-file', 'append-output', 'directory-prefix']
+const optionNameHits = (v, names) => {
+  const n = v.slice(2).split('=')[0]
+  return n.length >= 2 && names.some((l) => l.startsWith(n) || n.startsWith(l))
+}
+// The curl LONG options whose value is the NEXT word when written without `=`: that word is data (`--data -o`), not a switch. (The short
+// ones, `-d -o`, `-H -o`, `-X -o`, never reach this scan: their values are removed before it, measured.)
+// Only the exact long names are listed (curl also takes unique prefixes); an abbreviation is not skipped, so its next word is still
+// scanned as before (fail closed).
+const CURL_VALUE_LONG = new Set(['data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'header', 'request', 'user-agent', 'json'])
+function downloaderWritesFile(words, name) {
+  const curl = name === 'curl'
+  if (!curl && name !== 'wget') return false
+  let valueNext = false
+  for (const w of words.slice(1)) {
+    if (valueNext) { valueNext = false; continue }
+    const v = w.value
+    if (v.startsWith('--')) {
+      if (optionNameHits(v, curl ? CURL_OUT_LONG : WGET_OUT_LONG)) return true
+      if (curl && CURL_VALUE_LONG.has(v.slice(2))) valueNext = true
+      continue
+    }
+    if (!v.startsWith('-') || v.length < 2) continue
+    for (const ch of v.slice(1)) {
+      if ((curl ? CURL_OUT_SHORT : WGET_OUT_SHORT).includes(ch)) return true
+      if (curl && CURL_ARG_SHORT.includes(ch)) break
+    }
+  }
+  return false
+}
+function dbSegmentWrites(words, name, text, downloaders = true) {
   if (DB_FILE_WRITERS.has(name)) return true
+  if (downloaders && downloaderWritesFile(words, name)) return true
   if (name === 'sed' && words.some((w) => /^-[a-zA-Z]*i/.test(w.value) || w.value.startsWith('--in-place'))) return true
   if ((name === 'perl' || name === 'ruby') && words.some((w) => /^-[a-zA-Z]*i/.test(w.value))) return true
   if (/^sqlite3?$/.test(name) && SQLITE_FILE_DOT_RX.test(text)) return true
@@ -2359,8 +3016,16 @@ function wholeCommandExports(command) {
 // The only cross-segment state left is a tainted VARIABLE (`F=<store path>;
 // cat >> $F`): a value carrying a reference taints its name, and a later use of
 // it counts as a reference. That only ADDS denials.
+//
+// SCHEDWRITE1023: gateOpts.allowScheduleWrite (a literal true, the hook's --allow-schedule-write) lets ONE kind of
+// segment through that this decision otherwise denies: a segment whose only schedule reference is the dashboard
+// schedule API and that is a curl POST of a new schedule (isCurlSchedulePost). The API reference itself stays in
+// the decision, so PUT, PATCH, DELETE, the POST sub-routes and every other HTTP client stay denied with the flag.
+// The store directory, the registry tool, the schedule table SQL and the dashboard
+// database file stay judged exactly as without the flag.
 export function scheduleSurfaceDeny(command, gateOpts = {}) {
   const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent, surface: gateOpts.surface }
+  const apiOpen = gateOpts.allowScheduleWrite === true
   const whole = scheduleSurfaceRefs(command, opts)
   const wholeStrong = strongRef(whole)
   if (!wholeStrong && !whole.db) return false
@@ -2419,9 +3084,23 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
     if (names) { names.forEach((n) => (strong ? tainted : dbTainted).add(n)); continue } // an assignment writes nothing
     if (words[0].value === 'for' && /^[A-Za-z_]\w*$/.test(words[1]?.value ?? '')) { (strong ? tainted : dbTainted).add(words[1].value); continue }
     const name = commandName(words) // '' for an untrusted path -> matches no form -> deny
-    if (db) {
-      if (dbSegmentWrites(words, name, view.text)) return true
-      continue
+    const security = opts.surface === 'security'
+    const residue = dataResidue(view, words, name, opts, !security && name === 'curl' && stdinAuthHeaderOnly(segs, k))
+    // The database file is judged on what the command does, not on what its message data says, and on EVERY segment that
+    // names it -- also one that names a schedule route (`curl -o <db> URL -d '/api/schedules'` made the segment
+    // "strong" and skipped this check). A reference that only sits in message data is not a reference.
+    // ...and a command path the gate cannot trust (name === '') is judged on its WHOLE segment: its residue drops the message
+    // word of scripts/agent-msg.sh, which is no data when the script is not the real helper
+    // The security surface (db-write-gate) keeps its own flow, as before this change: the database file is judged on the
+    // segments that name nothing else, and without the downloader rule (a gap there is not this change's to close).
+    if (security) {
+      if (db) {
+        if (dbSegmentWrites(words, name, view.text, false)) return true
+        continue
+      }
+    } else {
+      if ((db || strong) && dbRefsIn(name === '' ? view.text : residue) && dbSegmentWrites(words, name, view.text)) return true
+      if (db) continue
     }
     // A reference that sits in a heredoc body, with the command's output going
     // to a file: `cat <<'X' > /tmp/s.sh ... X; bash /tmp/s.sh`. The file is a
@@ -2432,13 +3111,13 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
     const fileTargets = words.redirects.map((t) => t.value).filter((v) => v !== '/dev/null')
     const scriptFile = opts.surface !== 'security' || laterRuns(segs, k, fileTargets)
     if (seg.bodies.length && refsIn(seg.bodies.join('\n')) && fileTargets.length && scriptFile) return true
-    const residue = dataResidue(view, words, name, opts)
     // The security surface reads the same of any output: SQL text written to a
     // file (`printf 'UPDATE approvals ..' > s.sql; sqlite3 db < s.sql`) is a
     // statement file the next segment runs, whichever command wrote it.
     if (opts.surface === 'security' && fileTargets.length && scriptFile && refsIn(residue)) return true
     if (!refsIn(residue)) continue // (c) only message data mentions it
     if (name === 'curl' && isPlainCurlGet(words)) continue // (a)
+    if (apiOpen && name === 'curl' && isScheduleCreateSegment(residue, words, tainted, opts, tokenMention, command)) continue // SCHEDWRITE1023
     if (isReadOnlyFsCommand(words, name) && pipesOnlyIntoSinks(segs, k, redirectsOk)) continue // (b)
     // the registry tool's read-only subcommands, and git on its source
     const r = scheduleSurfaceRefs(view.text, opts)
@@ -2968,9 +3647,10 @@ function shellWordRuns(words, i) {
 }
 
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
-// such pieces back together so `tmux a \; send-keys` stays one segment.
-function codeSegments(command) {
-  const segs = shellSegments(command)
+// such pieces back together so `tmux a \; send-keys` stays one segment. opts: the gate's own (v6), so the recipe rewrite
+// in shellSegments accepts the same token files as everywhere else in decide().
+function codeSegments(command, opts) {
+  const segs = shellSegments(command, opts)
   if (segs == null) {
     const whole = String(command ?? '')
     const out = [{ own: whole, bodies: [] }]
@@ -3524,8 +4204,8 @@ export function substitutionInCommandPosition(command, { heredoc: asHeredocBody 
   return found
 }
 
-function scanShellCode(command) {
-  const segs = codeSegments(command)
+function scanShellCode(command, opts) {
+  const segs = codeSegments(command, opts)
   const codes = []
   const seen = new Set()
   const push = (c) => {
@@ -3734,6 +4414,16 @@ function mcpBaseInsideGuarded(base, opts) {
 
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
+  // SCHEDWRITE1023: `--allow-schedule-write` on the hook command (set by the
+  // scaffold for the agents named in SELF_PACE_SCHEDULE_WRITERS) opens exactly ONE
+  // route: a curl POST that creates a schedule (POST /api/schedules, isCurlSchedulePost);
+  // PUT, PATCH, DELETE, the POST sub-routes and other HTTP clients stay denied. Everything else
+  // this gate denies stays denied: the self-schedule store (scheduled_tasks.json),
+  // the scheduled-tasks directory, the registry tool, the schedule table SQL, the
+  // dashboard database file, the self-pacing tools, `tmux send-keys`, /loop, the
+  // scheduler binaries, the egress allowlist, and the other protected store files.
+  // Only a literal true counts.
+  const allowScheduleWrite = opts.allowScheduleWrite === true
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
   if (/^mcp__/i.test(name)) return mcpDecide(name, toolInput, opts)
   // Native file tools writing the self-schedule store would bypass any Bash regex.
@@ -3750,7 +4440,7 @@ function decide(toolName, toolInput, opts = {}) {
     // commit-message blanking below: that blanking is regex-based and trusts a
     // `-d` wherever it appears (`python3 -c CODE -d URL` would blank the URL),
     // so this check does its own grammar-aware data removal instead.
-    if (scheduleSurfaceDeny(String(toolInput?.command ?? ''), opts)) return { deny: true }
+    if (scheduleSurfaceDeny(String(toolInput?.command ?? ''), { ...opts, allowScheduleWrite })) return { deny: true }
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
     // data, not an invocation; and since splitSegments is NOT quote-aware, a shell
     // separator (; && | &) INSIDE a dispatch body would otherwise orphan a fragment
@@ -3758,7 +4448,12 @@ function decide(toolName, toolInput, opts = {}) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? '')))))
+    //
+    // The fleet's closing recipe (`--data-binary "$(python3 -c '<fixed json.dumps>' '<text>')"`) is resolved to the literal
+    // it evaluates to FIRST (resolveJsonDumpSubst, the same rewrite the surface check applies), so its result text is
+    // blanked like any other data payload instead of being matched as a method / tmux send-keys.
+    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(
+      resolveJsonDumpSubst(String(toolInput?.command ?? ''), opts)))))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
@@ -3776,7 +4471,7 @@ function decide(toolName, toolInput, opts = {}) {
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
-      if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+      if (!allowScheduleWrite && SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
     }
     // The protected store files and the allowlist judge the segments the shell runs (protectedSegments,
     // EGRESSFP1106 (a)): a `|` or `;` inside a quoted grep pattern does not make a command of its own.
@@ -3822,14 +4517,16 @@ function decide(toolName, toolInput, opts = {}) {
     const rawCommand = String(toolInput?.command ?? '')
     const depth = opts.depth ?? 0
     const bodies = []
-    if (substitutionInCommandPosition(rawCommand, { bodies })) return { deny: true, reason: 'dynamic-command' }
+    // The fleet's closing recipe is resolved to the literal it evaluates to first (the same rewrite as above): its fixed
+    // python snippet is not a command to decide again, and its result text is data, not a tmux send-keys or a method.
+    if (substitutionInCommandPosition(resolveJsonDumpSubst(rawCommand, opts), { bodies })) return { deny: true, reason: 'dynamic-command' }
     // the code of each outermost substitution is a command of its own (scanShellCode does not look inside one)
     for (const body of bodies) {
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
       const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
-    const scan = scanShellCode(rawCommand)
+    const scan = scanShellCode(rawCommand, opts)
     for (const code of scan.codes) {
       if (code.ansi) return { deny: true, reason: 'shell-code' }
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
@@ -3838,7 +4535,7 @@ function decide(toolName, toolInput, opts = {}) {
     }
     if (scan.bad) return { deny: true, reason: 'shell-code' }
     // tmux command shortcuts and `tmux a \; send-keys` chains
-    for (const seg of codeSegments(rawCommand)) {
+    for (const seg of codeSegments(rawCommand, opts)) {
       const words = splitCodeWords(seg.own)
       if (words != null && (tmuxInjectsPane(words) || systemctlArmsTimer(words))) return { deny: true }
     }
@@ -3870,6 +4567,76 @@ const DYNAMIC_COMMAND_GATE_MSG =
   'Self-pace kapu: a parancs NEVE helyettesitesbol jon ($(...), backtick vagy <(...)), igy a kapu nem latja, ' +
   'mi fut: a $(echo X) az X-et futtatja. Fail-closed: TILTVA. Ird ki a parancsot szo szerint; a ' +
   'helyettesites argumentumkent vagy idezve tovabbra is szabad.'
+
+// The deny text names the operation that was blocked. GATE_MSG stays the generic fallback and
+// the fail-closed text. The classification below only chooses the SENTENCE, after the decision: it can never change a verdict.
+const GATE_HEAD = 'Self-pace TILTOTT (governance hard-gate). '
+const GATE_TAIL = 'Utemezest a fo agenstol kerj inter-agent uzenetben. Input-vezerelt vagy: csak az operator (channel) vagy egy ' +
+  'peer (inter-agent) uzenete inditson. Ha varakozol, maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. ' +
+  'SOHA ne valaszolj magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
+// one label per SELF_PACE_BASH_PATTERNS entry, same order
+const SELF_PACE_BASH_LABELS = [
+  'tmux send-keys / paste-buffer / run-shell (billentyu-injektalas egy pane-be)',
+  'nohup / setsid / disown + claude (onujraindito hatterfolyamat)',
+  '/loop slash-skill (onallo ujrafuttatas)',
+]
+const SCHEDULE_CREATE_ONLY = 'A kapcsolo CSAK az uj utemezes letrehozasat engedi: `curl -q -X POST http://<host>/api/schedules` + adat (a -q az ELSO argumentum), ' +
+  'egy URL, -K/-o/-D/-c/-G, method-override fejlec es mas kliens nelkul. A parancs egy sorban (sorvegi \\ nelkul), a torzs EGY egyszeres ' +
+  'idezojeles inline JSON: -d \'{"agent":"<sajat nev>",...}\', csak a sajat agent, egyszer, targetSession es forceSend nelkul; fajl (@x), ' +
+  'stdin, heredoc, valtozo vagy $(...) a torzsben nem megy at.'
+
+function apiOperation(command, apiOpen) {
+  if (!apiOpen) {
+    return {
+      what: 'iras a dashboard utemezes-API-ra (/api/schedules)',
+      hint: 'Ehhez az ugynokhoz nincs utemezes-iras engedelyezve (SELF_PACE_SCHEDULE_WRITERS). Olvasni a `curl -q -s -H "Authorization: ' +
+        'Bearer $(cat <TOKEN>)" http://.../api/schedules` GET megy (-q ELSO argumentum, <TOKEN> a repo-gyoker abszolut utja).',
+    }
+  }
+  const method = [...command.matchAll(/(?:-X\s*|--request[\s=])['"]?(POST|PUT|PATCH|DELETE)\b/gi)].map((m) => m[1].toUpperCase()).pop()
+    ?? (/(?:^|\s)(?:-T|--upload-file)\b/.test(command) ? 'PUT' : undefined)
+  const sub = /\/api\/schedules\/[^\s'"/]+\/(toggle|run)\b/i.exec(command)
+  if (sub) return { what: `POST /api/schedules/<id>/${sub[1].toLowerCase()} (al-utvonal)`, hint: SCHEDULE_CREATE_ONLY }
+  if (method === 'DELETE') return { what: 'DELETE /api/schedules (utemezes torlese)', hint: SCHEDULE_CREATE_ONLY }
+  if (method === 'PUT' || method === 'PATCH') return { what: `${method} /api/schedules (utemezes szerkesztese)`, hint: SCHEDULE_CREATE_ONLY }
+  if (!/\bcurl\b/.test(command)) {
+    return { what: 'a /api/schedules hivasa nem-curl kliensbol (a metodusa a szovegbol nem bizonyithato)', hint: SCHEDULE_CREATE_ONLY }
+  }
+  return { what: 'olyan /api/schedules hivas, ami nem a sima curl POST (uj utemezes)', hint: SCHEDULE_CREATE_ONLY }
+}
+
+function denyOperation(toolName, toolInput, opts = {}) {
+  if (SELF_PACE_TOOLS.has(toolName)) {
+    return { what: `a(z) ${toolName} eszkoz (onallo, jovobeli turn utemezese)`, hint: 'Sub-agentkent ez az eszkoz nem hasznalhato.' }
+  }
+  if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
+    const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
+    if (SCHEDULE_STORE_RX.test(fp)) return { what: 'iras a scheduled_tasks.json fajlba (a sajat utemezes-tar)', hint: 'Olvasni cat / grep / ls-sel lehet.' }
+    if (SCHEDULE_DIR_PATH_RX.test(fp)) return { what: 'iras a scheduled-tasks konyvtarba (a dashboard utemezes-tara)', hint: 'Olvasni cat / grep / ls-sel lehet, abszolut uttal.' }
+    return null
+  }
+  if (toolName !== 'Bash') return null
+  const command = String(toolInput?.command ?? '')
+  const i = SELF_PACE_BASH_PATTERNS.findIndex((re) => re.test(normalizeShellEvasion(command)))
+  if (i >= 0) return { what: SELF_PACE_BASH_LABELS[i] ?? 'onallo ujrainditas', hint: 'Sub-agentkent ez a ut zarva van.' }
+  const r = scheduleSurfaceRefs(command, { parentCtx: cdsIntoStoreParent(command), projectRoot: opts.projectRoot, selfAgent: opts.selfAgent })
+  if (r.sql) return { what: 'utemezes-tabla SQL-iras (scheduled_tasks)', hint: 'Olvasni sqlite3 SELECT-tel lehet.' }
+  if (r.db) return { what: 'a dashboard adatbazis fajl (claudeclaw.db) irasa vagy felulirasa', hint: 'Olvasni sqlite3 SELECT-tel lehet.' }
+  if (r.cli) return { what: 'schedule-registry-cli register / unregister', hint: 'Csak a status es a verify megy.' }
+  if (SCHEDULE_STORE_RX.test(command)) return { what: 'iras a scheduled_tasks.json fajlba (a sajat utemezes-tar)', hint: 'Olvasni cat / grep / ls-sel lehet.' }
+  if (r.dir) return { what: 'iras a scheduled-tasks konyvtarba (a dashboard utemezes-tara)', hint: 'Olvasni ls / cat / grep / sed -n lehet, abszolut uttal (cd nelkul).' }
+  if (SCHEDULER_RX.test(command)) return { what: 'utemezo binaris (crontab / at / batch / launchctl / systemd-run)', hint: 'Csak a pure listazas (crontab -l, atq, launchctl list) megy.' }
+  if (r.api) return apiOperation(command, opts.allowScheduleWrite === true)
+  return null
+}
+
+export function gateMessage(toolName, toolInput, opts = {}) {
+  try {
+    const op = denyOperation(toolName, toolInput, opts)
+    if (op) return `${GATE_HEAD}Tiltott muvelet: ${op.what}. ${op.hint} ${GATE_TAIL}`
+  } catch { /* the sentence is advisory: any failure falls back to the generic text */ }
+  return GATE_MSG
+}
 
 const ALLOWLIST_GATE_MSG =
   'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
@@ -3978,13 +4745,17 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
     // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
     const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
     if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.bare.length) allow()
-    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent, projectDir: process.env.CLAUDE_PROJECT_DIR || null })
+    // SCHEDWRITE1023: the scaffold appends this flag to the hook command of the agents named in
+    // SELF_PACE_SCHEDULE_WRITERS; without it, the gate is byte-for-byte what it was.
+    const allowScheduleWrite = process.argv.includes('--allow-schedule-write')
+    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent, projectDir: process.env.CLAUDE_PROJECT_DIR || null, allowScheduleWrite })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
         : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
         : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
-        : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG : GATE_MSG)
+        : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG
+        : gateMessage(payload?.tool_name, payload?.tool_input, { selfAgent, allowScheduleWrite }))
     }
     allow()
   } catch (err) {

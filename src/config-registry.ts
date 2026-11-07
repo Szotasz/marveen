@@ -1129,6 +1129,22 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'SELF_PACE_SCHEDULE_WRITERS',
+    type: 'string',
+    default: '',
+    // #2354 review: the list grants a self-pace deny exemption, so ADDING a name loosens; removing one, reordering
+    // or spacing does not. Names compare exactly (the hook flag is per exact agent name): a case variant is a new name.
+    loosens: (oldValue, newValue) => {
+      const names = (v: string) => new Set(v.split(',').map((w) => w.trim()).filter(Boolean))
+      const before = names(oldValue)
+      return [...names(newValue)].some((n) => !before.has(n))
+    },
+    description: 'Vesszővel elválasztott ügynöknevek: a felsorolt ügynökök a self-pace-kapun át is írhatják a dashboard ütemezés-végpontját (POST /api/schedules). Üresen hagyva minden alügynök tiltást kap, ahogy eddig. A listán szereplő ügynök kapu-parancsa megkapja az --allow-schedule-write kapcsolót, és KIZÁRÓLAG az ütemezés-végpont írásának tilalma oldódik; az ütemezés-tár (scheduled_tasks.json), az ütemezett feladatok könyvtára, a schedule-registry eszköz, az SQL-írás, a dashboard-adatbázisfájl, az önütemező eszközök, a billentyű-küldés a tmux-szal, az ütemező programok és az egress-engedélylista védelme marad. Strict biztonsági profilú ügynök a listán szerepelve sem kapja meg a kapcsolót. Az érvénytelen nevet a rendszer figyelmeztetéssel kihagyja, jogot sosem ad. A fő ügynökre a beállítás nem vonatkozik. A kapcsoló a HTTP-oldalon nem azonosítja a hívót: ez fegyelmi határ, mint maga a kapu. A módosítás az ügynökök következő indításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+  },
   // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
   // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
   // settings are byte-identical to an install without the switch.
