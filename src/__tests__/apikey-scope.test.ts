@@ -270,6 +270,9 @@ describe('the owner-facing texts (doctor line, one-time notice)', () => {
     }
     expect(notice('subscription', 'en')).toContain('authMode=api')
     expect(notice('subscription', 'hu')).toContain('authMode=api')
+    // Samu 72311: B on its own must tell the truth: the main agent still gets the key (its own mode comes with A+D).
+    expect(notice('subscription', 'en')).toContain('only agents set to authMode=api and the main agent get it')
+    expect(notice('subscription', 'hu')).toContain('csak az authMode=api beállítású ügynökök és a fő ügynök kapják meg')
     expect(notice('none', 'hu')).toBe('')
   })
   it('channels.sh sends it once: the stamp only after notify.sh succeeded, in the background', () => {
