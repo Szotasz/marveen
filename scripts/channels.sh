@@ -1129,7 +1129,16 @@ claude_native_update() {
   return 1
 }
 
-if ! command -v claude >/dev/null 2>&1; then
+# HOSTINGERDOCKER1107: in the container the image owns the claude version (Dockerfile CLAUDE_CODE_VERSION, npm-global
+# in /usr/local, outside the volumes): no self-heal install and no daily update here. A newer claude is a newer image.
+marveen_in_docker() {
+  [ -f "$INSTALL_DIR/.env" ] && grep -qx 'MARVEEN_DEPLOYMENT=docker' "$INSTALL_DIR/.env"
+}
+if marveen_in_docker; then
+  command -v claude >/dev/null 2>&1 \
+    || echo "$(date '+%F %T') claude MISSING in the container: the image is broken (no self-heal install in Docker mode)" >&2
+  echo "$(date '+%F %T') claude update SKIPPED: Docker mode, the image owns the version" >&2
+elif ! command -v claude >/dev/null 2>&1; then
   if ! claude_relink_native; then
     claude_install "binary missing -- self-heal"
   fi

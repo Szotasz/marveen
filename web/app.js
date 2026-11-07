@@ -14881,7 +14881,12 @@ async function loadUpdates() {
     renderUpdatesVersion(data)
     updateBranchDriftUI(data)
     renderBranchNotice(data)
-    if (data.error) {
+    if (data.deployment === 'docker') {
+      // HOSTINGERDOCKER1107: the image owns the version (no git checkout here): say how to update instead of a failure.
+      summary.className = 'updates-summary'
+      summary.textContent = t('updates.docker_managed')
+      applyBtn.hidden = true
+    } else if (data.error) {
       summary.className = 'updates-summary error'
       summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}`
       applyBtn.hidden = true
@@ -14954,6 +14959,8 @@ async function renderCliUpdateOffer(fresh) {
   if (!box) return
   let d
   try { d = await (await fetch('/api/updates/cli' + (fresh ? '?fresh=1' : ''))).json() } catch { box.hidden = true; return }
+  // HOSTINGERDOCKER1107: in the container the claude CLI comes with the image; nothing to install from here.
+  if (d.deployment === 'docker') { box.hidden = true; return }
   const esc = escapeHtmlUpdates
   const lines = []
   lines.push(`<strong>${esc(t('updates.cli.title'))}</strong>`)

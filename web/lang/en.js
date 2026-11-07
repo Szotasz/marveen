@@ -1386,6 +1386,7 @@ window._i18n.en = {
   'updates.brand_subtitle':        '{brand} version check',
   'conversation.modal_title':      'Conversation',
   'updates.checking':             'Checking...',
+  'updates.docker_managed': 'This Marveen runs in a container, and its image sets the version. Update it with a new image: docker compose pull && docker compose up -d',
   'updates.btn.check':           'Check',
   'updates.btn.update':          'Update',
   'updates.loading':             'Checking for updates...',

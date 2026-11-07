@@ -1767,6 +1767,7 @@ window._i18n.hu = {
   'updates.brand_subtitle':        '{brand} verzió ellenőrzés',
   'conversation.modal_title':      'Beszélgetés',
   'updates.checking':             'Ellenőrzés...',
+  'updates.docker_managed': 'Ez a Marveen konténerben fut, a verzióját az image adja. Frissítés új image-dzsel: docker compose pull && docker compose up -d',
   'updates.btn.check':           'Ellenőrzés',
   'updates.btn.update':          'Frissítés',
   'updates.loading':             'Frissítés keresése...',

@@ -20,6 +20,7 @@ import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
 import type { RouteContext } from './types.js'
+import { deployment, MANAGED_BY_IMAGE } from '../deployment.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -68,9 +69,15 @@ function isDiagnosable(r: LastResult | null): boolean {
 export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   const { res, req, path, method } = ctx
 
+  // HOSTINGERDOCKER1107: in the container the image owns the version: no update.sh and no CLI install from here.
+  if (method === 'POST' && (path === '/api/updates/apply' || path === '/api/updates/cli/apply') && deployment() === 'docker') {
+    json(res, MANAGED_BY_IMAGE, 409)
+    return true
+  }
+
   if (path === '/api/updates' && method === 'GET') {
     // UPDATECONFLICT1105: what start.sh's conflict guard found after the last update (null when nothing).
-    json(res, { ...getUpdateStatus(), conflictGuard: readConflictGuard(STORE_DIR) })
+    json(res, { ...getUpdateStatus(), conflictGuard: readConflictGuard(STORE_DIR), deployment: deployment() })
     return true
   }
 
@@ -140,7 +147,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   // Claude Code CLI update OFFER (CLIFRISSAJANLAS923). GET measures; nothing
   // is installed until the operator POSTs the exact target the GET offered.
   if (path === '/api/updates/cli' && method === 'GET') {
-    json(res, await buildCliUpdateStatus(cliUpdateDepsForRoute({ fresh: ctx.url.searchParams.get('fresh') === '1' })))
+    json(res, { ...(await buildCliUpdateStatus(cliUpdateDepsForRoute({ fresh: ctx.url.searchParams.get('fresh') === '1' }))), deployment: deployment() })
     return true
   }
   if (path === '/api/updates/cli/apply' && method === 'POST') {

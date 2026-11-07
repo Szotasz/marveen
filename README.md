@@ -107,6 +107,18 @@ A Windows telepítő automatikusan beállítja a WSL-t (Windows Subsystem for Li
 > ```
 > Ez a megbízható út, ha a `wsl.exe`/Windows-claude környezet összeakad.
 
+### Docker (English)
+
+Marveen also runs as a container with Docker Compose, on any Linux server with Docker:
+
+```bash
+git clone https://github.com/Szotasz/marveen.git && cd marveen
+docker compose up -d
+docker compose logs marveen   # the dashboard link
+```
+
+The dashboard listens on the server's `127.0.0.1` only: connect with Marveen Bridge or an SSH tunnel, or use your own domain with automatic HTTPS (`MARVEEN_DOMAIN=... docker compose --profile tls up -d`). The setup wizard in the dashboard asks for the owner, the Claude login (`claude setup-token`) and the chat channel. Full guide: [docs/docker.md](docs/docker.md).
+
 A telepítő végigvezet a beállításokon:
 1. Függőségek ellenőrzése és telepítése
 2. Claude Code bejelentkezés
