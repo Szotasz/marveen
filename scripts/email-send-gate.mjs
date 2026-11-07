@@ -1760,9 +1760,8 @@ function outsideBodies(cmd, lo, hi) {
   return out + cmd.slice(pos, hi)
 }
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-// Dani (review of #2586): the write must happen: no noclobber, only commands before it that cannot leave P there
-// unnamed, and a P that exists now is judged on disk too (see the python twin's _written_scripts)
-const WRITTEN_NOCLOBBER = /(?:^|[\s;&|(])(?:set\s+(?:-[A-Za-z]*C|-o\s+noclobber|\+o\s+clobber)|setopt\s+no_?clobber|unsetopt\s+clobber)\b/i
+// Dani (review of #2586): the write must happen: only commands before it that cannot leave P there unnamed (a control
+// word is none), and a P that exists now is judged on disk too, which covers noclobber (see the python twin)
 const WRITTEN_SAFE_BEFORE = new Set(['mkdir', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep', 'date', 'pwd', 'ls', 'cd',
   'pushd', 'rm', 'cat', 'tee', 'export', 'set'])
 function writtenSafeBefore(text) {
@@ -1774,12 +1773,9 @@ function writtenSafeBefore(text) {
   }
   return true
 }
-const WRITTEN_CONTROL = /(?:^|[\s;&|(])(?:if|then|else|elif|while|until|do|case|function|for|select|\{)(?=[\s;]|$)/
 export function writtenScripts(cmd, cwd) {
   const out = new Map()
   // a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
-  if (WRITTEN_CONTROL.test(outsideBodies(cmd, 0, cmd.length))) return out
-  if (WRITTEN_NOCLOBBER.test(outsideBodies(cmd, 0, cmd.length))) return out // the write may fail on an existing file
   const hasCd = /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)/.test(cmd)
   for (const m of cmd.matchAll(new RegExp(HEREDOC_RE.source, 'g'))) {
     const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1

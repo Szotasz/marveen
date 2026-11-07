@@ -2477,13 +2477,12 @@ def _bind_literal_vars(cmd: str) -> str:
 #     a `>>` / `tee -a` appends, so the old content would run too;
 #   - the tag is quoted (`<<'EOF'`) or the body has no `$` and no backtick (an unquoted body is expanded by the shell);
 #   - P is absolute after (A), or relative in a command with no cd / pushd / env -C;
-#   - no control word (if, then, while, do, case, for, function, `{`, ...) stands outside the bodies;
-#   - Dani (review of #2586): the write must HAPPEN. No noclobber (set -C, set -o noclobber, setopt noclobber,
-#     unsetopt clobber): with it, `cat > P` fails on an existing P and the old file runs. Before the write only
-#     commands that cannot create P without naming it (mkdir, echo, printf, true, :, test, [, sleep, date, pwd, ls, cd,
-#     pushd, rm, cat, tee, export, set, assignments): an unzip, git, cp -r or any program could leave P there,
-#     read-only, and the write would fail. And P must not exist when the gate runs: if it does (a read-only file, a
-#     file the write may not replace), the body AND the file on disk are judged, and either one sending is a send;
+#   - Dani (review of #2586): the write must HAPPEN. Before it only commands that cannot create P without naming it
+#     (mkdir, echo, printf, true, :, test, [, sleep, date, pwd, ls, cd, pushd, rm, cat, tee, export, set, and
+#     assignments): an unzip, git, cp -r or any program could leave P there, read-only, and the write would fail; a
+#     control word before it (if, while, do, `{`, ...) is no such command either, so a conditional write is out. And P
+#     must not exist when the gate runs: if it does, the body AND the file on disk are judged, and either one sending is
+#     a send. That also covers noclobber (set -C, setopt noclobber): it only stops the write over an EXISTING P;
 #   - P is named exactly twice in the command: the write and one run. Another write, a cp, mv or sed -i on it, or a
 #     second run would change what runs, so they keep today's verdict.
 # Every other case reads the disk as before (and a missing file stays fail-closed).
@@ -2494,8 +2493,6 @@ _WRITTEN_OPENER = re.compile(
     r""")[ \t]*$""")
 
 
-_WRITTEN_NOCLOBBER = re.compile(
-    r"(?:^|[\s;&|(])(?:set\s+(?:-[A-Za-z]*C|-o\s+noclobber|\+o\s+clobber)|setopt\s+no_?clobber|unsetopt\s+clobber)\b", re.I)
 _WRITTEN_SAFE_BEFORE = frozenset(("mkdir", "echo", "printf", "true", ":", "test", "[", "sleep", "date", "pwd", "ls", "cd",
                                   "pushd", "rm", "cat", "tee", "export", "set"))
 
@@ -2513,17 +2510,11 @@ def _written_safe_before(text: str) -> bool:
     return True
 
 
-_WRITTEN_CONTROL = re.compile(r"(?:^|[\s;&|(])(?:if|then|else|elif|while|until|do|case|function|for|select|\{)(?=[\s;]|$)")
 
 
 def _written_scripts(cmd: str, cwd):
     """ISSUE2582 (B): {absolute path: heredoc body} for the scripts this command writes and then runs (see above)."""
     out = {}
-    # a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
-    if _WRITTEN_CONTROL.search(_outside_bodies(cmd, 0, len(cmd))):
-        return out
-    if _WRITTEN_NOCLOBBER.search(_outside_bodies(cmd, 0, len(cmd))):
-        return out  # the write may fail on an existing file, and the old one runs
     has_cd = bool(re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)", cmd))
     for m in _HEREDOC.finditer(cmd):
         line_start = cmd.rfind("\n", 0, m.start()) + 1

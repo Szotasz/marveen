@@ -12,6 +12,7 @@
     "pkgsend/__main__.py": "import smtplib\nsmtplib.SMTP('x')\n",
     "pkgclean/__main__.py": "print('x')\n",
     "okdir/hello.py": "print('hello')\n",
+    "okdir:h/hello.py": "print('hello')\n",
     "nm.mjs": "const nodemailer = require('nodemailer')\n",
     "plain.mjs": "console.log(1)\n",
     "sender": "#!/usr/bin/env python3\nimport smtplib\nsmtplib.SMTP('x')\n",
@@ -246,6 +247,7 @@
     {"name": "ISSUE2582 Dani review (B) kept: an unzip before the write may leave the file there (read-only), unnamed", "cmd": "unzip -o a.zip; cat > fresh.py <<'EOF'\nprint(1)\nEOF\npython3 fresh.py", "main": true, "sub": false},
     {"name": "ISSUE2582 Dani review (B) kept, sender pair: an unzip before the write (scriptRunSends: no override; the hook denies it through isSendInvocation)", "cmd": "unzip -o a.zip; cat > fresh.py <<'EOF'\nimport smtplib\nsmtplib.SMTP('x')\nEOF\npython3 fresh.py", "main": true, "sub": false},
     {"name": "ISSUE2582 Dani review (B) kept: any program before the write may create the file", "cmd": "python3 plain.py\ncat > fresh.py <<'EOF'\nprint(1)\nEOF\npython3 fresh.py", "main": true, "sub": false},
-    {"name": "ISSUE2582 Dani review (B): mkdir and echo before the write cannot create it unnamed", "cmd": "mkdir -p okdir; echo start\ncat > okdir/fresh.py <<'EOF'\nprint(1)\nEOF\npython3 okdir/fresh.py", "main": false, "sub": false}
+    {"name": "ISSUE2582 Dani review (B): mkdir and echo before the write cannot create it unnamed", "cmd": "mkdir -p okdir; echo start\ncat > okdir/fresh.py <<'EOF'\nprint(1)\nEOF\npython3 okdir/fresh.py", "main": false, "sub": false},
+    {"name": "ISSUE2582 Dani review (A) kept: zsh $D:h is a modifier; a dir named okdir:h exists, so filling in the text ':h' would read a harmless file", "cmd": "D=okdir; python3 $D:h/hello.py", "main": true, "sub": true}
   ]
 }
