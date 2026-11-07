@@ -4,9 +4,11 @@
 // template by the install's language through scripts/lib/persona-template.sh; Hungarian stays the default.
 import { describe, it, expect, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseEnvContent } from '../env-parse.js'
+import { agentTextLang } from '../web/agent-text-lang.js'
 
 const ROOT = join(__dirname, '..', '..')
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8')
@@ -213,4 +215,48 @@ describe('the installers and update.sh render the persona through it', () => {
     const s = read('update.sh')
     expect(s).toContain(CALL('CLAUDE.md.template') + ' > "$CLAUDE_MD"')
   })
+})
+
+// Dani 72871 S1: the shell reader and the TypeScript reader must agree on every hand-edited .env shape, or the persona
+// (shell) and the managed sections (TypeScript) come out in different languages. ONE case table, both real readers.
+describe('AGENT_TEXT_LANG: the shell reader and the TypeScript reader agree on every .env shape', () => {
+  const CASES: ReadonlyArray<readonly [string, 'hu' | 'en']> = [
+    ['AGENT_TEXT_LANG=en\n', 'en'],
+    ['AGENT_TEXT_LANG=hu\n', 'hu'],
+    ['', 'hu'],
+    ['A=1\n', 'hu'],
+    ['  AGENT_TEXT_LANG=en\n', 'en'],
+    ['AGENT_TEXT_LANG = en\n', 'en'],
+    ['AGENT_TEXT_LANG=  en  \n', 'en'],
+    ['AGENT_TEXT_LANG=\'en\'\n', 'en'],
+    ['AGENT_TEXT_LANG="en"\n', 'en'],
+    ['AGENT_TEXT_LANG="en\n', 'hu'],
+    ['AGENT_TEXT_LANG=en"\n', 'hu'],
+    ['AGENT_TEXT_LANG="en\'\n', 'hu'],
+    ['AGENT_TEXT_LANG=""en""\n', 'hu'],
+    ['AGENT_TEXT_LANG=hu\nAGENT_TEXT_LANG=en\n', 'en'],
+    ['AGENT_TEXT_LANG=en\nAGENT_TEXT_LANG=\n', 'hu'],
+    ['AGENT_TEXT_LANG=en\r\n', 'en'],
+    ['A=1\n  AGENT_TEXT_LANG=en', 'en'],
+    ['# AGENT_TEXT_LANG=en\n', 'hu'],
+    ['AGENT_TEXT_LANG=EN\n', 'hu'],
+    ['AGENT_TEXT_LANG=en=x\n', 'hu'],
+    ['XAGENT_TEXT_LANG=en\n', 'hu'],
+    ['AGENT_TEXT_LANG="\n', 'hu'],
+  ]
+  let dir = ''
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+  for (const [content, want] of CASES) {
+    it(`${JSON.stringify(content)} -> ${want} in both`, () => {
+      dir = mkdtempSync(join(tmpdir(), 'geri-atl-parity-'))
+      writeFileSync(join(dir, '.env'), content)
+      const ts = agentTextLang(() => parseEnvContent(content, ['AGENT_TEXT_LANG']), () => false)
+      // The PATH bash and, where it exists, macOS's own /bin/bash 3.2 (the installer's bash on a stock Mac).
+      for (const bash of ['bash', ...(existsSync('/bin/bash') ? ['/bin/bash'] : [])]) {
+        const r = spawnSync(bash, ['-c', '. "$1"; agent_text_lang "$2"', '_', join(ROOT, 'scripts/lib/persona-template.sh'), dir], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } })
+        expect(r.status, `${bash}: ${r.stderr}`).toBe(0)
+        expect({ bash, shell: r.stdout, ts }).toEqual({ bash, shell: want, ts: want })
+      }
+    })
+  }
 })

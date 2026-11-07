@@ -396,6 +396,19 @@ describe('the PreCompact agent-hook prompt of a new agent on an English install'
     expect(sc.localizeSettingsTemplate(raw)).toBe(raw)
   })
 
+  it('only the PreCompact AGENT hook is swapped: a command or prompt hook, and another event\'s agent hook, stay (Dani 72871 N2)', () => {
+    setLang('en')
+    const tpl = JSON.stringify({ hooks: {
+      PreCompact: [{ hooks: [{ type: 'command', command: 'x.sh' }, { type: 'prompt', prompt: 'P-HU' }, { type: 'agent', prompt: 'A-HU', timeout: 180 }] }],
+      Stop: [{ hooks: [{ type: 'agent', prompt: 'S-HU' }] }],
+    } })
+    const out = JSON.parse(sc.localizeSettingsTemplate(tpl)) as { hooks: Record<string, Array<{ hooks: Array<Record<string, unknown>> }>> }
+    expect(out.hooks.PreCompact[0].hooks).toEqual([
+      { type: 'command', command: 'x.sh' }, { type: 'prompt', prompt: 'P-HU' }, { type: 'agent', prompt: en.PRECOMPACT_PROMPT_EN_TPL, timeout: 180 },
+    ])
+    expect(out.hooks.Stop[0].hooks).toEqual([{ type: 'agent', prompt: 'S-HU' }])
+  })
+
   it('with en only the PreCompact agent prompt changes, its commands are the Hungarian ones, its prose is English', () => {
     setLang('en')
     const out = sc.localizeSettingsTemplate(raw)

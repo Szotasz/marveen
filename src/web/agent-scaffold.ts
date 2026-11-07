@@ -4846,7 +4846,7 @@ export function ensureThinChiefHandoffSection(name: string): void {
 
   let updated: string
   if (THIN_CHIEF_BLOCK_RE.test(existing)) {
-    updated = existing.replace(THIN_CHIEF_BLOCK_RE, block)
+    updated = existing.replace(THIN_CHIEF_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }

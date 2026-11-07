@@ -13,11 +13,27 @@
 #                                  the template path in that language (decide: the first-render callers, i.e. the
 #                                  installers and the Docker first-boot; without it: read only, e.g. update.sh)
 
+_atl_trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+
+# The .env line grammar of the TypeScript reader (src/env-parse.ts parseEnvContent), line for line, so the persona and
+# the managed sections never disagree on a hand-edited .env (EGM review, Dani 72871 S1): the line is trimmed, blank
+# and # lines are skipped, the key is what precedes the FIRST "=", key and value are trimmed, ONE pair of matching
+# surrounding quotes is stripped, and the LAST matching line wins. Bash 3.2 safe (no negative substring offsets).
 _atl_read() {
-  local v
-  # The LAST occurrence and both quote kinds, as the TypeScript reader (src/env-parse.ts) takes it, so the persona and
-  # the managed sections never disagree on a hand-edited .env (EGM review: two lines, or AGENT_TEXT_LANG='en').
-  v="$(grep '^AGENT_TEXT_LANG=' "$1/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d "[:space:]\"'")"
+  local line key val first last v=""
+  [ -f "$1/.env" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(_atl_trim "$line")"
+    case "$line" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+    key="$(_atl_trim "${line%%=*}")"
+    [ "$key" = AGENT_TEXT_LANG ] || continue
+    val="$(_atl_trim "${line#*=}")"
+    first="${val%"${val#?}"}"; last="${val#"${val%?}"}"
+    if { [ "$first" = '"' ] && [ "$last" = '"' ]; } || { [ "$first" = "'" ] && [ "$last" = "'" ]; }; then
+      val="${val#?}"; val="${val%?}"
+    fi
+    v="$val"
+  done < "$1/.env"
   case "$v" in en|hu) printf '%s' "$v" ;; esac
 }
 
