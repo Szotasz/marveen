@@ -439,9 +439,13 @@ describe('a cd before the run, and a missing script (JSCDSEND1104, Bence 69475)'
     // controls: the cwd's own harmless script, a cd into a dir without a sender, a non-script run; and (Samu 69538)
     // the fail-closed forms without an address
     for (const cmd of ['python3 send.py', `cd ${cwd} && python3 send.py`, 'cd evil && ls', 'bun test', 'node --version',
-      'cd $DEST && python3 send.py', 'cd $DEST && python3 -m pkg.main', 'python3 missing.py', 'python3 $S',
+      'cd $DEST && python3 send.py', 'cd $DEST && python3 -m pkg.main', 'python3 missing.py',
       'node missing.mjs']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+    }
+    // ISSUE2582 TIGHTENING (Samu 72403): an undecidable script path is a send without an address too
+    for (const cmd of ['python3 $S', 'node $X', 'D=$(pwd)/x; python3 $D/send.py']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }
     // Samu 69648 (3a): after a cd $(...) what runs is out of sight, so the fail-closed branches fire without an address
     for (const cmd of ['cd $(pwd)/x && python3 send.py', 'cd `pwd`/x && python3 missing.py']) {

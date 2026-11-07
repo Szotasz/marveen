@@ -1847,9 +1847,9 @@ def _python_module(rest):
 
 # JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
 # value) or an e-mail address anywhere in it. The two gates differ HERE, and only here:
-#   - the sub-agent gate (email-send-gate.mjs, a hard deny) calls the fail-closed branches (an undecidable cd, -m or
-#     script path, a missing or unreadable script) a send only on an addressed run, or a developer's
-#     `cd $WT && python3 -m pytest` would be refused;
+#   - the sub-agent gate (email-send-gate.mjs, a hard deny) calls the fail-closed branches (an undecidable cd or -m, a
+#     missing or unreadable script) a send only on an addressed run, or a developer's `cd $WT && python3 -m pytest`
+#     would be refused; an undecidable SCRIPT PATH is a send there on every run too (ISSUE2582, Samu 72403);
 #   - this gate (the main agent's approval gate) keeps them fail-closed on every run: it guards the owner's real mail,
 #     a script can carry the address inside, and the cost of a false positive is an approval request, not a denial.
 # A READABLE sender is a send on both. script-run-cases.json holds both expected verdicts per row (main / sub).
@@ -1944,13 +1944,14 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if not ext_kind:
             # no candidate with a kind is readable: a #! line cannot be known, the extension gives none
             return False
-        return addressed  # the kind is known and no candidate is readable: fail-closed when addressed
+        # the kind is known and no candidate is readable: fail-closed when addressed; an undecidable path always
+        return addressed or bool(_UNDECIDABLE_PATH.search(toks[0]))
     else:
         return False
     if script is None:
         return False
     if _UNDECIDABLE_PATH.search(script):
-        return addressed  # what runs is undecidable here: fail-closed when addressed
+        return True  # what runs is undecidable here: a send, addressed or not (ISSUE2582: the JS twin agrees now)
     if addressed and _relative_under_undecidable_cd(script, cwd, cmd_words):
         return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
     paths = _resolve_script_paths(script, cwd, cmd_words)

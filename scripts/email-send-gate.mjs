@@ -1295,9 +1295,10 @@ function pythonModule(rest) {
   return null
 }
 // JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
-// value) or an e-mail address anywhere in it. This gate (a hard deny) calls the fail-closed branches (an undecidable cd,
-// -m or script path, a missing or unreadable script) a send ONLY on an addressed run: without an address, a script the
-// gate cannot read is no send (a developer's `cd $WT && python3 -m pytest`, a script written and run in one command).
+// value) or an e-mail address anywhere in it. This gate (a hard deny) calls the fail-closed branches (an undecidable cd
+// or -m, a missing or unreadable script) a send ONLY on an addressed run: without an address, a script the gate cannot
+// read is no send (a developer's `cd $WT && python3 -m pytest`, a script written and run in one command). ISSUE2582
+// (Samu 72403): an undecidable SCRIPT PATH is no longer among them, it is a send on every run, as on the main gate.
 // A READABLE sender is a send either way, as it takes the address from inside. The main agent's approval gate (the
 // python twin) keeps the fail-closed branches on every run (its _FAIL_CLOSED_NEEDS_ADDRESS is false): this is the one
 // place the two gates differ, and script-run-cases.json holds both verdicts per row (main / sub).
@@ -1363,12 +1364,17 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
     }
     if (readable) return false
     if (!extKind) return false // no candidate with a kind is readable: a #! line cannot be known, the extension gives none
-    return addressed // the kind is known and no candidate is readable: fail-closed when addressed (JSCDSEND1104)
+    // the kind is known and no candidate is readable: fail-closed when addressed (JSCDSEND1104); an undecidable path
+    // (`$D/x.py`) always (ISSUE2582, Samu 72403, the same tightening as above)
+    return addressed || UNDECIDABLE_PATH.test(toks[0])
   } else {
     return false
   }
   if (script === null) return false
-  if (UNDECIDABLE_PATH.test(script)) return addressed // what runs is undecidable here: fail-closed when addressed
+  // ISSUE2582 (Samu 72403): an undecidable SCRIPT PATH (`python3 $X`, `node $D/x.js`, a variable the command does not
+  // provably set) is a send on this gate too, addressed or not, as on the main gate. A TIGHTENING: before, an unaddressed
+  // one passed here, so `D=$(..); python3 $D/send.py` ran unread. An undecidable cd or -m keeps the older rule.
+  if (UNDECIDABLE_PATH.test(script)) return true
   if (addressed && relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
   let paths = resolveScriptPaths(script, cwd, cmdWords)
   if (prog === 'node' && !/\.[^/]*$/.test(basename(script))) {
