@@ -267,6 +267,14 @@
     {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: an array subscript evaluates an assignment", "cmd": "SD=okdir; A=S; B=D; x=(1); : ${x[$A$B=1]}; python3 $SD/send.py", "main": true, "sub": true},
     {"name": "ISSUE2582 Dani 72479 (A) kept: an escaped eval", "cmd": "SD=okdir; A='SD=evil'; \\eval \"$A\"; python3 $SD/hello.py", "main": true, "sub": true},
     {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: an escaped eval", "cmd": "SD=okdir; A='SD=evil'; \\eval \"$A\"; python3 $SD/send.py", "main": true, "sub": true},
-    {"name": "ISSUE2582 Dani 72479 (A): control, another unbound variable as an argument does not stop the binding", "cmd": "SD=okdir; A=x; python3 $SD/hello.py $A", "main": false, "sub": false}
+    {"name": "ISSUE2582 Dani 72479 (A): control, another unbound variable as an argument does not stop the binding", "cmd": "SD=okdir; A=x; python3 $SD/hello.py $A", "main": false, "sub": false},
+    {"name": "ISSUE2582 Dani 72479 (A) kept: an unbound dynamic command name ($C set outside)", "cmd": "SD=okdir; $C -v \"$A$B\" %s evil; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: an unbound dynamic command name ($C set outside)", "cmd": "SD=okdir; $C -v \"$A$B\" %s evil; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept: a quoted \"eval\"", "cmd": "SD=okdir; A='SD=evil'; \"eval\" \"$A\"; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: a quoted \"eval\"", "cmd": "SD=okdir; A='SD=evil'; \"eval\" \"$A\"; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept: export of a computed name", "cmd": "SD=okdir; A=S; B=D; export \"$A$B\"=evil; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: export of a computed name", "cmd": "SD=okdir; A=S; B=D; export \"$A$B\"=evil; python3 $SD/send.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept: zsh set -A with a computed name", "cmd": "SD=okdir; A=S; B=D; set -A \"$A$B\" evil; python3 $SD/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 Dani 72479 (A) kept, sender pair: zsh set -A with a computed name", "cmd": "SD=okdir; A=S; B=D; set -A \"$A$B\" evil; python3 $SD/send.py", "main": true, "sub": true}
   ]
 }

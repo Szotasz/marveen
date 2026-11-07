@@ -2410,15 +2410,7 @@ def _bind_literal_vars(cmd: str) -> str:
                 k += 1
                 continue
             break
-        seg["block"] = block
-        # eval / source / `.` / alias / autoload / trap in command position, also behind command / builtin / exec ...
-        j = k
-        while j < len(words) and _BIND_ASSIGN.match(words[j]["text"]):
-            j += 1
-        while j < len(words) and not words[j]["quoted"] and words[j]["text"] in _BIND_PRECMD:
-            j += 1
-        if j < len(words) and not words[j]["quoted"] and words[j]["text"] in _BIND_GLOBAL_BLOCK:
-            return cmd
+        seg["block"] = block  # eval / source / `.` ... in command position: _bound_is_plain, quoted or not
     ref_count = {}
     for seg in segs:
         for w in seg["words"]:
@@ -2462,11 +2454,14 @@ def _bind_literal_vars(cmd: str) -> str:
                     continue
                 if b[2] and any(segs[j]["sep_after"] != "&&" for j in range(b[0], idx)):
                     continue
-                edits.append((start, end, b[1]))
+                edits.append((start, end, b[1], name))
     bound = cmd
-    for start, end, value in sorted(edits, reverse=True):
+    for start, end, value, _name in sorted(edits, reverse=True):
         bound = bound[:start] + value + bound[end:]
-    return bound if _bound_is_plain(bound) else cmd
+    # in the bound command each bound name stands once (its assignment) plus its uses left as they were: a filled-in
+    # value that spells a bound name (`export "$A$B"=x` -> `export "SD"=x`) is one more assignment
+    expected = {n: 1 + ref_count.get(n, 0) - sum(1 for e in edits if e[3] == n) for n in binds}
+    return bound if _bound_is_plain(bound, expected) else cmd
 
 
 # Dani (review of #2586, the computed name): the name rule only sees a name WRITTEN in the command; a setter can build it
@@ -2485,8 +2480,11 @@ _BIND_DYNAMIC_TEXT = re.compile(r"\(\(|\$\[|\$\{[^}]*=|\$\{?[A-Za-z_][A-Za-z_0-9
 _BIND_ARITH_TEST = re.compile(r"-(?:eq|ne|lt|le|gt|ge)\b")
 
 
-def _bound_is_plain(bound: str) -> bool:
+def _bound_is_plain(bound: str, expected=None) -> bool:
     outside = _outside_bodies(bound, 0, len(bound))
+    for name, count in (expected or {}).items():
+        if len(re.findall(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", outside)) != count:
+            return False
     if _BIND_DYNAMIC_TEXT.search(outside):
         return False
     if "[[" in outside and _BIND_ARITH_TEST.search(outside):

@@ -1691,12 +1691,7 @@ export function bindLiteralVars(cmd) {
       if (BIND_LEAD.has(t)) { k++; continue }
       break
     }
-    seg.block = block
-    // eval / source / `.` / alias / autoload / trap in command position, also behind command / builtin / exec ...
-    let j = k
-    while (j < words.length && BIND_ASSIGN.test(words[j].text)) j++
-    while (j < words.length && !words[j].quoted && BIND_PRECMD.has(words[j].text)) j++
-    if (j < words.length && !words[j].quoted && BIND_GLOBAL_BLOCK.has(words[j].text)) return cmd
+    seg.block = block // eval / source / `.` ... in command position: boundIsPlain, quoted or not
   }
   const refCount = new Map()
   for (const seg of segs) for (const w of seg.words) for (const [name] of w.refs) refCount.set(name, (refCount.get(name) ?? 0) + 1)
@@ -1732,13 +1727,15 @@ export function bindLiteralVars(cmd) {
         const b = binds.get(name)
         if (b === undefined || idx <= b[0]) continue
         if (b[2] && segs.slice(b[0], idx).some((s) => s.sepAfter !== '&&')) continue
-        edits.push([start, end, b[1]])
+        edits.push([start, end, b[1], name])
       }
     })
   })
   let bound = cmd
-  for (const [start, end, value] of edits.sort((a, b) => b[0] - a[0])) bound = bound.slice(0, start) + value + bound.slice(end)
-  return boundIsPlain(bound) ? bound : cmd
+  for (const [start, end, value] of [...edits].sort((a, b) => b[0] - a[0])) bound = bound.slice(0, start) + value + bound.slice(end)
+  // each bound name stands once in the bound command plus its uses left as they were (see the python twin)
+  const expected = new Map([...binds.keys()].map((n) => [n, 1 + (refCount.get(n) ?? 0) - edits.filter((e) => e[3] === n).length]))
+  return boundIsPlain(bound, expected) ? bound : cmd
 }
 
 // Dani (review of #2586, the computed name): the BOUND command is read once more; a variable-setting builtin anywhere,
@@ -1748,8 +1745,11 @@ const BIND_SETTERS = new Set(['read', 'declare', 'typeset', 'local', 'readonly',
   'unset', 'vared', 'zparseopts', 'zstyle', 'integer', 'float'])
 const BIND_DYNAMIC_TEXT = /\(\(|\$\[|\$\{[^}]*=|\$\{?[A-Za-z_][A-Za-z_0-9]*\[/
 const BIND_ARITH_TEST = /-(?:eq|ne|lt|le|gt|ge)\b/
-function boundIsPlain(bound) {
+function boundIsPlain(bound, expected = new Map()) {
   const outside = outsideBodies(bound, 0, bound.length)
+  for (const [name, count] of expected) {
+    if ((outside.match(new RegExp(String.raw`(?<![A-Za-z0-9_])` + name + String.raw`(?![A-Za-z0-9_])`, 'g')) || []).length !== count) return false
+  }
   if (BIND_DYNAMIC_TEXT.test(outside)) return false
   if (outside.includes('[[') && BIND_ARITH_TEST.test(outside)) return false
   const segs = bindScan(bound)
