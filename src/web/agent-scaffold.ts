@@ -3417,7 +3417,7 @@ const MCPLIST_BLOCK_RE = new RegExp(
  * message is lost. That was reported by the external submitter; we reproduced
  * the tool/plugin side only.
  */
-function buildMcpListChannelBody(): string {
+export function buildMcpListChannelBody(): string {
   if (agentTextLang() === 'en') return buildMcpListChannelBodyEn()
   return [
     '## `claude mcp list` és gyerek-`claude` egy csatornát birtokló ügynökben',
@@ -3636,7 +3636,7 @@ function ownTokenConsume403(name: string): string {
 
 // `helper`: the recipes go through scripts/marveen-api.sh (agentUsesApiHelper: every agent whose settings do not deny
 // it). `strict`: the agent also has the "Dashboard-hívások a strict profilodban" section the level-1 text points at.
-function buildAutonomyBody(name: string, helper = true, strict = false): string {
+export function buildAutonomyBody(name: string, helper = true, strict = false): string {
   if (agentTextLang() === 'en') return buildAutonomyBodyEn(name, helper, strict, scaffoldFrags(name))
   const tokenPath = dashboardTokenPathFor(name)
   return [
@@ -4138,7 +4138,7 @@ const SKILLS_TRAP_BLOCK_RE = new RegExp(
   `${SKILLS_TRAP_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SKILLS_TRAP_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildSkillsPathTrapBody(name: string): string {
+export function buildSkillsPathTrapBody(name: string): string {
   if (agentTextLang() === 'en') return buildSkillsPathTrapBodyEn(name === MAIN_AGENT_ID)
   const isMain = name === MAIN_AGENT_ID
   const shared = [
