@@ -32,8 +32,9 @@ const INTENDED: ReadonlyArray<readonly [string, string, string]> = [
 const restored = (en: string, E: string) =>
   INTENDED.filter(([f]) => f === en).reduce((acc, [, hu, eng]) => acc.split(eng).join(hu), E)
 
-const fences = (s: string) => s.match(/^```[\s\S]*?^```/gm) ?? []
-const withoutFences = (s: string) => s.replace(/^```[\s\S]*?^```/gm, '')
+// Indented fences too (a code block inside a list item): the first version matched only column-0 fences.
+const fences = (s: string) => s.match(/^[ \t]*```[\s\S]*?^[ \t]*```/gm) ?? []
+const withoutFences = (s: string) => s.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, '')
 const inline = (s: string) => withoutFences(s).match(/`[^`\n]+`/g) ?? []
 const placeholders = (s: string) => (s.match(/\{\{[A-Z_]+\}\}/g) ?? []).sort()
 const headings = (s: string) => (withoutFences(s).match(/^#{1,6} /gm) ?? []).map((h) => h.trim())
