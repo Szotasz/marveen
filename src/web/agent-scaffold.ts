@@ -21,7 +21,7 @@ import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
 import { agentTextLang } from './agent-text-lang.js'
 import {
-  type ScaffoldFrags, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
+  type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
   buildBackgroundCheckpointBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
   buildMemorySearchLabelBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
 } from './agent-scaffold-en.js'
@@ -3464,7 +3464,25 @@ const EVIDENCE_BLOCK_RE = new RegExp(
 // - listAgentNames() reads the agents/ directory; the main agent has no
 //   subdirectory there (it lives in the project root). Without explicit
 //   prepending, the main agent would be absent from every peer's roster.
-function buildFleetRosterBody(selfName: string): string {
+// PERSONAESC1107: the roster's words; the English set is ROSTER_TEXT_EN (agent-scaffold-en.ts).
+const ROSTER_TEXT_HU: RosterText = {
+  heading: '## A flotta többi agense',
+  intro: [
+    'Ez a lista automatikusan generálódik az ágens indulásakor, ez a mérvadó és naprakész forrás.',
+    'Ha a fenti szövegben régebbi, kézzel írt felsorolás szerepel, ezt a szekciót vedd figyelembe.',
+  ],
+  subordinateTag: ' (beosztottad)',
+  leadTag: ' (vezetőd)',
+  delegateTag: ' (delegálhatsz neki)',
+  none: '(nincs regisztrált ágens)',
+  lead: (n) => `Vezetőd: **${n}**.`,
+  subordinates: (list) => `Beosztottjaid: ${list}.`,
+  delegates: (list) => `Kiknek delegálhatsz: ${list}.`,
+  outro: 'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
+}
+
+export function buildFleetRosterBody(selfName: string): string {
+  const T = agentTextLang() === 'en' ? ROSTER_TEXT_EN : ROSTER_TEXT_HU
   let agentNames: string[]
   try {
     agentNames = listAgentNames()
@@ -3544,18 +3562,18 @@ function buildFleetRosterBody(selfName: string): string {
     // ALSO this agent's own (validated) manager.
     if (peerReportsTo === selfName && agentName !== selfReportsTo) {
       subordinates.push(agentName)
-      roleTag = ' (beosztottad)'
+      roleTag = T.subordinateTag
     } else if (agentName === selfReportsTo) {
-      roleTag = ' (vezetőd)'
+      roleTag = T.leadTag
     } else if (selfDelegates.has(agentName)) {
-      roleTag = ' (delegálhatsz neki)'
+      roleTag = T.delegateTag
     }
     if (selfDelegates.has(agentName)) delegates.push(agentName)
 
     lines.push(`- **${agentName}** (agent_id: ${agentName})${roleTag}: ${capsStr}`)
   }
 
-  const roster = lines.length > 0 ? lines.join('\n') : '(nincs regisztrált ágens)'
+  const roster = lines.length > 0 ? lines.join('\n') : T.none
 
   // Factual only (2026-10-23, reviewer-measured): the line used to also
   // prescribe ROUTING ("a kész munkát neki adod át, nem közvetlenül a
@@ -3565,25 +3583,24 @@ function buildFleetRosterBody(selfName: string): string {
   // agent's own text, not in this generated, one-size-fits-all block.
   const hierarchyLines: string[] = []
   if (selfReportsTo) {
-    hierarchyLines.push(`Vezetőd: **${selfReportsTo}**.`)
+    hierarchyLines.push(T.lead(selfReportsTo))
   }
   if (subordinates.length > 0) {
-    hierarchyLines.push(`Beosztottjaid: ${subordinates.map((n) => `**${n}**`).join(', ')}.`)
+    hierarchyLines.push(T.subordinates(subordinates.map((n) => `**${n}**`).join(', ')))
   }
   if (delegates.length > 0) {
-    hierarchyLines.push(`Kiknek delegálhatsz: ${delegates.map((n) => `**${n}**`).join(', ')}.`)
+    hierarchyLines.push(T.delegates(delegates.map((n) => `**${n}**`).join(', ')))
   }
 
   return [
-    '## A flotta többi agense',
+    T.heading,
     '',
-    'Ez a lista automatikusan generálódik az ágens indulásakor, ez a mérvadó és naprakész forrás.',
-    'Ha a fenti szövegben régebbi, kézzel írt felsorolás szerepel, ezt a szekciót vedd figyelembe.',
+    ...T.intro,
     '',
     roster,
     '',
     ...(hierarchyLines.length > 0 ? [...hierarchyLines, ''] : []),
-    'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
+    T.outro,
   ].join('\n')
 }
 

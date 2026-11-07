@@ -51,6 +51,21 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     readAgentCapabilities: () => [],
   }
 })
+// The roster's role tags: own-token-sub reports to shared-token-sub, which may delegate to the main agent.
+vi.mock('../web/agent-team.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/agent-team.js')>()
+  return {
+    ...real,
+    readAgentTeam: (name: string) => ({
+      role: 'member' as const,
+      reportsTo: name === 'own-token-sub' ? 'shared-token-sub' : null,
+      delegatesTo: name === 'shared-token-sub' ? ['agent-a'] : [],
+      autoDelegation: false,
+      trustFrom: [],
+    }),
+    resolveAgentSecurityProfile: () => 'default',
+  }
+})
 vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8'),
 }))
@@ -76,6 +91,7 @@ const CASES: Array<{ id: string; build: () => string }> = [
   { id: 'mcp-list-channel', build: () => sc.buildMcpListChannelBody() },
   { id: 'background-checkpoint', build: () => sc.buildBackgroundCheckpointBody() },
   { id: 'fleet-auth', build: () => sc.buildFleetAuthBody() },
+  ...[OWN, SHARED].map((n) => ({ id: `fleet-roster:${n}`, build: () => sc.buildFleetRosterBody(n) })),
   ...NAMES.flatMap((n) => B.flatMap((h) => B.map((s) => ({ id: `autonomy:${n}:helper=${h}:strict=${s}`, build: () => sc.buildAutonomyBody(n, h, s) })))),
   ...B.flatMap((m) => B.map((l) => ({ id: `evidence:main=${m}:ledger=${l}`, build: () => sc.buildEvidenceBody(m, l) }))),
   ...NAMES.flatMap((n) => B.map((h) => ({ id: `message-close:${n}:helper=${h}`, build: () => sc.buildMessageCloseBody(h, n) }))),
@@ -160,6 +176,18 @@ describe('generated sections: the English twin of every Hungarian body', () => {
     })
   }
 
+  it('the roster role tags and hierarchy lines are English too (the shared logic picks the English words)', () => {
+    setLang('en')
+    const own = sc.buildFleetRosterBody(OWN)
+    const shared = sc.buildFleetRosterBody(SHARED)
+    expect(own).toContain(`- **${SHARED}** (agent_id: ${SHARED}) (your lead): -`)
+    expect(own).toContain(`Your lead: **${SHARED}**.`)
+    expect(shared).toContain(`- **${OWN}** (agent_id: ${OWN}) (reports to you): -`)
+    expect(shared).toContain(`- **${MAIN}** (agent_id: ${MAIN}) (you can delegate to them): -`)
+    expect(shared).toContain(`Reporting to you: **${OWN}**.`)
+    expect(shared).toContain(`You can delegate to: **${MAIN}**.`)
+  })
+
   it('the English skills heading is the one the English template points at ("Skill path trap")', () => {
     const tpl = readFileSync(join(__dirname, '..', '..', 'templates', 'en', 'CLAUDE.md.template'), 'utf-8')
     expect(tpl).toContain('"Skill path trap" section')
@@ -203,6 +231,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'background-checkpoint': '04505f8789507f70',
   'evidence': '9dff6e8bd9b8d64c',
   'fleet-auth': '93c48bc9916ec0da',
+  'fleet-roster': '1150d059b61e7362',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
   'message-close': '835ee6c92d6e0a7a',

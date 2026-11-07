@@ -34,6 +34,37 @@ export interface ScaffoldFrags {
 
 export const ONE_FILE_ONE_SEND_EN = 'One file, one send: write it, send it, and only then the next one; never prepare two in parallel (it is the same file, the second would overwrite the first). After a successful send the helper empties the file, and it stops with an error on an empty file: it never sends an old text.'
 
+// ---- fleet-roster (sub-agents only) ----
+/** The words of the fleet roster block; the logic is shared (buildFleetRosterBody), only these differ. */
+export interface RosterText {
+  heading: string
+  intro: string[]
+  subordinateTag: string
+  leadTag: string
+  delegateTag: string
+  none: string
+  lead: (name: string) => string
+  subordinates: (list: string) => string
+  delegates: (list: string) => string
+  outro: string
+}
+
+export const ROSTER_TEXT_EN: RosterText = {
+  heading: '## The other agents of the fleet',
+  intro: [
+    'This list is generated automatically when the agent starts; it is the authoritative, up-to-date source.',
+    'If the text above has an older, hand-written list, go by this section.',
+  ],
+  subordinateTag: ' (reports to you)',
+  leadTag: ' (your lead)',
+  delegateTag: ' (you can delegate to them)',
+  none: '(no registered agent)',
+  lead: (n) => `Your lead: **${n}**.`,
+  subordinates: (list) => `Reporting to you: ${list}.`,
+  delegates: (list) => `You can delegate to: ${list}.`,
+  outro: 'If a request clearly falls into another agent\'s field, flag it or delegate it to the right agent with an inter-agent message.',
+}
+
 // ---- mcp-list-channel ----
 export function buildMcpListChannelBodyEn(): string {
   return [
