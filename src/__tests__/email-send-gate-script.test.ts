@@ -126,6 +126,19 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
     const unaddressed = run('python3 missing.py')
     expect(unaddressed.status).toBe(0)
     expect(unaddressed.stdout).toBe('')
+    // ISSUE2582 TIGHTENING (Samu 72403 / 72415): an undecidable script path is denied without an address too, and the
+    // reason names the way out (a literal path, or a literal assignment in the same command)
+    const undecidable = run('python3 $S/other.py')
+    expect(undecidable.status).toBe(0)
+    const why = JSON.parse(undecidable.stdout).hookSpecificOutput.permissionDecisionReason as string
+    expect(why).toContain('VALTOZOBOL')
+    expect(why).toContain('literalis uttal')
+    expect(why).toContain('D=/abszolut/ut; python3 $D/x.py')
+    // the way out works: the same run with the variable set to a literal in the command (the measured fleet shape,
+    // a for loop after the assignment) passes
+    const bound = run(`S=${cwd}; for i in 1 2; do python3 $S/other.py $i; done`)
+    expect(bound.status).toBe(0)
+    expect(bound.stdout).toBe('')
   })
 })
 

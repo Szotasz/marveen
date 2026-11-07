@@ -870,11 +870,12 @@ export function wrapperDepthHit(cmd) {
 export function buildScriptSendMsg(botName, ownerName) {
   return (
     'TILTVA (governance hard-gate): a futtatott szkript levelet kuldhet, vagy a kapu nem tudja elolvasni. ' +
+    'Kuldesnek szamit, ha a szkript UTJA VALTOZOBOL JON, es a kapu nem tudja eldonteni, mi az erteke (ISSUE2582). ' +
     'Cimzettet vivo futasnal (--to/--cc/--bcc vagy e-mail-cim a parancsban), es egy cd $(...) utan mindig, kuldesnek ' +
-    'szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, ha az utja valtozobol jon, vagy ha egy cd / env -C ' +
-    'celkonyvtara nem dontheto el. ' +
+    'szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, vagy ha egy cd / env -C celkonyvtara nem dontheto el. ' +
     'Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, es literalis uttal (vagy literalis cd utan) ' +
-    'futtasd. ' + buildGateMsg(botName, ownerName)
+    'futtasd. Valtozoval is mehet, ha UGYANEBBEN a parancsban, blokkon kivul, egyszer, literalis ertekkel allitod be ' +
+    '(D=/abszolut/ut; python3 $D/x.py), es nem $(...), $HOME vagy egy elozo hivas adja az erteket. ' + buildGateMsg(botName, ownerName)
   )
 }
 
@@ -1509,11 +1510,37 @@ function assignedCdDirs(segments) {
 // ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal is filled in where its value
 // at run time is certain; everything else keeps the variable (today's verdict). The full proof is at the python twin's
 // _bind_literal_vars (outgoing-copy-gate.py); the two agree, script-run-cases.json binds them.
-const BIND_BLOCK_WORDS = new Set([
-  'unset', 'read', 'for', 'select', 'declare', 'typeset', 'local', 'readonly', 'mapfile', 'readarray', 'getopts',
-  'eval', 'source', 'let', 'if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'case', 'esac',
-  'function', '{', '}', '[[', ']]', 'coproc', 'alias',
-])
+// Samu 72415: a block keyword opens / closes a block, a word that sets a variable blocks its own NAME, and only these
+// switch the binding off (see the python twin's _BIND_GLOBAL_BLOCK for the measurement behind it)
+const BIND_GLOBAL_BLOCK = new Set(['eval', 'source', '.', 'let', 'function', 'alias', 'coproc'])
+const BIND_OPEN = new Set(['if', 'while', 'until', 'case', '{', 'for', 'select'])
+const BIND_CLOSE = new Set(['fi', 'done', 'esac', '}'])
+const BIND_LEAD = new Set(['then', 'do', 'else', 'elif', '!', 'time'])
+const BIND_NAMERS = new Set(['read', 'unset', 'declare', 'typeset', 'local', 'readonly', 'export', 'mapfile', 'readarray', 'getopts'])
+const BIND_SUBST_ASSIGN = /(?:^|[\s;&|(`])([A-Za-z_][A-Za-z_0-9]*)(?:\[[^\]]*\])?\+?=/g
+function substEnd(cmd, i) {
+  // the index just past the `$(...)` or backtick substitution that starts at i (inside double quotes), else -1
+  if (cmd[i] === '`') {
+    for (let j = i + 1; j < cmd.length; j++) {
+      if (cmd[j] === '\\') { j++; continue }
+      if (cmd[j] === '`') return j + 1
+    }
+    return -1
+  }
+  let depth = 0
+  let q = null
+  for (let j = i + 1; j < cmd.length; j++) {
+    const c = cmd[j]
+    if (q) {
+      if (c === '\\' && q === '"') { j++; continue }
+      if (c === q) q = null
+    } else if (c === '\\') j++
+    else if (c === "'" || c === '"') q = c
+    else if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) return j + 1 }
+  }
+  return -1
+}
 const BIND_NAME = /[A-Za-z_][A-Za-z_0-9]*/y
 const BIND_LITERAL = /^[^\s$`'"()|;&<>*?[\]{}\\!~#]+$/
 const BIND_ASSIGN = /^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=/
@@ -1528,6 +1555,7 @@ function heredocBodySpans(cmd) {
 function bindScan(cmd) {
   const spans = heredocBodySpans(cmd)
   const segs = []
+  const substAssigned = []
   const stack = []
   let depth = 0
   let cur = { words: [], sepBefore: null, depth: 0 }
@@ -1582,8 +1610,16 @@ function bindScan(cmd) {
     }
     if (q === '"') {
       if (ch === '"') q = null
-      else if (ch === '`' || cmd.startsWith('$(', i)) return null // a substitution inside double quotes: not read here
-      else word.text += ch
+      else if (ch === '`' || cmd.startsWith('$(', i)) {
+        const end = substEnd(cmd, i)
+        if (end < 0) return null // an unclosed substitution: not read here
+        // a quoted "$(...)" runs in a subshell: nothing in it is filled in, an assignment in it counts as one more
+        const inner = cmd.slice(i, end)
+        for (const m of inner.matchAll(BIND_SUBST_ASSIGN)) substAssigned.push(m[1])
+        word.text += inner
+        i = end
+        continue
+      } else word.text += ch
       i++
       continue
     }
@@ -1633,25 +1669,57 @@ function bindScan(cmd) {
   }
   if (q) return null
   endSeg(null)
-  return segs
+  return { segs, substAssigned }
 }
 export function bindLiteralVars(cmd) {
   if (!cmd.includes('$') || !cmd.includes('=')) return cmd
   const scanned = bindScan(cmd)
   if (scanned === null) return cmd
-  const segs = scanned
+  const { segs, substAssigned } = scanned
   const counts = new Map()
+  for (const name of substAssigned) counts.set(name, (counts.get(name) ?? 0) + 2)
+  const blocked = new Set()
+  let block = 0 // how many blocks are open at the segment
   for (const seg of segs) {
     const words = seg.words
     for (const w of words) {
-      if (!w.quoted && BIND_BLOCK_WORDS.has(w.text)) return cmd
       const m = BIND_ASSIGN.exec(w.text)
       if (m) counts.set(m[1], (counts.get(m[1]) ?? 0) + (m[2] || m[3] ? 2 : 1))
     }
-    const first = words.find((w) => !BIND_ASSIGN.test(w.text))?.text ?? null
-    if (first === '.') return cmd
-    if (first === 'printf' && words.some((w) => w.text.startsWith('-v'))) return cmd
-    if (first === 'export' && !words.slice(1).every((w) => BIND_ASSIGN.test(w.text))) return cmd
+    let k = 0
+    while (k < words.length && !words[k].quoted) {
+      const t = words[k].text
+      if (BIND_OPEN.has(t)) {
+        block++
+        if ((t === 'for' || t === 'select') && k + 1 < words.length) blocked.add(words[k + 1].text) // the loop variable
+        if (t === 'for' || t === 'select' || t === 'case') { k = words.length; break } // the rest is a word list
+        k++
+        continue
+      }
+      if (BIND_CLOSE.has(t)) { block = Math.max(0, block - 1); k++; continue }
+      if (BIND_LEAD.has(t)) { k++; continue }
+      break
+    }
+    seg.block = block
+    const rest = words.slice(k)
+    const ci = rest.findIndex((w) => !BIND_ASSIGN.test(w.text))
+    if (ci < 0) continue
+    const c = rest[ci].quoted ? '' : rest[ci].text
+    const after = rest.slice(ci + 1)
+    if (BIND_GLOBAL_BLOCK.has(c)) return cmd
+    if (c === 'export' && after.length && after.every((w) => BIND_ASSIGN.test(w.text))) continue // `export NAME=v`
+    if (BIND_NAMERS.has(c)) {
+      for (const w of after) {
+        const nm = bindName(w.text, 0)
+        if (nm) blocked.add(nm.name)
+      }
+    }
+    if (c === 'printf') {
+      after.forEach((w, j) => {
+        if (w.text === '-v' && j + 1 < after.length) blocked.add(after[j + 1].text)
+        else if (w.text.startsWith('-v') && w.text.length > 2) blocked.add(w.text.slice(2))
+      })
+    }
   }
   if (counts.has('IFS')) return cmd
   const binds = new Map() // name -> [segment index, value, conditional]
@@ -1659,7 +1727,7 @@ export function bindLiteralVars(cmd) {
     const words = seg.words
     const assigns = words.length && words[0].text === 'export' && !words[0].quoted ? words.slice(1) : words
     if (!assigns.length || !assigns.every((w) => BIND_ASSIGN.test(w.text))) return
-    if (seg.depth !== 0 || ![null, ';', '&&', '||'].includes(seg.sepAfter)) return
+    if (seg.depth !== 0 || seg.block !== 0 || ![null, ';', '&&', '||'].includes(seg.sepAfter)) return
     let conditional
     if (seg.sepBefore === null || seg.sepBefore === ';') conditional = false
     else if (seg.sepBefore === '&&') conditional = true
@@ -1668,7 +1736,7 @@ export function bindLiteralVars(cmd) {
       const eq = w.text.indexOf('=')
       const name = w.text.slice(0, eq)
       const value = w.text.slice(eq + 1)
-      if (counts.get(name) !== 1 || w.escaped || !BIND_LITERAL.test(value)) continue
+      if (counts.get(name) !== 1 || blocked.has(name) || w.escaped || !BIND_LITERAL.test(value)) continue
       binds.set(name, [idx, value, conditional])
     }
   })

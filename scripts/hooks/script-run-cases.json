@@ -207,6 +207,21 @@
     {"name": "ISSUE2582 TIGHTENING (Samu 72403, sub-agent gate): node with an undecidable script, no address", "cmd": "node $X", "main": true, "sub": true},
     {"name": "ISSUE2582 TIGHTENING (Samu 72403, sub-agent gate): a directly executed .py under an undecidable path, no address", "cmd": "$D/hello.py", "main": true, "sub": true},
     {"name": "ISSUE2582 TIGHTENING (Samu 72403, sub-agent gate) control: an undecidable .sh path (no kind): neither gate reads it, unchanged", "cmd": "$D/run.sh", "main": false, "sub": false},
-    {"name": "ISSUE2582 TIGHTENING (Samu 72403, sub-agent gate) control: an undecidable cd keeps the older rule (no address passes the sub-agent gate)", "cmd": "cd $WT && python3 hello.py", "main": true, "sub": false}
+    {"name": "ISSUE2582 TIGHTENING (Samu 72403, sub-agent gate) control: an undecidable cd keeps the older rule (no address passes the sub-agent gate)", "cmd": "cd $WT && python3 hello.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A, Samu 72415): a for loop over another name after the assignment (the measured fleet shape)", "cmd": "S=okdir; for i in 1 2; do python3 $S/hello.py $i; done", "main": false, "sub": false},
+    {"name": "ISSUE2582 (A, Samu 72415): sender pair of the for loop shape", "cmd": "S=evil; for i in 1 2; do python3 $S/send.py $i; done", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415): a while read loop reads another name", "cmd": "S=okdir; printf 'a\\n' | while read line; do python3 $S/hello.py \"$line\"; done", "main": false, "sub": false},
+    {"name": "ISSUE2582 (A, Samu 72415): an if block after the assignment", "cmd": "S=okdir; if test -d x; then python3 $S/hello.py; fi", "main": false, "sub": false},
+    {"name": "ISSUE2582 (A, Samu 72415): a case block after the assignment", "cmd": "S=okdir; case x in x) python3 $S/hello.py;; esac", "main": false, "sub": false},
+    {"name": "ISSUE2582 (A, Samu 72415): a quoted \"$(...)\" elsewhere in the command", "cmd": "S=okdir; echo \"$(date)\"; python3 $S/hello.py", "main": false, "sub": false},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: the assignment inside an if block (a newline does not take it out)", "cmd": "if test -d x; then\nS=okdir\nfi\npython3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: the assignment inside a { } group over lines", "cmd": "{\nS=okdir\n}\npython3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: the assignment inside a while loop over lines", "cmd": "while false; do\nS=okdir\ndone\npython3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: an assignment of the name inside a quoted \"$(...)\" counts as a second one", "cmd": "S=okdir; echo \"$(S=evil; echo x)\"; python3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: printf -v names it", "cmd": "S=okdir; printf -v S '%s' evil; python3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: local names it", "cmd": "S=okdir; local S; python3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: a select loop over the name", "cmd": "S=okdir; select S in evil; do python3 $S/hello.py; done", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: source switches the binding off", "cmd": "S=okdir; source x.sh; python3 $S/hello.py", "main": true, "sub": true},
+    {"name": "ISSUE2582 (A, Samu 72415) kept: a function definition switches the binding off", "cmd": "S=okdir; function f { S=evil; }; f; python3 $S/hello.py", "main": true, "sub": true}
   ]
 }

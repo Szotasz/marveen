@@ -2147,19 +2147,28 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 #     the end (a `|` or `&` puts it in a subshell, and a subshell's assignment is lost);
 #   - the value is a plain literal (no `$`, backtick, quote, glob or white space) and the name is assigned ONCE in the
 #     whole command (a prefix `D=v cmd`, `D+=`, `D[i]=`, a second assignment, one inside `( )` or `$( )` all count);
-#   - the command holds no other way to set a variable or to run a block: unset, read, for, select, declare, typeset,
-#     local, readonly, mapfile, readarray, getopts, eval, source / `.`, let, printf -v, export of anything else, an
-#     IFS assignment, and no control word (if, while, case, `{`, function, ...);
+#   - the assignment stands outside every block (if / while / until / for / select / case / `{`: a block may not run),
+#     and the name is not set any other way: a `for NAME` / `select NAME`, `read`, `unset`, `declare` / `typeset` /
+#     `local` / `readonly`, `export` of anything but `NAME=literal`, `mapfile` / `readarray`, `getopts`, `printf -v`
+#     naming it (those block that NAME only), or an assignment inside a quoted "$(...)" (counted as a second one);
+#   - the command has no eval, source / `.`, let, function, alias or coproc, and no IFS assignment (any of them: no
+#     binding at all);
 #   - the use comes AFTER the assignment and is a plain `$D` / `${D}`, unquoted or double-quoted (`'$D'` and `\$D`
 #     are the literal text, `${D%x}` and the like are not filled in; `${D=x}` cannot change a D set before it);
 #   - a `cd $D` / `pushd $D` word is left alone (_assigned_cd_dirs has its own, older rule for it).
 # Heredoc bodies are not touched (B below judges a body only when the shell does not expand it). The JS twin
 # (email-send-gate.mjs :: bindLiteralVars) does the same; script-run-cases.json binds the two.
-_BIND_BLOCK_WORDS = frozenset((
-    "unset", "read", "for", "select", "declare", "typeset", "local", "readonly", "mapfile", "readarray", "getopts",
-    "eval", "source", "let", "if", "then", "else", "elif", "fi", "while", "until", "do", "done", "case", "esac",
-    "function", "{", "}", "[[", "]]", "coproc", "alias",
-))
+# Samu 72415 (measured on 7 days of the fleet's sub-agent calls): a `for` anywhere switched the binding off, and
+# `S=/x; for id in ...; do python3 $S/close.py $id; done` was 509 of the 635 calls the tightening would newly deny.
+# A block keyword now only opens / closes a block (an assignment inside one does not bind); the words that set a
+# variable block their own NAME; only the commands below switch the whole binding off.
+_BIND_GLOBAL_BLOCK = frozenset(("eval", "source", ".", "let", "function", "alias", "coproc"))
+_BIND_OPEN = frozenset(("if", "while", "until", "case", "{", "for", "select"))
+_BIND_CLOSE = frozenset(("fi", "done", "esac", "}"))
+_BIND_LEAD = frozenset(("then", "do", "else", "elif", "!", "time"))
+_BIND_NAMERS = frozenset(("read", "unset", "declare", "typeset", "local", "readonly", "export", "mapfile", "readarray",
+                          "getopts"))
+_BIND_SUBST_ASSIGN = re.compile(r"(?:^|[\s;&|(`])([A-Za-z_][A-Za-z_0-9]*)(?:\[[^\]]*\])?\+?=")
 _BIND_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 _BIND_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\!~#]+$""")
 _BIND_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=")
@@ -2176,6 +2185,7 @@ def _bind_scan(cmd: str):
     `$NAME` / `${NAME}`. Returns None when the command cannot be read."""
     spans = _heredoc_body_spans(cmd)
     segs = []
+    subst_assigned = []
     cur = {"words": [], "sep_before": None, "depth": 0}
     word = None
     depth = 0
@@ -2244,7 +2254,16 @@ def _bind_scan(cmd: str):
             if ch == '"':
                 q = None
             elif ch == "`" or (ch == "$" and cmd.startswith("$(", i)):
-                return None  # a substitution inside double quotes: not read here
+                end = _subst_end(cmd, i)
+                if end < 0:
+                    return None  # an unclosed substitution: not read here
+                # a quoted "$(...)" runs in a subshell: nothing in it is filled in, and an assignment in it counts as one
+                # more assignment of that name (so the name is never bound)
+                inner = cmd[i:end]
+                subst_assigned.extend(m.group(1) for m in _BIND_SUBST_ASSIGN.finditer(inner))
+                word["text"] += inner
+                i = end
+                continue
             else:
                 word["text"] += ch
             i += 1
@@ -2323,7 +2342,43 @@ def _bind_scan(cmd: str):
     if q:
         return None
     end_seg(None)
-    return segs
+    return segs, subst_assigned
+
+
+def _subst_end(cmd: str, i: int) -> int:
+    """The index just past the `$(...)` or backtick substitution that starts at i (inside double quotes), else -1."""
+    if cmd[i] == "`":
+        j = i + 1
+        while j < len(cmd):
+            if cmd[j] == "\\":
+                j += 2
+                continue
+            if cmd[j] == "`":
+                return j + 1
+            j += 1
+        return -1
+    depth, j, q = 0, i + 1, None
+    while j < len(cmd):
+        c = cmd[j]
+        if q:
+            if c == "\\" and q == '"':
+                j += 2
+                continue
+            if c == q:
+                q = None
+        elif c == "\\":
+            j += 2
+            continue
+        elif c in "'\"":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return -1
 
 
 def _bind_literal_vars(cmd: str) -> str:
@@ -2333,23 +2388,60 @@ def _bind_literal_vars(cmd: str) -> str:
     scanned = _bind_scan(cmd)
     if scanned is None:
         return cmd
-    segs = scanned
+    segs, subst_assigned = scanned
     counts = {}
+    for name in subst_assigned:
+        counts[name] = counts.get(name, 0) + 2
+    blocked = set()
+    block = 0  # how many blocks are open at the segment
     for seg in segs:
-        heads = seg["words"]
-        for k, w in enumerate(heads):
-            if not w["quoted"] and w["text"] in _BIND_BLOCK_WORDS:
-                return cmd
+        words = seg["words"]
+        for w in words:
             m = _BIND_ASSIGN.match(w["text"])
             if m:
                 counts[m.group(1)] = counts.get(m.group(1), 0) + (2 if (m.group(2) or m.group(3)) else 1)
-        first = next((w["text"] for w in heads if not _BIND_ASSIGN.match(w["text"])), None)
-        if first == ".":
+        k = 0
+        while k < len(words) and not words[k]["quoted"]:
+            t = words[k]["text"]
+            if t in _BIND_OPEN:
+                block += 1
+                if t in ("for", "select") and k + 1 < len(words):
+                    blocked.add(words[k + 1]["text"])  # the loop variable
+                if t in ("for", "select", "case"):
+                    k = len(words)  # the rest is the word list / the case word, not a command
+                    break
+                k += 1
+                continue
+            if t in _BIND_CLOSE:
+                block = max(0, block - 1)
+                k += 1
+                continue
+            if t in _BIND_LEAD:
+                k += 1
+                continue
+            break
+        seg["block"] = block
+        rest = words[k:]
+        cmd_word = next((w for w in rest if not _BIND_ASSIGN.match(w["text"])), None)
+        if cmd_word is None:
+            continue
+        c = "" if cmd_word["quoted"] else cmd_word["text"]
+        after = rest[rest.index(cmd_word) + 1:]
+        if c in _BIND_GLOBAL_BLOCK:
             return cmd
-        if first == "printf" and any(w["text"].startswith("-v") for w in heads):
-            return cmd
-        if first == "export" and not all(_BIND_ASSIGN.match(w["text"]) for w in heads[1:]):
-            return cmd
+        if c == "export" and after and all(_BIND_ASSIGN.match(w["text"]) for w in after):
+            continue  # `export NAME=v`: the assignment form, counted above
+        if c in _BIND_NAMERS:
+            for w in after:
+                nm = _BIND_NAME.match(w["text"])
+                if nm:
+                    blocked.add(nm.group(0))
+        if c == "printf":
+            for j, w in enumerate(after):
+                if w["text"] == "-v" and j + 1 < len(after):
+                    blocked.add(after[j + 1]["text"])
+                elif w["text"].startswith("-v") and len(w["text"]) > 2:
+                    blocked.add(w["text"][2:])
     if "IFS" in counts:
         return cmd
     binds = {}  # name -> (segment index, value, conditional)
@@ -2358,7 +2450,7 @@ def _bind_literal_vars(cmd: str) -> str:
         assigns = words[1:] if words and words[0]["text"] == "export" and not words[0]["quoted"] else words
         if not assigns or not all(_BIND_ASSIGN.match(w["text"]) for w in assigns):
             continue
-        if seg["depth"] != 0 or seg["sep_after"] not in (None, ";", "&&", "||"):
+        if seg["depth"] != 0 or seg["block"] != 0 or seg["sep_after"] not in (None, ";", "&&", "||"):
             continue
         if seg["sep_before"] in (None, ";"):
             conditional = False
@@ -2368,7 +2460,7 @@ def _bind_literal_vars(cmd: str) -> str:
             continue
         for w in assigns:
             name, value = w["text"].split("=", 1)
-            if counts.get(name) != 1 or w["escaped"] or not _BIND_LITERAL.match(value):
+            if counts.get(name) != 1 or name in blocked or w["escaped"] or not _BIND_LITERAL.match(value):
                 continue
             binds[name] = (idx, value, conditional)
     if not binds:
