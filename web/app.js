@@ -3773,6 +3773,9 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 
 // === Toast ===
 function showToast(msg, duration = 3000) {
+  // Some callers pass a type word ('error') where the duration goes. The delay was then NaN, which setTimeout runs
+  // at once: the toast was gone before it could be seen. Anything but a finite number means the default.
+  if (typeof duration !== 'number' || !Number.isFinite(duration)) duration = 3000
   toast.textContent = msg
   toast.classList.add('visible')
   setTimeout(() => toast.classList.remove('visible'), toastDuration(msg, duration))
