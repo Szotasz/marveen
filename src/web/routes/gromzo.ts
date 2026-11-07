@@ -81,6 +81,21 @@ export function isOwnerSession(auth: RouteContext['auth'], req: http.IncomingMes
   return true
 }
 
+/** GROMZOQRAUDITLOG1107: who asked for the owner QR, on every one of its log lines (issued, refused, failed):
+ *  how the caller authenticated, the owner's dashboard login when it is known (the session's own, or the
+ *  owner cookie beside a token or a Bridge key) and the Bridge device's name. Never the cookie, a token, a
+ *  key or an address. The Bridge's root step (mxdctl on admin.sock) never comes here: mxd logs that one. */
+export function ownerQrCaller(auth: RouteContext['auth'], req: http.IncomingMessage): Record<string, string> {
+  const via = 'dashboard'
+  switch (auth?.kind) {
+    case 'session': return { via, auth: 'session', owner: auth.user ?? '-' }
+    case 'device': return { via, auth: `device_${auth.scope}`, device: auth.device ?? '-', owner: ownerCookieSession(req) ?? '-' }
+    case 'token': return { via, auth: auth.tokenAgent ? 'agent_token' : 'shared_token', owner: ownerCookieSession(req) ?? '-' }
+    case 'federation': return { via, auth: 'federation' }
+    default: return { via, auth: 'none' }
+  }
+}
+
 const STATUS_PATH = '/api/gromzo/status'
 const OWNER_QR_PATH = '/api/gromzo/owner-qr'
 const AGENTS_PATH = '/api/gromzo/agents'
@@ -544,26 +559,30 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
   if (!isJsonRequest(req)) { json(res, { error: 'content_type_must_be_json' }, 415); return true }
   // Drain the (empty) body; nothing in it is used.
   try { await readBody(req, { maxBytes: 1024 }) } catch { json(res, { error: 'body_too_large' }, 413); return true }
+  const caller = ownerQrCaller(auth, req)
   if (!isOwnerSession(auth, req)) {
-    logger.warn({ kind: auth?.kind }, 'gromzo: owner QR refused (needs the owner session)')
+    logger.warn({ ...caller, kind: auth?.kind }, 'gromzo: owner QR refused (needs the owner session)')
     json(res, OWNER_QR_SESSION_REQUIRED, 403)
     return true
   }
+  // The verbs asked of mxd, in order (owner_invite, then owner_login_code on a taken seat): which code was asked for.
+  const asked: string[] = []
+  const tracked: MxdDashCall = (request) => { asked.push(request.verb); return call(request) }
   let result
   try {
-    result = await requestOwnerQr(call)
+    result = await requestOwnerQr(tracked)
   } catch (e) {
     const code = e instanceof MxdDashError ? e.code : 'io'
-    logger.warn({ code }, 'gromzo: owner QR failed (dash.sock)')
+    logger.warn({ ...caller, asked: asked.join('>'), code }, 'gromzo: owner QR failed (dash.sock)')
     failure(res, code)
     return true
   }
   if (!result.ok) {
-    logger.warn({ code: result.code }, 'gromzo: owner QR refused by mxd')
+    logger.warn({ ...caller, asked: asked.join('>'), code: result.code }, 'gromzo: owner QR refused by mxd')
     failure(res, result.code, result.retryAfter)
     return true
   }
-  logger.info({ kind: result.qr.kind, expires_in: result.qr.expires_in }, 'gromzo: owner QR issued (the secret is not logged)')
+  logger.info({ ...caller, asked: asked.join('>'), kind: result.qr.kind, expires_in: result.qr.expires_in }, 'gromzo: owner QR issued (the secret is not logged)')
   sendOwnerQr(res, result.qr)
   return true
 }
