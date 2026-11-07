@@ -19954,8 +19954,23 @@ async function saveIdea() {
 }
 
 async function deleteIdeaItem(id) {
-  if (!confirm(t('kanban.confirm.delete'))) return
-  await fetch(`/api/ideas/${id}`, { method: 'DELETE' })
+  const idea = ideasAll.find(i => i.id === id) || ideas.find(i => i.id === id)
+  // The server deletes the idea's attachments (and their files) and its comments with it, so say so.
+  const confirmed = await confirmDialog({
+    title: t('ideas.confirm.delete_title'),
+    message: t('ideas.confirm.delete', { title: (idea && idea.title) || id }) + '\n\n' + t('ideas.confirm.delete_children'),
+    okLabel: t('ideas.confirm.delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(err.error || t('ideas.toast.delete_error'), 'error')
+      return
+    }
+  } catch { showToast(t('ideas.toast.delete_error'), 'error'); return }
   loadIdeasPage()
 }
 
@@ -20007,7 +20022,7 @@ async function loadIdeaAttachments(id) {
           <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
         </div>
         <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
-        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))})">${t('ideas.detail.attach.delete')}</button>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))}, ${jsArg(a.filename)})">${t('ideas.detail.attach.delete')}</button>
       </div>`).join('')
   } catch {
     list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
@@ -20046,8 +20061,14 @@ document.getElementById('ideaAttachmentInput')?.addEventListener('change', async
   }
 })
 
-async function deleteIdeaAttachmentItem(encodedId) {
-  if (!confirm(t('ideas.detail.attach.confirm_delete'))) return
+async function deleteIdeaAttachmentItem(encodedId, filename) {
+  const confirmed = await confirmDialog({
+    title: t('ideas.detail.attach.confirm_delete_title'),
+    message: t('ideas.detail.attach.confirm_delete', { name: filename || '' }),
+    okLabel: t('ideas.detail.attach.confirm_delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/ideas/attachments/${encodedId}`, { method: 'DELETE' })
     if (!res.ok) throw new Error('HTTP ' + res.status)

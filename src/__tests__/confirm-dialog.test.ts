@@ -623,3 +623,71 @@ describe('the custom provider delete uses it', () => {
     }
   })
 })
+
+describe('the idea and idea attachment deletes use it', () => {
+  const between = (from: string, to: string) => {
+    const i = APP.indexOf(from)
+    const j = i < 0 ? -1 : APP.indexOf(to, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  }
+  const IDEA = between('async function deleteIdeaItem(', '\n}\n')
+  const ATTACH = between('async function deleteIdeaAttachmentItem(', '\n}\n')
+
+  it('the handlers were found', () => {
+    expect(IDEA).not.toBe('')
+    expect(ATTACH).not.toBe('')
+  })
+
+  it('the idea delete: a danger confirmDialog with its own title and button, naming the idea, no native confirm()', () => {
+    expect(IDEA).toContain('const confirmed = await confirmDialog({')
+    expect(IDEA).toContain("title: t('ideas.confirm.delete_title')")
+    expect(IDEA).toContain("t('ideas.confirm.delete', { title: (idea && idea.title) || id })")
+    expect(IDEA).toContain("okLabel: t('ideas.confirm.delete_ok')")
+    expect(IDEA).toContain('danger: true')
+    expect(IDEA).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    // it borrowed the Kanban card's question before
+    expect(IDEA).not.toContain('kanban.confirm.delete')
+  })
+
+  it('the idea delete says that its attachments and comments go with it', () => {
+    expect(IDEA).toContain("'\\n\\n' + t('ideas.confirm.delete_children')")
+  })
+
+  it('the attachment delete: a danger confirmDialog naming the file, no native confirm()', () => {
+    expect(ATTACH).toContain('const confirmed = await confirmDialog({')
+    expect(ATTACH).toContain("title: t('ideas.detail.attach.confirm_delete_title')")
+    expect(ATTACH).toContain("t('ideas.detail.attach.confirm_delete', { name: filename || '' })")
+    expect(ATTACH).toContain("okLabel: t('ideas.detail.attach.confirm_delete_ok')")
+    expect(ATTACH).toContain('danger: true')
+    expect(ATTACH).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    expect(APP).toContain('onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))}, ${jsArg(a.filename)})"')
+  })
+
+  it('a "no" stops both, before the request', () => {
+    for (const handler of [IDEA, ATTACH]) {
+      const ask = handler.indexOf('const confirmed = await confirmDialog({')
+      const guard = handler.indexOf('if (!confirmed) return')
+      expect(ask).toBeGreaterThan(-1)
+      expect(guard).toBeGreaterThan(ask)
+      expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+    }
+  })
+
+  it('a failed idea delete shows the server\'s reason or a translated toast, and the list is not reloaded as if it worked', () => {
+    expect(IDEA).toContain("showToast(err.error || t('ideas.toast.delete_error'), 'error')")
+    expect(IDEA).toContain("catch { showToast(t('ideas.toast.delete_error'), 'error'); return }")
+    expect(IDEA).toContain("showToast(err.error || t('ideas.toast.delete_error'), 'error')\n      return\n    }")
+    expect(IDEA.indexOf('loadIdeasPage()')).toBeGreaterThan(IDEA.indexOf('if (!res.ok) {'))
+  })
+
+  it('the keys are in both languages, with their placeholders', () => {
+    for (const key of ['ideas.confirm.delete_title', 'ideas.confirm.delete', 'ideas.confirm.delete_children', 'ideas.confirm.delete_ok',
+      'ideas.detail.attach.confirm_delete', 'ideas.detail.attach.confirm_delete_title', 'ideas.detail.attach.confirm_delete_ok', 'ideas.toast.delete_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'ideas.confirm.delete':"))).toContain('{title}')
+      expect(lang.split('\n').find(l => l.includes("'ideas.detail.attach.confirm_delete':"))).toContain('{name}')
+    }
+  })
+})
