@@ -90,6 +90,7 @@ import { SCHEDULED_TASKS_DIR } from '../web/scheduled-tasks-io.js'
 import { backfillScheduledTaskRegistryOnce, registerScheduledTask, _resetRegistryWarningsForTest } from '../web/schedule-registry.js'
 import { tryHandleSchedules } from '../web/routes/schedules.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { deliveredTaskText } from './helpers/scheduled-runs-tmp.js'
 
 const AGENT = 'tickagent'
 
@@ -212,7 +213,7 @@ describe('runner tick x registry (real tick, real registry)', () => {
     expect(sentTo('tick-ok')).toHaveLength(1)          // control: the tick does fire
     expect(sentTo('tick-planted')).toHaveLength(0)
     expect(sentTo('tick-edited')).toHaveLength(0)
-    expect(sent.some(s => s.prompt.includes('PLANTED') || s.prompt.includes('EDITED'))).toBe(false)
+    expect(sent.some(s => deliveredTaskText(s.prompt).includes('PLANTED') || deliveredTaskText(s.prompt).includes('EDITED'))).toBe(false)
     expect(existsSync(join(tmpHome, 'planted-precheck-ran'))).toBe(false)
     expect(existsSync(join(tmpHome, 'edited-precheck-ran'))).toBe(false)
     // A skip is reported only when it persists to the next tick, so the
@@ -247,7 +248,7 @@ describe('runner tick x registry (real tick, real registry)', () => {
     }
     await runOneTick()
     expect(sent).toHaveLength(1)
-    expect(sent.some(s => s.prompt.includes('EDITED'))).toBe(false)
+    expect(sent.some(s => deliveredTaskText(s.prompt).includes('EDITED'))).toBe(false)
   })
 
   it('retry path control: two pending retries, nothing changes -> both are sent', async () => {
@@ -274,7 +275,7 @@ describe('runner tick x registry (real tick, real registry)', () => {
     }
     await runOneTick()
     expect(sent).toHaveLength(1)
-    expect(sent.some(s => s.prompt.includes('EDITED'))).toBe(false)
+    expect(sent.some(s => deliveredTaskText(s.prompt).includes('EDITED'))).toBe(false)
   })
 
   // The registry hash and the runner read a task's preCheck by one path rule

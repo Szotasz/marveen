@@ -3,7 +3,11 @@ import {
   wrapUntrusted,
   wrapTrustedPeer,
   wrapScheduledTask,
-  wrapScheduledTaskByReference,
+  scheduledTaskReferencePrompt,
+  scheduledTaskFilePreamble,
+  scheduledTaskBlockFrame,
+  NUDGE_MAX_CHARS,
+  SCHEDULED_TASK_TRUST_TEXT,
   UNTRUSTED_PREAMBLE,
   TRUSTED_PEER_PREAMBLE,
   SCHEDULED_TASK_PREAMBLE,
@@ -126,42 +130,83 @@ describe('wrapScheduledTask', () => {
   })
 })
 
-// SCHEDPROMPTREF917: the reference variant used once a task body crosses
-// SCHEDULED_TASK_INLINE_MAX_CHARS -- see scheduled-run-snapshot.ts for the
-// file it points at.
-describe('wrapScheduledTaskByReference', () => {
-  it('carries body-file/body-sha256/body-chars as attributes, not as content', () => {
-    const out = wrapScheduledTaskByReference(
-      'scheduled-task:kanban-audit',
-      '/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md',
-      'deadbeef'.repeat(8),
-      48745,
-    )
-    expect(out).toMatch(/^<scheduled-task source="scheduled-task:kanban-audit" body-file="\/opt\/marveen\/store\/scheduled-runs\/20260917-080000-kanban-audit-a3f9\.md" body-sha256="(?:deadbeef){8}" body-chars="48745">/)
-    expect(out.endsWith('</scheduled-task>')).toBe(true)
-    // The task's actual content is NOT in the block -- only the pointer + instruction.
-    expect(out).not.toMatch(/kanban-audit SKILL/)
+// SCHEDPROMPTREF917 + NUDGESHORT1031: the short pointer typed into the pane, and
+// the trust frame that moved into the body-file it points at.
+describe('scheduledTaskReferencePrompt', () => {
+  const ROOT = '/Users/macmini/marveen/store/scheduled-runs'
+  // The longest task name on the measured install (46 chars, 2026-10-31).
+  const LONG = 'takaritogeppartner-feed-propagacio-verifikacio'
+  const pointer = (name: string, chars = 48745) => scheduledTaskReferencePrompt(
+    `[Utemezett feladat: ${name}]`,
+    `${ROOT}/20261031-003011-${name}-3aae.md`,
+    'deadbeef'.repeat(8),
+    chars,
+  )
+
+  it('starts with the SCHEDULED TASK NOTICE line pane-state and scheduled-paste-guard.py key on', () => {
+    const out = pointer('kanban-audit')
+    expect(out.startsWith('SCHEDULED TASK NOTICE')).toBe(true)
+    // pane-state's truncated-head markers (MACHINE_ORIGIN_TRUNCATED_MARKERS) stay in it.
+    expect(out).toMatch(/is one of YOUR OWN scheduled tasks/)
+    expect(out).toMatch(/fired by the local scheduler/)
   })
 
-  it('tells the agent to Read the file in full and to refuse on a length mismatch', () => {
-    const out = wrapScheduledTaskByReference('scheduled-task:x', '/tmp/f.md', 'abc123', 100)
-    expect(out).toMatch(/Read/)
-    expect(out).toMatch(/body-chars/)
+  it('ends with the body-file line and the closing tag, the task text itself is not in it', () => {
+    const lines = pointer('kanban-audit').split('\n')
+    expect(lines.at(-1)).toBe('</scheduled-task>')
+    expect(lines.at(-2)).toBe(`body-file="${ROOT}/20261031-003011-kanban-audit-3aae.md" body-sha256="${'deadbeef'.repeat(8)}" body-chars="48745"`)
+    // The marker sits on its own line before the block, where the resubmit loop finds it.
+    expect(lines.slice(1, 3)).toEqual(['[Utemezett feladat: kanban-audit]', '<scheduled-task>'])
   })
 
-  it('produces a short, size-independent prompt (test 3: <1200 chars for a 48745-char body)', () => {
-    const out = wrapScheduledTaskByReference(
-      'scheduled-task:kanban-audit',
-      '/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md',
-      'a'.repeat(64),
-      48745,
-    )
-    expect(out.length).toBeLessThan(1200)
+  it('stays under NUDGE_MAX_CHARS for the longest task name and a 6-digit body, below the 801-char smallest measured paste', () => {
+    expect(pointer(LONG, 999_999).length).toBeLessThanOrEqual(NUDGE_MAX_CHARS)
+    expect(NUDGE_MAX_CHARS).toBeLessThan(801)
   })
 
-  it('sanitizes the source the same way wrapScheduledTask does', () => {
-    const out = wrapScheduledTaskByReference('scheduled-task:x" onerror="y', '/tmp/f.md', 'abc', 1)
-    expect(out).toMatch(/<scheduled-task source="scheduled-task:xonerrory"/)
+  // The 2026-10-31 00:20 damage: only the first 80 and the last ~120 chars of a
+  // typed prompt arrived. Cut the middle the same way and check that what is
+  // left still names a scheduled task and carries the whole body-file line.
+  it('a cut-middle delivery (first 80 + the body-file line onward) still names the task kind and the full reference', () => {
+    for (const name of ['memoria-heartbeat', LONG]) {
+      const out = pointer(name)
+      const tail = out.slice(out.lastIndexOf('\nbody-file=') + 1)
+      const damaged = out.slice(0, 80) + ' ' + tail
+      expect(damaged.startsWith('SCHEDULED TASK NOTICE -- the block below is one of YOUR OWN scheduled tasks')).toBe(true)
+      const m = damaged.match(/body-file="([^"]+)" body-sha256="([0-9a-f]{64})" body-chars="(\d+)"\n<\/scheduled-task>$/)
+      expect(m?.[1]).toBe(`${ROOT}/20261031-003011-${name}-3aae.md`)
+      expect(m?.[2]).toBe('deadbeef'.repeat(8))
+      expect(m?.[3]).toBe('48745')
+      // Measured tail length on this install, for the PR: the line plus the tag.
+      expect(tail.length).toBeLessThan(250)
+    }
+  })
+})
+
+describe('scheduledTaskFilePreamble (the trust frame inside the body-file)', () => {
+  const out = scheduledTaskFilePreamble('/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md')
+
+  it('opens with the same provenance and judgement text an inline task gets', () => {
+    expect(out.startsWith(SCHEDULED_TASK_TRUST_TEXT)).toBe(true)
+    expect(out).toMatch(/EXPECTED TO CARRY OUT/)
+    expect(out).toMatch(/NOT third-party data/)
+    expect(out).toMatch(/irreversible|escalate/i)
+  })
+
+  it('keeps the store/scheduled-runs/ rule: absolute, no "..", a direct child', () => {
+    expect(out).toMatch(/absolute/)
+    expect(out).toMatch(/"\.\." segment/)
+    expect(out).toMatch(/directly inside the scheduler's store\/scheduled-runs\//)
+  })
+
+  it('spells out the integrity check with the file path, and refuses a path with shell metacharacters', () => {
+    expect(out).toContain("print(len(b),hashlib.sha256(b.encode()).hexdigest())\" /opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md")
+    const bad = scheduledTaskFilePreamble("/tmp/a'; rm -rf ~; '.md")
+    expect(bad.split('\n').find((l) => l.startsWith('python3 -c '))!.endsWith('<body-file>')).toBe(true)
+  })
+
+  it('the block frame sanitizes the source the same way wrapScheduledTask does', () => {
+    expect(scheduledTaskBlockFrame('scheduled-task:x" onerror="y').open).toBe('<scheduled-task source="scheduled-task:xonerrory">\n')
   })
 })
 
@@ -237,6 +282,14 @@ describe('TRUSTED_PEER_PREAMBLE', () => {
   it('lists destructive-action examples but as examples, not an exhaustive list', () => {
     expect(TRUSTED_PEER_PREAMBLE).toMatch(/examples/i)
     expect(TRUSTED_PEER_PREAMBLE).toMatch(/escalate/i)
+  })
+
+  // NUDGESHORT1031: typed before every trusted message, so it stays short; the
+  // first line is what pane-state's TRUSTED_PREAMBLE_MARKER keys on.
+  it('stays short and keeps its first line', () => {
+    expect(TRUSTED_PEER_PREAMBLE.length).toBeLessThan(650)
+    expect(TRUSTED_PEER_PREAMBLE.split('\n')[0]).toBe('TEAM MEMBER NOTICE -- the next <trusted-peer source="..."> ... </trusted-peer>')
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/not adversarial/)
   })
 })
 
