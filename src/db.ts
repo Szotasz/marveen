@@ -5829,12 +5829,19 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
   })
 }
 
+// Runs that actually happened. A tick the scheduler dropped without running
+// anything ('skipped', 'skipped-precheck', 'skipped-usage-limit', ...) or a
+// 'missed' slot is a log line, not a run: counting them made the overview's
+// "tasks today" tile report hundreds of runs on a quiet install whose
+// 2-minute ledger drain is almost always skipped by its token-free preCheck.
+const RAN_STATUS_SQL = "status NOT LIKE 'skipped%' AND status != 'missed'"
+
 export function countTaskRunsBetween(fromTs: number, toTs?: number): number {
   if (toTs === undefined) {
-    const row = db.prepare('SELECT COUNT(*) as c FROM task_runs WHERE ts >= ?').get(fromTs) as { c: number }
+    const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ${RAN_STATUS_SQL}`).get(fromTs) as { c: number }
     return row.c
   }
-  const row = db.prepare('SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ts < ?').get(fromTs, toTs) as { c: number }
+  const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ts < ? AND ${RAN_STATUS_SQL}`).get(fromTs, toTs) as { c: number }
   return row.c
 }
 
