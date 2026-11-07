@@ -16,3 +16,18 @@ export function agentTextLangSetting(read: (keys: string[]) => Record<string, st
 export function agentTextLang(read: (keys: string[]) => Record<string, string> = readEnvFile): AgentTextLang {
   return agentTextLangSetting(read) ?? 'hu'
 }
+
+/**
+ * The language of the agent-facing text that followed DASHBOARD_LANG before this key existed (the federation
+ * onboarding block and capability summary, the inbox nudge): AGENT_TEXT_LANG when it is set, else DASHBOARD_LANG as
+ * before, else Hungarian. One place for the four copies that each had their own resolveLang.
+ */
+export function agentFacingLang(dashboardLang: () => unknown, read: (keys: string[]) => Record<string, string> = readEnvFile): AgentTextLang {
+  const set = agentTextLangSetting(read)
+  if (set) return set
+  try {
+    return dashboardLang() === 'en' ? 'en' : 'hu'
+  } catch {
+    return 'hu'
+  }
+}
