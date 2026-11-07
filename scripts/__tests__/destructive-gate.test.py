@@ -890,6 +890,25 @@ try:
     _git(["config", "core.hooksPath", os.path.join(_td, "copied-hooks")], copied)
     check("masik konyvtarba MASOLT dispatcher: a konyvtar szamit, nem a jelolo sor, BLOKK",
           blocks_cwd(GPUSH + " origin munkaag", copied))
+    # Fail-closed ag (Szotasz, PR #1957 delta-review, a tulelo mutans: "olvashatatlan pre-push =
+    # nincs telepitve"): ha a telepitett pre-push NEM olvashato, a kapu nem tudja, futnanak-e a
+    # push-kapuk, tehat tilt. Az indokot is kitujuk, hogy ezt az agat merje, ne a "mashova mutat"-ot.
+    unread = _repo("unread", True)
+    _git(["config", "core.hooksPath", "/tmp/nowhere"], unread)
+    _pp = os.path.join(unread, ".git", "hooks", "pre-push")
+    os.chmod(_pp, 0)
+    if os.access(_pp, os.R_OK):
+        # root a 000-s fajlt is olvassa: itt az olvashatatlan pre-push nem allithato elo.
+        print("  [NEM MERHETO] olvashatatlan pre-push: a futtato root, a 000-s fajl is olvashato")
+    else:
+        try:
+            gate.check_bash(GPUSH + " origin munkaag", cwd=unread)
+            _why = None
+        except Blocked as e:
+            _why = str(e)
+        check("olvashatatlan pre-push (chmod 000) + hooksPath mashova: fail-closed BLOKK, "
+              "az olvashatatlan-ag indokaval",
+              _why is not None and "nem olvashato" in _why)
     print("NEGATIV kontroll -- hooksPath, ami NEM kapcsolja ki a kapukat (Szotasz, PR #1957):")
     own = _repo("own", True)
     _git(["config", "core.hooksPath", os.path.join(own, ".git", "hooks")], own)
