@@ -40,7 +40,9 @@ export const FEDERATION_BLOCK_END = '<!-- MARVEEN-FEDERATION:END -->'
 export const FEDERATION_POLICY_ANCHOR = '<!-- MARVEEN-FEDERATION:POLICY -->'
 // Insert after this template section when present (EOF-fallback otherwise --
 // hand-edited or migrated installs may lack the heading).
-const INTERAGENT_HEADING = '## Inter-agent kommunikáció'
+// PERSONAESC1107: the English persona (templates/en/CLAUDE.md.template) names the same section in English; without it
+// the block fell to the end of an English install's CLAUDE.md.
+export const INTERAGENT_HEADINGS: readonly string[] = ['## Inter-agent kommunikáció', '## Inter-agent communication']
 
 export interface OnboardingIdentity {
   botName: string
@@ -312,7 +314,7 @@ export function applyFederationBlock(content: string, block: string | null): str
   }
   // Insert: after the inter-agent section when the heading exists (i.e.
   // before the NEXT '## ' heading), else append at EOF.
-  const headingIdx = lines.findIndex((l) => l.trim() === INTERAGENT_HEADING)
+  const headingIdx = lines.findIndex((l) => INTERAGENT_HEADINGS.includes(l.trim()))
   if (headingIdx !== -1) {
     let insertAt = lines.length
     for (let i = headingIdx + 1; i < lines.length; i++) {

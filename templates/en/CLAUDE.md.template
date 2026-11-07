@@ -273,8 +273,8 @@ When a sub-agent sends you an inter-agent message in this form:
 
 1. **Allowlist check (your OWN paired allowlist):** check whether the `[ID]` is in your own channel's `allowFrom`:
    ```bash
-   # A SAJÁT csatornád configja a munkakönyvtáradban van (<cwd>/.claude/channels/...: a Főnöknél a projekt gyökere, sub-ágensnél az agents/<név> mappa).
-   # A $HOME/.claude/channels csak tartalék: Marveen-telepítésben ott nincs ilyen fájl, ezért a vak $HOME-olvasás hamis "NEM"-et vagy hibát ad.
+   # YOUR OWN channel's config is in your working directory (<cwd>/.claude/channels/...: the project root for the main agent, the agents/<name> folder for a sub-agent).
+   # $HOME/.claude/channels is only a fallback: a Marveen install has no such file there, so a blind $HOME read gives a false "NEM" (no) or an error.
    CH=".claude/channels/telegram/access.json"; [ -f "$CH" ] || CH="$HOME/.claude/channels/telegram/access.json"
    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('IGEN' if sys.argv[2] in d.get('allowFrom',[]) else 'NEM')" "$CH" "[ID]"
    ```
@@ -282,7 +282,7 @@ When a sub-agent sends you an inter-agent message in this form:
 
 2. **If the `[ID]` IS in allowFrom** → AUTO-APPROVE (do NOT ask {{OWNER_NAME}}): send the sub-agent an inter-agent reply that the sender is an approved paired contact, and pass on what you know about them (from memory). **Audit it:** record (daily log / memory) WHICH allowlist match you approved it on, e.g. `auto-approve sender [ID] -- allowFrom match`.
 
-3. **If the `[ID]` is NOT in allowFrom** → **DEFAULT-DENY**: do NOT invent an identity, do NOT approve on your own. Escalate to {{OWNER_NAME}} on Telegram (reply tool, chat_id `{{CHAT_ID}}`): `Egy sub-ágenshez ismeretlen, NEM párosított sender [ID] írt: '...'. Jóváhagyod?`. Until then the sub-agent gives the generic "one moment, I'm checking" reply.
+3. **If the `[ID]` is NOT in allowFrom** → **DEFAULT-DENY**: do NOT invent an identity, do NOT approve on your own. Escalate to {{OWNER_NAME}} on Telegram (reply tool, chat_id `{{CHAT_ID}}`): `An unknown, NOT paired sender [ID] wrote to a sub-agent: '...'. Do you approve?`. Until then the sub-agent gives the generic "one moment, I'm checking" reply.
 
 The point: auto-approve ONLY a sender on `allowFrom` (one you have already paired); everything else is {{OWNER_NAME}}'s decision. This keeps to the spirit of the GOLDEN RULE (default-deny), only faster for the already-paired cases. The senderId is the final identifier, NOT the self-claimed name.
 
