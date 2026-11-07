@@ -637,6 +637,14 @@ export const SUBAGENT_INBOX_TEE =
 export const MEMORY_CONTENT_FILTER_STRICT_COMMANDS =
   ['1', 'true', 'yes', 'on'].includes((cfg('MEMORY_CONTENT_FILTER_STRICT_COMMANDS') ?? '').trim().toLowerCase())
 
+// Default mode of GET /api/memories?q= when the caller passes no ?mode= (opt-in).
+// Unset or anything other than 'hybrid' keeps the upstream 'fts' default and its
+// relaxed/strict labelling unchanged. 'hybrid' fuses FTS with the vector index
+// (RRF) and needs a working embedding backend (OLLAMA_URL + EMBED_MODEL); without
+// one, hybridSearch falls back to its FTS leg. strict=1 is always FTS-only.
+export const MEMORY_SEARCH_DEFAULT_MODE: 'fts' | 'hybrid' =
+  (cfg('MEMORY_SEARCH_DEFAULT_MODE') ?? '').trim().toLowerCase() === 'hybrid' ? 'hybrid' : 'fts'
+
 // Sub-agent Telegram inbox wake-nudge (opt-in, DEFAULT OFF).
 // The message-router can nudge an idle sub-agent whose derived Telegram inbox
 // (<state>/inbox-pending.jsonl) has stuck inbound messages, so its drain hook
