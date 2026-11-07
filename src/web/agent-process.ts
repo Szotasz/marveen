@@ -1331,18 +1331,42 @@ function provisionIsolatedConfigDir(
     // Seed installed_plugins.json with every project-scoped install re-pointed at
     // THIS agent's cwd, so the channel plugin is registered for this project from
     // first launch (Claude Code keeps maintaining it thereafter).
+    //
+    // PLUGINREGCLOBBER1107: this runs on EVERY launch, so it must MERGE, not
+    // overwrite. The agent's own registry is the one Claude Code maintains; a
+    // plain copy of the shared file threw away every entry the shared file
+    // lacked. Measured 2026-11-07: the shared registry was `{"plugins":{}}`, so
+    // each channels.sh start wiped the telegram entry, Claude Code re-installed
+    // the plugin DURING startup (installedAt == session start, every time), and
+    // a plugin installed that late is never spawned for the session: no bun
+    // child, no bot.pid, the watchdog's "plugin disappeared" grace, and a
+    // service-manager restart (the recurring FAILED) unless /reload-plugins ran.
+    // Rule: an id the agent's own registry already lists is kept as is; only
+    // ids it lacks are added from the shared file, re-pointed at this cwd.
     const sharedInstalled = join(sharedPlugins, 'installed_plugins.json')
+    const ownInstalled = join(pluginsDir, 'installed_plugins.json')
     if (existsSync(sharedInstalled)) {
       try {
-        const inst = JSON.parse(readFileSync(sharedInstalled, 'utf-8')) as {
-          plugins?: Record<string, Array<{ scope?: string; projectPath?: string }>>
+        type Reg = { plugins?: Record<string, Array<{ scope?: string; projectPath?: string }>>; [k: string]: unknown }
+        const shared = JSON.parse(readFileSync(sharedInstalled, 'utf-8')) as Reg
+        let own: Reg | null = null
+        if (existsSync(ownInstalled)) {
+          try {
+            const parsed = JSON.parse(readFileSync(ownInstalled, 'utf-8')) as Reg
+            if (isPlainObject(parsed)) own = parsed
+          } catch { own = null /* torn/garbage: reseed from shared */ }
         }
-        for (const entries of Object.values(inst.plugins ?? {})) {
-          for (const e of entries) {
-            if (e.scope === 'project') e.projectPath = cwd
-          }
+        const merged: Reg = own ?? { ...shared, plugins: {} }
+        if (!isPlainObject(merged.plugins)) merged.plugins = {}
+        let changed = own === null
+        for (const [id, entries] of Object.entries(shared.plugins ?? {})) {
+          const have = merged.plugins![id]
+          if (Array.isArray(have) && have.length > 0) continue
+          merged.plugins![id] = (Array.isArray(entries) ? entries : []).map(e =>
+            e && e.scope === 'project' ? { ...e, projectPath: cwd } : e)
+          changed = true
         }
-        writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
+        if (changed) writeJsonAtomic(ownInstalled, merged, { groupShared: perUserAgent })
       } catch (err) {
         logger.warn({ err, name }, 'isolated-config: failed to seed installed_plugins.json')
       }

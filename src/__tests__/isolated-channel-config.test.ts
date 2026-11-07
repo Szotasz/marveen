@@ -141,6 +141,32 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(inst.plugins[TG][0].projectPath).toBe(join(SANDBOX, 'agents', 'testagent'))
   })
 
+  it('PLUGINREGCLOBBER1107: a relaunch keeps the agent-owned registry entry the shared file lacks', () => {
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const ip = join(cfg, 'plugins', 'installed_plugins.json')
+    // Claude Code maintained the agent's own registry after the first launch...
+    const own = JSON.parse(readFileSync(ip, 'utf-8'))
+    own.plugins[TG] = [{ scope: 'project', projectPath: join(SANDBOX, 'agents', 'testagent'), installPath: '/own', version: '0.0.7', installedAt: 'T0' }]
+    writeFileSync(ip, JSON.stringify(own))
+    // ...and the shared registry is (or became) empty, as measured live.
+    writeFileSync(join(SANDBOX, 'home', '.claude', 'plugins', 'installed_plugins.json'), '{"version":2,"plugins":{}}')
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    const after = JSON.parse(readFileSync(ip, 'utf-8'))
+    expect(after.plugins[TG]).toHaveLength(1)
+    expect(after.plugins[TG][0].installPath).toBe('/own')
+    expect(after.plugins[TG][0].installedAt).toBe('T0')
+  })
+
+  it('PLUGINREGCLOBBER1107: an id only the shared registry lists is still added, re-pointed', () => {
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const ip = join(cfg, 'plugins', 'installed_plugins.json')
+    writeFileSync(ip, JSON.stringify({ version: 2, plugins: { 'other@m': [{ scope: 'user', installPath: '/o' }] } }))
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    const after = JSON.parse(readFileSync(ip, 'utf-8'))
+    expect(after.plugins['other@m'][0].installPath).toBe('/o')
+    expect(after.plugins[TG][0].projectPath).toBe(join(SANDBOX, 'agents', 'testagent'))
+  })
+
   it('a CHANNEL-LESS agent (null provider) disables EVERY channel plugin', () => {
     // AUTHISO25: dani/geri-class agents have no bot token at all. Their
     // isolated settings.json must not enable any channel plugin -- a loaded
