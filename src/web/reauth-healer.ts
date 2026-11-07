@@ -16,6 +16,7 @@ import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 import { whileNotFrozen } from './fleet-freeze.js'
+import { mainLaunchedOnKey } from './main-auth.js'
 
 // Autonomous re-auth healer (Adam stability-fix #1, scoped 2026-06-03).
 //
@@ -231,15 +232,21 @@ export interface QuietSuppressedEntry {
   tokenFileInvalid?: boolean
   /** ...and the session sits on the first-run gate: the heal there is a restart, not a token refresh and not a /login. */
   firstRunGate?: boolean
+  /** MAINAUTH1107: the main agent runs on an API key: the failure is the key's (invalid, revoked, out of credit). */
+  apiKey?: boolean
 }
 
 const quietSuppressed = new Map<string, QuietSuppressedEntry>()
 
-export function buildEscalationMessage(label: string, reason: string, consecutiveDead: number, usesOwnTokenFile = false, tokenFileInvalid = false, firstRunGate = false): string {
+export function buildEscalationMessage(label: string, reason: string, consecutiveDead: number, usesOwnTokenFile = false, tokenFileInvalid = false, firstRunGate = false, apiKey = false): string {
   // Dynamic duration: consecutiveDead probes at PROBE_INTERVAL_MS each. On a
   // re-alert (after the 30min cooldown, still dead) this grows past the initial
   // ~9min, so a hardcoded value would lie -- compute it from the probe count.
   const approxMin = Math.round((consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
+  // MAINAUTH1107: on an API key the OAuth wording and the /login advice are both wrong, and a restart does not help.
+  if (apiKey) {
+    return `🔐 A(z) ${label} ágens API-kulccsal fut, és a kulcs hibát ad (${reason}) több mint ~${approxMin} perce. Nézd meg a kulcsot és az egyenleget az Anthropic Console-ban, vagy a dashboardon állítsd a fő ügynök hitelesítését előfizetésre. Újraindítás ezen nem segít, ezért nem indítom újra.`
+  }
   const head = `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) több mint ~${approxMin} perce.`
   // An agent with its own oauthTokenFile: a /login would replace the credential the file provides.
   // First-run gate on a token-file agent: the restart the healer starts is the heal. No token refresh, no manual /login.
@@ -258,9 +265,10 @@ export function buildEscalationMessage(label: string, reason: string, consecutiv
 export function buildQuietSummaryMessage(entries: QuietSuppressedEntry[]): string {
   const lines = entries.map((e) => {
     const approxMin = Math.round((e.consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
+    if (e.apiKey) return `• ${e.label}: ${e.reason} (~${approxMin} perce), API-kulcs: nézd meg a kulcsot és az egyenleget az Anthropic Console-ban`
     return `• ${e.label}: ${e.reason} (~${approxMin} perce)${e.usesOwnTokenFile ? (e.firstRunGate ? `, első indítási képernyő: újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel${e.tokenFileInvalid ? '; hibás oauthTokenFile beállítás: javítsd az agent-config.json-t' : ''}` : e.tokenFileInvalid ? ', hibás oauthTokenFile beállítás: javítsd az agent-config.json-t' : ', saját token-fájl: frissítsd a fájlt és indítsd újra') : ''}`
   })
-  const needsLogin = entries.some((e) => !e.usesOwnTokenFile)
+  const needsLogin = entries.some((e) => !e.usesOwnTokenFile && !e.apiKey)
   return [
     `🔐 Reggeli token-összegzés: az éjszakai csendes sáv (${QUIET_START_HOUR}:00-0${QUIET_END_HOUR}:00) alatt elnyomott riasztások. MOST IS halott tokent jelez:`,
     ...lines,
@@ -284,7 +292,7 @@ export function routeEscalation(
     logger.warn({ label: entry.label, session: entry.session, reason: entry.reason }, 'reauth-healer: dead token escalation suppressed (quiet hours), queued for morning summary')
     return
   }
-  notify(buildEscalationMessage(entry.label, entry.reason, entry.consecutiveDead, entry.usesOwnTokenFile === true, entry.tokenFileInvalid === true, entry.firstRunGate === true))
+  notify(buildEscalationMessage(entry.label, entry.reason, entry.consecutiveDead, entry.usesOwnTokenFile === true, entry.tokenFileInvalid === true, entry.firstRunGate === true, entry.apiKey === true))
 }
 
 /**
@@ -479,10 +487,13 @@ export function checkSession(label: string, session: string, isMain: boolean, qu
     logger.warn({ label, session, reason: reauth.reason }, 'reauth-healer: first-run gate on live sub-agent -- restarting it (re-seeds hasCompletedOnboarding)')
     void restartFirstRunGatedAgent(label, session)
   }
+  // MAINAUTH1107: a main agent on an API key fails on the KEY: the fleet-token probe would judge the wrong credential,
+  // and a restart re-launches on the same key (a restart loop that heals nothing). The owner gets a key message.
+  const mainOnKey = isMain && !isFirstRunGate && mainLaunchedOnKey()
   if (decision.escalate) {
-    logger.error({ label, session, reason: reauth.reason, quiet }, 'reauth-healer: dead OAuth token on live session -- escalating to owner')
+    logger.error({ label, session, reason: reauth.reason, quiet, mainOnKey }, mainOnKey ? 'reauth-healer: the main agent\'s API key fails on a live session -- escalating to owner' : 'reauth-healer: dead OAuth token on live session -- escalating to owner')
     routeEscalation(
-      { session, label, reason: reauth.reason ?? 'auth failure', consecutiveDead: decision.next.consecutiveDead, ...escalationHint },
+      { session, label, reason: reauth.reason ?? 'auth failure', consecutiveDead: decision.next.consecutiveDead, ...escalationHint, ...(mainOnKey ? { apiKey: true } : {}) },
       quiet,
       sendNotify,
     )
@@ -493,7 +504,7 @@ export function checkSession(label: string, session: string, isMain: boolean, qu
     // creds), and a manual delete would be undone by the boot sync. Cadence is
     // bounded by the escalation cooldown. Skipped for the first-run gate: the
     // credential there is typically fine.
-    if (!isFirstRunGate) {
+    if (!isFirstRunGate && !mainOnKey) {
       quarantineFleetTokenIfDead()
         .then((r) => {
           if (r !== 'no-token') logger.warn({ label, result: r }, 'reauth-healer: fleet-token liveness check')

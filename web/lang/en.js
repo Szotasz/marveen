@@ -1035,6 +1035,7 @@ window._i18n.en = {
   'settings.claude_plans.switch_error': 'Could not switch plans.',
   'settings.claude_plans.readiness.title': 'Automatic rotation is on, but it cannot work yet:',
   'settings.claude_plans.readiness.main_agent_not_isolated': 'The main agent uses the shared ~/.claude (MAIN_AGENT_ISOLATED_CONFIG=0), so every heartbeat tick exits without deciding. Turn on MAIN_AGENT_ISOLATED_CONFIG: it moves the main agent onto the fleet token and restarts it, so it is not switched on automatically.',
+  'settings.claude_plans.readiness.main_agent_on_api_key': 'The main agent runs on an API key (its authentication is set to API key on the dashboard), so rotation never applies to the main agent.',
   'settings.claude_plans.readiness.main_agent_explicit_config_dir': 'The main agent has its own Claude login (MAIN_AGENT_CONFIG_DIR is set). That always takes precedence, so rotation never applies to the main agent.',
   'settings.claude_plans.readiness.too_few_channel_plans': 'At least 2 plans that allow channels use are needed.',
   'settings.claude_plans.readiness.heartbeat_task_missing': 'The rotation heartbeat schedule (claude-plan-rotate-check) is missing. It is created on dashboard start while rotation is on; if you deleted it, turn rotation off and on again.',

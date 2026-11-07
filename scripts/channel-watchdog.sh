@@ -295,7 +295,15 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
-  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
+  # MAINAUTH1107: the credential this respawn runs on, decided and written by the same module the boot and the
+  # dashboard use (pane-auth file + post-file + key approval), right before the respawn. Only the config-dir mode
+  # the respawn really uses (CFG_ENV set) counts. No contract line = the files the last launch wrote stay.
+  _ma_mode=""; _ma_dir=""
+  if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
+  _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+  _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
+  [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line
 fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does
@@ -326,7 +334,10 @@ FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.
 # BEFORE CFG_ENV, so an own-login mode (explicit/rotated) unsets both again and an isolated/token mode exports
 # its own token over it. A missing file is not an error (the chain goes on).
 PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth"); } && "
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
+# MAINAUTH1107: the post-file right AFTER CFG_ENV (api: the token unset; subscription: the key unset), so neither the
+# config branch nor the tmux global env can add the other credential back.
+PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""
