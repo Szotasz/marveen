@@ -130,6 +130,34 @@ describe('docker/code-sync.py', () => {
     expect(existsSync(join(dst, '.code-sync-pending'))).toBe(false)
   })
 
+  it('a tree that differs from the image after the swap: refused, the marker stays, no id recorded', () => {
+    buildImage({ 'dist/index.js': 'v1', 'web/app.js': 'app' })
+    // The module itself, with os.rename wrapped: the swapped-in dist/ gets one byte changed, as a broken disk would.
+    const harness = [
+      'import importlib.util, os, sys',
+      `spec = importlib.util.spec_from_file_location("cs", ${JSON.stringify(SCRIPT)})`,
+      'cs = importlib.util.module_from_spec(spec); spec.loader.exec_module(cs)',
+      'real = os.rename',
+      'def rename(a, b):',
+      '    real(a, b)',
+      '    if b.endswith("/dist") and ".code-stage" in a:',
+      '        open(os.path.join(b, "index.js"), "a").write("x")',
+      'cs.os.rename = rename',
+      'sys.exit(cs.main())',
+    ].join('\n')
+    const r = spawnSync('python3', ['-I', '-c', harness], {
+      env: { PATH: process.env.PATH ?? '', MARVEEN_IMAGE_DIR: img, MARVEEN_INSTALL_DIR: dst, MARVEEN_DOCKER_DIR: meta },
+      encoding: 'utf8',
+    })
+    expect(r.status, (r.stdout ?? '') + (r.stderr ?? '')).toBe(4)
+    expect(existsSync(join(dst, '.code-sync-pending'))).toBe(true)
+    expect(existsSync(join(dst, '.image-id'))).toBe(false)
+    // and the next (clean) start redoes it
+    const again = sync()
+    expect(again.code, again.out).toBe(0)
+    expect(readFileSync(join(dst, 'dist', 'index.js'), 'utf8')).toBe('v1')
+  })
+
   it('no image id: refuses', () => {
     buildImage({ 'dist/index.js': 'v1' })
     rmSync(join(meta, 'image.id'))
