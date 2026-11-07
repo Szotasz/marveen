@@ -98,6 +98,91 @@ describe('sumInProgressSeconds / listKanbanCards active_seconds', () => {
     createKanbanCard({ id: 'p', title: 'Planned' })
     expect(getKanbanCardEvents('p')).toHaveLength(0)
   })
+
+  // ---------- edges of the SQL aggregation ----------
+  // The sum runs in SQL now (window LEAD + GROUP BY); these pin the corners a
+  // rewrite of that statement could silently get wrong.
+
+  it('closes a stay at the card\'s NEXT event and reopens on re-entry (back-to-back in_progress)', () => {
+    createKanbanCard({ id: 'c', title: 'Back to back' })
+    at(100); moveKanbanCard('c', 'in_progress', 0, 'tester')
+    // The clock steps BACK for the exit move, so that event sorts before the
+    // opener: in event order the two in_progress events below are adjacent,
+    // which is what makes this the back-to-back case.
+    at(50); moveKanbanCard('c', 'waiting', 0, 'tester')
+    at(300); moveKanbanCard('c', 'in_progress', 0, 'tester')
+    at(600); moveKanbanCard('c', 'waiting', 0, 'tester')
+    at(1000)
+    // (300-100) + (600-300): dropping the second opener would report 200,
+    // double-counting it 800.
+    expect(sumInProgressSeconds(['c']).get('c')).toBe(500)
+    expect(activeOf('c')).toBe(500)
+  })
+
+  it('breaks a created_at tie by insertion order, so a same-second close contributes 0', () => {
+    createKanbanCard({ id: 'c', title: 'Same second' })
+    at(500); moveKanbanCard('c', 'in_progress', 0, 'tester')
+    at(500); moveKanbanCard('c', 'waiting', 0, 'tester') // same second, later id
+    at(5000)
+    const m = sumInProgressSeconds(['c'])
+    expect(m.has('c')).toBe(true) // measured (the card has events), not absent
+    expect(m.get('c')).toBe(0) // the stay closed at the identical timestamp
+  })
+
+  it('clamps a stay to 0 when the closing event predates its opener (clock stepped back)', () => {
+    createKanbanCard({ id: 'c', title: 'Clock back' })
+    at(500); moveKanbanCard('c', 'in_progress', 0, 'tester')
+    at(200); moveKanbanCard('c', 'waiting', 0, 'tester') // created_at 200 < 500
+    const m = sumInProgressSeconds(['c']) // still at now = 200
+    expect(m.has('c')).toBe(true)
+    expect(m.get('c')).toBe(0) // a measured zero, never -300
+  })
+
+  it('takes more than 900 ids in one call (json_each, not one placeholder per id)', () => {
+    const ids: string[] = []
+    for (let i = 0; i < 950; i++) {
+      const id = `bulk-${i}`
+      createKanbanCard({ id, title: `Bulk ${i}` }) // born planned: no event rows
+      ids.push(id)
+    }
+    at(100); moveKanbanCard('bulk-7', 'in_progress', 0, 'tester')
+    at(700); moveKanbanCard('bulk-7', 'waiting', 0, 'tester')
+    at(1000)
+    const read = () => sumInProgressSeconds(ids)
+    expect(read).not.toThrow() // 950 `?`s would exceed SQLITE_MAX_VARIABLE_NUMBER
+    const m = read()
+    expect(m.size).toBe(1) // only the card with event rows; the rest are absent, not zero
+    expect(m.get('bulk-7')).toBe(600)
+    expect(m.has('bulk-0')).toBe(false)
+  })
+
+  it('drops an unknown id and leaves the known id\'s value alone', () => {
+    createKanbanCard({ id: 'a', title: 'A' })
+    at(100); moveKanbanCard('a', 'in_progress', 0, 'tester')
+    at(400); moveKanbanCard('a', 'waiting', 0, 'tester')
+    at(1000)
+    const m = sumInProgressSeconds(['totally-unknown', 'a'])
+    expect(m.has('totally-unknown')).toBe(false)
+    expect(m.size).toBe(1)
+    expect(m.get('a')).toBe(300)
+  })
+
+  it('returns ONLY the requested cards even when other cards also have events', () => {
+    // Two cards, both with measured dwell; the map must carry just the one
+    // asked for. An aggregation that drops the card_id filter (whole-table
+    // GROUP BY) would leak the other card's row into the result.
+    createKanbanCard({ id: 'a', title: 'A' })
+    createKanbanCard({ id: 'b', title: 'B' })
+    at(100); moveKanbanCard('a', 'in_progress', 0, 'tester')
+    at(200); moveKanbanCard('b', 'in_progress', 0, 'tester')
+    at(400); moveKanbanCard('a', 'waiting', 0, 'tester') // a: 300 s
+    at(900); moveKanbanCard('b', 'waiting', 0, 'tester') // b: 700 s
+    at(1000)
+    const m = sumInProgressSeconds(['a'])
+    expect(m.size).toBe(1)
+    expect(m.has('b')).toBe(false)
+    expect(m.get('a')).toBe(300)
+  })
 })
 
 // ---------- browser: formatActiveTime ----------
