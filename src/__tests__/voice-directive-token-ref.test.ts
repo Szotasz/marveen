@@ -22,7 +22,7 @@ const OPTS = { chatId: '12345', stateDir: '/tmp/state', voiceModel: 'eleven_v3' 
 
 // The double-quoted Authorization header word, exactly as the directive's curl line has it.
 function authHeaderWord(directive: string): string {
-  const m = directive.match(/-H ("Authorization: Bearer [^\n]*?") -d @-/)
+  const m = directive.match(/-H ("Authorization: Bearer [^\n]*?") --data-binary @-/)
   if (!m) throw new Error('no Authorization header in the directive')
   return m[1]
 }
