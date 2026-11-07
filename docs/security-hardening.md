@@ -112,6 +112,88 @@ environment of the push command. The reason is mandatory and the call is appende
 `store/push-review-gate-skips.log` (who, when, remote, refs, reason); if the line cannot be
 written the push is refused.
 
+# Personal data and repository visibility on the way out
+
+The secret gate asks whether a file holds a credential. This gate asks a different
+question of a different object: does the push add **data about a person**, and is the
+place it goes **public**? It reuses the same dispatcher (`pre-push.d/`) and the same
+runner (`scripts/secret-gate.ts`), so there is one entry point for "may this leave the
+host", not a second gate to forget to install.
+
+## What it does
+
+`scripts/install-secret-gate-hook.sh` (run by `scripts/sync-hooks.sh` on update) now also
+installs `pre-push.d/15-personal-data-gate`. For every ref a push updates it works out the
+commits the remote does not have yet, and scans **the lines each commit adds and its
+message** for:
+
+| Detector | What it flags |
+|----------|---------------|
+| `email` | an address that is not a reserved domain, a no-reply/bot form, a role mailbox (`support@`, `info@`, ...), a synthetic domain (`b.hu`, `pelda.hu`, `ceg.hu`, one/two-letter labels), a system address (service accounts, calendar ids) or a URL's userinfo |
+| `local-path` | `/home/<name>`, `/Users/<name>`, `C:\Users\<name>` with an account that is not a placeholder (`u`, `user`, `foo`, `runner`, `$USER`, ...) |
+| `phone` | `+36` / `06` Hungarian numbers and generic `+cc` numbers with separators, minus obviously invented ones |
+| `iban` | an IBAN whose ISO 13616 mod-97 checksum passes |
+| `hu-account`, `hu-taxid` | Hungarian bank-account (8-8, 8-8-8) and tax-number (8-1-2) shapes |
+| `denylist` | any term in your **local** denylist (below) |
+
+Design points, each one a failure of the mod this replaces:
+
+- **It runs in git, not on the command text.** The hook sees what git is about to
+  transmit, so `git push`, `git -C x push`, `HEAD:refs/heads/y`, an alias, a script, or a
+  tool that shells out are all the same push. (A check written against the literal
+  `git push` string sees only the spellings its author thought of.)
+- **Added lines only, per commit.** Deleted and context lines are never scanned, so
+  removing personal data is never punished. A line added in one commit and removed in the
+  next is still published, so every commit is scanned, not the net diff.
+- **Patches are read by hunk length, never by what a line looks like.** An added line that
+  begins with `++` is not mistaken for a file header and silently dropped.
+- **Record boundaries are a per-run random token** at a line start, not a fixed control
+  byte. The matched text is never printed, only file, line and detector.
+- **Fail-closed everywhere.** An outgoing set that cannot be computed, a patch git will not
+  produce, a denylist rule that does not compile, a malformed exception table: each blocks.
+  Binary changes cannot be read by a text detector and are reported as NOT scanned.
+- **Visibility only ever raises strictness.** The target is probed *anonymously*
+  (`GET api.github.com/repos/<o>/<r>`, no token): `200` + `private:false` is public, `404`
+  is "not readable by a stranger" (private), and everything else (rate limit, 5xx,
+  timeout, a non-GitHub remote) is *unknown* and treated as **public**. Findings block when
+  the target is public or unknown; they only downgrade to a loud warning on a positive
+  "private". The probe cannot be switched off with an environment variable.
+
+## Deliberate literals, names, and the audit before a repo goes public
+
+- A reviewed, deliberate literal goes in `PII_EXCEPTIONS` (`src/security/pii-gate.ts`) as a
+  **sha256 of the matched text + a written reason**, exactly like the secret gate's fixture
+  exceptions: the key is a hash (no line number to go stale, and the literal cannot live in
+  the scanner), a changed literal stops matching, and every applied exception is printed.
+  There is **no environment override**.
+- A **name** is not a shape, so the gate cannot recognise one. Put known names in a
+  *local, untracked* file, `<repo>/.git/hooks/pii-denylist.txt` (one per line; `#` comments;
+  `re:<pattern>` for a regex). It lives outside the tree on purpose: the names are the data
+  being protected. Without the file the gate says so in its output.
+- Before a private repository is made public, audit its **whole history**:
+  `npx tsx scripts/secret-gate.ts --pii-range <rev-list args>` (for example `--all`).
+
+## Turning the hook off, and what stops that
+
+`git push --no-verify` and `git -c core.hooksPath=... push` skip any git hook. The
+`destructive-gate` PreToolUse hook denies both (including git's unambiguous abbreviations,
+`--no-ver`) for agent sessions, and denies the *visibility flips* that expose a whole
+history at once: `gh repo edit --visibility public|internal`, `gh repo create --public`,
+and `gh api` PATCH/POST calls to `repos/<owner>/<repo>` that set `private=false` or
+`visibility=public` (a body passed with `--input` is refused because the gate cannot read it).
+
+Limits, stated out loud:
+
+- A person at a terminal can still `--no-verify`; the hook protects against mistakes and
+  against agents, not against its owner. CI is the check a hook cannot be.
+- The destructive-gate reads command text. A quoted string containing a space is data to
+  it, so a GraphQL mutation inside `-f query='...'` is not seen; a flip made by a script
+  that calls the API itself is only as covered as the egress gate covers that script.
+- Binary files (images, PDFs) are not scanned.
+- Measured on the last 150 develop commits (1401 commits, 9 s): after calibration 132 added
+  lines are flagged, of which the real-looking account names and the free-mail addresses in
+  test fixtures are the bulk. Run `--pii-range` yourself before relying on the numbers.
+
 # Bash egress deny rules
 
 `scripts/hooks/egress-gate.mjs` compares a URL against the allowlist, but it is

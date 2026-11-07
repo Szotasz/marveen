@@ -62,3 +62,62 @@ EOF
 chmod +x "$DISPATCH"
 
 echo "  secret gate pre-commit hook installed (bypass: SKIP_SECRET_GATE=1; the CI job is the real gate)"
+
+# -- The personal-data leg: a pre-push.d member, not a second gate -----------
+# Same runner (scripts/secret-gate.ts --pushed), same dispatcher family as the
+# force-push guard. It runs on what git is about to TRANSMIT, so it sees every
+# spelling of a push (git -C x push, a script, an alias), not just the literal
+# command line. There is deliberately NO environment override: an agent that can
+# export a variable could switch the gate off. `git push --no-verify` is git's
+# own switch and is denied to agents by the destructive-gate hook.
+PUSH_DISPATCH="$HOOK_DIR/pre-push"
+PUSH_MARK="marveen-pre-push-dispatcher"
+PUSH_GUARD="$HOOK_DIR/pre-push.d/15-personal-data-gate"
+mkdir -p "$HOOK_DIR/pre-push.d"
+
+# The gate's code is resolved against the INSTALL root, not the checkout being
+# pushed from: hooks are shared by every worktree, and an old branch that does not
+# contain the script must not turn every push into a "module not found" block.
+cat > "$PUSH_GUARD" <<EOF
+#!/usr/bin/env bash
+# PIIGATE: block a push whose added lines or commit messages carry personal data
+# (e-mail, home-directory path, phone, IBAN, HU account/tax number, local denylist).
+# Fail-closed: if the check cannot run, the push does not go.
+set -euo pipefail
+GATE_ROOT="$ROOT"
+TSX="\$GATE_ROOT/node_modules/.bin/tsx"
+RUNNER="\$GATE_ROOT/scripts/secret-gate.ts"
+if [ ! -x "\$TSX" ] || [ ! -f "\$RUNNER" ]; then
+  echo "pre-push: the personal-data gate cannot run (\$TSX or \$RUNNER missing) -- BLOCKING (fail-closed)." >&2
+  echo "Reinstall: bash \$GATE_ROOT/scripts/install-secret-gate-hook.sh" >&2
+  exit 1
+fi
+exec "\$TSX" "\$RUNNER" --pushed "\$@"
+EOF
+chmod +x "$PUSH_GUARD"
+
+# The dispatcher may not exist yet (install order is alphabetical: git-guard
+# normally runs first). Write the identical one rather than depend on that.
+if [ ! -f "$PUSH_DISPATCH" ] || ! grep -q "$PUSH_MARK" "$PUSH_DISPATCH" 2>/dev/null; then
+  if [ -f "$PUSH_DISPATCH" ]; then
+    mv "$PUSH_DISPATCH" "$HOOK_DIR/pre-push.d/00-existing-prepush"
+    chmod +x "$HOOK_DIR/pre-push.d/00-existing-prepush"
+    echo "  (preserved existing pre-push as pre-push.d/00-existing-prepush)"
+  fi
+  cat > "$PUSH_DISPATCH" <<EOF
+#!/usr/bin/env bash
+# $PUSH_MARK : run every executable in pre-push.d/, passing the ref list to each.
+set -euo pipefail
+HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+payload="\$(cat)"
+status=0
+for h in "\$HOOK_DIR"/pre-push.d/*; do
+  [ -x "\$h" ] || continue
+  printf '%s\n' "\$payload" | "\$h" "\$@" || status=1
+done
+exit \$status
+EOF
+  chmod +x "$PUSH_DISPATCH"
+fi
+
+echo "  personal-data pre-push gate installed (no env override; names need a local hooks/pii-denylist.txt)"

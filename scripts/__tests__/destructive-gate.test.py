@@ -740,6 +740,69 @@ check("#2482 tul hosszu burkolo-lanc: blokk", blocks("nohup " * 20 + RM + TGT))
 check("#2482 rovid lanc tovabbra is atlathato", blocks("nohup nice -n 5 timeout 5 " + RM + TGT))
 
 
+# --- 12. A PUSH-KAPUK KIKAPCSOLASA ES A LATHATOSAG-VALTAS (013b1bb9) ----------
+# A pre-push.d kapuk (force-guard, szemelyes-adat kapu) git hookok. Egy hook
+# kikapcsolasa a kapu kikapcsolasa: `--no-verify` es `core.hooksPath`. A git a
+# kapcsolo egyertelmu roviditeset is elfogadja (`--no-ver`), ezert azt is pin-elem.
+print()
+print("POZITIV kontroll -- a pre-push kapukat kihagyo alakok:")
+check("git push --no-verify", blocks(GPUSH + " --no-verify origin munkaag"))
+check("git push --no-verify=... nelkul, a ref utan is",
+      blocks(GPUSH + " origin munkaag --no-verify"))
+check("git push --no-ver (egyertelmu rovidites)",
+      blocks(GPUSH + " --no-ver origin munkaag"))
+check("git -c core.hooksPath=... push",
+      blocks("git -c core.hooksPath=/dev/null push origin munkaag"))
+check("kisbetus core.hookspath", blocks("git -c core.hookspath=/tmp/x push origin munkaag"))
+check("git -C ut push --no-verify", blocks("git -C " + GROOT + " push --no-verify origin munkaag"))
+print("NEGATIV kontroll -- a sima munkaag-push tovabbra is szabad:")
+check("git push origin munkaag", not blocks(GPUSH + " origin munkaag"))
+check("git push --verify (a hook BEkapcsolasa)", not blocks(GPUSH + " --verify origin munkaag"))
+check("git commit --no-verify NEM push (a pre-commit a CI-vel egyutt kapu)",
+      not blocks("git commit --no-verify -m x"))
+
+print()
+print("POZITIV kontroll -- lathatosag-valtas (gh):")
+check("gh repo edit --visibility public", blocks("gh repo edit o/r --visibility public"))
+check("gh repo edit --visibility=public", blocks("gh repo edit o/r --visibility=public"))
+check("gh repo edit --visibility internal", blocks("gh repo edit o/r --visibility internal"))
+check("gh repo edit --visibility PUBLIC (nagybetu)", blocks("gh repo edit o/r --visibility PUBLIC"))
+check("gh repo edit --visibility $V (nem eldonthetо)", blocks('gh repo edit o/r --visibility "$V"'))
+check("gh -R o/r repo edit --visibility public", blocks("gh -R o/r repo edit --visibility public"))
+check("env GH_TOKEN=x gh repo edit ... public (burkolt)",
+      blocks("env GH_TOKEN=x gh repo edit o/r --visibility public"))
+check("gh repo create --public", blocks("gh repo create nev --public"))
+check("gh repo create --internal", blocks("gh repo create nev --internal"))
+check("gh api -X PATCH repos/o/r -F private=false",
+      blocks("gh api -X PATCH repos/o/r -F private=false"))
+check("gh api --method PATCH /repos/o/r -f visibility=public",
+      blocks("gh api --method PATCH /repos/o/r -f visibility=public"))
+check("gh api repos/o/r -f private=false (modszer nelkul = POST)",
+      blocks("gh api repos/o/r -f private=false"))
+check("gh api -X PATCH repos/o/r --input body.json (torzs nem lathato)",
+      blocks("gh api -X PATCH repos/o/r --input body.json"))
+check("gh api ... -F 'private=false' (idezett, szokoz nelkul)",
+      blocks("gh api -X PATCH repos/o/r -F 'private=false'"))
+print("NEGATIV kontroll -- ami nem tesz semmit nyilvanossa:")
+check("gh repo edit --visibility private (biztonsagos irany)",
+      not blocks("gh repo edit o/r --visibility private"))
+check("gh repo edit --description", not blocks("gh repo edit o/r --description x"))
+check("gh repo create --private", not blocks("gh repo create nev --private"))
+check("gh api repos/o/r (GET)", not blocks("gh api repos/o/r"))
+check("gh api repos/o/r/pulls (olvasas)", not blocks("gh api repos/o/r/pulls"))
+check("gh api -X PATCH repos/o/r -f description=x (nem lathatosag)",
+      not blocks("gh api -X PATCH repos/o/r -f description=x"))
+check("gh api -X PATCH repos/o/r/pulls/5 -f private=false (nem a repo vegpontja)",
+      not blocks("gh api -X PATCH repos/o/r/pulls/5 -f body=x"))
+check("gh pr view", not blocks("gh pr view 12"))
+print("KIMONDOTT KORLAT -- amit a kapu szandekosan nem lat:")
+# Az idezett, SZOKOZT tartalmazo karakterlanc a kapu elvei szerint adat, nem parancs
+# (ba856d56): a GraphQL-torzs ilyen. Ezt a kapu sosem fogta; a hatar ugyanaz, mint az
+# egyeb idezett szovegeknel. A gyakorlati vedelem a repo-szintu push-kapu (git hook)
+# es a hozzaferes, nem a parancs-szoveg elemzese.
+check("gh api graphql idezett torzs NEM latszik",
+      not blocks("gh api graphql -f query='mutation { x(visibility: PUBLIC) }'"))
+
 print()
 if failed:
     print("%d FAILED: %s" % (len(failed), failed), file=sys.stderr)

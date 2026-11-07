@@ -885,6 +885,20 @@ def _check_git(toks, argstart):
     flags = [a for a in args if a.startswith('-')]
     positional = [a for a in args if not a.startswith('-')]
 
+    # A push-ellenorzo kapuk (pre-push.d: force-guard, szemelyes-adat kapu) git hookok;
+    # a hookot kikapcsolo KET alak egy ugynok kezeben a kapu kikapcsolasa lenne. A
+    # szoveg-szintu tiltas csak az ugynok sajat hivasait fogja; a hook maga (git-szint)
+    # minden egyeb alakot lat. Mindketto kell.
+    segment_text = ' '.join(t for t, _sp in toks).lower()
+    if 'core.hookspath' in segment_text:
+        block('git push core.hooksPath mellett: ez a pre-push kapukat (force-guard, '
+              'szemelyes-adat kapu) kikapcsolo alak. Nem az ugynok dontese.')
+    for f in flags:
+        if f.startswith('--no-v') and len(f.split('=', 1)[0]) >= 6 \
+                and '--no-verify'.startswith(f.split('=', 1)[0]):
+            block('git push %s: a pre-push kapukat (force-guard, szemelyes-adat kapu) '
+                  'kihagyo kapcsolo. Nem az ugynok dontese; javitsd a talalatot.' % f[:20])
+
     for f in flags:
         base = f.split('=', 1)[0]
         if base in PUSH_FORCE_FLAGS:
@@ -915,6 +929,81 @@ def _check_git(toks, argstart):
         if dest.rsplit('/', 1)[-1] in PROTECTED_BRANCHES and not dest.startswith('refs/tags/'):
             block('git push a(z) "%s" agra: vedett ag, ide review-n keresztul megy '
                   'valami. Pusholj sajat munkaagra.' % dest)
+
+
+# A lathatosag-valtas (privat -> publikus) a repo TELJES tortenetet kiteszi, nem egy
+# push-nyi valtoztatast. A push-kapu (szemelyes-adat) csak azt latja, ami egy pushban
+# megy ki; a valtas utan mar az egesz regi tortenet nyilvanos. Ezert a valtas maga
+# nem az ugynok dontese (013b1bb9, the owner's decision 4181). A "privatra" valtas biztonsagos irany,
+# az atmegy. A PUBLIKUS letrehozas ugyanez: uj, mar nyilvanos repo.
+GH_PUBLIC_VALUES = {'public', 'internal'}
+# Kapcsolok, amelyek erteke KULON szoban all: kulonben az ertek (PATCH, a mezo) pozicionalis
+# szonak latszana, es a `gh api <ut>` utat eltolna.
+GH_VALUE_FLAGS = {'-R', '--repo', '--hostname', '-X', '--method', '-f', '-F', '--field',
+                  '--raw-field', '-H', '--header', '--input', '--jq', '-q', '--template',
+                  '-t', '--cache'}
+GH_FIELD_FLAGS = {'-f', '-F', '--field', '--raw-field'}
+_VIS_FIELD = re.compile(r'(^|[&\s])(private\s*=\s*false|visibility\s*=\s*(public|internal))\b', re.I)
+
+
+def _flag_value(args, name):
+    """A kapcsolo erteke (`--x v` vagy `--x=v`), vagy None, ha a kapcsolo nincs jelen."""
+    for k, a in enumerate(args):
+        if a == name:
+            return args[k + 1] if k + 1 < len(args) else ''
+        if a.startswith(name + '='):
+            return a.split('=', 1)[1]
+    return None
+
+
+def _check_gh(toks, argstart):
+    args = [t for t, _sp in toks[argstart:]]
+    words, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in GH_VALUE_FLAGS:
+            skip = True
+            continue
+        if a.startswith('-'):
+            continue
+        words.append(a)
+
+    if words[:2] == ['repo', 'edit']:
+        vis = _flag_value(args, '--visibility')
+        if vis is not None:
+            v = vis.strip().lower()
+            if v in GH_PUBLIC_VALUES or not v or any(c in v for c in RM_UNRESOLVABLE):
+                block('gh repo edit --visibility %s: a lathatosag-valtas a repo teljes '
+                      'tortenetet kiteszi. Nem az ugynok dontese.' % (vis[:20] or '(ures)'))
+        return
+    if words[:2] == ['repo', 'create']:
+        if '--public' in args or '--internal' in args:
+            block('gh repo create --public/--internal: uj, azonnal nyilvanos repo. '
+                  'Nem az ugynok dontese; privatkent szabad.')
+        return
+    if words[:1] == ['api'] and len(words) >= 2:
+        path = words[1].lstrip('/')
+        method = _flag_value(args, '-X')
+        if method is None:
+            method = _flag_value(args, '--method')
+        fields = [args[k + 1] for k, a in enumerate(args[:-1]) if a in GH_FIELD_FLAGS]
+        fields += [a.split('=', 1)[1] for a in args
+                   if a.startswith(('--field=', '--raw-field='))]
+        has_input = _flag_value(args, '--input') is not None
+        if method is None:
+            method = 'POST' if (fields or has_input) else 'GET'
+        if method.upper() == 'GET':
+            return
+        if re.match(r'^repos/[^/]+/[^/]+/?$', path):
+            if has_input:
+                block('gh api %s %s --input: a torzset a kapu nem latja, es ez a vegpont '
+                      'a repo lathatosagat is allitja. Mezokkel (-f) add meg.' % (method, path[:40]))
+            for f in fields:
+                if _VIS_FIELD.search(f):
+                    block('gh api %s %s: lathatosag-valtas (publikus/internal). '
+                          'Nem az ugynok dontese.' % (method, path[:40]))
 
 
 # --- Az ERTELMEZO-PAYLOAD belseje (efccadab) ---------------------------------
@@ -1115,6 +1204,9 @@ def check_bash(cmd, _depth=0, cwd=None):
             base = os.path.basename(name)
             if base == 'git':
                 _check_git(toks, argstart)
+                continue
+            if base == 'gh':
+                _check_gh(toks, argstart)
                 continue
             if base == 'rm':
                 ok, why = _rm_allowed(toks, argstart, cwd)
