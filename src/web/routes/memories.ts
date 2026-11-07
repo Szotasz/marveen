@@ -466,6 +466,22 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'offset is not supported together with q (search results are relevance-ranked, not a stable page order)' }, 400)
       return true
     }
+    // stale_days (card ca046c9a, #570): listing-only, like offset -- a
+    // relevance-ranked search filtered by age would page over a different set.
+    const staleRaw = url.searchParams.get('stale_days')
+    let staleBefore: number | undefined
+    if (staleRaw !== null) {
+      const staleDays = Number(staleRaw)
+      if (!Number.isFinite(staleDays) || staleDays <= 0) {
+        json(res, { error: 'invalid stale_days: must be a positive number' }, 400)
+        return true
+      }
+      if (q) {
+        json(res, { error: 'stale_days is not supported together with q (listing only)' }, 400)
+        return true
+      }
+      staleBefore = Math.floor(Date.now() / 1000) - Math.round(staleDays * 86400)
+    }
 
     // Card f90928e3: date= / since= / until= narrow the search to a created_at
     // window. An unknown expression is a 400 with the accepted forms: a filter
@@ -535,11 +551,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           .all(pattern, pattern, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
-      // Category and date window go into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange)
+      // Category, date window and stale cut-off go into the query, not a post-filter: see getAgentMemories.
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange, staleBefore)
     } else {
       // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange, staleBefore)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
