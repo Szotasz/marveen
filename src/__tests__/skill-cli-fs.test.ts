@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -109,6 +109,28 @@ describe('skill-fajlok kiirasa', () => {
     expect(() => writeSkillFiles(cel, [{ relPath: '/etc/evil.md', content: 'x' }])).toThrow(/Elutasitott/)
     // KONTROLL: a szabalyos ut UGYANEZEN a hivason atmegy
     expect(() => writeSkillFiles(cel, [{ relPath: 'ok/SKILL.md', content: 'x' }])).not.toThrow()
+  })
+
+  it('a HELYI MODOSITAS megmarad egy .bak masolatban, es a hivo megtudja', () => {
+    const cel = join(tmp, 'cel')
+    writeSkillFiles(cel, [{ relPath: 's/SKILL.md', content: 'csomag v1\n' }])
+    writeFileSync(join(cel, 's/SKILL.md'), 'csomag v1\nHELYI kiegeszites\n')
+    const megorizve: string[] = []
+    writeSkillFiles(cel, [{ relPath: 's/SKILL.md', content: 'csomag v2\n' }], {
+      onMegorizve: (_e, m) => megorizve.push(m), most: new Date('2026-10-12T09:00:00Z'),
+    })
+    expect(readFileSync(join(cel, 's/SKILL.md'), 'utf8')).toBe('csomag v2\n')
+    expect(megorizve).toEqual([join(cel, 's/SKILL.md.helyi-20261012T090000.bak')])
+    expect(readFileSync(megorizve[0], 'utf8')).toBe('csomag v1\nHELYI kiegeszites\n')
+  })
+
+  it('KONTROLL: bajt-azonos ujrahuzas NEM keszit masolatot', () => {
+    const cel = join(tmp, 'cel')
+    writeSkillFiles(cel, [{ relPath: 's/SKILL.md', content: 'ugyanaz\n' }])
+    const megorizve: string[] = []
+    writeSkillFiles(cel, [{ relPath: 's/SKILL.md', content: 'ugyanaz\n' }], { onMegorizve: (_e, m) => megorizve.push(m) })
+    expect(megorizve).toEqual([])
+    expect(readdirSync(join(cel, 's'))).toEqual(['SKILL.md'])
   })
 
   it('a kilepo ut elutasitasa UTAN semmi nem keletkezett a celon kivul', () => {
