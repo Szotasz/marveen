@@ -82,6 +82,8 @@ describe('resume give-up', () => {
         handoffMtime: null,
         paneSaturated: false,
         dailyHandoffDue: false,
+        periodicHandoffDue: false,
+        taskCloseHandoffDue: false,
         contextTokens: null,
         idleMs: null,
         usageLimited: false,

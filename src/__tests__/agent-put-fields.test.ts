@@ -191,6 +191,9 @@ describe('checkConfigPutFields', () => {
       'dailyHandoffEnabled', 'dailyHandoffTime',
       // Heavy-job gate restart hold bound (context-guard).
       'heavyJobDeferMaxMinutes',
+      // Periodic and task-close tiers (CTXGUARDTIERS1107), same reason as daily.
+      'periodicHandoffEnabled', 'periodicHandoffMinutes', 'periodicHandoffMinTokens',
+      'taskCloseHandoffEnabled',
     ])
   })
 })
