@@ -126,6 +126,19 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
     const unaddressed = run('python3 missing.py')
     expect(unaddressed.status).toBe(0)
     expect(unaddressed.stdout).toBe('')
+    // ISSUE2582 TIGHTENING (Samu 72403 / 72415): an undecidable script path is denied without an address too, and the
+    // reason names the way out (a literal path, or a literal assignment in the same command)
+    const undecidable = run('python3 $S/other.py')
+    expect(undecidable.status).toBe(0)
+    const why = JSON.parse(undecidable.stdout).hookSpecificOutput.permissionDecisionReason as string
+    expect(why).toContain('VALTOZOBOL')
+    expect(why).toContain('literalis uttal')
+    expect(why).toContain('D=/abszolut/ut; python3 $D/x.py')
+    // the way out works: the same run with the variable set to a literal in the command (the measured fleet shape,
+    // a for loop after the assignment) passes
+    const bound = run(`S=${cwd}; for i in 1 2; do python3 $S/other.py $i; done`)
+    expect(bound.status).toBe(0)
+    expect(bound.stdout).toBe('')
   })
 })
 
@@ -439,9 +452,13 @@ describe('a cd before the run, and a missing script (JSCDSEND1104, Bence 69475)'
     // controls: the cwd's own harmless script, a cd into a dir without a sender, a non-script run; and (Samu 69538)
     // the fail-closed forms without an address
     for (const cmd of ['python3 send.py', `cd ${cwd} && python3 send.py`, 'cd evil && ls', 'bun test', 'node --version',
-      'cd $DEST && python3 send.py', 'cd $DEST && python3 -m pkg.main', 'python3 missing.py', 'python3 $S',
+      'cd $DEST && python3 send.py', 'cd $DEST && python3 -m pkg.main', 'python3 missing.py',
       'node missing.mjs']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+    }
+    // ISSUE2582 TIGHTENING (Samu 72403): an undecidable script path is a send without an address too
+    for (const cmd of ['python3 $S', 'node $X', 'D=$(pwd)/x; python3 $D/send.py']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
     }
     // Samu 69648 (3a): after a cd $(...) what runs is out of sight, so the fail-closed branches fire without an address
     for (const cmd of ['cd $(pwd)/x && python3 send.py', 'cd `pwd`/x && python3 missing.py']) {
