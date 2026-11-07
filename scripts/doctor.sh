@@ -203,6 +203,12 @@ _owner_notice="$(node -e 'import(process.argv[1]).then((m) => { const n = m.owne
 # The Keychain probe is presence-only (no `-w`), so the secret never leaves it.
 API_KEY=$(grep -E "^ANTHROPIC_API_KEY=" .env 2>/dev/null | head -1 | cut -d= -f2-)
 OAUTH=$(grep -E "^CLAUDE_CODE_OAUTH_TOKEN=" .env 2>/dev/null | head -1 | cut -d= -f2-)
+# APIKEYSCOPE1107 (Samu 72223): where an API key in .env goes now, in the install's language. The value is never shown.
+if [ -n "$API_KEY" ] && . "$INSTALL_DIR/scripts/lib/auth-key-mode.sh" 2>/dev/null; then
+  _akm_line="$(auth_key_mode_notice "$(auth_key_mode "$INSTALL_DIR")" "$(cat "$INSTALL_DIR/.lang" 2>/dev/null || echo hu)")"
+  [ -n "$_akm_line" ] && warn "${_akm_line#Marveen: }"
+  unset _akm_line
+fi
 if [ -n "$API_KEY" ]; then
   ok "Claude auth: present (.env API key)"
 elif [ -n "$OAUTH" ]; then

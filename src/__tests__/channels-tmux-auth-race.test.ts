@@ -315,7 +315,7 @@ describe.skipIf(!HAS_TMUX)('channels.sh start-server leaves the state-dir var ou
 })
 
 describe('channels.sh tmux auth wiring (source pin)', () => {
-  const launches = SH.split('\n').filter(l => /^\s*(env -u "\$STATE_ENV_VAR" )?\$TMUX new-session -d -s "\$SESSION"/.test(l))
+  const launches = SH.split('\n').filter(l => /^\s*(env -u "\$STATE_ENV_VAR" (\$_AKM_ENV_UNSET )?)?\$TMUX new-session -d -s "\$SESSION"/.test(l))
 
   // TOKENARGV929: no secret on a new-session argv; the pane sources it first.
   it('neither channels new-session call site passes an -e secret, and both pane commands source the auth file first', () => {
@@ -336,7 +336,8 @@ describe('channels.sh tmux auth wiring (source pin)', () => {
   // session with it). The pane still gets the var from the command's own export.
   it('both channels new-session call sites strip the state-dir var from the tmux client env', () => {
     expect(launches).toHaveLength(2)
-    for (const l of launches) expect(l.trim().startsWith('env -u "$STATE_ENV_VAR" $TMUX new-session')).toBe(true)
+    // APIKEYSCOPE1107: $_AKM_ENV_UNSET (the key off key-only) sits between the state-dir unset and $TMUX.
+    for (const l of launches) expect(l.trim().startsWith('env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session')).toBe(true)
     expect(SH).toContain('$TMUX set-environment -g -u "$STATE_ENV_VAR"')
   })
 

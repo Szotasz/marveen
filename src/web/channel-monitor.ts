@@ -107,6 +107,10 @@ const claudeBin = makeLazyBinResolver('claude')
 // header and PR #1304 review (c).
 const RESOLVE_PLAN_TOKEN_PATH = join(PROJECT_ROOT, 'scripts', 'resolve-plan-token-env.mjs')
 const CHANNELS_FAILURES_LOG_PATH = join(PROJECT_ROOT, 'store', 'channels-failures.log')
+// APIKEYSCOPE1107: the 0600 file channels.sh writes for the main pane (TOKENARGV929): the token, and the key whenever
+// .env has one (the main agent's own mode is a later change). A respawn sources it too (below), since the key no
+// longer rides the tmux global env off a key-only install.
+export const PANE_AUTH_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth')
 
 // How long the agent's claude process has been running. Returns -1 when it
 // cannot be determined, which the restart policy treats as "do not restart".
@@ -1161,6 +1165,11 @@ export function buildMainSessionRespawnCmd(opts: {
     // ROOTRESPAWN1001: the recovery respawn on a root host died with "cannot be used
     // with root/sudo privileges" whenever the tmux server lacked IS_SANDBOX.
     `&& ${ROOT_SANDBOX_ENV}`,
+    // APIKEYSCOPE1107: the main session's credentials from the same pane-auth file channels.sh launched it with,
+    // not only from the tmux server global env (where a subscription install's key no longer is). BEFORE the config
+    // branch, so an own-login dir unsets both again and an isolated/token dir exports its own token over it. A
+    // missing file keeps the chain going.
+    `&& { [ ! -f ${shSingleQuote(PANE_AUTH_PATH)} ] || . ${shSingleQuote(PANE_AUTH_PATH)}; }`,
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
@@ -1182,8 +1191,8 @@ export function buildMainSessionRespawnCmd(opts: {
           // The pane inherits the tmux global env, which carries the fleet
           // token, and an env token outranks the dir's own login (the
           // inference-only setup-token hid the claude.ai connectors,
-          // measured 2026-10-16) -- so drop it explicitly. channels.sh also puts
-          // ANTHROPIC_API_KEY in the tmux global env when .env has one, and that
+          // measured 2026-10-16) -- so drop it explicitly. The pane-auth file sourced above
+          // (and, on a key-only install, the tmux global env) carries ANTHROPIC_API_KEY, and that
           // outranks a /login credential as well (Claude Code docs, "Authentication
           // precedence"): this dir authenticates with its own login only.
           ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]

@@ -48,6 +48,7 @@ import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-livene
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
+import { copyProjectsOnce, currentAuthKeyMode, hostApiKey, isolatedDirReady, stampAllowed } from './auth-key-mode.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
@@ -2452,8 +2453,19 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
     // Code picks it up without needing OAuth credentials at all.
     let apiKeyEnv = ''
+    // APIKEYSCOPE1107: the key an authMode=api agent runs on, stamped below once its config dir is known.
+    let apiKeyForApproval = ''
+    const keyMode = currentAuthKeyMode(join(PROJECT_ROOT, '.env'), FLEET_OAUTH_TOKEN_PATH)
     if (isClaude && authMode === 'api') {
-      const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
+      // Its own vault key, else the host key from .env, EXPLICITLY: it no longer arrives through the tmux global env
+      // on a subscription install (APIKEYSCOPE1107). Under the same launch-secret name, so clearLaunchSecrets cleans
+      // it. Neither -> the launch is refused: it would come up "Not logged in" or on a credential nobody chose.
+      const agentApiKey = getSecret(`agent-${name}-api-key`) || hostApiKey(join(PROJECT_ROOT, '.env'))
+      if (!agentApiKey) {
+        logger.error({ name }, 'authMode=api: no key (no vault agent-<name>-api-key and no ANTHROPIC_API_KEY in .env) -- agent NOT started')
+        return { ok: false, error: 'authMode=api: no API key (vault agent-<name>-api-key or .env ANTHROPIC_API_KEY)' }
+      }
+      apiKeyForApproval = agentApiKey.trim()
       if (agentApiKey) {
         // Ugyanaz a szabaly, mint a provider-againal: a kulcs FAJLBOL olvasva kerul be, hogy a
         // launch-parancs (es vele a `ps` sora) ne hordozza az erteket (LATENSKULCSARGV920).
@@ -2840,6 +2852,22 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // 2fb86ef2: a Claude agent with its own token must run isolated. On the
     // shared ~/.claude the rotating host credential wins over the env token, so
     // the agent would silently authenticate as the host, not with its own token.
+    // APIKEYSCOPE1107: an authMode=api agent that would run on the shared ~/.claude of a subscription install gets its
+    // own config dir: its key's approval stamp must never land in the shared ~/.claude.json (the main agent and the
+    // operator's own CLI read it and would switch to billing the key). Its project dir (memory, transcripts) is
+    // copied over once, modes kept; the dir must be past onboarding. Any step failing refuses the launch, loudly:
+    // a half-provisioned dir is not a success (Samu 72235).
+    if (isClaude && authMode === 'api' && !claudeConfigDir && keyMode !== 'keyonly' && name !== MAIN_AGENT_ID) {
+      const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
+      const copied = isolated
+        ? copyProjectsOnce(join(homedir(), '.claude', 'projects'), join(isolated, 'projects'), encodeClaudeProjectDir(dir))
+        : false
+      if (!isolated || !copied || !isolatedDirReady(isolated)) {
+        logger.error({ name, isolated, copied }, 'authMode=api: isolated config dir could not be provisioned (dir, project copy or onboarding state) -- agent NOT started; the shared ~/.claude.json must not carry its key approval')
+        return { ok: false, error: 'authMode=api: isolated config dir could not be provisioned' }
+      }
+      claudeConfigDir = isolated
+    }
     if (ownTokenFile && isClaude && !claudeConfigDir) {
       logger.error(
         { name, path: ownTokenFile },
@@ -2887,6 +2915,29 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
         customApiKeyForApproval,
       )
+    }
+    // APIKEYSCOPE1107: the API key's approval stamp, so the "Detected a custom API key" prompt (default No) never
+    // stops the pane: an authMode=api agent's key, or on a key-only install the host key for a fleet agent. Into the
+    // agent's own .claude.json; the shared ~/.claude.json only on a key-only install (stampAllowed). Anything else is
+    // a refused launch, never a silent stamp in the shared file.
+    // A key-only fleet agent that keeps the key (no own login: see inheritedAuthUnset) gets the host key EXPLICITLY,
+    // the very value stamped, not whatever the tmux global env carried since channels.sh last started (a rotated key
+    // would otherwise meet a stamp for the new one and stop at the prompt). By reference, never in argv.
+    let stampKey = apiKeyForApproval
+    if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile) {
+      const hostKey = hostApiKey(join(PROJECT_ROOT, '.env')).trim()
+      if (hostKey) {
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, hostKey)} && `
+        stampKey = hostKey
+      }
+    }
+    if (stampKey) {
+      const target = claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json')
+      if (!stampAllowed(target, keyMode)) {
+        logger.error({ name, keyMode }, 'API key approval would land in the shared ~/.claude.json on a subscription install -- agent NOT started')
+        return { ok: false, error: 'API key approval refused for the shared ~/.claude.json' }
+      }
+      stampCustomApiKeyApproval(target, stampKey)
     }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // VOICETOKENLEAK1101 PR-A0: scripts/marveen-api.sh reads the agent's OWN token when it has one (AGENT_TOKENS).
@@ -2952,15 +3003,17 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and
-    // every new pane inherits it. The Claude CLI prefers CLAUDE_CODE_OAUTH_TOKEN
-    // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
-    // reach the custom endpoint -> 401, even after the explicit export was removed.
+    // every new pane inherits it. Two credentials on one launch is ambiguous and a
+    // custom endpoint got the fleet token -> 401 (2026-08-05). (The precedence is the
+    // docs' one: ANTHROPIC_API_KEY outranks CLAUDE_CODE_OAUTH_TOKEN, measured
+    // 2026-11-07 on CLI 2.1.319, APIKEYSCOPE1107; the old "the CLI prefers the token"
+    // here was wrong.) So exactly one credential goes in.
     // An active `unset` at launch strips the inherited value before exec.
     // Fleet Claude-OAuth agents keep the token intact. An agent with its own
     // credential (own_team, a configured config dir, its own token file) also
     // drops an inherited ANTHROPIC_API_KEY, which outranks every OAuth path
     // (BYOSUBUNSET1018, inherited-auth-unset.ts).
-    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null })
+    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null, keyMode })
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
