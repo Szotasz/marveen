@@ -26,7 +26,7 @@ once; `stop_hook_active` is also honored. Silent on stdout EXCEPT the single
 decision JSON when blocking. Token/state dir resolution mirrors the plugin
 (TELEGRAM_STATE_DIR else default).
 """
-import sys, os, json, glob, urllib.request
+import sys, os, json, glob, time, urllib.request
 
 # #2269: the CLI writes its OWN lines into the transcript as assistant messages (the session-limit
 # wall "You've hit your session limit · resets 12am (UTC)", the usage limit, an API error); the guaranteed fallback below
@@ -231,6 +231,23 @@ def main():
         except Exception:
             pass
 
+    def claim_send(mid):
+        """Win-once guard so a Stop hook registered under two python paths can't
+        deliver the fallback twice. Both copies can run at once; only the one
+        that atomically creates this marker sends, so the answer goes out exactly
+        ONCE. Shared with the watchdog (same marker name), which back-stops the
+        very same turn from another process. Keyed by the unique placeholder
+        message_id, so a leftover marker never suppresses a later turn."""
+        try:
+            fd = os.open(os.path.join(pdir, f"fbsent-{sid}-{mid}.marker"),
+                         os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            return False
+        except Exception:
+            return True  # guard unavailable, prefer delivering over silence
+
     path = os.path.join(pdir, f"{sid}.json")
     try:
         pend = json.load(open(path))
@@ -244,18 +261,59 @@ def main():
             os.remove(guard)
         except Exception:
             pass
+        # Opportunistic housekeeping of spent send-claim markers (safe here: no
+        # fallback is in flight this turn, and they are keyed by message_id).
+        for m in glob.glob(os.path.join(pdir, f"fbsent-{sid}-*.marker")):
+            try:
+                os.remove(m)
+            except Exception:
+                pass
         return
 
     # A Telegram turn whose reply was NOT sent for the listed chat(s).
-    blocked_before = os.path.exists(guard)
-    if not stop_active and not blocked_before:
+    #
+    # "First stop" vs "already nudged" must be decided ATOMICALLY, because this
+    # hook can run as two concurrent copies: the installer used to key its
+    # idempotency on the resolved interpreter path, so a python3 upgrade added a
+    # SECOND registration of the same script (2026-08-12 incident: every Stop ran
+    # /usr/bin/python3 and /usr/local/bin/python3 side by side).
+    #
+    # With the old exists()-then-create the twins split down two different
+    # branches: copy A saw no marker, wrote it and BLOCKED (nudging the agent to
+    # reply through its tool), while copy B saw the marker A had just written,
+    # concluded "already nudged" and delivered the raw transcript text. The agent
+    # then replied properly, so the user got the same answer twice. That is the
+    # duplicate-reply bug, and it hit every un-replied Telegram turn.
+    #
+    # O_EXCL makes exactly one copy the nudger. The loser must NOT fall through
+    # to delivery: a nudge is already in flight. A marker younger than
+    # TWIN_WINDOW_SEC can only belong to a twin in this same Stop (a genuine
+    # post-nudge Stop is a whole agent turn later), so that is the discriminator
+    # when the harness does not set stop_hook_active.
+    TWIN_WINDOW_SEC = 5
+    nudged = False
+    if not stop_active:
+        try:
+            fd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            nudged = True
+        except FileExistsError:
+            try:
+                age = time.time() - os.path.getmtime(guard)
+            except Exception:
+                age = TWIN_WINDOW_SEC  # unreadable, treat as a real post-nudge
+            if age < TWIN_WINDOW_SEC:
+                # A twin copy owns the nudge for THIS stop. Stay silent; the
+                # agent is about to reply with its own tool.
+                log(sd, f"[enforce] twin stop hook, nudge already in flight sid={sid}")
+                return
+        except Exception:
+            nudged = True  # marker unavailable, prefer nudging over silence
+
+    if nudged:
         # First Stop with an un-replied Telegram turn -> nudge the agent to reply
         # properly via its own tool. Keep the placeholder so the re-entry path
         # (PostToolUse) clears it when the reply finally goes out.
-        try:
-            open(guard, "w").close()
-        except Exception:
-            pass
         chats = ", ".join(sorted({str(p.get("chat_id")) for p in pend}))
         log(sd, f"[enforce] blocking stop, no reply sent sid={sid} chats={chats}")
         print(json.dumps({"decision": "block", "reason": INSTRUCTION % chats}))
@@ -272,6 +330,10 @@ def main():
         # the same chat. The answer goes to each chat (and topic) ONCE; every
         # placeholder is still deleted (FALLBACKEGYSZER1019). A failed send does
         # not count as sent, so the next entry of that chat retries it.
+        # The `sent_to` set is IN-PROCESS only, so claim_send adds the half it
+        # cannot cover: two copies of this hook can run at once, so the marker is
+        # what makes the send win-once ACROSS processes (and against the
+        # watchdog, which uses the same marker name).
         sent_to = set()
         for p in pend:
             cid, mid = p.get("chat_id"), p.get("message_id")
@@ -279,12 +341,14 @@ def main():
             dest = (str(cid), topic.get("message_thread_id"))
             if answer and synthetic:
                 # #2269: the turn ended on a CLI line, not an answer: the placeholder says the answer is late and stays.
+                # No claim_send here: the outage edit sends nothing, so it must
+                # not consume the win-once marker of a later genuine delivery.
                 try:
                     api(tok, "editMessageText", {"chat_id": cid, "message_id": mid, "text": OUTAGE_TEXT})
                 except Exception as e:
                     log(sd, f"[enforce] outage edit failed: {e}")
                 continue
-            if answer and dest not in sent_to:
+            if answer and dest not in sent_to and claim_send(str(mid)):
                 try:
                     res = api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic})
                     sent_to.add(dest)
