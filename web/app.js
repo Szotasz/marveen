@@ -19989,7 +19989,9 @@ async function openIdeaDetail(id) {
   const idea = ideas.find(i => i.id === id)
   if (!idea) return
   ideaDetailId = id
-  const statusLabel = STATUS_LABELS[idea.status] || idea.status
+  // STATUS_LABELS holds functions (the language can change): call it, as the list does.
+  const statusLabelFn = STATUS_LABELS[idea.status]
+  const statusLabel = typeof statusLabelFn === 'function' ? statusLabelFn() : (statusLabelFn || idea.status)
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
