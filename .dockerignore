@@ -1,0 +1,15 @@
+.git
+node_modules
+dist
+store
+workspace
+agents
+reports
+.env
+.env.*
+.claude
+tests
+**/__tests__
+deploy/*
+!deploy/docker/entrypoint.sh
+**/__pycache__
