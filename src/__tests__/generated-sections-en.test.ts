@@ -328,6 +328,69 @@ describe('the new sub-agent\'s CLAUDE.md prompt and SOUL/SKILL prompts in Englis
   })
 })
 
+const REPO_TEMPLATE = join(__dirname, '..', '..', 'templates', 'settings.json.template')
+type Hook = { type?: string; prompt?: string }
+const preCompactPrompt = (json: string): string => {
+  const t = JSON.parse(json) as { hooks: Record<string, Array<{ hooks: Hook[] }>> }
+  return t.hooks.PreCompact.flatMap((g) => g.hooks).find((h) => h.type === 'agent')!.prompt!
+}
+const PRECOMPACT_TRANSLATED: Array<[string, string]> = [
+  ['egy mondat mit csinálsz', 'one sentence on what you are doing'],
+  ['már kész lépés', 'a step already done'],
+  ['mit kinek adtál már át', 'what you already handed to whom'],
+  ['a következő konkrét lépés', 'the next concrete step'],
+  ['nyitott döntés vagy blokkoló ha van', 'an open decision or blocker, if any'],
+]
+const commandLines = (prompt: string, map: Array<[string, string]> = []) => prompt.split('\n')
+  .filter((l) => /^\s*(bash |mkdir |\{"summary"|SKILLEOF$)/.test(l) || /scripts\/skill-index\.sh/.test(l))
+  .map((l) => l.replace(/^.*?(bash \{\{PROJECT_ROOT\}\}\/scripts\/skill-index\.sh)/, '$1'))
+  .map((l) => map.reduce((x, [a, b]) => x.split(a).join(b), l))
+
+describe('the PreCompact agent-hook prompt of a new agent on an English install', () => {
+  const raw = readFileSync(REPO_TEMPLATE, 'utf-8')
+
+  it('without the key the template is returned byte for byte', () => {
+    setLang(null)
+    expect(sc.localizeSettingsTemplate(raw)).toBe(raw)
+  })
+
+  it('with en only the PreCompact agent prompt changes, its commands are the Hungarian ones, its prose is English', () => {
+    setLang('en')
+    const out = sc.localizeSettingsTemplate(raw)
+    const huPrompt = preCompactPrompt(raw)
+    const enPrompt = preCompactPrompt(out)
+    expect(enPrompt).toBe(en.PRECOMPACT_PROMPT_EN_TPL)
+    // Everything else is the same template.
+    const strip = (j: string) => JSON.stringify(JSON.parse(j, (k, v) => (k === 'prompt' ? '<p>' : v)))
+    expect(strip(out)).toBe(strip(raw))
+    expect(commandLines(enPrompt)).toEqual(commandLines(huPrompt, PRECOMPACT_TRANSLATED))
+    expect(commandLines(enPrompt).length).toBeGreaterThanOrEqual(7)
+    const p = stripProtocol(enPrompt)
+    expect(p.split('\n').filter((l) => HU_ACCENT.test(l))).toEqual([])
+    expect(p.match(HU_WORDS)).toBeNull()
+  })
+
+  it('ensureAgentHooks writes the English prompt into a new agent\'s settings on an English install', () => {
+    mkdirSync(join(tmpRoot, 'templates'), { recursive: true })
+    writeFileSync(join(tmpRoot, 'templates', 'settings.json.template'), raw, 'utf-8')
+    const scopes = { user: join(tmpRoot, 'scope-user'), project: join(tmpRoot, 'scope-project') }
+    for (const [lang, agent] of [['en', 'hooks-en'], [null, 'hooks-hu']] as const) {
+      setLang(lang)
+      mkdirSync(join(tmpRoot, 'agents', agent, '.claude'), { recursive: true })
+      sc.ensureAgentHooks(agent, scopes)
+      const written = preCompactPrompt(readFileSync(join(tmpRoot, 'agents', agent, '.claude', 'settings.json'), 'utf-8'))
+      if (lang === 'en') expect(written.startsWith('The context is about to be compacted.')).toBe(true)
+      else expect(written.startsWith('A kontextus hamarosan tömörítődik.')).toBe(true)
+      expect(written).not.toContain('{{PROJECT_ROOT}}')
+    }
+  })
+
+  it('PreCompact staleness guard: the Hungarian prompt is the one the English twin was written against', () => {
+    const digest = createHash('sha256').update(preCompactPrompt(raw)).digest('hex').slice(0, 16)
+    expect(HU_SOURCE_HASHES['precompact-prompt'], `precompact-prompt: the Hungarian prompt changed; update PRECOMPACT_PROMPT_EN_TPL, then set the hash to '${digest}'`).toBe(digest)
+  })
+})
+
 // STALENESS GUARD. A Hungarian body changed? Bring its English twin in src/web/agent-scaffold-en.ts along, then
 // update the hash here (the failing test prints the new one). The hash covers every branch combination above.
 const HU_SOURCE_HASHES: Record<string, string> = {
@@ -340,6 +403,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'fleet-roster': '4849b0f0ec0dab70',
   'skill-section': 'ccb3df74b18e6c8f',
   'claude-md-prompt': 'e74c8fc962126244',
+  'precompact-prompt': 'ba0d64daf27b1316',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
   'message-close': '835ee6c92d6e0a7a',

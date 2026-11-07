@@ -953,3 +953,78 @@ IMPORTANT FORMATTING RULES:
 Keep the body under 200 lines. Be specific and actionable. The owner's name is ${ownerName}; use only this name when referring to the user.
 Output ONLY the markdown content, no code fences.`
 }
+
+// ---- the PreCompact agent-hook prompt (templates/settings.json.template), for a NEW agent on an English install ----
+// Placeholders ({{BOT_NAME}}, {{PROJECT_ROOT}}) are resolved by the same resolveTemplatePlaceholders as the template.
+// The command lines are the Hungarian prompt's, byte for byte; SAJAT_NEVED and SKILL-NEV stay as the tokens the
+// upgrade passes in agent-scaffold.ts match. An agent that already has a PreCompact prompt keeps it (the hook merge
+// never adds a second agent hook), so this reaches only agents created after the key is set.
+export const PRECOMPACT_PROMPT_EN_TPL = `The context is about to be compacted. Do three things:
+
+{{BOT_NAME}}'s /api/* calls go through ONE helper: bash {{PROJECT_ROOT}}/scripts/marveen-api.sh <verb> (the verbs: bash {{PROJECT_ROOT}}/scripts/marveen-api.sh --help). The helper reads the token itself, so you need neither a raw curl nor command substitution: on a strict profile Claude Code refuses those without asking. The helper takes the text ONLY from a file: first write it into your working folder with the Write tool, and pass the file's path. Never put text on the command line.
+
+## 1. Saving memories
+Look through the conversation so far and save what matters.
+
+IMPORTANT: Find your agent_id in the CLAUDE.md (your name is at the start of the file). If you cannot find it, look at the name of your working folder (agents/<NAME>). In the commands below SAJAT_NEVED stands for that name.
+
+Use the helper (first write the text to save into your working folder with the Write tool: the memory into the api-memoria.txt file, the log into the api-naplo.txt file). One file, one send: write it, send it, and only then the next one; never prepare two in parallel (the second would overwrite the first). After a successful send the helper empties the file, and it stops with an error on an empty file: it never sends an old text.
+- Important decisions, preferences, lessons (category=warm):
+  bash {{PROJECT_ROOT}}/scripts/marveen-api.sh memory-save SAJAT_NEVED warm "kulcsszo1, kulcsszo2" api-memoria.txt
+- Active tasks, pending -> category=hot
+- Long-term lesson -> category=cold
+- For another agent too -> category=shared
+- Daily log entry:
+  bash {{PROJECT_ROOT}}/scripts/marveen-api.sh daily-log SAJAT_NEVED api-naplo.txt
+
+Save ONLY what really matters and is not obvious. Do not save what the code already shows.
+
+## 2. Skill reflection (auto skill generation)
+Look through the session so far and look for reusable patterns:
+- Was there a complex task that took 5+ tool calls?
+- Was there a successful recovery after an error?
+- Was there a user correction you learned from?
+- Was there a non-trivial, multi-step workflow?
+
+If ANY of these is true, write a SKILL.md. There are two places, and which one matters. The main agent has no skill folder of its own (its working directory is the project root, which the sub-agents see too), so for it every skill goes the B) way: the main agent must NOT run the A) block.
+
+A) A skill meant ONLY FOR YOU: the .claude/skills/ folder of YOUR OWN working directory (run from your working directory). You write here directly:
+
+mkdir -p .claude/skills/SKILL-NEV && cat > .claude/skills/SKILL-NEV/SKILL.md << 'SKILLEOF'
+---
+name: skill-name
+description: When to use it, what it does (be specific and "pushy" in the triggers)
+---
+# Skill name
+## When to use
+[Specific triggers]
+## Procedure
+[Numbered steps]
+## Pitfalls
+[Known problems and their fixes]
+## Verification
+[How to validate the result]
+SKILLEOF
+
+If you had a similar skill of your own before, PATCH it (replace only the changed part), do not rewrite the whole thing.
+
+B) A new skill meant FOR EVERY AGENT (global), or a fix to an existing global skill: do NOT write into the ~/.claude/skills/ folder directly. Write the full SKILL.md as a draft, and send it as a proposal. Whether it goes live at once (the scan and the audit run then too) or waits in quarantine until the owner approves it is decided by the SKILL_QUARANTINE switch, the live field of the response tells you; if the name is already live, it becomes a replacement proposal, and when it goes live the old version is backed up. When fixing an existing global skill, start from its current text (cat ~/.claude/skills/NEV/SKILL.md), and send the WHOLE fixed text, under the same name.
+
+Write the full SKILL.md (with the same structure as your own skill's) into your working folder with the Write tool, into this file: skill-javaslat.md
+Write the reason (why it is needed, what it fixes) with the Write tool into this file: skill-javaslat-indok.txt
+Then send it:
+bash {{PROJECT_ROOT}}/scripts/marveen-api.sh skill-propose SKILL-NEV skill-javaslat.md --reason-file skill-javaslat-indok.txt
+
+If you wrote or fixed something in your own folder, run the index refresher: bash {{PROJECT_ROOT}}/scripts/skill-index.sh "$(pwd)"
+
+If there was no skill-worthy work, do nothing -- this part is optional.
+
+## 3. Saving the active task state (continuity across the compact)
+If you are IN THE MIDDLE of a task (not finished), save it in a structured way, so after the compact you continue from there and do NOT restart / do NOT re-delegate what is already done:
+
+Write the record as JSON into the api-payload.json file in your working folder:
+{"summary":"one sentence on what you are doing","doneSteps":["a step already done"],"alreadyDelegated":["what you already handed to whom"],"nextAction":"the next concrete step","pendingDecision":"an open decision or blocker, if any"}
+then:
+bash {{PROJECT_ROOT}}/scripts/marveen-api.sh taskstate-save SAJAT_NEVED api-payload.json
+
+IMPORTANT: doneSteps = what you have ALREADY done (do NOT repeat it), alreadyDelegated = what you have ALREADY handed to another agent (do NOT send it again), nextAction = the next concrete step. If there is NO active task (only conversation/idle), skip this step completely -- then no record is needed.`

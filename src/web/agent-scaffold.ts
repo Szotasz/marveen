@@ -25,7 +25,7 @@ import {
   buildBackgroundCheckpointBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
   buildMemorySearchLabelBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
   type PromptRecipes, strictPromptRecipesEn, SKILL_SECTION_HEADING_EN, buildSkillSectionEn, buildClaudeMdPromptEn,
-  buildSoulPromptEn, buildSkillPromptEn,
+  buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL,
 } from './agent-scaffold-en.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
@@ -342,6 +342,26 @@ export function substituteTemplatePlaceholders(content: string, id: TemplateIden
     .replaceAll('{{WEB_PORT}}', String(id.webPort))
     // ISSUE1895 (#1895): the install zone, not a hardcoded Europe/Budapest.
     .replaceAll('{{TIMEZONE}}', id.timeZone ?? APP_TZ)
+}
+
+// PERSONAESC1107: on an English install the settings template's PreCompact agent prompt is the English one. Applied to
+// the RAW template (placeholders still in), before resolveTemplatePlaceholders. Without the key the text is returned as
+// it is, byte for byte. Only a new agent's settings get it: the hook merge never adds a second PreCompact agent hook,
+// so an existing agent keeps its prompt (a stock retired one is upgraded by upgradeRetiredHookPrompts as before).
+export function localizeSettingsTemplate(raw: string): string {
+  if (agentTextLang() !== 'en') return raw
+  try {
+    const tpl = JSON.parse(raw) as { hooks?: Record<string, Array<{ hooks?: Array<{ type?: string; prompt?: unknown }> }>> }
+    let swapped = false
+    for (const group of tpl.hooks?.PreCompact ?? []) {
+      for (const h of group.hooks ?? []) {
+        if (h.type === 'agent' && typeof h.prompt === 'string') { h.prompt = PRECOMPACT_PROMPT_EN_TPL; swapped = true }
+      }
+    }
+    return swapped ? JSON.stringify(tpl, null, 2) + '\n' : raw
+  } catch {
+    return raw
+  }
 }
 
 export function resolveTemplatePlaceholders(content: string): string {
@@ -922,7 +942,7 @@ export function ensureAgentHooks(
   if (!existsSync(tplPath)) return false
   let tpl: Record<string, unknown>
   try {
-    const raw = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
+    const raw = resolveTemplatePlaceholders(localizeSettingsTemplate(readFileSync(tplPath, 'utf-8')))
     tpl = JSON.parse(raw)
   } catch {
     return false
@@ -3356,7 +3376,7 @@ export function scaffoldAgentDir(name: string) {
   if (!existsSync(settingsJson)) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
     if (existsSync(tplPath)) {
-      const resolved = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
+      const resolved = resolveTemplatePlaceholders(localizeSettingsTemplate(readFileSync(tplPath, 'utf-8')))
       atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
   }
