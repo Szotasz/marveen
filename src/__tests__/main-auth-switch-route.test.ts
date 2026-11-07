@@ -5,7 +5,7 @@
 //  - the shared access token is refused (owner only).
 import { Readable } from 'node:stream'
 import type http from 'node:http'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RouteContext } from '../web/routes/types.js'
 
 const h = vi.hoisted(() => ({
@@ -22,11 +22,23 @@ vi.mock('../web/vault.js', async (orig) => ({
   setSecret: (...a: unknown[]) => (h.setSecret as any)(...a),
   deleteSecret: (...a: unknown[]) => (h.deleteSecret as any)(...a),
 }))
-vi.mock('../web/agent-config.js', async (orig) => ({
-  ...(await orig<typeof import('../web/agent-config.js')>()),
-  writeAgentAuthMode: (...a: unknown[]) => (h.writeAgentAuthMode as any)(...a),
-  readAgentCustomProvider: () => null,
-}))
+// The route mkdirs agentDir(<main>) before writing the mode: pointed at a throwaway dir, so a run never creates
+// agents/<main> in the checkout (that dir makes the main id a "known agent" for later tests in the same run).
+const TMP_AGENTS = vi.hoisted(() => {
+  const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
+  const { join } = require('node:path') as typeof import('node:path')
+  const { tmpdir } = require('node:os') as typeof import('node:os')
+  return mkdtempSync(join(tmpdir(), 'mauth-route-agents-'))
+})
+vi.mock('../web/agent-config.js', async (orig) => {
+  const { join } = await import('node:path')
+  return {
+    ...(await orig<typeof import('../web/agent-config.js')>()),
+    agentDir: (n: string) => join(TMP_AGENTS, n),
+    writeAgentAuthMode: (...a: unknown[]) => (h.writeAgentAuthMode as any)(...a),
+    readAgentCustomProvider: () => null,
+  }
+})
 vi.mock('../web/claude-credentials-guard.js', async (orig) => ({
   ...(await orig<typeof import('../web/claude-credentials-guard.js')>()),
   liveProbeAuth: (...a: unknown[]) => (h.probe as any)(...a),
@@ -46,8 +58,17 @@ vi.mock('../web/agent-process.js', async (orig) => ({
   resolveMainAgentRotatedTokenSecretId: () => null,
 }))
 
-const { MAIN_AGENT_ID } = await import('../config.js')
+const { MAIN_AGENT_ID, PROJECT_ROOT } = await import('../config.js')
 const { tryHandleAgents } = await import('../web/routes/agents.js')
+const { existsSync, rmSync } = await import('node:fs')
+const { join } = await import('node:path')
+const CHECKOUT_MAIN_DIR = join(PROJECT_ROOT, 'agents', MAIN_AGENT_ID)
+const checkoutHadMainDir = existsSync(CHECKOUT_MAIN_DIR)
+afterAll(() => {
+  rmSync(TMP_AGENTS, { recursive: true, force: true })
+  // the run itself must not have created it
+  if (!checkoutHadMainDir) expect(existsSync(CHECKOUT_MAIN_DIR)).toBe(false)
+})
 
 type Auth = RouteContext['auth']
 async function put(body: unknown, auth: Auth) {
