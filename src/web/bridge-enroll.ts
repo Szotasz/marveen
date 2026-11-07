@@ -123,14 +123,25 @@ export function isTailnetIPv4(addr: string): boolean {
   return second >= 64 && second <= 127
 }
 
+/** True for a ZeroTier virtual interface name. Unlike Tailscale, ZeroTier has
+ * no fixed, dedicated IP range -- its auto-assign pool is an ordinary RFC1918
+ * /24 (eg the elvis-marveen network measured 2026-11-03: 10.76.163.0/24),
+ * indistinguishable by address alone from a real LAN, so address shape can't
+ * identify it. The interface name can: the ZeroTier driver always names the
+ * device "zt" + a lowercase alphanumeric id (Linux eg "ztdiyqolon"), a
+ * pattern no real LAN NIC or other VPN interface uses. */
+export function isZeroTierIfaceName(name: string): boolean {
+  return /^zt[0-9a-z]{6,}$/i.test(name)
+}
+
 /** Pick the default enroll host from an interface map. The Bridge exists for
  * REMOTE access, so a LAN address is a structurally wrong default: the first
  * non-loopback IPv4 in interface order used to win (BRIDGEHOST1: en0's
  * 192.168.x beat utun4's tailnet address, and the bundle died the moment the
- * laptop left the home network). Prefer the first tailnet (CGNAT) address
- * when one exists; otherwise keep the pre-existing first-IPv4 behavior so
- * hosts without Tailscale see no change. Pure over the interface map so the
- * order-sensitive cases are unit-testable. */
+ * laptop left the home network). Prefer the first tailnet (CGNAT) or
+ * ZeroTier address when one exists; otherwise keep the pre-existing
+ * first-IPv4 behavior so hosts without either VPN see no change. Pure over
+ * the interface map so the order-sensitive cases are unit-testable. */
 export interface EnrollIfaceInfo {
   address: string
   family: string | number
@@ -142,10 +153,11 @@ export function selectEnrollHost(
 ): string | null {
   let first: string | null = null
   for (const name of Object.keys(ifaces)) {
+    const zerotier = isZeroTierIfaceName(name)
     for (const info of ifaces[name] ?? []) {
       const family = info.family as string | number
       if ((family === 'IPv4' || family === 4) && !info.internal) {
-        if (isTailnetIPv4(info.address)) return info.address
+        if (isTailnetIPv4(info.address) || zerotier) return info.address
         if (first === null) first = info.address
       }
     }
@@ -153,8 +165,8 @@ export function selectEnrollHost(
   return first
 }
 
-/** Best-effort default host of this machine: tailnet-preferred, else the
- * first non-loopback IPv4. */
+/** Best-effort default host of this machine: tailnet/ZeroTier-preferred,
+ * else the first non-loopback IPv4. */
 function primaryIPv4(): string | null {
   return selectEnrollHost(networkInterfaces())
 }
