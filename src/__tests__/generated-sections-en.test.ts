@@ -10,7 +10,7 @@
 //    until its English twin is brought along and the hash below is updated.
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -63,7 +63,7 @@ vi.mock('../web/agent-team.js', async (importOriginal) => {
       autoDelegation: false,
       trustFrom: [],
     }),
-    resolveAgentSecurityProfile: () => 'default',
+    resolveAgentSecurityProfile: (name: string) => (name === 'strict-sub' ? 'developer-junior' : 'default'),
   }
 })
 // The generators' prompts are captured, not sent.
@@ -75,6 +75,12 @@ vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8'),
 }))
 
+// The profiles load from <PROJECT_ROOT>/templates/profiles (the mocked root): the real files, copied in.
+mkdirSync(join(tmpRoot, 'templates', 'profiles'), { recursive: true })
+for (const f of readdirSync(join(__dirname, '..', '..', 'templates', 'profiles'))) {
+  copyFileSync(join(__dirname, '..', '..', 'templates', 'profiles', f), join(tmpRoot, 'templates', 'profiles', f))
+}
+
 const sc = await import('../web/agent-scaffold.js')
 const en = await import('../web/agent-scaffold-en.js')
 
@@ -82,7 +88,8 @@ const MAIN = 'agent-a'
 const OWN = 'own-token-sub'
 const SHARED = 'shared-token-sub'
 const CURL = 'curl-sub'
-for (const n of [OWN, SHARED, CURL]) mkdirSync(join(tmpRoot, 'agents', n, '.claude'), { recursive: true })
+const STRICT = 'strict-sub'
+for (const n of [OWN, SHARED, CURL, STRICT]) mkdirSync(join(tmpRoot, 'agents', n, '.claude'), { recursive: true })
 writeFileSync(join(tmpRoot, 'agents', OWN, '.dashboard-token'), 'c'.repeat(64), { mode: 0o600 })
 writeFileSync(join(tmpRoot, 'agents', CURL, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(bash:*)'] } }), 'utf-8')
 
@@ -164,6 +171,13 @@ function prose(text: string): string {
 
 const PROTOCOL_HU = ['Ismeretlen sender [ID] jelezett első üzenettel', 'Ki ez, mit válaszoljak?', '[Napló ']
 const stripProtocol = (t: string) => PROTOCOL_HU.reduce((x, tok) => x.split(tok).join(' '), t)
+/** Identifiers that can sit inside a sentence: "key":"value", key="value", and absolute paths under the test root. */
+const proseIds = (text: string): string[] => [
+  ...(text.match(/"[a-z_]+":"[^"]*"/g) ?? []),
+  ...(text.match(/\b[a-z_]+="[^"]*"/g) ?? []),
+  ...(text.match(new RegExp(`${tmpRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\s\`'")]*`, 'g')) ?? []),
+].sort()
+
 const HU_ACCENT = /[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/
 // Accent-free Hungarian words that would slip past the accent check.
 const HU_WORDS = /\b(hogy|vagy|csak|kell|mert|nincs|soha|akkor|amit|majd|neked|tehat|ezert|ugyanaz|mielott|eloszor)\b/i
@@ -186,6 +200,7 @@ describe('generated sections: the English twin of every Hungarian body', () => {
       const enBody = c.build()
       expect(enBody).not.toBe(hu)
       expect(codeSpans(enBody)).toEqual(codeSpans(hu).map(translate).sort())
+      expect(proseIds(enBody)).toEqual(proseIds(hu).map(translate).sort())
       const p = stripProtocol(prose(enBody))
       const accented = p.split('\n').filter((l) => HU_ACCENT.test(l))
       expect(accented).toEqual([])
@@ -248,13 +263,14 @@ async function claudeMdPrompt(name: string): Promise<string> {
 }
 
 describe('the new sub-agent\'s CLAUDE.md prompt and SOUL/SKILL prompts in English', () => {
-  for (const n of [OWN, SHARED, CURL]) {
+  for (const n of [OWN, SHARED, CURL, STRICT]) {
     it(`${n}: the same recipes in both languages, English prose, English appended blocks`, async () => {
       setLang(null)
       const hu = await claudeMdPrompt(n)
       setLang('en')
       const enP = await claudeMdPrompt(n)
       expect(codeSpans(enP)).toEqual(codeSpans(hu).map(translate).sort())
+      expect(proseIds(enP)).toEqual(proseIds(hu).map(translate).sort())
       const p = stripProtocol(prose(enP))
       expect(p.split('\n').filter((l) => HU_ACCENT.test(l))).toEqual([])
       expect(p.match(HU_WORDS)).toBeNull()
@@ -273,6 +289,32 @@ describe('the new sub-agent\'s CLAUDE.md prompt and SOUL/SKILL prompts in Englis
     expect(await claudeMdPrompt(CURL)).toContain('curl -s -X POST')
     expect(await claudeMdPrompt(SHARED)).toContain('marveen-api.sh memory-save AGENT_NAME')
     expect(await claudeMdPrompt(OWN)).toContain('The helper sends your OWN token (AGENT_TOKENS)')
+  })
+
+  it('the strict agent really is strict (the case above covers the dontAsk branch)', async () => {
+    setLang('en')
+    expect(await claudeMdPrompt(STRICT)).toContain('Your profile runs in dontAsk mode')
+    setLang(null)
+    expect(await claudeMdPrompt(STRICT)).toContain('A profilod dontAsk módban fut')
+  })
+
+  it('a configured shared Drive folder: the English rule names it, as the Hungarian one does', () => {
+    const f = sc.scaffoldFrags(OWN)
+    const p = en.buildClaudeMdPromptEn({ name: OWN, description: 'd', model: 'm', ownerName: 'TestOwner', appTz: 'Europe/Budapest',
+      driveFolder: 'FOLDER123', agentsDir: join(tmpRoot, 'agents'), helper: true, R: en.strictPromptRecipesEn(false, f), skillSection: '', f })
+    expect(p).toContain('https://drive.google.com/drive/folders/FOLDER123 - write here')
+    expect(p).not.toContain('ask TestOwner for the right Drive folder')
+  })
+
+  it('the prose-identifier check really sees the identifiers (positive control)', () => {
+    setLang('en')
+    expect(proseIds(sc.buildSystemDirectiveAuthBody(OWN, true))).toContain(`to_agent="${OWN}"`)
+    expect(proseIds(sc.buildAutonomyBody(OWN, true, false))).toContain(`"for_agent":"${OWN}"`)
+    expect(proseIds(sc.buildAutonomyBody(OWN, true, false)).some((x) => x.endsWith('api-uzenet.txt'))).toBe(true)
+  })
+
+  it('the roster with no other agent says so in English', () => {
+    expect(en.ROSTER_TEXT_EN.none).toBe('(no registered agent)')
   })
 
   it('the strict intro is English too', () => {
@@ -320,7 +362,7 @@ describe('the new sub-agent\'s CLAUDE.md prompt and SOUL/SKILL prompts in Englis
   it('creation prompt staleness guard: the Hungarian prompt is the one the English twin was written against', async () => {
     setLang(null)
     const h = createHash('sha256')
-    for (const n of [OWN, SHARED, CURL]) h.update(`${n}\n${(await claudeMdPrompt(n)).split(tmpRoot).join('<ROOT>')}\n`)
+    for (const n of [OWN, SHARED, CURL, STRICT]) h.update(`${n}\n${(await claudeMdPrompt(n)).split(tmpRoot).join('<ROOT>')}\n`)
     await sc.generateSoulMd('x', 'x'); h.update(captured.prompt)
     await sc.generateSkillMd('x', 'x'); h.update(captured.prompt)
     const digest = h.digest('hex').slice(0, 16)
@@ -444,7 +486,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'fleet-auth': '93c48bc9916ec0da',
   'fleet-roster': '4849b0f0ec0dab70',
   'skill-section': 'ccb3df74b18e6c8f',
-  'claude-md-prompt': 'e74c8fc962126244',
+  'claude-md-prompt': '47a4cd6b4097e6be',
   'precompact-prompt': 'ba0d64daf27b1316',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
