@@ -406,8 +406,11 @@ run_guard() {
     # rather than hard-coding 'telegram' -- a renamed install would otherwise get
     # a config dir that belongs to a different channel.
     local _prov="${RESPAWN_PLUGIN#plugin:}"; _prov="${_prov%%@*}"
-    local _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
-    _cfg_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 2>>"$STORE/channels-failures.log" || true)"
+    local _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line
+    # The contract rides fd 3 (as in channels.sh and channel-watchdog.sh): a log line the dist module prints on
+    # stdout must not become the mode line (MAINAUTH1107: this caller read stdout until now).
+    _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+    _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
     _cfg_mode="${_cfg_line%%	*}"
     _cfg_rest="${_cfg_line#*	}"
     if [ "$_cfg_mode" = "token" ]; then
@@ -433,6 +436,13 @@ run_guard() {
       fi
       log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
     fi
+    # MAINAUTH1107: the credential this respawn runs on, from the same module the boot and the dashboard use, right
+    # before the respawn (see channel-watchdog.sh). No contract line = the files the last launch wrote stay.
+    _ma_mode=""; _ma_dir=""
+    if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
+    _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+    _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
+    [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
   fi
 
   # FLEETVENV923: the fleet venv's bin/ first, exactly as channels.sh boots the
@@ -446,7 +456,9 @@ run_guard() {
   # BEFORE CFG_ENV, so an own-login mode (explicit/rotated) unsets both again and an isolated/token mode exports
   # its own token over it. A missing file is not an error (the chain goes on).
   local PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth"); } && "
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${GROMZO_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q${EXTRA_Q}"
+  # MAINAUTH1107: the post-file right AFTER CFG_ENV (see channel-watchdog.sh).
+  local PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q${EXTRA_Q}"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

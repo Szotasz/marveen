@@ -1391,6 +1391,7 @@ window._i18n.hu = {
   'settings.claude_plans.switch_error': 'Nem sikerült a plan-váltás.',
   'settings.claude_plans.readiness.title': 'Az automata rotáció be van kapcsolva, de még nem tud működni:',
   'settings.claude_plans.readiness.main_agent_not_isolated': 'A fő agent a közös ~/.claude-ot használja (MAIN_AGENT_ISOLATED_CONFIG=0), így a heartbeat minden körben döntés nélkül kilép. Kapcsold be a MAIN_AGENT_ISOLATED_CONFIG-ot: ez a fő agentet a flotta tokenjére állítja és újraindítja, ezért nem kapcsoljuk be automatikusan.',
+  'settings.claude_plans.readiness.main_agent_on_api_key': 'A fő agent API-kulccsal fut (a dashboardon a hitelesítése API-kulcsra van állítva), ezért a rotáció a fő agentnél nem érvényesül.',
   'settings.claude_plans.readiness.main_agent_explicit_config_dir': 'A fő agentnek saját Claude-loginja van (MAIN_AGENT_CONFIG_DIR be van állítva). Ez mindig elsőbbséget kap, ezért a rotáció a fő agentnél nem érvényesül.',
   'settings.claude_plans.readiness.too_few_channel_plans': 'Legalább 2 olyan plan kell, amelyen a csatorna futhat.',
   'settings.claude_plans.readiness.heartbeat_task_missing': 'Hiányzik a rotációs heartbeat ütemezés (claude-plan-rotate-check). Bekapcsolt rotációnál a dashboard indításkor létrehozza; ha kézzel törölted, kapcsold ki és be a rotációt.',

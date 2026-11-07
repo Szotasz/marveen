@@ -410,6 +410,12 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
       json(res, { error: 'Invalid secret id' }, 400)
       return true
     }
+    // MAINAUTH1107: an agent's API key decides which Console account its prompts go to; it is set on the agent card
+    // with the dashboard login only (the generic vault routes ask for that too). An operator device is not the owner.
+    if (/^agent-[^/]+-api-key$/.test(id)) {
+      json(res, { error: 'Agent API keys are set on the agent card, with the dashboard login (an owner session)' }, 403)
+      return true
+    }
     let value: unknown
     let label: unknown
     try {

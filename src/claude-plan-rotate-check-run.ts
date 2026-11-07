@@ -15,6 +15,7 @@ import { probePlanUsage, observationFromProbe, selectPlansToProbe, usageFromProb
 import { getSecret } from './web/vault.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from './config.js'
+import { readAgentAuthMode } from './web/agent-config.js'
 
 function settingIsOn(key: string): boolean {
   try { return String(getEffectiveSettingValue(key)) === '1' } catch { return false }
@@ -160,6 +161,14 @@ export async function runRotateCheck(): Promise<void> {
   // Re-checked on purpose (defence in depth): this is the last gate before a
   // ROTATE line, so it must not depend on the early return above staying put.
   if (!settingIsOn('CLAUDE_ROTATION_ENABLED') || !settingIsOn('MAIN_AGENT_ISOLATED_CONFIG')) return
+  // MAINAUTH1107: the owner put the main agent on an API key. A rotation would move it onto a plan's own login
+  // (rotated: the key is unset) or token, i.e. silently off the key the owner chose. Never decided here.
+  // A plan already active for the main agent wins over api (main-auth: own-login / plan-token conflict), so the
+  // rotation keeps managing that plan; only a main that really runs on the key is left alone.
+  if (readAgentAuthMode(MAIN_AGENT_ID) === 'api' && !readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]) {
+    console.error('claude-plan-rotate-check: the main agent runs on an API key (authMode=api), no rotation decision')
+    return
+  }
 
   const result = decideAndRecord({
     agentId: MAIN_AGENT_ID,

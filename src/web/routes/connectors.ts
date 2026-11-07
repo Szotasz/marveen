@@ -821,6 +821,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   // === Vault ===
+  // MAINAUTH1107 (Samu 72304/72307, Dani 72305): an agent's API key (agent-<name>-api-key, the main agent's too) decides
+  // which Anthropic Console account that agent's prompts go to. With the shared access token any sub-agent could
+  // otherwise swap the main agent's key for one of its own account (its prompts would then reach that account:
+  // data leaving, not only billing) or delete it. So writing or deleting one through the generic routes needs the
+  // dashboard login, the same gate as the agent editor's authMode/apiKey fields. Reading is unchanged (the vault ACL).
+  const AGENT_API_KEY_ID = /^agent-[^/]+-api-key$/
+  const agentApiKeyWriteRefused = (id: string): boolean => AGENT_API_KEY_ID.test(id) && !mayActAsOwner(ctx.auth, req)
+
   if (path === '/api/vault' && method === 'GET') {
     // ssh-key-* entries are managed exclusively via the SSH key pool
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
@@ -832,6 +840,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    if (agentApiKeyWriteRefused(id.trim())) {
+      refuseOwner(res, 'Storing an agent API key needs the dashboard login (an owner session): it decides which Console account the agent runs on.')
+      return true
+    }
     if (label !== undefined && label !== null && typeof label !== 'string') { json(res, { error: 'label must be a string' }, 400); return true }
     // An unchanged stored label passes whatever its length (value rotation re-sends it); a new
     // secret or a changed label is capped. listSecrets() never decrypts anything.
@@ -947,6 +959,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
+    if (agentApiKeyWriteRefused(id)) {
+      refuseOwner(res, 'Deleting an agent API key needs the dashboard login (an owner session).')
+      return true
+    }
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
     json(res, { ok: true })
@@ -1071,6 +1087,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         createBinding: boolean
         targets: Array<{ mcpFilePath: string, serverName: string }>
       }>
+    }
+    // MAINAUTH1107: an import names its vault id freely, so it is the same write door as POST /api/vault.
+    if (Array.isArray(importRequests) && importRequests.some((imp) => typeof imp?.vaultId === 'string' && agentApiKeyWriteRefused(imp.vaultId.trim()))) {
+      refuseOwner(res, 'Importing into an agent API key needs the dashboard login (an owner session).')
+      return true
     }
     let imported = 0
     let bound = 0

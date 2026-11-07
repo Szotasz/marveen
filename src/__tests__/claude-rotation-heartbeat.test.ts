@@ -227,6 +227,23 @@ describe('rotationReadiness', () => {
     expect(rotationReadiness().blockers).toEqual(['main_agent_explicit_config_dir'])
   })
 
+  it('MAINAUTH1107: a main agent the owner put on an API key is its own blocker', () => {
+    readyBaseline()
+    const cfgDir = join(tmpRoot, 'agents', 'host-main')
+    mkdirSync(cfgDir, { recursive: true })
+    writeFileSync(join(cfgDir, 'agent-config.json'), JSON.stringify({ authMode: 'api' }))
+    try {
+      // a plan already active for the main agent wins over api (main-auth), so the rotation keeps managing it
+      expect(rotationReadiness().blockers).toEqual([])
+      activePlanByAgent = {}
+      const r = rotationReadiness()
+      expect(r.blockers).toContain('main_agent_on_api_key')
+      expect(r.details.find((d: { code: string }) => d.code === 'main_agent_on_api_key')?.message).toContain('API-kulccsal fut')
+    } finally {
+      rmSync(join(cfgDir, 'agent-config.json'), { force: true })
+    }
+  })
+
   it('fewer than 2 channelsAllowed plans, however many are registered', () => {
     readyBaseline()
     plans = [plan('a'), plan('b', false), plan('c', false)]
