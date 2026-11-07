@@ -118,6 +118,33 @@ try:
     ):
         code, err = rc(cmd)
         check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
+
+    print("== Dani's review of #2586: the run would reach a sender in zsh or bash; every shape is stopped")
+    os.makedirs(os.path.join(D, "evil"))
+    with open(os.path.join(D, "evil", "hello.py"), "w") as fh:
+        fh.write(SEND)
+    os.makedirs(os.path.join(D, "ro"))
+    ro = os.path.join(D, "ro", "send.py")
+    with open(ro, "w") as fh:
+        fh.write(SEND)
+    os.chmod(ro, 0o444)
+    harmless_over = lambda p: H.format(f=p, body='print("hi")\n')  # noqa: E731
+    for name, cmd in (
+        ("set -C, then a heredoc 'overwrite' of an existing sender", "set -C; " + harmless_over(f"{D}/send.py") + f"python3 {D}/send.py"),
+        ("setopt noclobber (zsh), the same", "setopt noclobber; " + harmless_over(f"{D}/send.py") + f"python3 {D}/send.py"),
+        ("a heredoc 'overwrite' of a read-only sender", harmless_over(ro) + f"python3 {ro}"),
+        ("an unzip before the write may leave the script there", f"unzip -o {D}/a.zip -d {D}; " + harmless_over(f"{D}/new.py") + f"python3 {D}/new.py"),
+        ("exec {D}> sets D (zsh)", f"D={D}; exec {{D}}>/dev/null; python3 $D/hello.py"),
+        ("builtin printf -v D", f"D={D}; builtin printf -v D %s {D}/evil; python3 $D/hello.py"),
+        ("print -v D (zsh)", f"D={D}; print -v D {D}/evil; python3 $D/hello.py"),
+        (": ${D::=x} (zsh)", f"D={D}; : ${{D::={D}/evil}}; python3 $D/hello.py"),
+        ("command . FILE that sets D", f"D={D}; command . {D}/setD.sh; python3 $D/hello.py"),
+        ("a trap DEBUG string that sets D", f"D={D}; trap 'D={D}/evil' DEBUG; python3 $D/hello.py"),
+        ("$D:h is a zsh modifier", f"D={D}/evil/x; python3 $D:h/hello.py"),
+    ):
+        code, err = rc(cmd)
+        check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
+    os.chmod(ro, 0o644)
 finally:
     shutil.rmtree(td, ignore_errors=True)
 

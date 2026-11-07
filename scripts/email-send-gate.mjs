@@ -31,7 +31,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -1510,14 +1510,14 @@ function assignedCdDirs(segments) {
 // ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal is filled in where its value
 // at run time is certain; everything else keeps the variable (today's verdict). The full proof is at the python twin's
 // _bind_literal_vars (outgoing-copy-gate.py); the two agree, script-run-cases.json binds them.
-// Samu 72415: a block keyword opens / closes a block, a word that sets a variable blocks its own NAME, and only these
-// switch the binding off (see the python twin's _BIND_GLOBAL_BLOCK for the measurement behind it)
-const BIND_GLOBAL_BLOCK = new Set(['eval', 'source', '.', 'let', 'function', 'alias', 'coproc'])
+// Samu 72415: a block keyword opens / closes a block (an assignment inside one does not bind). Dani (review of #2586):
+// the NAME may appear nowhere in the command but in its one assignment and its plain uses; eval / source / `.` / alias /
+// autoload / trap in command position (also behind command / builtin / exec / ...) switch the binding off.
+const BIND_GLOBAL_BLOCK = new Set(['eval', 'source', '.', 'alias', 'autoload', 'trap'])
+const BIND_PRECMD = new Set(['command', 'builtin', 'exec', 'noglob', 'nocorrect', '-', 'nohup', 'nice', 'time'])
 const BIND_OPEN = new Set(['if', 'while', 'until', 'case', '{', 'for', 'select'])
 const BIND_CLOSE = new Set(['fi', 'done', 'esac', '}'])
 const BIND_LEAD = new Set(['then', 'do', 'else', 'elif', '!', 'time'])
-const BIND_NAMERS = new Set(['read', 'unset', 'declare', 'typeset', 'local', 'readonly', 'export', 'mapfile', 'readarray', 'getopts'])
-const BIND_SUBST_ASSIGN = /(?:^|[\s;&|(`])([A-Za-z_][A-Za-z_0-9]*)(?:\[[^\]]*\])?\+?=/g
 function substEnd(cmd, i) {
   // the index just past the `$(...)` or backtick substitution that starts at i (inside double quotes), else -1
   if (cmd[i] === '`') {
@@ -1555,7 +1555,6 @@ function heredocBodySpans(cmd) {
 function bindScan(cmd) {
   const spans = heredocBodySpans(cmd)
   const segs = []
-  const substAssigned = []
   const stack = []
   let depth = 0
   let cur = { words: [], sepBefore: null, depth: 0 }
@@ -1593,7 +1592,7 @@ function bindScan(cmd) {
       if (cmd[i + 1] === '{') {
         const m = bindName(cmd, i + 2)
         if (m && cmd[m.end] === '}') {
-          word.refs.push([m.name, i, m.end + 1])
+          if (!':[('.includes(cmd[m.end + 1] ?? 'x')) word.refs.push([m.name, i, m.end + 1]) // zsh modifier / subscript
           word.text += cmd.slice(i, m.end + 1)
           i = m.end + 1
           continue
@@ -1603,7 +1602,7 @@ function bindScan(cmd) {
         continue
       }
       const m = bindName(cmd, i + 1)
-      word.refs.push([m.name, i, m.end])
+      if (!':[('.includes(cmd[m.end] ?? 'x')) word.refs.push([m.name, i, m.end]) // zsh `$D:h` modifier, `$D[1]` subscript
       word.text += cmd.slice(i, m.end)
       i = m.end
       continue
@@ -1613,10 +1612,8 @@ function bindScan(cmd) {
       else if (ch === '`' || cmd.startsWith('$(', i)) {
         const end = substEnd(cmd, i)
         if (end < 0) return null // an unclosed substitution: not read here
-        // a quoted "$(...)" runs in a subshell: nothing in it is filled in, an assignment in it counts as one more
-        const inner = cmd.slice(i, end)
-        for (const m of inner.matchAll(BIND_SUBST_ASSIGN)) substAssigned.push(m[1])
-        word.text += inner
+        // a quoted "$(...)" runs in a subshell: nothing in it is filled in (a name in it is one more occurrence)
+        word.text += cmd.slice(i, end)
         i = end
         continue
       } else word.text += ch
@@ -1669,29 +1666,23 @@ function bindScan(cmd) {
   }
   if (q) return null
   endSeg(null)
-  return { segs, substAssigned }
+  return segs
 }
 export function bindLiteralVars(cmd) {
   if (!cmd.includes('$') || !cmd.includes('=')) return cmd
   const scanned = bindScan(cmd)
   if (scanned === null) return cmd
-  const { segs, substAssigned } = scanned
-  const counts = new Map()
-  for (const name of substAssigned) counts.set(name, (counts.get(name) ?? 0) + 2)
-  const blocked = new Set()
+  const segs = scanned
+  const outside = outsideBodies(cmd, 0, cmd.length)
+  if (/(?<![A-Za-z0-9_])IFS(?![A-Za-z0-9_])/.test(outside)) return cmd
   let block = 0 // how many blocks are open at the segment
   for (const seg of segs) {
     const words = seg.words
-    for (const w of words) {
-      const m = BIND_ASSIGN.exec(w.text)
-      if (m) counts.set(m[1], (counts.get(m[1]) ?? 0) + (m[2] || m[3] ? 2 : 1))
-    }
     let k = 0
     while (k < words.length && !words[k].quoted) {
       const t = words[k].text
       if (BIND_OPEN.has(t)) {
         block++
-        if ((t === 'for' || t === 'select') && k + 1 < words.length) blocked.add(words[k + 1].text) // the loop variable
         if (t === 'for' || t === 'select' || t === 'case') { k = words.length; break } // the rest is a word list
         k++
         continue
@@ -1701,27 +1692,14 @@ export function bindLiteralVars(cmd) {
       break
     }
     seg.block = block
-    const rest = words.slice(k)
-    const ci = rest.findIndex((w) => !BIND_ASSIGN.test(w.text))
-    if (ci < 0) continue
-    const c = rest[ci].quoted ? '' : rest[ci].text
-    const after = rest.slice(ci + 1)
-    if (BIND_GLOBAL_BLOCK.has(c)) return cmd
-    if (c === 'export' && after.length && after.every((w) => BIND_ASSIGN.test(w.text))) continue // `export NAME=v`
-    if (BIND_NAMERS.has(c)) {
-      for (const w of after) {
-        const nm = bindName(w.text, 0)
-        if (nm) blocked.add(nm.name)
-      }
-    }
-    if (c === 'printf') {
-      after.forEach((w, j) => {
-        if (w.text === '-v' && j + 1 < after.length) blocked.add(after[j + 1].text)
-        else if (w.text.startsWith('-v') && w.text.length > 2) blocked.add(w.text.slice(2))
-      })
-    }
+    // eval / source / `.` / alias / autoload / trap in command position, also behind command / builtin / exec ...
+    let j = k
+    while (j < words.length && BIND_ASSIGN.test(words[j].text)) j++
+    while (j < words.length && !words[j].quoted && BIND_PRECMD.has(words[j].text)) j++
+    if (j < words.length && !words[j].quoted && BIND_GLOBAL_BLOCK.has(words[j].text)) return cmd
   }
-  if (counts.has('IFS')) return cmd
+  const refCount = new Map()
+  for (const seg of segs) for (const w of seg.words) for (const [name] of w.refs) refCount.set(name, (refCount.get(name) ?? 0) + 1)
   const binds = new Map() // name -> [segment index, value, conditional]
   segs.forEach((seg, idx) => {
     const words = seg.words
@@ -1736,7 +1714,9 @@ export function bindLiteralVars(cmd) {
       const eq = w.text.indexOf('=')
       const name = w.text.slice(0, eq)
       const value = w.text.slice(eq + 1)
-      if (counts.get(name) !== 1 || blocked.has(name) || w.escaped || !BIND_LITERAL.test(value)) continue
+      if (w.escaped || !BIND_LITERAL.test(value) || name === 'IFS') continue
+      const occurrences = (outside.match(new RegExp(String.raw`(?<![A-Za-z0-9_])` + name + String.raw`(?![A-Za-z0-9_])`, 'g')) || []).length
+      if (occurrences !== 1 + (refCount.get(name) ?? 0)) continue // the name is named somewhere else: it may be set another way
       binds.set(name, [idx, value, conditional])
     }
   })
@@ -1764,10 +1744,11 @@ export function bindLiteralVars(cmd) {
 // ISSUE2582 (B): a script written by a heredoc and then run in the same command is judged by its body (see the python
 // twin's _written_scripts for the exact conditions); every other case reads the disk as before.
 const WRITTEN_OPENER = new RegExp(
-  String.raw`^(?:[^\n'"\x60\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
+  String.raw`^(?<pre>[^\n'"\x60\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
   String.raw`|cat[ \t]+<<-?[ \t]*(?<q2>'?)(?<t2>\w+)\k<q2>[ \t]+>[ \t]*(?<p2>[^\s'"<>;&|$\x60]+)` +
   String.raw`|tee[ \t]+(?<p3>[^\s'"<>;&|$\x60-][^\s'"<>;&|$\x60]*)(?:[ \t]+>[ \t]*\/dev\/null)?[ \t]+<<-?[ \t]*(?<q3>'?)(?<t3>\w+)\k<q3>` +
   String.raw`)[ \t]*$`)
+function lexists(p) { try { lstatSync(p); return true } catch { return false } } // a dangling symlink counts too
 function outsideBodies(cmd, lo, hi) {
   let out = ''
   let pos = lo
@@ -1779,11 +1760,26 @@ function outsideBodies(cmd, lo, hi) {
   return out + cmd.slice(pos, hi)
 }
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Dani (review of #2586): the write must happen: no noclobber, only commands before it that cannot leave P there
+// unnamed, and a P that exists now is judged on disk too (see the python twin's _written_scripts)
+const WRITTEN_NOCLOBBER = /(?:^|[\s;&|(])(?:set\s+(?:-[A-Za-z]*C|-o\s+noclobber|\+o\s+clobber)|setopt\s+no_?clobber|unsetopt\s+clobber)\b/i
+const WRITTEN_SAFE_BEFORE = new Set(['mkdir', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep', 'date', 'pwd', 'ls', 'cd',
+  'pushd', 'rm', 'cat', 'tee', 'export', 'set'])
+function writtenSafeBefore(text) {
+  let segments
+  try { segments = segmentsTokens(text) } catch { return false }
+  for (const toks of segments) {
+    const head = toks.find((t) => !ENV_ASSIGN.test(t))
+    if (head !== undefined && !WRITTEN_SAFE_BEFORE.has(head)) return false
+  }
+  return true
+}
 const WRITTEN_CONTROL = /(?:^|[\s;&|(])(?:if|then|else|elif|while|until|do|case|function|for|select|\{)(?=[\s;]|$)/
 export function writtenScripts(cmd, cwd) {
   const out = new Map()
   // a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
   if (WRITTEN_CONTROL.test(outsideBodies(cmd, 0, cmd.length))) return out
+  if (WRITTEN_NOCLOBBER.test(outsideBodies(cmd, 0, cmd.length))) return out // the write may fail on an existing file
   const hasCd = /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)/.test(cmd)
   for (const m of cmd.matchAll(new RegExp(HEREDOC_RE.source, 'g'))) {
     const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
@@ -1803,6 +1799,8 @@ export function writtenScripts(cmd, cwd) {
     else continue
     // the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
     if (/(?:&&|\|\||\||\\)\s*$/.test(cmd.slice(0, lineStart))) continue
+    // nothing before the write can have left P there unnamed (so the write does not fail on it)
+    if (!writtenSafeBefore(outsideBodies(cmd, 0, lineStart) + (g.pre ?? ''))) continue
     // counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py
     const mention = new RegExp(String.raw`(?<![\w.-])` + reEscape(basename(path)) + String.raw`(?![\w.-])`, 'g')
     const count = (s) => (s.match(mention) || []).length
@@ -1818,7 +1816,15 @@ export function writtenScripts(cmd, cwd) {
 
 export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
   const bound = bindLiteralVars(cmdIn)
-  const written = writtenScripts(bound, cwd)
+  const allWritten = writtenScripts(bound, cwd)
+  // Dani (review of #2586): a P that exists now may survive the write: its body is judged next to the file on disk
+  for (const [path, body] of allWritten) {
+    if (!lexists(path)) continue
+    const kind = shebangKind(body.slice(0, SHEBANG_READ_LIMIT)) ?? (/\.py$/.test(path) ? 'py' : SCRIPT_FILE.test(path) ? 'node' : null)
+    const reader = (q, lim) => (normalize(q) === path ? body.slice(0, lim) : readScript(q, lim))
+    if (kind && judgeCandidates([path], kind, reader).sends) return true
+  }
+  const written = new Map([...allWritten].filter(([p]) => !lexists(p)))
   if (written.size) {
     const diskRead = readScript
     readScript = (path, limit = SCRIPT_READ_LIMIT) => {

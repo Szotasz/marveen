@@ -2145,30 +2145,28 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 #   - the assignment is a segment of its own (`D=v`, `export D=v`), at depth 0, run unconditionally (at the start or
 #     after `;` / a newline) or in a pure `&&` chain that reaches the use; its own end is `;`, a newline, `&&`, `||` or
 #     the end (a `|` or `&` puts it in a subshell, and a subshell's assignment is lost);
-#   - the value is a plain literal (no `$`, backtick, quote, glob or white space) and the name is assigned ONCE in the
-#     whole command (a prefix `D=v cmd`, `D+=`, `D[i]=`, a second assignment, one inside `( )` or `$( )` all count);
-#   - the assignment stands outside every block (if / while / until / for / select / case / `{`: a block may not run),
-#     and the name is not set any other way: a `for NAME` / `select NAME`, `read`, `unset`, `declare` / `typeset` /
-#     `local` / `readonly`, `export` of anything but `NAME=literal`, `mapfile` / `readarray`, `getopts`, `printf -v`
-#     naming it (those block that NAME only), or an assignment inside a quoted "$(...)" (counted as a second one);
-#   - the command has no eval, source / `.`, let, function, alias or coproc, and no IFS assignment (any of them: no
-#     binding at all);
-#   - the use comes AFTER the assignment and is a plain `$D` / `${D}`, unquoted or double-quoted (`'$D'` and `\$D`
-#     are the literal text, `${D%x}` and the like are not filled in; `${D=x}` cannot change a D set before it);
+#   - the value is a plain literal (no `$`, backtick, quote, glob or white space);
+#   - Dani (review of #2586): the NAME appears NOWHERE in the command (outside the heredoc bodies, quoted text included)
+#     but in that one assignment and in plain `$D` / `${D}` uses. Every other way to set it names it: a second or a
+#     prefix assignment, `D+=`, `D[i]=`, `for D`, `read D`, `printf -v D` (also after `builtin`), zsh `print -v D`,
+#     `exec {D}>`, `${D::=x}` / `${D:=x}`, `unset D`, `typeset D`, a function body, a trap string;
+#   - the assignment stands outside every block (if / while / until / for / select / case / `{`: a block may not run);
+#   - no eval, source / `.`, alias, autoload or trap in command position (also after command / builtin / exec /
+#     noglob / nocorrect / `-`): those run code the command does not show; and no IFS anywhere (no binding at all);
+#   - the use comes AFTER the assignment and is a plain `$D` / `${D}`, unquoted or double-quoted, and is not followed
+#     by `:`, `[` or `(` (zsh reads `$D:h` as a modifier and `$D[1]` as a subscript); `'$D'` and `\$D` are the
+#     literal text, `${D%x}` and the like are not filled in;
 #   - a `cd $D` / `pushd $D` word is left alone (_assigned_cd_dirs has its own, older rule for it).
 # Heredoc bodies are not touched (B below judges a body only when the shell does not expand it). The JS twin
 # (email-send-gate.mjs :: bindLiteralVars) does the same; script-run-cases.json binds the two.
 # Samu 72415 (measured on 7 days of the fleet's sub-agent calls): a `for` anywhere switched the binding off, and
 # `S=/x; for id in ...; do python3 $S/close.py $id; done` was 509 of the 635 calls the tightening would newly deny.
-# A block keyword now only opens / closes a block (an assignment inside one does not bind); the words that set a
-# variable block their own NAME; only the commands below switch the whole binding off.
-_BIND_GLOBAL_BLOCK = frozenset(("eval", "source", ".", "let", "function", "alias", "coproc"))
+# A block keyword now only opens / closes a block (an assignment inside one does not bind).
+_BIND_GLOBAL_BLOCK = frozenset(("eval", "source", ".", "alias", "autoload", "trap"))
+_BIND_PRECMD = frozenset(("command", "builtin", "exec", "noglob", "nocorrect", "-", "nohup", "nice", "time"))
 _BIND_OPEN = frozenset(("if", "while", "until", "case", "{", "for", "select"))
 _BIND_CLOSE = frozenset(("fi", "done", "esac", "}"))
 _BIND_LEAD = frozenset(("then", "do", "else", "elif", "!", "time"))
-_BIND_NAMERS = frozenset(("read", "unset", "declare", "typeset", "local", "readonly", "export", "mapfile", "readarray",
-                          "getopts"))
-_BIND_SUBST_ASSIGN = re.compile(r"(?:^|[\s;&|(`])([A-Za-z_][A-Za-z_0-9]*)(?:\[[^\]]*\])?\+?=")
 _BIND_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 _BIND_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\!~#]+$""")
 _BIND_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=")
@@ -2185,7 +2183,6 @@ def _bind_scan(cmd: str):
     `$NAME` / `${NAME}`. Returns None when the command cannot be read."""
     spans = _heredoc_body_spans(cmd)
     segs = []
-    subst_assigned = []
     cur = {"words": [], "sep_before": None, "depth": 0}
     word = None
     depth = 0
@@ -2238,7 +2235,8 @@ def _bind_scan(cmd: str):
             if cmd[i + 1] == "{":
                 m = _BIND_NAME.match(cmd, i + 2)
                 if m and m.end() < n and cmd[m.end()] == "}":
-                    word["refs"].append((m.group(0), i, m.end() + 1))
+                    if not (m.end() + 1 < n and cmd[m.end() + 1] in ":[("):  # zsh modifier / subscript: not plain
+                        word["refs"].append((m.group(0), i, m.end() + 1))
                     word["text"] += cmd[i:m.end() + 1]
                     i = m.end() + 1
                     continue
@@ -2246,7 +2244,8 @@ def _bind_scan(cmd: str):
                 i += 1
                 continue
             m = _BIND_NAME.match(cmd, i + 1)
-            word["refs"].append((m.group(0), i, m.end()))
+            if not (m.end() < n and cmd[m.end()] in ":[("):  # zsh `$D:h` modifier, `$D[1]` subscript: not plain
+                word["refs"].append((m.group(0), i, m.end()))
             word["text"] += cmd[i:m.end()]
             i = m.end()
             continue
@@ -2257,11 +2256,9 @@ def _bind_scan(cmd: str):
                 end = _subst_end(cmd, i)
                 if end < 0:
                     return None  # an unclosed substitution: not read here
-                # a quoted "$(...)" runs in a subshell: nothing in it is filled in, and an assignment in it counts as one
-                # more assignment of that name (so the name is never bound)
-                inner = cmd[i:end]
-                subst_assigned.extend(m.group(1) for m in _BIND_SUBST_ASSIGN.finditer(inner))
-                word["text"] += inner
+                # a quoted "$(...)" runs in a subshell: nothing in it is filled in (a name in it is one more
+                # occurrence, so that name is never bound)
+                word["text"] += cmd[i:end]
                 i = end
                 continue
             else:
@@ -2342,7 +2339,7 @@ def _bind_scan(cmd: str):
     if q:
         return None
     end_seg(None)
-    return segs, subst_assigned
+    return segs
 
 
 def _subst_end(cmd: str, i: int) -> int:
@@ -2388,25 +2385,18 @@ def _bind_literal_vars(cmd: str) -> str:
     scanned = _bind_scan(cmd)
     if scanned is None:
         return cmd
-    segs, subst_assigned = scanned
-    counts = {}
-    for name in subst_assigned:
-        counts[name] = counts.get(name, 0) + 2
-    blocked = set()
+    segs = scanned
+    outside = _outside_bodies(cmd, 0, len(cmd))
+    if re.search(r"(?<![A-Za-z0-9_])IFS(?![A-Za-z0-9_])", outside):
+        return cmd
     block = 0  # how many blocks are open at the segment
     for seg in segs:
         words = seg["words"]
-        for w in words:
-            m = _BIND_ASSIGN.match(w["text"])
-            if m:
-                counts[m.group(1)] = counts.get(m.group(1), 0) + (2 if (m.group(2) or m.group(3)) else 1)
         k = 0
         while k < len(words) and not words[k]["quoted"]:
             t = words[k]["text"]
             if t in _BIND_OPEN:
                 block += 1
-                if t in ("for", "select") and k + 1 < len(words):
-                    blocked.add(words[k + 1]["text"])  # the loop variable
                 if t in ("for", "select", "case"):
                     k = len(words)  # the rest is the word list / the case word, not a command
                     break
@@ -2421,29 +2411,19 @@ def _bind_literal_vars(cmd: str) -> str:
                 continue
             break
         seg["block"] = block
-        rest = words[k:]
-        cmd_word = next((w for w in rest if not _BIND_ASSIGN.match(w["text"])), None)
-        if cmd_word is None:
-            continue
-        c = "" if cmd_word["quoted"] else cmd_word["text"]
-        after = rest[rest.index(cmd_word) + 1:]
-        if c in _BIND_GLOBAL_BLOCK:
+        # eval / source / `.` / alias / autoload / trap in command position, also behind command / builtin / exec ...
+        j = k
+        while j < len(words) and _BIND_ASSIGN.match(words[j]["text"]):
+            j += 1
+        while j < len(words) and not words[j]["quoted"] and words[j]["text"] in _BIND_PRECMD:
+            j += 1
+        if j < len(words) and not words[j]["quoted"] and words[j]["text"] in _BIND_GLOBAL_BLOCK:
             return cmd
-        if c == "export" and after and all(_BIND_ASSIGN.match(w["text"]) for w in after):
-            continue  # `export NAME=v`: the assignment form, counted above
-        if c in _BIND_NAMERS:
-            for w in after:
-                nm = _BIND_NAME.match(w["text"])
-                if nm:
-                    blocked.add(nm.group(0))
-        if c == "printf":
-            for j, w in enumerate(after):
-                if w["text"] == "-v" and j + 1 < len(after):
-                    blocked.add(after[j + 1]["text"])
-                elif w["text"].startswith("-v") and len(w["text"]) > 2:
-                    blocked.add(w["text"][2:])
-    if "IFS" in counts:
-        return cmd
+    ref_count = {}
+    for seg in segs:
+        for w in seg["words"]:
+            for name, _s, _e in w["refs"]:
+                ref_count[name] = ref_count.get(name, 0) + 1
     binds = {}  # name -> (segment index, value, conditional)
     for idx, seg in enumerate(segs):
         words = seg["words"]
@@ -2460,8 +2440,11 @@ def _bind_literal_vars(cmd: str) -> str:
             continue
         for w in assigns:
             name, value = w["text"].split("=", 1)
-            if counts.get(name) != 1 or name in blocked or w["escaped"] or not _BIND_LITERAL.match(value):
+            if w["escaped"] or not _BIND_LITERAL.match(value) or name == "IFS":
                 continue
+            occurrences = len(re.findall(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", outside))
+            if occurrences != 1 + ref_count.get(name, 0):
+                continue  # the name is named somewhere else: it may be set another way
             binds[name] = (idx, value, conditional)
     if not binds:
         return cmd
@@ -2495,14 +2478,39 @@ def _bind_literal_vars(cmd: str) -> str:
 #   - the tag is quoted (`<<'EOF'`) or the body has no `$` and no backtick (an unquoted body is expanded by the shell);
 #   - P is absolute after (A), or relative in a command with no cd / pushd / env -C;
 #   - no control word (if, then, while, do, case, for, function, `{`, ...) stands outside the bodies;
+#   - Dani (review of #2586): the write must HAPPEN. No noclobber (set -C, set -o noclobber, setopt noclobber,
+#     unsetopt clobber): with it, `cat > P` fails on an existing P and the old file runs. Before the write only
+#     commands that cannot create P without naming it (mkdir, echo, printf, true, :, test, [, sleep, date, pwd, ls, cd,
+#     pushd, rm, cat, tee, export, set, assignments): an unzip, git, cp -r or any program could leave P there,
+#     read-only, and the write would fail. And P must not exist when the gate runs: if it does (a read-only file, a
+#     file the write may not replace), the body AND the file on disk are judged, and either one sending is a send;
 #   - P is named exactly twice in the command: the write and one run. Another write, a cp, mv or sed -i on it, or a
 #     second run would change what runs, so they keep today's verdict.
 # Every other case reads the disk as before (and a missing file stays fail-closed).
 _WRITTEN_OPENER = re.compile(
-    r"""^(?:[^\n'"`\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
+    r"""^(?P<pre>[^\n'"`\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
     r"""|cat[ \t]+<<-?[ \t]*(?P<q2>'?)(?P<t2>\w+)(?P=q2)[ \t]+>[ \t]*(?P<p2>[^\s'"<>;&|$`]+)"""
     r"""|tee[ \t]+(?P<p3>[^\s'"<>;&|$`-][^\s'"<>;&|$`]*)(?:[ \t]+>[ \t]*/dev/null)?[ \t]+<<-?[ \t]*(?P<q3>'?)(?P<t3>\w+)(?P=q3)"""
     r""")[ \t]*$""")
+
+
+_WRITTEN_NOCLOBBER = re.compile(
+    r"(?:^|[\s;&|(])(?:set\s+(?:-[A-Za-z]*C|-o\s+noclobber|\+o\s+clobber)|setopt\s+no_?clobber|unsetopt\s+clobber)\b", re.I)
+_WRITTEN_SAFE_BEFORE = frozenset(("mkdir", "echo", "printf", "true", ":", "test", "[", "sleep", "date", "pwd", "ls", "cd",
+                                  "pushd", "rm", "cat", "tee", "export", "set"))
+
+
+def _written_safe_before(text: str) -> bool:
+    """Every command in `text` (what runs before the write) is one that cannot create a file without naming it."""
+    try:
+        segments = _segments_tokens(text)
+    except ValueError:
+        return False
+    for toks in segments:
+        head = next((t for t in toks if not _ENV_ASSIGN.match(t)), None)
+        if head is not None and head not in _WRITTEN_SAFE_BEFORE:
+            return False
+    return True
 
 
 _WRITTEN_CONTROL = re.compile(r"(?:^|[\s;&|(])(?:if|then|else|elif|while|until|do|case|function|for|select|\{)(?=[\s;]|$)")
@@ -2514,6 +2522,8 @@ def _written_scripts(cmd: str, cwd):
     # a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
     if _WRITTEN_CONTROL.search(_outside_bodies(cmd, 0, len(cmd))):
         return out
+    if _WRITTEN_NOCLOBBER.search(_outside_bodies(cmd, 0, len(cmd))):
+        return out  # the write may fail on an existing file, and the old one runs
     has_cd = bool(re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)", cmd))
     for m in _HEREDOC.finditer(cmd):
         line_start = cmd.rfind("\n", 0, m.start()) + 1
@@ -2534,6 +2544,9 @@ def _written_scripts(cmd: str, cwd):
             continue
         # the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
         if re.search(r"(?:&&|\|\||\||\\)\s*$", cmd[:line_start]):
+            continue
+        # nothing before the write can have left P there unnamed (so the write does not fail on it)
+        if not _written_safe_before(_outside_bodies(cmd, 0, line_start) + (w.group("pre") or "")):
             continue
         # counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py
         mention = re.compile(r"(?<![\w.-])" + re.escape(os.path.basename(path)) + r"(?![\w.-])")
@@ -2564,6 +2577,16 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         read_script = _read_script_head
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)
+    # Dani (review of #2586): a P that exists now may survive the write (read-only, noclobber set elsewhere): its body
+    # is judged NEXT TO the file on disk (which the normal reading below judges), and a sending body is a send
+    for path, body in [(p, b) for p, b in written.items() if os.path.lexists(p)]:
+        kind = _shebang_kind(body[:_SHEBANG_READ_LIMIT]) or (
+            "py" if path.endswith(".py") else "node" if _SCRIPT_FILE.search(path) else None)
+        if kind and _judge_candidates(
+                [path], kind, lambda q, lim, _p=path, _b=body: _b[:lim] if os.path.normpath(q) == _p
+                else read_script(q, lim))[1]:
+            return True
+    written = {p: b for p, b in written.items() if not os.path.lexists(p)}
     if written:
         disk_read = read_script
 
