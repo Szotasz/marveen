@@ -70,7 +70,7 @@ export interface GromzoAgentDeps {
   mainLaunchState?: () => string
   /** GROMZOBRIDGEWIZARD1107: whether the main session shows a sign-in failure (its pane, reauth-detect.ts);
    *  absent = unknown (the row says null). */
-  mainNeedsReauth?: () => boolean
+  mainNeedsReauth?: () => boolean | null
   /** MXDAGENTSOCKID1106: the held agents and the agent.sock protection from ONE dash status call (statusFactsOf).
    *  When given, the list uses it instead of `held`, so a list load asks mxd once. */
   statusFacts?: () => Promise<{ held: Set<string>, protection: MxdProtection | null }>
@@ -228,6 +228,11 @@ function dropPending(slug: string): void {
 function remember(slug: string, outcome: GromzoAgentOutcome, now: number): GromzoAgentOutcome {
   lastResult.set(slug, { outcome, at: now })
   return outcome
+}
+/** The main row's needsReauth from the main session's pane (Dani 72997 m3): no pane (no session, a failed capture) is
+ *  unknown (null), never "signed in"; a pane answers by the same markers as the dashboard's agent card. */
+export function needsReauthOfPane(pane: string | null, detect: (pane: string | null) => { needsReauth: boolean }): boolean | null {
+  return pane === null ? null : detect(pane).needsReauth
 }
 /** The row's view of the last final answer: its state, or its error code; null when none within the TTL. */
 function lastResultOf(slug: string, now: number): string | null {
