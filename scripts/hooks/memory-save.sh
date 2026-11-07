@@ -6,9 +6,8 @@
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # Load config (so WEB_PORT from .env is available before API is built)
-if [ -f "$INSTALL_DIR/.env" ]; then
-  export $(grep -v '^#' "$INSTALL_DIR/.env" | xargs)
-fi
+. "$INSTALL_DIR/scripts/lib/load-env.sh"
+load_env_file "$INSTALL_DIR/.env"
 
 API="http://localhost:${WEB_PORT:-3420}/api"
 

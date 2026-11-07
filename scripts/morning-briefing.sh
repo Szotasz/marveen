@@ -28,9 +28,8 @@ CLAUDE="${CLAUDE_BIN:-$(command -v claude)}"
 LOG="$INSTALL_DIR/store/morning.log"
 
 # Load config
-if [ -f "$INSTALL_DIR/.env" ]; then
-  export $(grep -v '^#' "$INSTALL_DIR/.env" | xargs)
-fi
+. "$INSTALL_DIR/scripts/lib/load-env.sh"
+load_env_file "$INSTALL_DIR/.env"
 
 CALENDAR_ID="${HEARTBEAT_CALENDAR_ID:-primary}"
 # The install zone for "today" (ISSUE1895 / #1895), not a hardcoded Europe/Budapest.
