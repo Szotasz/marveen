@@ -4,7 +4,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
-  CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, FAST_CHECK_WINDOW_MS, LAST_RESULT_TTL_MS, listGromzoAgents,
+  CHECK_GAP_MS, checkGromzoAgent, disableGromzoAgent, enableGromzoAgent, EXPIRY_FINAL_CHECK_MS, FAST_CHECK_WINDOW_MS,
+  LAST_RESULT_TTL_MS, LATE_FAST_WINDOW_MS, listGromzoAgents,
   listGromzoAgentsWithStatus, pendingGromzoConsentSlug, protectionOf, resetPendingGromzoConsents, resetProtectionClockForTest,
   restorePendingGromzoConsents, sendGromzoAvatar, setPendingConsentStore, slugRefusal, SLOW_CHECK_GAP_MS, statusFactsOf,
   UNPROTECTED_AFTER_MS, USED_VERIFY_MS, watcherDelayMs, type GromzoAgentDeps, type MxdProtection, type PendingConsentStore,
@@ -173,13 +174,100 @@ describe('the consent id is the server\'s, bound to its slug (Dani 64126)', () =
   })
 
   // D1: the lapse is a final answer the panel shows ("expired"), no longer a silent no_pending.
-  it('a lapsed consent is forgotten without asking mxd, and answers expired', async () => {
+  // D1 expiry edge (measured on the QA VPS 2026-11-07: an approval 39 s before the local expiry was lost): a lapsed
+  // consent is no longer dropped by the local clock alone. One final mxd check decides; only past the final-check
+  // window is it dropped without asking.
+  it('lapsed: one final check asks mxd, and an approval that came in time still adds the agent', async () => {
     const w = world()
     w.replies.agent_add = [addOk(ID_A, 60)]
     await enableGromzoAgent('zara', w.deps)
     later(w, 60_000)
+    w.replies.agent_add_check = [added('zara')]
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'added' })
+    expect(w.calls.filter((c) => c.verb === 'agent_add_check')).toHaveLength(1)
+    expect(w.writes).toEqual([['zara', true]])
+    expect(w.restarted).toEqual(['zara'])
+  })
+  it('lapsed: mxd still says pending at the final check -> expired, dropped, no flag', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 60)]
+    await enableGromzoAgent('zara', w.deps)
+    later(w, 60_000)
+    w.replies.agent_add_check = [{ ok: true, state: 'pending' }]
     expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'expired' })
+    expect(pendingGromzoConsentSlug()).toBeNull()
+    expect(w.writes).toEqual([])
+    later(w)
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'expired' })
+    expect(w.calls.filter((c) => c.verb === 'agent_add_check')).toHaveLength(1)
+  })
+  it('lapsed: mxd down at the final check keeps the consent; past the final-check window it expires without a call', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 60)]
+    await enableGromzoAgent('zara', w.deps)
+    later(w, 60_000)
+    w.replies.agent_add_check = [{ ok: false, error: 'unavailable' }]
+    expect(await checkGromzoAgent('zara', w.deps)).toMatchObject({ ok: false })
+    expect(pendingGromzoConsentSlug()).toBe('zara')
+    later(w, EXPIRY_FINAL_CHECK_MS)
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'expired' })
+    expect(w.calls.filter((c) => c.verb === 'agent_add_check')).toHaveLength(1)
+  })
+  it('just inside the final-check window the consent is kept; at its end it is gone (the list drops it too)', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 60)]
+    await enableGromzoAgent('zara', w.deps)
+    later(w, 60_000 + EXPIRY_FINAL_CHECK_MS - 1)
+    const row = (await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')!
+    expect(row.pendingUntil).toBe(1_000_000 + 60_000)
+    expect(row.lastResult).toBeNull()
+    expect(pendingGromzoConsentSlug()).toBe('zara')
+    later(w, 1)
+    const after = (await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')!
+    expect(after.pendingUntil).toBeNull()
+    expect(after.lastResult).toBe('expired')
     expect(w.calls.filter((c) => c.verb === 'agent_add_check')).toEqual([])
+  })
+  it('mxd answers expired: dropped at once, the row says expired', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 600)]
+    await enableGromzoAgent('zara', w.deps)
+    w.replies.agent_add_check = [{ ok: true, state: 'expired' }]
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'expired' })
+    expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.lastResult).toBe('expired')
+  })
+})
+
+describe('D1: the rows carry the last final answer and the main session\'s sign-in state', () => {
+  it('lastResult: added after an add, null before any, gone after the TTL', async () => {
+    const w = world()
+    expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.lastResult).toBeNull()
+    w.replies.agent_add = [addOk()]
+    await enableGromzoAgent('zara', w.deps)
+    w.replies.agent_add_check = [added('zara')]
+    await checkGromzoAgent('zara', w.deps)
+    expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.lastResult).toBe('added')
+    later(w, LAST_RESULT_TTL_MS)
+    expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.lastResult).toBeNull()
+  })
+  it('lastResult carries an error code (consent_mismatch)', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk()]
+    await enableGromzoAgent('zara', w.deps)
+    w.replies.agent_add_check = [added('samu')]
+    await checkGromzoAgent('zara', w.deps)
+    expect((await listGromzoAgents(w.deps)).find((r) => r.slug === 'zara')?.lastResult).toBe('consent_mismatch')
+  })
+  it('needsReauth: the main row from the pane check, null without it; other rows always null', async () => {
+    const w = world()
+    let rows = await listGromzoAgents(w.deps)
+    expect(rows.find((r) => r.main)?.needsReauth).toBeNull()
+    for (const v of [true, false]) {
+      w.deps.mainNeedsReauth = () => v
+      rows = await listGromzoAgents(w.deps)
+      expect(rows.find((r) => r.main)?.needsReauth).toBe(v)
+      expect(rows.filter((r) => !r.main).every((r) => r.needsReauth === null)).toBe(true)
+    }
   })
 })
 
@@ -420,11 +508,15 @@ describe('one pending add at a time; a held agent may be asked again (Ábel 6416
     expect(w.calls.filter((c) => c.verb === 'agent_add')).toHaveLength(1)
   })
 
-  it('once the first lapsed, the second may go', async () => {
+  // D1 expiry edge: the first is still owed its final check for EXPIRY_FINAL_CHECK_MS after its expiry (it may still
+  // be added), so the second waits for the end of that window.
+  it('once the first lapsed and its final-check window is over, the second may go', async () => {
     const w = world()
     w.replies.agent_add = [addOk(ID_A, 60), addOk(ID_B)]
     await enableGromzoAgent('zara', w.deps)
     later(w, 60_000)
+    expect(await enableGromzoAgent('samu', w.deps)).toEqual({ ok: false, code: 'add_in_progress' })
+    later(w, EXPIRY_FINAL_CHECK_MS)
     expect(await enableGromzoAgent('samu', w.deps)).toMatchObject({ ok: true, state: 'pending' })
   })
 
@@ -685,6 +777,49 @@ describe('D1: the watcher\'s pace', () => {
     await checkGromzoAgent('zara', w.deps)
     expect(watcherDelayMs(w.clock.t)).toBe(CHECK_GAP_MS)
   })
+  // D1 expiry edge: the measured loss was an approval in the 10th minute of a 600 s consent, between two
+  // once-a-minute checks. The last LATE_FAST_WINDOW_MS and the final-check window run at CHECK_GAP_MS, and the slow
+  // gap is cut short so the late window is never stepped over.
+  it('the late window: 11 s from expiry - 90 s, through the final check; the slow gap never jumps over it', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 600)]
+    await enableGromzoAgent('zara', w.deps)
+    const exp = 1_000_000 + 600_000
+    w.clock.t = exp - LATE_FAST_WINDOW_MS - 30_000
+    expect(watcherDelayMs(w.clock.t)).toBe(30_000)
+    w.clock.t = exp - LATE_FAST_WINDOW_MS - 5_000
+    expect(watcherDelayMs(w.clock.t)).toBe(CHECK_GAP_MS)
+    w.clock.t = exp - LATE_FAST_WINDOW_MS
+    expect(watcherDelayMs(w.clock.t)).toBe(CHECK_GAP_MS)
+    w.clock.t = exp - 39_000
+    expect(watcherDelayMs(w.clock.t)).toBe(CHECK_GAP_MS)
+    w.clock.t = exp + 10_000
+    expect(watcherDelayMs(w.clock.t)).toBe(CHECK_GAP_MS)
+    w.clock.t = exp - LATE_FAST_WINDOW_MS - 200_000
+    expect(watcherDelayMs(w.clock.t)).toBe(SLOW_CHECK_GAP_MS)
+  })
+  it('the measured case end to end: approved 39 s before the expiry, the watcher\'s next round adds it', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 600)]
+    await enableGromzoAgent('zara', w.deps)
+    const exp = 1_000_000 + 600_000
+    // the owner approves at exp - 39 s; the watcher (late window) asks within CHECK_GAP_MS
+    w.clock.t = exp - 39_000 + watcherDelayMs(exp - 39_000)!
+    expect(w.clock.t).toBeLessThan(exp)
+    w.replies.agent_add_check = [added('zara')]
+    expect(await checkGromzoAgent('zara', w.deps)).toEqual({ ok: true, state: 'added' })
+  })
+  it('"used" being verified is not dropped by the expiry (its own clock, USED_VERIFY_MS)', async () => {
+    const w = world()
+    w.replies.agent_add = [addOk(ID_A, 60)]
+    await enableGromzoAgent('zara', w.deps)
+    later(w, 50_000)
+    w.replies.agent_add_check = [{ ok: true, state: 'used' }]
+    await checkGromzoAgent('zara', w.deps)
+    later(w, 10_000 + EXPIRY_FINAL_CHECK_MS)
+    await listGromzoAgents(w.deps)
+    expect(pendingGromzoConsentSlug()).toBe('zara')
+  })
 })
 
 describe('D1: the pending consent survives a dashboard restart', () => {
@@ -711,7 +846,9 @@ describe('D1: the pending consent survives a dashboard restart', () => {
     const w = world()
     const t = w.clock.t
     for (const [entries, want] of [
-      [[{ slug: 'zara', consentId: ID_A, expiresAt: t - 1, startedAt: t - 9 }], null],
+      [[{ slug: 'zara', consentId: ID_A, expiresAt: t - EXPIRY_FINAL_CHECK_MS, startedAt: t - 9 }], null],
+      // D1 expiry edge: lapsed, but its final check is still owed -> it comes back
+      [[{ slug: 'zara', consentId: ID_A, expiresAt: t - 1, startedAt: t - 9 }], 'zara'],
       [[{ slug: 'nobody', consentId: ID_A, expiresAt: t + 9, startedAt: t }], null],
       [[{ slug: '../x', consentId: ID_A, expiresAt: t + 9, startedAt: t }], null],
       [[{ slug: 'zara', consentId: 'bad id!', expiresAt: t + 9, startedAt: t }], null],

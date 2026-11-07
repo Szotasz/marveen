@@ -14,7 +14,7 @@ vi.mock('../logger.js', () => {
   return { logger: l }
 })
 
-const { fileConsentStore, consentWatchTick } = await import('../web/routes/gromzo.js')
+const { fileConsentStore, consentWatchTick, stopGromzoConsentWatchForTest, PENDING_LOG_GAP_MS } = await import('../web/routes/gromzo.js')
 const { enableGromzoAgent, resetPendingGromzoConsents, setPendingConsentStore, pendingGromzoConsentSlug, CHECK_GAP_MS } = await import('../web/gromzo-agents.js')
 type Deps = import('../web/gromzo-agents.js').GromzoAgentDeps
 type Reply = import('../web/mxd-dash.js').MxdDashReply
@@ -97,6 +97,39 @@ describe('one watcher round, with no panel open', () => {
     expect(pendingGromzoConsentSlug()).toBeNull()
     expect(saved.at(-1)).toEqual([])
     expect(logged.join('\n')).toContain('the server finished the switch')
+  })
+  // D1 expiry edge (b): the watcher's rounds leave a trace. Before, a pending round logged nothing and the lapse dropped
+  // the consent silently, so the QA-VPS log could not tell a lost approval from a watcher that never ran.
+  it('a pending round is logged, at most once per PENDING_LOG_GAP_MS', async () => {
+    stopGromzoConsentWatchForTest()
+    const clock = { t: 1_000_000 }
+    const { d } = deps({ agent_add: [{ ok: true, consent_id: ID, expires_in: 600 }] }, clock)
+    await enableGromzoAgent('zara', d)
+    ;(d as { call: Deps['call'] }).call = async () => ({ ok: true, state: 'pending' })
+    const real = Date.now
+    let wall = 5_000_000
+    Date.now = () => wall
+    try {
+      await consentWatchTick(d)
+      clock.t += CHECK_GAP_MS; wall += CHECK_GAP_MS
+      await consentWatchTick(d)
+      expect(logged.filter((l) => l.includes('still waiting for the owner')).length).toBe(1)
+      clock.t += PENDING_LOG_GAP_MS; wall += PENDING_LOG_GAP_MS
+      await consentWatchTick(d)
+      expect(logged.filter((l) => l.includes('still waiting for the owner')).length).toBe(2)
+    } finally { Date.now = real }
+  })
+  it('the lapse is logged with its reason; the final check after the expiry is the one that says it', async () => {
+    const clock = { t: 1_000_000 }
+    const { d, writes } = deps({ agent_add: [{ ok: true, consent_id: ID, expires_in: 60 }] }, clock)
+    await enableGromzoAgent('zara', d)
+    clock.t += 60_000
+    ;(d as { call: Deps['call'] }).call = async () => ({ ok: true, state: 'pending' })
+    expect(await consentWatchTick(d)).toEqual({ ok: true, state: 'expired' })
+    expect(writes).toEqual([])
+    const line = logged.find((l) => l.includes('the approval request expired'))
+    expect(line).toContain('pending_after_expiry')
+    expect(pendingGromzoConsentSlug()).toBeNull()
   })
   it('a failed check keeps the consent and says so (no throw)', async () => {
     const clock = { t: 1_000_000 }

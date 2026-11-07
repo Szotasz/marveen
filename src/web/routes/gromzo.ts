@@ -47,7 +47,8 @@ import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
-import { isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
+import { capturePane, isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
+import { detectReauthNeeded } from '../reauth-detect.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, currentBotName } from '../../config.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { gateManualRestart } from '../manual-restart-gate.js'
@@ -296,6 +297,10 @@ const defaultAgentDeps: GromzoAgentDeps = {
     const t = readMainGromzoToken(PROJECT_ROOT)
     return mainGromzoPanelState(t.ok && t.on, mainSessionLoadsGromzo(MAIN_CHANNELS_SESSION))
   },
+  // GROMZOBRIDGEWIZARD1107 (Samu 72990): measured on the QA VPS, a main session without a Claude sign-in runs, shows
+  // "Not logged in" and ignores its channels, while mxd lists the agent as running. The same pane check as the
+  // dashboard's agent card (routes/agents.ts) tells the wizard not to call it reachable.
+  mainNeedsReauth: () => detectReauthNeeded(capturePane(MAIN_CHANNELS_SESSION)).needsReauth,
   displayName: (slug) => readAgentDisplayName(slug) || slug,
   // GROMZONAMETAKEN1106 (the owner, Samu 71820): the main agent joins Gromzo under the name the owner set for it
   // (.env BOT_NAME, read per call like the dashboard's own label; "Marveen" when unset); every other agent under its
@@ -388,6 +393,9 @@ export function fileConsentStore(path = join(STORE_DIR, 'gromzo-agent-consent.js
 
 let watchOn = false
 let watchTimer: ReturnType<typeof setTimeout> | null = null
+/** The watcher's "still waiting" line: at most this often (the fast pace checks every 11 s). */
+export const PENDING_LOG_GAP_MS = 60_000
+let lastPendingLogAt = 0
 
 /** One round of the server's own check of the pending consent (null: nothing pending, or the check failed and the
  *  consent is kept). Exported for the tests. */
@@ -396,7 +404,16 @@ export async function consentWatchTick(deps: GromzoAgentDeps = agentDeps): Promi
   if (!slug) return null
   try {
     const o = await checkGromzoAgent(slug, deps)
-    if (o.ok && o.state === 'pending') return o
+    if (o.ok && o.state === 'pending') {
+      // D1 expiry edge (b): the pending answer is logged too, at most once per PENDING_LOG_GAP_MS, so the log shows
+      // the watcher ran (before, a pending round left no line and a lost approval looked like a watcher that never ran).
+      const now = Date.now()
+      if (now - lastPendingLogAt >= PENDING_LOG_GAP_MS) {
+        lastPendingLogAt = now
+        logger.info({ slug, expiresIn: o.expiresIn }, 'gromzo agents: the server check: still waiting for the owner\'s approval')
+      }
+      return o
+    }
     if (o.ok && o.state === 'added') logger.info({ slug, by: 'server' }, 'gromzo agents: the owner approved in the app; the server finished the switch (no panel needed)')
     else logger.info({ slug, ...(o.ok ? { state: o.state } : { code: o.code }) }, 'gromzo agents: the server check got an answer')
     return o
@@ -433,6 +450,7 @@ export function stopGromzoConsentWatchForTest(): void {
   watchOn = false
   if (watchTimer) clearTimeout(watchTimer)
   watchTimer = null
+  lastPendingLogAt = 0
 }
 
 /** Test seam: replace some of the agent switch's collaborators (null puts the real ones back). */
