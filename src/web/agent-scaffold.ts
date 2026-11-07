@@ -19,6 +19,12 @@ import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-s
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
+import { agentTextLang } from './agent-text-lang.js'
+import {
+  type ScaffoldFrags, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
+  buildBackgroundCheckpointBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
+  buildMemorySearchLabelBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
+} from './agent-scaffold-en.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
@@ -80,6 +86,17 @@ export function apiPayloadPath(name: string, kind: ApiPayloadKind): string {
 // Dani 65157/1, Samu 65160: one fixed file per kind means two texts prepared in one round would both send the second.
 // The helper empties the file after a successful send and stops on an empty one (scripts/lib/marveen_api.py).
 export const ONE_FILE_ONE_SEND = 'Egy fájl, egy küldés: írd, küldd, és csak utána a következőt; kettőt párhuzamosan ne készíts elő (ugyanaz a fájl, a második felülírná az elsőt). A segéd sikeres küldés után kiüríti a fájlt, és üres fájlra hibával megáll: régi szöveget nem küld.'
+
+// PERSONAESC1107: the values the English bodies (agent-scaffold-en.ts) embed, the same ones the Hungarian recipes use.
+export function scaffoldFrags(name: string): ScaffoldFrags {
+  const tokenPath = dashboardTokenPathFor(name)
+  return {
+    apiHelper, dashboardOrigin, mainAgentId: MAIN_AGENT_ID, botName: BOT_NAME, tokenPath,
+    ownToken: tokenPath !== mainTokenPath(),
+    payload: (kind) => shellWord(apiPayloadPath(name, kind)),
+    ledgerScript: join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs'),
+  }
+}
 
 // The verbs the generated sections run; a deny rule that hits any of them keeps the agent on the old recipes.
 const HELPER_SECTION_VERBS = ['message', 'message-close', 'directive-verify', 'memory-search', 'memory-save', 'memory-update',
@@ -3401,6 +3418,7 @@ const MCPLIST_BLOCK_RE = new RegExp(
  * the tool/plugin side only.
  */
 function buildMcpListChannelBody(): string {
+  if (agentTextLang() === 'en') return buildMcpListChannelBodyEn()
   return [
     '## `claude mcp list` és gyerek-`claude` egy csatornát birtokló ügynökben',
     '',
@@ -3619,6 +3637,7 @@ function ownTokenConsume403(name: string): string {
 // `helper`: the recipes go through scripts/marveen-api.sh (agentUsesApiHelper: every agent whose settings do not deny
 // it). `strict`: the agent also has the "Dashboard-hívások a strict profilodban" section the level-1 text points at.
 function buildAutonomyBody(name: string, helper = true, strict = false): string {
+  if (agentTextLang() === 'en') return buildAutonomyBodyEn(name, helper, strict, scaffoldFrags(name))
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Autonómia és jóváhagyás',
@@ -3712,6 +3731,7 @@ function buildAutonomyBody(name: string, helper = true, strict = false): string 
 // senders check every recipient), and the paragraph then says so: the text
 // must stay true for the install it is written into.
 export function buildEvidenceBody(isMainAgent = false, mainLedger = mainAgentRecipientLedgerEnabled()): string {
+  if (agentTextLang() === 'en') return buildEvidenceBodyEn(isMainAgent, mainLedger, scaffoldFrags(MAIN_AGENT_ID))
   const gateParagraphs: string[] = isMainAgent && mainLedger
     ? [
         'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad is gépi kapu**: ez a telepítés bekapcsolta (`MAIN_AGENT_RECIPIENT_LEDGER=1` a `.env`-ben). A jóváhagyás-kapu minden küldés, piszkozat és Bash-küldés címzettjét a ledgerhez méri, mielőtt bármilyen jóváhagyás fogyna, és a projekt saját küldői is csak a ledgerben lévő címre kézbesítenek, a gazda-CC-re is. Amit a kapu nem lát, az a szkriptbe zárt cím: azt a szabály tartja, nem a gép.',
@@ -3794,7 +3814,7 @@ export function ensureEvidenceSection(name: string): void {
 
   let updated: string
   if (EVIDENCE_BLOCK_RE.test(existing)) {
-    updated = existing.replace(EVIDENCE_BLOCK_RE, block)
+    updated = existing.replace(EVIDENCE_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
@@ -3827,7 +3847,7 @@ export function ensureMcpListChannelSection(name: string): void {
 
   let updated: string
   if (MCPLIST_BLOCK_RE.test(existing)) {
-    updated = existing.replace(MCPLIST_BLOCK_RE, block)
+    updated = existing.replace(MCPLIST_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
@@ -3856,6 +3876,7 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
 // token); the default keeps the zero-argument call shape. `helper`: the recipe goes through
 // scripts/marveen-api.sh (agentUsesApiHelper), the token never on a command line (VOICETOKENLEAK1101 PR-A1).
 export function buildMessageCloseBody(helper = true, name: string = MAIN_AGENT_ID): string {
+  if (agentTextLang() === 'en') return buildMessageCloseBodyEn(helper, scaffoldFrags(name))
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
@@ -3908,7 +3929,7 @@ export function ensureMessageCloseSection(name: string): void {
   }
 
   const updated = MSGCLOSE_BLOCK_RE.test(existing)
-    ? existing.replace(MSGCLOSE_BLOCK_RE, block)
+    ? existing.replace(MSGCLOSE_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
@@ -3933,6 +3954,7 @@ const BGCHECKPOINT_BLOCK_RE = new RegExp(
 )
 
 export function buildBackgroundCheckpointBody(): string {
+  if (agentTextLang() === 'en') return buildBackgroundCheckpointBodyEn()
   return [
     '## Hosszú háttér-munka: menet közbeni mentés, folytatás a mentett részből',
     '',
@@ -3969,7 +3991,7 @@ export function ensureBackgroundCheckpointSection(name: string): void {
   }
 
   const updated = BGCHECKPOINT_BLOCK_RE.test(existing)
-    ? existing.replace(BGCHECKPOINT_BLOCK_RE, block)
+    ? existing.replace(BGCHECKPOINT_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
@@ -4002,7 +4024,7 @@ export function ensureAutonomySection(name: string): void {
 
   let updated: string
   if (AUTONOMY_BLOCK_RE.test(existing)) {
-    updated = existing.replace(AUTONOMY_BLOCK_RE, block)
+    updated = existing.replace(AUTONOMY_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
@@ -4040,7 +4062,7 @@ export function ensureFleetRosterSection(name: string): void {
 
   let updated: string
   if (FLEET_ROSTER_BLOCK_RE.test(existing)) {
-    updated = existing.replace(FLEET_ROSTER_BLOCK_RE, block)
+    updated = existing.replace(FLEET_ROSTER_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
@@ -4117,6 +4139,7 @@ const SKILLS_TRAP_BLOCK_RE = new RegExp(
 )
 
 function buildSkillsPathTrapBody(name: string): string {
+  if (agentTextLang() === 'en') return buildSkillsPathTrapBodyEn(name === MAIN_AGENT_ID)
   const isMain = name === MAIN_AGENT_ID
   const shared = [
     '## Skill-útvonal csapda (KÖTELEZŐ elolvasni skill-írás előtt)',
@@ -4233,7 +4256,7 @@ export function ensureSkillsPathTrapSection(name: string): void {
 
   let updated: string
   if (SKILLS_TRAP_BLOCK_RE.test(existing)) {
-    updated = existing.replace(SKILLS_TRAP_BLOCK_RE, block)
+    updated = existing.replace(SKILLS_TRAP_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
@@ -4355,6 +4378,7 @@ const SYSTEM_DIRECTIVE_AUTH_BLOCK_RE = new RegExp(
 )
 
 export function buildSystemDirectiveAuthBody(name: string, helper = true): string {
+  if (agentTextLang() === 'en') return buildSystemDirectiveAuthBodyEn(name, helper, scaffoldFrags(name))
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Rendszer-direktíva hitelesítés (KÖTELEZŐ, végrehajtás előtt)',
@@ -4405,7 +4429,7 @@ export function ensureSystemDirectiveAuthSection(name: string): void {
 
   let updated: string
   if (SYSTEM_DIRECTIVE_AUTH_BLOCK_RE.test(existing)) {
-    updated = existing.replace(SYSTEM_DIRECTIVE_AUTH_BLOCK_RE, block)
+    updated = existing.replace(SYSTEM_DIRECTIVE_AUTH_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
@@ -4431,6 +4455,7 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
 // customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
 // ties this text to that behaviour.
 export function buildAgentIdHeaderBody(name: string, helper = true): string {
+  if (agentTextLang() === 'en') return buildAgentIdHeaderBodyEn(name, helper, scaffoldFrags(name))
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
@@ -4490,7 +4515,7 @@ export function ensureAgentIdHeaderSection(name: string): void {
   }
 
   const updated = AGENT_ID_HEADER_BLOCK_RE.test(existing)
-    ? existing.replace(AGENT_ID_HEADER_BLOCK_RE, block)
+    ? existing.replace(AGENT_ID_HEADER_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
@@ -4794,6 +4819,7 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // so the header dump file is genuinely per-agent and two agents searching at the
 // same time cannot read each other's label out of one shared /tmp path.
 export function buildMemorySearchLabelBody(name: string, helper = true): string {
+  if (agentTextLang() === 'en') return buildMemorySearchLabelBodyEn(name, helper, scaffoldFrags(name))
   const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
@@ -4877,7 +4903,7 @@ export function ensureMemorySearchLabelSection(name: string): void {
 
   const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentUsesApiHelper(name))}\n${MEMORY_SEARCH_LABEL_END}`
   const updated = hasBlock
-    ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, block)
+    ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
@@ -4921,6 +4947,7 @@ const FLEET_AUTH_BLOCK_RE = new RegExp(
 // Host-agnostic on purpose: no operator name, no per-install agent names. The
 // rule is about the auth PATH, which is identical on every install.
 export function buildFleetAuthBody(): string {
+  if (agentTextLang() === 'en') return buildFleetAuthBodyEn()
   return [
     '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
     '',
@@ -4975,7 +5002,7 @@ export function ensureFleetAuthSection(name: string): void {
 
   const block = `${FLEET_AUTH_BEGIN}\n${buildFleetAuthBody()}\n${FLEET_AUTH_END}`
   const updated = hasBlock
-    ? existing.replace(FLEET_AUTH_BLOCK_RE, block)
+    ? existing.replace(FLEET_AUTH_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
@@ -5022,6 +5049,7 @@ const helperExitCodes = [
 ]
 
 export function buildStrictApiBody(name: string): string {
+  if (agentTextLang() === 'en') return buildStrictApiBodyEn(name, scaffoldFrags(name))
   return [
     '## Dashboard-hívások a strict profilodban',
     '',
@@ -5054,6 +5082,7 @@ const API_HELPER_BLOCK_RE = new RegExp(
 )
 
 export function buildApiHelperBody(name: string): string {
+  if (agentTextLang() === 'en') return buildApiHelperBodyEn(name, scaffoldFrags(name))
   return [
     '## Dashboard-hívások: a segéd (ez ÍRJA FELÜL a curl-recepteket)',
     '',
@@ -5095,7 +5124,7 @@ export function ensureApiHelperSection(name: string): void {
   if (!agentRunsStrict(name) && agentUsesApiHelper(name)) {
     const block = `${API_HELPER_BEGIN}\n${buildApiHelperBody(name)}\n${API_HELPER_END}`
     updated = hasBlock
-      ? existing.replace(API_HELPER_BLOCK_RE, block)
+      ? existing.replace(API_HELPER_BLOCK_RE, () => block)
       : existing.trimEnd() + '\n\n' + block + '\n'
   } else {
     if (!hasBlock) return
@@ -5125,7 +5154,7 @@ export function ensureStrictApiSection(name: string): void {
   if (agentRunsStrict(name)) {
     const block = `${STRICT_API_BEGIN}\n${buildStrictApiBody(name)}\n${STRICT_API_END}`
     updated = hasBlock
-      ? existing.replace(STRICT_API_BLOCK_RE, block)
+      ? existing.replace(STRICT_API_BLOCK_RE, () => block)
       : existing.trimEnd() + '\n\n' + block + '\n'
   } else {
     if (!hasBlock) return
