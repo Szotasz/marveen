@@ -17,6 +17,7 @@ export function prepareMainAuth(kind, dir) {
   console.log('a log line on stdout that must never reach the contract')
   appendFileSync(process.env.STUB_LOG, JSON.stringify({ kind, dir, logLevel: process.env.LOG_LEVEL, noMigrate: process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION }) + '\\n')
   if (process.env.STUB_THROW) throw new Error('vault unreadable')
+  if (process.env.STUB_VAULT) { const e = new Error('main-auth: the vault is unreadable (Error)'); e.code = 'vault-unreadable'; throw e }
   return { decision: { configured: 'api', effective: 'api', conflict: null }, result: { failed: ['unstamp'] } }
 }
 `
@@ -56,14 +57,22 @@ describe('scripts/main-agent-auth.mjs', () => {
   })
 })
 
+describe('VAULTUNREAD1107: api mode with an unreadable vault is its own contract line, never silence', () => {
+  it('the helper says kept / vault-unreadable (and wrote nothing: the module threw before applying)', () => {
+    const root = fakeRoot(true)
+    expect(runHelper(root, ['', ''], { STUB_LOG: join(root, 'stub.log'), STUB_VAULT: '1' })).toBe('main-auth\tapi\tkept\tvault-unreadable\t-\nrc=0\n')
+  })
+})
+
 describe('channels.sh: the contract-line parse, run as shipped', () => {
   const sh = readFileSync(join(REPO, 'scripts', 'channels.sh'), 'utf-8')
   const start = sh.indexOf(`  _ma_line="$(printf '%s\\n' "$_ma_line" | grep -m1 -E '^main-auth\t' || true)"`)
   const end = sh.indexOf('  unset _ma_line _ma_mode _ma_dir')
   const block = sh.slice(start, end)
-  const parse = (line: string) => {
+  const parse = (line: string, files: Record<string, string> = {}) => {
     const inst = tmp('mauth-inst-')
     mkdirSync(join(inst, 'store'))
+    for (const [f, c] of Object.entries(files)) writeFileSync(join(inst, 'store', f), c)
     const script = `INSTALL_DIR="$1"; _ma_line="$2"\nMAIN_AUTH_APPLIED=""\n${block}\nprintf '%s|%s|%s|%s|%s' "$MAIN_AUTH_APPLIED" "$MAIN_AUTH_CONFIGURED" "$MAIN_AUTH_EFFECTIVE" "$MAIN_AUTH_CONFLICT" "$MAIN_AUTH_FAILED"`
     return execFileSync('/bin/bash', ['-c', script, 'bash', inst, line], { encoding: 'utf-8' })
   }
@@ -81,6 +90,15 @@ describe('channels.sh: the contract-line parse, run as shipped', () => {
   it('an unstamp failure alone still counts as applied ("unstamp" is not "pane-auth" or "post")', () => {
     expect(parse('main-auth\tshared\tsubscription\t-\tunstamp')).toBe('1|shared|subscription|-|unstamp')
   })
+  it('vault unreadable with a previous launch: its files are kept, the effective mode read from its record', () => {
+    expect(parse('main-auth\tapi\tkept\tvault-unreadable\t-', {
+      '.channels-pane-auth': "export ANTHROPIC_API_KEY='x'\n",
+      '.main-auth-launched': JSON.stringify({ configured: 'api', effective: 'api', conflict: null }, null, 2),
+    })).toBe('1|api|api|vault-unreadable|-')
+  })
+  it('vault unreadable and no previous files: not applied (the subscription rule), still configured api (the notice fires)', () => {
+    expect(parse('main-auth\tapi\tkept\tvault-unreadable\t-')).toBe('|api||vault-unreadable|-')
+  })
   it('no contract line: nothing set', () => {
     expect(parse('just a log line')).toBe('||||')
   })
@@ -93,6 +111,11 @@ describe('the owner notice matches whole failure names', () => {
     expect(notice('-', 'unstamp')).toBe('')
     expect(notice('-', 'unstamp,stamp')).toContain('approval could not be written')
     expect(notice('-', 'post')).toContain('credential files')
+  })
+  it('the unreadable vault has its own notice: what it runs on now, and what to do', () => {
+    const m = notice('vault-unreadable', '-')
+    expect(m).toContain('vault, where the key is stored, could not be read')
+    expect(m).toContain("previous start's authentication")
   })
 })
 

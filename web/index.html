@@ -2836,6 +2836,36 @@
               Bekapcsolva az ágens a saját, kezdetben üres fájl-memóriájával indul, és nem látja a közös MEMORY.md-t. A megosztott SQLite-emlékek és a CLAUDE.md továbbra is elérnek hozzá. Több-felhasználós telepítésen ajánlott; egy-felhasználós telepítésen hagyd kikapcsolva. A következő újraindításkor lép életbe.
             </small>
           </div>
+          <!-- MAINAUTHSWITCH1107: the main agent's own authentication switch (only on the main agent card) -->
+          <div class="form-group" id="mainAuthGroup" hidden>
+            <label data-i18n="agents.main_auth.label">Hitelesítés</label>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px" role="radiogroup">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+                <input type="radio" name="mainAuthMode" value="shared" checked>
+                <span data-i18n="agents.main_auth.shared">Előfizetés (alapértelmezett)</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+                <input type="radio" name="mainAuthMode" value="api">
+                <span data-i18n="agents.main_auth.api">API-kulcs</span>
+              </label>
+            </div>
+            <div id="mainAuthApiSection" hidden style="margin-top:10px">
+              <input class="input" type="password" id="mainAuthApiKey" autocomplete="off" spellcheck="false" style="width:100%;max-width:100%;box-sizing:border-box" data-i18n-placeholder="agents.main_auth.key_placeholder" placeholder="API-kulcs (üresen hagyva a tárolt marad)">
+              <small id="mainAuthKeyStatus" style="display:block;margin-top:6px;font-size:12px"></small>
+              <div id="mainAuthWarning" style="margin-top:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--warning);font-size:12px;line-height:1.5">
+                <strong data-i18n="agents.main_auth.warn_title">Mielőtt mented:</strong>
+                <ul style="margin:6px 0 0 18px;padding:0">
+                  <li data-i18n="agents.main_auth.warn_billing">A fő ügynök minden hívása (az ütemezett feladatok és a háttér-ellenőrzések is) a kulcs Anthropic Console-fiókjára számláz, tokenenként, nem az előfizetésre. Érdemes költségkeretet állítani a Console-ban.</li>
+                  <li data-i18n="agents.main_auth.warn_connectors">API-kulccsal a claude.ai-ban beállított connectorok nem töltődnek be a fő ügynöknél.</li>
+                  <li data-i18n="agents.main_auth.warn_shared">Ha a fő ügynök a közös Claude-beállításokat használja (ez az alapeset), a kulcs jóváhagyása oda kerül: ha a saját terminálodban is be van állítva ugyanez a kulcs (ANTHROPIC_API_KEY), az ott indított claude is kérdés nélkül ezt használja. Linuxon a régebbi telepítések minden új shellbe betöltik a .env kulcsát, tehát ott a saját terminálod is ezt a kulcsot kapja.</li>
+                  <li data-i18n="agents.main_auth.warn_restart">Mentés után a fő ügynök újraindul.</li>
+                </ul>
+              </div>
+            </div>
+            <small id="mainAuthRunning" style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5"></small>
+            <div id="mainAuthError" hidden style="margin-top:8px;color:var(--danger);font-size:12px"></div>
+            <button class="btn-secondary btn-compact agent-save-section" id="mainAuthApplyBtn" style="margin-top:10px" data-i18n="agents.main_auth.apply">Mentés és újraindítás</button>
+          </div>
           <div class="form-group" id="authModeGroup">
             <label data-i18n="agents.settings.auth_mode_label">Hitelesítési mód</label>
             <div class="auth-mode-cards">

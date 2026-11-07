@@ -12,6 +12,9 @@
 // Output contract, on fd 3 (callers redirect `3>&1 2>>log 1>&2`, as for main-agent-isolated-config.mjs, so a log
 // line the dist modules print can never reach the contract), ONE line:
 //   main-auth<TAB><configured><TAB><effective><TAB><conflict or -><TAB><failed steps comma-joined, or ->
+// One special line (VAULTUNREAD1107): api mode with an unreadable vault writes NOTHING and says
+//   main-auth<TAB>api<TAB>kept<TAB>vault-unreadable<TAB>-
+// so the caller keeps the previous decision's files and alerts, instead of mistaking it for a missing dist.
 // Nothing at all when the dist modules cannot load: the caller then keeps its own fallback. Never a credential value.
 
 import { join, dirname } from 'node:path'
@@ -43,6 +46,11 @@ try {
   const { decision, result } = mod.prepareMainAuth(kind, cfgDir)
   writeSync(CONTRACT_FD, ['main-auth', decision.configured, decision.effective, decision.conflict ?? '-', result.failed.length ? result.failed.join(',') : '-'].join('\t') + '\n')
 } catch (e) {
+  if (e && e.code === 'vault-unreadable') {
+    writeSync(CONTRACT_FD, ['main-auth', 'api', 'kept', 'vault-unreadable', '-'].join('\t') + '\n')
+    process.stderr.write(`main-agent-auth: ${e.message}\n`)
+    process.exit(0)
+  }
   process.stderr.write(`main-agent-auth: apply failed (${e && e.message}) -- the caller keeps its fallback\n`)
   process.exit(0)
 }
