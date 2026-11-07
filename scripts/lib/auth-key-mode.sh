@@ -73,6 +73,14 @@ main_auth_problem_notice() { # conflict failed lang -> one paragraph, or nothing
     esac
   fi
   [ -n "$why_en" ] || return 0
+  if [ "$1" = vault-unreadable ]; then
+    # Dani 72343: not "it does not run as set": with a previous api start it does, on that start's files.
+    case "$3" in
+      en) printf '%s\n' "Marveen: the main agent is set to run on an API key, but this start could not read the key again, because $why_en. $now_en To do: $todo_en" ;;
+      *)  printf '%s\n' "Marveen: a fő ügynök API-kulcsos futásra van állítva, de ennél az indításnál a kulcsot nem tudta újra kiolvasni, mert $why_hu. $now_hu Teendő: $todo_hu" ;;
+    esac
+    return 0
+  fi
   case "$3" in
     en) printf '%s\n' "Marveen: the main agent is set to run on an API key, but this start it does not run as set, because $why_en. $now_en To do: $todo_en" ;;
     *)  printf '%s\n' "Marveen: a fő ügynök API-kulcsos futásra van állítva, de ennél az indításnál nem így fut, mert $why_hu. $now_hu Teendő: $todo_hu" ;;

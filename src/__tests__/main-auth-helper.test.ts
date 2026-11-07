@@ -116,6 +116,12 @@ describe('the owner notice matches whole failure names', () => {
     const m = notice('vault-unreadable', '-')
     expect(m).toContain('vault, where the key is stored, could not be read')
     expect(m).toContain("previous start's authentication")
+    // Dani 72343: it may run exactly as set (a previous api start), so it never says "does not run as set"
+    expect(m).toContain('could not read the key again')
+    expect(m).not.toContain('does not run as set')
+    const hu = execFileSync('/bin/bash', ['-c', '. "$1" && main_auth_problem_notice vault-unreadable - hu', 'bash', lib], { encoding: 'utf-8' })
+    expect(hu).toContain('a kulcsot nem tudta újra kiolvasni')
+    expect(hu).not.toContain('nem így fut')
   })
 })
 
