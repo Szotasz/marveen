@@ -12,8 +12,9 @@
 // Only the bot can open a topic in a private chat when the owner keeps
 // user-created topics off in BotFather, hence the write command.
 
+import { join } from 'node:path'
 import { CHANNEL_PROVIDER, CHANNEL_TOKEN } from '../config.js'
-import { createTelegramForumTopic } from '../channel-provider.js'
+import { channelStateDir, createTelegramForumTopic, readChannelToken } from '../channel-provider.js'
 import { registerCommand, type CommandContext } from './commands.js'
 import {
   TELEGRAM_TOPICS_FILE,
@@ -32,10 +33,16 @@ export interface TopicCommandDeps {
 
 const defaultDeps: TopicCommandDeps = {
   createTopic: (chatId, name) => {
-    if (CHANNEL_PROVIDER !== 'telegram' || !CHANNEL_TOKEN) {
+    // The bot token usually lives only in the plugin's own state .env, not in
+    // the install .env (channels.sh keeps it out of the shared environment), so
+    // fall back to it the way the other dashboard Telegram readers do.
+    const token = CHANNEL_TOKEN || (CHANNEL_PROVIDER === 'telegram'
+      ? readChannelToken('telegram', join(channelStateDir('telegram'), '.env')) ?? ''
+      : '')
+    if (CHANNEL_PROVIDER !== 'telegram' || !token) {
       return Promise.reject(new Error('Telegram: a fő csatorna nem Telegram, vagy nincs bot token'))
     }
-    return createTelegramForumTopic(CHANNEL_TOKEN, chatId, name)
+    return createTelegramForumTopic(token, chatId, name)
   },
   topicsFile: TELEGRAM_TOPICS_FILE,
 }
