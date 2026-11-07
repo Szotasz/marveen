@@ -659,6 +659,7 @@ window._i18n.hu = {
 
   'tasks.confirm.delete':        'Törlöd ezt az ütemezést?',
   'tasks.confirm.cancel_pending': 'Biztosan visszavonod ezt a várakozó feladatot: "{name}" ({agent})? Ez a futás nem kerül kézbesítésre, de maga az ütemezés megmarad.',
+  'tasks.confirm.cancel_pending_no_agent': 'Biztosan visszavonod ezt a várakozó feladatot: "{name}"? Ez a futás nem kerül kézbesítésre, de maga az ütemezés megmarad.',
   'tasks.confirm.cancel_pending_title': 'Várakozó feladat visszavonása',
   'tasks.confirm.cancel_pending_ok': 'Visszavonás',
   'tasks.toast.cancel_pending_error': 'Nem sikerült visszavonni a várakozó feladatot.',
@@ -833,6 +834,7 @@ window._i18n.hu = {
   'bgTasks.modal.title':         'Háttérfeladat {id}',
   'bgTasks.finished_label':      'Befejezve:',
   'bgTasks.cancel.confirm':      'Biztosan leállítod ezt a háttérfeladatot: {id} ({agent})? A futó munka megszakad, az eddigi kimenete megmarad.',
+  'bgTasks.cancel.confirm_no_agent': 'Biztosan leállítod ezt a háttérfeladatot: {id}? A futó munka megszakad, az eddigi kimenete megmarad.',
   'bgTasks.cancel.title':        'Háttérfeladat leállítása',
   'bgTasks.cancel.ok':           'Leállítás',
   'bgTasks.no_output':           '(nincs kimenet)',

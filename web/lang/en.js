@@ -423,6 +423,7 @@ window._i18n.en = {
 
   'tasks.confirm.delete':        'Delete this schedule?',
   'tasks.confirm.cancel_pending': 'Cancel this pending task: "{name}" ({agent})? This run is not delivered, but the schedule itself stays.',
+  'tasks.confirm.cancel_pending_no_agent': 'Cancel this pending task: "{name}"? This run is not delivered, but the schedule itself stays.',
   'tasks.confirm.cancel_pending_title': 'Cancel pending task',
   'tasks.confirm.cancel_pending_ok': 'Cancel task',
   'tasks.toast.cancel_pending_error': 'Could not cancel the pending task.',
@@ -1594,6 +1595,7 @@ window._i18n.en = {
   'autonomy.lock_label':			'Security lock',
   'autonomy.not_modified':			'Not yet modified',
   'bgTasks.cancel.confirm':			'Stop this background task: {id} ({agent})? The running work is interrupted, its output so far is kept.',
+  'bgTasks.cancel.confirm_no_agent':			'Stop this background task: {id}? The running work is interrupted, its output so far is kept.',
   'bgTasks.cancel.title':			'Stop background task',
   'bgTasks.cancel.ok':			'Stop',
   'bgTasks.empty':			'No background tasks.',

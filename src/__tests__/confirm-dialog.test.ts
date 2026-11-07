@@ -591,7 +591,8 @@ describe('the pending retry cancel and the background task stop use it', () => {
   it('the pending retry cancel: a danger confirmDialog naming the task and its agent, no native confirm()', () => {
     expect(PENDING).toContain('const confirmed = await confirmDialog({')
     expect(PENDING).toContain("title: t('tasks.confirm.cancel_pending_title')")
-    expect(PENDING).toContain("t('tasks.confirm.cancel_pending', { name: (r && r.taskName) || id, agent: (r && r.agentName) || '' })")
+    expect(PENDING).toContain("t('tasks.confirm.cancel_pending', { name: r.taskName || id, agent: r.agentName })")
+    expect(PENDING).toContain("t('tasks.confirm.cancel_pending_no_agent', { name: (r && r.taskName) || id })")
     expect(PENDING).toContain("okLabel: t('tasks.confirm.cancel_pending_ok')")
     expect(PENDING).toContain('danger: true')
     expect(PENDING).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
@@ -606,11 +607,35 @@ describe('the pending retry cancel and the background task stop use it', () => {
   it('the background task stop: a danger confirmDialog naming the task and its agent, no native confirm()', () => {
     expect(BG).toContain('const confirmed = await confirmDialog({')
     expect(BG).toContain("title: t('bgTasks.cancel.title')")
-    expect(BG).toContain("t('bgTasks.cancel.confirm', { id, agent: agent || '' })")
+    expect(BG).toContain("t('bgTasks.cancel.confirm', { id, agent })")
     expect(BG).toContain("okLabel: t('bgTasks.cancel.ok')")
     expect(BG).toContain('danger: true')
     expect(BG).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
     expect(APP).toContain('onclick="cancelBgTask(${jsArg(task.id)}, ${jsArg(task.agent_id)})"')
+  })
+
+  it('without an agent name the question has no empty parentheses', async () => {
+    // The real cancelBgTask, with the dialog captured and "no" answered.
+    const asked: string[] = []
+    const tr = (key: string, vars: Record<string, string> = {}) => {
+      const line = HU.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+      const text = line.slice(line.indexOf(':') + 1).trim().replace(/^'|',?$/g, '')
+      return text.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
+    }
+    const run = new Function('confirmDialog', 't', 'fetch', `${BG}\n}\nreturn cancelBgTask`)(
+      async (o: { message: string }) => { asked.push(o.message); return false },
+      tr,
+      () => { throw new Error('no request after a "no"') },
+    )
+    await run('bg-1', 'marketing')
+    await run('bg-2', '')
+    await run('bg-3', undefined)
+    expect(asked[0]).toContain('bg-1 (marketing)?')
+    for (const m of asked.slice(1)) {
+      expect(m).not.toContain('()')
+      expect(m).toMatch(/bg-\d\? A futó munka megszakad/)
+    }
+    expect(PENDING).toContain('message: (r && r.agentName)\n')
   })
 
   it('a "no" stops both, before the request', () => {
@@ -632,6 +657,7 @@ describe('the pending retry cancel and the background task stop use it', () => {
 
   it('the keys are in both languages, with their placeholders', () => {
     for (const key of ['tasks.confirm.cancel_pending', 'tasks.confirm.cancel_pending_title', 'tasks.confirm.cancel_pending_ok', 'tasks.toast.cancel_pending_error',
+      'tasks.confirm.cancel_pending_no_agent', 'bgTasks.cancel.confirm_no_agent',
       'bgTasks.cancel.confirm', 'bgTasks.cancel.title', 'bgTasks.cancel.ok', 'bgTasks.toast.stop_error', 'bgTasks.load_error']) {
       for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
     }
@@ -642,6 +668,11 @@ describe('the pending retry cancel and the background task stop use it', () => {
       const bg = lang.split('\n').find(l => l.includes("'bgTasks.cancel.confirm':")) ?? ''
       expect(bg).toContain('{id}')
       expect(bg).toContain('{agent}')
+      for (const key of ['tasks.confirm.cancel_pending_no_agent', 'bgTasks.cancel.confirm_no_agent']) {
+        const line = lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+        expect(line, key).not.toContain('{agent}')
+        expect(line, key).not.toContain('(')
+      }
     }
   })
 })

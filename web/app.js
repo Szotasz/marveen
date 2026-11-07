@@ -7596,7 +7596,10 @@ function renderPendingRetries(container, rows) {
       const r = rows.find(x => String(x.id) === id)
       const confirmed = await confirmDialog({
         title: t('tasks.confirm.cancel_pending_title'),
-        message: t('tasks.confirm.cancel_pending', { name: (r && r.taskName) || id, agent: (r && r.agentName) || '' }),
+        // Without an agent name the text drops the parentheses instead of printing an empty pair.
+        message: (r && r.agentName)
+          ? t('tasks.confirm.cancel_pending', { name: r.taskName || id, agent: r.agentName })
+          : t('tasks.confirm.cancel_pending_no_agent', { name: (r && r.taskName) || id }),
         okLabel: t('tasks.confirm.cancel_pending_ok'),
         danger: true,
       })
@@ -15956,7 +15959,7 @@ async function cancelBgTask(id, agent) {
   // The server kills the task's tmux session; the output so far is kept on the task.
   const confirmed = await confirmDialog({
     title: t('bgTasks.cancel.title'),
-    message: t('bgTasks.cancel.confirm', { id, agent: agent || '' }),
+    message: agent ? t('bgTasks.cancel.confirm', { id, agent }) : t('bgTasks.cancel.confirm_no_agent', { id }),
     okLabel: t('bgTasks.cancel.ok'),
     danger: true,
   })
