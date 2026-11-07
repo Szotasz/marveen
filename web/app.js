@@ -17604,9 +17604,27 @@ async function switchToClaudePlan(plan) {
   await loadClaudePlansList()
 }
 
-async function deleteClaudePlan(plan, users = []) {
+// The agents set to a plan: the rotation's record (the main agent included) and every agent whose own claudePlan
+// field points at it (set in the agent editor, which the rotation does not record). After the delete they all
+// stop using the plan from their next start (resolveAgentConfigDir reports planUnresolved). If the agent list
+// cannot be read, the rotation's record is still named.
+async function claudePlanUsers(planId, rotationUsers = []) {
+  const users = new Set(rotationUsers)
+  try {
+    const res = await fetch('/api/agents')
+    const list = res.ok ? await res.json() : []
+    for (const a of Array.isArray(list) ? list : []) if (a && a.claudePlan === planId && a.name) users.add(a.name)
+  } catch {}
+  return [...users]
+}
+
+async function deleteClaudePlan(plan, rotationUsers = []) {
   const id = plan.id
+  const users = await claudePlanUsers(id, rotationUsers)
   let message = t('settings.claude_plans.confirm_delete', { label: plan.label || id })
+  // Only a token-mode plan has a token in the Vault, and the server removes only that one (deleteOwnTokenSecret);
+  // a configDir plan loses nothing there.
+  if (plan.tokenSecretId) message += ' ' + t('settings.claude_plans.confirm_delete_token')
   if (users.length) message += '\n\n' + t('settings.claude_plans.confirm_delete_used_by', { agents: users.map(n => `"${n}"`).join(', ') })
   const confirmed = await confirmDialog({
     title: t('settings.claude_plans.confirm_delete_title'),
@@ -17857,7 +17875,7 @@ async function loadClaudePlansList() {
       delBtn.className = 'claude-plan-delete'
       delBtn.title = t('common.btn.delete')
       delBtn.textContent = '×'
-      // The agents running on this plan lose their credential with it (the token leaves the vault): name them.
+      // The agents the rotation has on this plan; deleteClaudePlan adds the ones set to it in the agent editor.
       const planUsers = Object.entries(state.activePlanByAgent || {}).filter(([, id]) => id === plan.id).map(([agent]) => agent)
       delBtn.addEventListener('click', () => deleteClaudePlan(plan, planUsers))
       actions.appendChild(delBtn)

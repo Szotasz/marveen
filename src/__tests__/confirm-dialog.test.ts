@@ -495,9 +495,75 @@ describe('the Claude plan delete uses it', () => {
     return i < 0 || j < 0 ? '' : APP.slice(i, j)
   }
   const DEL = between('async function deleteClaudePlan(', '\n}\n')
+  const USERS = between('async function claudePlanUsers(', '\n}\n')
 
   it('the handler was found', () => {
     expect(DEL).not.toBe('')
+    expect(USERS).not.toBe('')
+  })
+
+  // The real deleteClaudePlan and claudePlanUsers, with the dialog captured and the Hungarian texts filled in.
+  function load(agentList: unknown, answer = false) {
+    const asked: string[] = []
+    const calls: Array<{ url: string; method: string }> = []
+    const tr = (key: string, vars: Record<string, string> = {}) => {
+      const line = HU.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+      const text = line.slice(line.indexOf(':') + 1).trim().replace(/^'|',?$/g, '')
+      return text.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
+    }
+    const fetchStub = async (url: string, init: { method?: string } = {}) => {
+      calls.push({ url, method: init.method || 'GET' })
+      if (url === '/api/agents') {
+        if (agentList instanceof Error) throw agentList
+        return { ok: true, json: async () => agentList }
+      }
+      return { ok: true, json: async () => ({ ok: true }) }
+    }
+    const run = new Function('confirmDialog', 't', 'fetch', 'showToast', 'loadClaudePlansList',
+      `${USERS}\n}\n${DEL}\n}\nreturn deleteClaudePlan`)(
+      async (o: { message: string }) => { asked.push(o.message); return answer },
+      tr, fetchStub, () => {}, async () => {},
+    ) as (plan: Record<string, unknown>, rotationUsers?: string[]) => Promise<void>
+    return { run, asked, calls }
+  }
+
+  it('the Vault sentence only for a token-mode plan: a configDir plan has no token there', async () => {
+    const h = load([])
+    await h.run({ id: 'p1', label: 'Mappás', configDir: '/home/x/.claude-p1' })
+    await h.run({ id: 'p2', label: 'Tokenes', tokenSecretId: 'claude-plan-token-p2' })
+    expect(h.asked[0]).toContain('"Mappás"?')
+    expect(h.asked[0]).not.toContain('Vault')
+    expect(h.asked[1]).toContain('"Tokenes"? A tokenje a Vaultból is törlődik.')
+  })
+
+  it('the agents set to the plan in the agent editor are named too, next to the rotation record, once each', async () => {
+    const h = load([
+      { name: 'kutato', claudePlan: 'p1' },
+      { name: 'irnok', claudePlan: 'p1' },
+      { name: 'masik', claudePlan: 'p9' },
+      { name: 'semmi', claudePlan: null },
+    ])
+    await h.run({ id: 'p1', label: 'Mappás', configDir: '/x' }, ['fo', 'irnok'])
+    expect(h.asked[0]).toContain('\n\nEzek az ügynökök erre a planre vannak állítva: "fo", "irnok", "kutato".')
+    expect(h.asked[0]).not.toMatch(/masik|semmi/)
+  })
+
+  it('no agent on the plan: no second paragraph; an unreadable agent list still names the rotation record', async () => {
+    const none = load([{ name: 'masik', claudePlan: 'p9' }])
+    await none.run({ id: 'p1', label: 'Mappás', configDir: '/x' })
+    expect(none.asked[0]).not.toContain('\n\n')
+    const broken = load(new Error('network'))
+    await broken.run({ id: 'p1', label: 'Mappás', configDir: '/x' }, ['fo'])
+    expect(broken.asked[0]).toContain('"fo"')
+  })
+
+  it('a "no" sends no DELETE, a "yes" sends it after the question', async () => {
+    const no = load([])
+    await no.run({ id: 'p1', label: 'Mappás', configDir: '/x' })
+    expect(no.calls.filter(c => c.method === 'DELETE')).toEqual([])
+    const yes = load([], true)
+    await yes.run({ id: 'p1', label: 'Mappás', configDir: '/x' })
+    expect(yes.calls.filter(c => c.method === 'DELETE')).toEqual([{ url: '/api/claude-plans/p1', method: 'DELETE' }])
   })
 
   it('a danger confirmDialog with its own title and button, naming the plan by its label, no native confirm()', () => {
@@ -517,9 +583,11 @@ describe('the Claude plan delete uses it', () => {
     expect(DEL.slice(0, guard)).not.toMatch(/\bfetch\(/)
   })
 
-  it('the agents running on the plan are named in a second paragraph, from the rotation state', () => {
+  it('the agents on the plan are named in a second paragraph, from the rotation state and the agent list', () => {
     expect(APP).toContain("const planUsers = Object.entries(state.activePlanByAgent || {}).filter(([, id]) => id === plan.id).map(([agent]) => agent)")
     expect(APP).toContain("delBtn.addEventListener('click', () => deleteClaudePlan(plan, planUsers))")
+    expect(DEL).toContain('const users = await claudePlanUsers(id, rotationUsers)')
+    expect(DEL).toContain("if (plan.tokenSecretId) message += ' ' + t('settings.claude_plans.confirm_delete_token')")
     expect(DEL).toContain("if (users.length) message += '\\n\\n' + t('settings.claude_plans.confirm_delete_used_by', { agents: ")
   })
 
@@ -527,10 +595,12 @@ describe('the Claude plan delete uses it', () => {
     for (const lang of [HU, EN]) {
       expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).not.toContain('regisztry')
       for (const key of ['settings.claude_plans.confirm_delete', 'settings.claude_plans.confirm_delete_title', 'settings.claude_plans.confirm_delete_ok',
-        'settings.claude_plans.confirm_delete_used_by', 'settings.claude_plans.confirm_switch', 'settings.claude_plans.confirm_switch_title', 'settings.claude_plans.confirm_switch_ok']) {
+        'settings.claude_plans.confirm_delete_used_by', 'settings.claude_plans.confirm_delete_token', 'settings.claude_plans.confirm_switch', 'settings.claude_plans.confirm_switch_title', 'settings.claude_plans.confirm_switch_ok']) {
         expect(lang, key).toContain(`'${key}':`)
       }
       expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).toContain('{label}')
+      // The Vault is its own sentence, added only for a token-mode plan.
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).not.toContain('Vault')
       expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete_used_by':"))).toContain('{agents}')
       expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_switch':"))).toContain('{label}')
     }
