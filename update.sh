@@ -12,6 +12,14 @@ NC='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
+
+# HOSTINGERDOCKER1107: in the container the image owns the code (docker/code-sync.py) and the claude CLI version; a
+# git pull here would be overwritten by the next start, or fail on a tree with no .git. Update with a new image.
+if [ -f "$INSTALL_DIR/.env" ] && grep -qx 'MARVEEN_DEPLOYMENT=docker' "$INSTALL_DIR/.env"; then
+  echo "This Marveen runs in a container, and its image owns the version: update it with a new image"
+  echo "(docker compose pull && docker compose up -d). update.sh does nothing here."
+  exit 3
+fi
 # ── Language (saved by installer, falls back to HU) ──────────────────────────
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 export MARVEEN_LANG
