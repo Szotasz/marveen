@@ -22,7 +22,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
-import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
+import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, parseTtsRequest } from '../voice-directive.js'
 import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
@@ -258,16 +258,16 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/voice/tts
   // Body: { text: string, voice_model: string, chat_id: string, state_dir: string }
+  //   or, with Content-Type text/plain: the text as the body, and
+  //   ?chat_id=&state_dir=&voice_model= in the query string (the directive's shape, #2600).
   // Returns: { ok: boolean, message_id?: number }
   if (path === '/api/voice/tts' && method === 'POST') {
     if (!isVoiceInstalled()) { json(res, { error: 'Voice toolkit not installed' }, 503); return true }
     const body = await readBody(req)
-    let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string }
-    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
-    const text = data.text?.trim() ?? ''
-    const voiceModel = data.voice_model?.trim() ?? 'hu_HU-imre-medium'
-    const chatId = String(data.chat_id ?? '').trim()
-    const stateDir = data.state_dir?.trim() ?? ''
+    // text/plain (the directive, #2600) or the JSON body: parseTtsRequest reads both.
+    const parsed = parseTtsRequest(req.headers['content-type'], body, ctx.url.searchParams, 'hu_HU-imre-medium')
+    if (!parsed) { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const { text, voiceModel, chatId, stateDir } = parsed
 
     if (!text) { json(res, { error: 'text required' }, 400); return true }
     if (!/^\d+$/.test(chatId)) { json(res, { error: 'Invalid chat_id' }, 400); return true }
