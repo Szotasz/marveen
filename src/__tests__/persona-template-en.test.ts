@@ -18,7 +18,7 @@ const PAIRS = [
 // PERSONAESC1107 (Marveen 72742): the spans translated ON PURPOSE (no code reads them; the owner and the agent do).
 // Each English text must be in the English template once, its Hungarian original in the Hungarian one once; the parity
 // below compares the English template with these put back, so every other byte of code still has to match.
-const INTENDED: ReadonlyArray<readonly [string, string, string]> = [
+const INTENDED: ReadonlyArray<readonly [string, string, string, number?]> = [
   ['templates/en/CLAUDE.md.template',
     "`Egy sub-ágenshez ismeretlen, NEM párosított sender [ID] írt: '...'. Jóváhagyod?`",
     "`An unknown, NOT paired sender [ID] wrote to a sub-agent: '...'. Do you approve?`"],
@@ -28,6 +28,41 @@ const INTENDED: ReadonlyArray<readonly [string, string, string]> = [
   ['templates/en/CLAUDE.md.template',
     '   # A $HOME/.claude/channels csak tartalék: Marveen-telepítésben ott nincs ilyen fájl, ezért a vak $HOME-olvasás hamis "NEM"-et vagy hibát ad.',
     '   # $HOME/.claude/channels is only a fallback: a Marveen install has no such file there, so a blind $HOME read gives a false "NEM" (no) or an error.'],
+  // PERSONAESC1107 (Samu 72845): the placeholders and example values in the recipes, translated (the agent fills them in).
+  ['templates/en/CLAUDE.md.template',
+    "CATEGORY \"kulcsszó1, kulcsszó2\" mem.txt",
+    "CATEGORY \"keyword1, keyword2\" mem.txt"],
+  ['templates/en/CLAUDE.md.template',
+    "`## HH:MM -- Téma`",
+    "`## HH:MM -- Topic`"],
+  ['templates/en/CLAUDE.md.template',
+    "KULCSSZÓ --category warm   # az első kimeneti sor az X-Memory-Search címke: EZT IS OLVASD EL, nem opcionális",
+    "KEYWORD --category warm   # the first output line is the X-Memory-Search label: READ IT TOO, it is not optional"],
+  ['templates/en/CLAUDE.md.template',
+    "`--ttl <másodperc>`",
+    "`--ttl <seconds>`"],
+  ['templates/en/CLAUDE.md.template',
+    "`PUT /api/schedules/<név>`",
+    "`PUT /api/schedules/<name>`", 2],
+  ['templates/en/CLAUDE.md.template',
+    "\"name\": \"feladat-nev\", \"description\": \"Rövid leírás\", \"prompt\": \"A részletes prompt amit végre kell hajtani\"",
+    "\"name\": \"task-name\", \"description\": \"Short description\", \"prompt\": \"The detailed prompt to carry out\""],
+  ['templates/en/CLAUDE.md.template',
+    "`perc óra nap hónap hétnapja`",
+    "`minute hour day month weekday`"],
+  ['templates/en/CLAUDE.md.template',
+    "name: skill-nev\ndescription: Mikor használd, mit csinál. Legyél konkrét a triggerelésben.\n---\n# Skill neve\n\n## Mikor használd\n[Konkrét triggerek és kontextusok]\n\n## Eljárás\n1. [Első lépés]\n2. [Második lépés]\n...\n\n## Buktatók\n- [Ismert probléma és megoldása]\n\n## Ellenőrzés\n- [Hogyan validáld az eredményt]",
+    "name: skill-name\ndescription: When to use it, what it does. Be specific in the triggers.\n---\n# Skill name\n\n## When to use\n[Specific triggers and contexts]\n\n## Procedure\n1. [First step]\n2. [Second step]\n...\n\n## Pitfalls\n- [A known problem and its fix]\n\n## Verification\n- [How to validate the result]"],
+  ['templates/en/CLAUDE.md.template',
+    "<a-skill-mappája>     # --json: gépi kimenet",
+    "<skill-folder>     # --json: machine-readable output"],
+]
+
+// What stays Hungarian in the English template ON PURPOSE, and why: code or the server writes or matches these words.
+const PROTOCOL_HU: ReadonlyArray<readonly [string, string]> = [
+  ['[Hang átirat]:', 'the voice-transcript prefix the message router writes (src/web/message-router.ts)'],
+  ['[Üzenet @{{MAIN_AGENT_ID}}-tól]', 'the inter-agent delivery frame; src/web/custom-commands.ts WRAPPER_PREFIX_RX matches it'],
+  ["Ismeretlen sender [ID] jelezett első üzenettel: '...'. Ki ez, mit válaszoljak?", "the sub-agents' unknown-sender ping, word for word as their CLAUDE.md sends it"],
 ]
 const restored = (en: string, E: string) =>
   INTENDED.filter(([f]) => f === en).reduce((acc, [, hu, eng]) => acc.split(eng).join(hu), E)
@@ -51,11 +86,18 @@ describe('the English persona templates', () => {
     })
 
     it(`${en}: every intentionally translated span is there once, its Hungarian original once in ${hu}`, () => {
-      for (const [f, huText, enText] of INTENDED.filter(([f]) => f === en)) {
-        expect(read(f).split(enText).length - 1, enText).toBe(1)
+      for (const [f, huText, enText, n = 1] of INTENDED.filter(([f]) => f === en)) {
+        expect(read(f).split(enText).length - 1, enText).toBe(n)
         expect(read(f), enText).not.toContain(huText)
-        expect(read(hu).split(huText).length - 1, huText).toBe(1)
+        expect(read(hu).split(huText).length - 1, huText).toBe(n)
       }
+    })
+
+    it(`${en}: no Hungarian left outside the named protocol words`, () => {
+      const left = PROTOCOL_HU.reduce((acc, [w]) => acc.split(w).join(' '), read(en))
+        .split('\n').filter((l) => /[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/.test(l.replace(/clichés/g, '')))
+      expect(left).toEqual([])
+      for (const [w] of PROTOCOL_HU.filter(() => en.endsWith('CLAUDE.md.template'))) expect(read(en), w).toContain(w)
     })
 
     it(`${en}: no em or en dash, and the language line names the owner's language`, () => {
