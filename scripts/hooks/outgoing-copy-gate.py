@@ -2148,8 +2148,9 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 #     whole command (a prefix `D=v cmd`, `D+=`, `D[i]=`, a second assignment, one inside `( )` or `$( )` all count);
 #   - the command holds no other way to set a variable or to run a block: unset, read, for, select, declare, typeset,
 #     local, readonly, mapfile, readarray, getopts, eval, source / `.`, let, printf -v, export of anything else, an
-#     IFS assignment, `${D=..}` / `${D:=..}`, and no control word (if, while, case, `{`, function, ...);
-#   - the use comes AFTER the assignment and is not single-quoted or escaped (`'$D'` is the literal text `$D`);
+#     IFS assignment, and no control word (if, while, case, `{`, function, ...);
+#   - the use comes AFTER the assignment and is a plain `$D` / `${D}`, unquoted or double-quoted (`'$D'` and `\$D`
+#     are the literal text, `${D%x}` and the like are not filled in; `${D=x}` cannot change a D set before it);
 #   - a `cd $D` / `pushd $D` word is left alone (_assigned_cd_dirs has its own, older rule for it).
 # Heredoc bodies are not touched (B below judges a body only when the shell does not expand it). The JS twin
 # (email-send-gate.mjs :: bindLiteralVars) does the same; script-run-cases.json binds the two.
@@ -2170,10 +2171,10 @@ def _heredoc_body_spans(cmd: str):
 
 def _bind_scan(cmd: str):
     """Segments of the raw command: a list of dicts {words, sep_before, sep_after, depth}. A word is a dict
-    {text (unquoted), quoted (bool), refs [(name, start, end)], start}. Also the set of names that must never be
-    bound (single-quoted or escaped `$NAME`, `${NAME=..}`). Returns None when the command cannot be read."""
+    {text (unquoted), quoted, escaped, refs [(name, start, end)], start}; a ref is an unquoted or double-quoted
+    `$NAME` / `${NAME}`. Returns None when the command cannot be read."""
     spans = _heredoc_body_spans(cmd)
-    segs, blocked = [], set()
+    segs = []
     cur = {"words": [], "sep_before": None, "depth": 0}
     word = None
     depth = 0
@@ -2210,18 +2211,10 @@ def _bind_scan(cmd: str):
             if ch == "'":
                 q = None
             else:
-                if ch == "$":
-                    m = _BIND_NAME.match(cmd, i + 1) or (cmd.startswith("{", i + 1) and _BIND_NAME.match(cmd, i + 2))
-                    if m:
-                        blocked.add(m.group(0))
-                word["text"] += ch
+                word["text"] += ch  # a single-quoted `$D` is the literal text: no ref is recorded, nothing is filled in
             i += 1
             continue
-        if ch == "\\" and i + 1 < n:
-            if cmd[i + 1] == "$":
-                m = _BIND_NAME.match(cmd, i + 2) or (cmd.startswith("{", i + 2) and _BIND_NAME.match(cmd, i + 3))
-                if m:
-                    blocked.add(m.group(0))
+        if ch == "\\" and i + 1 < n:  # an escaped `\$D` is literal text too: no ref
             if word is None:
                 word = new_word(i)
             word["escaped"] = True  # inside "..." a backslash may stay: the value is not certain, never bound
@@ -2238,9 +2231,7 @@ def _bind_scan(cmd: str):
                     word["text"] += cmd[i:m.end() + 1]
                     i = m.end() + 1
                     continue
-                if m and (cmd.startswith(":=", m.end()) or cmd.startswith("=", m.end())):
-                    blocked.add(m.group(0))
-                word["text"] += ch
+                word["text"] += ch  # ${D%x}, ${D:-x}, ...: not filled in (and ${D=x} cannot change a D set before)
                 i += 1
                 continue
             m = _BIND_NAME.match(cmd, i + 1)
@@ -2331,7 +2322,7 @@ def _bind_scan(cmd: str):
     if q:
         return None
     end_seg(None)
-    return segs, blocked
+    return segs
 
 
 def _bind_literal_vars(cmd: str) -> str:
@@ -2341,7 +2332,7 @@ def _bind_literal_vars(cmd: str) -> str:
     scanned = _bind_scan(cmd)
     if scanned is None:
         return cmd
-    segs, blocked = scanned
+    segs = scanned
     counts = {}
     for seg in segs:
         heads = seg["words"]
@@ -2376,8 +2367,7 @@ def _bind_literal_vars(cmd: str) -> str:
             continue
         for w in assigns:
             name, value = w["text"].split("=", 1)
-            if (counts.get(name) != 1 or name in blocked or w["refs"] or w["escaped"]
-                    or not _BIND_LITERAL.match(value)):
+            if counts.get(name) != 1 or w["escaped"] or not _BIND_LITERAL.match(value):
                 continue
             binds[name] = (idx, value, conditional)
     if not binds:

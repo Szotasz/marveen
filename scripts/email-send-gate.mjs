@@ -1522,7 +1522,6 @@ function heredocBodySpans(cmd) {
 function bindScan(cmd) {
   const spans = heredocBodySpans(cmd)
   const segs = []
-  const blocked = new Set()
   const stack = []
   let depth = 0
   let cur = { words: [], sepBefore: null, depth: 0 }
@@ -1544,21 +1543,11 @@ function bindScan(cmd) {
     const ch = cmd[i]
     if (q === "'") {
       if (ch === "'") q = null
-      else {
-        if (ch === '$') {
-          const m = bindName(cmd, i + 1) ?? (cmd[i + 1] === '{' ? bindName(cmd, i + 2) : null)
-          if (m) blocked.add(m.name)
-        }
-        word.text += ch
-      }
+      else word.text += ch // a single-quoted `$D` is the literal text: no ref is recorded, nothing is filled in
       i++
       continue
     }
-    if (ch === '\\' && i + 1 < n) {
-      if (cmd[i + 1] === '$') {
-        const m = bindName(cmd, i + 2) ?? (cmd[i + 2] === '{' ? bindName(cmd, i + 3) : null)
-        if (m) blocked.add(m.name)
-      }
+    if (ch === '\\' && i + 1 < n) { // an escaped `\$D` is literal text too: no ref
       if (word === null) word = newWord(i)
       word.escaped = true // inside "..." a backslash may stay: the value is not certain, never bound
       word.text += cmd[i + 1]
@@ -1575,8 +1564,7 @@ function bindScan(cmd) {
           i = m.end + 1
           continue
         }
-        if (m && (cmd.startsWith(':=', m.end) || cmd.startsWith('=', m.end))) blocked.add(m.name)
-        word.text += ch
+        word.text += ch // ${D%x}, ${D:-x}, ...: not filled in (and ${D=x} cannot change a D set before)
         i++
         continue
       }
@@ -1639,13 +1627,13 @@ function bindScan(cmd) {
   }
   if (q) return null
   endSeg(null)
-  return { segs, blocked }
+  return segs
 }
 export function bindLiteralVars(cmd) {
   if (!cmd.includes('$') || !cmd.includes('=')) return cmd
   const scanned = bindScan(cmd)
   if (scanned === null) return cmd
-  const { segs, blocked } = scanned
+  const segs = scanned
   const counts = new Map()
   for (const seg of segs) {
     const words = seg.words
@@ -1674,7 +1662,7 @@ export function bindLiteralVars(cmd) {
       const eq = w.text.indexOf('=')
       const name = w.text.slice(0, eq)
       const value = w.text.slice(eq + 1)
-      if (counts.get(name) !== 1 || blocked.has(name) || w.refs.length || w.escaped || !BIND_LITERAL.test(value)) continue
+      if (counts.get(name) !== 1 || w.escaped || !BIND_LITERAL.test(value)) continue
       binds.set(name, [idx, value, conditional])
     }
   })

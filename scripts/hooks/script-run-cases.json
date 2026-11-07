@@ -183,6 +183,24 @@
     {"name": "ISSUE2582 (B) kept: a relative path after a cd", "cmd": "cd okdir\ncat > fresh.py <<'EOF'\nprint(1)\nEOF\npython3 fresh.py", "main": true, "sub": false},
     {"name": "ISSUE2582 (B) kept: written twice", "cmd": "cat > fresh.py <<'EOF'\nprint(1)\nEOF\ncat > fresh.py <<'EOF'\nprint(1)\nEOF\npython3 fresh.py", "main": true, "sub": false},
     {"name": "ISSUE2582 (B) kept: the write inside an if block (a ; prefix does not make it unconditional there)", "cmd": "if test -d x; then :; cat > fresh.py <<'EOF'\nprint(1)\nEOF\nfi\npython3 fresh.py", "main": true, "sub": false},
-    {"name": "ISSUE2582 (B): a ; prefix on the writer's line (the write is unconditional)", "cmd": "mkdir -p okdir; cat > okdir/fresh.py <<'EOF'\nprint(1)\nEOF\npython3 okdir/fresh.py", "main": false, "sub": false}
+    {"name": "ISSUE2582 (B): a ; prefix on the writer's line (the write is unconditional)", "cmd": "mkdir -p okdir; cat > okdir/fresh.py <<'EOF'\nprint(1)\nEOF\npython3 okdir/fresh.py", "main": false, "sub": false},
+    {"name": "ISSUE2582 (A) kept: an assignment inside a ( ... ) group between two ; is lost", "cmd": "(cd okdir; D=okdir; true); python3 $D/hello.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: a ( ... ) group", "cmd": "(cd okdir; D=evil; true); python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: a second assignment", "cmd": "D=okdir; D=evil; python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: an assignment after ||", "cmd": "false || D=evil; python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: an && assignment, then ;", "cmd": "test -d x && D=evil; python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: a pipeline", "cmd": "D=evil | python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: unset", "cmd": "D=evil; unset D; python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: an IFS assignment", "cmd": "IFS=/; D=evil; python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: the use before the assignment", "cmd": "python3 $D/send.py; D=evil", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: a single-quoted use", "cmd": "D=evil; python3 '$D/send.py'", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: a prefix assignment", "cmd": "D=evil python3 $D/send.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (B) kept, sender pair: an unquoted heredoc with a $", "cmd": "cat > fresh.py <<EOF\nimport smtplib\nsmtplib.SMTP('x')\nprint('$HOME')\nEOF\npython3 fresh.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (B) kept, sender pair: a cp onto the path before the run", "cmd": "cat > fresh.py <<'EOF'\nimport smtplib\nsmtplib.SMTP('x')\nEOF\ncp plain.py fresh.py\npython3 fresh.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (B) kept, sender pair: the write inside an if block", "cmd": "if test -d x; then :; cat > fresh.py <<'EOF'\nimport smtplib\nsmtplib.SMTP('x')\nEOF\nfi\npython3 fresh.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (B) kept, sender pair: >> appends", "cmd": "cat >> fresh.py <<'EOF'\nimport smtplib\nsmtplib.SMTP('x')\nEOF\npython3 fresh.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (B) kept, sender pair: the write on a condition", "cmd": "test -d x &&\ncat > fresh.py <<'EOF'\nimport smtplib\nsmtplib.SMTP('x')\nEOF\npython3 fresh.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept: a backslash in a double-quoted value stays in the value (\"okdi\\r\" is not okdir)", "cmd": "D=\"okdi\\r\"; python3 $D/hello.py", "main": true, "sub": false},
+    {"name": "ISSUE2582 (A) kept, sender pair: a backslash in a double-quoted value", "cmd": "D=\"evi\\l\"; python3 $D/send.py", "main": true, "sub": false}
   ]
 }
