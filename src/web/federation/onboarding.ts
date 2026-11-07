@@ -30,6 +30,7 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME, WEB_PORT } from '../../config.js
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { agentFacingLang } from '../agent-text-lang.js'
 import { agentDir } from '../agent-config.js'
 import { shellWord } from '../sanitize.js'
 import { catalogAgentNames } from './local-catalog.js'
@@ -326,12 +327,9 @@ export function applyFederationBlock(content: string, block: string | null): str
   return `${content.replace(/\n*$/, '')}\n\n${block}\n`
 }
 
+// PERSONAESC1107: AGENT_TEXT_LANG when set, else DASHBOARD_LANG as before (agent-text-lang.ts agentFacingLang).
 function resolveLang(): 'hu' | 'en' {
-  try {
-    return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu'
-  } catch {
-    return 'hu'
-  }
+  return agentFacingLang(() => getEffectiveSettingValue('DASHBOARD_LANG'))
 }
 
 /** Apply a block to one CLAUDE.md file. Returns true when the file changed.

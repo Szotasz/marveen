@@ -112,17 +112,17 @@ The list of verbs: `bash scripts/marveen-api.sh --help`.
 
 Saving a memory (`mem.txt` is the WHAT, CATEGORY is hot, warm, cold or shared):
 ```bash
-bash scripts/marveen-api.sh memory-save {{MAIN_AGENT_ID}} CATEGORY "kulcsszó1, kulcsszó2" mem.txt
+bash scripts/marveen-api.sh memory-save {{MAIN_AGENT_ID}} CATEGORY "keyword1, keyword2" mem.txt
 ```
 
-Daily log (append-only; the first line of `naplo.txt` is `## HH:MM -- Téma`, below it what happened and what the result was):
+Daily log (append-only; the first line of `naplo.txt` is `## HH:MM -- Topic`, below it what happened and what the result was):
 ```bash
 bash scripts/marveen-api.sh daily-log {{MAIN_AGENT_ID}} naplo.txt
 ```
 
 Search (before you answer, check whether there is a relevant memory):
 ```bash
-bash scripts/marveen-api.sh memory-search {{MAIN_AGENT_ID}} KULCSSZÓ --category warm   # az első kimeneti sor az X-Memory-Search címke: EZT IS OLVASD EL, nem opcionális
+bash scripts/marveen-api.sh memory-search {{MAIN_AGENT_ID}} KEYWORD --category warm   # the first output line is the X-Memory-Search label: READ IT TOO, it is not optional
 ```
 
 The `X-Memory-Search` line is NOT decoration (if it says `MISSING`, the search did not run the way you asked). Search is LENIENT by default: if not one of your real words matches, it drops
@@ -182,7 +182,7 @@ works where card claiming is switched on (`KANBAN_CLAIM_LOCK=1`); when it is off
 and `/release` return 404 (exit code 1, stderr `claim_lock_disabled`), and then you work without a claim.
 When it is on, only start if the exit code is 0 (HTTP 200); on 409 (exit code 1)
 someone else holds it (stderr tells you who and until when), and then do NOT work on it in parallel. A claim lives for 2 hours by default
-(`--ttl <másodperc>`, between 60 and 86400); for longer work you renew it with the same call.
+(`--ttl <seconds>`, between 60 and 86400); for longer work you renew it with the same call.
 It is released automatically by `done`, `waiting` or `testing` status, by archiving, and when you reassign the card
 to someone else (so the new assignee can claim it):
 ```bash
@@ -212,14 +212,14 @@ Scheduled tasks live in the `~/.claude/scheduled-tasks/` folder and are file-bas
 ### Creating a task via the API
 
 The helper intentionally has no schedule verb, so creating a schedule (and the
-`PUT /api/schedules/<név>` change mentioned below) goes through curl, with the token on the command line. Archiving
+`PUT /api/schedules/<name>` change mentioned below) goes through curl, with the token on the command line. Archiving
 has no helper verb either.
 
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
+  -d '{"name": "task-name", "description": "Short description", "prompt": "The detailed prompt to carry out", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
 ```
 
 ### Types:
@@ -227,7 +227,7 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
 - **heartbeat**: Silent check, writes on Telegram ONLY when something is important/urgent
 
 ### Cron format:
-`perc óra nap hónap hétnapja`. Examples:
+`minute hour day month weekday`. Examples:
 - `0 8 * * *` = every day at 8:00
 - `*/30 * * * *` = every 30 minutes
 - `0 9 * * 1-5` = weekdays at 9:00
@@ -235,7 +235,7 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
 ### Important:
 - The task only runs if your tmux session is running
 - Do NOT write the SQLite scheduled_tasks table directly: that is an old API
-- Do NOT edit the files in `~/.claude/scheduled-tasks/` by hand: the runner only starts a task written (registered) through the API, and a task created or changed by hand will NOT run. To change one: `PUT /api/schedules/<név>`
+- Do NOT edit the files in `~/.claude/scheduled-tasks/` by hand: the runner only starts a task written (registered) through the API, and a task created or changed by hand will NOT run. To change one: `PUT /api/schedules/<name>`
 - You can also manage schedules visually on the dashboard (http://localhost:{{WEB_PORT}})
 
 ## Inter-agent communication
@@ -302,24 +302,24 @@ First write the reason (why it is needed, what it fixes) to the `.claude/skill-j
 ```bash
 mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
 ---
-name: skill-nev
-description: Mikor használd, mit csinál. Legyél konkrét a triggerelésben.
+name: skill-name
+description: When to use it, what it does. Be specific in the triggers.
 ---
-# Skill neve
+# Skill name
 
-## Mikor használd
-[Konkrét triggerek és kontextusok]
+## When to use
+[Specific triggers and contexts]
 
-## Eljárás
-1. [Első lépés]
-2. [Második lépés]
+## Procedure
+1. [First step]
+2. [Second step]
 ...
 
-## Buktatók
-- [Ismert probléma és megoldása]
+## Pitfalls
+- [A known problem and its fix]
 
-## Ellenőrzés
-- [Hogyan validáld az eredményt]
+## Verification
+- [How to validate the result]
 SKILLEOF
 bash scripts/marveen-api.sh skill-propose SKILL-NEV .claude/skill-javaslat/SKILL.md --reason-file .claude/skill-javaslat/indok.txt
 ```
@@ -329,7 +329,7 @@ The proposal (`POST /api/skills/propose`) is sent by the helper's `skill-propose
 ### Skill patch (runtime fix)
 If you find a better solution while using an existing skill:
 1. Do not fix it in place: every skill of the main agent belongs to the fleet. Start from the current text, and send the fixed FULL text as a proposal (above), under the same name.
-2. In the fixed text, rewrite only the part that changed, and note the reason for the change in the "Buktatók" section.
+2. In the fixed text, rewrite only the part that changed, and note the reason for the change in the "Pitfalls" section.
 
 ### Progressive disclosure (token-efficient loading)
 Skills load at 3 levels:
@@ -345,7 +345,7 @@ According to Anthropic's skill-writing guide (Skill authoring best practices, ht
 
 **After writing or fixing a skill, the linter on that skill is MANDATORY:**
 ```bash
-node {{INSTALL_DIR}}/scripts/skill-lint.mjs <a-skill-mappája>     # --json: gépi kimenet
+node {{INSTALL_DIR}}/scripts/skill-lint.mjs <skill-folder>     # --json: machine-readable output
 ```
 If it reports an error (exit code not 0), fix the reported point and run it again until it is clean. The linter only reports, it rewrites nothing. So do not rewrite a skill installed from an external source because of it.
 

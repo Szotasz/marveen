@@ -25,6 +25,7 @@ import { parseQualifiedId, isValidIdSegment, formatQualifiedId } from '../federa
 import { catalogAgentNames, listAgentLocalSkills } from '../federation/local-catalog.js'
 import { containsPrivateData, getCapabilitySummary, mainAgentCapabilitySummary, purgeCapabilityCache } from '../federation/capabilities.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { agentFacingLang } from '../agent-text-lang.js'
 import {
   getFederationConfig,
   federationFileHealth,
@@ -188,12 +189,9 @@ export function validateInboxPayload(
 // (Skill/agent enumeration lives in federation/local-catalog.ts, shared with
 // the capability-summary runner and the routing directory.)
 
+// PERSONAESC1107: AGENT_TEXT_LANG when set, else DASHBOARD_LANG as before (agent-text-lang.ts agentFacingLang).
 function resolveLang(): 'hu' | 'en' {
-  try {
-    return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu'
-  } catch {
-    return 'hu'
-  }
+  return agentFacingLang(() => getEffectiveSettingValue('DASHBOARD_LANG'))
 }
 
 /** Outbound free-text chokepoint: drop the FIELD (never the agent) when a

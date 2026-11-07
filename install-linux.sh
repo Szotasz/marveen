@@ -1662,7 +1662,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
     -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
     -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-    "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template)" >"$INSTALL_DIR/CLAUDE.md"
+    "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template decide)" >"$INSTALL_DIR/CLAUDE.md"
   ok "CLAUDE.md generalva"
 else
   warn "CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
@@ -1672,7 +1672,7 @@ fi
 if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
   sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-      "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" SOUL.md.template)" > "$INSTALL_DIR/SOUL.md"
+      "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" SOUL.md.template decide)" > "$INSTALL_DIR/SOUL.md"
   ok "SOUL.md generalva"
 elif [ ! -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
   warn "SOUL.md.template nem talalhato, SOUL.md nem generalhato"
