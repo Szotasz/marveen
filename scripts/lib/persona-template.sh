@@ -15,7 +15,9 @@
 
 _atl_read() {
   local v
-  v="$(grep -m1 '^AGENT_TEXT_LANG=' "$1/.env" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]"')"
+  # The LAST occurrence and both quote kinds, as the TypeScript reader (src/env-parse.ts) takes it, so the persona and
+  # the managed sections never disagree on a hand-edited .env (EGM review: two lines, or AGENT_TEXT_LANG='en').
+  v="$(grep '^AGENT_TEXT_LANG=' "$1/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d "[:space:]\"'")"
   case "$v" in en|hu) printf '%s' "$v" ;; esac
 }
 
