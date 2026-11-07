@@ -1736,9 +1736,48 @@ export function bindLiteralVars(cmd) {
       }
     })
   })
-  let out = cmd
-  for (const [start, end, value] of edits.sort((a, b) => b[0] - a[0])) out = out.slice(0, start) + value + out.slice(end)
-  return out
+  let bound = cmd
+  for (const [start, end, value] of edits.sort((a, b) => b[0] - a[0])) bound = bound.slice(0, start) + value + bound.slice(end)
+  return boundIsPlain(bound) ? bound : cmd
+}
+
+// Dani (review of #2586, the computed name): the BOUND command is read once more; a variable-setting builtin anywhere,
+// a dynamic or quoted command name, arithmetic, an assigning ${...}, a subscript or [[ ... -eq ... ]] keep today's
+// verdict for the whole command (see the python twin's _bound_is_plain for the list and the shapes).
+const BIND_SETTERS = new Set(['read', 'declare', 'typeset', 'local', 'readonly', 'mapfile', 'readarray', 'getopts', 'let',
+  'unset', 'vared', 'zparseopts', 'zstyle', 'integer', 'float'])
+const BIND_DYNAMIC_TEXT = /\(\(|\$\[|\$\{[^}]*=|\$\{?[A-Za-z_][A-Za-z_0-9]*\[/
+const BIND_ARITH_TEST = /-(?:eq|ne|lt|le|gt|ge)\b/
+function boundIsPlain(bound) {
+  const outside = outsideBodies(bound, 0, bound.length)
+  if (BIND_DYNAMIC_TEXT.test(outside)) return false
+  if (outside.includes('[[') && BIND_ARITH_TEST.test(outside)) return false
+  const segs = bindScan(bound)
+  if (segs === null) return false
+  for (const seg of segs) {
+    const words = seg.words
+    const texts = words.map((w) => w.text)
+    for (let i = 0; i < texts.length; i++) {
+      const t = texts[i]
+      const rest = texts.slice(i + 1)
+      if (BIND_SETTERS.has(t)) return false
+      if (t === 'export' && !rest.every((x) => BIND_ASSIGN.test(x))) return false
+      if ((t === 'printf' || t === 'print') && rest.some((x) => x.startsWith('-v'))) return false
+      if (t === 'set' && rest.some((x) => x.startsWith('-A') || x.startsWith('+A'))) return false
+    }
+    let k = 0
+    while (k < words.length && (BIND_OPEN.has(words[k].text) || BIND_CLOSE.has(words[k].text) || BIND_LEAD.has(words[k].text))) {
+      if (words[k].text === 'for' || words[k].text === 'select' || words[k].text === 'case') { k = words.length; break }
+      k++
+    }
+    while (k < words.length && BIND_ASSIGN.test(words[k].text)) k++
+    while (k < words.length && BIND_PRECMD.has(words[k].text)) k++
+    if (k < words.length) {
+      const head = words[k]
+      if (BIND_GLOBAL_BLOCK.has(head.text) || head.refs.length || head.text.includes('$') || head.text.includes('`')) return false
+    }
+  }
+  return true
 }
 
 // ISSUE2582 (B): a script written by a heredoc and then run in the same command is judged by its body (see the python

@@ -141,6 +141,13 @@ try:
         ("command . FILE that sets D", f"D={D}; command . {D}/setD.sh; python3 $D/hello.py"),
         ("a trap DEBUG string that sets D", f"D={D}; trap 'D={D}/evil' DEBUG; python3 $D/hello.py"),
         ("$D:h is a zsh modifier", f"D={D}/evil/x; python3 $D:h/hello.py"),
+        # Dani's second round (72479): a computed name sets D without naming it; and the shapes next to it
+        ("builtin printf -v with a computed name", f"SD={D}; A=S; B=D; builtin printf -v \"$A$B\" %s {D}/evil; python3 $SD/hello.py"),
+        ("unset with a computed name", f"SD={D}; A=S; B=D; unset \"$A$B\"; python3 $SD/hello.py"),
+        ("arithmetic assigning a computed name", f"SD={D}; A=S; B=D; : $(( $A$B = 1 )); python3 $SD/hello.py"),
+        ("a dynamic command name", f"SD={D}; C=printf; A=S; B=D; $C -v \"$A$B\" %s {D}/evil; python3 $SD/hello.py"),
+        ("a quoted command name", f"SD={D}; A=S; B=D; \"printf\" -v \"$A$B\" %s {D}/evil; python3 $SD/hello.py"),
+        ("an escaped eval", f"SD={D}; A='SD={D}/evil'; \\eval \"$A\"; python3 $SD/hello.py"),
     ):
         code, err = rc(cmd)
         check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")

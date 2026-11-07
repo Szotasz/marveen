@@ -2463,9 +2463,65 @@ def _bind_literal_vars(cmd: str) -> str:
                 if b[2] and any(segs[j]["sep_after"] != "&&" for j in range(b[0], idx)):
                     continue
                 edits.append((start, end, b[1]))
+    bound = cmd
     for start, end, value in sorted(edits, reverse=True):
-        cmd = cmd[:start] + value + cmd[end:]
-    return cmd
+        bound = bound[:start] + value + bound[end:]
+    return bound if _bound_is_plain(bound) else cmd
+
+
+# Dani (review of #2586, the computed name): the name rule only sees a name WRITTEN in the command; a setter can build it
+# (`A=S; B=D; printf -v "$A$B" ...`, `unset "$A$B"`, `$((A$B=1))`, `${(P)X::=...}`, `x[$A$B=1]`, `[[ 1 -eq $A$B=1 ]]`), or
+# hide behind a dynamic or quoted command name (`C=printf; $C -v ...`, `"printf" -v ...`). So the BOUND command (every
+# provable use filled in) is read once more, and any of these anywhere keeps today's verdict for the whole command:
+#   - a variable-setting builtin as a word anywhere (quoted or not): read, declare, typeset, local, readonly, mapfile,
+#     readarray, getopts, let, unset, vared, zparseopts, zstyle, integer, float, and export unless its segment is the
+#     plain `export NAME=literal` form; printf / print with a -v word in the same segment; set -A / +A;
+#   - eval / source / `.` / alias / autoload / trap as a command, quoted or not, also behind command / builtin / exec;
+#   - a command word (after keywords, assignments and command / builtin / exec ...) that still holds a `$` or backtick;
+#   - `((`, `$[`, a `${` with `=` inside, a `$NAME[` / `${NAME[` subscript, or `[[` with an arithmetic comparison.
+_BIND_SETTERS = frozenset(("read", "declare", "typeset", "local", "readonly", "mapfile", "readarray", "getopts", "let",
+                           "unset", "vared", "zparseopts", "zstyle", "integer", "float"))
+_BIND_DYNAMIC_TEXT = re.compile(r"\(\(|\$\[|\$\{[^}]*=|\$\{?[A-Za-z_][A-Za-z_0-9]*\[")
+_BIND_ARITH_TEST = re.compile(r"-(?:eq|ne|lt|le|gt|ge)\b")
+
+
+def _bound_is_plain(bound: str) -> bool:
+    outside = _outside_bodies(bound, 0, len(bound))
+    if _BIND_DYNAMIC_TEXT.search(outside):
+        return False
+    if "[[" in outside and _BIND_ARITH_TEST.search(outside):
+        return False
+    segs = _bind_scan(bound)
+    if segs is None:
+        return False
+    for seg in segs:
+        words = seg["words"]
+        texts = [w["text"] for w in words]
+        for i, t in enumerate(texts):
+            if t in _BIND_SETTERS:
+                return False
+            if t == "export" and not all(_BIND_ASSIGN.match(x) for x in texts[i + 1:]):
+                return False
+            if t in ("printf", "print") and any(x.startswith("-v") for x in texts[i + 1:]):
+                return False
+            if t == "set" and any(x.startswith(("-A", "+A")) for x in texts[i + 1:]):
+                return False
+        k = 0
+        while k < len(words) and (words[k]["text"] in _BIND_OPEN or words[k]["text"] in _BIND_CLOSE
+                                  or words[k]["text"] in _BIND_LEAD):
+            if words[k]["text"] in ("for", "select", "case"):
+                k = len(words)
+                break
+            k += 1
+        while k < len(words) and _BIND_ASSIGN.match(words[k]["text"]):
+            k += 1
+        while k < len(words) and words[k]["text"] in _BIND_PRECMD:
+            k += 1
+        if k < len(words):
+            head = words[k]
+            if head["text"] in _BIND_GLOBAL_BLOCK or head["refs"] or "$" in head["text"] or "`" in head["text"]:
+                return False
+    return True
 
 
 # ISSUE2582 (B): `cat > /x/new.py <<'EOF' ... EOF` and then `python3 /x/new.py` in the same command. The file does not
