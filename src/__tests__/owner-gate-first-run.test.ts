@@ -10,7 +10,7 @@
 // Side effects that would leave the process are mocked; PROJECT_ROOT/STORE_DIR point at a throwaway directory.
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -358,6 +358,47 @@ describe("'first-login': creating the FIRST dashboard login", () => {
     createDashboardUser('owner', 'x'.repeat(60))
     expect((await addUser(FULL_KEY, 'second')).status).toBe(403)
     expect(notices).toHaveLength(0)
+  })
+})
+
+// --- ONBOARDOWNERPW1107: the first-login race ------------------------------------------------------------------
+// The first-run pass is decided when the request arrives, but the user is inserted only after the body is read and
+// the password hashed (both awaited). Without a second count right before the insert, two windows could each create a
+// "first" login, and a request holding its body open could create one after the owner's login exists. The insert is
+// synchronous (better-sqlite3), so a count with no await before it is atomic with it.
+describe('ONBOARDOWNERPW1107: the first login is created once, even when requests race', () => {
+  const addUser = (auth: Auth, username: string) => hit(tryHandleAuth, 'POST', '/api/auth/users', auth, { username, password: 'super-secret-pw' })
+  for (const [name, auth] of [['a FULL key', FULL_KEY], ['the shared token', TOKEN]] as const) {
+    it(`two parallel first logins with ${name}, two names: exactly one 201, the other refused, one row`, async () => {
+      const [a, b] = await Promise.all([addUser(auth, 'first-a'), addUser(auth, 'first-b')])
+      expect([a.status, b.status].sort()).toEqual([201, 403])
+      expect(refused(a.status === 403 ? a : b)).toBe(true)
+      expect(listDashboardUsers()).toHaveLength(1)
+    })
+  }
+  it('a first-run request holding its body open is refused once the owner login exists, and inserts nothing', async () => {
+    const req = new PassThrough() as unknown as http.IncomingMessage
+    req.headers = { 'content-type': 'application/json' }
+    ;(req as any).url = '/api/auth/users'
+    ;(req as any).method = 'POST'
+    const out: { status: number; body: any } = { status: 0, body: null }
+    const res: any = { writeHead(s: number) { out.status = s; return res }, setHeader() {}, end(c?: string) { if (c) { try { out.body = JSON.parse(c) } catch { out.body = c } } } }
+    const url = new URL('http://127.0.0.1:3420/api/auth/users')
+    const pending = tryHandleAuth({ req, res, path: url.pathname, method: 'POST', url, auth: TOKEN, fedPeer: null } as any)
+    await new Promise((r) => setTimeout(r, 20))
+    createDashboardUser('owner', 'x'.repeat(60))
+    ;(req as unknown as PassThrough).end(JSON.stringify({ username: 'late', password: 'super-secret-pw' }))
+    expect(await pending).toBe(true)
+    expect(out.status).toBe(403)
+    expect(out.body?.code).toBe('owner_session_required')
+    expect(getDashboardUser('late')).toBeUndefined()
+    expect(listDashboardUsers().map((u) => u.username)).toEqual(['owner'])
+  })
+  it('the same name twice in parallel by the owner: 201 and 409, never a 500', async () => {
+    createDashboardUser('owner', 'x'.repeat(60))
+    const [a, b] = await Promise.all([addUser(SESSION, 'twin'), addUser(SESSION, 'twin')])
+    expect([a.status, b.status].sort()).toEqual([201, 409])
+    expect(listDashboardUsers().filter((u) => u.username === 'twin')).toHaveLength(1)
   })
 })
 

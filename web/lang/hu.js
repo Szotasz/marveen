@@ -2106,6 +2106,13 @@ window._i18n.hu = {
 
   // --- Onboarding wizard ---
   'onboarding.identity.tab':     'Név',
+  'onboarding.login.tab':        'Belépés',
+  'onboarding.login.create_desc': 'Először hozd létre a dashboard-belépésedet. Ezzel a felhasználónévvel és jelszóval lépsz be később is, és ezzel hagyod jóvá a beállításokat. Utána a varázsló innen folytatódik.',
+  'onboarding.login.create_btn':  'Létrehozás és belépés',
+  'onboarding.login.signin_desc': 'Ezen a gépen már van dashboard-belépés. Lépj be vele, és a varázsló innen folytatódik.',
+  'onboarding.login.created_signin': 'A belépés létrejött, de a bejelentkezés most nem sikerült. Lépj be vele itt.',
+  'onboarding.login.taken_signin': 'Közben létrejött egy dashboard-belépés ezen a gépen. Lépj be vele itt.',
+  'onboarding.login.disabled_only': 'Ezen a gépen csak letiltott dashboard-belépés van, ezért innen sem létrehozni, sem belépni nem lehet. A gépen az npm run dashboard-user paranccsal állítsd helyre, utána nyisd meg újra ezt az oldalt.',
   'onboarding.identity.desc':    'Nevezd el az asszisztensed, és add meg a saját neved. Ezt később is átírhatod.',
   'onboarding.identity.agent_label': 'Az asszisztens neve',
   'onboarding.identity.owner_label': 'A te neved',
@@ -2131,7 +2138,7 @@ window._i18n.hu = {
   'onboarding.step1.owner_login_required':'A Claude-belépés cseréjéhez jelentkezz be a dashboardra a tulajdonosi fiókkal, utána próbáld újra.',
   'onboarding.step1.saved_verified':   'Token elmentve és ellenőrizve.',
   'onboarding.step1.saved_unverified': 'Token elmentve (az ellenőrzés nem futott le, ettől még jó lehet).',
-  'onboarding.flow_note': 'A négy lépés egymásra épül: a mentések után a rendszer magától újraindul, és a 4. lépés (párosítás) után kezd válaszolni. Addig a hiányzó lépésekre hivatkozó üzenetek normálisak.',
+  'onboarding.flow_note': 'Az öt lépés egymásra épül: előbb a dashboard-belépésed, utána a mentések, amelyek után a rendszer magától újraindul. Az 5. lépés (párosítás) után kezd válaszolni, addig a hiányzó lépésekre hivatkozó üzenetek normálisak.',
   'onboarding.step2.saved_restarted': 'Bot token elmentve, az ügynök újraindul az új bottal. Egy pillanat.',
   'onboarding.step2.saved_restart_failed': 'A bot token elmentve, de az ügynök újraindítása nem sikerült. Indítsd újra kézzel: {cmd} (macOS-en a grafikus bejelentkezés egy termináljából), aztán térj vissza ide.',
   'onboarding.step2.waiting_channel':'A csatorna indul az új bot tokennel. Ez hidegindításnál pár percig is eltarthat, kérlek várj, magától lép tovább.',

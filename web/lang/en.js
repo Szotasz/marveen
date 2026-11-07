@@ -2103,6 +2103,13 @@ window._i18n.en = {
 
   // --- Onboarding wizard ---
   'onboarding.identity.tab':     'Name',
+  'onboarding.login.tab':        'Sign-in',
+  'onboarding.login.create_desc': 'First create your dashboard login. You will sign in with this username and password later too, and approve settings with it. The wizard then continues from here.',
+  'onboarding.login.create_btn':  'Create and sign in',
+  'onboarding.login.signin_desc': 'This machine already has a dashboard login. Sign in with it, and the wizard continues from here.',
+  'onboarding.login.created_signin': 'The login was created, but signing in failed just now. Sign in with it here.',
+  'onboarding.login.taken_signin': 'A dashboard login was created on this machine meanwhile. Sign in with it here.',
+  'onboarding.login.disabled_only': 'This machine has only disabled dashboard logins, so you can neither create one nor sign in from here. Restore one on the machine with npm run dashboard-user, then reopen this page.',
   'onboarding.identity.desc':    'Name your assistant and tell it your name. You can change these later.',
   'onboarding.identity.agent_label': 'Assistant name',
   'onboarding.identity.owner_label': 'Your name',
@@ -2128,7 +2135,7 @@ window._i18n.en = {
   'onboarding.step1.owner_login_required':'To change the Claude login, sign in to the dashboard with the owner account, then try again.',
   'onboarding.step1.saved_verified':   'Token saved and verified.',
   'onboarding.step1.saved_unverified': 'Token saved (verification did not run, it may still be valid).',
-  'onboarding.flow_note': 'The four steps build on each other: after each save the system restarts itself, and it begins responding after step 4 (pairing). Until then, messages about missing steps are normal.',
+  'onboarding.flow_note': 'The five steps build on each other: first your dashboard login, then the saves, after each of which the system restarts itself. It begins responding after step 5 (pairing); until then, messages about missing steps are normal.',
   'onboarding.step2.saved_restarted': 'Bot token saved, the agent is restarting with the new bot. One moment.',
   'onboarding.step2.saved_restart_failed': 'Bot token saved, but restarting the agent failed. Restart it by hand: {cmd} (on macOS from a terminal of the GUI login), then come back here.',
   'onboarding.step2.waiting_channel':'The channel is starting with the new bot token. A cold start can take a few minutes, please wait, it advances on its own.',

@@ -262,6 +262,24 @@ function mainAgentId() {
 
   window.mvShowLogin = (opts) => showLoginOverlay(opts)
 
+  // ONBOARDOWNERPW1107: the onboarding wizard's own sign-in (its first step). On the unwrapped fetch, like the overlay
+  // above: through the wrapper a wrong password's 401 would wipe the stored token or Bridge key and open the full-screen
+  // login. Returns only the outcome; the caller clears its password fields.
+  window.mvPasswordLogin = async (username, password) => {
+    try {
+      const r = await originalFetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      let retryAfter = 0
+      if (r.status === 429) { try { retryAfter = (await r.json()).retry_after_s || 0 } catch { /* ignore */ } }
+      return { ok: r.ok, status: r.status, retryAfter }
+    } catch {
+      return { ok: false, status: 0, retryAfter: 0 }
+    }
+  }
+
   // BRIDGEPWLOGIN1101 (Samu 64763, plan A; the moment: Samu 65968): the Bridge opens the dashboard with its device key,
   // which never makes the owner. Most Bridge use needs no owner session, so nothing is offered on load: the offer comes
   // when an owner action is first refused (403 owner_session_required, maybeOfferOnOwnerRefusal in the fetch wrapper),
@@ -281,6 +299,8 @@ function mainAgentId() {
   }
   async function offerOwnerLoginOnce() {
     try { if (sessionStorage.getItem(LOGIN_LATER_KEY) === '1') return } catch { /* storage blocked: offer it */ }
+    // ONBOARDOWNERPW1107: while the onboarding wizard is open, its first step is the sign-in; no second form over it.
+    if (typeof document !== 'undefined' && document.getElementById('onboardingOverlay')?.classList.contains('active')) return
     if (!sessionToken) return
     let s = null
     try {
@@ -15199,29 +15219,52 @@ async function initOnboarding() {
   if (onboardingDismissed()) return
   const s = await fetchOnboardingStatus()
   if (!s || !s.needsOnboarding) return
-  renderOnboarding(s)
+  renderOnboarding(s, await fetchOnboardingAuth())
 }
 async function refreshOnboarding() {
   const s = await fetchOnboardingStatus()
-  if (s) renderOnboarding(s)
+  if (s) renderOnboarding(s, await fetchOnboardingAuth())
+}
+// ONBOARDOWNERPW1107 (owner decision, 11-07): the wizard's FIRST step is the dashboard login, so every later step runs
+// in the owner's session (the Bridge key or the token plus the owner cookie) and never stops on a "go to Settings"
+// text. owner_session is in the status only for a caller that could hold it (the shared token, a FULL device key, a
+// session); false means this window can become the owner by creating or signing in to the login. An operator key or a
+// sub-agent token gets no such field, so no sign-in step it could never complete; an unreadable status skips the step
+// too, and the server's gate decides.
+async function fetchOnboardingAuth() {
+  try {
+    const r = await fetch('/api/auth/status', { cache: 'no-store' })
+    return r.ok ? await r.json() : null
+  } catch {
+    return null
+  }
+}
+function onboardingNeedsLogin(auth) {
+  return !!auth && auth.owner_session === false
+}
+// The bar's step for an onboarding step (onboardingCurrentStep, 1-4): the login is 1, the rest move one along.
+function onboardingDisplayStep(base, auth) {
+  return onboardingNeedsLogin(auth) ? 1 : base + 1
 }
 let onboardingChannelProvider = 'telegram'
 let onboardingAgentId = null
 // The step-3 tab is a static HTML label ("Telegram bot") that renderStaticI18n's generic data-i18n sweep would otherwise reset
 // to the Telegram wording on every language switch, so both call sites re-apply the provider-specific text here.
 function applyOnboardingProviderTab() {
-  const el = document.querySelector('#onboardingSteps .onboarding-step[data-ostep="3"] span:last-child')
+  const el = document.querySelector('#onboardingSteps .onboarding-step[data-ostep="4"] span:last-child')
   if (el) el.textContent = onboardingChannelProvider === 'slack' ? t('onboarding.step2.tab_slack') : t('onboarding.step2.tab')
 }
-function renderOnboarding(s) {
+function renderOnboarding(s, auth) {
   if (onboardingDismissed()) return
   const overlay = document.getElementById('onboardingOverlay')
   if (!overlay) return
   if (s.channelProvider) onboardingChannelProvider = s.channelProvider
   if (s.agentId) onboardingAgentId = s.agentId
   applyOnboardingProviderTab()
-  const step = onboardingCurrentStep(s)
-  if (step === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
+  const base = onboardingCurrentStep(s)
+  if (base === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
+  const loginStep = onboardingNeedsLogin(auth)
+  const step = onboardingDisplayStep(base, auth)
   overlay.hidden = false
   overlay.classList.add('active')
   document.body.style.overflow = 'hidden'
@@ -15234,20 +15277,121 @@ function renderOnboarding(s) {
   // of step 4 -- say so, or a fresh installer reads step 2's "saved" as "done"
   // and every later "bot token not found" as a failure (BK bootcamp, 07-28).
   const flowNote = document.getElementById('onbFlowNote')
-  if (flowNote) flowNote.textContent = step === 4 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
+  if (flowNote) flowNote.textContent = step === 5 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
   const body = document.getElementById('onboardingBody')
-  if (step === 1) body.innerHTML = onbIdentityHtml(s)
-  else if (step === 2) body.innerHTML = onbStep1Html(s)
-  else if (step === 3) body.innerHTML = onbStep2Html(s)
+  if (loginStep) {
+    body.innerHTML = onbLoginHtml(auth)
+    wireOnboardingLogin(auth)
+    return
+  }
+  if (base === 1) body.innerHTML = onbIdentityHtml(s)
+  else if (base === 2) body.innerHTML = onbStep1Html(s)
+  else if (base === 3) body.innerHTML = onbStep2Html(s)
   else body.innerHTML = onbStep3Html(s)
-  wireOnboarding(step)
+  wireOnboarding(base)
   // Step 3, token already on disk, managed-settings.json still missing: the status GET already knows this (no probe/write/restart triggered),
   // so show the sudo command right away instead of waiting for a Save click. Retry just re-polls status -- no token POST, no channel restart.
-  if (step === 3 && s.sudoCommand) showSudoModal(s.sudoCommand, () => refreshOnboarding())
+  if (base === 3 && s.sudoCommand) showSudoModal(s.sudoCommand, () => refreshOnboarding())
 }
 function onbMsg(text, isErr) {
   const el = document.getElementById('onbMsg')
   if (el) { el.textContent = text; el.className = 'onb-msg' + (isErr ? ' err' : ' ok') }
+}
+// ONBOARDOWNERPW1107: the login step, three forms. (a) no login yet: create it, then sign in with it at once;
+// (b) a login exists but this window holds no owner session: sign in; (c) only disabled logins: neither works over HTTP,
+// the machine-local CLI is the way. Own ids (onbLogin*): the Settings auth card has its own create form.
+function onbLoginHtml(auth) {
+  if (auth && auth.setup_required) {
+    return `<p>${escapeHtml(t('onboarding.login.create_desc'))}</p>`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.username'))}</label>`
+      + `<input id="onbLoginUser" type="text" class="onb-input" maxlength="64" autocomplete="username" autocapitalize="off" spellcheck="false">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.card.new_password'))}</label>`
+      + `<input id="onbLoginPass" type="password" class="onb-input" autocomplete="new-password">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.card.repeat_password'))}</label>`
+      + `<input id="onbLoginPass2" type="password" class="onb-input" autocomplete="new-password">`
+      + `<button class="btn-primary btn-compact" id="onbLoginCreateBtn">${escapeHtml(t('onboarding.login.create_btn'))}</button>`
+      + `<div id="onbMsg" class="onb-msg"></div>`
+  }
+  if (auth && auth.login_available) {
+    return `<p>${escapeHtml(t('onboarding.login.signin_desc'))}</p>`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.username'))}</label>`
+      + `<input id="onbLoginUser" type="text" class="onb-input" maxlength="64" autocomplete="username" autocapitalize="off" spellcheck="false">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.password'))}</label>`
+      + `<input id="onbLoginPass" type="password" class="onb-input" autocomplete="current-password">`
+      + `<button class="btn-primary btn-compact" id="onbLoginSignInBtn">${escapeHtml(t('auth.login.submit'))}</button>`
+      + `<div id="onbMsg" class="onb-msg"></div>`
+  }
+  return `<p>${escapeHtml(t('onboarding.login.disabled_only'))}</p><div id="onbMsg" class="onb-msg"></div>`
+}
+// The sign-in after a create, or on its own. On success the page reloads, like the login overlay: the cookie and the
+// stored token or key stay, and the wizard comes back on its next step with the whole page in the owner's session.
+async function onbSignIn(username, password) {
+  const r = await window.mvPasswordLogin(username, password)
+  if (r.ok) { window.location.reload(); return true }
+  if (r.status === 429) onbMsg(t('auth.login.err_throttled') + (r.retryAfter ? ` (${r.retryAfter}s)` : ''), true)
+  else if (r.status === 401) onbMsg(t('auth.login.err_invalid'), true)
+  else onbMsg(t('auth.login.err_network'), true)
+  return false
+}
+function wireOnboardingLogin(auth) {
+  const field = (id) => document.getElementById(id)
+  const clearPasswords = () => { for (const id of ['onbLoginPass', 'onbLoginPass2']) { const el = field(id); if (el) el.value = '' } }
+  const createBtn = field('onbLoginCreateBtn')
+  if (createBtn) createBtn.addEventListener('click', async () => {
+    const username = (field('onbLoginUser').value || '').trim()
+    const p1 = field('onbLoginPass').value || ''
+    const p2 = field('onbLoginPass2').value || ''
+    if (!username || !p1) { onbMsg(t('auth.login.err_empty'), true); return }
+    if (p1 !== p2) { onbMsg(t('auth.card.err_mismatch'), true); return }
+    createBtn.disabled = true; onbMsg(t('onboarding.saving'))
+    try {
+      const r = await fetch('/api/auth/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password: p1 }) })
+      const d = await r.json().catch(() => ({}))
+      if (r.ok) {
+        const signedIn = await onbSignIn(username, p1)
+        clearPasswords()
+        if (!signedIn) {
+          // The login exists, this window is not signed in: the step turns into the sign-in form.
+          await refreshOnboarding()
+          onbMsg(t('onboarding.login.created_signin'), true)
+        }
+        return
+      }
+      clearPasswords()
+      if (r.status === 403 || r.status === 409) {
+        // Another window created the login meanwhile (the server creates only one): sign in with it instead.
+        await refreshOnboarding()
+        onbMsg(t('onboarding.login.taken_signin'), true)
+        return
+      }
+      createBtn.disabled = false
+      onbMsg(d.error || t('auth.card.err_generic'), true)
+    } catch {
+      clearPasswords()
+      createBtn.disabled = false
+      onbMsg(t('auth.login.err_network'), true)
+    }
+  })
+  const signInBtn = field('onbLoginSignInBtn')
+  if (signInBtn) signInBtn.addEventListener('click', async () => {
+    const username = (field('onbLoginUser').value || '').trim()
+    const password = field('onbLoginPass').value || ''
+    if (!username || !password) { onbMsg(t('auth.login.err_empty'), true); return }
+    signInBtn.disabled = true
+    const ok = await onbSignIn(username, password)
+    clearPasswords()
+    if (!ok) signInBtn.disabled = false
+  })
+}
+// ONBOARDOWNERPW1107: an owner refusal inside the wizard. When this window can become the owner, the wizard goes back
+// to its login step (true). Otherwise (an operator key, a sub-agent token, an unreadable status, or a session the gate
+// still refused) the caller shows the server's own reason, and nothing jumps to Settings: ownerSessionText would open
+// the Settings page and hide the wizard, the very stop the owner ruled out.
+async function onbOwnerRefused(d) {
+  if (!d || d.code !== 'owner_session_required') return false
+  if (!onboardingNeedsLogin(await fetchOnboardingAuth())) return false
+  await refreshOnboarding()
+  return true
 }
 function onbIdentityHtml(s) {
   return `<p>${escapeHtml(t('onboarding.identity.desc'))}</p>`
@@ -15320,8 +15464,8 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentName, ownerName }) })
         const d = await res.json().catch(() => ({}))
-        // OWNERGATE3-1104: an owner-session refusal is shown in the page language (ownerSessionText).
-        if (!res.ok) { idBtn.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
+        // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+        if (!res.ok) { idBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
         // The name is live in the .env now -- repaint the chrome from
         // /api/marveen so the sidebar/title reflect it immediately, and
         // surface the automatic channels restart (same pattern as the
@@ -15345,7 +15489,7 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { authBtn.disabled = false; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
+        if (!res.ok) { authBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
         // Fresh-install path: the server restarts the (previously
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
@@ -15405,8 +15549,8 @@ function wireOnboarding(step) {
           showSudoModal(d.sudoCommand, () => botBtn.click())
           return
         }
-        // OWNERGATE2-1104: an owner refusal is said in the page language (ownerSessionText); setup_required also opens the create-login form.
-        if (!res.ok) { botBtn.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
+        // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+        if (!res.ok) { botBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
         // The server restarts the channels session so the new bot token goes
         // live. Do NOT advance on a timer: the restart response is a dispatch
         // receipt, and the cold start is ~minutes. Wait for the MEASURED
@@ -15476,9 +15620,8 @@ function wireOnboarding(step) {
           try {
             const res = await fetch(`/api/agents/${encodeURIComponent(onboardingAgentId || mainAgentId())}/channels/${onboardingChannelProvider}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: b.dataset.code }) })
             const d = await res.json().catch(() => ({}))
-            // OWNERGATE2-1104: only the channel's FIRST pairing keeps the token before a login exists; a later one is refused
-            // with setup_required, which ownerSessionText says in the page language and answers by opening the create-login form.
-            if (!res.ok) { b.disabled = false; onbMsg(ownerSessionText(d) || d.error || t('onboarding.error'), true); return }
+            // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+            if (!res.ok) { b.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
             onbMsg(t('onboarding.step3.approved'))
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
@@ -16786,7 +16929,17 @@ function wireAuthBanner() {
     banner.hidden = true
   })
   // Land on the Security tab, where the auth card lives now (openCreateLoginSettings, shared with the 403 setup_required path).
-  if (go) go.addEventListener('click', () => { openCreateLoginSettings() })
+  // ONBOARDOWNERPW1107 (Samu 72423): while the onboarding is unfinished, the banner takes the owner back to the wizard,
+  // which opens on its login step (a closed wizard is reopened); otherwise to the Security tab as before.
+  if (go) go.addEventListener('click', async () => {
+    const s = await fetchOnboardingStatus()
+    if (s && s.needsOnboarding) {
+      try { localStorage.removeItem(ONBOARDING_DISMISS_KEY) } catch { /* storage blocked */ }
+      renderOnboarding(s, await fetchOnboardingAuth())
+      return
+    }
+    openCreateLoginSettings()
+  })
 }
 
 document.addEventListener('DOMContentLoaded', () => {
