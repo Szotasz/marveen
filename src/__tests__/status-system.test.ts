@@ -277,21 +277,21 @@ describe('Telegram plugin-patch row', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   it('patched: "rendben" with the version', () => {
-    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeState([{ version: '0.0.7', status: 'patched' }])
     expect(telegramPluginPatchStatus(state)).toBe('rendben (0.0.7)')
   })
 
   it('the forward patch is measured on its own: d4 in place, fwd missing says what that costs', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'anchor-missing:inbound meta user_id', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'anchor-missing:inbound meta user_id', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (továbbítás-jelölő): 0.0.8 (anchor-missing:inbound meta user_id) · egy továbbított parancs úgy fut, mint a begépelt')
   })
 
   it('topics: not expected while the switch is off, measured like the others while it is on', () => {
-    const fixed = '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v'
+    const fixed = '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v'
     server('0.0.7', fixed)
     const withTopics = (topics: string, patches: Record<string, string>) =>
       writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), topics, files: [{ version: '0.0.7', status: 'patched', patches }] }))
@@ -305,7 +305,7 @@ describe('Telegram plugin-patch row', () => {
   })
 
   it('anchor-missing / unwritable at start: one line naming the version, the reason and the fallback', () => {
-    server('0.0.8', 'plugin code\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', 'plugin code\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeState([{ version: '0.0.8', status: 'anchor-missing:status handler' }])
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK: 0.0.8 (anchor-missing:status handler) · a /status és a /help a plugin saját válasza')
     writeState([{ version: '0.0.8', status: 'unwritable' }])
@@ -315,18 +315,18 @@ describe('Telegram plugin-patch row', () => {
   // #1530 review: without the inbound log no owner write command can run, so
   // a missing `evid` patch must say exactly that.
   it('the evidence patch is measured on its own: missing says the write commands will not run', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'anchor-missing:channel notification', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'anchor-missing:channel notification', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (bejövő-napló): 0.0.8 (anchor-missing:channel notification) · az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket')
   })
 
   // quote1101: without the quote patch a reply still arrives, only without the quoted excerpt.
   it('the quote patch is measured on its own: missing says the quoted excerpt does not reach the agent', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'anchor-missing:inbound meta ts', silent: 'patched', kbd: 'patched', invis: 'patched' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'anchor-missing:inbound meta ts', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (idézet-részlet): 0.0.8 (anchor-missing:inbound meta ts) · egy idézett válasznál az idézett részlet nem jut el az ágenshez')
   })
@@ -334,24 +334,33 @@ describe('Telegram plugin-patch row', () => {
   // c67f5f34: without the reply-keyboard patch the staff questions still go out, only without buttons.
   it('the reply-keyboard patch is measured on its own: missing says the questions go out without buttons', () => {
     // the silent patch shares the send-options anchor, so it is missing with kbd
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched', pairtext: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (hangtalan válasz): 0.0.8 (anchor-missing:reply send options) · minden válasz hanggal érkezik, a státuszüzenetek is; HIÁNYZIK (válaszgombok): 0.0.8 (anchor-missing:reply send options) · a kérdések gomb nélkül mennek ki, a válasz betűvel jön')
   })
 
   // Without the silent-reply patch every reply still goes out, only with the notification sound.
   it('the silent-reply patch is measured on its own: missing says every reply rings', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched', pairtext: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (hangtalan válasz): 0.0.8 (anchor-missing:reply file branch) · minden válasz hanggal érkezik, a státuszüzenetek is')
   })
 
+  it('the pairtext patch is measured on its own: missing says the bot names Claude Code (TGPAIRTEXT1108)', () => {
+    // A plugin update moved its pairing wording: the patcher left pairtext out (all-or-nothing), the others are in.
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'anchor-missing:pair reply' } },
+    ] }))
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (párosítás-szöveg): 0.0.8 (anchor-missing:pair reply) · a párosításnál a bot Claude Code-ot mond, a jóváhagyás viszont a dashboardon van')
+  })
+
   it('a plugin version that arrived after the start is measured now, not taken from the state file', () => {
-    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(invis1024): v')
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(quote1101): q\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(c67f5f34-kbd): w\n// MARVEEN-PATCH(pairtext): p\n// MARVEEN-PATCH(invis1024): v')
     server('0.0.9', 'fresh plugin code')
     writeState([{ version: '0.0.7', status: 'already' }])
     expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.9 \(új verzió/)

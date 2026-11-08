@@ -221,7 +221,7 @@ describe('silent: reply without a notification sound', () => {
     expect(r.stderr).toMatch(/LOUD: reply file branch not found exactly once.*the reply tool has no silent option/)
     expect(readFileSync(server, 'utf-8')).not.toContain(SIL)
     expect(readState(state).files[0].patches).toEqual({
-      d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched',
+      d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched', pairtext: 'patched',
     })
   })
 })

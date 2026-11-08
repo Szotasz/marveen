@@ -444,6 +444,65 @@ TOPICS_STEPS = [
 ]
 TOPICS_FALLBACK = "replies and the typing indicator land outside the topic the message came from"
 
+# TGPAIRTEXT1108 (the owner's ask, Samu 73716): the plugin tells a pairing user "run in Claude Code: /telegram:access
+# pair <code>", and its /start says the same, but on a Marveen install the code is approved in the dashboard. Two
+# insert-only lines answer first and return, so the plugin's own lines stay byte-exact under them (stripping ours gives
+# the original back) and never run. The text is the install's AGENT_TEXT_LANG (en | hu; anything else, or none: hu),
+# and it says nothing the chat did not have before: no name, no URL, no agent list. A language change rebuilds the
+# lines (strip, then insert again).
+PAIRTEXT_MARKER = "// MARVEEN-PATCH(pairtext): the pairing text names the Marveen dashboard"
+PAIRTEXT_REPLY = {
+    "hu": "`${{result.isResend ? 'Még várakozik' : 'Párosítás szükséges'}}: ezt a párosítást a Marveen dashboardon lehet "
+          "jóváhagyni ezzel a kóddal: ${{result.code}}`",
+    "en": "`${{result.isResend ? 'Still pending' : 'Pairing required'}}: approve this pairing in the Marveen dashboard "
+          "with this code: ${{result.code}}`",
+}
+PAIRTEXT_START = {
+    "hu": "`Ez a bot egy Marveen-ügynökhöz kapcsol.\\n\\nPárosítás:\\n1. Írj nekem bármit, és kapsz egy 6 karakteres kódot.\\n"
+          "2. A Marveen dashboardon hagyd jóvá ezzel a kóddal.\\n\\nUtána az ide írt üzeneteid az ügynökhöz jutnak.`",
+    "en": "`This bot connects to a Marveen agent.\\n\\nTo pair:\\n1. DM me anything, and you get a 6-character code.\\n"
+          "2. Approve it in the Marveen dashboard with that code.\\n\\nAfter that, DMs here reach the agent.`",
+}
+# The pair branch: the line ours goes after, and (lookahead) the plugin's own reply under it, exactly as published.
+PAIRTEXT_REPLY_ANCHOR = ("pair reply", re.compile(
+    r"^( *)const lead = result\.isResend \? 'Still pending' : 'Pairing required'\n"
+    r"(?= *await ctx\.reply\(\n *`\$\{lead\} — run in Claude Code:\\n\\n/telegram:access pair \$\{result\.code\}`,\n *\)\n *return\n)",
+    re.MULTILINE))
+# /start: after its DM gate, with the plugin's own Claude Code wording under it.
+PAIRTEXT_START_ANCHOR = ("start reply", re.compile(
+    r"^bot\.command\('start', async ctx => \{\n( *)if \(!dmCommandGate\(ctx\)\) return\n"
+    r"(?= *await ctx\.reply\(\n *`This bot bridges Telegram to a Claude Code session\.\\n\\n` \+\n(?:.*\n){2} *`2\. In Claude Code: /telegram:access pair <code>\\n\\n` \+\n)",
+    re.MULTILINE))
+PAIRTEXT_FALLBACK = "the pairing replies keep the plugin's own text, which sends the user to Claude Code"
+
+
+def strip_pairtext(text):
+    """The text without the lines the pairtext patch inserted (they all end with ' ' + PAIRTEXT_MARKER)."""
+    return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + PAIRTEXT_MARKER))
+
+
+def apply_pairtext(text, lang):
+    """Returns (new_text, status). Both lines or none (all-or-nothing): a missing anchor leaves the file as it was.
+    'already' when the lines are there in this language; a language change rewrites them ('patched')."""
+    if PAIRTEXT_MARKER in text and strip_pairtext(text).count(PAIRTEXT_MARKER):
+        return text, "damaged:pairtext marker"
+    base = strip_pairtext(text)
+    lang = lang if lang in PAIRTEXT_REPLY else "hu"
+    out = base
+    for (name, rx), body in ((PAIRTEXT_REPLY_ANCHOR, PAIRTEXT_REPLY[lang]), (PAIRTEXT_START_ANCHOR, PAIRTEXT_START[lang])):
+        found = list(rx.finditer(out))
+        if len(found) != 1:
+            return text, f"anchor-missing:{name}"
+        m = found[0]
+        line = "{indent}await ctx.reply(" + body + "); return " + PAIRTEXT_MARKER + "\n"
+        out = out[:m.end()] + line.format(indent=m.group(1)) + out[m.end():]
+    if out == text:
+        return text, "already"
+    return out, "patched"
+
+
+PAIRTEXT_PATCH = {"name": "pairtext", "fallback": PAIRTEXT_FALLBACK}
+
 
 def log(msg):
     sys.stderr.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} patch-telegram-plugin: {msg}\n")
@@ -534,14 +593,17 @@ def remove_topics(text):
 TOPICS_PATCH = {"name": "topics", "fallback": TOPICS_FALLBACK}
 
 
-def patch_text(text, topics=False, buttons=True):
+def patch_text(text, topics=False, buttons=True, lang="hu"):
     """Returns (new_text, [(patch, status), ...]). The topics entry is there
     when the switch is on, or when switching it off took the patch out.
-    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS)."""
+    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS); `lang` the pairtext language."""
     results = []
     for patch in PATCHES:
         text, status = patch["apply"](text, buttons) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
+    # pairtext last: independent of the others (its own marker and anchors), all-or-nothing on its own.
+    text, status = apply_pairtext(text, lang)
+    results.append((PAIRTEXT_PATCH, status))
     if topics:
         text, status = apply_topics(text)
         results.append((TOPICS_PATCH, status))
@@ -563,7 +625,7 @@ def file_status(results):
     return next(st for st in statuses if st.startswith(("anchor-missing", "damaged")))
 
 
-def patch_file(path, topics=False, buttons=True):
+def patch_file(path, topics=False, buttons=True, lang="hu"):
     """Returns (file status, {patch name: status})."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -571,7 +633,7 @@ def patch_file(path, topics=False, buttons=True):
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
         return "unreadable", {}
-    new, results = patch_text(text, topics, buttons)
+    new, results = patch_text(text, topics, buttons, lang)
     per_patch = {p["name"]: st for p, st in results}
     for patch, status in results:
         if status.startswith("anchor-missing"):
@@ -675,6 +737,17 @@ def buttons_setting(install_dir):
     return flag_setting(install_dir, BUTTONS_SETTING, True)
 
 
+def lang_setting(install_dir):
+    """AGENT_TEXT_LANG from the install's .env, as src/web/agent-text-lang.ts reads it: en or hu. Unset, unreadable or
+    anything else: hu (Samu 73716)."""
+    try:
+        with open(os.path.join(install_dir, ".env"), encoding="utf-8", errors="replace", newline="") as f:
+            value = str(parse_env_content(f.read()).get("AGENT_TEXT_LANG", "")).strip().lower()
+    except Exception:
+        return "hu"
+    return value if value in ("en", "hu") else "hu"
+
+
 def main(argv):
     args = argv[1:]
     state_path = None
@@ -698,6 +771,7 @@ def main(argv):
         topics = topics_setting(install_dir)
     if buttons is None:
         buttons = buttons_setting(install_dir)
+    lang = lang_setting(install_dir)
     root = args[0] if args else default_root()
     files = []
     base = os.path.join(root, "claude-plugins-official", "telegram")
@@ -705,11 +779,11 @@ def main(argv):
         for ver in sorted(os.listdir(base)):
             path = os.path.join(base, ver, "server.ts")
             if os.path.isfile(path):
-                status, patches = patch_file(path, topics, buttons)
+                status, patches = patch_file(path, topics, buttons, lang)
                 files.append({"version": ver, "path": path, "status": status, "patches": patches})
     if state_path:
         write_state(state_path, {"at": int(time.time()), "root": root, "topics": "on" if topics else "off",
-                                 "buttons": "on" if buttons else "off", "files": files})
+                                 "buttons": "on" if buttons else "off", "lang": lang, "files": files})
     return 0
 
 
