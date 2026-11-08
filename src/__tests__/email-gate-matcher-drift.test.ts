@@ -111,6 +111,31 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     expect(gateDecision('mcp__harder-mail__create_draft', { reply_to_uid: 7, body: 'x' }, verified).deny).toBe(false)
   })
 
+  it('the canonical matcher reaches the email server\'s messages multiplexer (EMAILMESSAGESMUX1108)', () => {
+    // Measured 2026-11-08 on the live install: a real letter went out through
+    // mcp__email__messages (action=new) with NO approval and NO copy audit. The
+    // tool holds none of the gate's words ("messages", action "new"), so BOTH
+    // hooks exited before the classifier was asked. This test is pinned on the
+    // NAME and on the settings wiring, because the coverage test above compares
+    // settings.json AGAINST this constant and so passed green while the
+    // constant itself had the hole.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    expect(full.test('mcp__email__messages')).toBe(true)
+    // A prefixed or versioned variant of the same tool is reached as well.
+    expect(full.test('mcp__my-email__messages')).toBe(true)
+    // A CHAT server's messages tool must stay out: it is not a letter, and
+    // fail-closing it would block ordinary chat.
+    expect(full.test('mcp__slack__messages')).toBe(false)
+    expect(full.test('mcp__plugin_telegram_telegram__messages')).toBe(false)
+    // Both email hooks must actually be wired for it in settings.json, not just
+    // covered by the constant.
+    for (const script of EMAIL_HOOKS) {
+      const fires = matcherAlternativesFor(script)
+        .some((alt) => new RegExp(`^(${alt})$`).test('mcp__email__messages'))
+      expect(fires, `${script} does not fire for mcp__email__messages`).toBe(true)
+    }
+  })
+
   it('every name in the shared harder-mail fixture fires the hooks and gets its sub-agent verdict (PR #2075 review)', () => {
     // The outcome is pinned per NAME, not per regex: a classifier change that
     // moves one of these names to another kind goes red here.

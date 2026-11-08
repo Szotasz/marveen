@@ -146,8 +146,15 @@ WINDOW_S = APPROVAL_WINDOW_S
 # let through BEFORE the load: every name the classifier can put in scope holds
 # one of these words, so this is a superset of it, and a read-only call never
 # needs the module (classify_tool below).
+# EMAILMESSAGESMUX1108: `email__messages` holds NONE of these words -- the tool is
+# `messages` and its send action is `new` -- so the gate exited 0 before the
+# classifier was ever asked, and a real letter went out unapproved on the live
+# install (2026-11-08). This is the superset test, so a name the classifier can
+# put in scope must appear HERE too; the word list and classify_mail_tool have to
+# be extended together, and the test file pins both.
 _MAYBE_MAIL_TOOL = re.compile(
-    r"send|reply|forward|draft|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
+    r"send|reply|forward|draft|manage_email|email__messages"
+    r"|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
     re.I)
 
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
@@ -163,7 +170,13 @@ _MAYBE_MAIL_TOOL = re.compile(
 # passes, drafts included (MANAGEDRAFT905). Fail-closed on doubt: a missing or
 # unreadable operation counts as a send, because that is the case where we
 # cannot prove it is not one. `send_email` needs no such test -- it only sends.
-_MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
+# "new" and the `action` key come from the `email` MCP server's `messages`
+# multiplexer (EMAILMESSAGESMUX1108): there the send operations are new / reply /
+# forward and the key is `action`, not `operation`. Adding them here rather than
+# in a second code path keeps ONE send test for every multiplexer.
+_MANAGE_EMAIL_SEND_OPS = {"send", "new", "reply", "reply_all", "replyall", "forward"}
+# The keys a multiplexer may name its operation with, in the order they are read.
+_MANAGE_EMAIL_OP_KEYS = ("operation", "action")
 
 
 def _is_explicit_draft(tool_input: dict) -> bool:
@@ -345,8 +358,13 @@ def manage_email_is_send(tool_input: dict) -> bool:
     to stop the SEND. Fail-closed stays: only an explicit draft:true passes,
     a missing/ambiguous flag is a send.
     """
-    op = tool_input.get("operation")
-    if not isinstance(op, str) or not op.strip():
+    op = None
+    for key in _MANAGE_EMAIL_OP_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            op = value
+            break
+    if op is None:
         return True
     if op.strip().lower().replace("-", "_") not in _MANAGE_EMAIL_SEND_OPS:
         return False
