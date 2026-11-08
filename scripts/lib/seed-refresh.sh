@@ -35,10 +35,29 @@ render_seed_template() {
       "{{INSTALL_DIR}}"*) _rst_out="$_rst_out${INSTALL_DIR}"; _rst_in="${_rst_in#"{{INSTALL_DIR}}"}" ;;
       "{{PROJECT_ROOT}}"*) _rst_out="$_rst_out${INSTALL_DIR}"; _rst_in="${_rst_in#"{{PROJECT_ROOT}}"}" ;;
       "{{WEB_PORT}}"*) _rst_out="$_rst_out${WEB_PORT:-3420}"; _rst_in="${_rst_in#"{{WEB_PORT}}"}" ;;
+      # PERSONARENDERLITERAL1108: the persona templates' two extra placeholders, substituted ONLY when the caller sets
+      # RENDER_CHAT_ID / RENDER_TIMEZONE (render_persona_file's callers); unset, they stay as they are, so every seed
+      # render keeps its bytes.
+      "{{CHAT_ID}}"*) if [ -n "${RENDER_CHAT_ID+x}" ]; then _rst_out="$_rst_out$RENDER_CHAT_ID"; _rst_in="${_rst_in#"{{CHAT_ID}}"}"; else _rst_out="$_rst_out{{"; _rst_in="${_rst_in#"{{"}"; fi ;;
+      "{{TIMEZONE}}"*) if [ -n "${RENDER_TIMEZONE+x}" ]; then _rst_out="$_rst_out$RENDER_TIMEZONE"; _rst_in="${_rst_in#"{{TIMEZONE}}"}"; else _rst_out="$_rst_out{{"; _rst_in="${_rst_in#"{{"}"; fi ;;
       *) _rst_out="$_rst_out{{"; _rst_in="${_rst_in#"{{"}" ;;
     esac
   done
   printf '%s' "$_rst_out$_rst_in"
+}
+
+# PERSONARENDERLITERAL1108: render a persona template ($1) into its target ($2) with render_seed_template, never
+# truncating the target: the render goes to a temp file next to it and replaces the target only when it succeeded and
+# is not empty. On failure the old file stays as it was, the temp file is removed, and the return is 1 (the caller says
+# so loudly). The identity comes from the caller's MAIN_AGENT_ID / BOT_NAME / OWNER_NAME / INSTALL_DIR / WEB_PORT and,
+# for the CLAUDE.md template, RENDER_CHAT_ID / RENDER_TIMEZONE.
+render_persona_file() {
+  _rpf_tmp="$2.render.$$"
+  if render_seed_template < "$1" > "$_rpf_tmp" && [ -s "$_rpf_tmp" ] && mv -f "$_rpf_tmp" "$2"; then
+    return 0
+  fi
+  rm -f "$_rpf_tmp"
+  return 1
 }
 
 # A top-level task-config.json on stdin, as the dashboard seeder writes it
