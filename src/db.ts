@@ -6071,12 +6071,24 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
   })
 }
 
-// Runs that actually happened. A tick the scheduler dropped without running
-// anything ('skipped', 'skipped-precheck', 'skipped-usage-limit', ...) or a
-// 'missed' slot is a log line, not a run: counting them made the overview's
-// "tasks today" tile report hundreds of runs on a quiet install whose
-// 2-minute ledger drain is almost always skipped by its token-free preCheck.
-const RAN_STATUS_SQL = "status NOT LIKE 'skipped%' AND status != 'missed'"
+// Runs that actually happened, counted once each: only the statuses that OPEN
+// a run. A tick the scheduler dropped without running anything ('skipped',
+// 'skipped-precheck', 'skipped-usage-limit', ...) or a 'missed' slot is a log
+// line, not a run: counting them made the overview's "tasks today" tile report
+// hundreds of runs on a quiet install whose 2-minute ledger drain is almost
+// always skipped by its token-free preCheck. The follow-up rows of a run that
+// already has its own row ('lost' and 'lost-giveup' after the 'fired' row the
+// watchdog closes, 'missing-retrying' while a queued retry waits) are state
+// changes of that run, not new runs. An allowlist, so a status added later is
+// not counted until someone decides it opens a run.
+//   fired, fired_late, fired_busy: the scheduler's typed and queued fires
+//   sent-direct: the direct heartbeat digest (DIRECT_DIGEST_RUN_STATUS)
+//   error: a fire that failed. Kept as before: when the send throws after the
+//     'fired' row was written, this is a second row for the same attempt, and
+//     the row alone cannot tell that case apart from a fire that failed before
+//     any row was opened.
+const RUN_OPENING_STATUSES = ['fired', 'fired_late', 'fired_busy', 'sent-direct', 'error'] as const
+const RAN_STATUS_SQL = `status IN (${RUN_OPENING_STATUSES.map(s => `'${s}'`).join(', ')})`
 
 export function countTaskRunsBetween(fromTs: number, toTs?: number): number {
   if (toTs === undefined) {
