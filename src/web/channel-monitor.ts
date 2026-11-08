@@ -88,6 +88,7 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
+import { flushGromzoPendingOwnerAlerts } from '../notify.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
@@ -3044,6 +3045,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (t.isMarveen && t.provider === 'gromzo' && !mainGromzoPrimaryReady(readMainAgentIdRaw())) {
         logger.debug({ session: t.session }, 'Main session is gromzo-pending -- no Gromzo channel expected yet, no liveness action')
         continue
+      }
+      // GROMZONOPROVIDER1108 (Samu 73588): live again -> the owner alerts kept while pending go out now.
+      if (t.isMarveen && t.provider === 'gromzo') {
+        try { flushGromzoPendingOwnerAlerts() } catch (err) { logger.warn({ err }, 'gromzo pending alerts flush failed') }
       }
       const liveness = await probeChannelPluginLivenessAsync(claudePid, t.provider, t.agentName, { confirmAlive: openDownSpell }, sweepSnapshot ?? undefined)
       if (liveness === 'unknown') {

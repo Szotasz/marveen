@@ -2,7 +2,10 @@ import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID, STORE_
 import { normalizeChatId, resolveAlertDeliveryChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { mainGromzoPrimaryReady } from './web/main-gromzo-launch.js'
+import { MAIN_AGENT_ID } from './config.js'
 import { markIfTestRun } from './test-run-marker.js'
 import type { sendSlackNotification as SendSlack } from './slack-notify.js'
 
@@ -162,7 +165,7 @@ export interface AlertMeta {
 }
 
 type AlertRecipient = 'owner' | 'alert-chat'
-type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped' | 'relayed'
+type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped' | 'relayed' | 'queued'
 
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
@@ -211,7 +214,59 @@ export function setOwnerRelaySink(sink: OwnerChatMissingSink | null): void {
   ownerRelaySink = sink
 }
 
+// GROMZONOPROVIDER1108 (Samu 73588): while the install is gromzo-pending the main agent has no Gromzo channel, so it
+// could not deliver a relayed alert. The alert is kept, durable, in the store (one JSON line each, 0600, the newest
+// GROMZO_PENDING_ALERTS_MAX), and flushGromzoPendingOwnerAlerts() hands them to the main agent once it is live (the
+// dashboard sweep calls it). Never dropped in silence.
+export const GROMZO_PENDING_ALERTS_FILE = 'gromzo-owner-alerts.pending.jsonl'
+const GROMZO_PENDING_ALERTS_MAX = 50
+let pendingCheck: () => boolean = () => !mainGromzoPrimaryReady(MAIN_AGENT_ID)
+/** Test seam for the pending check (the real one reads mxd's socket and the token file). */
+export function setGromzoPendingCheck(fn: () => boolean): void {
+  pendingCheck = fn
+}
+
+function queueGromzoOwnerAlert(text: string): boolean {
+  try {
+    const p = join(STORE_DIR, GROMZO_PENDING_ALERTS_FILE)
+    appendFileSync(p, JSON.stringify({ at: new Date().toISOString(), text }) + '\n', { mode: 0o600 })
+    const lines = readFileSync(p, 'utf-8').split('\n').filter(Boolean)
+    if (lines.length > GROMZO_PENDING_ALERTS_MAX) writeFileSync(p, lines.slice(-GROMZO_PENDING_ALERTS_MAX).join('\n') + '\n', { mode: 0o600 })
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'gromzo pending owner alert could not be kept')
+    return false
+  }
+}
+
+/** Hands every kept alert to the main agent (through the relay sink) once the install is live; returns how many. */
+export function flushGromzoPendingOwnerAlerts(): number {
+  if (!ownerRelaySink || pendingCheck()) return 0
+  const p = join(STORE_DIR, GROMZO_PENDING_ALERTS_FILE)
+  if (!existsSync(p)) return 0
+  const taken = `${p}.flushing`
+  try { renameSync(p, taken) } catch { return 0 }
+  let n = 0
+  for (const line of readFileSync(taken, 'utf-8').split('\n').filter(Boolean)) {
+    try {
+      const { text } = JSON.parse(line) as { text: string }
+      if (typeof text === 'string' && relayOwnerViaMainAgent(text)) n++
+    } catch { /* a broken line is skipped, the rest still goes */ }
+  }
+  try { renameSync(taken, `${taken}.done`) } catch { /* best-effort */ }
+  logger.info({ delivered: n }, 'gromzo: the alerts kept while pending went to the main agent')
+  return n
+}
+
 function relayOwnerViaMainAgent(text: string, meta?: AlertMeta): boolean {
+  let pending = false
+  try { pending = pendingCheck() } catch { pending = false }
+  if (pending) {
+    const kept = queueGromzoOwnerAlert(text)
+    logAlertDelivery(meta, 'owner', kept ? 'queued' : 'failed')
+    if (kept) logger.warn('Owner alert kept: the install is gromzo-pending (no Gromzo channel yet); it goes out when the main agent is live')
+    return kept
+  }
   if (!ownerRelaySink) {
     logAlertDelivery(meta, 'owner', 'skipped')
     logger.warn('Channel ertesites kihagyva: gromzo telepites, es ebben a folyamatban nincs fo-ugynok tovabbito')
