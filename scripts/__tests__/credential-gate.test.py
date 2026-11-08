@@ -340,6 +340,10 @@ def test_warn_mode():
     r = gate(store, "Bash", bash_send(td, "ugyfel@example.invalid", LETTER), CREDENTIAL_GATE_MODE="warn")
     check("warn: the letter goes out", r.returncode == 0, r.stderr)
     check("warn: a visible warning, without the value", "figyelo mod" in r.stdout and VAL not in r.stdout)
+    _j = json.loads(r.stdout.strip().splitlines()[-1])
+    _h = _j.get("hookSpecificOutput") or {}
+    check("warn: the sending agent gets the same warning (additionalContext, PreToolUse)",
+          _h.get("hookEventName") == "PreToolUse" and _h.get("additionalContext") == _j.get("systemMessage"))
     last = log_lines(store)[-1]
     check("warn: logged as warn with what block mode would have done",
           last["decision"] == "warn" and last["would_deny"] == "jeloles-nelkul")

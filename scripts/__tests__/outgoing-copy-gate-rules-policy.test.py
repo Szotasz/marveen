@@ -66,6 +66,11 @@ with tempfile.TemporaryDirectory() as td:
     check("missing rules: the pass is LOUD (systemMessage names the absent check)",
           "systemMessage" in out and "HIANYZIK" in out and "nev-ellenorzes NELKUL" in out,
           f"out={out[:200]!r}")
+    _j = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    check("missing rules: the agent gets the same warning (additionalContext, PreToolUse)",
+          (_j.get("hookSpecificOutput") or {}).get("additionalContext") == _j.get("systemMessage")
+          and (_j.get("hookSpecificOutput") or {}).get("hookEventName") == "PreToolUse",
+          f"out={out[:200]!r}")
 
     # --- valid but empty: OPEN + LOUD ------------------------------------
     empty = os.path.join(td, "empty.json")

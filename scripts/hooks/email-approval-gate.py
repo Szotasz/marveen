@@ -1158,6 +1158,18 @@ def canonical_forms_text() -> str:
             "literal, vagy <<'EOF' heredoc, utana semmi mas parancs")
 
 
+def pass_with_warning(msg: str) -> str:
+    """A non-blocking warning, for BOTH readers. `systemMessage` is shown on
+    the host's terminal only and never enters the model's request; the agent
+    that just made the call learns of it only through
+    `hookSpecificOutput.additionalContext` (measured 2026-11-08 on our own
+    transcripts: systemMessage 0/6, PreToolUse additionalContext 7/7)."""
+    return json.dumps({
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg},
+    })
+
+
 def deny(msg: str):
     sys.stderr.write(f"EMAIL JOVAHAGYASI KAPU: TILTVA.\n{msg}\n")
     sys.exit(2)
@@ -1294,9 +1306,9 @@ def main():
         # itself (sender_check.py) on the envelope it delivers, standing list
         # included, and consumes the approval there. Not consuming here keeps
         # exactly one consumption per send.
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "email-approval-gate: email_send level 2 -- a kuldo maga ellenorzi a jovahagyast "
-            "(vagy az allando cimzett-listat), es elutasitaskor kiirja a level horgonyat."}))
+            "(vagy az allando cimzett-listat), es elutasitaskor kiirja a level horgonyat."))
         sys.exit(0)
     if tool == "Bash" and names_own_sender(cmd, payload.get("cwd")):
         deny(prefix +
@@ -1387,9 +1399,9 @@ def main():
                 f"{os.path.basename(STANDING_LOG)} rogzitette a kuldest ES az ertesites "
                 "hianyat is, de a gazda ettol meg nem tud rola -- ha a level fontos, "
                 "szolj neki a csatornan.")
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             f"email-approval-gate: {hit} allando cimzett, a kuldes jovahagyas nelkul "
-            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"}))
+            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"))
         sys.exit(0)
 
     anchor = content_anchor(env)
@@ -1406,9 +1418,9 @@ def main():
                      "kapu maga hasznalja fel a jovahagyast. A projekt kuldoinek alakja: "
                      f"{canonical_forms_text()}.")
     if verdict == "allowed":
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."
-            + copy_note}))
+            + copy_note))
         sys.exit(0)
 
     reasons = {

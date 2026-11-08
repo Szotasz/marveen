@@ -150,9 +150,13 @@ describe('inter-agent message: an UNINTERPRETABLE body PASSES, loudly (fail-open
     it(name, () => {
       const r = gate(cmd)
       expect(r.code).toBe(0)
-      const sm = JSON.parse(r.out.trim()).systemMessage as string
+      const j = JSON.parse(r.out.trim())
+      const sm = j.systemMessage as string
       expect(sm).toMatch(reason)
       expect(sm).toContain('homoglifa-ellenorzes NELKUL')
+      // systemMessage is terminal-only; the agent that sent the message learns
+      // that it went out unchecked only through additionalContext.
+      expect(j.hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', additionalContext: sm })
     })
   }
   it('and leaves a line in the gate log', () => {

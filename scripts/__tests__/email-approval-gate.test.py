@@ -76,6 +76,19 @@ def check(name, ok, detail=""):
         failed.append(name)
 
 
+def reaches_model(out):
+    """A pass-with-warning must carry the SAME text in additionalContext: a
+    systemMessage alone is shown on the terminal and never reaches the agent."""
+    try:
+        j = json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        return False
+    hso = j.get("hookSpecificOutput") or {}
+    return (hso.get("hookEventName") == "PreToolUse"
+            and bool(j.get("systemMessage"))
+            and hso.get("additionalContext") == j.get("systemMessage"))
+
+
 def make_store(td, level=2, max_level=None, config="ok"):
     store = os.path.join(td, "store")
     os.makedirs(store, exist_ok=True)
@@ -227,6 +240,8 @@ with tempfile.TemporaryDirectory() as td:
     code, out, _ = run_gate(store, payload)
     check("level 2 with approved+matching+in-window approval: ALLOWED",
           code == 0 and "felhasznalva" in out, f"exit={code} out={out[:120]!r}")
+    check("the consumed-approval notice reaches the agent (additionalContext)",
+          reaches_model(out), f"out={out[:200]!r}")
 
     con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
     consumed = con.execute("SELECT consumed_at FROM approvals WHERE content_hash=?", (anchor,)).fetchone()[0]
@@ -701,6 +716,8 @@ with tempfile.TemporaryDirectory() as td:
           "NEM MENT KI" in log_text, f"log={log_text!r}")
     check("keres2: a systemMessage sem allitja, hogy a gazda latta",
           "NEM sikerult ertesiteni" in out, f"out={out[:300]!r}")
+    check("keres2: a kuldo ugynok is megkapja (additionalContext), nem csak a terminal",
+          reaches_model(out), f"out={out[:300]!r}")
 
     # A ket kuldes ket sor: a naplo append-only, nem felulir.
     run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Masodik"))
@@ -1185,6 +1202,8 @@ with tempfile.TemporaryDirectory() as td:
         check(f"pass-through at level 2: {label} -> allowed, the hook consumes nothing",
               code == 0 and "a kuldo maga ellenorzi" in out and unconsumed_count(store) == 0,
               f"exit={code} out={out[:120]!r} err={err[:160]!r}")
+        check(f"pass-through at level 2: {label} -> the notice reaches the agent",
+              reaches_model(out), f"out={out[:200]!r}")
     own_noncanonical = {
         "a cd prefix": bash_payload("cd " + REPO + " && python3 " + SENDER_REL + LETTER),
         "a relative cd": bash_payload("cd scripts/support-mail && python3 " + "se" + "nd.py" + LETTER),
