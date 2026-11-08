@@ -16,6 +16,8 @@ const ROOT = join(__dirname, '..', '..')
 const LINUX = readFileSync(join(ROOT, 'install-linux.sh'), 'utf-8')
 const MACOS = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
 const UPDATE = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
+// DOCKERSEEDREFRESH1108: the refresh rules moved to scripts/lib/seed-refresh.sh (update.sh sources it).
+const SHELL_SRC = UPDATE + '\n' + readFileSync(join(ROOT, 'scripts', 'lib', 'seed-refresh.sh'), 'utf-8')
 
 function sliceShellFn(src: string, name: string): string {
   const start = src.indexOf(`${name}() {`)
@@ -118,8 +120,8 @@ describe('a fresh seed ships the references/ subdir, rendered (SEEDREFDIR1018)',
 })
 
 // Sliced per call, so a missing helper fails the refresh tests, not the file.
-const funcs = () => ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'refresh_one_seed_file', 'refresh_untouched_seeds']
-  .map((n) => sliceShellFn(UPDATE, n))
+const funcs = () => ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'refresh_one_seed_file', 'refresh_untouched_seeds', 'seed_tracked_files']
+  .map((n) => sliceShellFn(SHELL_SRC, n))
   .join('\n')
 
 function git(dir: string, args: string[]): void {

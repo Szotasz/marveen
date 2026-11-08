@@ -17,6 +17,8 @@ const MACOS = read('install-macos.sh')
 const LINUX = read('install-linux.sh')
 const FIRSTBOOT = read('docker/first-boot.sh')
 const OLD = read('src/__tests__/fixtures/update-sh-pre-seed-a.sh')
+// DOCKERSEEDREFRESH1108: the refresh rules moved to scripts/lib/seed-refresh.sh (update.sh sources it before the pull).
+const SHELL_SRC = UPDATE + '\n' + read('scripts/lib/seed-refresh.sh')
 
 function sliceShellFn(src: string, name: string): string {
   const start = src.indexOf(`\n${name}() {`)
@@ -38,8 +40,8 @@ function sliceLoop(src: string, head: string, from = 0): string {
 
 const NEW_FUNCS = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file',
   'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'sched_pre_verify_once', 'refresh_one_seed_file',
-  'refresh_untouched_seeds', 'run_seed_refresh', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
-  .map((n) => sliceShellFn(UPDATE, n)).join('\n')
+  'refresh_untouched_seeds', 'run_seed_refresh', 'seed_refresh_groups', 'seed_tracked_files', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
+  .map((n) => sliceShellFn(SHELL_SRC, n)).join('\n')
 
 function git(dir: string, args: string[]): void {
   execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' })
