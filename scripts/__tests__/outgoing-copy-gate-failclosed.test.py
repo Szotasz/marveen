@@ -96,7 +96,7 @@ import importlib.util, io, sys
 spec = importlib.util.spec_from_file_location("ocg", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 if sys.argv[3] == "1":
-    def boom(*a, **k): raise RuntimeError("forced-internal-error")
+    def boom(*a, **k): raise RuntimeError("forced-internal-error REPRMARKER-szoveg")
     m.audit = boom
 sys.stdin = io.StringIO(sys.argv[2])
 m.main()
@@ -140,6 +140,14 @@ with tempfile.TemporaryDirectory() as _tmp:
         _ok = _reaches_agent(_p.returncode, _p.stdout)
         failed.append(_name) if not _ok else None
         print(f"  [{'PASS' if _ok else 'FAIL'}] {_name}: exit={_p.returncode} stdout={_p.stdout[:100]!r}")
+        if _force == "1":
+            # The exception repr can quote the processed text, so the model gets
+            # the type name only; the full repr stays on stderr (and the log).
+            _name = f"{_label}: the agent gets the exception type, never its repr text"
+            _ok = ("RuntimeError" in _p.stdout and "REPRMARKER" not in _p.stdout
+                   and "REPRMARKER" in _p.stderr)
+            failed.append(_name) if not _ok else None
+            print(f"  [{'PASS' if _ok else 'FAIL'}] {_name}: stdout={_p.stdout[:160]!r}")
 
 print()
 if failed:

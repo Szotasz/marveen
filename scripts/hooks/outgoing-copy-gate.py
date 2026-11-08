@@ -3532,13 +3532,15 @@ def http_channel_gate(cmd: str) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
-        warn = (f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
-                " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki.")
-        sys.stderr.write(warn + "\n")
-        _gate_log(warn)
+        head = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
         # stderr on exit 0 and the gate log never reach the sending agent;
         # only additionalContext does, so it learns the send went out unchecked.
-        print(pass_with_warning(warn))
+        # The model gets the exception TYPE only: a repr can carry the text
+        # being processed (e.g. a UnicodeEncodeError quotes it).
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -3623,11 +3625,11 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = (f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
-                " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki.")
-        sys.stderr.write(warn + "\n")
-        _gate_log(warn)
-        print(pass_with_warning(warn))
+        head = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))  # type only, see above
         sys.exit(0)
     if problems:
         sys.stderr.write(
