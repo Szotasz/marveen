@@ -45,7 +45,7 @@
 // Decision logic is pure (decideNudgePreflight/recordNudge) with a thin IO
 // shell, mirroring decideStuckInputRecovery.
 //
-// Voice channel fast path (card 80a6833e): a row FROM the voice channel
+// Voice channel fast path: a row FROM the voice channel
 // (VOICE_CHANNEL_ID, the owner speaking in a live call through the relay) is a
 // question someone is waiting for on the line. The steady-stream guards above
 // (MIN_PENDING_AGE_MS, NUDGE_DEBOUNCE_MS, the 20 s cadence) made every spoken
@@ -70,7 +70,7 @@ import { voiceChannelSenderId } from '../delivery-order.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
 export const INBOX_NUDGE_INTERVAL_MS = 20_000
-// Card 80a6833e: the watcher's interval; the 20 s body still runs every INBOX_NUDGE_INTERVAL_MS (see header).
+// The watcher's interval; the 20 s body still runs every INBOX_NUDGE_INTERVAL_MS (see header).
 export const VOICE_NUDGE_INTERVAL_MS = 2_000
 // A message younger than this is left alone: a concurrently-starting turn (or
 // the send that just created it) may claim it in seconds anyway.
@@ -116,7 +116,7 @@ export interface NudgeState {
   budgetLogged: boolean
   lastBusyLogAt: number
   absenceLogged: boolean
-  lastVoiceNudgedId: number // card 80a6833e: the newest voice row a fast nudge was sent for
+  lastVoiceNudgedId: number // the newest voice row a fast nudge was sent for
 }
 
 export const INITIAL_NUDGE_STATE: NudgeState = Object.freeze({
@@ -202,7 +202,7 @@ export function recordNudge(state: NudgeState, now: number, oldestId: number): N
   }
 }
 
-/** Card 80a6833e: the newest pending row from the voice channel that no fast nudge has covered yet,
+/** The newest pending row from the voice channel that no fast nudge has covered yet,
  *  or null (voice lane off, no voice row, or every voice row already nudged for). */
 export function decideVoiceNudge(
   rows: ReadonlyArray<{ id: number; from_agent: string }>,
@@ -217,7 +217,7 @@ export function decideVoiceNudge(
   return newest
 }
 
-/** Card 80a6833e: state advance for a fast voice nudge. It also sets lastNudgeAt, so the 20 s path
+/** State advance for a fast voice nudge. It also sets lastNudgeAt, so the 20 s path
  *  keeps its debounce floor behind it (no second nudge for the same drain); the hourly budget and the
  *  stale-spell fields belong to the 20 s path and stay as they are. */
 export function recordVoiceNudge(state: NudgeState, now: number, voiceRowId: number): NudgeState {
@@ -238,7 +238,7 @@ export function _resetNudgeStateForTest(): void {
   lastSlowTickAt = Number.NEGATIVE_INFINITY
 }
 
-// Card 80a6833e: the steps never send at the same time (the second would type a second nudge into a
+// The steps never send at the same time (the second would type a second nudge into a
 // pane the first one just made busy); a call that finds another one running simply skips.
 let tickRunning = false
 // Monotonic stamp (performance.now): a wall-clock step (NTP, resume from sleep) must not move the 20 s schedule.
@@ -258,12 +258,12 @@ export function runInboxNudgeTick(): Promise<void> {
   return exclusive(tick)
 }
 
-/** Card 80a6833e: the voice-channel step alone (exported for tests). */
+/** The voice-channel step alone (exported for tests). */
 export function runVoiceNudgeTick(): Promise<void> {
   return exclusive(voiceTick)
 }
 
-/** Card 80a6833e: one interval call -- the voice step, then the 20 s body when its period has elapsed
+/** One interval call -- the voice step, then the 20 s body when its period has elapsed
  *  (a voice nudge just sent sets lastNudgeAt, so the body's debounce keeps it from nudging again). */
 export function runWatcherInterval(nowMono = performance.now()): Promise<void> {
   return exclusive(async () => {
