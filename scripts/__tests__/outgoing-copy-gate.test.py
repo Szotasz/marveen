@@ -89,17 +89,20 @@ def check_true(name, cond, detail=""):
         FAILS.append(name)
 
 
-def reaches_model(out):
+def reaches_model(out, code):
     """A pass-with-warning must carry the SAME text in additionalContext: a
-    systemMessage alone is shown on the terminal and never reaches the agent."""
+    systemMessage alone is shown on the terminal and never reaches the agent.
+    It must also stay a PASS: exit 0, and hookSpecificOutput holds exactly
+    these two keys, so a permissionDecision ("deny"/"ask") slipped into the
+    warning helper fails here instead of passing because the text matches."""
     try:
         j = json.loads(out.strip().splitlines()[-1])
     except Exception:
         return False
     hso = j.get("hookSpecificOutput") or {}
-    return (hso.get("hookEventName") == "PreToolUse"
+    return (code == 0
             and bool(j.get("systemMessage"))
-            and hso.get("additionalContext") == j.get("systemMessage"))
+            and hso == {"hookEventName": "PreToolUse", "additionalContext": j["systemMessage"]})
 
 
 def main():
@@ -114,13 +117,13 @@ def main():
         check_true("missing file: the pass is LOUD (systemMessage names the absent check)",
                    "systemMessage" in out and "HIANYZIK" in out, out)
         check_true("missing file: the email warning reaches the agent (additionalContext)",
-                   reaches_model(out), out)
+                   reaches_model(out, code), out)
 
         code, out, err = run_hook(telegram_payload(CLEAN_HU_OK), rules_file=missing)
         check("missing file: telegram fail-open (exit 0)", code, 0)
         check_true("missing file: telegram warns via systemMessage", "NEV-SZABALY" in out, out)
         check_true("missing file: the telegram warning reaches the agent (additionalContext)",
-                   reaches_model(out), out)
+                   reaches_model(out, code), out)
 
         # --- 2. CORRUPT file (unparseable JSON) -----------------------------
         corrupt = rules_path(tmp, "corrupt.json")

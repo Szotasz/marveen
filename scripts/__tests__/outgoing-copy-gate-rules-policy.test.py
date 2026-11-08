@@ -67,9 +67,10 @@ with tempfile.TemporaryDirectory() as td:
           "systemMessage" in out and "HIANYZIK" in out and "nev-ellenorzes NELKUL" in out,
           f"out={out[:200]!r}")
     _j = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
-    check("missing rules: the agent gets the same warning (additionalContext, PreToolUse)",
-          (_j.get("hookSpecificOutput") or {}).get("additionalContext") == _j.get("systemMessage")
-          and (_j.get("hookSpecificOutput") or {}).get("hookEventName") == "PreToolUse",
+    check("missing rules: the agent gets the same warning (additionalContext, PreToolUse), and it stays a pass",
+          code == 0 and bool(_j.get("systemMessage"))
+          and _j.get("hookSpecificOutput") == {"hookEventName": "PreToolUse",
+                                               "additionalContext": _j["systemMessage"]},
           f"out={out[:200]!r}")
 
     # --- valid but empty: OPEN + LOUD ------------------------------------
