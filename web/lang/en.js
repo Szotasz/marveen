@@ -1463,7 +1463,7 @@ window._i18n.en = {
   'memories.stale.age':			'{days} days old',
   'memories.stale.age_title':		'Days since the last write',
   'memories.stale.to_warm':		'→ warm',
-  'memories.use.none':			'not used',
+  'memories.use.none':			'no measured use yet',
   'memories.use.none_title':		'No agent has read it, hit it with an exact search or referenced it since tracking began ({since}).',
   'memories.use.today':			'used today ({count}×)',
   'memories.use.days':			'used {days} days ago ({count}×)',

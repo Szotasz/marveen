@@ -700,7 +700,7 @@ window._i18n.hu = {
   'memories.stale.age':         '{days} napja',
   'memories.stale.age_title':   'Utolsó írás óta eltelt napok',
   'memories.stale.to_warm':     '→ warm',
-  'memories.use.none':          'nem használt',
+  'memories.use.none':          'nincs mért használat',
   'memories.use.none_title':    'Egy ügynök sem olvasta, kereste meg pontosan vagy hivatkozott rá, amióta ezt mérjük ({since}).',
   'memories.use.today':         'használva ma ({count}×)',
   'memories.use.days':          'használva {days} napja ({count}×)',
