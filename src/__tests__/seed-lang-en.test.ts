@@ -17,6 +17,8 @@ const MACOS = read('install-macos.sh')
 const LINUX = read('install-linux.sh')
 const FIRSTBOOT = read('docker/first-boot.sh')
 const OLD = read('src/__tests__/fixtures/update-sh-pre-seed-a.sh')
+// DOCKERSEEDREFRESH1108: the refresh rules moved to scripts/lib/seed-refresh.sh (update.sh sources it before the pull).
+const SHELL_SRC = UPDATE + '\n' + read('scripts/lib/seed-refresh.sh')
 
 function sliceShellFn(src: string, name: string): string {
   const start = src.indexOf(`\n${name}() {`)
@@ -38,8 +40,8 @@ function sliceLoop(src: string, head: string, from = 0): string {
 
 const NEW_FUNCS = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file',
   'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'sched_pre_verify_once', 'refresh_one_seed_file',
-  'refresh_untouched_seeds', 'run_seed_refresh', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
-  .map((n) => sliceShellFn(UPDATE, n)).join('\n')
+  'refresh_untouched_seeds', 'run_seed_refresh', 'seed_refresh_groups', 'seed_tracked_files', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
+  .map((n) => sliceShellFn(SHELL_SRC, n)).join('\n')
 
 function git(dir: string, args: string[]): void {
   execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' })
@@ -367,6 +369,8 @@ describe('docker/first-boot.sh', () => {
         const skillsLoop = FIRSTBOOT.slice(FIRSTBOOT.indexOf('for src in skills/skill-factory seed-skills/*/; do'), FIRSTBOOT.indexOf('\n# The hooks, as update.sh installs them'))
         const script = ['set -u', `INSTALL_DIR="${f.install}"`, `HOME="${f.home}"`, `cd "${f.install}"`, 'say() { :; }',
           'A=marveen; B=Marveen; O=Owner; WEB_PORT=3420; SCHED="$HOME/.claude/scheduled-tasks"; REGISTER=""',
+          // DOCKERSEEDREFRESH1108: copy_task renders through the shared lib with the raw identity
+          'AGENT_ID=marveen; BOT_NAME=Marveen; OWNER_NAME=Owner', `. "${join(ROOT, 'scripts', 'lib', 'seed-refresh.sh')}"`,
           'SEED_LANG=hu', 'if [ -f scripts/lib/seed-lang.sh ]; then . scripts/lib/seed-lang.sh; SEED_LANG="$(seed_lang "$INSTALL_DIR")"; fi',
           sliceShellFn(FIRSTBOOT, 'copy_task'), 'copy_task seed-scheduled-tasks/task1/ task1', skillsLoop].join('\n') + '\n'
         const r = bash(script, join(f.base, 'fb.sh'))

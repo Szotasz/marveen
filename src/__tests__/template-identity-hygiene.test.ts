@@ -360,7 +360,8 @@ describe('runtime-seeded placeholders are all substituted', () => {
   })
 
   it('update.sh stays host-agnostic (no hardcoded roster or operator identity)', () => {
-    const updateSh = readFileSync(join(REPO_ROOT, 'update.sh'), 'utf8')
+    // DOCKERSEEDREFRESH1108: the seed-refresh rules update.sh sources moved to scripts/lib/seed-refresh.sh; scanned too.
+    const updateSh = readFileSync(join(REPO_ROOT, 'update.sh'), 'utf8') + '\n' + readFileSync(join(REPO_ROOT, 'scripts', 'lib', 'seed-refresh.sh'), 'utf8')
     for (const name of ['samu', 'zara', 'boni', 'iris', 'deeper', 'slacker']) {
       expect(
         new RegExp(`\\b${name}\\b`, 'i').test(updateSh),
