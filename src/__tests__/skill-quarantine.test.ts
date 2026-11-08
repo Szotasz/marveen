@@ -550,14 +550,17 @@ describe('proposed skills (D4)', async () => {
     expect(readFileSync(join(liveDir('multi'), 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi\n')
   })
 
-  it('P5c: if the install fails, the old version is put back', () => {
+  // #2601: the install failure is forced with a 0o555 pending dir, and root ignores mode bits: as root the approval
+  // succeeds, the pending dir is gone, and the premise of the test cannot hold. Skipped as root, as the repo's other
+  // permission-based tests (channel-coordinator-pidlock T8, hook-failure-scan); the guard used to sit inside the try,
+  // so the finally's chmod ran on a dir that no longer existed and threw ENOENT.
+  it.skipIf(process.getuid?.() === 0)('P5c: if the install fails, the old version is put back', () => {
     mkLive('restore')
     const m = propose('restore')
     const hash = q.getPending(m.id)!.hash
     chmodSync(join(PENDING, m.id), 0o555)
     try {
       const r = q.approvePending(m.id, hash)
-      if (process.getuid?.() === 0) return
       expect(r).toMatchObject({ ok: false, status: 500 })
       expect((r as any).error).toMatch(/restored/)
       expect(readFileSync(join(liveDir('restore'), 'SKILL.md'), 'utf-8')).toBe('old')
