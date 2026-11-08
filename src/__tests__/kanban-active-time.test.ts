@@ -129,13 +129,13 @@ describe('sumInProgressSeconds / listKanbanCards active_seconds', () => {
     expect(m.get('c')).toBe(0) // the stay closed at the identical timestamp
   })
 
-  it('clamps a stay to 0 when the closing event predates its opener (clock stepped back)', () => {
+  it('clamps the open tail to 0 when the clock stepped back after the last event (now < created_at)', () => {
     createKanbanCard({ id: 'c', title: 'Clock back' })
     at(500); moveKanbanCard('c', 'in_progress', 0, 'tester')
-    at(200); moveKanbanCard('c', 'waiting', 0, 'tester') // created_at 200 < 500
+    at(200); moveKanbanCard('c', 'waiting', 0, 'tester') // 200 < 500: sorts BEFORE the opener, so the opener is the open tail
     const m = sumInProgressSeconds(['c']) // still at now = 200
     expect(m.has('c')).toBe(true)
-    expect(m.get('c')).toBe(0) // a measured zero, never -300
+    expect(m.get('c')).toBe(0) // a measured zero; the -300 would be the open tail (now 200 < opener 500)
   })
 
   it('takes more than 900 ids in one call (json_each, not one placeholder per id)', () => {

@@ -3343,9 +3343,12 @@ export function sumInProgressSeconds(cardIds: string[]): Map<string, number> {
                        -- A NULL next_at means the stay is still open at the end
                        -- of the card's event list: the card is in the column
                        -- right now, so it is charged up to the present moment.
-                       -- MAX(0, ...) clamps the length: a closing event that
-                       -- predates its opener (a clock stepped back) owes zero,
-                       -- never a negative stay.
+                       -- MAX(0, ...) clamps the length: LEAD walks this same
+                       -- ordering, so a closed stay always has next_at >=
+                       -- created_at and cannot go negative. The only negative
+                       -- case is the open tail above, when the clock stepped
+                       -- back after the last event (now < created_at): it owes
+                       -- zero, never a negative stay.
                        THEN MAX(0, COALESCE(next_at, ?) - created_at)
                        -- 0 rather than a dropped row, so a card seen in the
                        -- event table keeps its entry even when it never entered
