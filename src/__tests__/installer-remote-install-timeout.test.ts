@@ -278,6 +278,15 @@ describe.skipIf(!HAVE_TIMEOUT)('Bun: the GitHub download fails, the npm fallback
     expect(mac).toContain('if [ "$rc" = 0 ] && [ -n "$npm_bun" ] && [ -x "$npm_bun" ]')
     expect(mac).not.toContain('npm prefix -g 2>/dev/null || true)/bin/bun')
   })
+  it('the macOS sudo route goes through root_npm_install_global with no time limit, then sudo -K; no plain sudo npm (Dani 73629)', () => {
+    const mac = sliceShellFn(readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8'), '_install_bun_from_npm')
+    expect(mac).toMatch(/if \[ "\$\{NPM_NEEDS_SUDO:-\}" = "1" \]; then\n(?:\s*#[^\n]*\n)+\s+if ! root_npm_install_global "bun@\$\{BUN_PIN\}" >"\$log" 2>&1; then\n\s+rc=1\n\s+echo -e "  \$\{RED\}✗\$\{NC\} \$\(_t macos\.root_npm_bun_failed\)"/)
+    expect(mac).toContain('command /usr/bin/sudo -K 2>/dev/null || true')
+    const code = mac.split('\n').filter((l) => !l.trimStart().startsWith('#') && !/^\s*echo\b/.test(l)).join('\n')
+    expect(code).not.toMatch(/\bsudo npm\b/)
+    expect(code).not.toMatch(/_mac_timeout[^\n]*sudo/)
+    expect(code).not.toMatch(/_mac_timeout[^\n]*root_npm_install_global/)
+  })
 
   it('the GitHub path works: no npm call at all', () => {
     const work = mkdtempSync(join(tmpdir(), 'rinst-okvendor-'))

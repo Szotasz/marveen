@@ -1959,7 +1959,8 @@ fi
 
 # Channel state directory setup
 CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
-mkdir -p "$CHANNEL_DIR"
+# GROMZONOPROVIDER1108: gromzo keeps no channel state here (no token, no access.json), so no empty dir for it.
+[ "$CHANNEL_PROVIDER" = "gromzo" ] || mkdir -p "$CHANNEL_DIR"
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   (umask 077 && echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" >"$CHANNEL_DIR/.env")

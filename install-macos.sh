@@ -578,7 +578,16 @@ _install_bun_from_npm() {
     return 1
   fi
   if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
-    _mac_timeout "${REMOTE_INSTALL_TIMEOUT:-300}" sudo npm install -g "bun@${BUN_PIN}" </dev/null >"$log" 2>&1 || rc=$?
+    # Dani 73629: as root ONLY through root_npm_install_global (root-owned node and npm, a root-only dir chain, env -i,
+    # HOME=/var/root), never a plain `sudo npm`, which resolves npm and its config from the user's side. No time limit,
+    # as in the Claude step: a password-asking sudo needs the terminal, which a process group under _mac_timeout lacks.
+    if ! root_npm_install_global "bun@${BUN_PIN}" >"$log" 2>&1; then
+      rc=1
+      echo -e "  ${RED}✗${NC} $(_t macos.root_npm_bun_failed)"
+      echo "    sudo npm install -g bun@${BUN_PIN}"
+    fi
+    # the sudo login ends here, as after the Claude step
+    command /usr/bin/sudo -K 2>/dev/null || true
   else
     _mac_timeout "${REMOTE_INSTALL_TIMEOUT:-300}" npm install -g "bun@${BUN_PIN}" </dev/null >"$log" 2>&1 || rc=$?
   fi
@@ -1429,7 +1438,8 @@ fi
 
 # Setup channel state directory
 CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
-mkdir -p "$CHANNEL_DIR"
+# GROMZONOPROVIDER1108: gromzo keeps no channel state here (no token, no access.json), so no empty dir for it.
+[ "$CHANNEL_PROVIDER" = "gromzo" ] || mkdir -p "$CHANNEL_DIR"
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   (umask 077 && echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > "$CHANNEL_DIR/.env")

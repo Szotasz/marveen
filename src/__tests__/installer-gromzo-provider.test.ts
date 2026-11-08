@@ -19,14 +19,19 @@ const between = (text: string, from: string, to: string): string => {
 // Installer code never runs on the host for real (Samu 69664): a slice is EXECUTED here only after it is proven inert.
 // It must end where intended and name no system-changing command except the ones the harness stubs (_install_bun,
 // pkg_install_noninteractive, ensure_in_rc). The check runs BEFORE the spawn, so a non-inert slice never runs.
-const SYSTEM_CHANGING = /\b(sudo|dscl|dseditgroup|launchctl|systemctl|useradd|chown|chmod|curl|wget|rm|mv|cp|ln|install|npm|claude|apt-get|brew)\b/
+const SYSTEM_CHANGING = /\b(sudo|dscl|dseditgroup|launchctl|systemctl|useradd|chown|chmod|curl|wget|rm|mv|cp|ln|install|npm|claude|apt-get|brew|mkdir|touch|tee|eval|bash|sh|exec|source)\b/
+// a redirection that writes somewhere (after dropping the harmless /dev/null and fd-duplication forms)
+const WRITES = (code: string) => /[^<]>/.test(code.replace(/&?[0-9]?>>?\s*\/dev\/null/g, '').replace(/[0-9]?>&[0-9-]/g, ''))
+// an echo/ok line is skipped only when it is ONE plain command: a `;`, `&&`, `||` or `|` after it is code (Dani 73629)
+const PLAIN_MESSAGE = /^\s*(?:echo|ok)\b[^;&|]*$/
 const STUBBED = /^\s*(_install_bun|pkg_install_noninteractive|ensure_in_rc)\b.*$/gm
 const inertProblem = (slice: string, endsWith: string): string | null => {
   if (!slice.endsWith(endsWith)) return `the slice does not end at ${JSON.stringify(endsWith)}`
   const code = slice.replace(STUBBED, '').split('\n')
-    .filter((l) => !l.trimStart().startsWith('#') && !/^\s*(?:(?:echo|ok)\b|INSTALL_STEP=)/.test(l)).join('\n')
+    .filter((l) => !l.trimStart().startsWith('#') && !PLAIN_MESSAGE.test(l) && !/^\s*INSTALL_STEP="[a-z-]+"$/.test(l)).join('\n')
   const m = code.match(SYSTEM_CHANGING)
-  return m ? `the slice names a system-changing command: ${m[0]}` : null
+  if (m) return `the slice names a system-changing command: ${m[0]}`
+  return WRITES(code) ? 'the slice writes through a redirection' : null
 }
 // install-lang.sh is function definitions only at top level (no statement runs on source); _t is a pure echo.
 const sourceLangOnly = (script: string) => spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } })
@@ -37,6 +42,10 @@ const runInert = (slice: string, endsWith: string, script: string) => {
 }
 it('the inert check bites (positive controls), so nothing below runs an unchecked slice', () => {
   expect(inertProblem('x\n  ln -sf a b\nesac', '\nesac')).toMatch(/ln/)
+  expect(inertProblem('x\n  echo hi; sudo true\nesac', '\nesac')).toMatch(/sudo/)
+  expect(inertProblem('x\n  ok "x" && mkdir d\nesac', '\nesac')).toMatch(/mkdir/)
+  expect(inertProblem('x\n  printf x >"$HOME/f"\nesac', '\nesac')).toMatch(/redirection/)
+  expect(inertProblem('x\n  command -v bun &>/dev/null || y=1\nesac', '\nesac')).toBeNull()
   expect(inertProblem('x\nfi\nmore', '\nfi')).toMatch(/does not end/)
   expect(() => runInert('x\n  sudo true\nfi', '\nfi', 'true')).toThrow(/refusing/)
 })
@@ -88,6 +97,10 @@ for (const file of ['install-linux.sh', 'install-macos.sh']) {
 
   describe(`${file}: gromzo never falls into the Slack branches`, () => {
     const text = src(file)
+    it('no empty ~/.claude/channels/gromzo: the channel dir is made for every provider but gromzo (Dani 73629)', () => {
+      expect(text).toContain('CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"\n# GROMZONOPROVIDER1108: gromzo keeps no channel state here (no token, no access.json), so no empty dir for it.\n[ "$CHANNEL_PROVIDER" = "gromzo" ] || mkdir -p "$CHANNEL_DIR"\n')
+      expect(text.match(/^mkdir -p "\$CHANNEL_DIR"$/gm)).toBeNull()
+    })
     it('the token prompts, the .env keys, the plugin install and the plugin check each have a gromzo branch', () => {
       expect(text).toMatch(/elif \[ "\$CHANNEL_PROVIDER" = "gromzo" \]; then\n(?:\s*#[^\n]*\n)+  echo ""\n  echo -e "\$\{DIM\}  Az AI asszisztensed a Gromzo alkalmazason at/)
       expect(text).toContain('elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then\n  : # GROMZONOPROVIDER1108: no token keys')
