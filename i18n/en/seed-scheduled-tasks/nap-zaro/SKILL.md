@@ -27,13 +27,14 @@ not a documentation fix.)
 
 1. **Preparation, and exit if it already ran today.** This run is NOT idempotent (the log
    is append-only), so a prompt delivered twice would write two entries. If today's log
-   already has a `Day close` entry, stop and write nothing.
+   already has a `Day close` entry (or a `Napzáró` one: the Hungarian version's title, on the day the
+   install's language switched), stop and write nothing.
    ```bash
 PORT="$(sed -n 's/^WEB_PORT=//p' {{INSTALL_DIR}}/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 TOKEN="$(cat {{INSTALL_DIR}}/store/.dashboard-token)"
 TODAY="$(date +%F)"
 curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/daily-log?agent={{MAIN_AGENT_ID}}&date=$TODAY" \
-  | python3 -c "import json,sys; rows=json.load(sys.stdin); print('MAR_LEFUTOTT' if any('Day close' in r['content'] for r in rows) else 'last_ts=%d' % max([r['created_at'] for r in rows] or [0]))"
+  | python3 -c "import json,sys; rows=json.load(sys.stdin); print('MAR_LEFUTOTT' if any('Napzáró' in r['content'] or 'Day close' in r['content'] for r in rows) else 'last_ts=%d' % max([r['created_at'] for r in rows] or [0]))"
    ```
    ALWAYS give the date (`date=`): the default of the endpoint is the UTC day, which between 22:00 and midnight
    would be tomorrow.
@@ -143,5 +144,5 @@ python3 -c "import json,sys; print(json.dumps({'agent_id':'{{MAIN_AGENT_ID}}','c
 TXT
    ```
 
-4. **Verification.** Fetch today's log again and check that it has EXACTLY one `Day close`
-   entry. If there are two, report it at the end of the run, and DO NOT delete it on your own.
+4. **Verification.** Fetch today's log again and check that it has EXACTLY one `Day close` (or
+   `Napzáró`) entry. If there are two, report it at the end of the run, and DO NOT delete it on your own.

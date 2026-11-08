@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync, copyFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, relative } from 'node:path'
 import { seedEnRel, seedSourceFor } from '../web/seed-lang.js'
@@ -166,6 +166,27 @@ describe('the language helper (scripts/lib/seed-lang.sh, src/web/seed-lang.ts)',
       }
     })
   }
+})
+
+describe('an English version that is a symlink is never followed (Dani 73301 (1))', () => {
+  it('the initial seeding (shell and TS) and the refresh read the Hungarian file', () => {
+    const f = makeInstall({ lang: 'en' })
+    try {
+      const rel = 'seed-skills/demo/SKILL.md'
+      const en = join(f.install, 'i18n', 'en', rel)
+      const outside = join(f.base, 'outside.md')
+      writeFileSync(outside, 'linked text\n')
+      rmSync(en)
+      symlinkSync(outside, en)
+      const sh = execFileSync('bash', ['-c', `. "${f.install}/scripts/lib/seed-lang.sh"; seed_src_for "${f.install}" "${rel}" en`], { encoding: 'utf-8' })
+      expect(sh).toBe(join(f.install, rel))
+      expect(seedSourceFor(f.install, rel, 'en')).toBe(join(f.install, rel))
+      const refresh = bash([...PRELUDE(f.install, f.home), NEW_FUNCS, LANG_BLOCK, `printf '[%s]' "$(seed_en_file "${rel}")"`].join('\n') + '\n', join(f.base, 'sl.sh'))
+      expect(refresh.out).toBe('[]')
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('the update refresh switches a whole untouched dir to the install language (seed A)', () => {

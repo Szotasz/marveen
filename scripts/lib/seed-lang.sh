@@ -29,7 +29,8 @@ seed_src_for() {
   local install="$1" rel="$2" lang="$3" en
   if [ "$lang" = en ]; then
     en="$(seed_en_rel "$rel")"
-    if [ -n "$en" ] && [ -f "$install/$en" ]; then printf '%s' "$install/$en"; return 0; fi
+    # a regular file only, as update.sh seed_en_file: a symlink is never followed (Dani 73301 (1))
+    if [ -n "$en" ] && [ -f "$install/$en" ] && [ ! -L "$install/$en" ]; then printf '%s' "$install/$en"; return 0; fi
   fi
   printf '%s' "$install/$rel"
 }
