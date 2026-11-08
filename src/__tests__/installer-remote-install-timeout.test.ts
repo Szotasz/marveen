@@ -68,7 +68,7 @@ function run(vendorBody: string, env: Record<string, string> = {}, args: string[
     cwd: tmpdir(),
     env: {
       ...process.env,
-      PATH: `${fakeCurlDir()}:${process.env.PATH}`,
+      PATH: `${env.MKTEMP_DIR ? `${env.MKTEMP_DIR}:` : ''}${fakeCurlDir()}:${process.env.PATH}`,
       WORK: work,
       FAKE_VENDOR_SCRIPT: vendor,
       FAKE_CURL_LOG: join(work, 'curl.log'),
@@ -180,6 +180,7 @@ function runBun(env: Record<string, string>): Run {
   const npmPrefix = join(work, 'npm-prefix')
   writeFileSync(join(bin, 'npm'), [
     '#!/bin/bash',
+    `if [ "$1" = prefix ]; then echo "${npmPrefix}"; exit 0; fi`,
     'echo "$*" >> "$FAKE_NPM_LOG"',
     'if [ -n "${FAKE_NPM_FAIL:-}" ]; then echo "npm error code E503" >&2; exit 1; fi',
     `mkdir -p "${npmPrefix}/lib/bun/bin" "${npmPrefix}/bin"`,
@@ -208,7 +209,7 @@ function runBun(env: Record<string, string>): Run {
     cwd: tmpdir(),
     env: {
       ...process.env,
-      PATH: `${bin}:${npmPrefix}/bin:${process.env.PATH}`,
+      PATH: `${bin}:${env.EXTRA_PATH ? `${env.EXTRA_PATH}:` : ''}${npmPrefix}/bin:${process.env.PATH}`,
       WORK: work,
       FAKE_VENDOR_SCRIPT: vendor,
       FAKE_CURL_LOG: join(work, 'curl.log'),
@@ -248,6 +249,15 @@ describe.skipIf(!HAVE_TIMEOUT)('Bun: the GitHub download fails, the npm fallback
     expect(r.out).toContain('FAIL: A Bun telepitese nem sikerult: a GitHub-letoltes (bun.sh/install) es az npm-tartalek (bun@1.4.4) is bukott')
   })
 
+  it('an older, working bun earlier on PATH is not the one linked: npm\'s own prefix names the new one (Dani 73434)', () => {
+    const old = mkdtempSync(join(tmpdir(), 'rinst-oldbun-'))
+    writeFileSync(join(old, 'bun'), '#!/bin/bash\necho 1.0.0\n')
+    chmodSync(join(old, 'bun'), 0o755)
+    const r = runBun({ EXTRA_PATH: old })
+    expect(r.out).toContain('ok: bun telepitve (npm tartalek): 1.4.4')
+    expect(spawnSync(join(r.work, '.bun', 'bin', 'bun'), ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe('1.4.4')
+  })
+
   it('the GitHub path works: no npm call at all', () => {
     const work = mkdtempSync(join(tmpdir(), 'rinst-okvendor-'))
     const vendor = join(work, 'ok.sh')
@@ -255,5 +265,21 @@ describe.skipIf(!HAVE_TIMEOUT)('Bun: the GitHub download fails, the npm fallback
     const r = runBun({ FAKE_VENDOR_SCRIPT: vendor })
     expect(r.out).toContain('ok: bun telepitve: 1.4.4')
     expect(existsSync(join(r.work, 'npm.log'))).toBe(false)
+  })
+})
+
+describe.skipIf(!HAVE_TIMEOUT)('no predictable temp path for a root-run script (Dani 73434)', () => {
+  it('mktemp fails: the vendor script is neither fetched nor run, and the helper reports it', () => {
+    const fake = mkdtempSync(join(tmpdir(), 'rinst-nomktemp-'))
+    writeFileSync(join(fake, 'mktemp'), '#!/bin/sh\nexit 1\n')
+    chmodSync(join(fake, 'mktemp'), 0o755)
+    const r = run('touch "$WORK/ran"; touch "$WORK/tool"', { MKTEMP_DIR: fake })
+    expect(r.out).toContain('RESULT=1')
+    expect(r.out).toContain('nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)')
+    expect(existsSync(join(r.work, 'ran'))).toBe(false)
+    expect(existsSync(join(r.work, 'curl.log'))).toBe(false)
+  })
+  it('the source has no fixed /tmp fallback name in the two helpers', () => {
+    for (const f of ['_run_remote_installer', '_install_bun_from_npm']) expect(sliceShellFn(LINUX, f)).not.toMatch(/\|\|\s*echo\s+"?\/tmp\//)
   })
 })

@@ -888,8 +888,12 @@ _run_remote_installer() {
   local label="$1" url="$2" check="$3"
   shift 3
   local tries="${REMOTE_INSTALL_TRIES:-3}" n=1 rc dir script log
-  dir="$(mktemp -d 2>/dev/null || echo "/tmp/marveen-remote-install-$$")"
-  mkdir -p "$dir"
+  # No fixed /tmp fallback name: the installer runs as root, and a predictable path that it fills and then runs could
+  # be replaced by another local user (Dani 73434). Without a private temp dir the step stops.
+  if ! dir="$(mktemp -d 2>/dev/null)" || [ -z "$dir" ]; then
+    warn "$label: nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)."
+    return 1
+  fi
   script="$dir/install.sh"
   log="$dir/install.log"
   while [ "$n" -le "$tries" ]; do
@@ -940,15 +944,20 @@ _install_bun_from_npm() {
   fi
   ensure_global_npm_writable auto || true
   local log rc=0 npm_bun real
-  log="$(mktemp 2>/dev/null || echo "/tmp/marveen-bun-npm-$$.log")"
+  if ! log="$(mktemp 2>/dev/null)" || [ -z "$log" ]; then
+    warn "Bun (npm tartalek): nem tudtam privat ideiglenes fajlt letrehozni (mktemp)."
+    return 1
+  fi
   if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
     timeout --kill-after=10 "${REMOTE_INSTALL_TIMEOUT:-300}" sudo npm install -g "bun@${BUN_PIN}" </dev/null >"$log" 2>&1 || rc=$?
   else
     timeout --kill-after=10 "${REMOTE_INSTALL_TIMEOUT:-300}" npm install -g "bun@${BUN_PIN}" </dev/null >"$log" 2>&1 || rc=$?
   fi
   hash -r
-  npm_bun="$(command -v bun 2>/dev/null || true)"
-  if [ "$rc" = 0 ] && [ -n "$npm_bun" ] && "$npm_bun" --version >/dev/null 2>&1; then
+  # The bun this npm install put in, by npm's own prefix: `command -v bun` could name an older bun earlier on PATH
+  # (Dani 73434).
+  npm_bun="$(npm prefix -g 2>/dev/null || true)/bin/bun"
+  if [ "$rc" = 0 ] && [ -x "$npm_bun" ] && "$npm_bun" --version >/dev/null 2>&1; then
     real="$(readlink -f "$npm_bun" 2>/dev/null || echo "$npm_bun")"
     mkdir -p "$BUN_INSTALL/bin"
     ln -sf "$real" "$BUN_INSTALL/bin/bun"
