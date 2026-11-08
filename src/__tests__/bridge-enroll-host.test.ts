@@ -55,12 +55,42 @@ describe('selectEnrollHost', () => {
     expect(host).toBe('10.76.163.150')
   })
 
-  it('ZeroTier and Tailscale both present: the first one in interface order wins', () => {
+  it('ZeroTier and Tailscale both present: the tailnet wins even when the zt interface is listed FIRST', () => {
+    // Interface order follows device creation and can flip between reboots;
+    // a host with Tailscale must keep its tailnet default either way.
+    const host = selectEnrollHost({
+      ztdiyqolon: [v4('10.76.163.150')],
+      tailscale0: [v4('100.66.169.66')],
+    })
+    expect(host).toBe('100.66.169.66')
+  })
+
+  it('ZeroTier and Tailscale both present, tailnet listed first: the tailnet wins', () => {
     const host = selectEnrollHost({
       tailscale0: [v4('100.66.169.66')],
       ztdiyqolon: [v4('10.76.163.150')],
     })
     expect(host).toBe('100.66.169.66')
+  })
+
+  it('ZeroTier ahead of the LAN, with the LAN listed first and an IPv6 FIRST on the zt interface: the zt IPv4 wins', () => {
+    // Guards the family check: an address test moved ahead of it would
+    // return the IPv6 address.
+    const host = selectEnrollHost({
+      wlo1: [v4('10.0.2.237')],
+      ztdiyqolon: [v6('fd80:56c2:e21c::1'), v4('10.76.163.150')],
+    })
+    expect(host).toBe('10.76.163.150')
+  })
+
+  it('a name with "zt" in the middle is NOT ZeroTier: the first IPv4 wins', () => {
+    // Guards the ^ anchor of the name pattern.
+    expect(isZeroTierIfaceName('fooztabcdef')).toBe(false)
+    const host = selectEnrollHost({
+      wlo1: [v4('10.0.2.237')],
+      fooztabcdef: [v4('10.76.163.150')],
+    })
+    expect(host).toBe('10.0.2.237')
   })
 
   it('THE LIVE CASE: tailnet wins even when it is NOT the first interface', () => {

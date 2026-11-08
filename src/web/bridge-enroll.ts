@@ -138,9 +138,10 @@ export function isZeroTierIfaceName(name: string): boolean {
  * REMOTE access, so a LAN address is a structurally wrong default: the first
  * non-loopback IPv4 in interface order used to win (BRIDGEHOST1: en0's
  * 192.168.x beat utun4's tailnet address, and the bundle died the moment the
- * laptop left the home network). Prefer the first tailnet (CGNAT) or
- * ZeroTier address when one exists; otherwise keep the pre-existing
- * first-IPv4 behavior so hosts without either VPN see no change. Pure over
+ * laptop left the home network). Prefer the first tailnet (CGNAT) address
+ * when one exists, in any interface; else the first IPv4 on a ZeroTier
+ * interface; else the pre-existing first-IPv4 behavior, so hosts without
+ * either VPN see no change. Pure over
  * the interface map so the order-sensitive cases are unit-testable. */
 export interface EnrollIfaceInfo {
   address: string
@@ -151,18 +152,26 @@ export interface EnrollIfaceInfo {
 export function selectEnrollHost(
   ifaces: Record<string, EnrollIfaceInfo[] | undefined>,
 ): string | null {
+  // Three tiers, each the first match in interface order: tailnet, then
+  // ZeroTier, then any IPv4. The tailnet MUST win over ZeroTier regardless of
+  // order: interface order follows device creation and can flip between
+  // reboots, and a Bridge device on the tailnet but not on that ZeroTier
+  // network would get an unreachable bundle (the BRIDGEHOST1 failure). So a
+  // host with Tailscale sees exactly the pre-ZeroTier behavior.
+  let zerotierAddr: string | null = null
   let first: string | null = null
   for (const name of Object.keys(ifaces)) {
     const zerotier = isZeroTierIfaceName(name)
     for (const info of ifaces[name] ?? []) {
       const family = info.family as string | number
       if ((family === 'IPv4' || family === 4) && !info.internal) {
-        if (isTailnetIPv4(info.address) || zerotier) return info.address
+        if (isTailnetIPv4(info.address)) return info.address
+        if (zerotier && zerotierAddr === null) zerotierAddr = info.address
         if (first === null) first = info.address
       }
     }
   }
-  return first
+  return zerotierAddr ?? first
 }
 
 /** Best-effort default host of this machine: tailnet/ZeroTier-preferred,
