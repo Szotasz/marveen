@@ -395,19 +395,16 @@ export async function notifySecurityEvent(text: string): Promise<void> {
  * posted to directly). When it changes, the OLD target is told, so a change made around the gate (a text brake) is
  * still seen where the owner was reading. Never throws; logged either way. Exported for tests.
  */
-export async function announceSlackTargetChange(oldTarget: string, newTarget: string, opts: { send?: typeof SendSlack; now?: Date } = {}): Promise<{ sent: boolean; reason?: string }> {
+export async function announceSlackTargetChange(oldTarget: string, newTarget: string, opts: { send?: typeof SendSlack; now?: Date; lang?: 'hu' | 'en' } = {}): Promise<{ sent: boolean; reason?: string }> {
   const before = oldTarget.trim()
   const after = newTarget.trim()
   if (!before) return { sent: false, reason: 'no_old_target' }
   if (before === after) return { sent: false, reason: 'unchanged' }
   try {
-    const { APP_TZ } = await import('./config.js')
-    const when = (opts.now ?? new Date()).toLocaleString('hu-HU', { timeZone: APP_TZ })
-    const text = [
-      `[FIGYELEM] A gazda-értesítések és jóváhagyás-kérések Slack-célja megváltozott: ${before} -> ${after || '(nincs)'} (${when}).`,
-      'Ide ezután nem jönnek a kérések.',
-      'Ha nem te változtattál, a Dashboard -> Beállítások -> NOTIFY_SLACK_TARGET alatt állítsd vissza, és szólj.',
-    ].join('\n')
+    // APPROVALTAGEN1108: in the install's approval-text language (the explicit AGENT_TEXT_LANG).
+    const { OWNER_TEXT, formatMoment } = await import('./web/approval-texts.js')
+    const lang = opts.lang ?? (await import('./web/agent-text-lang.js')).approvalTextLang()
+    const text = OWNER_TEXT[lang].targetChanged(before, after, formatMoment(opts.now ?? new Date(), lang))
     const send = opts.send ?? (await import('./slack-notify.js')).sendSlackNotification
     const r = await send(before, text, { raw: true })
     if (r.ok) {
@@ -463,7 +460,7 @@ export async function noticeTargetDrift(
 export async function announceSlackOwnerChange(
   oldSetting: string,
   newSetting: string,
-  opts: { send?: typeof SendSlack; readAccess?: () => string | null; now?: Date } = {},
+  opts: { send?: typeof SendSlack; readAccess?: () => string | null; now?: Date; lang?: 'hu' | 'en' } = {},
 ): Promise<{ sent: boolean; reason?: string }> {
   try {
     const sn = await import('./slack-notify.js')
@@ -477,13 +474,10 @@ export async function announceSlackOwnerChange(
     const after = sn.resolveOwnerUserId(newSetting, access)
     if (!before) return { sent: false, reason: 'no_old_owner' }
     if (before === after) return { sent: false, reason: 'unchanged' }
-    const { APP_TZ } = await import('./config.js')
-    const when = (opts.now ?? new Date()).toLocaleString('hu-HU', { timeZone: APP_TZ })
-    const text = [
-      `[FIGYELEM] A jóváhagyó Slack-azonosító megváltozott: ${before} -> ${after ?? '(nincs)'} (${when}).`,
-      'Mostantól nem a te Slack-reakciód hagyja jóvá a kéréseket.',
-      'Ha nem te változtattál, a Dashboard -> Beállítások -> SLACK_OWNER_USER_ID alatt állítsd vissza, és szólj.',
-    ].join('\n')
+    // APPROVALTAGEN1108: in the install's approval-text language (the explicit AGENT_TEXT_LANG).
+    const { OWNER_TEXT, formatMoment } = await import('./web/approval-texts.js')
+    const lang = opts.lang ?? (await import('./web/agent-text-lang.js')).approvalTextLang()
+    const text = OWNER_TEXT[lang].ownerChanged(before, after, formatMoment(opts.now ?? new Date(), lang))
     const send = opts.send ?? sn.sendSlackNotification
     const r = await send('dm', text, { ownerUserId: before, raw: true })
     if (r.ok) {

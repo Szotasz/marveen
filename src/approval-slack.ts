@@ -47,6 +47,8 @@ export interface ApprovalSlackPost {
   replyMode?: boolean
   /** The server's own thread notice (asked for a new message after an edit), skipped by the thread rule. */
   noticeTs?: string | null
+  /** The language the post was made in (APPROVALTAGEN1108); absent = hu, as every post from before it was stored. */
+  lang?: ApprovalLang
 }
 
 export const sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')
@@ -96,15 +98,27 @@ export type Verdict =
 
 export const APPROVE_WORDS: ReadonlySet<string> = new Set(['mehet', 'jóváhagyom'])
 export const REJECT_WORDS: ReadonlySet<string> = new Set(['nem', 'elutasítom'])
+/**
+ * APPROVALTAGEN1108 (Samu 73344, the narrowest consent change): a post made in English accepts these IN ADDITION to the
+ * Hungarian words (backward compatible); a Hungarian post (and every post from before the language was stored) accepts
+ * exactly the Hungarian set, as before. "yes" and "ok" decide nothing, as "igen" does not.
+ */
+export const APPROVE_WORDS_EN: ReadonlySet<string> = new Set(['approve', 'go'])
+export const REJECT_WORDS_EN: ReadonlySet<string> = new Set(['reject', 'no'])
+/** The language a post was made in (stored with it): the words its owner was told decide. */
+export type ApprovalLang = 'hu' | 'en'
 /** A typed decision counts only this long after it was written, and only if it is still the owner's last word there. */
 export const REPLY_SETTLE_S = 30
 
-/** The decision a typed reply carries, or null: NFC, whitespace folded, only a trailing "." / "!" dropped. */
-export function replyWord(text: unknown): 'approved' | 'rejected' | null {
+/**
+ * The decision a typed reply carries, or null: NFC, whitespace folded, only a trailing "." / "!" dropped. [lang] is the
+ * POST's language (never the install's current one: a switch must not change the rules of a pending request).
+ */
+export function replyWord(text: unknown, lang: ApprovalLang): 'approved' | 'rejected' | null {
   if (typeof text !== 'string') return null
   const t = text.normalize('NFC').replace(/\s+/gu, ' ').trim().replace(/[.!]+$/u, '').trim().toLocaleLowerCase('hu-HU')
-  if (APPROVE_WORDS.has(t)) return 'approved'
-  if (REJECT_WORDS.has(t)) return 'rejected'
+  if (APPROVE_WORDS.has(t) || (lang === 'en' && APPROVE_WORDS_EN.has(t))) return 'approved'
+  if (REJECT_WORDS.has(t) || (lang === 'en' && REJECT_WORDS_EN.has(t))) return 'rejected'
   return null
 }
 
@@ -125,7 +139,7 @@ function byOwner(m: Msg, owner: string): boolean {
 /** What the owner's deciding message [d] gives now. */
 function fromDeciding(d: Msg, post: ApprovalSlackPost, binding: Binding, nowS: number): Verdict {
   if (d.edited !== undefined) return { kind: 'notice', reason: 'owner_edited' }
-  const word = replyWord(d.text)
+  const word = replyWord(d.text, post.lang === 'en' ? 'en' : 'hu')
   if (!word || typeof d.ts !== 'string') return { kind: 'none' }
   // a decision word still inside its settle time: nothing decides yet, a reaction neither (see checkPost)
   if (Number(d.ts) > nowS - REPLY_SETTLE_S) return { kind: 'none', pending: true }

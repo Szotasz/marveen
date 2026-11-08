@@ -1749,6 +1749,8 @@ export function initDatabase(dbPathOverride?: string): void {
   for (const col of [
     'content_basis TEXT', 'reaction_mode INTEGER NOT NULL DEFAULT 1', 'reply_mode INTEGER NOT NULL DEFAULT 0',
     'decided_by_ts TEXT', 'binding TEXT', 'notice_ts TEXT',
+    // APPROVALTAGEN1108: the language the post was made in (its words decide); NULL = hu, as every older row.
+    'lang TEXT',
   ]) {
     try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
   }
@@ -7551,17 +7553,18 @@ export interface ApprovalSlackPostRow {
   decided_by_ts: string | null
   binding: string | null
   notice_ts: string | null
+  lang: string | null
 }
 
 export function recordApprovalSlackPost(p: {
   approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string
-  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean
+  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean; lang?: 'hu' | 'en'
 }): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode, lang)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000),
-    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0).changes > 0
+    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0, p.lang === 'en' ? 'en' : null).changes > 0
 }
 
 /**
