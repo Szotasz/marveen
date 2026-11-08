@@ -111,6 +111,8 @@ describe('the TS respawn builder (channel-monitor)', () => {
     claudePath: '/c/claude',
     channelStateEnv: { name: 'GROMZO_STATE_DIR', dir: '/x' },
     config: {} as never,
+    model: '',
+    continueSession: false,
     mainAgentId: 'marveen',
     gromzoTokenFile: '/run/marveen-mxd/tokens/marveen.token',
   }
