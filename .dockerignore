@@ -47,3 +47,6 @@ evidence
 test-results
 .DS_Store
 __pycache__
+# DOCKERSEEDREFRESH1108: the seed snapshot of a running volume is state, never build context
+.seed-prev
+.seed-prev.tmp

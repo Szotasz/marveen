@@ -83,6 +83,8 @@ fi
 # comes from i18n/en/<its repo path> when that exists. An image without the helper seeds Hungarian, as before.
 SEED_LANG=hu
 if [ -f scripts/lib/seed-lang.sh ]; then . scripts/lib/seed-lang.sh; SEED_LANG="$(seed_lang "$INSTALL_DIR")"; fi
+# DOCKERSEEDREFRESH1108: the seed rules update.sh runs (the render below, the refresh at the end of the seeding).
+. scripts/lib/seed-refresh.sh || { say "scripts/lib/seed-refresh.sh is missing: the image is broken"; exit 1; }
 
 # ~/.claude: the dirs, the first-run answers claude would otherwise stop on (IL:1167-1218).
 mkdir -p "$HOME/.claude/channels" "$HOME/.claude/skills" "$HOME/.claude/scheduled-tasks"
@@ -103,8 +105,9 @@ copy_task() { # template dir, task name
       [ -f "$f" ] || continue
       local seed_src="$f"
       command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "$f" "$SEED_LANG")"
-      sed -e "s/{{MAIN_AGENT_ID}}/$A/g" -e "s/{{BOT_NAME}}/$B/g" -e "s/{{OWNER_NAME}}/$O/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" -e "s/{{WEB_PORT}}/$WEB_PORT/g" "$seed_src" > "$target/$sub$(basename "$f")"
+      # DOCKERSEEDREFRESH1108: the shared render (scripts/lib/seed-refresh.sh): literal values, the same bytes the refresh
+      # compares against later.
+      MAIN_AGENT_ID="$AGENT_ID" BOT_NAME="$BOT_NAME" OWNER_NAME="$OWNER_NAME" render_seed_template < "$seed_src" > "$target/$sub$(basename "$f")"
     done
   done
   REGISTER="$REGISTER $2"
@@ -146,6 +149,14 @@ for src in skills/skill-factory seed-skills/*/; do
   fi
   say "skill seeded: $n"
 done
+
+# DOCKERSEEDREFRESH1108: the untouched seed copies of an existing volume follow the new image (docker/seed-snapshot.sh kept
+# the old tree's sources before the swap). In a subshell: a failure is a WARN, the start goes on, the snapshot stays for
+# the next start.
+if [ -d .seed-prev ]; then
+  ( MAIN_AGENT_ID="$AGENT_ID"; . "${MARVEEN_DOCKER_DIR:-/opt/marveen-docker}/seed-refresh-docker.sh" && docker_seed_refresh ) \
+    || say "WARN: the seed refresh did not finish; it is tried again at the next start"
+fi
 
 # The hooks, as update.sh installs them (idempotent).
 bash scripts/sync-hooks.sh >/dev/null 2>&1 || say "WARN: scripts/sync-hooks.sh failed"

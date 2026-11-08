@@ -62,6 +62,15 @@ RUN usermod -l marveen -d /home/marveen -m node && groupmod -n marveen node \
     && mkdir -p /opt/marveen /home/marveen && chown marveen:marveen /opt/marveen /home/marveen && chmod 0700 /home/marveen
 
 COPY --from=build --chown=root:root /src /opt/marveen-image
+# DOCKERSEEDREFRESH1108: no gitignored file of the seed dirs ships (a skill's ignored secrets, e.g. fleet-helper's
+# mail_rules.json / .dashboard-token, from a build context that holds them): first-boot copies those dirs whole and the
+# seed refresh adds their files. The ignore rules are git's own (every nested .gitignore), read through a throwaway
+# GIT_DIR that is removed in the same step, so no .git reaches the image.
+RUN cd /opt/marveen-image && g="$(mktemp -d)" \
+    && git --git-dir="$g" --work-tree=. init -q \
+    && git --git-dir="$g" --work-tree=. ls-files -z --others --ignored --exclude-standard -- seed-skills skills seed-scheduled-tasks scheduled-tasks templates i18n > "$g.list" \
+    && xargs -0 -r rm -f -- < "$g.list" \
+    && rm -rf "$g" "$g.list"
 COPY --chown=root:root docker/ /opt/marveen-docker/
 # The build manifest: every code file and its hash. code-sync.sh compares it before and verifies the copy after.
 RUN cd /opt/marveen-image && find . -type f -o -type l | LC_ALL=C sort | while IFS= read -r f; do \

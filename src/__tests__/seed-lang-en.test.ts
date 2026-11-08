@@ -369,6 +369,8 @@ describe('docker/first-boot.sh', () => {
         const skillsLoop = FIRSTBOOT.slice(FIRSTBOOT.indexOf('for src in skills/skill-factory seed-skills/*/; do'), FIRSTBOOT.indexOf('\n# The hooks, as update.sh installs them'))
         const script = ['set -u', `INSTALL_DIR="${f.install}"`, `HOME="${f.home}"`, `cd "${f.install}"`, 'say() { :; }',
           'A=marveen; B=Marveen; O=Owner; WEB_PORT=3420; SCHED="$HOME/.claude/scheduled-tasks"; REGISTER=""',
+          // DOCKERSEEDREFRESH1108: copy_task renders through the shared lib with the raw identity
+          'AGENT_ID=marveen; BOT_NAME=Marveen; OWNER_NAME=Owner', `. "${join(ROOT, 'scripts', 'lib', 'seed-refresh.sh')}"`,
           'SEED_LANG=hu', 'if [ -f scripts/lib/seed-lang.sh ]; then . scripts/lib/seed-lang.sh; SEED_LANG="$(seed_lang "$INSTALL_DIR")"; fi',
           sliceShellFn(FIRSTBOOT, 'copy_task'), 'copy_task seed-scheduled-tasks/task1/ task1', skillsLoop].join('\n') + '\n'
         const r = bash(script, join(f.base, 'fb.sh'))
