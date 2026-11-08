@@ -39,6 +39,7 @@ import { logger } from '../logger.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { stripAllAnsi, stripGhostSuggestion, idleConsideringDimGhost } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -163,6 +164,28 @@ function isSessionReadyForUnlock(session: string): boolean {
   }
 }
 
+// Same verdict as channels.sh probe_pane_input_state == "idle": a COLOURED
+// capture, judged by the readiness rule over both the plain view and the
+// dim-stripped view (a dim placeholder in an empty box is not text). Pure over
+// the capture so the decision is unit-testable; null (unreadable) is not idle.
+export function unlockPaneInputIdle(colouredPane: string | null): boolean {
+  if (colouredPane == null) return false
+  return idleConsideringDimGhost(stripAllAnsi(colouredPane), stripGhostSuggestion(colouredPane))
+}
+
+function captureColouredPane(session: string): string | null {
+  try {
+    return execFileSync(TMUX, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'], {
+      timeout: 3000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (err) {
+    logger.warn({ site: 'channel-plugin-unlock.captureColouredPane', session, tmux: tmuxStderr(err) }, 'channel-plugin-unlock: coloured capture-pane failed')
+    return null
+  }
+}
+
 function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): void {
   try {
     // Open the MCP dialog. Claude renders the server list within ~2s; the
@@ -201,12 +224,30 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
       // soft-reconnect/resume/hard-restart stage repaired on its own). Send the
       // same command here: it reloads skills+agents+hooks+MCP servers in one
       // shot from the main prompt, so there is no list position to get wrong.
+      //
+      // Only into a pane PROVEN back at an empty idle prompt: if the single
+      // Escape above left a menu level open (the other branch below needs two
+      // to get out), the command would be typed into the menu. Re-probe after
+      // the Escape; if not idle, send ONE more Escape and re-probe again. The
+      // second Escape is conditional on purpose: at an already idle prompt a
+      // double Escape is not a no-op in Claude Code. Still not idle -> skip,
+      // never type blind.
       try {
         execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
-        execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), '/reload-plugins', 'Enter'], { timeout: 5000 })
-        logger.warn({ session, provider }, 'channel-plugin-unlock: sent /reload-plugins after confirmed-absent plugin')
+        let idle = unlockPaneInputIdle(captureColouredPane(session))
+        if (!idle) {
+          execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+          execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
+          idle = unlockPaneInputIdle(captureColouredPane(session))
+        }
+        if (!idle) {
+          logger.warn({ session, provider }, 'channel-plugin-unlock: pane not back at an empty idle prompt after leaving /mcp -- skipping /reload-plugins after confirmed-absent plugin')
+        } else {
+          execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), '/reload-plugins', 'Enter'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+          logger.warn({ session, provider }, 'channel-plugin-unlock: sent /reload-plugins after confirmed-absent plugin')
+        }
       } catch (err) {
-        logger.error({ err, session }, 'channel-plugin-unlock: failed to send /reload-plugins after confirmed-absent plugin')
+        logger.error({ site: 'channel-plugin-unlock.reloadAfterAbsent', err, session, tmux: tmuxStderr(err) }, 'channel-plugin-unlock: failed to send /reload-plugins after confirmed-absent plugin')
       }
       return
     }
