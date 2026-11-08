@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -237,6 +237,16 @@ function renameInPersonaFile(file: string, from: string, to: string): void {
   atomicWriteFileSync(file, content.split(from).join(to))
 }
 
+// ONBOARDNOTG1108 (b): the wizard's close ("x") is remembered on the machine, not in the browser. The dashboard used to
+// keep it in localStorage, which is bound to the origin, and the Bridge opens the dashboard on a fresh local tunnel port
+// on every connect (a new origin each time), so the wizard came back on every Bridge open. One flag file in the store:
+// present = the owner closed the wizard. Only the owner sets or clears it (the routes below); the status reports it.
+const ONBOARDING_DISMISSED_FILE = join(STORE_DIR, '.onboarding-dismissed')
+
+export function onboardingDismissedOnServer(): boolean {
+  try { return existsSync(ONBOARDING_DISMISSED_FILE) } catch { return false }
+}
+
 function identityConfirmed(): boolean {
   return readEnvValue('IDENTITY_CONFIRMED') === '1'
 }
@@ -318,7 +328,34 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       // The identity step never re-opens the wizard on an already-configured
       // install: it only participates while first-run setup is incomplete.
       needsOnboarding: !claude || !running || !ch || !pr,
+      // ONBOARDNOTG1108 (b): the owner closed the wizard (the machine's flag, whatever origin the dashboard is on).
+      dismissed: onboardingDismissedOnServer(),
     })
+    return true
+  }
+
+  // ONBOARDNOTG1108 (b): the wizard's close, remembered on the machine. POST sets the flag, DELETE clears it (the auth
+  // banner's "finish the setup" reopens the wizard). Owner-only: it hides the owner's setup wizard on every origin, so
+  // a bare device key, an operator key or a sub-agent token may not set it. A refused caller keeps the browser-local
+  // close (the dashboard still writes localStorage), which is the behaviour before this flag.
+  if (path === '/api/onboarding/dismiss' && (method === 'POST' || method === 'DELETE')) {
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Remembering the closed setup wizard on this machine needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
+    try {
+      if (method === 'POST') {
+        mkdirSync(STORE_DIR, { recursive: true })
+        atomicWriteFileSync(ONBOARDING_DISMISSED_FILE, JSON.stringify({ dismissedAt: new Date().toISOString() }) + '\n', { mode: 0o600 })
+      } else {
+        rmSync(ONBOARDING_DISMISSED_FILE, { force: true })
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, method }, 'onboarding: the wizard close flag could not be written')
+      json(res, { error: 'The setup wizard state could not be saved.', reason: 'write-failed' }, 500)
+      return true
+    }
+    json(res, { ok: true, dismissed: onboardingDismissedOnServer() })
     return true
   }
 

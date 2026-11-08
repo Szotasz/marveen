@@ -15210,20 +15210,40 @@ function onboardingCurrentStep(s) {
 // Operator can dismiss the wizard (skip/close). A false positive must never
 // lock the dashboard, so the choice persists across reloads; normal UI still
 // covers any real setup that remains.
+// ONBOARDNOTG1108 (b): the close is remembered on the machine too (POST /api/onboarding/dismiss, the status's
+// `dismissed`). localStorage is bound to the origin, and the Bridge opens the dashboard on a new local port on every
+// connect, so a close kept only there was lost on every Bridge open. localStorage stays as the fallback for a caller the
+// server refuses (no owner session yet): that close holds on this origin, as before.
 const ONBOARDING_DISMISS_KEY = 'mvOnboardingDismissed'
+let onboardingDismissedOnServer = false
 function onboardingDismissed() {
+  if (onboardingDismissedOnServer) return true
   try { return localStorage.getItem(ONBOARDING_DISMISS_KEY) === '1' } catch { return false }
+}
+// Best effort: a refusal or a network error leaves the browser-local close in place.
+async function saveOnboardingDismissed(dismissed) {
+  try { await fetch('/api/onboarding/dismiss', { method: dismissed ? 'POST' : 'DELETE' }) } catch { /* offline */ }
 }
 function dismissOnboarding() {
   try { localStorage.setItem(ONBOARDING_DISMISS_KEY, '1') } catch { /* private mode */ }
+  onboardingDismissedOnServer = true
+  saveOnboardingDismissed(true)
   const overlay = document.getElementById('onboardingOverlay')
   if (overlay) { overlay.classList.remove('active'); overlay.hidden = true }
   document.body.style.overflow = ''
 }
+// The owner reopens the wizard (the auth banner): both records are cleared.
+function undismissOnboarding() {
+  try { localStorage.removeItem(ONBOARDING_DISMISS_KEY) } catch { /* storage blocked */ }
+  onboardingDismissedOnServer = false
+  saveOnboardingDismissed(false)
+}
 async function initOnboarding() {
   if (onboardingDismissed()) return
   const s = await fetchOnboardingStatus()
-  if (!s || !s.needsOnboarding) return
+  if (!s) return
+  if (s.dismissed === true) { onboardingDismissedOnServer = true; return }
+  if (!s.needsOnboarding) return
   renderOnboarding(s, await fetchOnboardingAuth())
 }
 async function refreshOnboarding() {
@@ -16941,7 +16961,7 @@ function wireAuthBanner() {
   if (go) go.addEventListener('click', async () => {
     const s = await fetchOnboardingStatus()
     if (s && s.needsOnboarding) {
-      try { localStorage.removeItem(ONBOARDING_DISMISS_KEY) } catch { /* storage blocked */ }
+      undismissOnboarding()
       renderOnboarding(s, await fetchOnboardingAuth())
       return
     }
