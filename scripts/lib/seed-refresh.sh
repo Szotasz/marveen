@@ -17,12 +17,28 @@ render_seed_template() {
   # (substituteTemplatePlaceholders) -- without it here, any shipped task using
   # that form (ledger-live-drain does) hash-mismatches every rendered historical
   # version and is permanently classified "touched", so it never refreshes.
-  sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
-      -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
-      -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
-      -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
-      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
-      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
+  # DOCKERSEEDREFRESH1108: the values go in LITERALLY. A name the owner typed in the wizard may hold a sed
+  # metacharacter: with `sed s/../$name/` a `&` wrote the matched placeholder back, a `/` broke the expression (an empty
+  # file left behind), a `\` was an escape. One pass, left to right: a known placeholder is replaced by its value and
+  # the value is never scanned again (a name holding "{{INSTALL_DIR}}" stays that text). Pure bash, so the bytes are
+  # kept exactly (a missing final newline stays missing, as with sed) on bash 3.2 and 5.x alike.
+  _rst_in="$(cat; printf x)"; _rst_in="${_rst_in%x}"
+  _rst_out=""
+  while :; do
+    case "$_rst_in" in *"{{"*) ;; *) break ;; esac
+    _rst_out="$_rst_out${_rst_in%%"{{"*}"
+    _rst_in="{{${_rst_in#*"{{"}"
+    case "$_rst_in" in
+      "{{MAIN_AGENT_ID}}"*) _rst_out="$_rst_out${MAIN_AGENT_ID:-}"; _rst_in="${_rst_in#"{{MAIN_AGENT_ID}}"}" ;;
+      "{{BOT_NAME}}"*) _rst_out="$_rst_out${BOT_NAME:-}"; _rst_in="${_rst_in#"{{BOT_NAME}}"}" ;;
+      "{{OWNER_NAME}}"*) _rst_out="$_rst_out${OWNER_NAME:-}"; _rst_in="${_rst_in#"{{OWNER_NAME}}"}" ;;
+      "{{INSTALL_DIR}}"*) _rst_out="$_rst_out${INSTALL_DIR}"; _rst_in="${_rst_in#"{{INSTALL_DIR}}"}" ;;
+      "{{PROJECT_ROOT}}"*) _rst_out="$_rst_out${INSTALL_DIR}"; _rst_in="${_rst_in#"{{PROJECT_ROOT}}"}" ;;
+      "{{WEB_PORT}}"*) _rst_out="$_rst_out${WEB_PORT:-3420}"; _rst_in="${_rst_in#"{{WEB_PORT}}"}" ;;
+      *) _rst_out="$_rst_out{{"; _rst_in="${_rst_in#"{{"}" ;;
+    esac
+  done
+  printf '%s' "$_rst_out$_rst_in"
 }
 
 # A top-level task-config.json on stdin, as the dashboard seeder writes it
