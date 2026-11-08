@@ -1721,10 +1721,15 @@ export function stampFableOverageConsentSharedRoots(): void {
   }
 }
 
-export function resolveAgentProvider(name: string): ChannelProviderType {
-  const perAgent = readAgentChannelProvider(name)
+/** The provider a sub-agent's own agent-config value resolves to: one of the five sub-agent providers, else the
+ *  install's provider (an unknown or unaccepted value, 'gromzo' included, falls back). Pure, so it is unit-tested. */
+export function pickAgentProvider(perAgent: string | null, installProvider: ChannelProviderType): ChannelProviderType {
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
-  return CHANNEL_PROVIDER
+  return installProvider
+}
+
+export function resolveAgentProvider(name: string): ChannelProviderType {
+  return pickAgentProvider(readAgentChannelProvider(name), CHANNEL_PROVIDER)
 }
 
 export function agentSessionName(name: string): string {
@@ -2072,17 +2077,18 @@ export function getAgentRunningSince(name: string, session: string = agentSessio
 }
 
 
-/** GROMZONOPROVIDER1108 (Dani 73584): a sub-agent with no channel of its own falls back to the install's provider,
- *  except where that provider says sub-agents get none (providerCapabilities().subAgentDefault === 'none': gromzo, the
- *  MAIN agent's Gromzo channel, which a sub-agent must never carry or speak through). Pure, so it is unit-tested. */
-export function subAgentMayUseProvider(explicitProvider: string | null, resolved: ChannelProviderType): boolean {
-  if (explicitProvider) return true
+/** GROMZONOPROVIDER1108 (Dani 73584, 73593): decided on the RESOLVED provider, never on what the agent wrote. A
+ *  sub-agent never takes a provider whose capabilities say sub-agents get none (subAgentDefault === 'none': gromzo,
+ *  the MAIN agent's Gromzo channel, which a sub-agent must never carry or speak through). An own value the resolver
+ *  does not accept ('gromzo', 'whatsapp', any string the agent wrote into its own config) falls back to the install's
+ *  provider and lands here as that provider, so it cannot open the door. Pure, so it is unit-tested. */
+export function subAgentMayUseProvider(resolved: ChannelProviderType): boolean {
   return providerCapabilities(resolved).subAgentDefault !== 'none'
 }
 
 export function agentHasChannel(name: string): boolean {
   const agentProvider = resolveAgentProvider(name)
-  if (!subAgentMayUseProvider(readAgentChannelProvider(name), agentProvider)) return false
+  if (!subAgentMayUseProvider(agentProvider)) return false
   const dir = agentDir(name)
   const agentChannelDir = channelStateDir(agentProvider, dir)
   const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
@@ -2284,7 +2290,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
   const agentChannelDir = channelStateDir(agentProvider, dir)
-  const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
+  // GROMZONOPROVIDER1108 (Dani 73593): the launch path has its own guard, the same one agentHasChannel asks first, so a
+  // sub-agent never launches with a provider sub-agents may not use (gromzo), whatever a token reader would return.
+  const providerAllowed = subAgentMayUseProvider(agentProvider)
+  const token = providerAllowed ? readChannelToken(agentProvider, join(agentChannelDir, '.env')) : null
   // Backward compat: try legacy Telegram token if provider-aware lookup misses
   let hasChannel = !!token
   if (!token && agentProvider === 'telegram') {

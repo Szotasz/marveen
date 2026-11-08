@@ -170,22 +170,38 @@ describe('mainGromzoPrimaryReady (the TS twin of main_gromzo_primary_ready)', ()
     expect(mainGromzoPrimaryReady('marveen', sock)).toBe(true)
     expect(mainGromzoPrimaryReady('Bad Slug!', sock)).toBe(false) // fails mxd's slug rule
   })
-  it('the dashboard sweep leaves a gromzo-pending main session alone (no down spell, no restart)', () => {
+  it('the dashboard sweep leaves a gromzo-pending main session alone (no down spell, no restart); only a live one flushes the kept alerts', () => {
     const cm = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf8')
-    expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+continue\n\s+\}\n\s+const liveness = await probeChannelPluginLivenessAsync/)
+    expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+continue\n\s+\}\n\s+\/\/ GROMZONOPROVIDER1108 \(Samu 73588\)[^\n]*\n\s+if \(t\.isMarveen && t\.provider === 'gromzo'\) \{\n\s+try \{ flushGromzoPendingOwnerAlerts\(\) \}[^\n]*\n\s+\}\n\s+const liveness = await probeChannelPluginLivenessAsync/)
   })
 })
 
 describe('sub-agents never carry the main agent\'s Gromzo channel (Dani 73584 (1))', () => {
-  it('subAgentMayUseProvider: no own provider on a gromzo install -> no channel; an own provider or another install -> as before', async () => {
-    const { subAgentMayUseProvider } = await import('../web/agent-process.js')
-    expect(subAgentMayUseProvider(null, 'gromzo')).toBe(false)
-    expect(subAgentMayUseProvider('telegram', 'telegram')).toBe(true)
-    expect(subAgentMayUseProvider(null, 'telegram')).toBe(true)
-    expect(subAgentMayUseProvider(null, 'slack')).toBe(true)
+  it('decided on the RESOLVED provider: no own value, an own gromzo or an unaccepted own value on a gromzo install -> no channel', async () => {
+    const { subAgentMayUseProvider, pickAgentProvider } = await import('../web/agent-process.js')
+    const may = (own: string | null, install: Parameters<typeof pickAgentProvider>[1]) => subAgentMayUseProvider(pickAgentProvider(own, install))
+    expect(may(null, 'gromzo')).toBe(false)
+    expect(may('gromzo', 'gromzo')).toBe(false)
+    expect(may('xyz', 'gromzo')).toBe(false)
+    expect(may('whatsapp', 'gromzo')).toBe(false)
+    expect(pickAgentProvider('gromzo', 'telegram')).toBe('telegram')
+    // an accepted own provider, or another install, as before
+    expect(may('telegram', 'gromzo')).toBe(true)
+    expect(may('slack', 'gromzo')).toBe(true)
+    expect(may(null, 'telegram')).toBe(true)
+    expect(may(null, 'slack')).toBe(true)
+    expect(subAgentMayUseProvider('gromzo')).toBe(false)
   })
   it('agentHasChannel asks it first (so the launch gate, scoping and the monitor all read "no channel")', () => {
     const ap = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf8')
-    expect(ap).toMatch(/export function agentHasChannel\(name: string\): boolean \{\n  const agentProvider = resolveAgentProvider\(name\)\n  if \(!subAgentMayUseProvider\(readAgentChannelProvider\(name\), agentProvider\)\) return false\n/)
+    expect(ap).toMatch(/export function agentHasChannel\(name: string\): boolean \{\n  const agentProvider = resolveAgentProvider\(name\)\n  if \(!subAgentMayUseProvider\(agentProvider\)\) return false\n/)
+  })
+  it('startAgentProcess has its own guard before hasChannel: a disallowed provider reads no token at all', () => {
+    const ap = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf8')
+    const start = ap.slice(ap.indexOf('export async function startAgentProcess('))
+    expect(start).toMatch(/const providerAllowed = subAgentMayUseProvider\(agentProvider\)\n  const token = providerAllowed \? readChannelToken\(agentProvider, join\(agentChannelDir, '\.env'\)\) : null\n[^\n]*\n  let hasChannel = !!token\n/)
+    // the legacy Telegram fallback is reachable only through an allowed provider (telegram is never 'none')
+    expect(start.indexOf('const providerAllowed')).toBeLessThan(start.indexOf('let hasChannel'))
+    expect(ap).toMatch(/export function resolveAgentProvider\(name: string\): ChannelProviderType \{\n  return pickAgentProvider\(readAgentChannelProvider\(name\), CHANNEL_PROVIDER\)\n\}/)
   })
 })
