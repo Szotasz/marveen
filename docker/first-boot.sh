@@ -61,21 +61,23 @@ chmod 0600 .env
 # Read the identity back from .env (a finished wizard changed it).
 env_val() { grep -m1 "^$1=" .env | cut -d= -f2-; }
 OWNER_NAME="$(env_val OWNER_NAME)"; BOT_NAME="$(env_val BOT_NAME)"; AGENT_ID="$(env_val MAIN_AGENT_ID)"
-esc() { printf '%s' "$1" | sed -e 's/[\/&|]/\\&/g'; }
-O="$(esc "$OWNER_NAME")"; B="$(esc "$BOT_NAME")"; A="$(esc "$AGENT_ID")"
 
 # The persona in the install's language (PERSONAEN1107): the helper picks templates/en/ for an English install; an image
 # from before it renders the Hungarian template, as the installer did.
+# DOCKERSEEDREFRESH1108 / PERSONARENDERLITERAL1108: the seed rules update.sh runs (the persona renders below, copy_task,
+# the refresh at the end of the seeding).
+. scripts/lib/seed-refresh.sh || { say "scripts/lib/seed-refresh.sh is missing: the image is broken"; exit 1; }
 persona() { if [ -f scripts/lib/persona-template.sh ]; then (. scripts/lib/persona-template.sh; persona_template "$INSTALL_DIR" "$1" decide); else printf '%s' "templates/$1"; fi; }
 if [ ! -f CLAUDE.md ] && [ -f templates/CLAUDE.md.template ]; then
   TZV="$(. scripts/lib/install-tz.sh; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")"
-  sed -e "s/{{OWNER_NAME}}/$O/g" -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" -e "s/{{CHAT_ID}}/0/g" -e "s/{{BOT_NAME}}/$B/g" \
-      -e "s/{{MAIN_AGENT_ID}}/$A/g" -e "s/{{WEB_PORT}}/$WEB_PORT/g" -e "s|{{TIMEZONE}}|$(esc "$TZV")|g" \
-      "$(persona CLAUDE.md.template)" > CLAUDE.md
+  # PERSONARENDERLITERAL1108: the shared literal render, through a temp file (CLAUDE.md is never left empty)
+  MAIN_AGENT_ID="$AGENT_ID" RENDER_CHAT_ID=0 RENDER_TIMEZONE="$TZV" render_persona_file "$(persona CLAUDE.md.template)" CLAUDE.md \
+    || { say "CLAUDE.md could not be rendered from its template; nothing was written"; exit 1; }
   say "CLAUDE.md written"
 fi
 if [ ! -f SOUL.md ] && [ -f templates/SOUL.md.template ]; then
-  sed -e "s/{{OWNER_NAME}}/$O/g" -e "s/{{BOT_NAME}}/$B/g" "$(persona SOUL.md.template)" > SOUL.md
+  render_persona_file "$(persona SOUL.md.template)" SOUL.md \
+    || { say "SOUL.md could not be rendered from its template; nothing was written"; exit 1; }
   say "SOUL.md written"
 fi
 
@@ -83,8 +85,6 @@ fi
 # comes from i18n/en/<its repo path> when that exists. An image without the helper seeds Hungarian, as before.
 SEED_LANG=hu
 if [ -f scripts/lib/seed-lang.sh ]; then . scripts/lib/seed-lang.sh; SEED_LANG="$(seed_lang "$INSTALL_DIR")"; fi
-# DOCKERSEEDREFRESH1108: the seed rules update.sh runs (the render below, the refresh at the end of the seeding).
-. scripts/lib/seed-refresh.sh || { say "scripts/lib/seed-refresh.sh is missing: the image is broken"; exit 1; }
 
 # ~/.claude: the dirs, the first-run answers claude would otherwise stop on (IL:1167-1218).
 mkdir -p "$HOME/.claude/channels" "$HOME/.claude/skills" "$HOME/.claude/scheduled-tasks"

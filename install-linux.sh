@@ -1757,16 +1757,19 @@ case "$INSTALL_AUTH_STATE" in
     ;;
 esac
 
+# SEEDRENDERLITERAL1108 / PERSONARENDERLITERAL1108: the persona renders and the seeding loops below render through the
+# shared lib (scripts/lib/seed-refresh.sh render_seed_template / render_persona_file): a name typed here with &, / or \
+# goes in literally, a failed render never truncates its target, and the seeded bytes are the ones the seed refresh
+# compares against later. The lib ships in this tree; without it the tree is broken.
+[ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ] && . "$INSTALL_DIR/scripts/lib/seed-refresh.sh"
+command -v render_persona_file >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing: the install tree is incomplete"
+
 # CLAUDE.md generalasa template-bol
 if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
-  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-    -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-    -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
-    -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-    -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-    -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-    -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-    "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template decide)" >"$INSTALL_DIR/CLAUDE.md"
+  # PERSONARENDERLITERAL1108: the shared literal render, through a temp file (the target is never truncated)
+  RENDER_CHAT_ID="$CHAT_ID" RENDER_TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")" \
+    render_persona_file "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template decide)" "$INSTALL_DIR/CLAUDE.md" \
+    || fail "CLAUDE.md could not be rendered from its template; nothing was written"
   ok "CLAUDE.md generalva"
 else
   warn "CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
@@ -1774,9 +1777,8 @@ fi
 
 # SOUL.md generalasa template-bol (personality definition for the main agent).
 if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
-  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-      -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-      "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" SOUL.md.template decide)" > "$INSTALL_DIR/SOUL.md"
+  render_persona_file "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" SOUL.md.template decide)" "$INSTALL_DIR/SOUL.md" \
+    || fail "SOUL.md could not be rendered from its template; nothing was written"
   ok "SOUL.md generalva"
 elif [ ! -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
   warn "SOUL.md.template nem talalhato, SOUL.md nem generalhato"
@@ -1786,11 +1788,6 @@ fi
 # template-ek {{MAIN_AGENT_ID}} placeholdert hasznalnak, igy a felhasznalo
 # valasztott agent slugja kerul be a hardcoded "marveen" helyett. Letezo task
 # konyvtarakat soha nem irjuk felul.
-# SEEDRENDERLITERAL1108: the seeding loops below render through the shared lib (scripts/lib/seed-refresh.sh
-# render_seed_template): a name typed here with &, / or \ goes in literally, and the bytes are the ones the seed refresh
-# compares against later. The lib ships in this tree; without it the tree is broken.
-[ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ] && . "$INSTALL_DIR/scripts/lib/seed-refresh.sh"
-command -v render_seed_template >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing: the install tree is incomplete"
 SCHED_TPL_DIR="$INSTALL_DIR/templates/scheduled-tasks"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
 if [ -d "$SCHED_TPL_DIR" ]; then

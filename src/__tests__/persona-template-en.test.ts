@@ -213,7 +213,8 @@ describe('the installers and update.sh render the persona through it', () => {
   })
   it('update.sh --regen-claudemd: CLAUDE.md, read only (it never decides the language)', () => {
     const s = read('update.sh')
-    expect(s).toContain(CALL('CLAUDE.md.template') + ' > "$CLAUDE_MD"')
+    // PERSONARENDERLITERAL1108: through the shared literal render into a temp file (render_persona_file <tpl> <target>)
+    expect(s).toContain('render_persona_file ' + CALL('CLAUDE.md.template') + ' "$CLAUDE_MD"')
   })
 })
 

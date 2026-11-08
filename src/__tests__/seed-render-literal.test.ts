@@ -143,7 +143,8 @@ describe('the seeding loops render literally (installers, update.sh new-task loo
       const load = src.indexOf('[ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ] && . "$INSTALL_DIR/scripts/lib/seed-refresh.sh"')
       expect(load, file).toBeGreaterThan(0)
       expect(load, file).toBeLessThan(src.indexOf('for tpl in "$SCHED_TPL_DIR"/*/; do'))
-      expect(src, file).toContain('command -v render_seed_template >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing')
+      // PERSONARENDERLITERAL1108: the check names render_persona_file (the lib's function the persona renders above use)
+      expect(src, file).toContain('command -v render_persona_file >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing')
     }
     const upd = read('update.sh')
     expect(upd).toContain('command -v render_seed_template >/dev/null 2>&1 || { _seed_render_ok=0; echo "  new seed tasks skipped:')

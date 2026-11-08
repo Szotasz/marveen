@@ -77,9 +77,13 @@ describe('no hardcoded Europe/Budapest outside the allow-list (ISSUE1895)', () =
 
   it('the agent template carries the {{TIMEZONE}} placeholder, and every renderer fills it', () => {
     expect(readFileSync(join(ROOT, 'templates', 'CLAUDE.md.template'), 'utf-8')).toContain('{{TIMEZONE}}')
+    // PERSONARENDERLITERAL1108: each renderer hands install_tz's zone to the shared render (render_persona_file), and the
+    // shared render fills {{TIMEZONE}} from it
     for (const f of ['install-macos.sh', 'install-linux.sh', 'update.sh']) {
-      expect(readFileSync(join(ROOT, f), 'utf-8'), f).toContain('s|{{TIMEZONE}}|')
+      expect(readFileSync(join(ROOT, f), 'utf-8'), f).toContain('RENDER_TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"')
     }
+    expect(readFileSync(join(ROOT, 'docker', 'first-boot.sh'), 'utf-8')).toContain('RENDER_TIMEZONE="$TZV" render_persona_file')
+    expect(readFileSync(join(ROOT, 'scripts', 'lib', 'seed-refresh.sh'), 'utf-8')).toContain('"{{TIMEZONE}}"*) if [ -n "${RENDER_TIMEZONE+x}" ]')
     expect(readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')).toContain(".replaceAll('{{TIMEZONE}}'")
   })
 })

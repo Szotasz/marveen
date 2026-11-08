@@ -84,8 +84,9 @@ describe('the scripts and the page', () => {
   it('first-boot renders the persona in the install\'s language through the helper, with the Hungarian fallback', () => {
     const fb = src('docker/first-boot.sh')
     expect(fb).toContain('persona() { if [ -f scripts/lib/persona-template.sh ]; then (. scripts/lib/persona-template.sh; persona_template "$INSTALL_DIR" "$1" decide); else printf \'%s\' "templates/$1"; fi; }')
-    expect(fb).toContain('"$(persona CLAUDE.md.template)" > CLAUDE.md')
-    expect(fb).toContain('"$(persona SOUL.md.template)" > SOUL.md')
+    // PERSONARENDERLITERAL1108: through the shared literal render, into a temp file (never a truncating redirect)
+    expect(fb).toContain('render_persona_file "$(persona CLAUDE.md.template)" CLAUDE.md')
+    expect(fb).toContain('render_persona_file "$(persona SOUL.md.template)" SOUL.md')
     expect(fb).not.toMatch(/ templates\/(CLAUDE|SOUL)\.md\.template > /)
   })
 
