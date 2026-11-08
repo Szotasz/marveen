@@ -37,7 +37,8 @@ seed_tracked_files() {
 sched_task_verified_ok() {
   _dv_rec="$INSTALL_DIR/.seed-prev/.verdicts/$1"
   if [ -f "$_dv_rec" ]; then
-    return "$(cat "$_dv_rec")"
+    # only a verdict this function wrote counts; anything else in the file is "unknown" (2), never a return error
+    case "$(cat "$_dv_rec" 2>/dev/null)" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
   fi
   _dv_rc=2
   _dv_cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"

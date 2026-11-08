@@ -18,12 +18,23 @@ ARG NODE_IMAGE=node:22-bookworm-slim
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS build
 ENV npm_config_fund=false npm_config_audit=false npm_config_update_notifier=false
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# DOCKERSEEDREFRESH1108: no gitignored file of the seed dirs ships (a skill's ignored secrets, e.g. fleet-helper's
+# mail_rules.json / .dashboard-token, from a build context that holds them): first-boot copies those dirs whole and the
+# seed refresh adds their files. HERE, in the build stage, right after the context is copied: the runtime stage copies
+# only this stage's final /src, so a file removed here is in no shipped layer (a removal in a later runtime RUN would only
+# hide it in an upper layer, its bytes still in the image). The ignore rules are git's own (every nested .gitignore),
+# read through a throwaway GIT_DIR removed in the same step, so no .git reaches /src.
+RUN cd /src && g="$(mktemp -d)" \
+    && git --git-dir="$g" --work-tree=. init -q \
+    && git --git-dir="$g" --work-tree=. ls-files -z --others --ignored --exclude-standard -- seed-skills skills seed-scheduled-tasks scheduled-tasks templates i18n > "$g.list" \
+    && xargs -0 -r rm -f -- < "$g.list" \
+    && rm -rf "$g" "$g.list"
 ARG MARVEEN_COMMIT=""
 RUN npm run build \
     && if printf '%s' "$MARVEEN_COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then printf '%s\n' "$MARVEEN_COMMIT" > dist/.built-commit; fi \
@@ -62,15 +73,6 @@ RUN usermod -l marveen -d /home/marveen -m node && groupmod -n marveen node \
     && mkdir -p /opt/marveen /home/marveen && chown marveen:marveen /opt/marveen /home/marveen && chmod 0700 /home/marveen
 
 COPY --from=build --chown=root:root /src /opt/marveen-image
-# DOCKERSEEDREFRESH1108: no gitignored file of the seed dirs ships (a skill's ignored secrets, e.g. fleet-helper's
-# mail_rules.json / .dashboard-token, from a build context that holds them): first-boot copies those dirs whole and the
-# seed refresh adds their files. The ignore rules are git's own (every nested .gitignore), read through a throwaway
-# GIT_DIR that is removed in the same step, so no .git reaches the image.
-RUN cd /opt/marveen-image && g="$(mktemp -d)" \
-    && git --git-dir="$g" --work-tree=. init -q \
-    && git --git-dir="$g" --work-tree=. ls-files -z --others --ignored --exclude-standard -- seed-skills skills seed-scheduled-tasks scheduled-tasks templates i18n > "$g.list" \
-    && xargs -0 -r rm -f -- < "$g.list" \
-    && rm -rf "$g" "$g.list"
 COPY --chown=root:root docker/ /opt/marveen-docker/
 # The build manifest: every code file and its hash. code-sync.sh compares it before and verifies the copy after.
 RUN cd /opt/marveen-image && find . -type f -o -type l | LC_ALL=C sort | while IFS= read -r f; do \

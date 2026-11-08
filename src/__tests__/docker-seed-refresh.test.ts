@@ -197,6 +197,22 @@ describe('a retry after a run that stopped half way', () => {
   })
 })
 
+describe('the recorded registry verdict', () => {
+  it('only 0 and 1 are verdicts; anything else in the record is unknown (2), never a return error', () => {
+    const v = volume({ installed: {} })
+    try {
+      const probe = (content: string) => {
+        put(v.install, { '.seed-prev/.verdicts/t': content })
+        const r = spawnSync('bash', ['-c', `set -u\nINSTALL_DIR=${JSON.stringify(v.install)}\n. ${JSON.stringify(join(v.meta, 'seed-refresh-docker.sh'))}\nsched_task_verified_ok t; echo "rc=$?"`], { encoding: 'utf-8' })
+        return (r.stdout ?? '') + (r.stderr ?? '')
+      }
+      expect(probe('0')).toBe('rc=0\n')
+      expect(probe('1')).toBe('rc=1\n')
+      for (const junk of ['2', 'x', '', '300', '-1']) expect(probe(junk), JSON.stringify(junk)).toBe('rc=2\n')
+    } finally { rmSync(v.base, { recursive: true, force: true }) }
+  })
+})
+
 describe('the start is never blocked by the refresh', () => {
   it('without the Docker seams file the block says WARN, first-boot goes on, the snapshot stays', () => {
     const v = volume({ installed: SEEDED })
@@ -225,15 +241,36 @@ describe('the start is never blocked by the refresh', () => {
 
 describe('no gitignored file of the seed dirs ships in the image (Dockerfile)', () => {
   const DOCKERFILE = readFileSync(join(ROOT, 'Dockerfile'), 'utf-8')
-  const run = DOCKERFILE.slice(DOCKERFILE.indexOf('RUN cd /opt/marveen-image && g="$(mktemp -d)"') + 4, DOCKERFILE.indexOf('rm -rf "$g" "$g.list"') + 'rm -rf "$g" "$g.list"'.length)
+  const STEP = 'RUN cd /src && g="$(mktemp -d)"'
+  const run = DOCKERFILE.slice(DOCKERFILE.indexOf(STEP) + 4, DOCKERFILE.indexOf('rm -rf "$g" "$g.list"') + 'rm -rf "$g" "$g.list"'.length)
     .replace(/\\\n\s*/g, ' ')
+
+  it('the cleanup runs in the BUILD stage right after COPY . . (a later runtime RUN would only hide the bytes in an upper layer)', () => {
+    const at = DOCKERFILE.indexOf(STEP)
+    const copyCtx = DOCKERFILE.indexOf('\nCOPY . .\n')
+    const runtime = DOCKERFILE.indexOf('FROM ${NODE_IMAGE} AS runtime')
+    expect(at).toBeGreaterThan(copyCtx)
+    expect(copyCtx).toBeGreaterThan(0)
+    expect(at).toBeLessThan(runtime)
+    // nothing between COPY . . and the cleanup (no layer holds the files first), and no cleanup in the runtime stage
+    expect(DOCKERFILE.slice(copyCtx + '\nCOPY . .\n'.length, at).split('\n').every((l) => l === '' || l.startsWith('#'))).toBe(true)
+    expect(DOCKERFILE.slice(runtime)).not.toContain('--ignored --exclude-standard')
+    // git is in the build stage's packages
+    expect(DOCKERFILE.slice(0, runtime)).toMatch(/apt-get install -y --no-install-recommends python3 make g\+\+ ca-certificates git\b/)
+  })
+
+  it('the known seed secrets never enter the build context (.dockerignore)', () => {
+    const ignore = readFileSync(join(ROOT, '.dockerignore'), 'utf-8').split('\n')
+    expect(ignore).toContain('**/mail_rules.json')
+    expect(ignore).toContain('**/.dashboard-token')
+  })
 
   it('the cleanup step (its real text) removes an ignored file under a skill, keeps the tracked ones, leaves no .git', () => {
     const base = mkdtempSync(join(tmpdir(), 'dseed-img-'))
     try {
       put(base, { 'seed-skills/fleet-helper/scripts/.gitignore': 'mail_rules.json\n.dashboard-token\n', 'seed-skills/fleet-helper/scripts/mail_rules.json': '{"secret":1}\n',
         'seed-skills/fleet-helper/scripts/.dashboard-token': 'tok\n', 'seed-skills/fleet-helper/SKILL.md': 'x\n', 'seed-skills/fleet-helper/scripts/run.sh': 'echo\n', 'other/mail_rules.json': 'outside the seed dirs\n' })
-      execFileSync('sh', ['-c', run.replace('cd /opt/marveen-image', `cd ${JSON.stringify(base)}`)], { stdio: 'pipe' })
+      execFileSync('sh', ['-c', run.replace('cd /src', `cd ${JSON.stringify(base)}`)], { stdio: 'pipe' })
       expect(existsSync(join(base, 'seed-skills/fleet-helper/scripts/mail_rules.json'))).toBe(false)
       expect(existsSync(join(base, 'seed-skills/fleet-helper/scripts/.dashboard-token'))).toBe(false)
       expect(existsSync(join(base, 'seed-skills/fleet-helper/scripts/run.sh'))).toBe(true)
