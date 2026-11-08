@@ -35,12 +35,13 @@ want="$(PEM_VALUE="$PEM_VALUE" node -e 'process.stdout.write(JSON.stringify({PAD
 # 2. a resolver that does NOT escape (the old format, a multi-line value split into lines): the wrapper still never
 #    prints a byte of the value, and exports no variable named after one.
 cat > "$T/scripts/vault-resolve.mjs" <<'JS'
-process.stdout.write('PLAIN=value\nPEM=-----BEGIN FIXTURE BLOCK-----\nMIGTAgEA+MBMG/FAKEFIXTUREBYTES0123\nZZQU+JV/FAKEFIXTUREBYTES4567==\n-----END FIXTURE BLOCK-----\nPLAIN\n')
+process.stdout.write('PLAIN=value\nPEM=-----BEGIN FIXTURE BLOCK-----\nMIGTAgEA+MBMG/FAKEFIXTUREBYTES0123\nZZQU+JV/FAKEFIXTUREBYTES4567==\n-----END FIXTURE BLOCK-----\nQUJDREVGSElKS0xN==\nPLAIN\n')
 JS
-# (the last line, "PLAIN" without '=', stands for a split line that happens to equal an asked-for name)
+# (QUJD...== is a split line shaped like NAME=value for a name nobody asked for; the last line, "PLAIN" without '=',
+#  stands for a split line that happens to equal an asked-for name)
 out2="$(PLAIN=vault:d PEM=vault:e bash "$T/scripts/vault-env-wrapper.sh" env 2>"$T/err2")"
 if grep -q "FAKEFIXTUREBYTES" "$T/err2"; then bad "old format: value bytes in stderr: $(cat "$T/err2")"; else ok "old format: no value byte in stderr"; fi
-if printf '%s\n' "$out2" | grep -q "^MIGTAg\|^ZZQU\|^-----"; then bad "old format: a variable named after value bytes"; else ok "old format: no variable named after value bytes"; fi
+if printf '%s\n' "$out2" | grep -q "^MIGTAg\|^ZZQU\|^QUJD\|^-----"; then bad "old format: a variable named after value bytes"; else ok "old format: no variable named after value bytes"; fi
 printf '%s\n' "$out2" | grep -qx 'PLAIN=value' && ok "old format: the good line still exported" || bad "old format: PLAIN lost"
 
 echo "PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

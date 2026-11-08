@@ -59,13 +59,9 @@ if [ -n "$REFS" ]; then
       *) echo "vault-env-wrapper: skipped an output line that is not NAME=value (its text is not shown)" >&2; continue ;;
     esac
     key="${line%%=*}"
-    # Only a name this wrapper ASKED for is exported (a line of a split value can look like NAME=..., e.g. base64
-    # padding). Anything else is skipped with a message that quotes NOTHING of the line: it could be a value.
-    case "$key" in
-      ''|[0-9]*|*[!A-Za-z0-9_]*)
-        echo "vault-env-wrapper: skipped an output line that is not NAME=value (its text is not shown)" >&2
-        continue ;;
-    esac
+    # Only a name this wrapper ASKED for is exported (they come from its own environment, so they are valid names; a
+    # line of a split value can look like NAME=..., e.g. base64 padding). Anything else is skipped with a message that
+    # quotes NOTHING of the line: it could be a value.
     case "$ASKED" in
       *" $key "*) ;;
       *) echo "vault-env-wrapper: skipped an output line for a name that was not asked for (its text is not shown)" >&2; continue ;;
