@@ -16,6 +16,8 @@ const ROOT = join(__dirname, '..', '..')
 const LINUX = readFileSync(join(ROOT, 'install-linux.sh'), 'utf-8')
 const MACOS = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
 const UPDATE = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
+// SEEDRENDERLITERAL1108: the seeding loops render through the shared lib (each script sources it before them).
+const LIB_SRC_LINE = `. "${join(ROOT, 'scripts', 'lib', 'seed-refresh.sh')}"`
 // DOCKERSEEDREFRESH1108: the refresh rules moved to scripts/lib/seed-refresh.sh (update.sh sources it).
 const SHELL_SRC = UPDATE + '\n' + readFileSync(join(ROOT, 'scripts', 'lib', 'seed-refresh.sh'), 'utf-8')
 
@@ -82,6 +84,7 @@ describe('a fresh seed ships the references/ subdir, rendered (SEEDREFDIR1018)',
           'SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"',
           'RESEED_FLEET=0; SCHED_NEW=0; SCHED_SKIP=0; SCHED_FORCED=0',
           'MAIN_AGENT_ID=marveen; BOT_NAME=Bot; OWNER_NAME=Owner; WEB_PORT=3420',
+          LIB_SRC_LINE,
           sliceTplLoop(src, dirVar),
         ].join('\n') + '\n', join(base, 'probe.sh'))
         const ref = join(target, 'demo-task', 'references', 'w.md')
@@ -109,6 +112,7 @@ describe('a fresh seed ships the references/ subdir, rendered (SEEDREFDIR1018)',
         `SEED_SCHED_DIR="${join(install, 'seed-scheduled-tasks')}"`,
         `SCHED_TARGET_DIR="${target}"`, 'SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"',
         'SCHED_NEW=0; SCHED_SKIP=0; MAIN_AGENT_ID=m; BOT_NAME=b; OWNER_NAME=o',
+        LIB_SRC_LINE,
         sliceTplLoop(LINUX, 'SEED_SCHED_DIR'),
       ].join('\n') + '\n', join(base, 'probe.sh'))
       expect(existsSync(join(target, 'plain', 'SKILL.md'))).toBe(true)

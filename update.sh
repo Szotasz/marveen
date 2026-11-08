@@ -1647,7 +1647,12 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     # in the task dir), so it is preserved across a force-reseed. Tasks the user
     # authored themselves have no seed-scheduled-tasks/ source -> never visited.
     SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
+    # SEEDRENDERLITERAL1108: the loop renders through the lib update.sh sourced at the top; a torn checkout without it
+    # skips the new-task seeding with one line (the next update seeds them).
+    _seed_render_ok=1
+    command -v render_seed_template >/dev/null 2>&1 || { _seed_render_ok=0; echo "  new seed tasks skipped: $INSTALL_DIR/scripts/lib/seed-refresh.sh is missing"; }
     for tpl in "$SEED_SCHED_DIR"/*/; do
+      [ "${_seed_render_ok:-1}" = 1 ] || break
       [ -d "$tpl" ] || continue
       task_name=$(basename "$tpl")
       target="$SCHED_TARGET_DIR/$task_name"
@@ -1682,12 +1687,8 @@ if [ -d "$SEED_SCHED_DIR" ]; then
           # script created the copy.
           seed_src="$f"
           command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
-          sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-              -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-              -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-              -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-              -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-              "$seed_src" > "$target/$sub$(basename "$f")"
+          # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+          render_seed_template < "$seed_src" > "$target/$sub$(basename "$f")"
         done
       done
       SCHED_REGISTER_NAMES="${SCHED_REGISTER_NAMES:-} $task_name"
