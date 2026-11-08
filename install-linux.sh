@@ -1102,21 +1102,10 @@ fi'
   ok "XDG_RUNTIME_DIR / DBUS beallitva (headless)"
 fi
 
-# Bun
+# Bun: no longer here. GROMZONOPROVIDER1108: it is installed after the channel choice ("bun-install" below), and only
+# for a channel whose plugin runs on Bun (telegram, discord). A Gromzo or Slack install never downloads it.
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
-if command -v bun &>/dev/null; then
-  ok "bun mar telepitve: $(bun --version)"
-else
-  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distrokon,
-  # nelkule "error: unzip is required to install bun"-nal elhasal.
-  command -v unzip &>/dev/null || pkg_install_noninteractive unzip || true
-  echo -e "  Bun telepitese (Telegram plugin fuggoseg)..."
-  # BUNTIMEOUT1108: time limits, retries, the vendor's own error lines, the npm fallback, and a stop with the reason.
-  _install_bun
-fi
-ensure_in_rc 'BUN_INSTALL' 'export BUN_INSTALL="$HOME/.bun"'
-ensure_in_rc '.bun/bin' 'export PATH="$BUN_INSTALL/bin:$PATH"'
 
 INSTALL_STEP="claude-auth"
 # ─────────────────────────────────────────────
@@ -1374,13 +1363,17 @@ echo -e "${DIM}  Melyik csatornan kommunikaljon az AI asszisztensed?${NC}"
 echo -e "  ${BOLD}1.${NC} Telegram (alapertelmezett)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo -e "  ${BOLD}3.${NC} Discord"
+echo -e "  ${BOLD}4.${NC} $(_t channel_option_gromzo)"
 echo ""
-read -rp "$(_t prompt_channel_select_linux)" PROVIDER_CHOICE
+read -rp "$(_t prompt_channel_select4)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
 elif [ "$PROVIDER_CHOICE" = "3" ]; then
   CHANNEL_PROVIDER="discord"
+elif [ "$PROVIDER_CHOICE" = "4" ] || [ "$PROVIDER_CHOICE" = "gromzo" ]; then
+  # GROMZONOPROVIDER1108: the main agent talks only through Gromzo (no bot token, no Bun); accepted as 4 or by name.
+  CHANNEL_PROVIDER="gromzo"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -1456,6 +1449,12 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
   echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
   read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
+elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # GROMZONOPROVIDER1108: no bot, no token: the Gromzo channel is connected later from the Marveen Bridge (Gromzo
+  # wizard), through the local marveen-mxd.
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed a Gromzo alkalmazason at kommunikal veled; bot-token nem kell.${NC}"
+  echo -e "${DIM}  A Gromzot a Marveen Bridge-ben kotod be a telepites utan.${NC}"
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -1499,6 +1498,30 @@ fi
 # brand-unaware install.
 BRAND_NAME="$BOT_NAME"
 SERVICE_ID="$MAIN_AGENT_ID"
+
+INSTALL_STEP="bun-install"
+# GROMZONOPROVIDER1108: Bun only for a channel plugin that runs on it (telegram, discord). Slack runs on Node, Gromzo
+# on Node through marveen-mxd: those installs never download Bun, so they cannot fail on it (the owner's 11-08 Gromzo
+# install failed exactly on the Bun download). A Bun channel added later installs it then (release B).
+case "$CHANNEL_PROVIDER" in
+  telegram|discord)
+    if command -v bun &>/dev/null; then
+      ok "bun mar telepitve: $(bun --version)"
+    else
+      # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distrokon,
+      # nelkule "error: unzip is required to install bun"-nal elhasal.
+      command -v unzip &>/dev/null || pkg_install_noninteractive unzip || true
+      echo -e "  Bun telepitese (${CHANNEL_PROVIDER} plugin fuggoseg)..."
+      # BUNTIMEOUT1108: time limits, retries, the vendor's own error lines, the npm fallback, and a stop with the reason.
+      _install_bun
+    fi
+    ensure_in_rc 'BUN_INSTALL' 'export BUN_INSTALL="$HOME/.bun"'
+    ensure_in_rc '.bun/bin' 'export PATH="$BUN_INSTALL/bin:$PATH"'
+    ;;
+  *)
+    ok "Bun nem kell (${CHANNEL_PROVIDER}: a csatorna Node-on fut)"
+    ;;
+esac
 
 INSTALL_STEP="npm-install"
 # ─────────────────────────────────────────────
@@ -1643,6 +1666,8 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
     env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
   fi
+elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  : # GROMZONOPROVIDER1108: no token keys (CHANNEL_PROVIDER=gromzo is written above)
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
   env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
@@ -1983,7 +2008,12 @@ ACCESSEOF
 fi
 
 # Channel plugin install
-if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
+# GROMZONOPROVIDER1108: on gromzo there is no channel plugin to install here; the Gromzo plugin comes with the Bridge's
+# Gromzo step (marveen-mxd's payload).
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  PLUGIN_ID=""
+  ok "Gromzo: a csatorna-plugint a Bridge Gromzo-lepese hozza (itt nincs mit telepiteni)"
+elif [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
@@ -1997,6 +2027,9 @@ else
   PLUGIN_SHORT="slack-channel"
 fi
 
+if [ -z "$PLUGIN_ID" ]; then
+  :
+else
 echo -e "  ${CHANNEL_PROVIDER} plugin telepites..."
 claude plugin marketplace add "$PLUGIN_MARKETPLACE" 2>/dev/null || true
 if claude plugin install "$PLUGIN_ID" 2>/dev/null; then
@@ -2013,6 +2046,7 @@ else
     echo -e "  ${BLUE}claude plugin install ${PLUGIN_ID}${NC}"
     echo ""
   fi
+fi
 fi
 
 # INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
@@ -2801,7 +2835,9 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
   echo -e "  ${DIM}Utana: source ~/.bashrc && ./scripts/start.sh${NC}"
 fi
 PLUGIN_CHECK_PATTERN="${CHANNEL_PROVIDER}"
-if ! claude plugin list 2>/dev/null | grep -q "$PLUGIN_CHECK_PATTERN"; then
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  ok "Gromzo: a csatorna-plugint a Bridge Gromzo-lepese ellenorzi"
+elif ! claude plugin list 2>/dev/null | grep -q "$PLUGIN_CHECK_PATTERN"; then
   echo -e "  ${RED}✗${NC} ${CHANNEL_PROVIDER} plugin nincs telepitve."
   echo -e "  ${BOLD}Javitas:${NC} claude plugin install ${PLUGIN_ID}"
   echo -e "  ${DIM}Utana: systemctl --user restart ${CHAN_UNIT}${NC}"

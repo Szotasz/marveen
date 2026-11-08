@@ -44,6 +44,12 @@ _t() {
     hu:prompt_channel_select_macos) echo "  Válassz (1/2/3) [1]: " ;;
     en:prompt_channel_select_linux) echo "  Choose (1/2/3) [1]: " ;;
     hu:prompt_channel_select_linux) echo "  Válassz (1/2/3) [1]: " ;;
+    # GROMZONOPROVIDER1108: the 4-option prompts are NEW keys; the 3-option ones above stay as they are, since an
+    # already released Bridge's vendored installer fetches this file from main and still asks with them.
+    en:prompt_channel_select4) echo "  Choose (1/2/3/4) [1]: " ;;
+    hu:prompt_channel_select4) echo "  Válassz (1/2/3/4) [1]: " ;;
+    en:channel_option_gromzo) echo "Gromzo (the Marveen app on your phone; no bot, no Bun)" ;;
+    hu:channel_option_gromzo) echo "Gromzo (a Marveen alkalmazás a telefonodon; bot és Bun nélkül)" ;;
     en:prompt_telegram_token) echo "  Telegram bot token (or leave empty, set later): " ;;
     hu:prompt_telegram_token) echo "  Telegram bot token (vagy hagyd üresen, később is beállíthatod): " ;;
     en:prompt_slack_bot_token) echo "  Bot Token (xoxb-...): " ;;

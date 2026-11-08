@@ -153,7 +153,13 @@ describe('install-linux.sh wires the vendor installers through the helper (BUNTI
 
   it('Bun: the step calls _install_bun (GitHub, then npm, then a stop); Claude: a missing claude stops the install', () => {
     const step = LINUX.slice(LINUX.indexOf('INSTALL_STEP="claude-bun-install"'), LINUX.indexOf('INSTALL_STEP="claude-auth"'))
-    expect(step).toMatch(/Bun telepitese \(Telegram plugin fuggoseg\)\.\.\."\n[^\n]*\n\s+_install_bun\n/)
+    // GROMZONOPROVIDER1108: Bun left the Claude step; it is installed in its own step after the channel choice, and only
+    // for a Bun channel (telegram, discord).
+    expect(step).not.toMatch(/^\s+_install_bun$/m)
+    const bunStep = LINUX.slice(LINUX.indexOf('INSTALL_STEP="bun-install"'), LINUX.indexOf('INSTALL_STEP="npm-install"'))
+    expect(bunStep.length).toBeGreaterThan(200)
+    expect(bunStep).toMatch(/case "\$CHANNEL_PROVIDER" in\n  telegram\|discord\)\n[\s\S]*?\n\s+_install_bun\n[\s\S]*?\n  \*\)\n\s+ok "Bun nem kell/)
+    expect(LINUX.indexOf('INSTALL_STEP="bun-install"')).toBeGreaterThan(LINUX.indexOf('CHANNEL_PROVIDER="gromzo"'))
     expect(sliceShellFn(LINUX, '_install_bun')).toMatch(/\n\s+fail "A Bun telepitese nem sikerult: a GitHub-letoltes/)
     expect(LINUX).toMatch(/if ! _claude_present; then\n\s+fail "A Claude Code telepitese nem sikerult/)
     // the stop sits before the AVX message for a claude that is there but does not launch
@@ -265,6 +271,12 @@ describe.skipIf(!HAVE_TIMEOUT)('Bun: the GitHub download fails, the npm fallback
     expect(existsSync(join(r.work, '.bun', 'bin', 'bun'))).toBe(false)
     // no /bin/bun exists on a test host, so the behaviour alone cannot tell; the source names no prefix-less path
     expect(sliceShellFn(LINUX, '_install_bun_from_npm')).toContain('npm_bun="\${npm_prefix:+\$npm_prefix/bin/bun}"')
+  })
+  it('the macOS port carries the same empty-prefix guard (GROMZONOPROVIDER1108 A2 port of BUNTIMEOUT1108)', () => {
+    const mac = sliceShellFn(readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8'), '_install_bun_from_npm')
+    expect(mac).toContain('npm_bun="\${npm_prefix:+\$npm_prefix/bin/bun}"')
+    expect(mac).toContain('if [ "$rc" = 0 ] && [ -n "$npm_bun" ] && [ -x "$npm_bun" ]')
+    expect(mac).not.toContain('npm prefix -g 2>/dev/null || true)/bin/bun')
   })
 
   it('the GitHub path works: no npm call at all', () => {
