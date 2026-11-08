@@ -55,7 +55,17 @@ process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = '1'
 const argv = process.argv.slice(2)
 const VALUE_LABEL = /^[^\s=](?:[^\r\n=]*[^\s=])?$/
 let valueMode = false
+// VAULTWRAPMULTI1108: `--escaped` (stdin lines, as the default form): each value on ONE line, with backslash -> \\,
+// line feed -> \n, carriage return -> \r, so a multi-line secret (a PEM key) cannot split into lines that a line
+// reader would take for further ENV_VAR=value pairs. vault-env-wrapper.sh decodes it with printf '%b'. The default
+// form is unchanged for its other callers.
+let escapedMode = false
+const escapeValue = (v) => v.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
 let input
+if (argv.length === 1 && argv[0] === '--escaped') {
+  escapedMode = true
+  argv.length = 0
+}
 if (argv.length > 0) {
   // Exactly ONE label (Dani, #2563 review): no line break (it would make a second input line, and two values would
   // come out glued together), no '=', and no whitespace at either end. A space INSIDE is allowed: vault ids may
@@ -70,7 +80,7 @@ if (argv.length > 0) {
     input = `VALUE=${argv[1]}\n`
   } else {
     // The arguments are not echoed: one of them could be a value pasted by mistake.
-    process.stderr.write(`vault-resolve: takes ENV_VAR=secret_id lines on stdin, or exactly '--value <secret_id>'; got ${argv.length} other argument(s)\n`)
+    process.stderr.write(`vault-resolve: takes ENV_VAR=secret_id lines on stdin (optionally with '--escaped'), or exactly '--value <secret_id>'; got ${argv.length} other argument(s)\n`)
     process.exit(2)
   }
 } else {
@@ -158,7 +168,7 @@ for (const { envVar, secretId, unsendable } of valid) {
     process.exit(6)
   } else if (value !== null) {
     if (value === '') process.stderr.write(`vault-resolve: warning: the label holds an EMPTY value: ${secretId}\n`)
-    process.stdout.write(valueMode ? value : `${envVar}=${value}\n`)
+    process.stdout.write(valueMode ? value : `${envVar}=${escapedMode ? escapeValue(value) : value}\n`)
   } else {
     // Label only -- the value does not exist, and even if it did, values
     // must never reach stderr.
