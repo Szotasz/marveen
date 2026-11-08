@@ -27,7 +27,8 @@ import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { createAgentMessage } from './db.js'
-import { setOwnerChatMissingSink, setOwnerRelaySink } from './notify.js'
+import { setOwnerChatMissingSink, setOwnerRelayLang, setOwnerRelaySink } from './notify.js'
+import { approvalTextLang } from './web/agent-text-lang.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startScheduleRunner, startHeartbeatGapGuard } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
@@ -462,16 +463,19 @@ export function startWebServer(port = 3420): http.Server {
   if (!servicesOff) setOwnerChatMissingSink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
   // GROMZONOPROVIDER1108: on a gromzo install every owner alert goes to the main agent, which relays it over Gromzo.
   if (!servicesOff) setOwnerRelaySink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
+  setOwnerRelayLang(() => approvalTextLang())
   // GROMZONOPROVIDER1108: update.sh's provider migration leaves a marker; the owner hears it once, through the main
   // agent (the install now talks through Gromzo). The marker is renamed after the notice, so it is said once.
   if (!servicesOff) {
     const marker = join(STORE_DIR, 'gromzo-provider-migrated.json')
     if (existsSync(marker)) {
       try {
-        createAgentMessage('system', MAIN_AGENT_ID,
-          '[owner-notice] Tájékoztasd a tulajdonost a Gromzón, egy mondatban: a Marveen csatornája mostantól a Gromzo ' +
-          '(korábban egy Telegram-beállítás volt token nélkül, ezért a fő munkamenet újra és újra elindult). ' +
-          'Visszaállítás: CHANNEL_PROVIDER_PREV a telepítés beállításaiban.')
+        createAgentMessage('system', MAIN_AGENT_ID, approvalTextLang() === 'en'
+          ? '[owner-notice] Tell the owner over Gromzo, in one sentence: Marveen\'s channel is Gromzo from now on (it was a ' +
+            'Telegram setting with no token, so the main session kept restarting). To undo: CHANNEL_PROVIDER_PREV in the install settings.'
+          : '[owner-notice] Tájékoztasd a tulajdonost a Gromzón, egy mondatban: a Marveen csatornája mostantól a Gromzo ' +
+            '(korábban egy Telegram-beállítás volt token nélkül, ezért a fő munkamenet újra és újra elindult). ' +
+            'Visszaállítás: CHANNEL_PROVIDER_PREV a telepítés beállításaiban.')
         renameSync(marker, `${marker}.notified`)
       } catch (err) {
         logger.warn({ err }, 'gromzo provider migration notice could not be queued')

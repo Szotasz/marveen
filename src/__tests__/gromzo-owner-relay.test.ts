@@ -8,10 +8,10 @@ vi.mock('../config.js', async (orig) => {
   return { ...a, CHANNEL_PROVIDER: 'gromzo' as const, CHANNEL_TOKEN: '', CHANNEL_CHAT_ID: '', ALERT_CHAT_ID: '' }
 })
 
-const { notifyChannel, setOwnerRelaySink } = await import('../notify.js')
+const { notifyChannel, setOwnerRelaySink, setOwnerRelayLang } = await import('../notify.js')
 
 describe('owner alerts on a gromzo install go through the main agent', () => {
-  beforeEach(() => setOwnerRelaySink(null))
+  beforeEach(() => { setOwnerRelaySink(null); setOwnerRelayLang(() => 'hu') })
 
   it('relayed: the main agent gets the alert with the relay instruction, verbatim, and the send reports true', async () => {
     const seen: string[] = []
@@ -30,5 +30,14 @@ describe('owner alerts on a gromzo install go through the main agent', () => {
   it('a relay that throws: false', async () => {
     setOwnerRelaySink(() => { throw new Error('db down') })
     expect(await notifyChannel('x')).toBe(false)
+  })
+
+  it('an English install gets the English relay instruction (Dani 73584 (2))', async () => {
+    const seen: string[] = []
+    setOwnerRelaySink((t) => { seen.push(t) })
+    setOwnerRelayLang(() => 'en')
+    expect(await notifyChannel('the nightly job failed')).toBe(true)
+    expect(seen[0]).toMatch(/^\[owner-alert\] An alert for the owner\. Send it to them over Gromzo/)
+    expect(seen[0].endsWith('the nightly job failed')).toBe(true)
   })
 })

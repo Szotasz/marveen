@@ -74,7 +74,7 @@ import {
   type TmuxInvocation,
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
-import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, getProviderType, channelStateDir, providerCapabilities, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CONTINUE_OPT_OUT_REASON, decideContinueFlag, readContinueOptOut, verifyContinueLaunch } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
@@ -2072,8 +2072,17 @@ export function getAgentRunningSince(name: string, session: string = agentSessio
 }
 
 
+/** GROMZONOPROVIDER1108 (Dani 73584): a sub-agent with no channel of its own falls back to the install's provider,
+ *  except where that provider says sub-agents get none (providerCapabilities().subAgentDefault === 'none': gromzo, the
+ *  MAIN agent's Gromzo channel, which a sub-agent must never carry or speak through). Pure, so it is unit-tested. */
+export function subAgentMayUseProvider(explicitProvider: string | null, resolved: ChannelProviderType): boolean {
+  if (explicitProvider) return true
+  return providerCapabilities(resolved).subAgentDefault !== 'none'
+}
+
 export function agentHasChannel(name: string): boolean {
   const agentProvider = resolveAgentProvider(name)
+  if (!subAgentMayUseProvider(readAgentChannelProvider(name), agentProvider)) return false
   const dir = agentDir(name)
   const agentChannelDir = channelStateDir(agentProvider, dir)
   const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))

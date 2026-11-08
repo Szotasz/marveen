@@ -175,3 +175,17 @@ describe('mainGromzoPrimaryReady (the TS twin of main_gromzo_primary_ready)', ()
     expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+continue\n\s+\}\n\s+const liveness = await probeChannelPluginLivenessAsync/)
   })
 })
+
+describe('sub-agents never carry the main agent\'s Gromzo channel (Dani 73584 (1))', () => {
+  it('subAgentMayUseProvider: no own provider on a gromzo install -> no channel; an own provider or another install -> as before', async () => {
+    const { subAgentMayUseProvider } = await import('../web/agent-process.js')
+    expect(subAgentMayUseProvider(null, 'gromzo')).toBe(false)
+    expect(subAgentMayUseProvider('telegram', 'telegram')).toBe(true)
+    expect(subAgentMayUseProvider(null, 'telegram')).toBe(true)
+    expect(subAgentMayUseProvider(null, 'slack')).toBe(true)
+  })
+  it('agentHasChannel asks it first (so the launch gate, scoping and the monitor all read "no channel")', () => {
+    const ap = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf8')
+    expect(ap).toMatch(/export function agentHasChannel\(name: string\): boolean \{\n  const agentProvider = resolveAgentProvider\(name\)\n  if \(!subAgentMayUseProvider\(readAgentChannelProvider\(name\), agentProvider\)\) return false\n/)
+  })
+})

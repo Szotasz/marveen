@@ -201,6 +201,11 @@ const OWNER_CHAT_MISSING_SIGNAL_MS = 60 * 60 * 1000
 // GROMZONOPROVIDER1108: the owner relay of a gromzo install, registered by the dashboard at start (web.ts), like the
 // owner-chat-missing sink above. Every alert goes through; dedup of repeated alerts is the callers' (as for a chat).
 let ownerRelaySink: OwnerChatMissingSink | null = null
+// The agent-text language of the install (AGENT_TEXT_LANG, else DASHBOARD_LANG): a test seam; the dashboard sets it.
+let relayLang: () => 'hu' | 'en' = () => 'hu'
+export function setOwnerRelayLang(fn: () => 'hu' | 'en'): void {
+  relayLang = fn
+}
 
 export function setOwnerRelaySink(sink: OwnerChatMissingSink | null): void {
   ownerRelaySink = sink
@@ -213,10 +218,11 @@ function relayOwnerViaMainAgent(text: string, meta?: AlertMeta): boolean {
     return false
   }
   try {
-    ownerRelaySink(
-      '[owner-alert] Riasztás a tulajdonosnak. Küldd el neki a Gromzón (a tulajdonosi DM-be), szó szerint, ' +
-      'és ne válaszolj rá itt: ' + text,
-    )
+    let lang: 'hu' | 'en' = 'hu'
+    try { lang = relayLang() } catch { /* the default */ }
+    ownerRelaySink(lang === 'en'
+      ? '[owner-alert] An alert for the owner. Send it to them over Gromzo (the owner DM), word for word, and do not answer it here: ' + text
+      : '[owner-alert] Riasztás a tulajdonosnak. Küldd el neki a Gromzón (a tulajdonosi DM-be), szó szerint, és ne válaszolj rá itt: ' + text)
     logAlertDelivery(meta, 'owner', 'relayed')
     return true
   } catch (err) {
