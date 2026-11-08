@@ -502,20 +502,130 @@ if [ "$MISSING" -eq 1 ]; then
   echo -e "${GREEN}$(_t macos.deps_installed)${NC}"
 fi
 
-# Bun (required by Telegram channels plugin)
-export PATH="$HOME/.bun/bin:$PATH"
-if ! command -v bun &>/dev/null; then
-  echo -e "  ${ORANGE}$(_t macos.installing_bun)${NC}"
-  curl -fsSL https://bun.sh/install | bash 2>/dev/null
-  # MACROOTFROMCLONE1106: the profile is NOT sourced into the installer. It is the user's (an agent can write it),
-  # and the root steps below would run in whatever it defined (a `sudo` function, a PATH). bun's installer only
-  # adds its bin dir to the profile; this run needs only that.
-  export PATH="$HOME/.bun/bin:$PATH"
-  if ! command -v bun &>/dev/null; then
-    echo -e "  ${RED}✗${NC} $(_t macos.bun_install_failed)"
+# Bun: no longer here. GROMZONOPROVIDER1108: installed after the channel choice ("bun-install" below), only for a
+# channel whose plugin runs on Bun (telegram, discord).
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+# BUNTIMEOUT1108 (ported, GROMZONOPROVIDER1108): the Linux installer's Bun path, here too. It was a bare
+# `curl | bash 2>/dev/null` under set -e: no time limit, no retry, no npm fallback, the reason thrown away.
+# macOS has no `timeout`: _mac_timeout uses one when installed (coreutils), else the system perl runs the command in
+# its OWN process group and, past the limit, signals the whole group (TERM, then KILL after 10 s), so the vendor
+# script's own download is cut too; exit 124 on the limit, like timeout(1).
+_mac_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout --kill-after=10 "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout --kill-after=10 "$secs" "$@"; return $?; fi
+  /usr/bin/perl -e 'my $t = shift; my $pid = fork; die "fork: $!" unless defined $pid;
+    if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    local $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 10; kill "KILL", -$pid; waitpid($pid, 0); exit 124 };
+    alarm $t; waitpid($pid, 0); alarm 0;
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$secs" "$@"
+}
+_run_remote_installer() {
+  local label="$1" url="$2" check="$3"
+  shift 3
+  local tries="${REMOTE_INSTALL_TRIES:-3}" n=1 rc dir script log
+  # No fixed /tmp fallback name: the installer runs as root, and a predictable path that it fills and then runs could
+  # be replaced by another local user (Dani 73434). Without a private temp dir the step stops.
+  if ! dir="$(mktemp -d 2>/dev/null)" || [ -z "$dir" ]; then
+    warn "$label: nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)."
+    return 1
   fi
-fi
-check_cmd "bun" "Bun runtime"
+  script="$dir/install.sh"
+  log="$dir/install.log"
+  while [ "$n" -le "$tries" ]; do
+    : > "$log"
+    rc=0
+    if curl -fsSL --connect-timeout "${REMOTE_INSTALL_CONNECT_TIMEOUT:-20}" --max-time "${REMOTE_INSTALL_FETCH_TIMEOUT:-60}" \
+         -o "$script" "$url" 2>>"$log"; then
+      if _mac_timeout "${REMOTE_INSTALL_TIMEOUT:-300}" bash "$script" "$@" </dev/null >>"$log" 2>&1; then
+        rc=0
+      else
+        rc=$?
+      fi
+    else
+      rc=$?
+      echo "(the installer script could not be downloaded from $url, curl exit $rc)" >>"$log"
+    fi
+    hash -r
+    if "$check"; then
+      rm -rf "$dir"
+      return 0
+    fi
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+      warn "$label: a(z) $n/$tries. probalkozas tullepte az idokorlatot (${REMOTE_INSTALL_TIMEOUT:-300} mp)."
+    else
+      warn "$label: a(z) $n/$tries. probalkozas sikertelen (kilepesi kod: $rc)."
+    fi
+    n=$((n + 1))
+    if [ "$n" -le "$tries" ]; then sleep "${REMOTE_INSTALL_RETRY_DELAY:-5}"; fi
+  done
+  echo -e "  ${DIM}$label telepito utolso sorai:${NC}"
+  tail -n 15 "$log" 2>/dev/null | sed 's/^/    /'
+  rm -rf "$dir"
+  return 1
+}
+
+_install_bun_from_npm() {
+  if ! command -v npm >/dev/null 2>&1; then
+    warn "Bun (npm tartalek): az npm nem elerheto."
+    return 1
+  fi
+  ensure_global_npm_writable auto || true
+  local log rc=0 npm_prefix npm_bun real
+  if ! log="$(mktemp 2>/dev/null)" || [ -z "$log" ]; then
+    warn "Bun (npm tartalek): nem tudtam privat ideiglenes fajlt letrehozni (mktemp)."
+    return 1
+  fi
+  if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+    # Dani 73629: as root ONLY through root_npm_install_global (root-owned node and npm, a root-only dir chain, env -i,
+    # HOME=/var/root), never a plain `sudo npm`, which resolves npm and its config from the user's side. No time limit,
+    # as in the Claude step: a password-asking sudo needs the terminal, which a process group under _mac_timeout lacks.
+    if ! root_npm_install_global "bun@${BUN_PIN}" >"$log" 2>&1; then
+      rc=1
+      echo -e "  ${RED}✗${NC} $(_t macos.root_npm_bun_failed)"
+      echo "    sudo npm install -g bun@${BUN_PIN}"
+    fi
+    # the sudo login ends here, as after the Claude step
+    command /usr/bin/sudo -K 2>/dev/null || true
+  else
+    _mac_timeout "${REMOTE_INSTALL_TIMEOUT:-300}" npm install -g "bun@${BUN_PIN}" </dev/null >"$log" 2>&1 || rc=$?
+  fi
+  hash -r
+  # The bun this npm install put in, by npm's own prefix: `command -v bun` could name an older bun earlier on PATH
+  # (Dani 73434).
+  # An empty prefix would make this "/bin/bun" (Dani 73504, the TMPPROBE1108 Linux fix, ported): no prefix, no link.
+  npm_prefix="$(npm prefix -g 2>/dev/null || true)"
+  npm_bun="${npm_prefix:+$npm_prefix/bin/bun}"
+  if [ "$rc" = 0 ] && [ -n "$npm_bun" ] && [ -x "$npm_bun" ] && "$npm_bun" --version >/dev/null 2>&1; then
+    real="$(readlink -f "$npm_bun" 2>/dev/null || echo "$npm_bun")"
+    mkdir -p "$BUN_INSTALL/bin"
+    ln -sf "$real" "$BUN_INSTALL/bin/bun"
+    ln -sf bun "$BUN_INSTALL/bin/bunx"
+    rm -f "$log"
+    return 0
+  fi
+  warn "Bun (npm tartalek): sikertelen (kilepesi kod: $rc)."
+  echo -e "  ${DIM}Bun (npm tartalek) utolso sorai:${NC}"
+  tail -n 15 "$log" 2>/dev/null | sed 's/^/    /'
+  rm -f "$log"
+  return 1
+}
+
+_install_bun() {
+  if _run_remote_installer "Bun (GitHub-letoltes)" https://bun.sh/install _bun_present; then
+    ok "bun telepitve: $("$BUN_INSTALL/bin/bun" --version 2>/dev/null)"
+    return 0
+  fi
+  warn "A Bun GitHub-letoltese nem sikerult; tartalek: npm install -g bun@${BUN_PIN} (registry.npmjs.org)."
+  if _install_bun_from_npm && _bun_present; then
+    ok "bun telepitve (npm tartalek): $("$BUN_INSTALL/bin/bun" --version 2>/dev/null)"
+    return 0
+  fi
+  fail "A Bun telepitese nem sikerult: a GitHub-letoltes (bun.sh/install) es az npm-tartalek (bun@${BUN_PIN}) is bukott, az okot a fenti sorok mutatjak. Ellenorizd, hogy a gep eleri-e a github.com-ot vagy a registry.npmjs.org-ot, majd inditsd ujra a telepitest."
+}
+_bun_present() { [ -x "$BUN_INSTALL/bin/bun" ] && "$BUN_INSTALL/bin/bun" --version >/dev/null 2>&1; }
+BUN_PIN="1.4.4"
 
 # Check Claude Code CLI
 echo ""
@@ -693,13 +803,17 @@ echo -e "${DIM}$(_t macos.channel_select_hint)${NC}"
 echo -e "  ${BOLD}1.${NC} $(_t macos.channel_option_1)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo -e "  ${BOLD}3.${NC} Discord"
+echo -e "  ${BOLD}4.${NC} $(_t channel_option_gromzo)"
 echo ""
-read -rp "$(_t prompt_channel_select_macos)" PROVIDER_CHOICE
+read -rp "$(_t prompt_channel_select4)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
 elif [ "$PROVIDER_CHOICE" = "3" ]; then
   CHANNEL_PROVIDER="discord"
+elif [ "$PROVIDER_CHOICE" = "4" ] || [ "$PROVIDER_CHOICE" = "gromzo" ]; then
+  # GROMZONOPROVIDER1108: the main agent talks only through Gromzo (no bot token, no Bun); accepted as 4 or by name.
+  CHANNEL_PROVIDER="gromzo"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -806,6 +920,11 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
       fi
     fi
   fi
+elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # GROMZONOPROVIDER1108: no bot, no token: the Gromzo channel is connected later from the Marveen Bridge.
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed a Gromzo alkalmazason at kommunikal veled; bot-token nem kell.${NC}"
+  echo -e "${DIM}  A Gromzot a Marveen Bridge-ben kotod be a telepites utan.${NC}"
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -995,6 +1114,23 @@ resolve_service_node() {
 }
 
 # Step 5: Install dependencies
+INSTALL_STEP="bun-install"
+# GROMZONOPROVIDER1108: Bun only for a channel plugin that runs on it (telegram, discord); Slack and Gromzo run on Node.
+# MACROOTFROMCLONE1106 still holds: the profile is never sourced; bun's installer only adds its bin dir to it.
+case "$CHANNEL_PROVIDER" in
+  telegram|discord)
+    if command -v bun &>/dev/null; then
+      ok "bun mar telepitve: $(bun --version)"
+    else
+      echo -e "  ${ORANGE}$(_t macos.installing_bun)${NC}"
+      _install_bun
+    fi
+    ;;
+  *)
+    ok "Bun nem kell (${CHANNEL_PROVIDER}: a csatorna Node-on fut)"
+    ;;
+esac
+
 INSTALL_STEP="npm-install"
 echo ""
 echo -e "${BOLD}$(_t section_5)${NC}"
@@ -1123,6 +1259,8 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
     env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
   fi
+elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  : # GROMZONOPROVIDER1108: no token keys
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
   env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
@@ -1300,7 +1438,8 @@ fi
 
 # Setup channel state directory
 CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
-mkdir -p "$CHANNEL_DIR"
+# GROMZONOPROVIDER1108: gromzo keeps no channel state here (no token, no access.json), so no empty dir for it.
+[ "$CHANNEL_PROVIDER" = "gromzo" ] || mkdir -p "$CHANNEL_DIR"
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   (umask 077 && echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > "$CHANNEL_DIR/.env")
@@ -1349,7 +1488,11 @@ ACCESSEOF
 fi
 
 # Install channel plugin
-if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
+# GROMZONOPROVIDER1108: on gromzo there is no channel plugin to install here (the Bridge's Gromzo step brings it).
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  PLUGIN_ID=""
+  ok "Gromzo: a csatorna-plugint a Bridge Gromzo-lepese hozza (itt nincs mit telepiteni)"
+elif [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
@@ -1363,6 +1506,9 @@ else
   PLUGIN_SHORT="slack-channel"
 fi
 
+if [ -z "$PLUGIN_ID" ]; then
+  :
+else
 echo -e "  ${CHANNEL_PROVIDER} plugin telepites..."
 claude plugin marketplace add "$PLUGIN_MARKETPLACE" 2>/dev/null || true
 if claude plugin install "$PLUGIN_ID" 2>/dev/null; then
@@ -1378,6 +1524,7 @@ else
     echo -e "  ${BLUE}claude plugin install ${PLUGIN_ID}${NC}"
     echo ""
   fi
+fi
 fi
 
 # INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
@@ -1976,7 +2123,9 @@ if { [ "$CHANNEL_PROVIDER" = "telegram" ] || [ "$CHANNEL_PROVIDER" = "discord" ]
   echo -e "  ${DIM}Utana: source ~/.zshrc && ./scripts/start.sh${NC}"
 fi
 PLUGIN_CHECK_PATTERN="${CHANNEL_PROVIDER}"
-if ! claude plugin list 2>/dev/null | grep -q "$PLUGIN_CHECK_PATTERN"; then
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  ok "Gromzo: a csatorna-plugint a Bridge Gromzo-lepese ellenorzi"
+elif ! claude plugin list 2>/dev/null | grep -q "$PLUGIN_CHECK_PATTERN"; then
   echo -e "  ${RED}✗${NC} ${CHANNEL_PROVIDER} plugin nincs telepítve."
   echo -e "  ${BOLD}Javitas:${NC} claude plugin install ${PLUGIN_ID}"
   echo -e "  ${DIM}Utana: ./scripts/stop.sh && ./scripts/start.sh${NC}"
