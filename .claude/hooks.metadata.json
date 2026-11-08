@@ -219,6 +219,14 @@
       },
       {
         "index": 4,
+        "id": "pre-tool-use/outgoing-copy-gate/messages",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email (email server's messages multiplexer).",
+        "fingerprint": "12af96faf51332058029a2f90bd98fbba362e184b98c3af4180bc84d119e1522"
+      },
+      {
+        "index": 5,
         "id": "pre-tool-use/outgoing-copy-gate/gmail",
         "hook": "outgoing-copy-gate",
         "gate": true,
@@ -226,7 +234,7 @@
         "fingerprint": "bfd15b918d5e861888b5a8cf08e877ccc373346c7478f3d9a6b0b0b14a7b3a21"
       },
       {
-        "index": 5,
+        "index": 6,
         "id": "pre-tool-use/outgoing-copy-gate/draft-email",
         "hook": "outgoing-copy-gate",
         "gate": true,
@@ -234,7 +242,7 @@
         "fingerprint": "e156cb7d9b451c809c788b772ce36b966734081613bf8115b50455c9845f1659"
       },
       {
-        "index": 6,
+        "index": 7,
         "id": "pre-tool-use/outgoing-copy-gate/mail-tool-family",
         "hook": "outgoing-copy-gate",
         "gate": true,
@@ -242,7 +250,7 @@
         "fingerprint": "362b3427f238891d000b57df9828b521fe575edd077612f741e09f36d6050d6b"
       },
       {
-        "index": 7,
+        "index": 8,
         "id": "pre-tool-use/outgoing-copy-gate/telegram-reply",
         "hook": "outgoing-copy-gate",
         "gate": true,
@@ -250,7 +258,7 @@
         "fingerprint": "d292582ae1adda412acdb544c6c36f8191759ce2fe0562cf92e788bc9fdac45d"
       },
       {
-        "index": 8,
+        "index": 9,
         "id": "pre-tool-use/outgoing-copy-gate/discord-reply",
         "hook": "outgoing-copy-gate",
         "gate": true,
@@ -258,7 +266,7 @@
         "fingerprint": "b7b26a4c86cbfb0828a2512939acabdf370fa08adbd5436587d4f74c2391ea0f"
       },
       {
-        "index": 9,
+        "index": 10,
         "id": "pre-tool-use/email-approval-gate",
         "hook": "email-approval-gate",
         "gate": true,
@@ -266,7 +274,7 @@
         "fingerprint": "496e1328b3acf0ff757f4a7452d7b75ee9cad1a940e1f2f8b2dca5748eee616a"
       },
       {
-        "index": 10,
+        "index": 11,
         "id": "pre-tool-use/email-approval-gate/send-email",
         "hook": "email-approval-gate",
         "gate": true,
@@ -274,7 +282,7 @@
         "fingerprint": "332cecf4c440ff24467225484aea39feaeb628acebe3a9fb390694c72a2d93c8"
       },
       {
-        "index": 11,
+        "index": 12,
         "id": "pre-tool-use/email-approval-gate/manage-email",
         "hook": "email-approval-gate",
         "gate": true,
@@ -282,7 +290,15 @@
         "fingerprint": "a094e7338342de4d36ccb2674dfa262254094e270f939ad212c997dffdb65b0d"
       },
       {
-        "index": 12,
+        "index": 13,
+        "id": "pre-tool-use/email-approval-gate/messages",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email (email server's messages multiplexer).",
+        "fingerprint": "90eff86c2ad3c3e82c793b3eff03db362d50a473a681a3e8f6bc35952f771848"
+      },
+      {
+        "index": 14,
         "id": "pre-tool-use/email-approval-gate/gmail",
         "hook": "email-approval-gate",
         "gate": true,
@@ -290,7 +306,7 @@
         "fingerprint": "507c77e3d360bdffb86fba1fbffa397bc63a711dac267ca95523a8b83d29a2c5"
       },
       {
-        "index": 13,
+        "index": 15,
         "id": "pre-tool-use/email-approval-gate/draft-email",
         "hook": "email-approval-gate",
         "gate": true,
@@ -298,7 +314,7 @@
         "fingerprint": "fe8c00c608779013364e333420bcb12baed860dfdfae8e67033d6d45f3c012a1"
       },
       {
-        "index": 14,
+        "index": 16,
         "id": "pre-tool-use/email-approval-gate/mail-tool-family",
         "hook": "email-approval-gate",
         "gate": true,
@@ -306,7 +322,7 @@
         "fingerprint": "cc5f44ad15278d23f0bf433820840f7048886b012bfe268a8fc57be0175bbd3f"
       },
       {
-        "index": 15,
+        "index": 17,
         "id": "pre-tool-use/channel-image-resize",
         "hook": "channel-image-resize",
         "gate": false,
@@ -314,7 +330,7 @@
         "fingerprint": "6470bb700bcc630a5566246b081d408a8816d9e2380bd7a34569cd1a76afefb6"
       },
       {
-        "index": 16,
+        "index": 18,
         "id": "pre-tool-use/egress-gate",
         "hook": "egress-gate",
         "gate": true,
@@ -322,7 +338,7 @@
         "fingerprint": "94368f91e67d77d3cef978d63541bd2dcb5824dd82d2cc90404763644b622b87"
       },
       {
-        "index": 17,
+        "index": 19,
         "id": "pre-tool-use/memory-frontmatter-gate",
         "hook": "memory-frontmatter-gate",
         "gate": true,
@@ -330,7 +346,7 @@
         "fingerprint": "8fb3c47be81f397747a88bbf892cea7df2cd92b0cfd1fadf90a0a9a8e9f5379b"
       },
       {
-        "index": 18,
+        "index": 20,
         "id": "pre-tool-use/memory-frontmatter-bash-gate",
         "hook": "memory-frontmatter-bash-gate",
         "gate": true,
@@ -338,7 +354,7 @@
         "fingerprint": "4c2cc281846835bbf1614c13aeabd202f7e9f8f51b0d054b0611c5e791c088c6"
       },
       {
-        "index": 19,
+        "index": 21,
         "id": "pre-tool-use/db-write-gate",
         "hook": "db-write-gate",
         "gate": true,
@@ -346,7 +362,7 @@
         "fingerprint": "38f20fadd64d70a1adb20d98e52f82cc8add436d5d68fde932e5d52eebeae94d"
       },
       {
-        "index": 20,
+        "index": 22,
         "id": "pre-tool-use/shell-rescan-guard",
         "hook": "shell-rescan-guard",
         "gate": true,
