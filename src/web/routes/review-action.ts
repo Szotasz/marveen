@@ -17,6 +17,7 @@ import { sanitizeAgentName } from '../sanitize.js'
 import { agentGetsSecondReviewer } from '../agent-scaffold.js'
 import { fileServerApproval, categoryWindowSeconds, approvalWindowSeconds } from './approvals.js'
 import type { RouteContext } from './types.js'
+import type { ApprovalLang } from '../../approval-slack.js'
 
 export const SECOND_REVIEW_CATEGORY = 'second_review'
 export const SECOND_REVIEW_TIMEOUT_MS = 45_000
@@ -56,8 +57,16 @@ export function _clearReviewMemoryForTest(): void { recentDenies.clear() }
 // The owner's notification shows only the description, so the description carries the call itself
 // when it fits; a longer one points at the dashboard, where the approval row holds the whole payload.
 const DESCRIPTION_CALL_MAX = 3_000
-function describeCall(agent: string, toolName: string, reason: string, serialized: string): string {
-  const call = serialized.length <= DESCRIPTION_CALL_MAX
+// APPROVALTAGEN1108 (Samu 73350): in the language the owner's post is sent in (fileServerApproval reads it once).
+export function describeCall(agent: string, toolName: string, reason: string, serialized: string, lang: ApprovalLang): string {
+  const fits = serialized.length <= DESCRIPTION_CALL_MAX
+  if (lang === 'en') {
+    const call = fits
+      ? `\n${serialized}`
+      : `\n(${serialized.length} characters; the full call is on the dashboard, in the approval's details)`
+    return `Second reviewer: ${agent}'s ${toolName} call is waiting for approval (${reason})${call}`
+  }
+  const call = fits
     ? `\n${serialized}`
     : `\n(${serialized.length} karakter; a teljes hívás a dashboardon, a jóváhagyás adatai között)`
   return `Második ellenőr: ${agent} ${toolName} hívása jóváhagyásra vár (${reason})${call}`
@@ -170,7 +179,7 @@ export async function tryHandleReviewAction(ctx: RouteContext): Promise<boolean>
   const approval = fileServerApproval({
     agent_id: agent,
     category: SECOND_REVIEW_CATEGORY,
-    action_description: describeCall(agent, toolName, reason, serialized),
+    action_description: (lang) => describeCall(agent, toolName, reason, serialized, lang),
     action_payload: serialized,
     content_hash: contentHash,
   })

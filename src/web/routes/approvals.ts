@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
@@ -232,11 +232,12 @@ export const reactionDeps: RouteDeps = {
   lang: () => approvalTextLang(),
 }
 
-function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false): void {
+function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false, filedLang?: ApprovalLang): void {
   const informative = chatApprovedMessageId != null
   // APPROVALTAGEN1108: the language is read ONCE per request: the text, the Slack DM, its expiry and the language
-  // stored with the post (the words its replies are checked with) are the same one.
-  const lang = (reactionDeps.lang ?? approvalTextLang)()
+  // stored with the post (the words its replies are checked with) are the same one. A server-filed request passes the
+  // language its description was worded in (Samu 73350), so the description and the post never differ.
+  const lang = filedLang ?? (reactionDeps.lang ?? approvalTextLang)()
   let text = informative
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId, lang)
     : buildOwnerApprovalText(approval, lang)
@@ -371,21 +372,24 @@ function notifyMainAgent(approval: Approval): void {
 export function fileServerApproval(params: {
   agent_id: string
   category: string
-  action_description: string
+  /** APPROVALTAGEN1108 (Samu 73350): a function words it in the language the owner's post goes out in, read once here. */
+  action_description: string | ((lang: ApprovalLang) => string)
   action_payload?: string | null
   content_hash: string
 }): Approval {
+  const lang = (reactionDeps.lang ?? approvalTextLang)()
+  const description = typeof params.action_description === 'function' ? params.action_description(lang) : params.action_description
   const approval = createApproval({
     id: randomUUID(),
     agent_id: params.agent_id,
     category: params.category,
-    action_description: params.action_description,
+    action_description: description,
     action_payload: params.action_payload ?? null,
     timeout_at: computeTimeoutAt(params.category, undefined),
     content_hash: params.content_hash,
   })
   // serverFiled: the description is the server's own words, so the reaction path may show it (APPROVALSLACK1030 (2)).
-  notifyOwner(approval, null, true)
+  notifyOwner(approval, null, true, lang)
   notifyMainAgent(approval)
   logger.info({ id: approval.id, agent_id: approval.agent_id, category: approval.category }, 'Approval request filed by the server')
   return approval
