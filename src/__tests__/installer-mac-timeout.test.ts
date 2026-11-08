@@ -3,7 +3,7 @@
 // whole group at the limit. These run the REAL function (sliced out of install-macos.sh) with a PATH that has neither
 // timeout nor gtimeout, so the perl branch is what is measured.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, existsSync } from 'node:fs'
+import { readFileSync, mkdtempSync, existsSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -20,15 +20,25 @@ function sliceFn(src: string, name: string): string {
   return src.slice(start, i)
 }
 const FN = sliceFn(MAC, '_mac_timeout')
+// The test builds its OWN PATH: a temp bin with only the tools the test commands use (sleep, touch). /usr/bin:/bin
+// is not enough, because a Linux CI runner has coreutils' timeout there and the perl branch would never run
+// (Marveen 73635, CI run 42499677634). The perl branch itself calls /usr/bin/perl by absolute path.
+const TEST_BIN = mkdtempSync(join(tmpdir(), 'mac-to-bin-'))
+for (const tool of ['sleep', 'touch']) {
+  const at = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout.trim()
+  if (at) symlinkSync(at, join(TEST_BIN, tool))
+}
+const TEST_PATH = TEST_BIN
 const run = (cmd: string) => {
   const t0 = Date.now()
-  const r = spawnSync('/bin/bash', ['-c', `${FN}\n${cmd}\necho "RC=$?"`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } })
+  const r = spawnSync('/bin/bash', ['-c', `${FN}\n${cmd}\necho "RC=$?"`], { encoding: 'utf8', env: { PATH: TEST_PATH } })
   return { out: r.stdout, ms: Date.now() - t0 }
 }
 
 describe.skipIf(!HAVE_PERL)('_mac_timeout without timeout(1): the perl process-group watchdog', () => {
   it('precondition: the test PATH has no timeout or gtimeout (so the perl branch runs)', () => {
-    expect(spawnSync('/bin/bash', ['-c', 'command -v timeout || command -v gtimeout'], { env: { PATH: '/usr/bin:/bin' } }).status).not.toBe(0)
+    expect(spawnSync('/bin/bash', ['-c', 'command -v timeout || command -v gtimeout'], { env: { PATH: TEST_PATH } }).status).not.toBe(0)
+    expect(existsSync(join(TEST_BIN, 'sleep')) && existsSync(join(TEST_BIN, 'touch'))).toBe(true)
   })
   it('a command within the limit: its own exit code passes through', () => {
     expect(run('_mac_timeout 5 /bin/sh -c "exit 7"').out).toContain('RC=7')
@@ -38,10 +48,10 @@ describe.skipIf(!HAVE_PERL)('_mac_timeout without timeout(1): the perl process-g
     const dir = mkdtempSync(join(tmpdir(), 'mac-to-'))
     const r = run(`_mac_timeout 1 /bin/bash -c '(sleep 3; touch "${dir}/late") & sleep 30'`)
     expect(r.out).toContain('RC=124')
-    expect(r.ms).toBeLessThan(15_000)
+    expect(r.ms).toBeLessThan(25_000) // 1 s alarm + the fixed 10 s TERM grace (11 s measured in a Linux container), well under the 30 s sleep
     spawnSync('/bin/sleep', ['4'])
     expect(existsSync(join(dir, 'late'))).toBe(false)
-  }, 30_000)
+  }, 45_000)
 })
 
 describe('install-macos.sh: Bun only for Bun channels, after the choice, with the ported BUNTIMEOUT helpers', () => {
