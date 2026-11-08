@@ -3009,6 +3009,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
         }
         if (t.isMarveen) {
+          // GROMZONOPROVIDER1108 (Dani 73601): no claude, so no live Gromzo plugin either -> owner alerts are kept.
+          if (t.provider === 'gromzo') setGromzoMainLive(false)
           // The claude pid is gone. WHY decides recovery: a session that no
           // longer exists at all must be recreated from scratch (respawn-pane,
           // the only tool the down-cascade has on Linux, cannot resurrect a

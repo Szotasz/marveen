@@ -127,6 +127,9 @@ describe('owner alerts on a gromzo install go through the main agent', () => {
     const cm = readFileSync(join(__dirname, '..', 'web', 'channel-monitor.ts'), 'utf8')
     expect(cm).toMatch(/if \(liveness === 'alive'\) \{\n\s+if \(t\.isMarveen\) \{\n\s+handleMarveenUp\(\)\n(?:\s+\/\/[^\n]*\n)+\s+if \(t\.provider === 'gromzo'\) \{\n\s+setGromzoMainLive\(true\)\n\s+try \{ flushGromzoPendingOwnerAlerts\(\) \}/)
     expect(cm.match(/flushGromzoPendingOwnerAlerts\(\)/g)?.length).toBe(1)
+    // cleared on every not-alive path of the main agent: no claude pid, gromzo-pending, a dead plugin
+    expect(cm.match(/setGromzoMainLive\(false\)/g)?.length).toBe(3)
+    expect(cm).toMatch(/if \(t\.isMarveen\) \{\n\s+\/\/ GROMZONOPROVIDER1108 \(Dani 73601\): no claude[^\n]*\n\s+if \(t\.provider === 'gromzo'\) setGromzoMainLive\(false\)\n\s+\/\/ The claude pid is gone/)
     expect(cm).toMatch(/if \(t\.isMarveen\) \{\n(?:\s+\/\/[^\n]*\n)\s+if \(t\.provider === 'gromzo'\) setGromzoMainLive\(false\)\n\s+if \(shouldEscalateMarveenDown\(\)\)/)
   })
 })
