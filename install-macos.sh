@@ -1185,27 +1185,35 @@ else
   # Probe the way a SERVICE runs: isolated config dir (so the Keychain and the
   # operator's shell cannot make a broken install look healthy) carrying ONLY
   # the credential the launchd units will get.
-  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
-  # A 401 here is the VERDICT this gate exists to report, not an installer
-  # error. Unguarded, the capture reached the ERR trap and on_error() exited 1 --
-  # blaming the enclosing `fi` -- so the BROKEN branch below (and its
-  # `scripts/auth.sh` hint) was unreachable in exactly the case it was written
-  # for. `&& ... || ...` keeps the failure out of the trap and preserves rc.
-  _probe_rc=0
-  if [ -n "$_svc_token" ]; then
-    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
-      CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+  # TMPPROBE1108 (Dani 73504): no fixed /tmp fallback name. This dir is claude's CLAUDE_CONFIG_DIR next to the SERVICE
+  # token; a predictable one another local user created first could carry a settings.json whose hooks run commands
+  # with it. Without a private dir the probe is skipped and the state is UNKNOWN (said below).
+  _probe_cfg="$(mktemp -d 2>/dev/null)" || _probe_cfg=""
+  if [ -z "$_probe_cfg" ]; then
+    warn "Az auth-proba kimarad: nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)."
+    INSTALL_AUTH_STATE="UNKNOWN"
   else
-    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
-      ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    # A 401 here is the VERDICT this gate exists to report, not an installer
+    # error. Unguarded, the capture reached the ERR trap and on_error() exited 1 --
+    # blaming the enclosing `fi` -- so the BROKEN branch below (and its
+    # `scripts/auth.sh` hint) was unreachable in exactly the case it was written
+    # for. `&& ... || ...` keeps the failure out of the trap and preserves rc.
+    _probe_rc=0
+    if [ -n "$_svc_token" ]; then
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    else
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    fi
+    _probe_out=${_probe_out:0:200}
+    if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+      INSTALL_AUTH_STATE="OK"
+    else
+      INSTALL_AUTH_STATE="BROKEN"
+    fi
+    rm -rf "$_probe_cfg" 2>/dev/null || true
   fi
-  _probe_out=${_probe_out:0:200}
-  if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
-    INSTALL_AUTH_STATE="OK"
-  else
-    INSTALL_AUTH_STATE="BROKEN"
-  fi
-  rm -rf "$_probe_cfg" 2>/dev/null || true
 fi
 unset _svc_token _svc_apikey
 

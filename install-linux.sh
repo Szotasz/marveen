@@ -849,8 +849,11 @@ export PATH="$HOME/.local/bin:$PATH"
 _claude_runs() {
   command -v claude >/dev/null 2>&1 || return 1
   local probe_cfg rc
-  probe_cfg="$(mktemp -d 2>/dev/null || echo "/tmp/claude-probe-$$")"
-  mkdir -p "$probe_cfg"
+  # TMPPROBE1108 (Dani 73504): no fixed /tmp fallback name. The probe hands the dir to claude as CLAUDE_CONFIG_DIR,
+  # and a predictable one another local user created first could carry a settings.json whose hooks run commands.
+  # Without a private dir there is no probe: counted as "does not run" (the step then says so).
+  probe_cfg="$(mktemp -d 2>/dev/null)" || probe_cfg=""
+  [ -n "$probe_cfg" ] && [ -d "$probe_cfg" ] || return 1
   env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$probe_cfg" DISABLE_AUTOUPDATER=1 \
     timeout "${CLAUDE_PROBE_TIMEOUT:-25}" claude -p 'ping' --max-turns 1 --output-format json \
@@ -943,7 +946,7 @@ _install_bun_from_npm() {
     return 1
   fi
   ensure_global_npm_writable auto || true
-  local log rc=0 npm_bun real
+  local log rc=0 npm_prefix npm_bun real
   if ! log="$(mktemp 2>/dev/null)" || [ -z "$log" ]; then
     warn "Bun (npm tartalek): nem tudtam privat ideiglenes fajlt letrehozni (mktemp)."
     return 1
@@ -956,8 +959,11 @@ _install_bun_from_npm() {
   hash -r
   # The bun this npm install put in, by npm's own prefix: `command -v bun` could name an older bun earlier on PATH
   # (Dani 73434).
-  npm_bun="$(npm prefix -g 2>/dev/null || true)/bin/bun"
-  if [ "$rc" = 0 ] && [ -x "$npm_bun" ] && "$npm_bun" --version >/dev/null 2>&1; then
+  # An empty prefix would make this "/bin/bun", on a merged-/usr system possibly a distro bun (Dani 73504): no prefix,
+  # no link.
+  npm_prefix="$(npm prefix -g 2>/dev/null || true)"
+  npm_bun="${npm_prefix:+$npm_prefix/bin/bun}"
+  if [ "$rc" = 0 ] && [ -n "$npm_bun" ] && [ -x "$npm_bun" ] && "$npm_bun" --version >/dev/null 2>&1; then
     real="$(readlink -f "$npm_bun" 2>/dev/null || echo "$npm_bun")"
     mkdir -p "$BUN_INSTALL/bin"
     ln -sf "$real" "$BUN_INSTALL/bin/bun"
@@ -1718,10 +1724,14 @@ else
   # Probe the way a SERVICE will run: an isolated config dir (so ~/.claude and
   # the operator's shell exports cannot make a broken install look healthy)
   # carrying ONLY the credential the units will actually get.
-  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
+  # TMPPROBE1108 (Dani 73504): no fixed /tmp fallback name. This dir is claude's CLAUDE_CONFIG_DIR next to the SERVICE
+  # token; a predictable one another local user created first could carry a settings.json whose hooks run commands
+  # with it. Without a private dir the probe is skipped and the state is UNKNOWN (said below).
+  _probe_cfg="$(mktemp -d 2>/dev/null)" || _probe_cfg=""
+  [ -n "$_probe_cfg" ] || warn "Az auth-proba kimarad: nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)."
   _probe_out=""
   _probe_rc=1
-  if command -v claude >/dev/null 2>&1; then
+  if [ -n "$_probe_cfg" ] && command -v claude >/dev/null 2>&1; then
     # A 401 here is the VERDICT this gate exists to report, not an installer
     # error -- see the guard rationale above the operator-shell probe.
     if [ -n "$_svc_token" ]; then
@@ -1742,7 +1752,7 @@ else
   else
     INSTALL_AUTH_STATE="UNKNOWN"
   fi
-  rm -rf "$_probe_cfg" 2>/dev/null || true
+  [ -z "$_probe_cfg" ] || rm -rf "$_probe_cfg" 2>/dev/null || true
 fi
 unset _svc_token _svc_apikey
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, chmodSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, chmodSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -180,7 +180,7 @@ function runBun(env: Record<string, string>): Run {
   const npmPrefix = join(work, 'npm-prefix')
   writeFileSync(join(bin, 'npm'), [
     '#!/bin/bash',
-    `if [ "$1" = prefix ]; then echo "${npmPrefix}"; exit 0; fi`,
+    `if [ "$1" = prefix ]; then [ -n "\${FAKE_EMPTY_PREFIX:-}" ] || echo "${npmPrefix}"; exit 0; fi`,
     'echo "$*" >> "$FAKE_NPM_LOG"',
     'if [ -n "${FAKE_NPM_FAIL:-}" ]; then echo "npm error code E503" >&2; exit 1; fi',
     `mkdir -p "${npmPrefix}/lib/bun/bin" "${npmPrefix}/bin"`,
@@ -258,6 +258,15 @@ describe.skipIf(!HAVE_TIMEOUT)('Bun: the GitHub download fails, the npm fallback
     expect(spawnSync(join(r.work, '.bun', 'bin', 'bun'), ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe('1.4.4')
   })
 
+  it('an empty npm prefix links nothing (no "/bin/bun", Dani 73504) and the install stops with the reason', () => {
+    const r = runBun({ FAKE_EMPTY_PREFIX: '1' })
+    expect(r.status).toBe(7)
+    expect(r.out).toContain('Bun (npm tartalek): sikertelen (kilepesi kod: 0).')
+    expect(existsSync(join(r.work, '.bun', 'bin', 'bun'))).toBe(false)
+    // no /bin/bun exists on a test host, so the behaviour alone cannot tell; the source names no prefix-less path
+    expect(sliceShellFn(LINUX, '_install_bun_from_npm')).toContain('npm_bun="\${npm_prefix:+\$npm_prefix/bin/bun}"')
+  })
+
   it('the GitHub path works: no npm call at all', () => {
     const work = mkdtempSync(join(tmpdir(), 'rinst-okvendor-'))
     const vendor = join(work, 'ok.sh')
@@ -281,5 +290,26 @@ describe.skipIf(!HAVE_TIMEOUT)('no predictable temp path for a root-run script (
   })
   it('the source has no fixed /tmp fallback name in the two helpers', () => {
     for (const f of ['_run_remote_installer', '_install_bun_from_npm']) expect(sliceShellFn(LINUX, f)).not.toMatch(/\|\|\s*echo\s+"?\/tmp\//)
+  })
+})
+
+describe('TMPPROBE1108: no predictable /tmp fallback for a mktemp anywhere in the installers (Dani 73504)', () => {
+  const files = ['install-linux.sh', 'install-macos.sh', 'install-lang.sh', ...readdirSync(join(ROOT, 'scripts')).filter((f) => f.endsWith('.sh')).map((f) => `scripts/${f}`)]
+  it('no `mktemp ... || echo|printf /tmp/...` line (code lines; a positive control proves the pattern bites)', () => {
+    const rx = /mktemp[^\n]*\|\|\s*(echo|printf)\s+["']?\/tmp\//
+    expect('  x="$(mktemp -d 2>/dev/null || echo /tmp/x.$$)"').toMatch(rx)
+    const hits: string[] = []
+    for (const f of files) {
+      readFileSync(join(ROOT, f), 'utf-8').split('\n').forEach((l, i) => {
+        if (!l.trimStart().startsWith('#') && rx.test(l)) hits.push(`${f}:${i + 1}: ${l.trim()}`)
+      })
+    }
+    expect(hits).toEqual([])
+  })
+  it('both service-auth probes skip (UNKNOWN) instead of running claude without a private config dir', () => {
+    const mac = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
+    expect(LINUX).toMatch(/_probe_cfg="\$\(mktemp -d 2>\/dev\/null\)" \|\| _probe_cfg=""/)
+    expect(LINUX).toMatch(/if \[ -n "\$_probe_cfg" \] && command -v claude >\/dev\/null 2>&1; then/)
+    expect(mac).toMatch(/_probe_cfg="\$\(mktemp -d 2>\/dev\/null\)" \|\| _probe_cfg=""\n  if \[ -z "\$_probe_cfg" \]; then\n[^\n]*\n    INSTALL_AUTH_STATE="UNKNOWN"\n  else\n/)
   })
 })

@@ -125,6 +125,14 @@ describe.skipIf(!HAVE_TIMEOUT)('_claude_runs is a real launch probe, not --versi
         const log = join(mkdtempSync(join(tmpdir(), 'clirv-log-')), 'env')
         expect(runProbe(src, mockClaude('crash', log))).toBe(3)
       })
+      it('TMPPROBE1108: mktemp fails -> NO, and claude is never launched with a guessable config dir', () => {
+        const log = join(mkdtempSync(join(tmpdir(), 'clirv-log-')), 'env')
+        const dir = mockClaude('healthy', log)
+        writeFileSync(join(dir, 'mktemp'), '#!/bin/sh\nexit 1\n')
+        chmodSync(join(dir, 'mktemp'), 0o755)
+        expect(runProbe(src, dir, { CLAUDE_PROBE_TIMEOUT: '30' })).toBe(3)
+        expect(existsSync(log), 'the mock claude was never run').toBe(false)
+      })
       it('no claude on PATH: NO', () => {
         const empty = mkdtempSync(join(tmpdir(), 'clirv-empty-'))
         // Only the empty dir: on `${empty}:/usr/bin:/bin` an npm-global claude in

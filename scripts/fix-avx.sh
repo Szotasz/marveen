@@ -50,8 +50,11 @@ warn "AVX-hianyos x86 CPU detektalva -- a Bun-alapu claude build itt SIGILL-lel 
 _claude_runs() {
   command -v claude >/dev/null 2>&1 || return 1
   local probe_cfg rc
-  probe_cfg="$(mktemp -d 2>/dev/null || echo "/tmp/claude-probe-$$")"
-  mkdir -p "$probe_cfg"
+  # TMPPROBE1108 (Dani 73504): no fixed /tmp fallback name. The probe hands the dir to claude as CLAUDE_CONFIG_DIR,
+  # and a predictable one another local user created first could carry a settings.json whose hooks run commands.
+  # Without a private dir there is no probe: counted as "does not run" (the step then says so).
+  probe_cfg="$(mktemp -d 2>/dev/null)" || probe_cfg=""
+  [ -n "$probe_cfg" ] && [ -d "$probe_cfg" ] || return 1
   env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$probe_cfg" DISABLE_AUTOUPDATER=1 \
     timeout "${CLAUDE_PROBE_TIMEOUT:-25}" claude -p 'ping' --max-turns 1 --output-format json \
