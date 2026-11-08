@@ -252,6 +252,7 @@ const PLUGIN_PATCHES = [
   { name: 'quote', marker: 'MARVEEN-PATCH(quote1101)', label: ' (idézet-részlet)', fallback: 'egy idézett válasznál az idézett részlet nem jut el az ágenshez' },
   { name: 'silent', marker: 'MARVEEN-PATCH(tgsilent)', label: ' (hangtalan válasz)', fallback: 'minden válasz hanggal érkezik, a státuszüzenetek is' },
   { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
+  { name: 'pairtext', marker: 'MARVEEN-PATCH(pairtext)', label: ' (párosítás-szöveg)', fallback: 'a párosításnál a bot Claude Code-ot mond, a jóváhagyás viszont a dashboardon van' },
   { name: 'invis', marker: 'MARVEEN-PATCH(invis1024)', label: ' (láthatatlan karakterek)', fallback: 'a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket' },
 ]
 // Switchable (TELEGRAM_TOPICS_ENABLED): expected only when the last channel
