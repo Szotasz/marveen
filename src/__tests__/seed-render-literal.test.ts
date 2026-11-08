@@ -90,3 +90,63 @@ describe('the refresh with such a name (a templated task)', () => {
     } finally { rmSync(f.base, { recursive: true, force: true }) }
   })
 })
+
+// SEEDRENDERLITERAL1108: the five seeding loops (both installers' two, update.sh's new-task loop) render through the
+// same lib, so a name typed at install time (the installers read it raw) or in the wizard (update.sh renders with .env)
+// goes in literally, and the seeded bytes are the ones the refresh compares against later.
+describe('the seeding loops render literally (installers, update.sh new-task loop)', () => {
+  const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
+  const sliceTplLoop = (src: string, dirVar: string): string => {
+    const lines = src.split('\n')
+    const i = lines.findIndex((l) => l.trim() === `for tpl in "$${dirVar}"/*/; do`)
+    if (i < 0) throw new Error(`loop over ${dirVar} not found`)
+    const indent = lines[i].slice(0, lines[i].indexOf('for'))
+    return lines.slice(i, lines.findIndex((l, k) => k > i && l === `${indent}done`) + 1).join('\n')
+  }
+  const LOOPS: Array<[string, string, string]> = [
+    ['install-linux.sh', 'SCHED_TPL_DIR', `templates/${SCHED}`], ['install-linux.sh', 'SEED_SCHED_DIR', `seed-${SCHED}`],
+    ['install-macos.sh', 'SCHED_TPL_DIR', `templates/${SCHED}`], ['install-macos.sh', 'SEED_SCHED_DIR', `seed-${SCHED}`],
+    ['update.sh', 'SEED_SCHED_DIR', `seed-${SCHED}`],
+  ]
+  const NAME = 'Kiss & Társa/Kft \\ {{INSTALL_DIR}}'
+  for (const [file, dirVar, srcRel] of LOOPS) {
+    it(`${file} ${srcRel}: OWNER_NAME ${JSON.stringify(NAME)} comes out byte for byte`, () => {
+      const base = mkdtempSync(join(tmpdir(), 'seed-loop-literal-'))
+      try {
+        const install = join(base, 'install'); const target = join(base, 'home', SCHED)
+        mkdirSync(join(install, srcRel, 'demo'), { recursive: true }); mkdirSync(target, { recursive: true })
+        writeFileSync(join(install, srcRel, 'demo', 'SKILL.md'), 'for {{OWNER_NAME}} by {{BOT_NAME}} ({{MAIN_AGENT_ID}}) at {{INSTALL_DIR}}:{{WEB_PORT}}\n')
+        const script = ['set -u', 'ok() { :; }; warn() { :; }; GREEN=""; NC=""', `INSTALL_DIR=${JSON.stringify(install)}`,
+          `${dirVar}=${JSON.stringify(join(install, srcRel))}`, `SCHED_TARGET_DIR=${JSON.stringify(target)}`, 'SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"',
+          'RESEED_FLEET=0; SCHED_NEW=0; SCHED_SKIP=0; SCHED_FORCED=0', `MAIN_AGENT_ID=marveen; BOT_NAME='B&B/1'; OWNER_NAME=${JSON.stringify(NAME).replace(/\$/g, '\\$')}; WEB_PORT=3421`,
+          `. ${JSON.stringify(LIB)}`, sliceTplLoop(read(file), dirVar)].join('\n')
+        execFileSync('bash', ['-c', script], { encoding: 'utf-8' })
+        expect(readFileSync(join(target, 'demo', 'SKILL.md'), 'utf-8')).toBe(`for ${NAME} by B&B/1 (marveen) at ${install}:3421\n`)
+      } finally { rmSync(base, { recursive: true, force: true }) }
+    })
+  }
+
+  it('every seeding loop uses the lib render, none keeps a sed of the identity', () => {
+    for (const file of ['install-linux.sh', 'install-macos.sh', 'update.sh']) {
+      const src = read(file)
+      for (const [f, dirVar] of LOOPS.filter(([x]) => x === file).map(([x, d]) => [x, d])) {
+        const loop = sliceTplLoop(src, dirVar)
+        expect(loop, `${f} ${dirVar}`).toContain('render_seed_template < ')
+        expect(loop, `${f} ${dirVar}`).not.toMatch(/s\/\{\{(OWNER_NAME|BOT_NAME|MAIN_AGENT_ID)\}\}/)
+      }
+    }
+  })
+
+  it('the installers load the lib before their first seeding loop and stop without it; update.sh skips the loop with a line', () => {
+    for (const file of ['install-linux.sh', 'install-macos.sh']) {
+      const src = read(file)
+      const load = src.indexOf('[ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ] && . "$INSTALL_DIR/scripts/lib/seed-refresh.sh"')
+      expect(load, file).toBeGreaterThan(0)
+      expect(load, file).toBeLessThan(src.indexOf('for tpl in "$SCHED_TPL_DIR"/*/; do'))
+      expect(src, file).toContain('command -v render_seed_template >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing')
+    }
+    const upd = read('update.sh')
+    expect(upd).toContain('command -v render_seed_template >/dev/null 2>&1 || { _seed_render_ok=0; echo "  new seed tasks skipped:')
+    expect(sliceTplLoop(upd, 'SEED_SCHED_DIR').split('\n')[1].trim()).toBe('[ "${_seed_render_ok:-1}" = 1 ] || break')
+  })
+})

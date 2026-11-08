@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 // What we ship as a RECIPE has to run on the machine we ship it to.
 //
@@ -102,23 +103,24 @@ describe('both seeding paths substitute the same placeholders', () => {
   const INSTALL = readFileSync(join(ROOT, 'install-linux.sh'), 'utf-8')
   const UPDATE = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
 
-  /** Placeholder names substituted in the sed block that follows `anchor`. */
-  function placeholdersAfter(src: string, anchor: string): Set<string> {
+  /** The render the seeding loop after `anchor` writes its files with (SEEDRENDERLITERAL1108: the shared lib's). */
+  function renderAfter(src: string, anchor: string): string {
     const start = src.indexOf(anchor)
     if (start < 0) throw new Error(`anchor not found: ${anchor}`)
-    const sed = src.indexOf('sed -e', start)
-    if (sed < 0) throw new Error(`no sed block after ${anchor}`)
-    const end = src.indexOf('> "$target/$sub$(basename "$f")"', sed)
-    if (end < 0) throw new Error(`unterminated sed block after ${anchor}`)
-    const chunk = src.slice(sed, end)
-    return new Set([...chunk.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))
+    const end = src.indexOf('> "$target/$sub$(basename "$f")"', start)
+    if (end < 0) throw new Error(`no seeding write after ${anchor}`)
+    const line = src.slice(src.lastIndexOf('\n', end) + 1, end).trim()
+    return line.split(' ')[0]
   }
 
-  it('the scheduled-task seeder in update.sh matches the installer', () => {
-    const fromInstaller = placeholdersAfter(INSTALL, 'SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"')
-    const fromUpdate = placeholdersAfter(UPDATE, 'SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"')
-    expect([...fromUpdate].sort()).toEqual([...fromInstaller].sort())
-    // and WEB_PORT specifically, since that is the one that was missing
-    expect(fromUpdate.has('WEB_PORT')).toBe(true)
+  it('the scheduled-task seeder in update.sh matches the installer (one shared render)', () => {
+    // SEEDRENDERLITERAL1108: both seeding paths call scripts/lib/seed-refresh.sh render_seed_template, so their
+    // placeholder sets cannot drift apart any more (this test used to compare two sed blocks).
+    const anchor = 'SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"'
+    expect(renderAfter(INSTALL, anchor)).toBe('render_seed_template')
+    expect(renderAfter(UPDATE, anchor)).toBe('render_seed_template')
+    // and WEB_PORT specifically, since that is the one that was missing: the shared render substitutes it
+    const out = execFileSync('bash', ['-c', `. ${JSON.stringify(join(ROOT, 'scripts', 'lib', 'seed-refresh.sh'))}; INSTALL_DIR=/i; WEB_PORT=3421; printf '{{WEB_PORT}} {{MAIN_AGENT_ID}}' | MAIN_AGENT_ID=m render_seed_template`], { encoding: 'utf-8' })
+    expect(out).toBe('3421 m')
   })
 })

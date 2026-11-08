@@ -1786,6 +1786,11 @@ fi
 # template-ek {{MAIN_AGENT_ID}} placeholdert hasznalnak, igy a felhasznalo
 # valasztott agent slugja kerul be a hardcoded "marveen" helyett. Letezo task
 # konyvtarakat soha nem irjuk felul.
+# SEEDRENDERLITERAL1108: the seeding loops below render through the shared lib (scripts/lib/seed-refresh.sh
+# render_seed_template): a name typed here with &, / or \ goes in literally, and the bytes are the ones the seed refresh
+# compares against later. The lib ships in this tree; without it the tree is broken.
+[ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ] && . "$INSTALL_DIR/scripts/lib/seed-refresh.sh"
+command -v render_seed_template >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing: the install tree is incomplete"
 SCHED_TPL_DIR="$INSTALL_DIR/templates/scheduled-tasks"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
 if [ -d "$SCHED_TPL_DIR" ]; then
@@ -1806,12 +1811,8 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       mkdir -p "$target/$sub"
       for f in "$tpl$sub"*; do
         [ -f "$f" ] || continue
-        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$f" > "$target/$sub$(basename "$f")"
+        # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+        render_seed_template < "$f" > "$target/$sub$(basename "$f")"
       done
     done
     INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
@@ -1862,12 +1863,8 @@ if [ -d "$SEED_SCHED_DIR" ]; then
         [ -f "$f" ] || continue
         seed_src="$f"
         command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
-        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$seed_src" > "$target/$sub$(basename "$f")"
+        # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+        render_seed_template < "$seed_src" > "$target/$sub$(basename "$f")"
       done
     done
     INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"

@@ -331,6 +331,8 @@ describe('the initial seed loops pick the English version on en (installers, upd
         const f = makeInstall({ lang: mode === 'en' ? 'en' : 'hu', helper: mode !== 'no-helper' })
         try {
           const script = [...PRELUDE(f.install, f.home), 'MAIN_AGENT_ID=marveen; BOT_NAME=Marveen; OWNER_NAME=Owner; WEB_PORT=3420',
+            // SEEDRENDERLITERAL1108: the seeding loops render through the shared lib (each script sources it before them)
+            `. "${join(ROOT, 'scripts', 'lib', 'seed-refresh.sh')}"`,
             'SKILLS_DIR="$HOME/.claude/skills"; SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"',
             'SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"; SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"',
             'SEED_NEW=0; SEED_SKIP=0; SEED_FORCED=0; SCHED_NEW=0; SCHED_SKIP=0; SCHED_FORCED=0; SCHED_TOMBSTONE=/nonexistent',
