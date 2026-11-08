@@ -37,7 +37,7 @@ function sliceShellFn(src: string, name: string): string | null {
 
 // Required functions + the helpers this round added (optional, so the same
 // harness also runs against the pre-fix update.sh for the red-before check).
-const REQUIRED = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file',
+const REQUIRED = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'refresh_one_seed_file',
   'refresh_untouched_seeds', 'run_seed_refresh', 'register_seeded_schedules']
 const OPTIONAL = ['sched_pre_verify_once', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
 const UPDATE_FUNCS = [

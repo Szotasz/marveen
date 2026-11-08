@@ -1334,6 +1334,51 @@ render_seed_file() {
   render_seed_stream "$2" "$1" <"$1"
 }
 
+# PERSONAESC1107 seed A: the English version of a shipped seed file (scripts/lib/seed-lang.sh seed_en_rel: i18n/en/<rel>),
+# absolute, when this tree ships one as a regular file; empty otherwise, and always empty without the helper (this
+# script run against a tree from before seed A). $1 = repo-relative path.
+seed_en_file() {
+  command -v seed_en_rel >/dev/null 2>&1 || return 0
+  _se_rel="$(seed_en_rel "$1")"
+  if [ -n "$_se_rel" ] && [ -f "$INSTALL_DIR/$_se_rel" ] && [ ! -L "$INSTALL_DIR/$_se_rel" ]; then
+    printf '%s' "$INSTALL_DIR/$_se_rel"
+  fi
+  return 0
+}
+
+# True (0) iff $1 (an installed file) is untouched as EITHER language's shipped version: a historical version of $2 or
+# of its English version, rendered by mode $3. A language switch is a refresh of an untouched copy, nothing more.
+seed_copy_is_untouched_any() {
+  seed_copy_is_untouched "$1" "$2" "$3" && return 0
+  command -v seed_en_rel >/dev/null 2>&1 || return 1
+  _su_en="$(seed_en_rel "$2")"
+  [ -n "$_su_en" ] || return 1
+  seed_copy_is_untouched "$1" "$_su_en" "$3"
+}
+
+# The language ONE seeded dir is refreshed in (EGM design review M4: never half a dir). $1 = repo-relative dir, $2 = the
+# installed dir, $3 = mode. The install's language (SEED_LANG) when EVERY installed file that has an English version is
+# untouched in either language; otherwise the dir keeps the language it is in (en when any such file is an English
+# version), so a locally edited file never leaves its dir mixed. hu without the helper.
+seed_refresh_dir_lang() {
+  command -v seed_en_rel >/dev/null 2>&1 || { printf 'hu'; return 0; }
+  _dl_en_dir="$INSTALL_DIR/$(seed_en_rel "$1/x.md")"; _dl_en_dir="${_dl_en_dir%/x.md}"
+  _dl_all=1; _dl_cur=hu
+  if [ -d "$_dl_en_dir" ]; then
+    _dl_files="$(cd "$_dl_en_dir" && find . -type f -name '*.md' 2>/dev/null)"
+    while IFS= read -r _dl_rel; do
+      [ -n "$_dl_rel" ] || continue
+      _dl_rel="${_dl_rel#./}"
+      [ -f "$2/$_dl_rel" ] || continue
+      seed_copy_is_untouched_any "$2/$_dl_rel" "$1/$_dl_rel" "$3" || _dl_all=0
+      seed_copy_is_untouched "$2/$_dl_rel" "$(seed_en_rel "$1/$_dl_rel")" "$3" && _dl_cur=en
+    done <<EOF_DL
+$_dl_files
+EOF_DL
+  fi
+  if [ "$_dl_all" = 1 ]; then printf '%s' "${SEED_LANG:-hu}"; else printf '%s' "$_dl_cur"; fi
+}
+
 # Scheduled-task registry: take the registry verdict of the task dir being
 # refreshed, ONCE per dir, right before its first file is rewritten or added
 # (sched_pre_ok: "" = not asked yet, 1 = trusted, 0 = not trusted, u = unknown /
@@ -1351,6 +1396,13 @@ sched_pre_verify_once() {
 # $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
 refresh_one_seed_file() {
   f="$1"; installed="$2"; rel="$3"; mode="$4"
+  # seed A (EGM design review M2): the directory's language (seed_dir_lang, set per dir by refresh_untouched_seeds)
+  # picks the source ONCE, here, so the comparison below, the history check and the write all use the same version;
+  # otherwise an English copy would never equal the Hungarian `want` and every update would rewrite it.
+  if [ "${seed_dir_lang:-hu}" = en ]; then
+    _rf_en="$(seed_en_file "$rel")"
+    [ -n "$_rf_en" ] && f="$_rf_en"
+  fi
   # Already identical to what we would write -> not an update. Without this
   # the run is not idempotent: it would rewrite the same bytes and report a
   # refresh on every single update, which is exactly the kind of constant
@@ -1358,7 +1410,7 @@ refresh_one_seed_file() {
   want="$(render_seed_file "$f" "$mode" | shasum -a 256 | awk '{print $1}')"
   have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
   [ "$want" = "$have" ] && return 0
-  if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+  if seed_copy_is_untouched_any "$installed" "$rel" "$mode"; then
     sched_pre_verify_once
     if [ "$mode" = "verbatim" ]; then
       cp "$f" "$installed"
@@ -1394,6 +1446,9 @@ refresh_untouched_seeds() {
     case "$target_root" in */scheduled-tasks) sched_task=1 ;; esac
     sched_pre_ok=""
     sched_dir_refreshed=0
+    # seed A: this dir's language, decided once for the whole dir (seed_refresh_dir_lang); refresh_one_seed_file and
+    # the two branches below read the matching version of each file.
+    seed_dir_lang="$(seed_refresh_dir_lang "$src_rel/$name" "$target_root/$name" "$mode")"
     for f in "$d"*; do
       [ -f "$f" ] || continue
       base="$(basename "$f")"
@@ -1409,7 +1464,9 @@ refresh_untouched_seeds() {
     # operator's, so its directory gets nothing added.
     skill_current=0
     if [ -f "${d}SKILL.md" ] && [ -f "$target_root/$name/SKILL.md" ]; then
-      want="$(render_seed_file "${d}SKILL.md" "$mode" | shasum -a 256 | awk '{print $1}')"
+      _sc_src="${d}SKILL.md"
+      if [ "$seed_dir_lang" = en ]; then _sc_en="$(seed_en_file "$src_rel/$name/SKILL.md")"; [ -n "$_sc_en" ] && _sc_src="$_sc_en"; fi
+      want="$(render_seed_file "$_sc_src" "$mode" | shasum -a 256 | awk '{print $1}')"
       have="$(shasum -a 256 <"$target_root/$name/SKILL.md" | awk '{print $1}')"
       [ "$want" = "$have" ] && skill_current=1
     fi
@@ -1429,6 +1486,7 @@ refresh_untouched_seeds() {
       elif [ "$skill_current" = "1" ]; then
         sched_pre_verify_once
         mkdir -p "$(dirname "$installed")"
+        if [ "$seed_dir_lang" = en ]; then _am_en="$(seed_en_file "$src_rel/$name/$rel")"; [ -n "$_am_en" ] && f="$_am_en"; fi
         if [ "$mode" = "verbatim" ]; then
           cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
         else
@@ -1562,7 +1620,13 @@ sched_task_all_shipped() {
     [ ! -L "$_sa_seed" ] && [ -f "$_sa_seed" ] || return 1
     _sa_want="$(render_seed_file "$_sa_seed" "$_sa_mode" | shasum -a 256 | awk '{print $1}')"
     _sa_have="$(shasum -a 256 <"$_sa_entry" 2>/dev/null | awk '{print $1}')"
-    [ -n "$_sa_have" ] && [ "$_sa_want" = "$_sa_have" ] || return 1
+    [ -n "$_sa_have" ] || return 1
+    if [ "$_sa_want" != "$_sa_have" ]; then
+      # seed A (EGM review M1): the shipped English version of the same file is shipped content too.
+      _sa_en="$(seed_en_file "${_sa_src#"$INSTALL_DIR"/}/$_sa_rel")"
+      [ -n "$_sa_en" ] || return 1
+      [ "$(render_seed_file "$_sa_en" "$_sa_mode" | shasum -a 256 | awk '{print $1}')" = "$_sa_have" ] || return 1
+    fi
   done <<EOF_SA
 $_sa_list
 EOF_SA
@@ -1589,6 +1653,15 @@ register_refreshed_schedule() {
   fi
   return 0
 }
+
+# PERSONAESC1107 seed A: the seeds' language, read only (scripts/lib/seed-lang.sh -> persona-template.sh agent_text_lang;
+# update.sh never decides it). Every seeding and refresh below reads i18n/en/<rel> for <rel> on en when it exists.
+# Without the helper (a tree from before seed A): Hungarian, as before.
+SEED_LANG=hu
+if [ -f "$INSTALL_DIR/scripts/lib/seed-lang.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/seed-lang.sh"
+  SEED_LANG="$(seed_lang "$INSTALL_DIR")"
+fi
 
 run_seed_refresh
 
@@ -1830,7 +1903,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     mkdir -p "$target"
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
+      seed_src="$f"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$(basename "$f")" "${SEED_LANG:-hu}")"
+      cp "$seed_src" "$target/$(basename "$f")"
     done
     # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
     # verbatim and with their mode bits; its SKILL.md points into them.
@@ -1841,7 +1916,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
       case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
       mkdir -p "$target/$(dirname "$rel")"
-      cp -p "$skill_dir$rel" "$target/$rel"
+      seed_src="$skill_dir$rel"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$rel" "${SEED_LANG:-hu}")"
+      cp -p "$seed_src" "$target/$rel"
     done
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
@@ -1898,12 +1975,14 @@ if [ -d "$SEED_SCHED_DIR" ]; then
           # literal placeholder in its URLs. Same placeholder set on both paths,
           # or a template silently means different things depending on which
           # script created the copy.
+          seed_src="$f"
+          command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
           sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
               -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
               -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
               -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
               -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-              "$f" > "$target/$sub$(basename "$f")"
+              "$seed_src" > "$target/$sub$(basename "$f")"
         done
       done
       SCHED_REGISTER_NAMES="${SCHED_REGISTER_NAMES:-} $task_name"

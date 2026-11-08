@@ -1391,6 +1391,14 @@ if [ -d "$INSTALL_DIR/skills/skill-factory" ]; then
   echo -e "  ${GREEN}✓${NC} $(_t macos.skill_factory_installed)"
 fi
 
+# PERSONAESC1107 seed A: the seeders' language (scripts/lib/seed-lang.sh, read only: the persona render above decided it).
+# On en a seeded Markdown file comes from i18n/en/<its repo path> when that exists. Without the lib, Hungarian as before.
+SEED_LANG=hu
+if [ -f "$INSTALL_DIR/scripts/lib/seed-lang.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/seed-lang.sh"
+  SEED_LANG="$(seed_lang "$INSTALL_DIR")"
+fi
+
 # Seed skills: fleet-level skills from seed-skills/ into ~/.claude/skills/
 # Idempotent: skip directories that already exist (never overwrite user customizations)
 SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"
@@ -1408,7 +1416,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     mkdir -p "$target"
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
+      seed_src="$f"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$(basename "$f")" "${SEED_LANG:-hu}")"
+      cp "$seed_src" "$target/$(basename "$f")"
     done
     # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
     # verbatim and with their mode bits; its SKILL.md points into them.
@@ -1419,7 +1429,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
       case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
       mkdir -p "$target/$(dirname "$rel")"
-      cp -p "$skill_dir$rel" "$target/$rel"
+      seed_src="$skill_dir$rel"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$rel" "${SEED_LANG:-hu}")"
+      cp -p "$seed_src" "$target/$rel"
     done
     SEED_NEW=$((SEED_NEW + 1))
   done
@@ -1453,12 +1465,14 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       mkdir -p "$target/$sub"
       for f in "$tpl$sub"*; do
         [ -f "$f" ] || continue
+        seed_src="$f"
+        command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
         sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
             -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$f" > "$target/$sub$(basename "$f")"
+            "$seed_src" > "$target/$sub$(basename "$f")"
       done
     done
     INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"

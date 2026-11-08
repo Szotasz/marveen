@@ -79,6 +79,11 @@ if [ ! -f SOUL.md ] && [ -f templates/SOUL.md.template ]; then
   say "SOUL.md written"
 fi
 
+# PERSONAESC1107 seed A: the seeds' language, read only (the persona render above decided it). On en a seeded Markdown file
+# comes from i18n/en/<its repo path> when that exists. An image without the helper seeds Hungarian, as before.
+SEED_LANG=hu
+if [ -f scripts/lib/seed-lang.sh ]; then . scripts/lib/seed-lang.sh; SEED_LANG="$(seed_lang "$INSTALL_DIR")"; fi
+
 # ~/.claude: the dirs, the first-run answers claude would otherwise stop on (IL:1167-1218).
 mkdir -p "$HOME/.claude/channels" "$HOME/.claude/skills" "$HOME/.claude/scheduled-tasks"
 chmod 0700 "$HOME/.claude" "$HOME/.claude/channels" "$HOME/.claude/skills" "$HOME/.claude/scheduled-tasks"
@@ -96,8 +101,10 @@ copy_task() { # template dir, task name
     mkdir -p "$target/$sub"
     for f in "$tpl$sub"*; do
       [ -f "$f" ] || continue
+      local seed_src="$f"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "$f" "$SEED_LANG")"
       sed -e "s/{{MAIN_AGENT_ID}}/$A/g" -e "s/{{BOT_NAME}}/$B/g" -e "s/{{OWNER_NAME}}/$O/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" -e "s/{{WEB_PORT}}/$WEB_PORT/g" "$f" > "$target/$sub$(basename "$f")"
+          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" -e "s/{{WEB_PORT}}/$WEB_PORT/g" "$seed_src" > "$target/$sub$(basename "$f")"
     done
   done
   REGISTER="$REGISTER $2"
@@ -127,7 +134,17 @@ done
 # Skills: the whole tree of each (the installer copies sub-dirs through git ls-files; the image has no .git).
 for src in skills/skill-factory seed-skills/*/; do
   [ -d "$src" ] || continue; n="$(basename "$src")"
-  [ -e "$HOME/.claude/skills/$n" ] || { cp -R "$src" "$HOME/.claude/skills/$n" && say "skill seeded: $n"; }
+  [ -e "$HOME/.claude/skills/$n" ] && continue
+  cp -R "$src" "$HOME/.claude/skills/$n" || continue
+  # seed A: on en, the English version of each of its Markdown files over the copied one (the image has no .git, so the
+  # whole i18n/en/<skill> tree is the list).
+  if [ "$SEED_LANG" = en ] && [ -d "i18n/en/${src%/}" ]; then
+    (cd "i18n/en/${src%/}" && find . -type f -name '*.md') | while IFS= read -r rel; do
+      rel="${rel#./}"; mkdir -p "$HOME/.claude/skills/$n/$(dirname "$rel")"
+      cp "i18n/en/${src%/}/$rel" "$HOME/.claude/skills/$n/$rel"
+    done
+  fi
+  say "skill seeded: $n"
 done
 
 # The hooks, as update.sh installs them (idempotent).

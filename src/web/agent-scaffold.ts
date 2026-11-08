@@ -19,7 +19,8 @@ import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-s
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
-import { agentTextLang } from './agent-text-lang.js'
+import { agentTextLang, type AgentTextLang } from './agent-text-lang.js'
+import { seedSourceFor } from './seed-lang.js'
 import {
   type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
   buildBackgroundCheckpointBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
@@ -3267,7 +3268,12 @@ function copyTaskConfigWithAgentRewrite(srcPath: string, destPath: string): void
   }
 }
 
-export function ensureDefaultScheduledTasks(): void {
+/**
+ * Seeds the repo's top-level scheduled tasks into ~/.claude. `lang` (PERSONAESC1107 seed A): the install's agent-text
+ * language, read only; on en a Markdown file comes from i18n/en/<its repo path> when that exists (src/web/seed-lang.ts,
+ * the same rule as the shell seeders). A parameter so a test does not depend on the checkout's .env and CLAUDE.md.
+ */
+export function ensureDefaultScheduledTasks(lang: AgentTextLang = agentTextLang()): void {
   const repoTasks = join(PROJECT_ROOT, 'scheduled-tasks')
   if (!existsSync(repoTasks)) return
   const destRoot = join(homedir(), '.claude', 'scheduled-tasks')
@@ -3298,10 +3304,11 @@ export function ensureDefaultScheduledTasks(): void {
         // Substitute the identity placeholders (same set the install scripts
         // sed) so a template's SKILL.md never seeds a foreign absolute path or
         // name into the user's task. Binary/unreadable -> fall back to a copy.
+        const readFrom = seedSourceFor(PROJECT_ROOT, join('scheduled-tasks', taskName, file), lang)
         try {
-          writeFileSync(destFile, resolveTemplatePlaceholders(readFileSync(srcFile, 'utf-8')))
+          writeFileSync(destFile, resolveTemplatePlaceholders(readFileSync(readFrom, 'utf-8')))
         } catch {
-          copyFileSync(srcFile, destFile)
+          copyFileSync(readFrom, destFile)
         }
       }
     }
