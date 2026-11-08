@@ -37,7 +37,8 @@ Reject: you can also do it here: NO <id>
 ```
 
 A short prefix of the `id` is enough for the reply if it is unambiguous, but the PATCH needs the FULL id.
-The server also sends the owner a `[JÓVÁHAGYÁS KELL]` message pointing to the same place;
+The server also sends the owner an `[APPROVAL NEEDED]` message (`[JÓVÁHAGYÁS KELL]` unless the
+install sets `AGENT_TEXT_LANG=en`) pointing to the same place;
 your message must not contradict it.
 
 ### 2. Wait for the reply and check the sender

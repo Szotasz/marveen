@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
@@ -17,6 +17,8 @@ import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift }
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
 import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
+import { OWNER_TEXT, formatExpiry, type ApprovalLang } from '../approval-texts.js'
+import { approvalTextLang } from '../agent-text-lang.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
@@ -153,15 +155,14 @@ export function approvalsPageUrl(publicUrl: string = DASHBOARD_PUBLIC_URL, port:
 // Owner-facing text (Slack DM or the channel provider). Pure + exported for
 // tests. Plain text (no markdown escaping concerns), proper accents: this is
 // outgoing copy.
-export function buildOwnerApprovalText(approval: Approval): string {
-  const expires = approval.timeout_at
-    ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
-    : 'nincs'
+// APPROVALTAGEN1108: in [lang] (approval-texts.ts), the install's explicit AGENT_TEXT_LANG by default.
+export function buildOwnerApprovalText(approval: Approval, lang: ApprovalLang = approvalTextLang()): string {
+  const t = OWNER_TEXT[lang]
   return [
-    `[JÓVÁHAGYÁS KELL] ${approval.agent_id} | ${approval.category}`,
+    `${t.requestTag} ${approval.agent_id} | ${approval.category}`,
     approval.action_description,
-    `Lejárat: ${expires}`,
-    `Döntés: Dashboard -> Jóváhagyások (id: ${approval.id})`,
+    `${t.expires}: ${formatExpiry(approval.timeout_at, lang)}`,
+    t.decideOnDashboard(approval.id),
     approvalsPageUrl(),
   ].join('\n')
 }
@@ -171,13 +172,14 @@ export function buildOwnerApprovalText(approval: Approval): string {
 // question -- the owner answering "mehet" a second time to a done deal is
 // exactly the noise this replaces -- but it keeps the action visible in the
 // owner's chat.
-export function buildOwnerChatApprovedText(approval: Approval, ownerMessageId: number | string): string {
+export function buildOwnerChatApprovedText(approval: Approval, ownerMessageId: number | string, lang: ApprovalLang = approvalTextLang()): string {
+  const t = OWNER_TEXT[lang]
   return [
-    `[JÓVÁHAGYVA A CHATBEN] ${approval.agent_id} | ${approval.category}`,
+    `${t.chatApprovedTag} ${approval.agent_id} | ${approval.category}`,
     approval.action_description,
-    `Jóváhagyás: a chat-üzeneted (üzenet-azonosító: ${ownerMessageId})`,
-    `Nincs további teendőd, ez csak tájékoztatás.`,
-    `Napló: Dashboard -> Jóváhagyások (id: ${approval.id})`,
+    t.chatApprovedBy(String(ownerMessageId)),
+    t.nothingToDo,
+    t.logOnDashboard(approval.id),
   ].join('\n')
 }
 
@@ -227,22 +229,27 @@ export const reactionDeps: RouteDeps = {
   verdict: (channel, owner) => ownerDmVerdict(channel, owner),
   drift: (current) => noticeTargetDrift(current),
   chunk: SLACK_CHUNK,
+  lang: () => approvalTextLang(),
 }
 
-function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false): void {
+function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false, filedLang?: ApprovalLang): void {
   const informative = chatApprovedMessageId != null
+  // APPROVALTAGEN1108: the language is read ONCE per request: the text, the Slack DM, its expiry and the language
+  // stored with the post (the words its replies are checked with) are the same one. A server-filed request passes the
+  // language its description was worded in (Samu 73350), so the description and the post never differ.
+  const lang = filedLang ?? (reactionDeps.lang ?? approvalTextLang)()
   let text = informative
-    ? buildOwnerChatApprovedText(approval, chatApprovedMessageId)
-    : buildOwnerApprovalText(approval)
+    ? buildOwnerChatApprovedText(approval, chatApprovedMessageId, lang)
+    : buildOwnerApprovalText(approval, lang)
   void (async () => {
     // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
     // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
     // APPROVALSLACK1030 B: with APPROVAL_SLACK_REPLIES on, the same one-message path, and the owner's typed reply decides.
     if (!informative && (reactionsOn(reactionDeps.setting) || repliesOn(reactionDeps.setting))) {
-      const expires = approval.timeout_at ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }) : 'nincs'
-      const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl())
+      const expires = formatExpiry(approval.timeout_at, lang)
+      const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl(), lang)
       if (route.ok && await postReactionPrompt(approval, route)) return
-      text += '\n' + dashboardOnlyLine(route.ok ? 'slack_post_failed' : route.reason)
+      text += '\n' + dashboardOnlyLine(route.ok ? 'slack_post_failed' : route.reason, lang)
     }
     // APPROVALSLACK1030: an owner who moved to Slack (NOTIFY_SLACK_TARGET set) while the channel provider stays
     // Telegram got the request on Telegram (measured 2026-10-30: both of the day's requests logged this function's
@@ -365,21 +372,24 @@ function notifyMainAgent(approval: Approval): void {
 export function fileServerApproval(params: {
   agent_id: string
   category: string
-  action_description: string
+  /** APPROVALTAGEN1108 (Samu 73350): a function words it in the language the owner's post goes out in, read once here. */
+  action_description: string | ((lang: ApprovalLang) => string)
   action_payload?: string | null
   content_hash: string
 }): Approval {
+  const lang = (reactionDeps.lang ?? approvalTextLang)()
+  const description = typeof params.action_description === 'function' ? params.action_description(lang) : params.action_description
   const approval = createApproval({
     id: randomUUID(),
     agent_id: params.agent_id,
     category: params.category,
-    action_description: params.action_description,
+    action_description: description,
     action_payload: params.action_payload ?? null,
     timeout_at: computeTimeoutAt(params.category, undefined),
     content_hash: params.content_hash,
   })
   // serverFiled: the description is the server's own words, so the reaction path may show it (APPROVALSLACK1030 (2)).
-  notifyOwner(approval, null, true)
+  notifyOwner(approval, null, true, lang)
   notifyMainAgent(approval)
   logger.info({ id: approval.id, agent_id: approval.agent_id, category: approval.category }, 'Approval request filed by the server')
   return approval

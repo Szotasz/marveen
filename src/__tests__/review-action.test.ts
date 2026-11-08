@@ -27,7 +27,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../agent.js', () => ({ runAgent: vi.fn() }))
 
 const { tryHandleReviewAction, parseVerdict, _clearReviewMemoryForTest } = await import('../web/routes/review-action.js')
-const { tryHandleApprovals } = await import('../web/routes/approvals.js')
+const { tryHandleApprovals, reactionDeps } = await import('../web/routes/approvals.js')
 const { runAgent } = await import('../agent.js')
 const { initDatabase, getDb, listApprovals, resolveApproval } = await import('../db.js')
 type Auth = import('../web/routes/types.js').RouteContext['auth']
@@ -272,6 +272,19 @@ describe('review-action', () => {
     const row2 = listApprovals({ category: 'second_review' }).find((a) => a.id === r2.body.approval_id)
     expect(row2!.action_description).toContain(`(${JSON.stringify({ command: cmd }).length} karakter;`)
     expect(row2!.action_description).not.toContain(cmd)
+  })
+
+  it('V24b APPROVALTAGEN1108: the description is in the language the owner post goes out in (read once by the filer)', async () => {
+    const realLang = reactionDeps.lang
+    try {
+      reactionDeps.lang = () => 'en'
+      say(ASK)
+      const r = await call(BODY)
+      const row = listApprovals({ category: 'second_review' }).find((a) => a.id === r.body.approval_id)
+      expect(row!.action_description).toBe(`Second reviewer: probe-agent's Bash call is waiting for approval (${r.body.reason})\n${JSON.stringify({ command: 'git push origin main' })}`)
+    } finally {
+      reactionDeps.lang = realLang
+    }
   })
 
   it('V25 used approvals do not hide a valid one', async () => {

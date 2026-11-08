@@ -118,16 +118,25 @@ export function verifiedEnvelope(r: { category: string; action_payload: string |
   return env && contentAnchor(env) === r.content_hash ? env : null
 }
 
+// APPROVALTAGEN1108: the field labels in the post's language (the owner's copy round has the English list).
+const ENVELOPE_LABELS = {
+  hu: { to: 'Címzett', cc: 'Másolat', bcc: 'Titkos másolat', account: 'Fiók', replyTo: 'Válasz erre', render: 'Megjelenítés',
+    format: 'Formátum', attachment: 'Csatolmány', text: 'Szöveg', anchor: 'Horgony (sha256)', none: '(nincs)' },
+  en: { to: 'To', cc: 'Cc', bcc: 'Bcc', account: 'Account', replyTo: 'Reply to', render: 'Rendering',
+    format: 'Format', attachment: 'Attachment', text: 'Text', anchor: 'Anchor (sha256)', none: '(none)' },
+}
+
 /** The letter as the owner reads it before deciding: every field the anchor covers, the full text. */
-export function envelopeText(env: MailEnvelope, contentHash: string): string {
-  const lines = [`Címzett: ${env.to.join(', ') || '(nincs)'}`, `Másolat: ${env.cc.join(', ') || '-'}`]
-  if (truthy(env.bcc)) lines.push(`Titkos másolat: ${env.bcc!.join(', ')}`)
-  if (truthy(env.account)) lines.push(`Fiók: ${env.account}`)
-  if (truthy(env.reply_to)) lines.push(`Válasz erre: ${env.reply_to!.join(' / ')}`)
-  if (truthy(env.render)) lines.push(`Megjelenítés: ${env.render}`)
-  if (truthy(env.body_format)) lines.push(`Formátum: ${env.body_format}`)
+export function envelopeText(env: MailEnvelope, contentHash: string, lang: 'hu' | 'en' = 'hu'): string {
+  const l = ENVELOPE_LABELS[lang]
+  const lines = [`${l.to}: ${env.to.join(', ') || l.none}`, `${l.cc}: ${env.cc.join(', ') || '-'}`]
+  if (truthy(env.bcc)) lines.push(`${l.bcc}: ${env.bcc!.join(', ')}`)
+  if (truthy(env.account)) lines.push(`${l.account}: ${env.account}`)
+  if (truthy(env.reply_to)) lines.push(`${l.replyTo}: ${env.reply_to!.join(' / ')}`)
+  if (truthy(env.render)) lines.push(`${l.render}: ${env.render}`)
+  if (truthy(env.body_format)) lines.push(`${l.format}: ${env.body_format}`)
   if (truthy(env.html_sha256)) lines.push(`HTML sha256: ${env.html_sha256}`)
-  if (truthy(env.attachments)) lines.push(`Csatolmány: ${env.attachments!.map((a) => `${a.name} (sha256 ${a.sha256})`).join(', ')}`)
-  lines.push('Szöveg:', env.text, `Horgony (sha256): ${contentHash}`)
+  if (truthy(env.attachments)) lines.push(`${l.attachment}: ${env.attachments!.map((a) => `${a.name} (sha256 ${a.sha256})`).join(', ')}`)
+  lines.push(`${l.text}:`, env.text, `${l.anchor}: ${contentHash}`)
   return lines.join('\n')
 }

@@ -16,6 +16,7 @@ import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
 import { resolveDateFilter } from '../../date-range.js'
 import type { RouteContext } from './types.js'
+import type { ApprovalLang } from '../../approval-slack.js'
 import { findDuplicateMemories, DEDUP_RECENT_LIMIT, type DedupCandidate } from '../memory-dedup.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -164,8 +165,17 @@ function openDeleteApproval(anchor: string): Approval | undefined {
 }
 
 // The owner reads this, so the server words it from the row, not the caller.
-function memoryDeleteDescription(row: MemoryRow, caller: string | undefined): string {
+// APPROVALTAGEN1108 (Samu 73350): in the language the owner's post is sent in (fileServerApproval reads it once).
+export function memoryDeleteDescription(row: MemoryRow, caller: string | undefined, lang: ApprovalLang): string {
   const snippet = row.content.replace(/\s+/g, ' ').trim().slice(0, 160)
+  const more = row.content.length > 160 ? '...' : ''
+  if (lang === 'en') {
+    return [
+      `Permanent deletion of memory #${row.id} (owner: ${row.agent_id ?? 'unknown'}, tier: ${row.category ?? '-'}, ${row.content.length} characters).`,
+      `Starts with: "${snippet}${more}"`,
+      `Requested by: ${caller || 'unknown caller'}. The deletion takes its versions too and cannot be undone.`,
+    ].join(' ')
+  }
   return [
     `Emlék végleges törlése: #${row.id} (gazdája: ${row.agent_id ?? 'ismeretlen'}, tier: ${row.category ?? '-'}, ${row.content.length} karakter).`,
     `Kezdete: "${snippet}${row.content.length > 160 ? '...' : ''}"`,
@@ -920,7 +930,7 @@ Respond ONLY with JSON, nothing else:
         const approval = openDeleteApproval(anchor) ?? fileServerApproval({
           agent_id: ctx.auth?.agent || 'unknown',
           category: 'data_delete',
-          action_description: memoryDeleteDescription(before, ctx.auth?.agent),
+          action_description: (lang) => memoryDeleteDescription(before, ctx.auth?.agent, lang),
           action_payload: JSON.stringify({ memory_id: id, version: memoryVersion(before.content) }),
           content_hash: anchor,
         })
