@@ -1219,6 +1219,7 @@ export function channelDisplayName(provider: ChannelProviderType): string {
     case 'googlechat': return 'Google Chat'
     case 'teams': return 'Teams'
     case 'telegram': return 'Telegram'
+    case 'gromzo': return 'Gromzo'
   }
 }
 
@@ -1315,6 +1316,8 @@ export function channelDeliveryName(provider: ChannelProviderType): string {
       return "Teamsen";
     case "telegram":
       return "Telegramon";
+    case "gromzo":
+      return "Gromzón";
     // No default: the switch is exhaustive over ChannelProviderType, so a new
     // provider is a compile error here instead of silently reading "Telegramon".
   }

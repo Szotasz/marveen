@@ -74,6 +74,18 @@ main_gromzo_token_file() {
   printf '%s/%s.token' "$dir" "$1"
 }
 
+# GROMZONOPROVIDER1108: main_gromzo_primary_ready <main_agent_id>: the Gromzo plugin may be the main agent's
+# PRIMARY channel (CHANNEL_PROVIDER=gromzo) only when mxd's agent socket is usable AND the main agent is enrolled: its
+# token file exists, readable and not empty. mxd writes a token only for an agent it runs (after the owner's consent);
+# a held or not yet approved agent has none. NOT the .env CHANNEL_PLUGINS_EXTRA flag: that is no consent signal.
+main_gromzo_primary_ready() {
+  local slug tf
+  main_gromzo_usable "$1" || return 1
+  slug="$(main_gromzo_slug "$1")" || return 1
+  tf="$(main_gromzo_token_file "$slug")"
+  [ -n "$tf" ] && [ -r "$tf" ] && [ -s "$tf" ]
+}
+
 # main_gromzo_env <main_agent_id> [id ...]: the launch-command prefix when the (filtered) ids carry the
 # gromzo plugin, else nothing. Ends in "&& " like the other prefixes of the launch command.
 # MXDAGENTSOCKID1106: with the token path (MXD_AGENT_TOKEN_FILE) when mxd has one, so a protected agent binds.

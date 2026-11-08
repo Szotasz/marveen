@@ -114,6 +114,7 @@ case "$CHANNEL_PROVIDER" in
   whatsapp) PRIMARY_PLUGIN_ID="whatsapp@marveen-marketplace" ;;
   teams)    PRIMARY_PLUGIN_ID="teams@marveen-marketplace" ;;
   discord)  PRIMARY_PLUGIN_ID="discord@claude-plugins-official" ;;
+  gromzo)   PRIMARY_PLUGIN_ID="gromzo-channel@gromzo-local" ;;
   *)        PRIMARY_PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
 # Extra co-listen plugins, derived EXACTLY as channels.sh does (see the
@@ -142,11 +143,31 @@ else
   CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
   CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
 fi
+# GROMZONOPROVIDER1108: on a gromzo install the Gromzo plugin is the PRIMARY (never also an extra), exactly as in
+# channels.sh: with its exports when the main agent can take it, else a gromzo-pending respawn without it.
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+  if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$_GZ_MAIN_ID"; then
+    GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" "$PRIMARY_PLUGIN_ID")"
+  else
+    GROMZO_ENV=""
+    PRIMARY_PLUGIN_ID=""
+  fi
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+if [ -n "$PRIMARY_PLUGIN_ID" ]; then
+  CHANNELS_ARG="--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
+elif [ -n "$EXTRA_CHANNELS" ]; then
+  CHANNELS_ARG="--channels${EXTRA_CHANNELS}"
+else
+  CHANNELS_ARG=""
+fi
 # SLACKDMVESZT1006: same --settings file as channels.sh, or the respawn comes
 # back with the extras disabled by the project scope.
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
@@ -318,6 +339,7 @@ case "$CHANNEL_PROVIDER" in
   whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
   teams)    STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  gromzo)   STATE_ENV_VAR="GROMZO_STATE_DIR" ;;  # no state dir: STATE_DIR_ENV stays empty (no .env)
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
 MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
@@ -337,7 +359,7 @@ PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-aut
 # MAINAUTH1107: the post-file right AFTER CFG_ENV (api: the token unset; subscription: the key unset), so neither the
 # config branch nor the tmux global env can add the other credential back.
 PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""
