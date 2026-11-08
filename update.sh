@@ -1221,6 +1221,16 @@ scrub_rc_secrets() {
   return 0
 }
 
+# GROMZONOPROVIDER1108: the ONE automatic provider migration: a Bridge (Gromzo) install that was written
+# as telegram with no bot token, and whose mxd is linked, becomes CHANNEL_PROVIDER=gromzo (PREV kept, reversible); any
+# other shape is untouched. The script says what it did in one line; it never fails the update.
+migrate_gromzo_provider() {
+  [ -f "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  node "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" "$INSTALL_DIR" 2>/dev/null || true
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
@@ -1231,6 +1241,7 @@ run_unit_maintenance() {
   strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
   scrub_rc_secrets
+  migrate_gromzo_provider
   return 0
 }
 run_unit_maintenance

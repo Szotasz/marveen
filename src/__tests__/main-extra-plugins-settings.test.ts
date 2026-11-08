@@ -240,7 +240,10 @@ describe('every main-session launcher carries the flag', () => {
     const sh = readFileSync(join(ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')
     // GROMZOMAINAGENT1106: with the co-listen extras too, as channels.sh and the watchdog pass them.
     expect(sh).toContain('SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"')
-    expect(sh).toContain('--dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q${EXTRA_Q}"')
+    // GROMZONOPROVIDER1108: the channels argument is built once (a gromzo-pending respawn has no primary); for every
+    // other provider it is still the respawned primary plus the extras.
+    expect(sh).toContain('--dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"')
+    expect(sh).toContain('CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"')
   })
 })
 

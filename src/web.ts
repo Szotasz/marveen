@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -27,7 +27,7 @@ import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { createAgentMessage } from './db.js'
-import { setOwnerChatMissingSink } from './notify.js'
+import { setOwnerChatMissingSink, setOwnerRelaySink } from './notify.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startScheduleRunner, startHeartbeatGapGuard } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
@@ -460,6 +460,24 @@ export function startWebServer(port = 3420): http.Server {
   // Card 3ed09d25: an alert whose owner chat cannot be resolved reaches the main
   // agent's inbox (once an hour) instead of vanishing; the log line fires every time.
   if (!servicesOff) setOwnerChatMissingSink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
+  // GROMZONOPROVIDER1108: on a gromzo install every owner alert goes to the main agent, which relays it over Gromzo.
+  if (!servicesOff) setOwnerRelaySink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
+  // GROMZONOPROVIDER1108: update.sh's provider migration leaves a marker; the owner hears it once, through the main
+  // agent (the install now talks through Gromzo). The marker is renamed after the notice, so it is said once.
+  if (!servicesOff) {
+    const marker = join(STORE_DIR, 'gromzo-provider-migrated.json')
+    if (existsSync(marker)) {
+      try {
+        createAgentMessage('system', MAIN_AGENT_ID,
+          '[owner-notice] Tájékoztasd a tulajdonost a Gromzón, egy mondatban: a Marveen csatornája mostantól a Gromzo ' +
+          '(korábban egy Telegram-beállítás volt token nélkül, ezért a fő munkamenet újra és újra elindult). ' +
+          'Visszaállítás: CHANNEL_PROVIDER_PREV a telepítés beállításaiban.')
+        renameSync(marker, `${marker}.notified`)
+      } catch (err) {
+        logger.warn({ err }, 'gromzo provider migration notice could not be queued')
+      }
+    }
+  }
 
   const scheduleInterval = servicesOff ? undefined : startScheduleRunner()
   if (!servicesOff) logger.info('Schedule runner started (60s poll)')

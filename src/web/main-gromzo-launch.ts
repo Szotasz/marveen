@@ -2,6 +2,7 @@
 // (channel-monitor respawns, the isolated main config). scripts/main-gromzo-launch.sh is the shell twin
 // (channels.sh, channel-watchdog.sh, stuck-modal-guard.sh); a test runs both on the same inputs.
 // The rules and why: see the header of the shell twin.
+import { accessSync, constants, statSync } from 'node:fs'
 import { GROMZO_PLUGIN_ID, MXD_AGENT_SOCK_DEFAULT, gromzoTokenExport, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 
 export const MAIN_GROMZO_PLUGIN_ID = GROMZO_PLUGIN_ID
@@ -31,4 +32,22 @@ export function mainGromzoEnv(mainAgentId: string | undefined | null, ids: strin
   const slug = mainGromzoSlug(mainAgentId)
   // MXDAGENTSOCKID1106: the token path too, when mxd has a tokens dir (agent-extra-channels.ts gromzoTokenFile).
   return slug === null ? '' : `export MXD_AGENT="${slug}" && export MXD_SCOPE="both" && ${gromzoTokenExport(gromzoTokenFile(slug, sockPath))}`
+}
+
+/** GROMZONOPROVIDER1108: the twin of main-gromzo-launch.sh main_gromzo_primary_ready. The Gromzo plugin may be the
+ *  main agent's PRIMARY channel (CHANNEL_PROVIDER=gromzo) only when mxd's agent socket is usable AND the main agent is
+ *  enrolled: its token file exists, readable and not empty (mxd writes it only for an agent it runs, i.e. after the
+ *  owner's consent). Otherwise the main session is "gromzo pending": it runs without the Gromzo channel. */
+export function mainGromzoPrimaryReady(mainAgentId: string | undefined | null, sockPath: string = MXD_AGENT_SOCK_DEFAULT): boolean {
+  if (!mainGromzoUsable(mainAgentId, sockPath)) return false
+  const slug = mainGromzoSlug(mainAgentId)
+  if (!slug) return false
+  const tf = gromzoTokenFile(slug, sockPath)
+  if (!tf) return false
+  try {
+    accessSync(tf, constants.R_OK)
+    return statSync(tf).size > 0
+  } catch {
+    return false
+  }
 }

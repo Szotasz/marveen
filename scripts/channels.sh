@@ -133,6 +133,7 @@ resolve_plugin_ids() {
     whatsapp) PLUGIN_ID="whatsapp@marveen-marketplace";      PLUGIN_PANE_ID="plugin:whatsapp:marveen-marketplace" ;;
     teams)    PLUGIN_ID="teams@marveen-marketplace";         PLUGIN_PANE_ID="plugin:teams:marveen-marketplace" ;;
     discord)  PLUGIN_ID="discord@claude-plugins-official";   PLUGIN_PANE_ID="plugin:discord:discord" ;;
+    gromzo)   PLUGIN_ID="gromzo-channel@gromzo-local";       PLUGIN_PANE_ID="plugin:gromzo-channel:gromzo" ;;
     *)        PLUGIN_ID="telegram@claude-plugins-official";  PLUGIN_PANE_ID="plugin:telegram:telegram" ;;
   esac
 }
@@ -649,11 +650,39 @@ else
   CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
   CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
 fi
+# GROMZONOPROVIDER1108: CHANNEL_PROVIDER=gromzo makes the Gromzo plugin the PRIMARY channel (never also an extra).
+# It starts only when mxd's socket is usable AND the main agent is enrolled (main_gromzo_primary_ready); otherwise the
+# session is "gromzo pending": it starts WITHOUT the Gromzo channel (the dashboard still has its session, scheduled tasks
+# still run), the watchdog below does not count it against the never-started budget, and a 60 s poll restarts it once
+# the condition holds. One launch path: the same main_gromzo_env helper as the extras.
+GROMZO_PENDING=0
+GROMZO_LAST_POLL=0
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+  if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$MAIN_AGENT_ID"; then
+    GROMZO_ENV="$(main_gromzo_env "$MAIN_AGENT_ID" "$PLUGIN_ID")"
+  else
+    GROMZO_PENDING=1
+    GROMZO_ENV=""
+    PLUGIN_ID=""
+    echo "channels.sh: gromzo pending -- mxd's agent socket is not usable or the main agent is not enrolled yet; the session starts without the Gromzo channel and is restarted when it is ready" >&2
+  fi
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+# The --channels argument: the primary and the extras; a gromzo-pending session with no extra gets none at all.
+if [ -n "$PLUGIN_ID" ]; then
+  CHANNELS_ARG="--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+elif [ -n "$EXTRA_CHANNELS" ]; then
+  CHANNELS_ARG="--channels${EXTRA_CHANNELS}"
+else
+  CHANNELS_ARG=""
+fi
 # SLACKDMVESZT1006: enable the primary and the extras for THIS session only,
 # via a --settings file (see the helper's header for why not a settings layer).
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
@@ -1488,6 +1517,7 @@ case "$CHANNEL_PROVIDER" in
   whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
   teams)    STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  gromzo)   STATE_ENV_VAR="GROMZO_STATE_DIR" ;;
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
@@ -1527,6 +1557,8 @@ fi
 # strings. The slack plugin's cache dir is `slack-channel`.
 case "$CHANNEL_PROVIDER" in
   slack) PLUGIN_SEG="/slack-channel" ;;
+  # GROMZONOPROVIDER1108: the plugin cache dir is gromzo-channel; a left-over main Gromzo plugin goes like any other.
+  gromzo) PLUGIN_SEG="/gromzo-channel" ;;
   *)     PLUGIN_SEG="/${CHANNEL_PROVIDER}" ;;
 esac
 ORPHAN_PIDS2="$(/bin/ps axeww 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="$PLUGIN_SEG" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ (needle "[^ ]*" prov "([/@ ]|$)") && index($0, subdir) == 0 { print $1 }')"
@@ -1582,6 +1614,8 @@ fi
 # otherwise described the unexported state.
 export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"
 STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
+# gromzo has no channel state dir (no token, no access.json): nothing to export (GROMZONOPROVIDER1108).
+[ "$CHANNEL_PROVIDER" = "gromzo" ] && STATE_DIR_ENV=""
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not
@@ -1858,7 +1892,7 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
 env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1960,7 +1994,7 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.
@@ -2071,6 +2105,8 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 #     records whether the plugin actually came up -- a green "firing unlock"
 #     line alone said nothing about whether the fix landed.
 (
+  # GROMZONOPROVIDER1108: the Gromzo plugin runs on Node and is never in a "failed" /mcp row this unlock handles.
+  [ "$CHANNEL_PROVIDER" = "gromzo" ] && exit 0
   sleep 15
   CLAUDE_PID="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   # Check 1: bun grandchild of the marveen-channels claude
@@ -2367,6 +2403,21 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   _pane_pid_now="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [ -n "$_pane_pid_now" ] && _watchdog_claude_pid="$_pane_pid_now"
   unset _pane_pid_now
+  # GROMZONOPROVIDER1108: a gromzo-pending session is not a plugin that failed to start: no never-started budget,
+  # a readiness poll every 60 s, and one restart when the main agent can take its Gromzo channel.
+  if [ "$CHANNEL_PROVIDER" = "gromzo" ] && [ "$GROMZO_PENDING" = "1" ]; then
+    if [ "$((NOW - GROMZO_LAST_POLL))" -ge 60 ]; then
+      GROMZO_LAST_POLL=$NOW
+      if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$MAIN_AGENT_ID"; then
+        echo "channels.sh: gromzo ready -- restarting the session with the Gromzo channel" >&2
+        respawn_log "gromzo-ready: the main agent can take its Gromzo channel now -- restarting $SESSION with it"
+        RESTART_REQUESTED=1
+        EXIT_REASON="gromzo-ready"
+        break
+      fi
+    fi
+    continue
+  fi
   _plugin_alive=false
   _bot_hijacked=false
   if [ -f "$MAIN_BOT_PID_FILE" ]; then
@@ -2416,7 +2467,13 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   # failure the watchdog exists to catch, silently defeated. Single-agent
   # installs never saw this because there was only ever one plugin process to
   # find, and it happened to be the right one.
-  if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
+  if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+    # The Gromzo plugin: a Node child of THIS session's claude whose command names the gromzo-channel plugin root
+    # (no bot.pid, no Bun; GROMZO_ROOT_RE / SLUG_RX gromzo in the TS probes).
+    if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" -f '/gromzo-channel/' >/dev/null 2>&1; then
+      _plugin_alive=true
+    fi
+  elif [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
     if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" bun >/dev/null 2>&1; then
       _plugin_alive=true
     fi

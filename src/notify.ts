@@ -162,7 +162,7 @@ export interface AlertMeta {
 }
 
 type AlertRecipient = 'owner' | 'alert-chat'
-type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped'
+type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped' | 'relayed'
 
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
@@ -198,6 +198,34 @@ let ownerChatMissingSink: OwnerChatMissingSink | null = null
 let lastOwnerChatMissingSignalAt = 0
 const OWNER_CHAT_MISSING_SIGNAL_MS = 60 * 60 * 1000
 
+// GROMZONOPROVIDER1108: the owner relay of a gromzo install, registered by the dashboard at start (web.ts), like the
+// owner-chat-missing sink above. Every alert goes through; dedup of repeated alerts is the callers' (as for a chat).
+let ownerRelaySink: OwnerChatMissingSink | null = null
+
+export function setOwnerRelaySink(sink: OwnerChatMissingSink | null): void {
+  ownerRelaySink = sink
+}
+
+function relayOwnerViaMainAgent(text: string, meta?: AlertMeta): boolean {
+  if (!ownerRelaySink) {
+    logAlertDelivery(meta, 'owner', 'skipped')
+    logger.warn('Channel ertesites kihagyva: gromzo telepites, es ebben a folyamatban nincs fo-ugynok tovabbito')
+    return false
+  }
+  try {
+    ownerRelaySink(
+      '[owner-alert] Riasztás a tulajdonosnak. Küldd el neki a Gromzón (a tulajdonosi DM-be), szó szerint, ' +
+      'és ne válaszolj rá itt: ' + text,
+    )
+    logAlertDelivery(meta, 'owner', 'relayed')
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'gromzo owner relay could not be queued')
+    logAlertDelivery(meta, 'owner', 'failed')
+    return false
+  }
+}
+
 export function setOwnerChatMissingSink(sink: OwnerChatMissingSink | null): void {
   ownerChatMissingSink = sink
   lastOwnerChatMissingSignalAt = 0
@@ -226,6 +254,10 @@ export async function notifyOwner(text: string, meta?: AlertMeta): Promise<boole
 }
 
 async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
+  // GROMZONOPROVIDER1108: a gromzo install has no bot token and no owner chat id: the owner lives in the Gromzo app,
+  // reached through the MAIN agent (its Gromzo channel has the owner DM). The alert goes to the main agent's inbox
+  // with a relay instruction; without a registered sink (a process that never opens the database) the log line is it.
+  if (CHANNEL_PROVIDER === 'gromzo') return relayOwnerViaMainAgent(text, meta)
   // CHATID0 -- resolveAlertDeliveryChat (resolveAlertOwnerChat with the owner's OWNER_ALERT_CHAT_ID in front,
   // ISSUE2556X), not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"

@@ -87,7 +87,7 @@ import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
-import { filterMainGromzoIds, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
+import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
@@ -1165,10 +1165,22 @@ export function buildMainSessionRespawnCmd(opts: {
   mainAgentId?: string
   /** MXDAGENTSOCKID1106: the main agent's token file (gromzoTokenFile); absent: looked up for the slug. */
   gromzoTokenFile?: string | null
+  /** GROMZONOPROVIDER1108: test seam for mainGromzoPrimaryReady when the primary is the Gromzo plugin. */
+  gromzoPrimaryReady?: boolean
 }): string {
-  const gromzoSlug = (opts.extraPluginIds ?? []).includes(MAIN_GROMZO_PLUGIN_ID)
+  // GROMZONOPROVIDER1108: on a gromzo install the Gromzo plugin is the PRIMARY (never also an extra). It comes back only
+  // when the main agent can take it (mainGromzoPrimaryReady); otherwise this respawn is a gromzo-pending session with
+  // no Gromzo channel, exactly as channels.sh, stuck-modal-guard.sh and channel-watchdog.sh launch it.
+  const primaryIsGromzo = opts.pluginId === MAIN_GROMZO_PLUGIN_ID
+  const extras = (opts.extraPluginIds ?? []).filter((p) => !(primaryIsGromzo && p === MAIN_GROMZO_PLUGIN_ID))
+  const primaryReady = primaryIsGromzo
+    ? (opts.gromzoPrimaryReady ?? mainGromzoPrimaryReady(opts.mainAgentId ?? MAIN_AGENT_ID))
+    : true
+  const primary = primaryReady ? opts.pluginId : null
+  const gromzoSlug = (primaryIsGromzo && primaryReady) || extras.includes(MAIN_GROMZO_PLUGIN_ID)
     ? mainGromzoSlug(opts.mainAgentId ?? MAIN_AGENT_ID)
     : null
+  const channelsList = [...(primary ? [`plugin:${primary}`] : []), ...extras.map((p) => `plugin:${p}`)]
   const gromzoToken = gromzoSlug ? gromzoTokenExport(opts.gromzoTokenFile !== undefined ? opts.gromzoTokenFile : gromzoTokenFile(gromzoSlug)) : ''
   return [
     // FLEETVENV923: same venv-first PATH as startAgentProcess and channels.sh.
@@ -1243,7 +1255,7 @@ export function buildMainSessionRespawnCmd(opts: {
     // allowlist is the belt, this is the braces). shSingleQuote makes the value
     // one inert shell word. See model-id-injection.test.ts.
     ...(opts.model ? ['--model', shSingleQuote(opts.model)] : []),
-    [`--channels plugin:${opts.pluginId}`, ...(opts.extraPluginIds ?? []).map((p) => `plugin:${p}`)].join(' '),
+    ...(channelsList.length > 0 ? [['--channels', ...channelsList].join(' ')] : []),
   ].join(' ')
 }
 
@@ -3027,6 +3039,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       const openDownSpell = t.isMarveen
         ? marveenSuspectFirstSeen !== null || marveenDownState !== null || marveenRecreatedOutage !== null
         : agentDownSince.has(t.session) || (t.agentName !== undefined && agentRestartFailures.has(t.agentName))
+      // GROMZONOPROVIDER1108: a gromzo-pending main session runs WITHOUT its Gromzo channel on purpose (mxd's socket
+      // not usable or the main agent not enrolled yet); channels.sh restarts it once it is ready. Not a dead plugin.
+      if (t.isMarveen && t.provider === 'gromzo' && !mainGromzoPrimaryReady(readMainAgentIdRaw())) {
+        logger.debug({ session: t.session }, 'Main session is gromzo-pending -- no Gromzo channel expected yet, no liveness action')
+        continue
+      }
       const liveness = await probeChannelPluginLivenessAsync(claudePid, t.provider, t.agentName, { confirmAlive: openDownSpell }, sweepSnapshot ?? undefined)
       if (liveness === 'unknown') {
         // The PROBE failed (ps timed out, state dir unreadable) -- that is not

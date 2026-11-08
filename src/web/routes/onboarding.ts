@@ -21,6 +21,7 @@ import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
 import { mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
+import { mainGromzoPrimaryReady } from '../main-gromzo-launch.js'
 import type { RouteContext } from './types.js'
 
 const execFileAsync = promisify(execFile)
@@ -168,7 +169,15 @@ async function claudeAuthPresent(): Promise<boolean> {
 // must NOT read as "configured" -- otherwise step 3 skips straight to Pairing, the wizard never re-surfaces the 
 // sudo-command prompt (it only fires from the step-3 save handler), and the operator is left staring at
 // an empty pairing list with no explanation for why Slack never connects.
+// GROMZONOPROVIDER1108: a gromzo install has no token and no access.json. Its channel is "configured" and "paired" once
+// the main agent is enrolled in mxd (mainGromzoPrimaryReady: socket usable and its token file present): mxd issues that
+// token only for an agent it runs, which needs the owner's consent in the Gromzo app, so the owner is the paired one.
+function gromzoEnrolled(): boolean {
+  return mainGromzoPrimaryReady(MAIN_AGENT_ID)
+}
+
 function channelConfigured(): boolean {
+  if (CHANNEL_PROVIDER === 'gromzo') return gromzoEnrolled()
   const hasToken = readChannelToken(CHANNEL_PROVIDER, join(channelStateDir(CHANNEL_PROVIDER), '.env')) != null
   if (!hasToken) return false
   if (CHANNEL_PROVIDER === 'slack') return isManagedSettingsReady()
@@ -200,6 +209,7 @@ function existingChannelTokens(): { botToken: string | null; appToken: string | 
 }
 
 function paired(): boolean {
+  if (CHANNEL_PROVIDER === 'gromzo') return gromzoEnrolled()
   try {
     const a = JSON.parse(readFileSync(join(channelStateDir(CHANNEL_PROVIDER), 'access.json'), 'utf-8')) as {
       allowFrom?: unknown[]; groups?: Record<string, unknown>

@@ -221,6 +221,8 @@ export function readOwnerAlertChat(
   installProvider: ChannelProviderType = CHANNEL_PROVIDER,
 ): OwnerAlertChat {
   if (provider !== installProvider) return { chatId: null }
+  // gromzo has no alert chat: the owner is reached through the main agent (GROMZONOPROVIDER1108).
+  if (provider === 'gromzo') return { chatId: null }
   let raw: unknown
   try { raw = read() } catch { return { chatId: null } }
   const value = alertChatValue(raw)
