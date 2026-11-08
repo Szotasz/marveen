@@ -203,6 +203,21 @@ describe('the update refresh switches a whole untouched dir to the install langu
     }
   })
 
+  it('en: a MISSING references/ file is added in English, next to the SKILL.md that was just switched (SEEDREFDIR1018 branch)', () => {
+    const f = makeInstall({ lang: 'en' })
+    try {
+      seedInstalled(f.home, HU1)
+      rmSync(target(f.home, 'seed-scheduled-tasks/task1/references/ref.md'))
+      rmSync(target(f.home, 'seed-skills/demo/references/r.md'))
+      expect(refreshNew(f.install, f.home).code).toBe(0)
+      expect(installedText(f.home, 'seed-scheduled-tasks/task1/SKILL.md')).toBe(render(EN2['seed-scheduled-tasks/task1/SKILL.md']))
+      expect(installedText(f.home, 'seed-scheduled-tasks/task1/references/ref.md')).toBe(render(EN2['seed-scheduled-tasks/task1/references/ref.md']))
+      expect(installedText(f.home, 'seed-skills/demo/references/r.md')).toBe(EN2['seed-skills/demo/references/r.md'])
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
   it('hu: an untouched English copy becomes Hungarian; untouched Hungarian ones are refreshed as before', () => {
     const f = makeInstall({ lang: 'hu' })
     try {
