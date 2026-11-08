@@ -32,7 +32,10 @@ import { composeBatchInjection, type BatchInjectItem } from './batch-inject.js'
 import { sendSystemDirective } from './system-directive.js'
 import { logger } from '../logger.js'
 
-type SendPromptOpts = NonNullable<Parameters<typeof sendSystemDirective>[4]>
+// The drain owns attachAfterDirective: passing it as a caller is now a compile
+// error, and the runtime behavior (a caller-supplied value is overridden by the
+// drain's attachment) is pinned by src/__tests__/resume-queue-drain-opts.test.ts.
+type SendPromptOpts = Omit<NonNullable<Parameters<typeof sendSystemDirective>[4]>, 'attachAfterDirective'>
 type SendOutcome = Awaited<ReturnType<typeof sendSystemDirective>>
 
 /** Cap per resume injection; the remainder stays pending for the router and is
