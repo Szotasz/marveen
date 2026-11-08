@@ -320,7 +320,8 @@ function refuseUnlessOwner(ctx: RouteContext): boolean {
  *
  * Strict on purpose: only the exact header line the receipt builder writes, a numeric id
  * (our ids are integers; "ismeretlen" -- the peer had no ref -- closes nothing), and only
- * done/failed. The body after the blank line becomes the row's result.
+ * done/failed. `result` is the body after the blank line; it is NOT written to our row
+ * (closeOutboundByFederatedReceipt stores only a pointer to the receipt message).
  */
 const RECEIPT_HEADER_RE = /^\[Eredmény\] msg_id:(\d{1,15}) status:(done|failed)$/
 
@@ -342,11 +343,11 @@ export function parseFederatedReceipt(content: string): { id: number; status: 'd
  * checks that the row was sent to THIS peer (closeOutboundByFederatedReceipt), so a peer
  * cannot close a message we sent someone else by naming its id.
  */
-export function applyFederatedReceipt(callerPeerId: string | null, content: string): number | null {
+export function applyFederatedReceipt(callerPeerId: string | null, content: string, receiptMessageId: number): number | null {
   if (callerPeerId === null) return null
   const r = parseFederatedReceipt(content)
   if (!r) return null
-  return closeOutboundByFederatedReceipt(r.id, callerPeerId, r.status, r.result) ? r.id : null
+  return closeOutboundByFederatedReceipt(r.id, callerPeerId, r.status, receiptMessageId) ? r.id : null
 }
 
 // ---- route handler ------------------------------------------------------------
@@ -419,7 +420,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, from: verdict.from, to: verdict.to, ref: verdict.ref }, 'federation inbox: message accepted')
     // The receipt is still delivered as a message (the agent reads the result there); this
     // only moves our own outbound row out of `delivered`.
-    const closedOutbound = applyFederatedReceipt(callerPeerId, verdict.content)
+    const closedOutbound = applyFederatedReceipt(callerPeerId, verdict.content, msg.id)
     if (closedOutbound !== null) {
       logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, closedOutbound }, 'federation inbox: completion receipt closed our outbound row')
     }

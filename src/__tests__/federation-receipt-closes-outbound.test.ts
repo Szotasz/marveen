@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { initDatabase, createAgentMessage, getAgentMessage, markMessageDelivered, markMessageDone } from '../db.js'
+import { initDatabase, createAgentMessage, getAgentMessage, markMessageDelivered, markMessageDone, setMessageResult } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
   parseFederatedReceipt,
@@ -17,6 +17,8 @@ import type { RouteContext } from '../web/routes/types.js'
 const TMP = mkdtempSync(join(tmpdir(), 'fed-receipt-close-test-'))
 const IN_TOKEN = 'b'.repeat(64)
 const OUT_TOKEN = 'c'.repeat(64)
+/** Stand-in id of the inbound receipt message the inbox created. */
+const RECEIPT_ID = 9001
 
 function writeEnabledConfigFile(): void {
   writeFileSync(join(TMP, 'federation.json'), JSON.stringify({
@@ -88,48 +90,76 @@ describe('parseFederatedReceipt', () => {
 })
 
 describe('applyFederatedReceipt (DB guard)', () => {
-  it('closes our open row sent to THAT peer, with the result', () => {
+  it('closes our open row sent to THAT peer; the peer text stays out of result, a pointer goes in', () => {
     writeEnabledConfigFile()
     const id = sentTo('teodor/teodor')
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\nkész`)).toBe(id)
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\nkész`, RECEIPT_ID)).toBe(id)
     const row = getAgentMessage(id)!
     expect(row.status).toBe('done')
-    expect(row.result).toBe('kész')
+    expect(row.result).toBe(`receipt:${RECEIPT_ID}`)
+    expect(row.result).not.toContain('kész')
     expect(row.completed_at).not.toBeNull()
+  })
+
+  it('keeps the bridge trace (fed:<peer>:<remote id>) and appends the pointer after it', () => {
+    const id = sentTo('teodor/teodor')
+    setMessageResult(id, 'fed:teodor:512')
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\npeer szöveg`, RECEIPT_ID)).toBe(id)
+    expect(getAgentMessage(id)!.result).toBe(`fed:teodor:512 receipt:${RECEIPT_ID}`)
+    const failed = sentTo('teodor/teodor')
+    setMessageResult(failed, 'fed:teodor:513')
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${failed} status:failed\n\nhiba`, RECEIPT_ID)).toBe(failed)
+    expect(getAgentMessage(failed)!.result).toBe(`fed:teodor:513 receipt:${RECEIPT_ID}`)
+  })
+
+  it('the peer prefix compares case-insensitively: an upper-case stored prefix (older rows) still closes', () => {
+    const id = sentTo('TEODOR/teodor')
+    expect(getAgentMessage(id)!.to_agent).toBe('TEODOR/teodor')
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\nx`, RECEIPT_ID)).toBe(id)
+    expect(getAgentMessage(id)!.status).toBe('done')
+    const mixed = sentTo('Teodor/teodor')
+    expect(applyFederatedReceipt('TEODOR', `[Eredmény] msg_id:${mixed} status:done\n\nx`, RECEIPT_ID)).toBe(mixed)
+  })
+
+  it('a different-case id of ANOTHER peer does not close it', () => {
+    const id = sentTo('OTHER/agent')
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\nx`, RECEIPT_ID)).toBeNull()
+    expect(applyFederatedReceipt('Teodor', `[Eredmény] msg_id:${id} status:done\n\nx`, RECEIPT_ID)).toBeNull()
+    expect(getAgentMessage(id)!.status).toBe('delivered')
   })
 
   it('a failed receipt marks the row failed', () => {
     const id = sentTo('teodor/teodor')
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:failed\n\nhiba`)).toBe(id)
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:failed\n\nhiba`, RECEIPT_ID)).toBe(id)
     expect(getAgentMessage(id)!.status).toBe('failed')
   })
 
   it('a peer cannot close a row we sent to ANOTHER peer, or a local row', () => {
     const toOther = sentTo('other/agent')
     const local = sentTo('marketing')
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${toOther} status:done\n\nx`)).toBeNull()
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${local} status:done\n\nx`)).toBeNull()
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${toOther} status:done\n\nx`, RECEIPT_ID)).toBeNull()
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${local} status:done\n\nx`, RECEIPT_ID)).toBeNull()
     expect(getAgentMessage(toOther)!.status).toBe('delivered')
     expect(getAgentMessage(local)!.status).toBe('delivered')
   })
 
   it('a peer-system prefix match is exact, not a substring (teodor vs teodorx)', () => {
     const id = sentTo('teodorx/agent')
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\nx`)).toBeNull()
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${id} status:done\n\nx`, RECEIPT_ID)).toBeNull()
   })
 
   it('does not close a row a peer sent (relayed through us), nor an already closed row', () => {
     const relayed = sentTo('teodor/teodor', 'other/agent')
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${relayed} status:done\n\nx`)).toBeNull()
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${relayed} status:done\n\nx`, RECEIPT_ID)).toBeNull()
     const closed = sentTo('teodor/teodor')
     markMessageDone(closed, 'első')
-    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${closed} status:failed\n\nmásodik`)).toBeNull()
+    expect(applyFederatedReceipt('teodor', `[Eredmény] msg_id:${closed} status:failed\n\nmásodik`, RECEIPT_ID)).toBeNull()
     expect(getAgentMessage(closed)!.result).toBe('első')
   })
 
   it('a dashboard-token caller (no peer) closes nothing', () => {
     const id = sentTo('teodor/teodor')
-    expect(applyFederatedReceipt(null, `[Eredmény] msg_id:${id} status:done\n\nx`)).toBeNull()
+    expect(applyFederatedReceipt(null, `[Eredmény] msg_id:${id} status:done\n\nx`, RECEIPT_ID)).toBeNull()
     expect(getAgentMessage(id)!.status).toBe('delivered')
   })
 })
@@ -145,6 +175,6 @@ describe('inbox endpoint: a receipt closes our outbound row and is still deliver
     const receiptId = JSON.parse(res.body).id as number
     expect(getAgentMessage(receiptId)!.content).toContain('proba-ok')
     expect(getAgentMessage(id)!.status).toBe('done')
-    expect(getAgentMessage(id)!.result).toBe('proba-ok')
+    expect(getAgentMessage(id)!.result).toBe(`receipt:${receiptId}`)
   })
 })
