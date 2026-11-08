@@ -88,7 +88,7 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
-import { flushGromzoPendingOwnerAlerts } from '../notify.js'
+import { flushGromzoPendingOwnerAlerts, setGromzoMainLive } from '../notify.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
@@ -3044,11 +3044,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       // not usable or the main agent not enrolled yet); channels.sh restarts it once it is ready. Not a dead plugin.
       if (t.isMarveen && t.provider === 'gromzo' && !mainGromzoPrimaryReady(readMainAgentIdRaw())) {
         logger.debug({ session: t.session }, 'Main session is gromzo-pending -- no Gromzo channel expected yet, no liveness action')
+        setGromzoMainLive(false)
         continue
-      }
-      // GROMZONOPROVIDER1108 (Samu 73588): live again -> the owner alerts kept while pending go out now.
-      if (t.isMarveen && t.provider === 'gromzo') {
-        try { flushGromzoPendingOwnerAlerts() } catch (err) { logger.warn({ err }, 'gromzo pending alerts flush failed') }
       }
       const liveness = await probeChannelPluginLivenessAsync(claudePid, t.provider, t.agentName, { confirmAlive: openDownSpell }, sweepSnapshot ?? undefined)
       if (liveness === 'unknown') {
@@ -3062,6 +3059,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (liveness === 'alive') {
         if (t.isMarveen) {
           handleMarveenUp()
+          // GROMZONOPROVIDER1108 (Samu 73588, Dani 73601): the Gromzo plugin is alive in THIS session, so a relayed alert
+          // reaches the owner now; the alerts kept while it was not go out. Ready alone is not enough (see notify.ts).
+          if (t.provider === 'gromzo') {
+            setGromzoMainLive(true)
+            try { flushGromzoPendingOwnerAlerts() } catch (err) { logger.warn({ err }, 'gromzo pending alerts flush failed') }
+          }
           // Process-alive does NOT prove the inbound MCP pipe is healthy (the
           // deafness blind spot). Cross-check the keep-alive freshness.
           checkMainKeepaliveStaleness()
@@ -3095,6 +3098,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         continue
       }
       if (t.isMarveen) {
+        // GROMZONOPROVIDER1108 (Dani 73601): no live Gromzo plugin -> an owner alert is kept, not relayed into it.
+        if (t.provider === 'gromzo') setGromzoMainLive(false)
         if (shouldEscalateMarveenDown()) await handleMarveenDown()
       } else {
         if (!agentDownSince.has(t.session)) {

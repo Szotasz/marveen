@@ -220,10 +220,21 @@ export function setOwnerRelaySink(sink: OwnerChatMissingSink | null): void {
 // dashboard sweep calls it). Never dropped in silence.
 export const GROMZO_PENDING_ALERTS_FILE = 'gromzo-owner-alerts.pending.jsonl'
 const GROMZO_PENDING_ALERTS_MAX = 50
-let pendingCheck: () => boolean = () => !mainGromzoPrimaryReady(MAIN_AGENT_ID)
-/** Test seam for the pending check (the real one reads mxd's socket and the token file). */
-export function setGromzoPendingCheck(fn: () => boolean): void {
-  pendingCheck = fn
+// Dani 73601: "ready" (mxd's socket + the main agent enrolled) is not yet delivery. channels.sh notices it on its own
+// 60 s poll and restarts the unit, and only the NEW session loads the Gromzo plugin; a relay before that lands in the
+// old session, which has no Gromzo tool and is then replaced. So an alert goes out only while the dashboard sweep has
+// SEEN the Gromzo plugin alive in the main session (setGromzoMainLive); otherwise it is kept. A process that is not
+// the dashboard never sees the sweep, so it keeps its alerts too, and the dashboard flushes them.
+let gromzoMainLive = false
+export function setGromzoMainLive(live: boolean): void {
+  gromzoMainLive = live
+}
+const defaultPendingCheck = (): boolean => !gromzoMainLive || !mainGromzoPrimaryReady(MAIN_AGENT_ID)
+let pendingCheck: () => boolean = defaultPendingCheck
+/** Test seam for the pending check (the real one reads the sweep's liveness, mxd's socket and the token file); null
+ *  restores the real one. */
+export function setGromzoPendingCheck(fn: (() => boolean) | null): void {
+  pendingCheck = fn ?? defaultPendingCheck
 }
 
 function queueGromzoOwnerAlert(text: string): boolean {
@@ -239,23 +250,34 @@ function queueGromzoOwnerAlert(text: string): boolean {
   }
 }
 
-/** Hands every kept alert to the main agent (through the relay sink) once the install is live; returns how many. */
+/** Hands every kept alert to the main agent (through the relay sink) once it is live, as ONE message (one main-agent
+ *  round, not one per alert); returns how many alerts it carried. A `.flushing` file left by a crash between the two
+ *  renames goes first and is never overwritten; a relay that fails keeps it for the next sweep (Dani 73601). */
 export function flushGromzoPendingOwnerAlerts(): number {
   if (!ownerRelaySink || pendingCheck()) return 0
   const p = join(STORE_DIR, GROMZO_PENDING_ALERTS_FILE)
-  if (!existsSync(p)) return 0
   const taken = `${p}.flushing`
-  try { renameSync(p, taken) } catch { return 0 }
-  let n = 0
+  if (!existsSync(taken)) {
+    if (!existsSync(p)) return 0
+    try { renameSync(p, taken) } catch { return 0 }
+  }
+  const texts: string[] = []
   for (const line of readFileSync(taken, 'utf-8').split('\n').filter(Boolean)) {
     try {
       const { text } = JSON.parse(line) as { text: string }
-      if (typeof text === 'string' && relayOwnerViaMainAgent(text)) n++
+      if (typeof text === 'string') texts.push(text)
     } catch { /* a broken line is skipped, the rest still goes */ }
   }
+  if (texts.length > 0) {
+    const combined = texts.length === 1 ? texts[0] : texts.map((t, i) => `(${i + 1}/${texts.length}) ${t}`).join('\n')
+    if (!relayOwnerViaMainAgent(combined)) {
+      logger.warn({ kept: texts.length }, 'gromzo: the kept alerts could not be relayed; they stay for the next sweep')
+      return 0
+    }
+  }
   try { renameSync(taken, `${taken}.done`) } catch { /* best-effort */ }
-  logger.info({ delivered: n }, 'gromzo: the alerts kept while pending went to the main agent')
-  return n
+  logger.info({ delivered: texts.length }, 'gromzo: the alerts kept while pending went to the main agent')
+  return texts.length
 }
 
 function relayOwnerViaMainAgent(text: string, meta?: AlertMeta): boolean {

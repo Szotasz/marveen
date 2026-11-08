@@ -172,7 +172,7 @@ describe('mainGromzoPrimaryReady (the TS twin of main_gromzo_primary_ready)', ()
   })
   it('the dashboard sweep leaves a gromzo-pending main session alone (no down spell, no restart); only a live one flushes the kept alerts', () => {
     const cm = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf8')
-    expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+continue\n\s+\}\n\s+\/\/ GROMZONOPROVIDER1108 \(Samu 73588\)[^\n]*\n\s+if \(t\.isMarveen && t\.provider === 'gromzo'\) \{\n\s+try \{ flushGromzoPendingOwnerAlerts\(\) \}[^\n]*\n\s+\}\n\s+const liveness = await probeChannelPluginLivenessAsync/)
+    expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+setGromzoMainLive\(false\)\n\s+continue\n\s+\}\n\s+const liveness = await probeChannelPluginLivenessAsync/)
   })
 })
 
