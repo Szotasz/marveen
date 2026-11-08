@@ -131,6 +131,7 @@ vi.mock('../web/scheduled-tasks-io.js', async (importOriginal) => {
 })
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: vi.fn(async () => false),
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,

@@ -37,6 +37,7 @@ import {
   sessionExistsOnHost,
   capturePane,
   clearFeedbackModalAndRecheck,
+  withTmuxBatch,
 } from './agent-process.js'
 import { detectPaneState, detectQuotaWall, detectsBlockingMenu, detectsFirstRunGate, detectsHeldPeerMessage, detectsPermissionDialog, permissionPromptSummary, type FirstRunGateKind, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
@@ -854,20 +855,27 @@ export async function runMessageRouterTick(): Promise<void> {
     const presentNow = new Set<string>()
     // agent -> {exists: bool, host, session} cached lookup for the main loop.
     const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>()
-    for (const agent of receiversInTick) {
-      const host = readAgentRemoteHost(agent)
-      const session = agentSessionName(agent)
-      const exists = sessionExistsOnHost(host, session)
-      // Read once per receiver per tick, not once per message: the flag decides
-      // the whole delivery path below and a per-message read would re-open the
-      // same config file for every queued item.
-      agentSessionCache.set(agent, { host, session, exists, worksource: readAgentWorksourceChannel(agent) })
-      if (exists) {
-        presentNow.add(agent)
-      } else {
-        absentNow.add(agent)
+    // One list-sessions for the whole receiver pass: every local receiver's
+    // sessionExistsOnHost() asks the identical read-only query, and
+    // withTmuxBatch answers all of them from one memoized spawn while this
+    // (synchronous) loop runs. The per-agent answer is unchanged -- each agent
+    // is classified from the same session list the spawns would have returned.
+    withTmuxBatch(() => {
+      for (const agent of receiversInTick) {
+        const host = readAgentRemoteHost(agent)
+        const session = agentSessionName(agent)
+        const exists = sessionExistsOnHost(host, session)
+        // Read once per receiver per tick, not once per message: the flag decides
+        // the whole delivery path below and a per-message read would re-open the
+        // same config file for every queued item.
+        agentSessionCache.set(agent, { host, session, exists, worksource: readAgentWorksourceChannel(agent) })
+        if (exists) {
+          presentNow.add(agent)
+        } else {
+          absentNow.add(agent)
+        }
       }
-    }
+    })
     // Reconnect detection: agent was absent on the last tick, now present.
     for (const agent of presentNow) {
       // Worksource agents are exempt: backlog batching exists because a tmux

@@ -90,6 +90,7 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: (...a: unknown[]) => mockClearModal(...(a as [])),
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,

@@ -56,6 +56,7 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
 }))
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,

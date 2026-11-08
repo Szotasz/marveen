@@ -32,7 +32,7 @@ vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux' }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: '/nonexistent-project-root', STORE_DIR: '/nonexistent-store-dir' }))
 // The watcher also imports the sub-agent sweep's helpers (SUBWAIT925); they are
 // mocked inert here so this file only drives the main session's checkSession.
-vi.mock('../web/agent-process.js', () => ({ capturePane: () => h.pane, isAgentRunning: () => false, agentSessionName: (a: string) => a, agentHasChannel: () => true }))
+vi.mock('../web/agent-process.js', () => ({ withTmuxBatch: (fn: () => unknown) => fn(),  capturePane: () => h.pane, isAgentRunning: () => false, agentSessionName: (a: string) => a, agentHasChannel: () => true }))
 vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [], readAgentRemoteHost: () => null }))
 vi.mock('../web/state-observer.js', () => ({ STATE_OBSERVER_STATE_DIR: '/nonexistent-state-dir' }))
 vi.mock('../web/active-model.js', () => ({ readTranscriptMtimeAcrossConfigDirs: () => null }))

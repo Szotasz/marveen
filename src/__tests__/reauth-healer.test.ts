@@ -45,6 +45,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   isAgentRunning: () => true,
   capturePane: () => fixture.pane,
   startAgentProcess: async () => ({ ok: true }),

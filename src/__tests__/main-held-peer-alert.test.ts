@@ -31,7 +31,7 @@ vi.mock('node:child_process', () => ({
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
 vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux' }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: '/nonexistent-project-root', STORE_DIR: '/nonexistent-store-dir', BOT_NAME: 'Marveen', MAIN_AGENT_ID: 'marveen' }))
-vi.mock('../web/agent-process.js', () => ({ capturePane: (session: string) => { h.captured.push(session); return h.pane }, isAgentRunning: () => false, agentSessionName: (a: string) => a, agentHasChannel: () => true }))
+vi.mock('../web/agent-process.js', () => ({ withTmuxBatch: (fn: () => unknown) => fn(),  capturePane: (session: string) => { h.captured.push(session); return h.pane }, isAgentRunning: () => false, agentSessionName: (a: string) => a, agentHasChannel: () => true }))
 vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [], readAgentRemoteHost: () => null }))
 vi.mock('../web/state-observer.js', () => ({ STATE_OBSERVER_STATE_DIR: '/nonexistent-state-dir' }))
 vi.mock('../web/active-model.js', () => ({ readTranscriptMtimeAcrossConfigDirs: () => null }))

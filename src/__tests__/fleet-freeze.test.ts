@@ -19,6 +19,7 @@ const running = new Set<string>()
 const stopSpy = vi.hoisted(() => vi.fn())
 const startSpy = vi.hoisted(() => vi.fn())
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   isAgentRunning: (n: string) => running.has(n),
   agentHasChannel: (n: string) => n === 'zara',
   stopAgentProcess: async (n: string) => { stopSpy(n); running.delete(n); return { ok: true } },
