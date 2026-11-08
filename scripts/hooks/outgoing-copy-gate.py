@@ -3532,9 +3532,13 @@ def http_channel_gate(cmd: str) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
-        warn = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        warn = (f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
+                " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki.")
         sys.stderr.write(warn + "\n")
         _gate_log(warn)
+        # stderr on exit 0 and the gate log never reach the sending agent;
+        # only additionalContext does, so it learns the send went out unchecked.
+        print(pass_with_warning(warn))
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -3619,9 +3623,11 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        warn = (f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
+                " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki.")
         sys.stderr.write(warn + "\n")
         _gate_log(warn)
+        print(pass_with_warning(warn))
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -3986,7 +3992,11 @@ def main():
         _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
                   f"-- a vizsgalat nem futtathato (tool={tool!r}).")
         if re.search(r"telegram.*__reply$", tool, re.I):
-            sys.exit(0)  # Telegram stays fail-open by design
+            # Telegram stays fail-open by design, but not silently.
+            print(pass_with_warning(
+                f"outgoing-copy-gate: a Telegram-hivas tool_input mezoje nem szotar, hanem {shape} "
+                "-- FAIL-OPEN atengedes, ez az uzenet a szoveg-ellenorzes NELKUL ment ki."))
+            sys.exit(0)
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, a hivas tool_input mezoje nem szotar, hanem "
             f"{shape} -- a kimeno szoveg igy nem olvashato ki, tehat nem vizsgalhato.\n"
