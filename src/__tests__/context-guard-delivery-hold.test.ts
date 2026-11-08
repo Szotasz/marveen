@@ -91,6 +91,12 @@ vi.mock('../db.js', () => ({
     if (tag === 'context-guard restart notice') h.messages.push(content)
     return { id: 1 }
   },
+  // Card 2e1a5659: the resume send now goes through resume-queue-drain, which
+  // reads the recipient's pending rows before falling back to the plain
+  // directive send. Empty pending = byte-identical legacy resume, which is the
+  // scenario these hold-semantics tests exercise; without this export the
+  // drain throws on an undefined db call and the resume never lands.
+  getPendingMessages: () => [],
 }))
 
 type Runner = typeof import('../web/context-guard-runner.js')

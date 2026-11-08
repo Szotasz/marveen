@@ -138,7 +138,9 @@ vi.mock('../notify.js', async () => {
 vi.mock('../db.js', async () => {
   const { vi } = await import('vitest')
   h.createAgentMessage = vi.fn(() => ({ id: 1 }))
-  return { createAgentMessage: (...a: unknown[]) => h.createAgentMessage(...a) }
+  // Card 2e1a5659: the resume send reads pending rows through the drain;
+  // empty here = byte-identical legacy resume, which is what these tests measure.
+  return { createAgentMessage: (...a: unknown[]) => h.createAgentMessage(...a), getPendingMessages: () => [] }
 })
 
 const INITIAL_DELAY_MS = 270_000
