@@ -2,8 +2,8 @@
 // so _mac_timeout falls back to the system perl, which runs the command in its own process group and signals the
 // whole group at the limit. These run the REAL function (sliced out of install-macos.sh) with a PATH that has neither
 // timeout nor gtimeout, so the perl branch is what is measured.
-import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, existsSync, symlinkSync } from 'node:fs'
+import { describe, it, expect, afterAll } from 'vitest'
+import { readFileSync, mkdtempSync, existsSync, symlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -29,6 +29,9 @@ for (const tool of ['sleep', 'touch']) {
   if (at) symlinkSync(at, join(TEST_BIN, tool))
 }
 const TEST_PATH = TEST_BIN
+// Dani 73645: the temp dirs go when the file is done (the bin of symlinks and every per-test dir below).
+const TEMP_DIRS: string[] = [TEST_BIN]
+afterAll(() => { for (const d of TEMP_DIRS) rmSync(d, { recursive: true, force: true }) })
 const run = (cmd: string) => {
   const t0 = Date.now()
   const r = spawnSync('/bin/bash', ['-c', `${FN}\n${cmd}\necho "RC=$?"`], { encoding: 'utf8', env: { PATH: TEST_PATH } })
@@ -46,6 +49,7 @@ describe.skipIf(!HAVE_PERL)('_mac_timeout without timeout(1): the perl process-g
   })
   it('past the limit: exit 124, and the background child of the command is killed too (the whole group)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mac-to-'))
+    TEMP_DIRS.push(dir)
     const r = run(`_mac_timeout 1 /bin/bash -c '(sleep 3; touch "${dir}/late") & sleep 30'`)
     expect(r.out).toContain('RC=124')
     expect(r.ms).toBeLessThan(25_000) // 1 s alarm + the fixed 10 s TERM grace (11 s measured in a Linux container), well under the 30 s sleep
