@@ -199,7 +199,7 @@ import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
-import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED, ownerCookieSession } from './auth.js'
+import { kindAllowed, FORBIDDEN_KIND, bridgeOwner, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED, ownerCookieSession } from './auth.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -2726,6 +2726,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Per-agent tokens cannot apply modes', code: 'mode_agent_token_forbidden' }, 403)
       return true
     }
+    if (!(kindAllowed(ctx.auth, ['token', 'session']) || bridgeOwner(ctx.auth, req))) {
+      json(res, { ...FORBIDDEN_KIND, code: 'mode_credential_forbidden' }, 403)
+      return true
+    }
     let body: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse((await readBody(req)).toString())
@@ -2789,14 +2793,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       writeAgentMode(name, preset.customProvider, preset.model)
       try {
         if (guardChanged) mergeContextGuardConfig(name, patch)
+        const auth = ctx.auth
+        const actor = auth?.kind === 'session' ? `session:${auth.user ?? '?'}` : auth?.kind === 'device' ? `bridge:${ownerCookieSession(req) ?? '?'}` : 'token'
+        logConfigChange('agent-mode:' + name, JSON.stringify(before), JSON.stringify(after), actor)
       } catch (err) {
         // Restore exact bytes (or absence), including a writer that fails after writing.
         try { restore(configPath, configBytes) } finally { restore(guardPath, guardBytes) }
         throw err
       }
-      const auth = ctx.auth
-      const actor = auth?.kind === 'session' ? `session:${auth.user ?? '?'}` : auth?.kind === 'device' ? `bridge:${ownerCookieSession(req) ?? '?'}` : 'token'
-      logConfigChange('agent-mode:' + name, JSON.stringify(before), JSON.stringify(after), actor)
     } catch (err) {
       json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
       return true
