@@ -15,6 +15,11 @@
 # skipped. Nothing in the file is ever evaluated: no $(...), no backticks, no
 # variable expansion, no globbing.
 #
+# One behaviour change against the old xargs loader: an `export KEY=value` line
+# is skipped (its key "export KEY" is not an identifier), the same as
+# src/env-parse.ts, which reads it as the key "export KEY". The product never
+# writes such lines, but a hand-edited .env that uses them loses those keys.
+#
 # Safe to source under `set -euo pipefail`.
 
 # load_env_file FILE -- export every KEY=VALUE line of FILE. A missing file is
@@ -34,11 +39,12 @@ load_env_file() {
     _le_val="${_le_line#*=}"
     _le_val="${_le_val#"${_le_val%%[![:space:]]*}"}"
     [[ "$_le_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    if [ "${#_le_val}" -ge 2 ]; then
-      case "$_le_val" in
-        \"*\"|\'*\') _le_val="${_le_val:1:${#_le_val}-2}" ;;
-      esac
-    fi
+    # A lone quote counts as a matching pair, the same as src/env-parse.ts
+    # (startsWith and endsWith the same char), so it becomes the empty string.
+    case "$_le_val" in
+      \"|\') _le_val="" ;;
+      \"*\"|\'*\') _le_val="${_le_val:1:${#_le_val}-2}" ;;
+    esac
     export "$_le_key=$_le_val"
   done < "$_le_file"
   return 0

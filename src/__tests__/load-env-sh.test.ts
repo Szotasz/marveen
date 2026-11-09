@@ -53,19 +53,36 @@ describe('scripts/lib/load-env.sh', () => {
   it('matches src/env-parse.ts on comments, CRLF, whitespace, quotes and last-wins', () => {
     const content = [
       '# comment', '', '  SPACED = padded value  ', "SINGLE='one two'", 'CRLF=yes\r',
-      'MISMATCH="open', 'EQ=a=b', 'DUP=first', 'DUP=second', 'not a line', '1BAD=x',
+      'MISMATCH="open', 'LONE="', "LONE1='", 'EQ=a=b', 'DUP=first', 'DUP=second', 'not a line', '1BAD=x',
     ].join('\n')
-    const keys = ['SPACED', 'SINGLE', 'CRLF', 'MISMATCH', 'EQ', 'DUP']
+    const keys = ['SPACED', 'SINGLE', 'CRLF', 'MISMATCH', 'LONE', 'LONE1', 'EQ', 'DUP']
     const r = load(content, keys)
     expect(r.status).toBe(0)
     const ts = parseEnvContent(content, keys)
     expect(r.env).toEqual(ts)
     expect(r.env.SPACED).toBe('padded value')
+    expect(r.env.LONE).toBe('')
+  })
+
+  it('loads a last line that has no trailing newline', () => {
+    const r = load('FIRST=1\nLAST="no newline here"', ['FIRST', 'LAST'])
+    expect(r.status).toBe(0)
+    expect(r.stderr).toBe('')
+    expect(r.env).toEqual({ FIRST: '1', LAST: 'no newline here' })
+  })
+
+  it('skips an export-prefixed line, like src/env-parse.ts gives no plain key for it', () => {
+    const content = 'export HIDDEN=x\nKEPT=y\n'
+    const r = load(content, ['HIDDEN', 'KEPT'])
+    expect(r.status).toBe(0)
+    expect(r.env).toEqual({ HIDDEN: '<unset>', KEPT: 'y' })
+    expect(parseEnvContent(content, ['HIDDEN', 'KEPT'])).toEqual({ KEPT: 'y' })
   })
 
   it('a missing file is not an error', () => {
     const r = spawnSync('bash', ['-c', 'set -euo pipefail; . "$1"; load_env_file /nonexistent/.env; echo ok', 'x', LIB], { encoding: 'utf-8' })
     expect(r.status).toBe(0)
+    expect(r.stderr).toBe('')
     expect(r.stdout.trim()).toBe('ok')
   })
 

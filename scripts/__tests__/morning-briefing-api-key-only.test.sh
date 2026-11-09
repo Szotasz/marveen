@@ -36,7 +36,7 @@ run_case() {
   DIR="$TMP/inst.$RANDOM"
   mkdir -p "$DIR/scripts/lib" "$DIR/store" "$DIR/bin"
   cp "$REPO/scripts/morning-briefing.sh" "$DIR/scripts/"
-  cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$DIR/scripts/lib/"
+  cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$REPO/scripts/lib/load-env.sh" "$DIR/scripts/lib/"
   printf 'ALLOWED_CHAT_ID=1234\nTELEGRAM_BOT_TOKEN=tok-ok\n%s' "$extra" > "$DIR/.env"
   cat > "$DIR/bin/claude" <<'STUB'
 #!/bin/bash
