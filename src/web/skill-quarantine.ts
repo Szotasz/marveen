@@ -981,6 +981,9 @@ export type ImportResult =
 // A top-level directory name of an archive becomes a skill name.
 const IMPORT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
 
+// A symlink entry in `unzip -Z` (zipinfo) output: the Unix mode string starts with `l`.
+const SYMLINK_ENTRY_RE = /^l[rwxsStT-]{9}\s/
+
 // The zip import for both scopes: extract into a scratch dir inside the
 // pending area (never into a skill root), keep the structural checks the
 // routes had (path traversal, name clash, symlinks, a SKILL.md per skill),
@@ -1015,6 +1018,19 @@ export function importArchiveToPending(target: SkillTarget, data: Buffer): Impor
       const clash = nameConflict(target, td)
       if (clash === 'live') return { ok: false, status: 409, error: `Skill already exists: ${td}. Delete it first if you want to overwrite.` }
       if (clash === 'pending') return { ok: false, status: 409, error: `A skill named ${td} is already waiting for approval.` }
+    }
+    // A symlink entry is refused from the listing, before anything is extracted. Apple's unzip
+    // on macOS 27.2 will not create a link to an absolute target and exits non-zero, which the
+    // extract step below would report as a 500. hasSymlink() stays as the check on what was
+    // actually extracted.
+    let longListing: string
+    try {
+      longListing = execFileSync('unzip', ['-Z', zip], { timeout: 5000, encoding: 'utf-8' })
+    } catch {
+      return { ok: false, status: 400, error: 'Failed to read the archive' }
+    }
+    if (longListing.split('\n').some((l) => SYMLINK_ENTRY_RE.test(l))) {
+      return { ok: false, status: 400, error: 'Invalid skill file: symlink entries rejected' }
     }
     try {
       execFileSync('unzip', ['-o', '-q', zip, '-d', out], { timeout: 10000 })
