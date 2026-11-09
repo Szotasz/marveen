@@ -368,6 +368,19 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: 'env crontab -' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'sudo launchctl bootstrap gui/501 x.plist' }).deny).toBe(true)
   })
+  it('ALLOWS a path-valued assignment whose last segment is at/batch (SELFPACEASSIGN1109)', () => {
+    // the `(?:\S*/)?` path branch used to eat `SP=/tmp/.../scratchpad/`, leaving
+    // `batch` at a fake command position -- the same `ls` passed with a literal path
+    const sp = '/tmp/claude-1000/-home-user-install-agents-example/0044a81f/scratchpad/batch'
+    expect(selfPaceDecision('Bash', { command: `SP=${sp}; ls "$SP"` }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: `ls ${sp}` }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'SP=/tmp/x/at; ls "$SP"' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'DIR=/home/x/batch; cat "$DIR/f"' }).deny).toBe(false)
+    // the other direction: a real scheduler call after an assignment, or by path, stays denied
+    expect(selfPaceDecision('Bash', { command: 'SP=/tmp/x; batch' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'SP=/tmp/x /usr/bin/at now' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: '/usr/bin/batch' }).deny).toBe(true)
+  })
   it('ALLOWS a wrapped scheduler READ, and a crontab-prefixed script name', () => {
     expect(selfPaceDecision('Bash', { command: 'sudo crontab -l' }).deny).toBe(false)
     expect(selfPaceDecision('Bash', { command: './scripts/crontab-helper.sh status' }).deny).toBe(false)
