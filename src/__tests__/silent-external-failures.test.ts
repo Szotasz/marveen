@@ -125,11 +125,11 @@ describe('readJsonObjectForWrite never clobbers an existing config', () => {
     expect(read('src/web/fleet-transfer.ts')).toContain('const overrides = readJsonObjectForWrite(overridesPath)')
     expect(read('src/web/routes/schedules.ts')).toContain('config = readJsonObjectForWrite(configPath)')
     expect(read('src/web/model-fallback-runner.ts')).toContain('readJsonObjectForWrite(MAIN_SETTINGS_PATH)')
-    // Twenty writers in agent-config.ts (writeAgentExtraChannels, AGENTEXTRACH1006, is the 14th; writeAgentPullDelivery,
+    // Twenty-one writers in agent-config.ts (writeAgentExtraChannels, AGENTEXTRACH1006, is the 14th; writeAgentPullDelivery,
     // PULLDELIV920, the 15th; writeAgentGromzo, GROMZOAGENTPICK1101, the 16th; writeAgentTagline, TEAMTAGLINE1102,
     // the 17th; writeAgentCodeMode and writeAgentCodeModeLaunched, CODEMODEFLAG1119, the 18th and 19th;
-    // writeAgentSkillOverrides the 20th), one each in the other four.
-    expect(read('src/web/agent-config.ts').match(/= readJsonObjectForWrite\(configPath\)/g)).toHaveLength(20)
+    // writeAgentSkillOverrides the 20th; writeAgentMode, MODEPRESETS1109, the 21st), one each in the other four.
+    expect(read('src/web/agent-config.ts').match(/= readJsonObjectForWrite\(configPath\)/g)).toHaveLength(21)
     expect(read('src/web/agent-team.ts')).toContain('config = readJsonObjectForWrite(configPath)')
     expect(read('src/web/scheduled-tasks-io.ts')).toContain('config = readJsonObjectForWrite(configPath)')
     expect(read('src/web/routes/connectors.ts')).toContain('mcpConfig = readJsonObjectForWrite(mcpPath)')
