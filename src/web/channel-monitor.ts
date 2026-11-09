@@ -2512,6 +2512,16 @@ export function sendAlert(text: string, meta?: AlertMeta): void {
   notifyChannel(text, meta).catch(() => {})
 }
 
+// GAVEUPRELOAD1033: the give-up stage's last /reload-plugins, only into a main
+// input box PROVEN empty (see the call site). Run inside the send lane.
+function sendGaveUpReloadIfIdle(): 'sent' | 'not-idle' {
+  const plain = capturePane(MAIN_CHANNELS_SESSION)
+  const dimStripped = plain != null && detectPaneState(plain) === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
+  if (!mainInputBoxProvenEmpty(plain, dimStripped)) return 'not-idle'
+  execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), '/reload-plugins', 'Enter'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+  return 'sent'
+}
+
 async function handleMarveenDown(): Promise<void> {
   const now = Date.now()
   const providerLabel = getMainAgentProvider()
@@ -2625,6 +2635,34 @@ async function handleMarveenDown(): Promise<void> {
   if (marveenDownState.stage === 'hard') {
     marveenDownState.stage = 'gave_up'
     marveenDownState.lastAlertAt = now
+    // GAVEUPRELOAD1033: the independent channel-watchdog that takes over after
+    // tryReleaseOwnRespawnStamp below only respawns channels.sh -- it never
+    // sends /reload-plugins, which is the one thing measured to actually bring
+    // a confirmed-absent plugin back (RELOADPLUGINSABSENT1032 in
+    // channel-plugin-unlock.ts). Without this, the plugin stayed dead for ~1.5h
+    // of watchdog-only respawns until a human typed /reload-plugins by hand
+    // (measured 2026-11-01 02:45-04:20). Fire one last fire-and-forget attempt
+    // here, under the send lane so it can't splice into a live delivery; a
+    // skipped or failed attempt must not block the give-up path below.
+    //
+    // The lane only excludes deliveries, not a draft parked in the input box:
+    // typed into a non-empty box, the command would be appended to the draft
+    // and Enter would submit both. So, inside the lane, the box must be PROVEN
+    // empty first (the same readiness rule the stuck-input ladder uses, and
+    // what channels.sh's probe_pane_input_state == idle checks); anything else
+    // (parked text, busy, unreadable) skips the attempt.
+    try {
+      const res = await withSessionSendLock(MAIN_CHANNELS_SESSION, null, 'recover', async () => sendGaveUpReloadIfIdle())
+      if (res.ran && res.value === 'sent') {
+        logger.warn({ provider: providerLabel }, 'channel-monitor: giving-up stage sent one last /reload-plugins attempt before releasing respawn grace (GAVEUPRELOAD1033)')
+      } else if (res.ran) {
+        logger.info({ provider: providerLabel }, 'channel-monitor: giving-up stage skipped the last /reload-plugins attempt, input box not proven empty (GAVEUPRELOAD1033)')
+      } else {
+        logger.info({ provider: providerLabel }, 'channel-monitor: giving-up stage skipped the last /reload-plugins attempt, send lane busy (GAVEUPRELOAD1033)')
+      }
+    } catch (err) {
+      logger.warn({ site: 'channel-monitor.gaveUpReloadPlugins', err, session: MAIN_CHANNELS_SESSION, tmux: tmuxStderr(err), provider: providerLabel }, 'channel-monitor: giving-up stage failed to send /reload-plugins (GAVEUPRELOAD1033)')
+    }
     logger.error({ provider: providerLabel }, 'Marveen channel plugin still down after hard restart -- giving up auto-recovery')
     const serviceCmd = process.platform === 'linux'
       ? `\`systemctl --user status ${SERVICE_ID}-channels\``
