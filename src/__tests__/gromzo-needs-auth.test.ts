@@ -41,6 +41,13 @@ describe('clearGromzoNeedsAuth: only the Gromzo key goes', () => {
     expect(readdirSync(d)).toEqual([NEEDS_AUTH_CACHE_FILE])
   })
 
+  it('a mode the umask would strip (o+w; CI runs under 022 and 002) stays exactly', () => {
+    const d = dir()
+    const f = put(d, `{${GZ}}`, 0o602)
+    expect(clearGromzoNeedsAuth(d).outcome).toBe('removed')
+    expect(statSync(f).mode & 0o777).toBe(0o602)
+  })
+
   it('the Gromzo entry first or alone: what is left is exactly the rest', () => {
     const d1 = dir()
     put(d1, `{${GZ},${OTHER}}`)
