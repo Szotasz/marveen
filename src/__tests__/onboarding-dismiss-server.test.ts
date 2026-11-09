@@ -117,7 +117,7 @@ const BLOCK = (() => {
   return APP.slice(from, to)
 })()
 
-function page(server: { dismissed: boolean; needsOnboarding?: boolean; refuse?: boolean }, stored: Record<string, string> = {}) {
+function page(server: { dismissed: boolean; needsOnboarding?: boolean; refuse?: boolean; statusFails?: boolean; authBannerShown?: boolean }, stored: Record<string, string> = {}) {
   const calls: string[] = []
   const rendered: unknown[] = []
   const store = { ...stored }
@@ -131,7 +131,11 @@ function page(server: { dismissed: boolean; needsOnboarding?: boolean; refuse?: 
   const banner = { hidden: true }
   const goBtn = button()
   const closeBtn = button()
-  const els: Record<string, unknown> = { onboardingOverlay: overlay, setupResumeBanner: banner, setupResumeGoBtn: goBtn, setupResumeDismiss: closeBtn }
+  // The follow-up's two: the auth banner (shown or not, per case) and the resume banner's message line.
+  const authBanner = { hidden: !server.authBannerShown }
+  const msg = { hidden: true, textContent: '' }
+  const els: Record<string, unknown> = { onboardingOverlay: overlay, setupResumeBanner: banner, setupResumeGoBtn: goBtn, setupResumeDismiss: closeBtn, authSetupBanner: authBanner, setupResumeMsg: msg }
+  const t = (k: string) => `T(${k})`
   const document = { getElementById: (id: string) => els[id] ?? null, body: { style: { overflow: 'hidden' } } }
   const session: Record<string, string> = {}
   const sessionStorage = { getItem: (k: string) => session[k] ?? null, setItem: (k: string, v: string) => { session[k] = v } }
@@ -144,16 +148,17 @@ function page(server: { dismissed: boolean; needsOnboarding?: boolean; refuse?: 
     }
     return { ok: true, json: async () => ({}) }
   }
-  const fetchOnboardingStatus = async () => { calls.push('GET status'); return { needsOnboarding: server.needsOnboarding ?? true, dismissed: server.dismissed } }
+  // The real fetchOnboardingStatus returns null on any failure (offline, a 5xx, bad JSON).
+  const fetchOnboardingStatus = async () => { calls.push('GET status'); return server.statusFails ? null : { needsOnboarding: server.needsOnboarding ?? true, dismissed: server.dismissed } }
   const fetchOnboardingAuth = async () => ({})
   const renderOnboarding = (s: unknown) => { rendered.push(s) }
-  const api = new Function('localStorage', 'sessionStorage', 'document', 'fetch', 'fetchOnboardingStatus', 'fetchOnboardingAuth', 'renderOnboarding',
+  const api = new Function('localStorage', 'sessionStorage', 'document', 'fetch', 'fetchOnboardingStatus', 'fetchOnboardingAuth', 'renderOnboarding', 't',
     `${BLOCK}\nreturn { initOnboarding, dismissOnboarding, undismissOnboarding, onboardingDismissed, showSetupResumeBanner }`)(
-    localStorage, sessionStorage, document, fetch, fetchOnboardingStatus, fetchOnboardingAuth, renderOnboarding) as {
+    localStorage, sessionStorage, document, fetch, fetchOnboardingStatus, fetchOnboardingAuth, renderOnboarding, t) as {
     initOnboarding: () => Promise<void>; dismissOnboarding: () => void; undismissOnboarding: () => void; onboardingDismissed: () => boolean
     showSetupResumeBanner: () => Promise<void>
   }
-  return { api, calls, rendered, store, overlay, banner, goBtn, closeBtn, session }
+  return { api, calls, rendered, store, overlay, banner, goBtn, closeBtn, session, authBanner, msg, server }
 }
 const settle = () => new Promise((r) => setTimeout(r, 0))
 
@@ -279,5 +284,43 @@ describe('the setup-resume banner (DOCKERFIXES1109)', () => {
     expect(p.banner.hidden).toBe(true)
     expect(p.calls).not.toContain('DELETE /api/onboarding/dismiss')
     expect(p.calls).not.toContain('POST /api/onboarding/dismiss')
+  })
+
+  // Follow-up, Dani's review of #2649.
+  it('point 1: an unreadable status on the button keeps the banner, with a message, and opens or clears nothing', async () => {
+    const p = page({ dismissed: true })
+    await p.api.initOnboarding()
+    expect(p.banner.hidden).toBe(false)
+    p.server.statusFails = true
+    await p.goBtn.click()
+    await settle()
+    expect(p.banner.hidden).toBe(false)
+    expect(p.msg.hidden).toBe(false)
+    expect(p.msg.textContent).toBe('T(onboarding.resume.status_error)')
+    expect(p.rendered).toEqual([])
+    expect(p.calls).not.toContain('DELETE /api/onboarding/dismiss')
+    // The next try, with the status readable again, clears the message and opens the wizard.
+    p.server.statusFails = false
+    await p.goBtn.click()
+    await settle()
+    expect(p.msg.hidden).toBe(true)
+    expect(p.rendered.length).toBe(1)
+  })
+
+  it('point 2: while the auth banner is shown (no login yet) this one stays hidden; it is the auth banner\'s turn', async () => {
+    const p = page({ dismissed: true, authBannerShown: true })
+    await p.api.initOnboarding()
+    expect(p.banner.hidden).toBe(true)
+    // Closing the auth banner must not close the last way back: the re-check brings this one up.
+    p.authBanner.hidden = true
+    await p.api.showSetupResumeBanner()
+    expect(p.banner.hidden).toBe(false)
+  })
+
+  it('point 2, the other side: the auth banner re-checks this one when it shows and when it is closed', () => {
+    const init = APP.slice(APP.indexOf('async function initAuthBanner()'), APP.indexOf('function wireAuthBanner()'))
+    expect(init).toContain('if (show) showSetupResumeBanner()')
+    const wire = APP.slice(APP.indexOf('function wireAuthBanner()'), APP.indexOf("document.addEventListener('DOMContentLoaded', () => {\n  wireAuthBanner()"))
+    expect(wire).toMatch(/localStorage\.setItem\(AUTH_BANNER_DISMISS_KEY, '1'\)[\s\S]{0,200}banner\.hidden = true[\s\S]{0,200}showSetupResumeBanner\(\)/)
   })
 })

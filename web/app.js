@@ -15552,8 +15552,19 @@ async function showSetupResumeBanner(known) {
   let hidden = false
   try { hidden = sessionStorage.getItem(SETUP_RESUME_HIDE_KEY) === '1' } catch { /* storage blocked */ }
   if (hidden || !onboardingDismissed()) { banner.hidden = true; return }
+  // DOCKERFIXES1109 follow-up (Dani's review of #2649, point 2): while the auth banner is actually SHOWN (no login yet),
+  // it is the one way back (its button opens the wizard too), so this one stays out of the way. Only while it is shown:
+  // once the owner closes it, initAuthBanner's dismiss re-runs this check and this banner comes back.
+  const auth = document.getElementById('authSetupBanner')
+  if (auth && !auth.hidden) { banner.hidden = true; return }
   const s = known || await fetchOnboardingStatus()
   banner.hidden = !(s && s.needsOnboarding)
+}
+function setupResumeMessage(text) {
+  const msg = document.getElementById('setupResumeMsg')
+  if (!msg) return
+  msg.textContent = text || ''
+  msg.hidden = !text
 }
 function wireSetupResumeBanner() {
   const banner = document.getElementById('setupResumeBanner')
@@ -15566,8 +15577,12 @@ function wireSetupResumeBanner() {
   })
   if (go) go.addEventListener('click', async () => {
     const s = await fetchOnboardingStatus()
+    // DOCKERFIXES1109 follow-up (Dani's review of #2649, point 1): an unreadable status (offline, a 5xx) used to hide
+    // the banner and open nothing, so there was no way back until a reload. The banner now stays, with a message.
+    if (!s) { setupResumeMessage(t('onboarding.resume.status_error')); return }
+    setupResumeMessage('')
     banner.hidden = true
-    if (!s || !s.needsOnboarding) return
+    if (!s.needsOnboarding) return
     undismissOnboarding()
     renderOnboarding(s, await fetchOnboardingAuth())
   })
@@ -17286,6 +17301,9 @@ async function initAuthBanner() {
   const canCreate = !!status && (status.method === 'token' || (status.method === 'device' && 'owner_session' in status))
   const show = !!status && status.authenticated && canCreate && status.setup_required && !dismissed
   banner.hidden = !show
+  // DOCKERFIXES1109 follow-up: the setup-resume banner stays out of the way while this one is shown; re-check it now
+  // that this one is decided (whichever of the two inits finishes first).
+  if (show) showSetupResumeBanner()
 }
 
 function wireAuthBanner() {
@@ -17296,6 +17314,8 @@ function wireAuthBanner() {
   if (dismiss) dismiss.addEventListener('click', () => {
     try { localStorage.setItem(AUTH_BANNER_DISMISS_KEY, '1') } catch { /* storage blocked */ }
     banner.hidden = true
+    // DOCKERFIXES1109 follow-up: closing this one must not close the last way back to an unfinished setup.
+    showSetupResumeBanner()
   })
   // Land on the Security tab, where the auth card lives now (openCreateLoginSettings, shared with the 403 setup_required path).
   // ONBOARDOWNERPW1107 (Samu 72423): while the onboarding is unfinished, the banner takes the owner back to the wizard,

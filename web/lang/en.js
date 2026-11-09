@@ -2442,6 +2442,7 @@ window._i18n.en = {
   'auth.banner.action':           'Set up login',
   'onboarding.resume.text':       'The setup is not finished yet.',
   'onboarding.resume.action':     'Open the setup wizard',
+  'onboarding.resume.status_error': 'Could not read the setup status. Try again in a moment.',
   'branch_drift.banner.text':     'This install follows the {branch} development branch, not the released main branch, so updates can bring unreleased code. Switch back to the product branch:',
   'branch_drift.notice.on_main':  'Tracked branch: the released product branch',
   'branch_drift.notice.off_main': 'Tracked branch: {branch}. This is not the released product branch (main), so updates deliver unreleased code.',
