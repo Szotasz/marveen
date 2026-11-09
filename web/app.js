@@ -15533,18 +15533,51 @@ function dismissOnboarding() {
   const overlay = document.getElementById('onboardingOverlay')
   if (overlay) { overlay.classList.remove('active'); overlay.hidden = true }
   document.body.style.overflow = ''
+  showSetupResumeBanner()
 }
-// The owner reopens the wizard (the auth banner): both records are cleared.
+// The owner reopens the wizard (the auth banner, the setup-resume banner): both records are cleared.
 function undismissOnboarding() {
   try { localStorage.removeItem(ONBOARDING_DISMISS_KEY) } catch { /* storage blocked */ }
   onboardingDismissedOnServer = false
   saveOnboardingDismissed(false)
 }
+// DOCKERFIXES1109 (2): a closed wizard had only one way back, the auth banner, and that one shows only while no
+// dashboard login exists. Whoever closed the wizard after creating the login (measured on the Docker trial, step 4)
+// had none. This banner shows while the wizard is closed AND the server still says the setup is unfinished; its
+// close hides it for this browser session only, so it cannot become the next dead end.
+const SETUP_RESUME_HIDE_KEY = 'mvSetupResumeHidden'
+async function showSetupResumeBanner(known) {
+  const banner = document.getElementById('setupResumeBanner')
+  if (!banner) return
+  let hidden = false
+  try { hidden = sessionStorage.getItem(SETUP_RESUME_HIDE_KEY) === '1' } catch { /* storage blocked */ }
+  if (hidden || !onboardingDismissed()) { banner.hidden = true; return }
+  const s = known || await fetchOnboardingStatus()
+  banner.hidden = !(s && s.needsOnboarding)
+}
+function wireSetupResumeBanner() {
+  const banner = document.getElementById('setupResumeBanner')
+  if (!banner) return
+  const go = document.getElementById('setupResumeGoBtn')
+  const close = document.getElementById('setupResumeDismiss')
+  if (close) close.addEventListener('click', () => {
+    try { sessionStorage.setItem(SETUP_RESUME_HIDE_KEY, '1') } catch { /* storage blocked */ }
+    banner.hidden = true
+  })
+  if (go) go.addEventListener('click', async () => {
+    const s = await fetchOnboardingStatus()
+    banner.hidden = true
+    if (!s || !s.needsOnboarding) return
+    undismissOnboarding()
+    renderOnboarding(s, await fetchOnboardingAuth())
+  })
+}
 async function initOnboarding() {
-  if (onboardingDismissed()) return
+  wireSetupResumeBanner()
+  if (onboardingDismissed()) { await showSetupResumeBanner(); return }
   const s = await fetchOnboardingStatus()
   if (!s) return
-  if (s.dismissed === true) { onboardingDismissedOnServer = true; return }
+  if (s.dismissed === true) { onboardingDismissedOnServer = true; await showSetupResumeBanner(s); return }
   if (!s.needsOnboarding) return
   renderOnboarding(s, await fetchOnboardingAuth())
 }

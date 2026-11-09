@@ -2442,6 +2442,8 @@ window._i18n.hu = {
   'fleet_freeze.toast.unfrozen':    'A flotta feloldva.',
   'fleet_freeze.toast.owner_only':  'Feloldani csak a gazda tud, a dashboard-jelszóval bejelentkezve. Ha ez a böngésző tokennel van belépve: Beállítások, Dashboard belépés kártya, Belépés a dashboard-jelszóval gomb.',
   'auth.banner.action':           'Belépés beállítása',
+  'onboarding.resume.text':       'A beállítás még nincs kész.',
+  'onboarding.resume.action':     'Beállítás-varázsló megnyitása',
   'branch_drift.banner.text':     'Ez a telepítés a {branch} fejlesztői ágat követi, nem a kiadott main ágat, ezért kiadatlan kódot kaphat. Visszaállás a termék-ágra:',
   'branch_drift.notice.on_main':  'Követett ág: a kiadott termék-ág',
   'branch_drift.notice.off_main': 'Követett ág: {branch}. Ez nem a kiadott termék-ág (main), így a frissítések kiadatlan kódot hoznak.',
