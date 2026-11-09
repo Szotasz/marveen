@@ -147,6 +147,7 @@ function resumeCalls(): unknown[][] {
 }
 
 beforeEach(() => {
+  vi.stubEnv('ROUTER_BATCH_INJECT_AGENTS', 'some-other-agent')
   rmSync(STORE, { recursive: true, force: true })
   mkdirSync(STORE, { recursive: true })
   vi.useFakeTimers()
@@ -160,6 +161,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const t of timers) clearInterval(t)
   timers = []
   vi.clearAllTimers()

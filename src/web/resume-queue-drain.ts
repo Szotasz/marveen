@@ -1,7 +1,7 @@
 // Resume-time drain of the recipient's pending inter-agent queue (card
 // 2e1a5659).
 //
-// MEASURED 2026-11-08 on webesdavid: rows 117801/117805/117809 were created
+// MEASURED 2026-11-08 on a long-turn agent: three pending rows were created
 // 03:23-03:29 and delivered only 04:30 -- they outlived TWO full guard restart
 // cycles (guard acting 03:41/03:52 and 04:17/04:27). The delivery hold
 // (delivery-hold.ts) keeps a restarted agent's rows pending until the fresh
@@ -9,12 +9,11 @@
 // with its first continuation turn, and the router only delivers to an idle
 // pane, so every pending row waits out the whole turn (30-70 min for a
 // long-turn agent) while the guard may restart it again. 48h delivery
-// latency: bence p90 31 min / max 140, webesdavid p90 26 / max 71, levente
-// p90 45 / max 116.
+// latency on three long-turn agents: p90 26-45 min, max 71-140 min.
 //
 // The fix: when the resume prompt is injected, the drainable part of the
-// recipient's pending queue rides in the SAME injection, appended after the
-// directive body -- the first turn can no longer starve delivery for its
+// recipient's pending queue rides in the SAME injection, before the
+// directive header -- the first turn can no longer starve delivery for its
 // whole duration.
 //
 // SAFETY ARGUMENT (why the router cannot double-send a drained row): both
@@ -28,19 +27,18 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { getPendingMessages, markMessageDelivered, countNewerMessagesFromSameSender, type AgentMessage } from '../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { isUrgentDelivery } from './message-router-window.js'
-import { composeBatchInjection, type BatchInjectItem } from './batch-inject.js'
+import { batchInjectCapFor, composeBatchInjection, type BatchInjectItem } from './batch-inject.js'
 import { sendSystemDirective } from './system-directive.js'
 import { logger } from '../logger.js'
 
-// The drain owns attachAfterDirective: passing it as a caller is now a compile
+// The drain owns attachBeforeDirective: passing it as a caller is now a compile
 // error, and the runtime behavior (a caller-supplied value is overridden by the
 // drain's attachment) is pinned by src/__tests__/resume-queue-drain-opts.test.ts.
-type SendPromptOpts = Omit<NonNullable<Parameters<typeof sendSystemDirective>[4]>, 'attachAfterDirective'>
+type SendPromptOpts = Omit<NonNullable<Parameters<typeof sendSystemDirective>[4]>, 'attachBeforeDirective'>
 type SendOutcome = Awaited<ReturnType<typeof sendSystemDirective>>
 
-/** Cap per resume injection; the remainder stays pending for the router and is
- *  announced by the batch tail, so a truncated drain never reads as complete
- *  (same rule as the router's batch cap). */
+/** Cap per resume injection; the remainder stays pending for the router.
+ *  Batch mode announces the remainder in its tail. */
 export const RESUME_DRAIN_MAX = 8
 
 /**
@@ -76,7 +74,7 @@ export function selectDrainableRows(rows: AgentMessage[], mainAgentId: string): 
  *
  * With nothing to drain this is byte-identical to sendSystemDirective. The
  * directive TEXT argument stays the caller's prompt unchanged -- the drained
- * rows ride in opts.attachAfterDirective, so the anchor row (and the
+ * rows ride in opts.attachBeforeDirective, so the anchor row (and the
  * recipient's directive-verification rule on its content) never sees them.
  * Rows are marked delivered only after a 'sent' outcome; a non-'sent'
  * outcome leaves them pending, exactly as the router would.
@@ -92,7 +90,10 @@ export async function sendResumeWithDrain(
 ): Promise<SendOutcome> {
   const pending = getPendingMessages(name)
   const drainable = selectDrainableRows(pending, MAIN_AGENT_ID)
-  const capped = drainable.slice(0, RESUME_DRAIN_MAX)
+  const batchCap = batchInjectCapFor(name)
+  const mode = batchCap > 0 ? 'batch' : 'single'
+  const cap = batchCap > 0 ? Math.min(RESUME_DRAIN_MAX, batchCap) : 1
+  const capped = drainable.slice(0, cap)
   const remaining = drainable.length - capped.length
   if (capped.length === 0) {
     return await sendSystemDirective(name, session, text, host, opts)
@@ -120,19 +121,21 @@ export async function sendResumeWithDrain(
     )
     items.push({ prefix, wrapped })
   }
-  const attachment = composeBatchInjection(items, remaining)
-  const outcome = await sendSystemDirective(name, session, text, host, { ...opts, attachAfterDirective: attachment })
+  const attachment = mode === 'batch'
+    ? composeBatchInjection(items, remaining)
+    : items[0].prefix + items[0].wrapped
+  const outcome = await sendSystemDirective(name, session, text, host, { ...opts, attachBeforeDirective: attachment })
   if (outcome === 'sent') {
     for (const row of capped) {
       const marked = markMessageDelivered(row.id)
       if (!marked) logger.warn({ id: row.id }, 'resume drain: markMessageDelivered affected 0 rows (deleted concurrently?)')
     }
-    logger.info({ agent: name, drained: capped.length, remaining }, 'context-guard: resume drain delivered pending rows in the resume injection')
+    logger.info({ agent: name, mode, drained: capped.length, remaining }, 'context-guard: resume drain delivered pending rows in the resume injection')
   } else {
     // Review R1 MINOR fix: the unconditional 'delivered' info line read as a
     // completed delivery even on 'aborted-busy' / 'skipped-locked', where
     // every row stays pending for the router. Nothing was delivered then.
-    logger.warn({ agent: name, outcome, pending: capped.length, remaining }, 'resume drain: non-sent outcome, drained rows stay pending for the router')
+    logger.warn({ agent: name, mode, outcome, pending: capped.length, remaining }, 'resume drain: non-sent outcome, drained rows stay pending for the router')
   }
   return outcome
 }

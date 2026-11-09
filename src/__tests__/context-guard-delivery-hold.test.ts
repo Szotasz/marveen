@@ -115,6 +115,7 @@ async function boot(): Promise<{ runner: Runner; hold: Hold }> {
 }
 
 beforeEach(() => {
+  vi.stubEnv('ROUTER_BATCH_INJECT_AGENTS', 'some-other-agent')
   h.ready = false
   h.sendGate = null
   h.resumeSends = 0
@@ -130,6 +131,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const t of timers) clearInterval(t)
   timers = []
   vi.clearAllTimers()

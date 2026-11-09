@@ -1,11 +1,11 @@
 // Runtime belt for the 08fff6ba caller-opts narrowing of sendResumeWithDrain:
-// the drain owns opts.attachAfterDirective when there are drainable rows, so a
+// the drain owns opts.attachBeforeDirective when there are drainable rows, so a
 // caller-supplied value is overridden by the drain's own attachment and is
 // never forwarded as-is -- while every other caller opt (here onBusyTimeout)
 // survives untouched. The Omit<> on SendPromptOpts makes passing the key a
 // compile error; this test pins the runtime behaviour for call sites that
 // bypass the types anyway (JS callers, any-casts, older builds).
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 const wrapMock = vi.hoisted(() => ({
   classifyAgentMessage: vi.fn(),
@@ -33,7 +33,7 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
-vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'okostodor' }))
+vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'main-agent' }))
 
 import { sendResumeWithDrain } from '../web/resume-queue-drain.js'
 
@@ -51,8 +51,12 @@ function row(over: Partial<Record<string, unknown>> & { id: number }): Record<st
   }
 }
 
+afterEach(() => { vi.unstubAllEnvs() })
+
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubEnv('ROUTER_BATCH_INJECT_AGENTS', '*')
+  vi.stubEnv('ROUTER_BATCH_INJECT_MAX', '50')
   dbMock.markMessageDelivered.mockReturnValue(true)
   dbMock.countNewerMessagesFromSameSender.mockReturnValue(0)
   // Default classification: an ordinary trusted inter-agent row.
@@ -69,10 +73,10 @@ beforeEach(() => {
 })
 
 describe('sendResumeWithDrain caller opts (08fff6ba)', () => {
-  it('overrides a caller-supplied attachAfterDirective with the drain attachment and keeps the rest of the caller opts', async () => {
+  it('overrides a caller-supplied attachBeforeDirective with the drain attachment and keeps the rest of the caller opts', async () => {
     dbMock.getPendingMessages.mockReturnValue([row({ id: 4101, content: 'CALLER-OPTS-ROW' })])
     sysdirMock.sendSystemDirective.mockResolvedValue('sent')
-    // The Omit<> on SendPromptOpts makes passing attachAfterDirective a compile
+    // The Omit<> on SendPromptOpts makes passing attachBeforeDirective a compile
     // error on purpose. The @ts-expect-error pins that under tsc --noEmit (it
     // turns into an "unused directive" error if the key ever becomes legal
     // again), while the call itself is the runtime belt for callers that bypass
@@ -80,13 +84,13 @@ describe('sendResumeWithDrain caller opts (08fff6ba)', () => {
     // is exempted: onBusyTimeout stays type-checked.
     const out = await sendResumeWithDrain('orion', 'agent-orion', 'RESUME TEXT', null, {
       onBusyTimeout: 'abort',
-      // @ts-expect-error -- attachAfterDirective is omitted from SendPromptOpts
-      attachAfterDirective: 'CALLER-SUPPLIED-ATTACH',
+      // @ts-expect-error -- attachBeforeDirective is omitted from SendPromptOpts
+      attachBeforeDirective: 'CALLER-SUPPLIED-ATTACH',
     })
     expect(out).toBe('sent')
     expect(sysdirMock.sendSystemDirective).toHaveBeenCalledTimes(1)
     const forwarded = sysdirMock.sendSystemDirective.mock.calls[0][4] as Record<string, unknown>
-    const attach = forwarded.attachAfterDirective as string
+    const attach = forwarded.attachBeforeDirective as string
     // The drain's own attachment wins: the drained row is in it, the caller's
     // value is never forwarded as-is.
     expect(attach).toContain('CALLER-OPTS-ROW')
