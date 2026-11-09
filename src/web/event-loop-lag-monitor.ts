@@ -13,6 +13,7 @@
 // only: it never restarts or mutates anything.
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { logger } from '../logger.js'
+import { readMachineState, type CpuSnapshot, type MachineStateReader } from './machine-state.js'
 
 // Read the window max/mean/p99 (WARN threshold is on the max: a single long block is the
 // wedge signal, not a raised average). Sampled every 30s; blocked past 1s is "wedged".
@@ -54,15 +55,44 @@ export function classifyLagSample(s: LagSample, thresholdMs: number): 'ok' | 'bl
   return s.maxMs >= thresholdMs ? 'blocked' : 'ok'
 }
 
+// Machine-state support for the WARN line. The reader is INSTALLED at module level by
+// startEventLoopLagMonitor() and uninstalled by stop() instead of being a plain default
+// parameter that always runs: a direct sampleLagOnce(h, t) call outside a running monitor
+// then logs the plain 4-field shape, while production blocked windows carry the machine
+// state. lastCpuSnapshot chains consecutive blocked windows so busyFrac spans them.
+let lastCpuSnapshot: CpuSnapshot | null = null
+let machineStateReader: MachineStateReader | null = null
+
 // Read one window, log on a block, and reset. Extracted + injectable so a test can drive
-// it with a fake histogram; returns the classification for assertions.
-export function sampleLagOnce(h: LagHistogram, thresholdMs: number = WARN_MS): 'ok' | 'blocked' {
+// it with a fake histogram; returns the classification for assertions. The third argument
+// defaults to the module-level reader (set only while a monitor runs) so the machine-state
+// fields appear exactly when a real monitor produced the window.
+export function sampleLagOnce(
+  h: LagHistogram,
+  thresholdMs: number = WARN_MS,
+  readState: MachineStateReader | null = machineStateReader,
+): 'ok' | 'blocked' {
   try {
     const sample = readLagSample(h)
     const verdict = classifyLagSample(sample, thresholdMs)
     if (verdict === 'blocked') {
+      const fields: Record<string, unknown> = {
+        maxMs: Math.round(sample.maxMs), meanMs: Math.round(sample.meanMs),
+        p99Ms: Math.round(sample.p99Ms), thresholdMs,
+      }
+      if (readState) {
+        try {
+          const st = readState(lastCpuSnapshot)
+          lastCpuSnapshot = st.cpu
+          Object.assign(fields, {
+            busyFrac: st.busyFrac, memAvailableMB: st.memAvailableMB, swapUsedMB: st.swapUsedMB,
+            psiMemSome10: st.psiMemSome10, psiCpuSome10: st.psiCpuSome10,
+            topRssPid: st.topRssPid, topRssRssMB: st.topRssRssMB, topRssComm: st.topRssComm,
+          })
+        } catch { /* machine state is best-effort: warn without it */ }
+      }
       logger.warn(
-        { maxMs: Math.round(sample.maxMs), meanMs: Math.round(sample.meanMs), p99Ms: Math.round(sample.p99Ms), thresholdMs },
+        fields,
         'event-loop-lag: the event loop was BLOCKED past the threshold this window -- the dashboard was unresponsive (possible wedge; look for long synchronous work)',
       )
     }
@@ -77,6 +107,7 @@ export interface LagMonitorHandle { sampleMs: number; warnMs: number; stop(): vo
 
 // Starts sampling; stop() clears both timers and disables the histogram.
 export function startEventLoopLagMonitor(): LagMonitorHandle {
+  machineStateReader = readMachineState
   const histogram = monitorEventLoopDelay({ resolution: RESOLUTION_MS })
   histogram.enable()
   const run = () => {
@@ -87,6 +118,12 @@ export function startEventLoopLagMonitor(): LagMonitorHandle {
   return {
     sampleMs: SAMPLE_MS,
     warnMs: WARN_MS,
-    stop() { clearTimeout(initial); clearInterval(interval); histogram.disable() },
+    stop() {
+      clearTimeout(initial); clearInterval(interval); histogram.disable()
+      // Leave the module pristine: reader uninstalled, no cpu snapshot chained across
+      // monitor lifetimes (a busyFrac must never span two different monitors).
+      lastCpuSnapshot = null
+      machineStateReader = null
+    },
   }
 }
