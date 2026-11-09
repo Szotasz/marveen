@@ -159,16 +159,20 @@ describe('mainGromzoPrimaryReady (the TS twin of main_gromzo_primary_ready)', ()
     const { mainGromzoPrimaryReady } = await import('../web/main-gromzo-launch.js')
     const dir = mkdtempSync(join(tmpdir(), 'gz-ready-'))
     const sock = join(dir, 'agent.sock')
-    expect(mainGromzoPrimaryReady('marveen', sock)).toBe(false) // no socket
+    // GROMZOPLUGREG1109: an explicit, registered plugins file (never the host's own ~/.claude); its absence: gromzo-plugin-registered.test.ts
+    const pf = join(dir, 'installed_plugins.json')
+    writeFileSync(pf, JSON.stringify({ version: 2, plugins: { 'gromzo-channel@gromzo-local': [{}] } }))
+    const ready = (slug: string, s: string) => mainGromzoPrimaryReady(slug, s, pf)
+    expect(ready('marveen', sock)).toBe(false) // no socket
     writeFileSync(sock, '')
-    expect(mainGromzoPrimaryReady('marveen', sock)).toBe(false) // socket, no tokens dir
+    expect(ready('marveen', sock)).toBe(false) // socket, no tokens dir
     mkdirSync(join(dir, 'tokens'))
-    expect(mainGromzoPrimaryReady('marveen', sock)).toBe(false) // no token file (not enrolled / held)
+    expect(ready('marveen', sock)).toBe(false) // no token file (not enrolled / held)
     writeFileSync(join(dir, 'tokens', 'marveen.token'), '')
-    expect(mainGromzoPrimaryReady('marveen', sock)).toBe(false) // empty token
+    expect(ready('marveen', sock)).toBe(false) // empty token
     writeFileSync(join(dir, 'tokens', 'marveen.token'), 'tok')
-    expect(mainGromzoPrimaryReady('marveen', sock)).toBe(true)
-    expect(mainGromzoPrimaryReady('Bad Slug!', sock)).toBe(false) // fails mxd's slug rule
+    expect(ready('marveen', sock)).toBe(true)
+    expect(ready('Bad Slug!', sock)).toBe(false) // fails mxd's slug rule
   })
   it('the dashboard sweep leaves a gromzo-pending main session alone (no down spell, no restart); only a live one flushes the kept alerts', () => {
     const cm = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf8')
