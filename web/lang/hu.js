@@ -2357,6 +2357,12 @@ window._i18n.hu = {
   'overview.card.team':          'Csapat',
   'overview.card.activity':      'Aktivitás',
   'overview.meta.live':          'élő állapot',
+  'overview.card.tokens':        'Token-fogyasztás',
+  'overview.tokens.more':        'elmúlt 24 óra · részletek',
+  'overview.tokens.empty':       'Az elmúlt 24 órában nem volt modellhívás.',
+  'overview.tokens.error':       'A token-adat nem tölthető be.',
+  'overview.tokens.row_sub':     '{calls} hívás · átl. {ctx} kontextus/hívás · {out} kimenet',
+  'overview.tokens.total':       'Összesen: {total} token, ebből {pct}% gyorsítótárból olvasva',
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (dashboardról)',
   'ideas.modal.title_ph': 'Rövid, egyértelmű cím',

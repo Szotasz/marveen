@@ -2354,6 +2354,12 @@ window._i18n.en = {
   'overview.card.team':          'Team',
   'overview.card.activity':      'Activity',
   'overview.meta.live':          'live status',
+  'overview.card.tokens':        'Token usage',
+  'overview.tokens.more':        'last 24 hours · details',
+  'overview.tokens.empty':       'No model calls in the last 24 hours.',
+  'overview.tokens.error':       'Token data could not be loaded.',
+  'overview.tokens.row_sub':     '{calls} calls · avg {ctx} context/call · {out} output',
+  'overview.tokens.total':       'Total: {total} tokens, {pct}% read from cache',
 
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (from dashboard)',

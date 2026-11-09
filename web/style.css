@@ -793,6 +793,22 @@ main {
 .overview-card-head h3 { font-size: 16px; font-weight: 600; }
 .overview-card-meta { font-size: 12px; color: var(--text-muted); }
 
+/* Overview token card: one row per agent, bar = share of the busiest agent. */
+.overview-token-card { margin-top: 14px; }
+.overview-token-more { text-decoration: none; }
+.overview-token-more:hover { color: var(--accent); }
+.overview-tokens { display: flex; flex-direction: column; gap: 10px; }
+.overview-token-row { display: grid; grid-template-columns: 120px 1fr auto; gap: 4px 12px; align-items: center; }
+.overview-token-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-token-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.overview-token-bar-fill { height: 100%; border-radius: 4px; background: var(--accent); }
+.overview-token-value { min-width: 64px; font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.overview-token-sub { grid-column: 2 / 4; font-size: 11px; color: var(--text-muted); }
+.overview-token-total { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+@media (max-width: 600px) {
+  .overview-token-row { grid-template-columns: 90px 1fr auto; }
+}
+
 .overview-team-graph {
   padding: 12px 0;
   gap: 14px;
