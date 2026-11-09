@@ -210,8 +210,9 @@ function dailyQuestionOpen(name: string): boolean | undefined {
 // context size at that time). Same in-memory discipline as lastDailyHandoff:
 // a dashboard restart re-seeds and at worst delays one cycle.
 const lastPeriodicHandoff = new Map<string, PeriodicHandoffRecord>()
-// Agents whose last due periodic slot was skipped for an open inbound
-// question; mirrors dailySkipped (the daily tier's skip set).
+// Agents whose due periodic slot is currently HELD for an open inbound
+// question (see periodicHandoffSkipSweep: held until the question clears, so
+// onSkip logs once per hold). In-memory: a dashboard restart only re-logs.
 const periodicSkipped = new Set<string>()
 
 // agent name -> whether the task-close tier is currently ARMED (a card is, or
@@ -1161,7 +1162,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     running && state.phase === 'idle' && periodicTokens !== null,
     periodicTokens ?? 0, nowMs,
     () => dailyQuestionOpen(name),
-    () => logger.info({ name }, 'context-guard: periodic handoff slot skipped -- open inbound question (the next slot fires regardless)'),
+    () => logger.info({ name }, 'context-guard: periodic handoff slot held -- open inbound question (fires once the question clears)'),
   )
   // Task-close: the board is read only while the tier is armed. Eligible only
   // in the idle phase, like the scheduled tiers; the edge keeps its arming

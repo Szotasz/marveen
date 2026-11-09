@@ -14,6 +14,7 @@ import {
   periodicHandoffSweep,
   applyPeriodicHandoffSkipSweep,
   periodicHandoffSkipSweep,
+  PERIODIC_HANDOFF_MIN_MINUTES,
   contextGuardWeakenings,
   PERIODIC_HANDOFF_REASON_PREFIX,
   DAILY_HANDOFF_REASON_PREFIX,
@@ -146,12 +147,36 @@ describe('periodicHandoffSweep -- default off and gates', () => {
 describe('periodicHandoffSkipSweep -- the owner-question hold', () => {
   const rec: PeriodicHandoffRecord = { atMs: NOW - 30 * MIN, tokens: 0 }
 
-  it('an open owner question blocks a due slot and records it as served', () => {
+  it('an open owner question holds a due slot and leaves the record unchanged', () => {
     const r = periodicHandoffSkipSweep(PERIODIC_ONLY, rec, false, true, 200_000, NOW, () => true)
     expect(r.due).toBe(false)
     expect(r.skippedNow).toBe(true)
     expect(r.skippedLast).toBe(true)
-    expect(r.record).toEqual({ atMs: NOW, tokens: 200_000 })
+    expect(r.record).toEqual(rec)
+  })
+
+  it('holds for as long as the question is open, then fires on the first clear sweep (not one slot only)', () => {
+    // The review scenario: 30-minute cadence, floor 0, question open on every
+    // sweep. The old rule fired at the second slot (t=62 min) mid-question.
+    const records = new Map<string, PeriodicHandoffRecord>([['a', { atMs: NOW, tokens: 0 }]])
+    const skipped = new Set<string>()
+    let skips = 0
+    const sweep = (tMin: number, open: boolean): boolean =>
+      applyPeriodicHandoffSkipSweep(records, skipped, 'a', PERIODIC_ONLY, true, 200_000, NOW + tMin * MIN, () => open, () => { skips++ })
+    for (const t of [31, 32, 62, 93, 124, 600]) expect(sweep(t, true)).toBe(false)
+    expect(skips).toBe(1) // logged once per hold, not once per sweep
+    expect(records.get('a')).toEqual({ atMs: NOW, tokens: 0 }) // the slot was never consumed
+    expect(sweep(601, false)).toBe(true)
+    expect(skipped.has('a')).toBe(false)
+  })
+
+  it('a question that is unknown (undefined) does not hold', () => {
+    expect(periodicHandoffSkipSweep(PERIODIC_ONLY, rec, false, true, 200_000, NOW, () => undefined).due).toBe(true)
+  })
+
+  it('a hold that ends because the slot stops being due clears the holding flag', () => {
+    const r = periodicHandoffSkipSweep(PERIODIC_ONLY, { atMs: NOW, tokens: 0 }, true, true, 200_000, NOW, () => true)
+    expect(r).toEqual({ due: false, record: { atMs: NOW, tokens: 0 }, skippedLast: false, skippedNow: false })
   })
 
   it('no question: fires', () => {
@@ -262,5 +287,31 @@ describe('runner wiring', () => {
       "  if (decision.action === 'request-handoff' || decision.action === 'restart') {\n" +
       '    lastPeriodicHandoff.delete(name)\n',
     )
+  })
+})
+
+describe('periodicHandoffMinutes floor and the runner pins (FLEET REVIEW #2616)', () => {
+  it('a value below the floor is raised to PERIODIC_HANDOFF_MIN_MINUTES, not reset to the default', () => {
+    for (const v of [0.1, 1, 14.9]) {
+      expect(normalizeContextGuardConfig({ periodicHandoffMinutes: v }).periodicHandoffMinutes).toBe(PERIODIC_HANDOFF_MIN_MINUTES)
+    }
+    expect(normalizeContextGuardConfig({ periodicHandoffMinutes: 20 }).periodicHandoffMinutes).toBe(20)
+    expect(normalizeContextGuardConfig({ periodicHandoffMinutes: 0 }).periodicHandoffMinutes).toBe(DEFAULT_CONTEXT_GUARD.periodicHandoffMinutes)
+    expect(PERIODIC_HANDOFF_MIN_MINUTES).toBeGreaterThanOrEqual(DEFAULT_CONTEXT_GUARD.cooldownMinutes)
+  })
+
+  it('the runner makes the periodic tier ineligible when the context size is unmeasurable', () => {
+    // A failed measurement (null) must not seed or compare as 0 tokens.
+    expect(runnerSrc()).toMatch(/applyPeriodicHandoffSkipSweep\([\s\S]{0,200}running && state\.phase === 'idle' && periodicTokens !== null,/)
+  })
+
+  it('the guard-disabled early return forgets the task-close arming', () => {
+    const src = runnerSrc()
+    const start = src.indexOf('!cfg.taskCloseHandoffEnabled) {')
+    expect(start).toBeGreaterThan(-1)
+    const block = src.slice(start, src.indexOf('return\n', start))
+    expect(block).toContain('taskCloseArmed.delete(name)')
+    expect(block).toContain('lastPeriodicHandoff.delete(name)')
+    expect(block).toContain('periodicSkipped.delete(name)')
   })
 })

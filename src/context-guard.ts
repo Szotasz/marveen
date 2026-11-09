@@ -183,6 +183,10 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
  * (about 5800 years): it keeps the latest possible Date plus two such durations
  * a safe integer.
  */
+/** Lowest accepted periodicHandoffMinutes; a smaller value is raised to this
+ *  (not reset to the default), so "as often as allowed" stays meaningful. */
+export const PERIODIC_HANDOFF_MIN_MINUTES = 15
+
 export const MAX_GUARD_MINUTES = Math.floor((Number.MAX_SAFE_INTEGER - 8.64e15) / (2 * 60_000))
 
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
@@ -229,7 +233,11 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
         ? Math.min(o.heavyJobDeferMaxMinutes, 24 * 60)
         : DEFAULT_CONTEXT_GUARD.heavyJobDeferMaxMinutes,
     periodicHandoffEnabled: o.periodicHandoffEnabled === true, // default-off (opt-in), like the other scheduled tiers
-    periodicHandoffMinutes: mins(o.periodicHandoffMinutes, DEFAULT_CONTEXT_GUARD.periodicHandoffMinutes),
+    // Floored at PERIODIC_HANDOFF_MIN_MINUTES: the shared token can lower this
+    // for another agent (contextGuardWeakenings reads a lower value as a
+    // strengthening), and without a floor 0.1 would arm a restart on every
+    // sweep -- the "no per-minute restart" rule this tier is built around.
+    periodicHandoffMinutes: Math.max(PERIODIC_HANDOFF_MIN_MINUTES, mins(o.periodicHandoffMinutes, DEFAULT_CONTEXT_GUARD.periodicHandoffMinutes)),
     // 0 is a real value here (fire on the clock regardless of growth), so not
     // the >= 10_000 typo-guard idleFlushTokens/limitTokens use: those gate
     // "is this session big", this one gates "how much growth is enough to be
@@ -1068,13 +1076,18 @@ export function applyPeriodicHandoffSweep(
 }
 
 /**
- * periodicHandoffSweep plus the open-question skip, mirroring
- * dailyHandoffSkipSweep. Unlike the task-close tier, the periodic tier has a
- * real "next slot" (another `periodicHandoffMinutes` away), so a due slot
- * found with an open owner question is deferred exactly like the daily tier:
- * recorded as served now, so it does not re-check every sweep until the
- * question clears, and the NEXT due slot fires regardless of whether this one
- * was skipped.
+ * periodicHandoffSweep plus the open-question hold. Unlike the daily tier
+ * (which skips at most one slot, then fires regardless), the periodic tier
+ * HOLDS a due slot for as long as an owner question is open, the way the
+ * task-close tier does: the record is left unchanged, so the slot stays due
+ * and the question is re-read on every sweep, and the handoff fires on the
+ * first sweep after the question clears. The daily rule ("the next slot fires
+ * regardless") would, on a 30-minute cadence, type a handoff into the agent
+ * mid-question whenever a question stays unanswered past one interval.
+ *
+ * `skippedLast` here means "currently holding": it stays true across the held
+ * sweeps so onSkip is logged once per hold, not once per sweep, and it clears
+ * as soon as the slot fires or stops being due.
  */
 export function periodicHandoffSkipSweep(
   cfg: ContextGuardConfig,
@@ -1087,8 +1100,8 @@ export function periodicHandoffSkipSweep(
 ): { due: boolean; record: PeriodicHandoffRecord | undefined; skippedLast: boolean; skippedNow: boolean } {
   const sweep = periodicHandoffSweep(cfg, lastRun, eligible, contextTokens, nowMs)
   if (!cfg.periodicHandoffEnabled) return { due: false, record: sweep.record, skippedLast: false, skippedNow: false }
-  if (!sweep.due || skippedLast) return { ...sweep, skippedLast, skippedNow: false }
-  if (readQuestionOpen() === true) return { due: false, record: { atMs: nowMs, tokens: contextTokens }, skippedLast: true, skippedNow: true }
+  if (!sweep.due) return { ...sweep, skippedLast: false, skippedNow: false }
+  if (readQuestionOpen() === true) return { due: false, record: sweep.record, skippedLast: true, skippedNow: !skippedLast }
   return { ...sweep, skippedLast: false, skippedNow: false }
 }
 
