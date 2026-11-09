@@ -93,6 +93,7 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentModel: () => null,
   readAgentRemoteHost: () => null,
   readAgentEngineConfig: () => ({ engine: 'claude', codexConfigDir: null }),
+  readAgentEngineConfigSafe: () => ({ engine: 'claude', codexConfigDir: null }),
 }))
 vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))
 vi.mock('../web/active-model.js', async () => {

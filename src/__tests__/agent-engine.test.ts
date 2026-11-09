@@ -55,6 +55,21 @@ describe('per-agent engine pilot', () => {
     expect(source.indexOf("engineConfig.engine === 'codex'")).toBeLessThan(source.indexOf('const ownOauth = decideOwnOauthToken'))
   })
 
+  it('U1 accepts clearing the Codex config directory on a Claude agent', () => {
+    expect(() => validateAgentEngine({ engine: 'claude', codexConfigDir: '' })).not.toThrow()
+    expect(validateAgentEngine({ engine: 'claude', codexConfigDir: '' }))
+      .toEqual({ engine: 'claude', codexConfigDir: null })
+  })
+
+  it('U2 restricts Codex to the local dashboard user while allowing Claude execution settings', () => {
+    const error = new Error('Codex pilot agents must run locally as the dashboard user')
+    expect.soft(() => validateAgentEngine({ engine: 'codex', codexConfigDir: home, runAsUser: 'svc-user' })).toThrow(error)
+    expect.soft(() => validateAgentEngine({ engine: 'codex', codexConfigDir: home, remoteHost: 'h1' })).toThrow(error)
+    expect(() => validateAgentEngine({ engine: 'codex', codexConfigDir: home })).not.toThrow()
+    expect(validateAgentEngine({ engine: 'codex', codexConfigDir: home }).engine).toBe('codex')
+    expect(() => validateAgentEngine({ engine: 'claude', runAsUser: 'svc-user', remoteHost: 'h1' })).not.toThrow()
+  })
+
   it('accepts Codex with an absolute config directory', () => {
     expect(validateAgentEngine({ engine: 'codex', codexConfigDir: home }).engine).toBe('codex')
     expect(validateAgentEngine({ engine: 'claude' }).engine).toBe('claude')

@@ -181,3 +181,22 @@ it('T15 refuses remote hosts for Codex while allowing clearing and Claude remote
   const claudeResponse = await request('/api/agents/agent-b/remote', 'PUT', { host: 'h1', workdir: '/w' })
   expect(claudeResponse.status).toBe(200)
 })
+
+it.each([
+  { name: 'agent-a', config: { engine: 'claude', runAsUser: 'svc-user' } },
+  { name: 'agent-b', config: { engine: 'claude', remoteHost: 'h1' } },
+])('T16 refuses switching $name with existing execution settings to Codex before writing', async ({ name, config }) => {
+  const dir = agentDir(name)
+  mkdirSync(dir, { recursive: true })
+  const configPath = join(dir, 'agent-config.json')
+  writeFileSync(configPath, JSON.stringify(config))
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: {} }))
+  const before = readFileSync(configPath)
+  const home = join(sandbox, 't16-codex-home')
+  rmSync(home, { recursive: true, force: true })
+  const response = await request(`/api/agents/${name}`, 'PUT', { engine: 'codex', codexConfigDir: home })
+  expect.soft(response.status).toBe(400)
+  expect.soft(response.body.error).toBe('Codex pilot agents must run locally as the dashboard user')
+  expect.soft(readFileSync(configPath)).toEqual(before)
+  expect.soft(existsSync(home)).toBe(false)
+})
