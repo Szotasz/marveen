@@ -15,6 +15,7 @@ import {
 // double-restarting against the existing context-clean path (#525) until the two
 // systems share a trigger.
 const STORE_PATH = join(PROJECT_ROOT, 'store', 'context-guard.json')
+export { STORE_PATH as CONTEXT_GUARD_STORE_PATH } // MODEPRESETS1109: share the rollback target with the mode route.
 
 function readRaw(): Record<string, unknown> {
   try {

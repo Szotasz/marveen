@@ -23,6 +23,8 @@ import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
 import { startRotationBackend, defaultRotationBackendDeps } from './web/claude-rotation-backend.js'
 import { withRotationLock } from './web/claude-rotation-lock.js'
+// MODEPRESETS1109: owner-managed preset configuration.
+import { tryHandleModePresets } from './web/routes/mode-presets.js'
 import { tryHandleOperator } from './web/routes/operator.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -297,6 +299,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleOperator(routeCtx, WEB_DIR)) return
       if (await tryHandleColleague(routeCtx, WEB_DIR)) return
       if (await tryHandleSupportAccess(routeCtx)) return
+      if (await tryHandleModePresets(routeCtx)) return
       if (await tryHandleSecurity(routeCtx)) return
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
