@@ -12,8 +12,8 @@
 // latency on three long-turn agents: p90 26-45 min, max 71-140 min.
 //
 // The fix: when the resume prompt is injected, the drainable part of the
-// recipient's pending queue rides in the SAME injection, before the
-// directive header -- the first turn can no longer starve delivery for its
+// recipient's pending queue rides in the SAME injection, appended after the
+// directive body -- the first turn can no longer starve delivery for its
 // whole duration.
 //
 // SAFETY ARGUMENT (why the router cannot double-send a drained row): both
@@ -31,10 +31,10 @@ import { batchInjectCapFor, composeBatchInjection, type BatchInjectItem } from '
 import { sendSystemDirective } from './system-directive.js'
 import { logger } from '../logger.js'
 
-// The drain owns attachBeforeDirective: passing it as a caller is now a compile
+// The drain owns attachAfterDirective: passing it as a caller is now a compile
 // error, and the runtime behavior (a caller-supplied value is overridden by the
 // drain's attachment) is pinned by src/__tests__/resume-queue-drain-opts.test.ts.
-type SendPromptOpts = Omit<NonNullable<Parameters<typeof sendSystemDirective>[4]>, 'attachBeforeDirective'>
+type SendPromptOpts = Omit<NonNullable<Parameters<typeof sendSystemDirective>[4]>, 'attachAfterDirective'>
 type SendOutcome = Awaited<ReturnType<typeof sendSystemDirective>>
 
 /** Cap per resume injection; the remainder stays pending for the router.
@@ -74,8 +74,9 @@ export function selectDrainableRows(rows: AgentMessage[], mainAgentId: string): 
  *
  * With nothing to drain this is byte-identical to sendSystemDirective. The
  * directive TEXT argument stays the caller's prompt unchanged -- the drained
- * rows ride in opts.attachBeforeDirective, so the anchor row (and the
- * recipient's directive-verification rule on its content) never sees them.
+ * rows ride in opts.attachAfterDirective, appended after the directive body,
+ * so the anchor row (and the recipient's directive-verification rule on its
+ * content) never sees them.
  * Rows are marked delivered only after a 'sent' outcome; a non-'sent'
  * outcome leaves them pending, exactly as the router would.
  */
@@ -124,7 +125,7 @@ export async function sendResumeWithDrain(
   const attachment = mode === 'batch'
     ? composeBatchInjection(items, remaining)
     : items[0].prefix + items[0].wrapped
-  const outcome = await sendSystemDirective(name, session, text, host, { ...opts, attachBeforeDirective: attachment })
+  const outcome = await sendSystemDirective(name, session, text, host, { ...opts, attachAfterDirective: attachment })
   if (outcome === 'sent') {
     for (const row of capped) {
       const marked = markMessageDelivered(row.id)

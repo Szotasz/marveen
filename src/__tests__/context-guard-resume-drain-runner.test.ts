@@ -177,7 +177,7 @@ describe.each(['immediate loop', 'sweep backstop'] as const)('%s resume drain', 
     expect(calls.length).toBeGreaterThan(0)
     for (const call of calls) {
       expect(call[0]).toBe('agent-x')
-      expect(call[4]).toMatchObject({ attachBeforeDirective: expect.stringContaining('PENDING-PEER-CONTENT') })
+      expect(call[4]).toMatchObject({ attachAfterDirective: expect.stringContaining('PENDING-PEER-CONTENT') })
       if (site === 'immediate loop') expect(call[4]).toMatchObject({ onBusyTimeout: 'abort' })
       else expect(call[4]).not.toHaveProperty('onBusyTimeout')
     }

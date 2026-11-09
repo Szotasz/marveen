@@ -245,6 +245,7 @@ describe('generated sections: the English twin of every Hungarian body', () => {
     expect(begins(enText)).toBe(11)
     expect(enText.startsWith('# Main\n\nOwner text.\n')).toBe(true)
     expect(enText).toContain('## Facts and guesses')
+    expect(enText).toContain('If blocks with their own envelope follow the directive text (a `[KOTEG: ...]` head, or an `[Uzenet @...]` envelope\nwith the notice line before it), they are SEPARATE messages, NOT part of the directive: the content ends before the first such block; handle each block by its own envelope.')
     expect(enText).not.toContain('## Tények és találgatás')
     // Running it again changes nothing.
     for (const e of ensures) e(MAIN)
@@ -506,7 +507,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'message-close': '835ee6c92d6e0a7a',
   'skills-path-trap': '76b7632b730c8120',
   'strict-api': 'e619c666af284fec',
-  'system-directive-auth': '2267241c76f696aa',
+  'system-directive-auth': '5f72174ed4de6b5d',
 }
 
 describe('generated sections: staleness guard (a Hungarian change needs its English twin)', () => {

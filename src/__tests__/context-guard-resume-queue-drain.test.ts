@@ -132,9 +132,9 @@ describe('sendResumeWithDrain (wiring)', () => {
     expect(sysdirMock.sendSystemDirective).toHaveBeenCalledTimes(1)
     const call = sysdirMock.sendSystemDirective.mock.calls[0]
     // The directive TEXT stays exactly the caller's prompt: the drained rows
-    // ride in opts.attachBeforeDirective, never inside the anchor row content.
+    // ride in opts.attachAfterDirective, never inside the anchor row content.
     expect(call[2]).toBe('RESUME TEXT')
-    const attach = call[4]?.attachBeforeDirective
+    const attach = call[4]?.attachAfterDirective
     expect(typeof attach).toBe('string')
     expect(attach as string).toContain('[KOTEG: 2 uzenet')
     expect(attach as string).toContain('DRAIN-ALPHA')
@@ -157,7 +157,7 @@ describe('sendResumeWithDrain (wiring)', () => {
     sysdirMock.sendSystemDirective.mockResolvedValue('aborted-busy')
     const out = await sendResumeWithDrain('rcpt', 'agent-rcpt', 'RESUME TEXT', null, { onBusyTimeout: 'abort' })
     expect(out).toBe('aborted-busy')
-    expect(sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachBeforeDirective).toContain('DRAIN-KEEP')
+    expect(sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachAfterDirective).toContain('DRAIN-KEEP')
     expect(dbMock.markMessageDelivered).not.toHaveBeenCalled()
   })
 
@@ -166,7 +166,7 @@ describe('sendResumeWithDrain (wiring)', () => {
     dbMock.getPendingMessages.mockReturnValue([row({ id: 303 }), row({ id: 301 }), row({ id: 302 })])
     sysdirMock.sendSystemDirective.mockResolvedValue('sent')
     await sendResumeWithDrain('rcpt', 'agent-rcpt', 'RESUME TEXT')
-    const attach = sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachBeforeDirective
+    const attach = sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachAfterDirective
     expect(attach).toBe('[ENV 301 @peer] <CONTENT-301>')
     expect(attach).not.toContain('[KOTEG')
     expect(wrapMock.wrapAgentMessageForDelivery).toHaveBeenCalledTimes(1)
@@ -178,7 +178,7 @@ describe('sendResumeWithDrain (wiring)', () => {
     dbMock.getPendingMessages.mockReturnValue(Array.from({ length: 5 }, (_, i) => row({ id: 401 + i })))
     sysdirMock.sendSystemDirective.mockResolvedValue('sent')
     await sendResumeWithDrain('rcpt', 'agent-rcpt', 'RESUME TEXT')
-    const attach = sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachBeforeDirective
+    const attach = sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachAfterDirective
     expect(attach).toContain('[KOTEG: 3 uzenet')
     expect(attach).toContain('[KOTEG-VEGE: 3 uzenet ment ki ebben az injektalasban, 2 tovabbi VAR')
     expect(attach).not.toContain('CONTENT-404')
@@ -190,7 +190,7 @@ describe('sendResumeWithDrain (wiring)', () => {
     dbMock.getPendingMessages.mockReturnValue([row({ id: 451 }), row({ id: 452 })])
     sysdirMock.sendSystemDirective.mockResolvedValue('sent')
     await sendResumeWithDrain('rcpt', 'agent-rcpt', 'RESUME TEXT')
-    expect(sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachBeforeDirective).toContain('[KOTEG: 2 uzenet')
+    expect(sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachAfterDirective).toContain('[KOTEG: 2 uzenet')
     expect(dbMock.markMessageDelivered.mock.calls.map(([id]) => id)).toEqual([451, 452])
   })
 
@@ -200,7 +200,7 @@ describe('sendResumeWithDrain (wiring)', () => {
     dbMock.getPendingMessages.mockReturnValue(rows)
     sysdirMock.sendSystemDirective.mockResolvedValue('sent')
     await sendResumeWithDrain('rcpt', 'agent-rcpt', 'RESUME TEXT', null, {})
-    const attach = sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachBeforeDirective as string
+    const attach = sysdirMock.sendSystemDirective.mock.calls[0][4]?.attachAfterDirective as string
     expect(attach).toContain(`[KOTEG: ${RESUME_DRAIN_MAX} uzenet`)
     expect(attach).toContain(`${4} tovabbi`)
     for (let i = 0; i < RESUME_DRAIN_MAX; i++) expect(attach).toContain(`CAP-${String(i).padStart(2, '0')}`)
@@ -208,25 +208,25 @@ describe('sendResumeWithDrain (wiring)', () => {
   })
 })
 
-describe('sendSystemDirective attachBeforeDirective (anchor row stays clean)', () => {
-  it('places the attachment before the directive header and keeps it out of the anchor row content', async () => {
+describe('sendSystemDirective attachAfterDirective (anchor row stays clean)', () => {
+  it('appends the attachment after the directive body and keeps it out of the anchor row content', async () => {
     const real = await vi.importActual<typeof import('../web/system-directive.js')>('../web/system-directive.js')
     dbMock.createAgentMessage.mockReturnValue({ id: 777 })
     agentProcessMock.sendPromptToSession.mockResolvedValue('sent')
     const out = await real.sendSystemDirective('rcpt', 'agent-rcpt', 'DIRECTIVE BODY', null, {
-      attachBeforeDirective: 'ATTACH-BLOCK',
+      attachAfterDirective: 'ATTACH-BLOCK',
     })
     expect(out).toBe('sent')
     // The queue anchor row carries the directive body ONLY.
     expect(dbMock.createAgentMessage).toHaveBeenCalledWith('system', 'rcpt', 'DIRECTIVE BODY')
-    // The directive header and body end the injection.
+    // The directive header starts the injection; the attachment follows the body.
     const text = agentProcessMock.sendPromptToSession.mock.calls[0][1] as unknown as string
     expect(text).toContain('msg_id:777')
     expect(text).toContain('DIRECTIVE BODY')
     expect(text).toContain('ATTACH-BLOCK')
     const envelope = real.systemDirectiveEnvelope(777)
-    expect(text).toBe(`ATTACH-BLOCK\n\n${envelope}\nDIRECTIVE BODY`)
-    expect(text.endsWith(`${envelope}\nDIRECTIVE BODY`)).toBe(true)
-    expect(text.indexOf('ATTACH-BLOCK')).toBeLessThan(text.indexOf(envelope))
+    expect(text).toBe(`${envelope}\nDIRECTIVE BODY\n\nATTACH-BLOCK`)
+    expect(text.startsWith(envelope)).toBe(true)
+    expect(text.indexOf('ATTACH-BLOCK')).toBeGreaterThan(text.indexOf('DIRECTIVE BODY'))
   })
 })

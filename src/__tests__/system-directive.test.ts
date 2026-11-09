@@ -89,6 +89,12 @@ describe('sendSystemDirective', () => {
 })
 
 describe('systemDirectiveEnvelope', () => {
+  it('keeps separately enveloped messages outside the directive and has no nested brackets', () => {
+    const envelope = systemDirectiveEnvelope(123)
+    expect(envelope).toMatch(/^\[SYSTEM-DIREKTIVA msg_id:123 [^\[\]]*\]$/)
+    expect(envelope).toContain('KULON uzenetek')
+  })
+
   it('names the id, the verification target and the fail-closed rule', () => {
     const env = systemDirectiveEnvelope(7)
     expect(env).toContain('msg_id:7')

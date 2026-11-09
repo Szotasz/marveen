@@ -1,5 +1,5 @@
 // Runtime belt for the 08fff6ba caller-opts narrowing of sendResumeWithDrain:
-// the drain owns opts.attachBeforeDirective when there are drainable rows, so a
+// the drain owns opts.attachAfterDirective when there are drainable rows, so a
 // caller-supplied value is overridden by the drain's own attachment and is
 // never forwarded as-is -- while every other caller opt (here onBusyTimeout)
 // survives untouched. The Omit<> on SendPromptOpts makes passing the key a
@@ -73,10 +73,10 @@ beforeEach(() => {
 })
 
 describe('sendResumeWithDrain caller opts (08fff6ba)', () => {
-  it('overrides a caller-supplied attachBeforeDirective with the drain attachment and keeps the rest of the caller opts', async () => {
+  it('overrides a caller-supplied attachAfterDirective with the drain attachment and keeps the rest of the caller opts', async () => {
     dbMock.getPendingMessages.mockReturnValue([row({ id: 4101, content: 'CALLER-OPTS-ROW' })])
     sysdirMock.sendSystemDirective.mockResolvedValue('sent')
-    // The Omit<> on SendPromptOpts makes passing attachBeforeDirective a compile
+    // The Omit<> on SendPromptOpts makes passing attachAfterDirective a compile
     // error on purpose. The @ts-expect-error pins that under tsc --noEmit (it
     // turns into an "unused directive" error if the key ever becomes legal
     // again), while the call itself is the runtime belt for callers that bypass
@@ -84,13 +84,13 @@ describe('sendResumeWithDrain caller opts (08fff6ba)', () => {
     // is exempted: onBusyTimeout stays type-checked.
     const out = await sendResumeWithDrain('orion', 'agent-orion', 'RESUME TEXT', null, {
       onBusyTimeout: 'abort',
-      // @ts-expect-error -- attachBeforeDirective is omitted from SendPromptOpts
-      attachBeforeDirective: 'CALLER-SUPPLIED-ATTACH',
+      // @ts-expect-error -- attachAfterDirective is omitted from SendPromptOpts
+      attachAfterDirective: 'CALLER-SUPPLIED-ATTACH',
     })
     expect(out).toBe('sent')
     expect(sysdirMock.sendSystemDirective).toHaveBeenCalledTimes(1)
     const forwarded = sysdirMock.sendSystemDirective.mock.calls[0][4] as Record<string, unknown>
-    const attach = forwarded.attachBeforeDirective as string
+    const attach = forwarded.attachAfterDirective as string
     // The drain's own attachment wins: the drained row is in it, the caller's
     // value is never forwarded as-is.
     expect(attach).toContain('CALLER-OPTS-ROW')
