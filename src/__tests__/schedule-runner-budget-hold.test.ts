@@ -1,3 +1,4 @@
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
@@ -121,3 +122,6 @@ describe('agent budget hold in a real cron tick', () => {
     expect(skippedRows()).toEqual([['budget-hb-held', 'held-agent']])
   })
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['sess-hb-free', 'sess-hb-held', 'sess-owner-held'])

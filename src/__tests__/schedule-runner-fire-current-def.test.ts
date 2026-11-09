@@ -1,3 +1,4 @@
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
@@ -246,3 +247,6 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     expect(sentTo(MAIN_CHANNELS_SESSION)[0].prompt).toContain('to everyone')
   })
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['first-session', 'second-session'])

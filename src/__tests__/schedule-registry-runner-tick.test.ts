@@ -209,6 +209,20 @@ afterEach(() => {
 })
 
 describe('runner tick x registry (real tick, real registry)', () => {
+  it('an OLD stored task (on disk, registered, never through the API) with forceSend and a non-fleet targetSession is not sent, and the main agent hears it (OWNEREXEC1109)', async () => {
+    await createViaApi('old-ok', 'Fleet session control.')
+    mkdirSync(dirOf('old-shell'), { recursive: true })
+    writeFileSync(join(dirOf('old-shell'), 'SKILL.md'), '---\nname: old-shell\ndescription: stored before the gate\n---\n\nMust not be typed.\n')
+    writeFileSync(join(dirOf('old-shell'), 'task-config.json'), JSON.stringify(
+      { schedule: '* * * * *', agent: AGENT, enabled: true, forceSend: true, targetSession: 'old-plain-shell', createdAt: 1 }, null, 2))
+    expect(registerScheduledTask('old-shell', 'cli')).toBeTruthy()
+    await runOneTick()
+    expect(sentTo('old-ok').length).toBe(1)
+    expect(sent.filter(x => x.session === 'old-plain-shell')).toEqual([])
+    const notices = getDb().prepare("SELECT content FROM agent_messages WHERE from_agent = 'system' AND content LIKE ?").all('%"old-plain-shell"%')
+    expect(notices.length).toBe(1)
+  })
+
   it('a targetSession that is not a fleet session is never typed into, and the main agent hears it once (OWNEREXEC1109)', async () => {
     await createViaApi('tgt-ok', 'Fleet session control.')
     const r = await call('POST', '/api/schedules', {
@@ -219,7 +233,7 @@ describe('runner tick x registry (real tick, real registry)', () => {
     await runOneTick()
     expect(sentTo('tgt-ok').length).toBe(1)
     expect(sent.filter(x => x.session === 'plain-shell')).toEqual([])
-    const notices = getDb().prepare("SELECT content FROM agent_messages WHERE from_agent = 'system' AND content LIKE '%plain-shell%'").all()
+    const notices = getDb().prepare("SELECT content FROM agent_messages WHERE from_agent = 'system' AND content LIKE ?").all('%"plain-shell"%')
     expect(notices.length).toBe(1)
   })
 

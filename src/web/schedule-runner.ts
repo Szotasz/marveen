@@ -1908,7 +1908,10 @@ function mcpMissingReason(taskName: string, agentName: string): string {
 // 'error' run and tells the main agent once); the janitor does not touch its pane either. This also covers a task
 // stored before the API gated the field.
 export function allowedTargetSessions(agents: string[] = listAgentNames()): Set<string> {
-  return new Set([MAIN_CHANNELS_SESSION, ...agents.map((a) => agentSessionName(a))])
+  // A test-only list (src/__tests__/helpers/allow-target-sessions.ts) for suites whose fixtures use made-up session
+  // names; production never sets this symbol.
+  const testOnly = (globalThis as Record<symbol, unknown>)[Symbol.for('marveen.schedule.targetSessionAllowForTest')] as Set<string> | undefined
+  return new Set([MAIN_CHANNELS_SESSION, ...agents.map((a) => agentSessionName(a)), ...(testOnly ?? [])])
 }
 export function targetSessionRefused(task: Pick<ScheduledTask, 'targetSession'>, allowed: () => Set<string> = allowedTargetSessions): boolean {
   return !!task.targetSession && !allowed().has(task.targetSession)

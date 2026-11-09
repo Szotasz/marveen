@@ -13,6 +13,7 @@
 // if a future readiness/first-run gate turns the caller back before the
 // helper (the exact bug class #1123 fixed), the positive case goes red.
 
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
@@ -185,3 +186,6 @@ describe('schedule runner: modal cleared on the refusal branch -> the task fires
     expect(mockDeletePendingRetry).not.toHaveBeenCalled()
   })
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['modal-test-session'])

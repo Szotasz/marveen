@@ -15,6 +15,7 @@
 // real cron tick), with tmux and the DB mocked -- same fixture shape as the
 // sibling scheduler suites.
 
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
@@ -295,3 +296,6 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
     }
   })
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['usage-limit-test-session'])
