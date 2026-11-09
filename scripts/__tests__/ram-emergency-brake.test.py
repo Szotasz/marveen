@@ -5,10 +5,10 @@ Run: python3 scripts/__tests__/ram-emergency-brake.test.py
 
 Nothing here kills, unloads or sends anything: the process table is a fake
 /proc tree in a temp dir, meminfo/PSI are temp files, and the killer, the
-ollama client and the Telegram alert are recording fakes. The REAL
-TelegramAlert only ever runs against a fake send helper in a temp dir (to
-prove the bot token never reaches the log and the owner chat is resolved),
-so nothing is ever sent. The owner-chat resolver runs on temp install trees.
+ollama client and the owner alert are recording fakes. The REAL NotifyAlert
+only ever runs a fake notify.sh, or the REAL scripts/notify.sh copied into a
+temp install whose PATH puts a recording stand-in `node` (the Slack helper)
+and `curl` (the Telegram Bot API) first, so nothing is ever sent.
 """
 import sys
 
@@ -142,8 +142,10 @@ class FakeOllama:
     def __init__(self, models):
         self.models = list(models)
         self.unloaded = []
+        self.loaded_calls = 0
 
     def loaded(self):
+        self.loaded_calls += 1
         return list(self.models)
 
     def unload(self, m):
@@ -189,7 +191,9 @@ def write_psi(path, full):
                 "full avg10=%.2f avg60=0.00 avg300=0.00 total=1\n" % full)
 
 
-def make_brake(td, proc_root, models=(), dry_run=False, alert=None):
+def make_brake(td, proc_root, models=(), dry_run=False, alert=None, mod=None, **brake_kw):
+    """A Brake of `mod` (default: the brake under test) on temp files; brake_kw go to
+    Brake() as given (no ollama_* key = the Brake's own default)."""
     mem = os.path.join(td, "meminfo")
     psi = os.path.join(td, "psi")
     write_mem(mem, 5000)
@@ -201,10 +205,10 @@ def make_brake(td, proc_root, models=(), dry_run=False, alert=None):
         return {p: "term" for p in victim["targets"]}
 
     clock = Clock()
-    b = rvf.Brake(dry_run=dry_run, log_path=os.path.join(td, "log.jsonl"), meminfo_path=mem,
-                  psi_path=psi, proc_root=proc_root, ollama=FakeOllama(models),
-                  alert=alert or FakeAlert(), killer=killer, clock=clock, my_uid=UID,
-                  protected_pids=(), echo=False)
+    b = (mod or rvf).Brake(dry_run=dry_run, log_path=os.path.join(td, "log.jsonl"), meminfo_path=mem,
+                           psi_path=psi, proc_root=proc_root, ollama=FakeOllama(models),
+                           alert=alert or FakeAlert(), killer=killer, clock=clock, my_uid=UID,
+                           protected_pids=(), echo=False, **brake_kw)
     return b, mem, psi, killed, clock
 
 
@@ -428,7 +432,7 @@ def sc_lock_fresh(m):
         return mode == 0o600 and body == "pid=%d\n" % os.getpid() and second == "held", (oct(mode), body, second)
 
 
-EXCEPTION = ("TelegramAlert", "abort")   # the ONE documented exception: the alert child's own kill
+EXCEPTION = ("NotifyAlert", "abort")   # the ONE documented exception: the alert child's own kill
 SIGNAL_FUNCS = ("send_checked",)
 
 
@@ -439,7 +443,7 @@ def sc_static(path):
     - os.kill / os.killpg / signal.pidfd_send_signal / signal.pthread_kill are
       referenced only inside send_checked();
     - .kill() / .terminate() / .send_signal() are called only inside
-      TelegramAlert.abort() (the alert child), the one documented exception,
+      NotifyAlert.abort() (the alert child), the one documented exception,
       and that exception says so in its docstring."""
     import ast
     text = open(path).read()
@@ -468,6 +472,229 @@ def sc_static(path):
     if not exc_doc:
         bad.append("the exception %s.%s is not documented as THE ONE EXCEPTION" % EXCEPTION)
     return found == list(SIGNAL_FUNCS) and not bad, (found, bad)
+
+
+# ---- ollama unload (opt-in) and the provider-neutral alert: scenarios on the MODULE too ----
+OLLAMA_MODELS = ["qwen2.5:7b", "llama3.1:8b"]
+
+
+def _ollama_run(m, td, models=OLLAMA_MODELS, **kw):
+    root = os.path.join(td, "proc")
+    os.makedirs(root)
+    mkproc(root, 301, "ffmpeg", ["ffmpeg", "-i", "raw.mov", "out.mp4"], 1500)
+    b, mem, psi, killed, clock = make_brake(td, root, models=models, mod=m, **kw)
+    write_mem(mem, 300)
+    b.step(); clock.t += 3; b.step()
+    return b, killed
+
+
+def sc_unload_default_off(m):
+    """No ollama argument, and the config defaults (no file, {}): nothing is unloaded,
+    ollama is not asked, the first action is the kill."""
+    seen = []
+    with tempfile.TemporaryDirectory() as td:
+        sub = os.path.join(td, "brake-default")
+        os.makedirs(sub)
+        b, killed = _ollama_run(m, sub)
+        seen.append(("brake default", b.ollama.unloaded, b.ollama.loaded_calls, killed))
+        for label, body in (("no config file", None), ("empty config", {})):
+            cfg_path = os.path.join(td, label.replace(" ", "-") + ".json")
+            if body is not None:
+                _write(cfg_path, body)
+            cfg = m.load_full_config(cfg_path)
+            sub = os.path.join(td, label.replace(" ", "-"))
+            os.makedirs(sub)
+            b, killed = _ollama_run(m, sub, ollama_unload=cfg["ollama_unload"],
+                                    ollama_models=cfg["ollama_models"])
+            seen.append((label, b.ollama.unloaded, b.ollama.loaded_calls, killed))
+    ok = all(u == [] and calls == 0 and k == [[301]] for _, u, calls, k in seen)
+    return ok, seen
+
+
+def sc_unload_allowlist(m):
+    """Opt-in from the config: without a list every loaded model goes; with a list
+    only the listed one, the other stays loaded."""
+    with tempfile.TemporaryDirectory() as td:
+        res = {}
+        for label, body in (("all", {"ollama_unload": True}),
+                            ("listed", {"ollama_unload": True, "ollama_models": ["llama3.1:8b"]})):
+            cfg = m.load_full_config(_write(os.path.join(td, label + ".json"), body))
+            sub = os.path.join(td, label)
+            os.makedirs(sub)
+            b, killed = _ollama_run(m, sub, ollama_unload=cfg["ollama_unload"],
+                                    ollama_models=cfg["ollama_models"])
+            res[label] = (sorted(b.ollama.unloaded), list(b.ollama.models), killed)
+    ok = (res["all"] == (sorted(OLLAMA_MODELS), [], [])
+          and res["listed"] == (["llama3.1:8b"], ["qwen2.5:7b"], []))
+    return ok, res
+
+
+NOTIFY_SRC = (("scripts", "notify.sh"), ("scripts", "lib", "owner-chat.sh"),
+              ("scripts", "lib", "send-telegram.sh"))
+TG_TOKEN = "987654321:AAF" + "q" * 32
+NODE_REPLY = {
+    "ok": ('{"ok":true,"target":"C0TEST","sender":"main","telegram":"send"}', 0),
+    "fail": ('{"ok":false,"error":"channel_not_found","target":"C0TEST","sender":"main","telegram":"send"}', 1),
+    "none": ('{"ok":false,"skipped":true,"reason":"no Slack target configured","telegram":"send"}', 2),
+}
+
+
+def notify_install(td, env_text, slack):
+    """A temp install with the REAL scripts/notify.sh and its two libs, the stand-in
+    dist/slack-notify.js notify.sh checks for, and recording stand-ins first on PATH:
+    `node` plays scripts/slack-notify.mjs (slack: ok / fail / none = no target), `curl`
+    plays the Telegram Bot API and answers ok. Returns (install, environ, record dir)."""
+    inst, bindir, rec = os.path.join(td, "inst"), os.path.join(td, "bin"), os.path.join(td, "rec")
+    for d in (bindir, rec, os.path.join(inst, "dist"), os.path.join(inst, "scripts", "lib")):
+        os.makedirs(d, exist_ok=True)
+    for parts in NOTIFY_SRC:
+        shutil.copy(os.path.join(ROOT, *parts), os.path.join(inst, *parts))
+    _write(os.path.join(inst, ".env"), env_text)
+    _write(os.path.join(inst, "dist", "slack-notify.js"), "// stand-in, never loaded\n")
+    reply, rc = NODE_REPLY[slack]
+    _write(os.path.join(bindir, "node"),
+           "#!/bin/sh\nprintf '%%s\\n' \"$@\" > '%s/node-args'\necho '%s'\nexit %d\n" % (rec, reply, rc))
+    _write(os.path.join(bindir, "curl"),
+           "#!/bin/sh\ncat > '%s/curl-stdin'\nprintf '%%s\\n' \"$@\" > '%s/curl-args'\n"
+           "echo '{\"ok\":true,\"result\":{}}'\nexit 0\n" % (rec, rec))
+    for n in ("node", "curl"):
+        os.chmod(os.path.join(bindir, n), 0o755)
+    env = {"PATH": bindir + ":/usr/bin:/bin", "HOME": td, "LANG": "C.UTF-8"}
+    return inst, env, rec
+
+
+def _rec(rec, name):
+    try:
+        with open(os.path.join(rec, name)) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _notify_alert(m, inst, env):
+    """The module's NotifyAlert, pointed at the same relative helper path in the temp
+    install that NOTIFY_HELPER names in the module's own install."""
+    return m.NotifyAlert(helper=os.path.join(inst, os.path.relpath(m.NOTIFY_HELPER, m.ROOT)), environ=env)
+
+
+def _send(alert, text, wait=20.0):
+    started = alert.start(text)
+    if started is not None:
+        return started
+    t_end = time.time() + wait
+    while time.time() < t_end:
+        r = alert.poll()
+        if r is not None:
+            return r
+        time.sleep(0.05)
+    alert.abort()
+    return "timeout"
+
+
+def _drive_brake(m, td, alert, rounds):
+    """A brake of module m with the real alert, in a critical incident with nothing
+    to kill (the first send starts with the incident's first action). Each round
+    waits (real time) for the alert child to exit, jumps the clock past
+    ALERT_RETRY_SEC and steps once: that step polls the result and, after a
+    failure, starts the next attempt."""
+    root = os.path.join(td, "proc")
+    os.makedirs(root)
+    b, mem, psi, killed, clock = make_brake(td, root, alert=alert, mod=m)
+    write_mem(mem, 300)
+    b.step(); clock.t += 3; b.step()
+    for _ in range(rounds):
+        t_end = time.time() + 20
+        while alert.proc is not None and alert.proc.poll() is None and time.time() < t_end:
+            time.sleep(0.05)
+        clock.t += 61
+        b.step()
+    return b
+
+
+ALERT_SAMPLE = "Marveen RAM-vészfék: leállítva: <x> & y"
+
+
+def sc_notify_slack_only(m):
+    """No Telegram on the install (no TELEGRAM_BOT_TOKEN), a Slack target present:
+    the brake's alert reaches Slack, poll -> ok, and the Bot API is never called."""
+    with tempfile.TemporaryDirectory() as td:
+        inst, env, rec = notify_install(td, "MAIN_AGENT_ID=marveen\n", "ok")
+        res = _send(_notify_alert(m, inst, env), ALERT_SAMPLE)
+        node_args, curl = _rec(rec, "node-args"), _rec(rec, "curl-args")
+        default_is_notify = isinstance(m.Brake(echo=False, log_path=os.devnull).alert, m.NotifyAlert)
+        sub = os.path.join(td, "brake")
+        os.makedirs(sub)
+        b = _drive_brake(m, sub, _notify_alert(m, inst, env), 1)
+        ev = events(b)
+        sent = [e for e in ev if e["event"] == "alert_sent"]
+    ok = (isinstance(res, tuple) and res[0] is True and node_args is not None
+          and ALERT_SAMPLE in node_args.splitlines() and "--kind" in node_args.splitlines()
+          and curl is None and default_is_notify
+          and len(sent) == 1 and "Slack" in sent[0].get("detail", ""))
+    return ok, (res, node_args, curl, default_is_notify, [e["event"] for e in ev], sent)
+
+
+def sc_notify_no_channel(m):
+    """Neither channel delivers (Slack fails, no Telegram token): poll -> NOT ok, and
+    the brake retries ALERT_MAX_ATTEMPTS times, then logs a terminal alert_gave_up."""
+    with tempfile.TemporaryDirectory() as td:
+        inst, env, rec = notify_install(td, "MAIN_AGENT_ID=marveen\n", "fail")
+        res = _send(_notify_alert(m, inst, env), ALERT_SAMPLE)
+        sub = os.path.join(td, "brake")
+        os.makedirs(sub)
+        b = _drive_brake(m, sub, _notify_alert(m, inst, env), m.ALERT_MAX_ATTEMPTS + 2)
+        ev = [e["event"] for e in events(b)]
+    ok = (isinstance(res, tuple) and res[0] is False and "Hiba" in res[1]
+          and ev.count("alert_failed") == m.ALERT_MAX_ATTEMPTS and ev.count("alert_gave_up") == 1
+          and "alert_sent" not in ev and b.alert_state == "gave_up")
+    return ok, (res, ev)
+
+
+def sc_notify_telegram_only(m):
+    """A Telegram-only install (no Slack target): the alert goes over the Bot API to
+    ALLOWED_CHAT_ID, the token travels on curl's stdin, never in its argv, and never
+    in the brake's log."""
+    with tempfile.TemporaryDirectory() as td:
+        inst, env, rec = notify_install(
+            td, "TELEGRAM_BOT_TOKEN=%s\nALLOWED_CHAT_ID=4242\n" % TG_TOKEN, "none")
+        res = _send(_notify_alert(m, inst, env), ALERT_SAMPLE)
+        args, stdin = _rec(rec, "curl-args") or "", _rec(rec, "curl-stdin") or ""
+        sub = os.path.join(td, "brake")
+        os.makedirs(sub)
+        b = _drive_brake(m, sub, _notify_alert(m, inst, env), 1)
+        raw = open(b.log_path).read()
+    ok = (isinstance(res, tuple) and res[0] is True and "chat_id=4242" in args
+          and ("text=" + ALERT_SAMPLE) in args and TG_TOKEN not in args and TG_TOKEN in stdin
+          and '"alert_sent"' in raw and TG_TOKEN not in raw)
+    return ok, (res, args, raw[-300:])
+
+
+def sc_alert_escape(m):
+    """notify.sh sends Telegram with parse_mode=HTML: & < > in the alert are escaped."""
+    with tempfile.TemporaryDirectory() as td:
+        root = os.path.join(td, "proc")
+        os.makedirs(root)
+        b = make_brake(td, root, mod=m)[0]
+        b.alert_actions = ["leállítva: <x>&y [heavy:ffmpeg]"]
+        t = b.alert_text(400, 8000)
+    return "leállítva: &lt;x&gt;&amp;y [heavy:ffmpeg]" in t and "<x>" not in t, t
+
+
+def sc_redact(m):
+    t = m.redact("rejected for https://api.telegram.org/bot%s/sendMessage, slack xoxb-1-2-abc" % TG_TOKEN)
+    return TG_TOKEN not in t and "xoxb-" not in t and t.count("<token>") == 2, t
+
+
+NOTIFY_CHECKS = (
+    ("notify_slack_only", "no Telegram, Slack present: the alert reaches Slack (exit 0, logged alert_sent "
+                          "naming Slack), the Bot API is never called, Brake's default alert is NotifyAlert"),
+    ("notify_no_channel", "Slack fails and no Telegram: not ok, ALERT_MAX_ATTEMPTS attempts, one alert_gave_up"),
+    ("notify_telegram_only", "Telegram only: sent to ALLOWED_CHAT_ID, token on curl stdin only, never logged"),
+    ("alert_escape", "the alert text escapes & < > (parse_mode=HTML on Telegram, Slack's own escapes)"),
+    ("redact", "redact() removes a Telegram bot token inside a URL and a Slack token"),
+    ("unload_default_off", "ollama unload is off by default (Brake default, no config, empty config)"),
+    ("unload_allowlist", "ollama opt-in: all models without a list, only the listed ones with it"),
+)
 
 
 def load_variant(src, name, td):
@@ -514,11 +741,31 @@ def terminate(targets""", "static"),
 
 
 def terminate(targets""", "static"),
+    # ollama unload: opt-in, default off, allowlist honoured
+    ("unload-default-on (Brake)", """echo=True, python_allow=(), ollama_unload=False, ollama_models=None):""",
+     """echo=True, python_allow=(), ollama_unload=True, ollama_models=None):""", "unload_default_off"),
+    ("unload-default-on (config)", """return {"python_allow": (), "ollama_unload": False, "ollama_models": None}""",
+     """return {"python_allow": (), "ollama_unload": True, "ollama_models": None}""", "unload_default_off"),
+    ("unload-gate-removed", """if self.ollama_unload and now - self.last_ollama_try""",
+     """if now - self.last_ollama_try""", "unload_default_off"),
+    ("unload-allowlist-ignored", """models = [m for m in loaded if ollama_model_listed(m, self.ollama_models)]""",
+     """models = list(loaded)""", "unload_allowlist"),
+    # the alert: through notify.sh, honest exit, escaped, redacted
+    ("notify-bypassed", """NOTIFY_HELPER = os.path.join(ROOT, "scripts", "notify.sh")""",
+     """NOTIFY_HELPER = os.path.join(ROOT, "scripts", "lib", "send-telegram.sh")""", "notify_slack_only"),
+    ("alert-exit-ignored", """ok = self.proc.returncode == 0""", """ok = True""", "notify_no_channel"),
+    ("alert-unescaped", """acts = acts.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")""",
+     """acts = acts""", "alert_escape"),
+    ("redact-off", """text = r.sub("<token>", text)""", """pass""", "redact"),
 )
 SCENARIOS = {"send_recheck": sc_send_recheck, "exec_pidfd": sc_exec_pidfd,
              "unreadable_hidden": lambda m: sc_unreadable(m, "hidden"),
              "unreadable_nostart": lambda m: sc_unreadable(m, "nostart"),
-             "lock_symlink": sc_lock_symlink, "lock_foreign": sc_lock_foreign, "lock_fresh": sc_lock_fresh}
+             "lock_symlink": sc_lock_symlink, "lock_foreign": sc_lock_foreign, "lock_fresh": sc_lock_fresh,
+             "unload_default_off": sc_unload_default_off, "unload_allowlist": sc_unload_allowlist,
+             "notify_slack_only": sc_notify_slack_only, "notify_no_channel": sc_notify_no_channel,
+             "notify_telegram_only": sc_notify_telegram_only, "alert_escape": sc_alert_escape,
+             "redact": sc_redact}
 
 
 def run_scenario(name, m, path):
@@ -543,7 +790,7 @@ NEW_CHECKS = (
     ("lock_foreign", "an instance lock owned by another uid is refused"),
     ("lock_fresh", "a fresh instance lock is created 0600 with the pid, a second take is 'held'"),
     ("static", "static: no cgroup.kill / cgroup.freeze anywhere; signals only in send_checked; "
-               ".kill()/.terminate()/.send_signal() only in TelegramAlert.abort (the documented exception)"),
+               ".kill()/.terminate()/.send_signal() only in NotifyAlert.abort (the documented exception)"),
 )
 
 
@@ -626,7 +873,8 @@ def main():
         mkproc(root, 301, "ffmpeg", ["ffmpeg", "-i", "raw.mov", "out.mp4"], 1500)
         mkproc(root, 302, "ffmpeg", ["ffmpeg", "-i", "raw2.mov", "out2.mp4"], 700)
         alert = FakeAlert()
-        b, mem, psi, killed, clock = make_brake(td, root, models=["nomic-embed-text:latest"], alert=alert)
+        b, mem, psi, killed, clock = make_brake(td, root, models=["nomic-embed-text:latest"], alert=alert,
+                                                ollama_unload=True)
 
         b.step()
         check("healthy sample: no incident", not b.incident)
@@ -637,7 +885,7 @@ def main():
         clock.t += 3
         b.step()
         check("2 critical samples: incident started", b.incident)
-        check("first action = ollama unload, nothing killed",
+        check("opt-in: first action = ollama unload, nothing killed",
               b.ollama.unloaded == ["nomic-embed-text:latest"] and not killed, (b.ollama.unloaded, killed))
         check("alert sent once, after the first action", len(alert.sent) == 1, alert.sent)
         check("alert text is Hungarian, has the action, no em dash",
@@ -674,6 +922,53 @@ def main():
         b.step()
         check("second incident within 30 min: no second Telegram", len(alert.sent) == 1, len(alert.sent))
         check("suppression is logged", "alert_suppressed_cooldown" in [e["event"] for e in events(b)])
+
+    # ---------------- ollama unload: opt-in, default off, optional model allowlist -------------
+    # An agent on the ollama provider, or memory embeddings on the same server, lose
+    # their model on an unload, so by default the brake never even asks ollama.
+    def ollama_world(td, models, **kw):
+        root = os.path.join(td, "proc")
+        os.makedirs(root)
+        mkproc(root, 301, "ffmpeg", ["ffmpeg", "-i", "raw.mov", "out.mp4"], 1500)
+        b, mem, psi, killed, clock = make_brake(td, root, models=models, **kw)
+        write_mem(mem, 300)
+        b.step(); clock.t += 3; b.step()          # incident + first action
+        return b, killed, clock
+
+    with tempfile.TemporaryDirectory() as td:
+        b, killed, clock = ollama_world(td, ["qwen2.5:7b", "nomic-embed-text:latest"])
+        check("ollama default off: nothing unloaded, ollama not even asked (no /api/ps)",
+              b.ollama.unloaded == [] and b.ollama.loaded_calls == 0, (b.ollama.unloaded, b.ollama.loaded_calls))
+        check("ollama default off: the first action is the kill", killed == [[301]], killed)
+        clock.t += 61; b.step()
+        check("ollama default off: still nothing unloaded after OLLAMA_RETRY_SEC",
+              b.ollama.unloaded == [] and b.ollama.loaded_calls == 0, b.ollama.unloaded)
+        check("ollama default off: no ollama event in the log",
+              not [e for e in events(b) if "ollama" in e["event"] or "unload" in e["event"]], events(b))
+    with tempfile.TemporaryDirectory() as td:
+        b, killed, clock = ollama_world(td, ["qwen2.5:7b", "nomic-embed-text:latest"], ollama_unload=True)
+        check("ollama opt-in, no list: every loaded model unloaded, nothing killed yet",
+              b.ollama.unloaded == ["qwen2.5:7b", "nomic-embed-text:latest"] and killed == [],
+              (b.ollama.unloaded, killed))
+    with tempfile.TemporaryDirectory() as td:
+        b, killed, clock = ollama_world(td, ["qwen2.5:7b", "nomic-embed-text:latest", "llama3.1:8b"],
+                                        ollama_unload=True, ollama_models=["llama3.1:8b", "nomic-embed-text"])
+        check("ollama allowlist: only the listed models unloaded (tag-less name matches :latest)",
+              sorted(b.ollama.unloaded) == ["llama3.1:8b", "nomic-embed-text:latest"] and killed == [],
+              (b.ollama.unloaded, killed))
+        kept = [e for e in events(b) if e["event"] == "ollama_kept_unlisted"]
+        check("ollama allowlist: the unlisted model stays loaded and is logged as kept",
+              b.ollama.models == ["qwen2.5:7b"] and kept and kept[0]["models"] == ["qwen2.5:7b"], (b.ollama.models, kept))
+    with tempfile.TemporaryDirectory() as td:
+        b, killed, clock = ollama_world(td, ["qwen2.5:7b"], ollama_unload=True, ollama_models=["llama3.1:8b"])
+        check("ollama allowlist: only unlisted models loaded -> none unloaded, the kill goes ahead",
+              b.ollama.unloaded == [] and killed == [[301]], (b.ollama.unloaded, killed))
+    check("ollama_model_listed: exact name, tag-less -> :latest only, other tags not",
+          rvf.ollama_model_listed("qwen2.5:7b", frozenset(["qwen2.5:7b"]))
+          and rvf.ollama_model_listed("qwen2.5:latest", frozenset(["qwen2.5"]))
+          and not rvf.ollama_model_listed("qwen2.5:7b", frozenset(["qwen2.5"]))
+          and not rvf.ollama_model_listed("qwen2.5", frozenset(["qwen2.5:7b"]))
+          and rvf.ollama_model_listed("anything:1", None))
 
     # ---------------- PSI trigger ------------------------------------------------------
     with tempfile.TemporaryDirectory() as td:
@@ -820,7 +1115,8 @@ def main():
         os.makedirs(root)
         mkproc(root, 301, "ffmpeg", ["ffmpeg", "-i", "raw.mov"], 1500)
         alert = FakeAlert()
-        b, mem, psi, killed, clock = make_brake(td, root, models=["m1"], dry_run=True, alert=alert)
+        b, mem, psi, killed, clock = make_brake(td, root, models=["m1"], dry_run=True, alert=alert,
+                                                ollama_unload=True)
         write_mem(mem, 300)
         for _ in range(4):
             b.step(); clock.t += 9
@@ -970,13 +1266,8 @@ def main():
 
     # ---------------- alert still sending -> busy, never overwritten ------------------------------
     with tempfile.TemporaryDirectory() as td:
-        envf = os.path.join(td, ".env")
-        with open(envf, "w") as f:
-            f.write("TELEGRAM_BOT_TOKEN=abc:def\n")
-        helper = os.path.join(td, "slow-send.sh")
-        with open(helper, "w") as f:
-            f.write("send_telegram_message() { sleep 5; return 0; }\n")
-        ta = rvf.TelegramAlert(helper=helper, env_path=envf, chat_id="42")
+        helper = _write(os.path.join(td, "slow-notify.sh"), "sleep 5\nexit 0\n")
+        ta = rvf.NotifyAlert(helper=helper)
         first = ta.start("one")
         proc = ta.proc
         second = ta.start("two")
@@ -1083,6 +1374,19 @@ def main():
         allow = rvf.load_config(_write(cfg, {"python_scripts": [{"dir": "/opt/x/../jobs", "scripts": ["a.py"]}]}))
         check("config: an absolute dir is kept, normalized", allow == (("/opt/jobs", frozenset(["a.py"])),), allow)
         check("config: an empty object is an empty allowlist", rvf.load_config(_write(cfg, {})) == ())
+        full = rvf.load_full_config(os.path.join(td, "missing.json"))
+        check("config: no file -> ollama unload off, no model list",
+              full["ollama_unload"] is False and full["ollama_models"] is None and full["python_allow"] == (), full)
+        full = rvf.load_full_config(_write(cfg, SAMPLE_CONFIG))
+        check("config: python_scripts alone -> ollama unload still off", full["ollama_unload"] is False, full)
+        full = rvf.load_full_config(_write(cfg, {"ollama_unload": True}))
+        check("config: ollama_unload true without a list -> every model (None)",
+              full["ollama_unload"] is True and full["ollama_models"] is None, full)
+        full = rvf.load_full_config(_write(cfg, {"ollama_unload": True, "ollama_models": ["a:1", "b"]}))
+        check("config: ollama_models -> a frozenset of the names",
+              full["ollama_models"] == frozenset(["a:1", "b"]), full)
+        full = rvf.load_full_config(_write(cfg, {"ollama_unload": False}))
+        check("config: ollama_unload false is accepted (explicit off)", full["ollama_unload"] is False, full)
         bad = [
             ("not JSON", "{nope"),
             ("top level is a list", []),
@@ -1096,6 +1400,14 @@ def main():
             ("a script name with a slash", {"python_scripts": [{"dir": "x", "scripts": ["a/b.py"]}]}),
             ("an empty script list", {"python_scripts": [{"dir": "x", "scripts": []}]}),
             ("scripts is another string", {"python_scripts": [{"dir": "x", "scripts": "all"}]}),
+            ("ollama_unload not a bool", {"ollama_unload": "yes"}),
+            ("ollama_unload as 1", {"ollama_unload": 1}),
+            ("ollama_models without the opt-in", {"ollama_models": ["a"]}),
+            ("ollama_models with the opt-in off", {"ollama_unload": False, "ollama_models": ["a"]}),
+            ("ollama_models empty", {"ollama_unload": True, "ollama_models": []}),
+            ("ollama_models a string", {"ollama_unload": True, "ollama_models": "a"}),
+            ("ollama_models with a non-string", {"ollama_unload": True, "ollama_models": ["a", 3]}),
+            ("ollama_models with a blank name", {"ollama_unload": True, "ollama_models": ["a b"]}),
         ]
         for why, body in bad:
             try:
@@ -1241,19 +1553,14 @@ def main():
               len(al.starts) == 1 and b.alert_state == "done"
               and "magától visszajött" in al.starts[0], al.starts)
 
-    # e) the real TelegramAlert has abort() and never leaves the process behind
+    # e) the real NotifyAlert has abort() and never leaves the process behind
     with tempfile.TemporaryDirectory() as td:
-        envf = os.path.join(td, ".env")
-        with open(envf, "w") as f:
-            f.write("TELEGRAM_BOT_TOKEN=abc:def\n")
-        helper = os.path.join(td, "slow.sh")
-        with open(helper, "w") as f:
-            f.write("send_telegram_message() { sleep 30; }\n")
-        ta = rvf.TelegramAlert(helper=helper, env_path=envf, chat_id="42")
+        helper = _write(os.path.join(td, "slow.sh"), "sleep 30\n")
+        ta = rvf.NotifyAlert(helper=helper)
         ta.start("x")
         proc = ta.proc
         ta.abort()
-        check("TelegramAlert.abort kills and clears the running send",
+        check("NotifyAlert.abort kills and clears the running send",
               ta.proc is None and proc.poll() is not None, proc.poll())
 
     # ---------------- terminate(): TERM then KILL, only to the selected process --------------
@@ -1362,105 +1669,41 @@ def main():
     else:
         print("  SKIP pidfd cases (no os.pidfd_open here)")
 
-    # ---------------- real TelegramAlert: token never logged ---------------------------------------
+    # ---------------- real NotifyAlert: secrets in the child's output never reach the log ----------
     with tempfile.TemporaryDirectory() as td:
-        token = "123456:SECRET-TOKEN-abc"
-        envf = os.path.join(td, ".env")
-        with open(envf, "w") as f:
-            f.write('TELEGRAM_BOT_TOKEN="%s"\n' % token)
-        helper = os.path.join(td, "fake-send.sh")
-        with open(helper, "w") as f:
-            f.write('send_telegram_message() { echo "rejected for bot$1 chat $2" >&2; return 1; }\n')
-        ta = rvf.TelegramAlert(helper=helper, env_path=envf, chat_id="42")
+        token = "123456789:AAH" + "x" * 32
+        slack = "xoxb-1111-2222-SECRETsecret"
+        helper = _write(os.path.join(td, "fake-notify.sh"),
+                        'echo "rejected for bot%s, slack %s, text: $1" >&2\nexit 1\n' % (token, slack))
+        ta = rvf.NotifyAlert(helper=helper)
         root = os.path.join(td, "proc")
         os.makedirs(root)
         b, mem, psi, killed, clock = make_brake(td, root, alert=ta)
         write_mem(mem, 300)
         for _ in range(3):
             b.step(); clock.t += 1
-        import time as _t
         for _ in range(50):
-            if ta.proc is None:
+            if ta.proc is None or ta.proc.poll() is not None:
                 break
-            _t.sleep(0.1)
+            time.sleep(0.1)
         b.step()
         raw = open(b.log_path).read()
-        check("failed send is logged as alert_failed", "alert_failed" in raw, raw[-400:])
-        check("bot token never appears in the log", token not in raw)
-        check("redacted marker present instead", "<token>" in raw)
-        ta2 = rvf.TelegramAlert(helper=helper, env_path=envf, chat_id="")
-        miss = ta2.start("x")
-        check("missing chat id -> named, nothing started",
-              miss.startswith("missing:owner chat id") and ta2.proc is None, miss)
+        check("NotifyAlert: notify.sh exit 1 is logged as alert_failed", "alert_failed" in raw, raw[-400:])
+        check("NotifyAlert: no Telegram or Slack token in the log, redacted marker instead",
+              token not in raw and slack not in raw and "<token>" in raw, raw[-400:])
+        miss = rvf.NotifyAlert(helper=os.path.join(td, "no-such-notify.sh")).start("x")
+        check("NotifyAlert: a missing notify.sh is named, nothing started",
+              miss == "missing:" + os.path.join(td, "no-such-notify.sh"), miss)
+    check("NotifyAlert: the brake's default helper is scripts/notify.sh of the install",
+          rvf.NOTIFY_HELPER == os.path.join(rvf.ROOT, "scripts", "notify.sh")
+          and isinstance(rvf.Brake(echo=False, log_path=os.devnull).alert, rvf.NotifyAlert)
+          and rvf.NotifyAlert().helper == rvf.NOTIFY_HELPER, rvf.NOTIFY_HELPER)
 
-    # ---------------- owner chat + token file: the owner-chat.sh rules, on temp installs ----------
-    with tempfile.TemporaryDirectory() as td:
-        inst, home = os.path.join(td, "inst"), os.path.join(td, "home")
-        chan = os.path.join(inst, ".claude", "channels", "telegram")
-        legacy = os.path.join(home, ".claude", "channels", "telegram")
-        os.makedirs(chan)
-        os.makedirs(legacy)
-
-        def resolve(**env):
-            return rvf.resolve_owner_chat(inst, home, environ=env)
-
-        def access(path, allow_from):
-            _write(os.path.join(path, "access.json"), {"dmPolicy": "allowlist", "allowFrom": allow_from})
-
-        check("owner chat: no install .env -> none, the reason names it",
-              resolve() == (None, "no owner chat: env file not found: %s" % os.path.join(inst, ".env")),
-              resolve())
-        check("owner chat: MARVEEN_ALERT_CHAT_ID override wins", resolve(MARVEEN_ALERT_CHAT_ID="777") == ("777", None))
-        _write(os.path.join(inst, ".env"), "ALLOWED_CHAT_ID=0\n")
-        _write(os.path.join(chan, ".env"), "TELEGRAM_BOT_TOKEN=1:abc\n")
-        access(chan, ["111222333"])
-        check("owner chat: ALLOWED_CHAT_ID=0 is the placeholder -> the single DM entry of access.json",
-              resolve() == ("111222333", None), resolve())
-        check("owner chat: MARVEEN_ALERT_CHAT_ID=0 is not a chat either",
-              resolve(MARVEEN_ALERT_CHAT_ID="0") == ("111222333", None), resolve(MARVEEN_ALERT_CHAT_ID="0"))
-        _write(os.path.join(inst, ".env"), 'ALLOWED_CHAT_ID="555"\n')
-        check("owner chat: a real ALLOWED_CHAT_ID (quoted) is used first", resolve() == ("555", None), resolve())
-        _write(os.path.join(inst, ".env"), "ALLOWED_CHAT_ID=\n")
-        access(chan, ["111", 222, "-100123"])
-        r = resolve()
-        check("owner chat: two DM entries -> none, refusing to guess (the group id is ignored)",
-              r[0] is None and "2 DM entries" in r[1], r)
-        access(chan, ["-100123", "0"])
-        r = resolve()
-        check("owner chat: only a group and the placeholder -> none", r[0] is None and "no DM entry" in r[1], r)
-        os.remove(os.path.join(chan, ".env"))
-        _write(os.path.join(legacy, ".env"), "TELEGRAM_BOT_TOKEN=2:legacy\n")
-        access(legacy, [42])
-        check("owner chat: install-scoped dir without .env -> the legacy ~/.claude dir",
-              resolve() == ("42", None), resolve())
-        check("token file: the legacy .env when the install-scoped one is missing",
-              rvf.token_env_path(inst, home, environ={}) == os.path.join(legacy, ".env"))
-        check("token file: TELEGRAM_ENV overrides",
-              rvf.token_env_path(inst, home, environ={"TELEGRAM_ENV": "/x/.env"}) == "/x/.env")
-        check("token file: TELEGRAM_STATE_DIR is NOT honoured (a sub-agent's channel)",
-              rvf.token_env_path(inst, home, environ={"TELEGRAM_STATE_DIR": "/sub"}) == os.path.join(legacy, ".env"))
-
-        # the real TelegramAlert resolves the chat and the token at send time; fake helper
-        rec = os.path.join(td, "sent")
-        helper = os.path.join(td, "record-send.sh")
-        _write(helper, 'send_telegram_message() { printf "%%s|%%s" "$2" "$3" > %s; return 0; }\n' % rec)
-        ta = rvf.TelegramAlert(helper=helper, root=inst, home=home)
-        saved = os.environ.pop("MARVEEN_ALERT_CHAT_ID", None), os.environ.pop("TELEGRAM_ENV", None)
-        try:
-            started = ta.start("szia")
-        finally:
-            for k, v in zip(("MARVEEN_ALERT_CHAT_ID", "TELEGRAM_ENV"), saved):
-                if v is not None:
-                    os.environ[k] = v
-        res = None
-        for _ in range(100):
-            res = ta.poll()
-            if res is not None:
-                break
-            time.sleep(0.05)
-        sent = open(rec).read() if os.path.exists(rec) else ""
-        check("real TelegramAlert: resolved owner chat and text reach the helper, poll -> ok",
-              started is None and res == (True, "") and sent == "42|szia", (started, res, sent))
+    # ---------------- the REAL scripts/notify.sh (Slack-only, nothing, Telegram-only), escaping,
+    # redaction, and the ollama opt-in: the same scenarios the mutants below must turn red
+    for key, title in NOTIFY_CHECKS:
+        ok, info = run_scenario(key, rvf, BRAKE)
+        check("alert/ollama: " + title, ok, info)
 
     # ---------------- the alert copy passes the outgoing-copy gate's audit ----------------------------
     gate_path = os.path.join(ROOT, "scripts", "hooks", "outgoing-copy-gate.py")

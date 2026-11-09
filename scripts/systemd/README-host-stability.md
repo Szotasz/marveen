@@ -29,7 +29,7 @@ can be classified: **btime change = host/VM restart**, **OnFailure = app crash**
 |-------|---------|------|
 | `scripts/fleet-memory-gate.sh` (+ `fleet-safe-start.sh`) | may this AGENT start now? (safe-mode band, agent cap) | before every agent start (dashboard reconcile loop) |
 | `scripts/heavy-job-gate.sh` ([docs/heavy-job-gate.md](../../docs/heavy-job-gate.md)) | may this heavy JOB (render, ffmpeg, full test suite, `tsc`, browser test, local LLM batch) start now? | when an agent runs one |
-| `scripts/ram-emergency-brake.py` + `marveen-ram-emergency-brake.service` | memory is about to run out anyway: unload ollama, stop the heaviest allowlisted job | every 3 s, opt-in service |
+| `scripts/ram-emergency-brake.py` + `marveen-ram-emergency-brake.service` | memory is about to run out anyway: stop the heaviest allowlisted job (ollama unload first only if opted in) | every 3 s, opt-in service |
 
 **Heavy-job gate.** Documented in [docs/heavy-job-gate.md](../../docs/heavy-job-gate.md)
 (lock `store/.heavy-job.lock`, queue `store/.heavy-job-queue/`, log
@@ -47,13 +47,33 @@ optional `store/ram-emergency-brake.json`:
     {"python_scripts": [
       {"dir": "agents/video", "scripts": ["render.py", "batch.py"]},
       {"dir": "agents/video/scripts", "scripts": "*"}
-    ]}
+    ],
+     "ollama_unload": true,
+     "ollama_models": ["llama3.1:8b"]}
 
-(`dir` relative to the install root; a malformed file is ignored and logged as
-`config_error`, so it can only mean fewer kills; restart the service after an
-edit.) One owner alert per incident through `scripts/lib/send-telegram.sh`, owner
-chat resolved like `scripts/lib/owner-chat.sh` (`MARVEEN_ALERT_CHAT_ID`
-overrides). Every target is signalled on its own through one checked path (identity,
+(`dir` relative to the install root; every key is optional; a malformed file is
+ignored and logged as `config_error`, so it can only mean fewer actions; restart
+the service after an edit.)
+
+**Ollama unload is opt-in, off by default.** With `"ollama_unload": true` the
+first action of an incident unloads the models loaded in the local ollama server
+(`keep_alive: 0`; the brake cannot stop ollama itself). It is not free: an agent
+running on the `ollama` provider, or the memory embeddings when they come from
+the same ollama (`EMBED_URL` falls back to `OLLAMA_URL`), lose their model. Their
+next call loads it again, so the same memory comes back, and as the brake retries
+the unload every 60 s, this can repeat during one incident; a generation in
+flight during the unload may fail. Turn it on for models nothing interactive
+depends on, and name them in `ollama_models` (as `ollama ps` shows them; a name
+without a tag also matches `:latest`): only those are unloaded, the others are
+kept and logged as `ollama_kept_unlisted`. `ollama_models` without
+`"ollama_unload": true` is a config error.
+
+One owner alert per incident through `scripts/notify.sh`: Slack first when
+`NOTIFY_SLACK_TARGET` is set, Telegram as the fallback (or beside it), exactly as
+for the other owner notifications, so an install whose owner channel is not
+Telegram is told too. The brake reads no channel token itself. The alert counts
+as sent only when `notify.sh` exits 0 (a channel delivered); otherwise it is
+retried, at most 3 times, then logged as `alert_gave_up`. Every target is signalled on its own through one checked path (identity,
 owner, cgroup and never-kill re-checked right before each send); a process the brake
 cannot identify is never a target. One acting brake per install (an flock on
 `store/.ram-emergency-brake.lock`; a second one exits 3).

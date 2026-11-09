@@ -5,11 +5,17 @@ Polls /proc/meminfo every POLL_SEC. When MemAvailable stays under CRIT_MB for
 CONFIRM_SAMPLES consecutive samples (or memory PSI "full avg10" is high while
 MemAvailable is already low) an INCIDENT starts, and the brake acts in order:
 
-  1. unload every model loaded in the local ollama server (HTTP API,
-     keep_alive=0), because ollama usually runs as a system service a user
-     process cannot kill;
-  2. if still critical: SIGTERM, then SIGKILL after TERM_GRACE_SEC, the
-     largest-RSS process from a STRICT allowlist of heavy, restartable jobs.
+  1. OPT-IN, off by default: unload the models loaded in the local ollama
+     server (HTTP API, keep_alive=0), all of them or only the ones listed in
+     the config (see load_full_config). Ollama usually runs as a system
+     service a user process cannot kill, so this is the only lever on it. It
+     is NOT free: an agent on the ollama provider, or memory embeddings
+     served by the same ollama (EMBED_URL falls back to OLLAMA_URL), lose
+     the model, the next call loads it again (the memory comes back), and
+     a generation in flight during the unload may fail. Enable it only for
+     models nothing interactive depends on, or list them;
+  2. if still critical (or the unload is off): SIGTERM, then SIGKILL after
+     TERM_GRACE_SEC, the largest-RSS process from a STRICT allowlist of heavy, restartable jobs.
      Anything inside a heavy-job-*.scope (a job admitted by
      scripts/heavy-job-gate.sh, see docs/heavy-job-gate.md) is preferred, and every process of that job the
      brake can identify is a target; each one is signalled on its own (the
@@ -26,8 +32,8 @@ headless browsers, and node test runners / builds / renders (vitest, jest, tsc,
 playwright test, vite build, webpack, remotion, render.mjs). Python processes are
 never matched by basename alone (batch.py, render.py ... are common names):
 they are killable only when the resolved script path is listed in the optional
-config file store/ram-emergency-brake.json (see load_config). No config file =
-only the generic classes.
+config file store/ram-emergency-brake.json (see load_full_config). No config
+file = only the generic classes, and no ollama unload.
 
 It NEVER kills agent sessions (claude), tmux, the dashboard, the channels
 service, bun (channel plugins), systemd, sshd, dbus, ollama or itself: the
@@ -35,13 +41,12 @@ never-kill check wins over the allowlist and is applied per process.
 
 Every action is appended to store/ram-emergency-brake-log.jsonl (JSON lines,
 keys "ts", "event", ...). ONE owner alert is sent per incident (global cooldown
-ALERT_COOLDOWN_SEC) through the honest send helper scripts/lib/send-telegram.sh;
-the alert is driven to a logged terminal state (alert_sent / alert_gave_up /
-alert_suppressed_cooldown) even after the incident ends. The bot token is read
-from the main install's Telegram channel .env (TELEGRAM_ENV overrides); the
-owner chat is MARVEEN_ALERT_CHAT_ID when set, else resolved like
-scripts/lib/owner-chat.sh does (see resolve_owner_chat). The brake never prints
-or logs the token and never puts it in ITS OWN argv.
+ALERT_COOLDOWN_SEC) through scripts/notify.sh, the provider-neutral owner
+notification (Slack first when NOTIFY_SLACK_TARGET is set, Telegram as the
+fallback or beside it, exit 0 only when a channel delivered); the alert is
+driven to a logged terminal state (alert_sent / alert_gave_up /
+alert_suppressed_cooldown) even after the incident ends. The brake never reads
+a channel token: notify.sh resolves the channel, the owner and the token itself.
 
 Linux only: /proc/meminfo, /proc/<pid>/ and PSI are its whole input. On any
 other platform it prints a message and exits 0 without doing anything.
@@ -59,7 +64,7 @@ Flags:
                          against the real process table; use with --dry-run)
   --log-samples          log every sample (verbose, for --cycles runs)
   --no-mlock             do not mlockall() the process
-  --config PATH          python-script allowlist (default store/ram-emergency-brake.json)
+  --config PATH          python-script allowlist and ollama opt-in (default store/ram-emergency-brake.json)
 """
 import argparse
 import ctypes
@@ -80,7 +85,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(ROOT, "store")
 LOG_PATH = os.path.join(STORE, "ram-emergency-brake-log.jsonl")
 CONFIG_PATH = os.path.join(STORE, "ram-emergency-brake.json")
-SEND_HELPER = os.path.join(ROOT, "scripts", "lib", "send-telegram.sh")
+NOTIFY_HELPER = os.path.join(ROOT, "scripts", "notify.sh")
 OLLAMA_URL = os.environ.get("OLLAMA_URL") or "http://localhost:11434"
 
 POLL_SEC = 3.0
@@ -148,36 +153,60 @@ class ConfigError(ValueError):
     pass
 
 
-def load_config(path, root=ROOT):
-    """The python-script allowlist from the optional JSON config. Shape:
+_OLLAMA_NAME_RE = re.compile(r"^[^\s\0]+$")
+
+
+def default_config():
+    """No config file: generic kill classes only, and the brake never talks to ollama."""
+    return {"python_allow": (), "ollama_unload": False, "ollama_models": None}
+
+
+def load_full_config(path, root=ROOT):
+    """The optional JSON config. Every key is optional; shape:
 
       {"python_scripts": [
          {"dir": "agents/video", "scripts": ["render.py", "batch.py"]},
          {"dir": "agents/video/scripts", "scripts": "*"}
-      ]}
+       ],
+       "ollama_unload": true,
+       "ollama_models": ["llama3.1:8b", "qwen2.5"]}
 
-    "dir" is relative to the install root (or absolute); "scripts" lists the
-    basenames killable anywhere under that directory, or "*" for any python
-    script under it. Returns a tuple of (normalized dir, frozenset of names or
-    None for "*"). A missing file is an empty allowlist. A file that exists but
-    is unreadable or malformed raises ConfigError: the caller then runs with
-    the generic classes only (fewer kills, never more)."""
+    python_scripts: "dir" is relative to the install root (or absolute);
+    "scripts" lists the basenames killable anywhere under that directory, or
+    "*" for any python script under it.
+
+    ollama_unload: false (the default) = the brake never talks to ollama. true =
+    the first action of an incident unloads loaded ollama models; the cost is
+    named in the module docstring (an agent on the ollama provider or memory
+    embeddings on the same server lose their model until the next call).
+    ollama_models: only together with "ollama_unload": true; then ONLY these
+    models are unloaded, by the name `ollama ps` shows; a name without a tag
+    also matches its ":latest" (ollama's own default tag). Absent = every
+    loaded model.
+
+    Returns {"python_allow": tuple of (normalized dir, frozenset of names or
+    None for "*"), "ollama_unload": bool, "ollama_models": frozenset or None}.
+    A missing file is the default (empty allowlist, unload off). A file that
+    exists but is unreadable or malformed raises ConfigError: the caller then
+    runs with the defaults (generic classes only, no unload: fewer actions,
+    never more)."""
+    out = default_config()
     try:
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
     except FileNotFoundError:
-        return ()
+        return out
     except (OSError, ValueError) as e:
         raise ConfigError("cannot read %s: %s" % (path, e))
     if not isinstance(raw, dict):
         raise ConfigError("top level must be an object")
-    unknown = sorted(set(raw) - {"python_scripts"})
+    unknown = sorted(set(raw) - {"python_scripts", "ollama_unload", "ollama_models"})
     if unknown:
         raise ConfigError("unknown key(s): %s" % ", ".join(unknown))
     entries = raw.get("python_scripts", [])
     if not isinstance(entries, list):
         raise ConfigError("python_scripts must be a list")
-    out = []
+    allow = []
     for i, e in enumerate(entries):
         if not isinstance(e, dict) or set(e) != {"dir", "scripts"}:
             raise ConfigError("python_scripts[%d] must be {\"dir\": ..., \"scripts\": ...}" % i)
@@ -188,14 +217,43 @@ def load_config(path, root=ROOT):
         if d == os.sep:
             raise ConfigError("python_scripts[%d].dir must not be the filesystem root" % i)
         if names == "*":
-            out.append((d, None))
+            allow.append((d, None))
             continue
         if (not isinstance(names, list) or not names
                 or not all(isinstance(n, str) and _SCRIPT_NAME_RE.match(n) for n in names)):
             raise ConfigError("python_scripts[%d].scripts must be \"*\" or a non-empty list of "
                               "file names (no '/')" % i)
-        out.append((d, frozenset(names)))
-    return tuple(out)
+        allow.append((d, frozenset(names)))
+    out["python_allow"] = tuple(allow)
+    unload = raw.get("ollama_unload", False)
+    if not isinstance(unload, bool):
+        raise ConfigError("ollama_unload must be true or false")
+    out["ollama_unload"] = unload
+    if "ollama_models" in raw:
+        models = raw["ollama_models"]
+        if not unload:
+            raise ConfigError("ollama_models needs \"ollama_unload\": true (the unload is off by default)")
+        if (not isinstance(models, list) or not models
+                or not all(isinstance(m, str) and _OLLAMA_NAME_RE.match(m) for m in models)):
+            raise ConfigError("ollama_models must be a non-empty list of model names")
+        out["ollama_models"] = frozenset(models)
+    return out
+
+
+def load_config(path, root=ROOT):
+    """The python-script allowlist alone (see load_full_config)."""
+    return load_full_config(path, root)["python_allow"]
+
+
+def ollama_model_listed(name, listed):
+    """True if the loaded model `name` is allowed by the ollama_models list
+    (None = every model). "qwen2.5" in the list also matches "qwen2.5:latest"."""
+    if listed is None:
+        return True
+    if name in listed:
+        return True
+    base, sep, tag = name.rpartition(":")
+    return bool(sep) and tag == "latest" and base in listed
 
 
 def now_iso():
@@ -476,7 +534,7 @@ def identifiable(q):
 # Invariant (pinned by a static test): send_checked() is the only code that
 # sends a signal to a target, and it runs the full check immediately before
 # every send. The single other process-stopping call in this file is
-# TelegramAlert.abort() on the brake's OWN alert child (see there). Jobs are
+# NotifyAlert.abort() on the brake's OWN alert child (see there). Jobs are
 # never stopped through their cgroup: every kill is per target.
 HAS_PIDFD = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
 
@@ -668,137 +726,47 @@ class Ollama:
             r.read()
 
 
-def read_bot_token(env_path):
-    try:
-        with open(env_path) as f:
-            for line in f:
-                if line.startswith("TELEGRAM_BOT_TOKEN="):
-                    return line.split("=", 1)[1].strip().strip("'\"")
-    except OSError:
-        return ""
-    return ""
+# Token-shaped strings never reach the log, whatever the child printed: a
+# Telegram bot token (<digits>:<35 chars>) and Slack tokens (xox?-...). The send
+# paths behind notify.sh already redact their own token; this is the second net.
+_SECRET_RES = (re.compile(r"(?<![0-9])\d{6,}:[A-Za-z0-9_-]{30,}"), re.compile(r"xox[a-z]-[A-Za-z0-9-]+"))
 
 
-# ---- owner chat: a Python mirror of scripts/lib/owner-chat.sh -------------------
-# Not called through the shell lib on purpose: that lib parses access.json with
-# `node -e`, and the brake runs under a small MemoryMax (see its unit) exactly
-# when memory is short. The rules are the lib's (CHATID0): "0" is the installer
-# placeholder, never a chat; only a SINGLE DM entry of allowFrom counts (more
-# than one would be a guess); groups/channels ("-" ids) are never the owner.
-def _normalize_chat(value):
-    """The trimmed id, or None for empty / the "0" placeholder (_owner_chat_normalize)."""
-    v = str(value).replace("\r", "").strip()
-    for q in ('"', "'"):
-        if v.endswith(q):
-            v = v[:-1]
-        if v.startswith(q):
-            v = v[1:]
-    return v if v and v != "0" else None
+def redact(text):
+    for r in _SECRET_RES:
+        text = r.sub("<token>", text)
+    return text
 
 
-def _first_env_value(path, key):
-    try:
-        with open(path) as f:
-            for line in f:
-                if line.startswith(key + "="):
-                    return line.split("=", 1)[1].rstrip("\n")
-    except OSError:
-        return None
-    return None
+class NotifyAlert:
+    """Async owner alert through scripts/notify.sh, the provider-neutral owner
+    notification: Slack first when a Slack target is configured, Telegram as the
+    fallback (or beside it), and exit 0 ONLY when a channel delivered (notify.sh
+    exits 1 when neither did). So an install whose owner channel is Slack, not
+    Telegram, is told too. The brake never reads a channel token: notify.sh
+    resolves the channel, the owner and the token itself. The text is the
+    child's argv (it carries no secret); the child's output is logged on failure,
+    redacted (see redact). TMUX is dropped from the child's environment: the
+    brake is a host service, never an agent, so notify.sh must not attribute
+    the alert to whatever tmux session the brake happened to be started from."""
 
-
-def channel_state_dir(root=ROOT, home=None):
-    """The MAIN install's Telegram channel state dir: install-scoped when it has
-    a .env, else the legacy ~/.claude/channels/telegram when that has one, else
-    the install-scoped path. TELEGRAM_STATE_DIR is not honoured (a sub-agent's
-    own channel carries its dir in that variable; owner-chat.sh does the same)."""
-    installed = os.path.join(root, ".claude", "channels", "telegram")
-    if os.path.isfile(os.path.join(installed, ".env")):
-        return installed
-    legacy = os.path.join(home or os.path.expanduser("~"), ".claude", "channels", "telegram")
-    if os.path.isfile(os.path.join(legacy, ".env")):
-        return legacy
-    return installed
-
-
-def resolve_owner_chat(root=ROOT, home=None, environ=None):
-    """(chat id, None) or (None, reason). MARVEEN_ALERT_CHAT_ID wins when set
-    (the override the other owner alerts honour); then ALLOWED_CHAT_ID in the
-    install's .env; then the single DM entry of <state dir>/access.json."""
-    environ = os.environ if environ is None else environ
-    v = _normalize_chat(environ.get("MARVEEN_ALERT_CHAT_ID", ""))
-    if v:
-        return v, None
-    env_file = os.path.join(root, ".env")
-    if not os.path.isfile(env_file):
-        return None, "no owner chat: env file not found: %s" % env_file
-    v = _normalize_chat(_first_env_value(env_file, "ALLOWED_CHAT_ID") or "")
-    if v:
-        return v, None
-    access = os.path.join(channel_state_dir(root, home), "access.json")
-    try:
-        with open(access, encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        return None, "no owner chat: .env placeholder/empty and no readable access.json"
-    ids = []
-    for entry in (raw.get("allowFrom") if isinstance(raw, dict) else None) or []:
-        if isinstance(entry, bool) or not isinstance(entry, (str, int)):
-            continue
-        cid = _normalize_chat(entry)
-        if cid and not cid.startswith("-") and cid not in ids:
-            ids.append(cid)
-    if len(ids) == 1:
-        return ids[0], None
-    if not ids:
-        return None, "no owner chat: access.json has no DM entry (groups/channels are never used)"
-    return None, "no owner chat: access.json has %d DM entries, refusing to guess" % len(ids)
-
-
-def token_env_path(root=ROOT, home=None, environ=None):
-    environ = os.environ if environ is None else environ
-    return environ.get("TELEGRAM_ENV") or os.path.join(channel_state_dir(root, home), ".env")
-
-
-class TelegramAlert:
-    """Async owner alert through scripts/lib/send-telegram.sh (success only on
-    curl exit 0 AND "ok":true). The token reaches the helper through the child's
-    environment, and the helper keeps it out of curl's argv: it is never in an
-    argv or in our log (stderr is redacted). The chat and the token file are
-    resolved at every send (a pairing made after the brake started counts)."""
-
-    def __init__(self, helper=SEND_HELPER, env_path=None, chat_id=None, root=ROOT, home=None):
+    def __init__(self, helper=NOTIFY_HELPER, environ=None):
         self.helper = helper
-        self.env_path = env_path
-        self.chat_id = chat_id
-        self.root = root
-        self.home = home
+        self.environ = environ
         self.proc = None
-        self.token = ""
 
     def start(self, text):
         """Returns None if started, "busy" if a previous send is still running (it is
         never overwritten or orphaned), or a string naming what is missing."""
         if self.proc is not None and self.proc.poll() is None:
             return "busy"
-        token = read_bot_token(self.env_path or token_env_path(self.root, self.home))
-        if self.chat_id is not None:
-            chat, why = (self.chat_id or None), "no owner chat: empty chat id"
-        else:
-            chat, why = resolve_owner_chat(self.root, self.home)
-        miss = []
-        if not token:
-            miss.append("TELEGRAM_BOT_TOKEN")
-        if not chat:
-            miss.append("owner chat id (%s)" % why)
-        if miss:
-            return "missing:" + ",".join(miss)
-        self.token = token
-        env = dict(os.environ, TG_TOKEN=token, TG_CHAT=chat, TG_TEXT=text,
-                   TG_HELPER=self.helper)
-        self.proc = subprocess.Popen(
-            ["bash", "-c", '. "$TG_HELPER" && send_telegram_message "$TG_TOKEN" "$TG_CHAT" "$TG_TEXT"'],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if not os.path.isfile(self.helper):
+            return "missing:" + self.helper
+        env = dict(os.environ if self.environ is None else self.environ)
+        for k in ("TMUX", "TMUX_PANE"):
+            env.pop(k, None)
+        self.proc = subprocess.Popen(["bash", self.helper, text], env=env, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         return None
 
     def abort(self):
@@ -815,14 +783,12 @@ class TelegramAlert:
             self.proc = None
 
     def poll(self):
-        """None while running; (ok, stderr_redacted) when done."""
+        """None while running; (ok, output_redacted) when done. ok = notify.sh exit 0."""
         if self.proc is None or self.proc.poll() is None:
             return None
-        _, err = self.proc.communicate()
+        out, _ = self.proc.communicate()
         ok = self.proc.returncode == 0
-        text = (err or b"").decode("utf-8", "replace")
-        if self.token:
-            text = text.replace(self.token, "<token>")
+        text = redact((out or b"").decode("utf-8", "replace"))
         self.proc = None
         return ok, text.strip()[:500]
 
@@ -833,15 +799,18 @@ class Brake:
                  psi_path="/proc/pressure/memory", proc_root="/proc", ollama=None,
                  alert=None, killer=None, clock=time.monotonic, my_uid=None,
                  protected_pids=None, simulate_avail_mb=None, log_samples=False,
-                 echo=True, python_allow=()):
+                 echo=True, python_allow=(), ollama_unload=False, ollama_models=None):
         self.dry_run = dry_run
         self.python_allow = tuple(python_allow)
+        # off by default: an unload is not free on every install (see the module docstring)
+        self.ollama_unload = ollama_unload
+        self.ollama_models = None if ollama_models is None else frozenset(ollama_models)
         self.log_path = log_path
         self.meminfo_path = meminfo_path
         self.psi_path = psi_path
         self.proc_root = proc_root
         self.ollama = ollama if ollama is not None else Ollama()
-        self.alert = alert if alert is not None else TelegramAlert()
+        self.alert = alert if alert is not None else NotifyAlert()
         self.killer = killer if killer is not None else (
             lambda victim: kill_victim(victim, self.proc_root, self.protected, my_uid=self.my_uid))
         self.clock = clock
@@ -989,14 +958,21 @@ class Brake:
             self.hb_min_mb = None
 
     def act(self, now, avail):
-        # 1. ollama models first: cheap, nothing is lost
-        if now - self.last_ollama_try >= OLLAMA_RETRY_SEC:
+        # 1. OPT-IN (ollama_unload, off by default): unload ollama models, all or
+        # only the listed ones. Not free: an agent on the ollama provider, or memory
+        # embeddings on the same server, lose the model until their next call loads
+        # it again (which can repeat every OLLAMA_RETRY_SEC in one incident).
+        if self.ollama_unload and now - self.last_ollama_try >= OLLAMA_RETRY_SEC:
             self.last_ollama_try = now
             try:
-                models = [m for m in self.ollama.loaded() if m]
+                loaded = [m for m in self.ollama.loaded() if m]
             except (OSError, ValueError, urllib.error.URLError) as e:
-                models = []
+                loaded = []
                 self.log({"event": "ollama_error", "error": str(e)[:200]})
+            models = [m for m in loaded if ollama_model_listed(m, self.ollama_models)]
+            kept = [m for m in loaded if m not in models]
+            if kept:
+                self.log({"event": "ollama_kept_unlisted", "models": kept})
             if models:
                 done = []
                 for m in models:
@@ -1060,6 +1036,9 @@ class Brake:
     def alert_text(self, avail, total):
         acts = ("; ".join(self.alert_actions) if self.alert_actions
                 else "nem kellett beavatkozni, a memória magától visszajött")
+        # notify.sh sends Telegram with parse_mode=HTML, and Slack needs the same three
+        # escapes: a process name with "<" or "&" must not get the alert rejected
+        acts = acts.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         return ("Marveen RAM-vészfék: a szabad memória %d MB-ra esett (%d MB-ból, a küszöb %d MB). "
                 "Tett: %s. A vészfék figyel tovább, a napló: store/ram-emergency-brake-log.jsonl"
                 % (self.alert_min_mb if self.alert_min_mb is not None else avail,
@@ -1136,7 +1115,10 @@ class Brake:
         if ok:
             self.last_alert_ok = now
             self.alert_state = "done"
-            self.log({"event": "alert_sent", "attempt": self.alert_attempts})
+            rec = {"event": "alert_sent", "attempt": self.alert_attempts}
+            if err:
+                rec["detail"] = err   # notify.sh names the channel that delivered
+            self.log(rec)
         else:
             self.log({"event": "alert_failed", "error": err, "attempt": self.alert_attempts})
             self._alert_failed(now, err)
@@ -1196,8 +1178,9 @@ def platform_name():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="RAM emergency brake (Linux only): unload ollama models, then stop the "
-                    "heaviest allowlisted job when MemAvailable stays critical.")
+        description="RAM emergency brake (Linux only): stop the heaviest allowlisted job when "
+                    "MemAvailable stays critical (unloading ollama models first is opt-in, "
+                    "see --config).")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--cycles", type=int, default=0)
     ap.add_argument("--once", action="store_true")
@@ -1205,7 +1188,8 @@ def main(argv=None):
     ap.add_argument("--log-samples", action="store_true")
     ap.add_argument("--no-mlock", action="store_true")
     ap.add_argument("--config", default=CONFIG_PATH,
-                    help="python-script allowlist (JSON, optional; default: %(default)s)")
+                    help="python-script allowlist and ollama unload opt-in (JSON, optional; "
+                         "default: %(default)s)")
     a = ap.parse_args(argv)
     plat = platform_name()
     if not plat.startswith("linux"):
@@ -1235,22 +1219,26 @@ def main(argv=None):
 
     config_error = None
     try:
-        python_allow = load_config(a.config)
+        cfg = load_full_config(a.config)
     except ConfigError as e:
-        python_allow, config_error = (), str(e)
-        print("ram-emergency-brake: config ignored, generic classes only: %s" % e, file=sys.stderr)
+        cfg, config_error = default_config(), str(e)
+        print("ram-emergency-brake: config ignored, generic classes only, no ollama unload: %s" % e,
+              file=sys.stderr)
+    python_allow = cfg["python_allow"]
     brake = Brake(dry_run=a.dry_run, simulate_avail_mb=a.simulate_avail_mb,
-                  log_samples=a.log_samples or cycles > 0, python_allow=python_allow)
+                  log_samples=a.log_samples or cycles > 0, python_allow=python_allow,
+                  ollama_unload=cfg["ollama_unload"], ollama_models=cfg["ollama_models"])
     if config_error:
         brake.log({"event": "config_error", "config": a.config, "error": config_error[:300]})
     mlock = "skipped" if (a.no_mlock or cycles > 0) else try_mlock()
-    chat, chat_why = resolve_owner_chat()
     brake.log({"event": "start", "pid": os.getpid(), "crit_mb": CRIT_MB,
                "confirm_samples": CONFIRM_SAMPLES, "poll_sec": POLL_SEC,
                "psi_full_crit": PSI_FULL_CRIT, "mlock": mlock,
                "oom_score_adj": (_read("/proc/self/oom_score_adj") or "").strip(),
                "python_allow_entries": len(python_allow),
-               "alert_chat_resolved": bool(chat), "alert_chat_reason": chat_why})
+               "ollama_unload": cfg["ollama_unload"],
+               "ollama_models": sorted(cfg["ollama_models"]) if cfg["ollama_models"] else None,
+               "alert_helper": NOTIFY_HELPER, "alert_helper_present": os.path.isfile(NOTIFY_HELPER)})
     n = run_loop(brake, cycles, stop)
     # let a pending alert finish before exiting (bounded)
     t_end = time.monotonic() + 20

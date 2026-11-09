@@ -2,12 +2,15 @@
 #
 # RAM emergency brake (scripts/ram-emergency-brake.py), Linux only, opt-in:
 # polls /proc/meminfo every 3 s; under 600 MB MemAvailable for 2 samples it
-# unloads ollama models, then stops the largest allowlisted heavy job (a
-# heavy-job-*.scope of scripts/heavy-job-gate.sh first, then ffmpeg, headless browser, node test runner /
-# build / render, and python scripts listed in store/ram-emergency-brake.json).
+# stops the largest allowlisted heavy job (a heavy-job-*.scope of
+# scripts/heavy-job-gate.sh first, then ffmpeg, headless browser, node test
+# runner / build / render, and python scripts listed in
+# store/ram-emergency-brake.json). Unloading ollama models first is opt-in
+# ("ollama_unload": true in that file, optionally "ollama_models"), off by
+# default: see scripts/systemd/README-host-stability.md for its cost.
 # Never touches agent sessions, tmux, dashboard, channels, bun, sshd. One owner
-# alert per incident over the Telegram Bot API (scripts/lib/send-telegram.sh);
-# the owner chat is resolved at send time like scripts/lib/owner-chat.sh.
+# alert per incident through scripts/notify.sh (Slack first when configured,
+# Telegram as the fallback), so it reaches the owner on any channel.
 # Install:
 #   cp scripts/systemd/marveen-ram-emergency-brake.service ~/.config/systemd/user/
 #   (edit the placeholders)
@@ -27,17 +30,20 @@ RestartSec=2
 # agent sessions and the dashboard typically run at 200, so 100 still puts the
 # brake behind them for the kernel OOM killer.
 OOMScoreAdjust=100
-# Small and non-swappable: the script is ~15 MB and mlockall()s itself, so it
-# stays responsive while the rest of the host is thrashing. Its alert child
-# (bash + curl) runs inside this cap too, which is why the owner chat is
-# resolved in Python and not through a node helper.
-MemoryMax=96M
+# Non-swappable: the script is ~15 MB and mlockall()s itself, so it stays
+# responsive while the rest of the host is thrashing. Its alert child runs
+# inside this cap too: scripts/notify.sh, which may start node (the Slack
+# helper, and the access.json read of the owner-chat lib) besides bash + curl,
+# hence the headroom above the brake's own size. If that child still overruns
+# the cap, the kernel kills the child (the larger process), not the brake, and
+# OOMPolicy=continue keeps systemd from stopping the brake over it.
+MemoryMax=256M
+OOMPolicy=continue
 MemorySwapMax=0
 LimitMEMLOCK=96M
 CPUWeight=1000
-# No TELEGRAM_ENV and no chat id here: the script resolves both from the
-# install's own channel state at send time. Set MARVEEN_ALERT_CHAT_ID only to
-# override the resolved owner chat.
+# No channel token and no chat id here: scripts/notify.sh resolves the channel,
+# the owner and the token from the install's own .env and settings at send time.
 Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/USER
 Environment=TZ=Europe/Budapest
