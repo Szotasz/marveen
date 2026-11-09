@@ -70,7 +70,8 @@ async function put(body: unknown): Promise<{ statusCode: number; body: string }>
     ;(req as unknown as EventEmitter).emit('data', Buffer.from(JSON.stringify(body)))
     ;(req as unknown as EventEmitter).emit('end')
   })
-  const ctx = { req, res, path, method: 'PUT', url: new URL(`http://localhost${path}`), fedPeer: null } as never
+  // OWNEREXEC1109: a preCheck change is an owner action; this suite is about the value check, so the caller is the owner.
+  const ctx = { req, res, path, method: 'PUT', url: new URL(`http://localhost${path}`), fedPeer: null, auth: { kind: 'session', user: 'owner' } } as never
   expect(await route.tryHandleSchedules(ctx)).toBe(true)
   return state
 }

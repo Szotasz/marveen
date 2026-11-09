@@ -110,7 +110,8 @@ function call(method: string, path: string, body?: unknown): Promise<{ status: n
     },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  return tryHandleSchedules({ req, res, path: url.pathname, method, url } as RouteContext).then(handled => {
+  // OWNEREXEC1109: the owner drives these API calls (a preCheck change is an owner action).
+  return tryHandleSchedules({ req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext).then(handled => {
     expect(handled).toBe(true)
     return out
   })

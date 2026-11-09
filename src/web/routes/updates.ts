@@ -20,6 +20,7 @@ import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 import { deployment, MANAGED_BY_IMAGE } from '../deployment.js'
 
 const execFileAsync = promisify(execFile)
@@ -194,6 +195,12 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     } catch {
       // Empty/invalid body: treat as autoStash=false. Real validation lives
       // at update.sh's own dirty-tree check; this is just a hint.
+    }
+    // OWNEREXEC1109: autoStash lets the update stash local changes to the install and, when the pop conflicts, leave
+    // them behind; that is the owner's call. A plain apply (no body, as the operator surface forwards it) is unchanged.
+    if (autoStash && !mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, 'An update that stashes local changes needs the dashboard login (an owner session).')
+      return true
     }
     const pf: PidfileRunner = {
       readPidfile: () => {

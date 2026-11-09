@@ -5,6 +5,7 @@ import { MAIN_AGENT_ID, OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 
 // Longest run of characters a single memory row may hold. Anything longer is
 // split into several rows; it is never cut short. See CHUNK_MIN_TAIL for the
@@ -82,6 +83,14 @@ export function chunkText(text: string, maxLen: number): string[] {
 
 export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  // OWNEREXEC1109: both steps read files the request names (a folder to scan, then the files to import) and store
+  // their contents as memories every agent can read. That is the owner's migration from the dashboard, not an agent
+  // operation: owner-only, before the body is read.
+  if ((path === '/api/migrate/scan' || path === '/api/migrate/run') && method === 'POST' && !mayActAsOwner(ctx.auth, req)) {
+    refuseOwner(res, 'Importing files into the memory needs the dashboard login (an owner session).')
+    return true
+  }
 
   if (path === '/api/migrate/scan' && method === 'POST') {
     const body = await readBody(req)
