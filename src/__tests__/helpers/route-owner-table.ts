@@ -48,6 +48,7 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "daily-log.ts POST /api/daily-log", cls: "agent", why: "daily log, append-only" },
   { key: "desktop-lock.ts POST ?", cls: "unreviewed", why: "desktop lock; not reviewed route by route" },
   { key: "desktop-lock.ts DELETE ?", cls: "unreviewed", why: "desktop lock; not reviewed route by route" },
+  { key: "email-audit.ts POST /api/email-audit", cls: "agent", why: "the email-audit-capture hook writes one row per outgoing-letter attempt as the calling agent; WRITE only, no GET, so no principal can read another principal's envelope" },
   { key: "federation.ts POST /api/federation/inbox", cls: "own-check", why: "federation wire: authenticated by the peer key" },
   { key: "federation.ts POST /api/federation/refresh", cls: "pending", why: "federation peer state" },
   { key: "federation.ts POST /api/federation/apply", cls: "pending", why: "applies federation configuration" },

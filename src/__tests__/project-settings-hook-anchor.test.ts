@@ -60,6 +60,7 @@ const EXPECTED: Record<string, string[]> = {
     'taskstate-stub.py',
   ],
   PostToolUse: [
+    'email-audit-capture.py',
     'ledger-outbound.py @ mcp__plugin_[^_]+_[^_]+__reply', 'tool-log-capture.py',
     'telegram_progress_reply_clear.py @ telegram.*reply', 'slack_progress_reply_clear.py @ slack.*reply',
     'skill-usage-capture.py @ Skill|Read|Bash', 'memory-frontmatter-bash-gate.py @ Bash',
@@ -76,8 +77,9 @@ const EXPECTED: Record<string, string[]> = {
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
   // KAPUEGYUT918: a failed Bash call can still have written a memory file.
-  PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
+  PostToolUseFailure: ['email-audit-capture.py', 'tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
   PreToolUse: [
+    'email-audit-capture.py',
     'fleet-freeze-gate.sh @ *', // KILLSWITCH1022: every tool call denied while the fleet is frozen
     'outgoing-copy-gate.py @ Bash',
     'outgoing-copy-gate.py @ .*send_email.*',

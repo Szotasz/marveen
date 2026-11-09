@@ -1555,6 +1555,61 @@ export function initDatabase(dbPathOverride?: string): void {
   if (!toolLogCols.includes('trace_id'))    db.exec('ALTER TABLE tool_call_log ADD COLUMN trace_id TEXT')
   if (!toolLogCols.includes('duration_ms')) db.exec('ALTER TABLE tool_call_log ADD COLUMN duration_ms INTEGER')
 
+  // --- Outgoing Email Audit Trail (EMAILAUDIT1109, card 7df70b2e) ---
+  // One row per outgoing-letter ATTEMPT, opened by the PreToolUse hook (the
+  // envelope is known there) and closed by PostToolUse (the outcome is known
+  // there). The two halves are correlated by Claude Code's tool_use_id, which
+  // is present in BOTH payloads -- the same key tool_call_log.trace_id already
+  // carries, so no new correlation scheme is invented here.
+  //
+  // WHY NOT tool_call_log: that table is the activity dashboard's feed. It keeps
+  // only the FIRST string field of the tool input (_input_summary's generic
+  // fallback), so for a send it holds the recipient and nothing else -- cc, bcc,
+  // subject, provider message id and the approval that authorised it are all
+  // unrecoverable (measured 2026-11-09 on six real sends: 21..62 characters,
+  // recipient only). It is also pruned, so it cannot be an audit trail at any
+  // schema. This table is NOT pruned by the generic sweep: retention for it is
+  // an explicit owner decision (card 06197f7c), and the default is to keep.
+  //
+  // WHY A ROW SURVIVES A BLOCKED SEND: a denied send fires no PostToolUse at
+  // all, so a Post-only hook would leave the most audit-relevant event -- the
+  // attempt that a gate refused -- with no trace. Such a row keeps outcome
+  // NULL, which means "no outcome was recorded", NOT "it succeeded": the three
+  // written values are 'sent', 'failed' and 'blocked', and NULL is a fourth,
+  // named state (the session may also have died between the two hooks).
+  //
+  // CONTENT BOUNDARY: recipients and subject are stored verbatim because the
+  // owner asked for them by name; the BODY is stored only as a sha256, so the
+  // trail answers "who wrote to whom, when, about what, authorised by which
+  // approval" without becoming a second copy of the mailbox.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS email_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trace_id TEXT NOT NULL,
+      agent_id TEXT,
+      session_id TEXT,
+      tool_name TEXT NOT NULL,
+      mail_kind TEXT NOT NULL,
+      recipients_to TEXT NOT NULL DEFAULT '[]',
+      recipients_cc TEXT NOT NULL DEFAULT '[]',
+      recipients_bcc TEXT NOT NULL DEFAULT '[]',
+      subject TEXT,
+      body_sha256 TEXT,
+      envelope_hash TEXT,
+      attachments TEXT,
+      approval_id TEXT,
+      unreadable_reason TEXT,
+      intent_at INTEGER,
+      outcome_at INTEGER,
+      outcome TEXT,
+      provider_message_id TEXT,
+      error_text TEXT
+    )
+  `)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_audit_trace ON email_audit_log(trace_id)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_email_audit_intent ON email_audit_log(intent_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_email_audit_agent ON email_audit_log(agent_id, intent_at)`)
+
   // --- Skill Usage Log (persistent, no prune -- feeds dream-engine skill health) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS skill_usage (
@@ -7084,6 +7139,134 @@ export function revertIdeaFromKanban(kanbanId: string): string | null {
   db.prepare("UPDATE idea_box SET status = 'reviewed', kanban_id = NULL, updated_at = ? WHERE id = ?").run(now, idea.id)
   logIdeaStatusChange(idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
   return idea.id
+}
+
+// --- Outgoing Email Audit Trail (EMAILAUDIT1109) ---
+// Two writers, one row. recordEmailIntent runs from the PreToolUse hook,
+// recordEmailOutcome from PostToolUse, keyed on Claude Code's tool_use_id.
+// Neither writer trusts the other to have run: the intent UPSERTs over a row
+// an early outcome may already have created (filling only the intent columns,
+// and only while they are still empty), and the outcome falls back to an
+// INSERT when no intent row exists. A row whose intent_at is NULL therefore
+// means "an outcome arrived with no recorded intent" -- a measurable gap, not
+// a silently dropped letter.
+
+export interface EmailAuditIntent {
+  trace_id: string
+  tool_name: string
+  mail_kind: string
+  agent_id?: string | null
+  session_id?: string | null
+  to?: string[]
+  cc?: string[]
+  bcc?: string[]
+  subject?: string | null
+  body_sha256?: string | null
+  envelope_hash?: string | null
+  attachments?: unknown
+  approval_id?: string | null
+  unreadable_reason?: string | null
+}
+
+export interface EmailAuditRow {
+  id: number
+  trace_id: string
+  agent_id: string | null
+  session_id: string | null
+  tool_name: string
+  mail_kind: string
+  recipients_to: string
+  recipients_cc: string
+  recipients_bcc: string
+  subject: string | null
+  body_sha256: string | null
+  envelope_hash: string | null
+  attachments: string | null
+  approval_id: string | null
+  unreadable_reason: string | null
+  intent_at: number | null
+  outcome_at: number | null
+  outcome: string | null
+  provider_message_id: string | null
+  error_text: string | null
+}
+
+// The three written outcomes. NULL is a fourth, named state ("no outcome was
+// recorded"), and it must never be read as success -- a blocked send fires no
+// PostToolUse at all, and a session can die between the two hooks.
+export const EMAIL_AUDIT_OUTCOMES = ['sent', 'failed', 'blocked'] as const
+export type EmailAuditOutcome = (typeof EMAIL_AUDIT_OUTCOMES)[number]
+
+export function recordEmailIntent(i: EmailAuditIntent): void {
+  const now = Math.floor(Date.now() / 1000)
+  const arr = (v: string[] | undefined) => JSON.stringify(Array.isArray(v) ? v : [])
+  const atts = i.attachments === undefined || i.attachments === null ? null : JSON.stringify(i.attachments)
+  db.prepare(`
+    INSERT INTO email_audit_log (
+      trace_id, agent_id, session_id, tool_name, mail_kind,
+      recipients_to, recipients_cc, recipients_bcc, subject, body_sha256,
+      envelope_hash, attachments, approval_id, unreadable_reason, intent_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(trace_id) DO UPDATE SET
+      agent_id = COALESCE(email_audit_log.agent_id, excluded.agent_id),
+      session_id = COALESCE(email_audit_log.session_id, excluded.session_id),
+      mail_kind = excluded.mail_kind,
+      recipients_to = excluded.recipients_to,
+      recipients_cc = excluded.recipients_cc,
+      recipients_bcc = excluded.recipients_bcc,
+      subject = COALESCE(email_audit_log.subject, excluded.subject),
+      body_sha256 = COALESCE(email_audit_log.body_sha256, excluded.body_sha256),
+      envelope_hash = COALESCE(email_audit_log.envelope_hash, excluded.envelope_hash),
+      attachments = COALESCE(email_audit_log.attachments, excluded.attachments),
+      approval_id = COALESCE(email_audit_log.approval_id, excluded.approval_id),
+      unreadable_reason = COALESCE(email_audit_log.unreadable_reason, excluded.unreadable_reason),
+      intent_at = excluded.intent_at
+    WHERE email_audit_log.intent_at IS NULL
+  `).run(
+    i.trace_id, i.agent_id ?? null, i.session_id ?? null, i.tool_name, i.mail_kind,
+    arr(i.to), arr(i.cc), arr(i.bcc), i.subject ?? null, i.body_sha256 ?? null,
+    i.envelope_hash ?? null, atts, i.approval_id ?? null, i.unreadable_reason ?? null, now,
+  )
+}
+
+export function recordEmailOutcome(
+  traceId: string,
+  outcome: EmailAuditOutcome,
+  opts: { providerMessageId?: string | null; errorText?: string | null; toolName?: string; mailKind?: string; agentId?: string | null; sessionId?: string | null } = {},
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  const changed = db.prepare(`
+    UPDATE email_audit_log
+       SET outcome = ?, outcome_at = ?,
+           provider_message_id = COALESCE(?, provider_message_id),
+           error_text = COALESCE(?, error_text)
+     WHERE trace_id = ? AND outcome IS NULL
+  `).run(outcome, now, opts.providerMessageId ?? null, opts.errorText ?? null, traceId).changes
+  if (changed > 0) return
+  // No open intent row: keep the outcome rather than lose it. intent_at stays
+  // NULL so the gap is countable instead of looking like a complete record.
+  db.prepare(`
+    INSERT INTO email_audit_log (trace_id, agent_id, session_id, tool_name, mail_kind, outcome, outcome_at, provider_message_id, error_text)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(trace_id) DO NOTHING
+  `).run(
+    traceId, opts.agentId ?? null, opts.sessionId ?? null,
+    opts.toolName ?? 'unknown', opts.mailKind ?? 'unknown',
+    outcome, now, opts.providerMessageId ?? null, opts.errorText ?? null,
+  )
+}
+
+export function getEmailAuditRows(sinceSecs = 86400, agentId?: string | null): EmailAuditRow[] {
+  const cutoff = Math.floor(Date.now() / 1000) - sinceSecs
+  // COALESCE so an outcome-only row (intent_at NULL) is not invisible to the
+  // time filter -- the whole point of keeping it is that it can be counted.
+  const where = agentId ? 'AND agent_id = ?' : ''
+  const params: unknown[] = agentId ? [cutoff, agentId] : [cutoff]
+  return db.prepare(
+    `SELECT * FROM email_audit_log
+      WHERE COALESCE(intent_at, outcome_at) >= ? ${where}
+      ORDER BY COALESCE(intent_at, outcome_at) DESC, id DESC`,
+  ).all(...params) as EmailAuditRow[]
 }
 
 // --- Tool Call Log ---

@@ -116,6 +116,7 @@ import { tryHandleNotes } from './web/routes/notes.js'
 import { tryHandlePdfRender } from './web/routes/pdf-render.js'
 import { tryHandleVideoReview } from './web/routes/video-review.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
+import { tryHandleEmailAudit } from './web/routes/email-audit.js'
 import { tryHandleSpans } from './web/routes/spans.js'
 import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
 import { tryHandleSettings } from './web/routes/settings.js'
@@ -292,6 +293,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleVideoReview(routeCtx, WEB_DIR)) return
       if (await tryHandleSpans(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
+      if (await tryHandleEmailAudit(routeCtx)) return
       if (await tryHandleSkillUsage(routeCtx)) return
       if (await tryHandleSettings(routeCtx)) return
       if (await tryHandleVoice(routeCtx)) return

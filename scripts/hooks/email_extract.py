@@ -890,6 +890,49 @@ def _harder_send_envelope(ti: dict, to: list, reason):
     return to, reason, extra
 
 
+def collect_subject(tool_name: str, tool_input: dict):
+    """The SUBJECT on its own, for the audit trail (EMAILAUDIT1109).
+
+    The gates never needed it apart: collect_mcp_body folds subject and body
+    into one text because the approval anchor hashes them together. The audit
+    trail stores the subject verbatim (the owner asked for it by name) and the
+    body only as a digest, so it needs the two separated -- and that split
+    belongs HERE, next to the other collectors, not in the capture hook, or a
+    second reading of the same tool input would start drifting from this one.
+
+    Returns a string, or None when the tool input does not carry one. None is
+    not an error: the audit hook never blocks, so an unknown subject is a gap
+    to record, not a reason to refuse a letter.
+    """
+    ti = tool_input if isinstance(tool_input, dict) else {}
+    if tool_name == "Bash":
+        cmd = str(ti.get("command") or "")
+        # Same flag shapes collect_bash_body reads, subject only. A shell
+        # substitution in the value means the real subject is decided at run
+        # time, so the literal text would be a lie -- report nothing instead.
+        m = re.search(r"--subject[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd)
+        if not m:
+            return None
+        val = m.group(2) if m.group(2) is not None else (m.group(3) if m.group(3) is not None else m.group(4))
+        if val is None or _SHELL_SUBST.search(val):
+            return None
+        return val
+    # Graph-shaped letters carry it under body.Message.subject (any case).
+    if is_ms365_tool(tool_name) if tool_name else is_ms365_shaped(ti):
+        body = ti.get("body")
+        msg = body.get("Message") if isinstance(body, dict) else None
+        if not isinstance(msg, dict):
+            msg = body if isinstance(body, dict) else {}
+        for k, v in msg.items():
+            if str(k).lower() == "subject" and isinstance(v, str):
+                return v
+        return None
+    for k, v in ti.items():
+        if str(k).lower() == "subject" and isinstance(v, str):
+            return v
+    return None
+
+
 def collect_email_envelope(tool_name: str, tool_input: dict):
     """PR2 entry point: one dict for the recipient+content hash anchor (to/cc/bcc/text), built from the
     SAME collectors the copy gate runs (no second extraction implementation).
