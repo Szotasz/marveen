@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('../web/agent-config.js', async original => ({
   ...await original<typeof import('../web/agent-config.js')>(),
   readAgentEngineConfig: () => ({ engine: 'codex', codexConfigDir: '/pilot/codex' }),
+  readAgentEngineConfigSafe: () => ({ engine: 'codex', codexConfigDir: '/pilot/codex' }),
 }))
 vi.mock('../web/auto-restart-store.js', () => ({ readAutoRestartConfig: vi.fn() }))
 vi.mock('../web/context-guard-store.js', () => ({ readContextGuardConfig: vi.fn() }))

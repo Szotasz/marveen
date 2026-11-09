@@ -1,6 +1,6 @@
 import { readPlanTokenStatus, type PlanTokenLaunchStatus } from '../plan-token-launch.js'
-import { validateAgentEngine, syncCodexInstructions, type AgentEngine } from '../agent-engine.js'
-import { readAgentEngineConfig, validateAgentEngineConfig, DEFAULT_MODEL } from '../agent-config.js'
+import { validateAgentEngine, preflightCodexHome, syncCodexInstructions, type AgentEngine } from '../agent-engine.js'
+import { readAgentEngineConfigSafe, validateAgentEngineConfig, DEFAULT_MODEL } from '../agent-config.js'
 import { isSingleLineEnvValue } from '../../env.js'
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
@@ -788,7 +788,7 @@ function getAgentSummary(name: string): AgentSummary {
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
-    ...readAgentEngineConfig(name),
+    ...readAgentEngineConfigSafe(name),
     claudePlan: readAgentClaudePlan(name),
     planTokenLaunch: name === MAIN_AGENT_ID ? null : readPlanTokenStatus(name),
     team: readAgentTeam(name),
@@ -1667,7 +1667,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const setupMatch = matchChannelRoute(path, '')
   if (setupMatch && method === 'POST') {
     const [name, provider] = setupMatch
-    if (readAgentEngineConfig(name).engine === 'codex') {
+    if (readAgentEngineConfigSafe(name).engine === 'codex') {
       json(res, { error: 'Codex agents cannot own channel bindings' }, 400); return true
     }
     const isMain = name === MAIN_AGENT_ID
@@ -3067,6 +3067,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
     if (data.engine !== undefined || data.codexConfigDir !== undefined) {
       if (isAgentRunning(name)) { json(res, { error: 'Stop the agent before changing its engine configuration' }, 409); return true }
+      if (nextEngineConfig.engine === 'codex') {
+        try {
+          const mcpJson = join(agentDir(name), '.mcp.json')
+          const servers = existsSync(mcpJson) ? JSON.parse(readFileSync(mcpJson, 'utf-8')).mcpServers ?? {} : {}
+          preflightCodexHome(nextEngineConfig.codexConfigDir!, agentDir(name), servers)
+        } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
+      }
       atomicWriteFileSync(enginePath, JSON.stringify({ ...currentEngineConfig, ...nextEngineConfig }, null, 2))
       if (nextEngineConfig.engine === 'codex') scaffoldAgentDir(name)
     }

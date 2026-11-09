@@ -1,5 +1,5 @@
 import { autoRestartSupportsEngine } from '../auto-restart.js'
-import { readAgentEngineConfig } from './agent-config.js'
+import { readAgentEngineConfigSafe } from './agent-config.js'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { logger } from '../logger.js'
@@ -131,7 +131,7 @@ async function performRestart(name: string, cfg: AutoRestartConfig): Promise<voi
 }
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
-  if (!autoRestartSupportsEngine(readAgentEngineConfig(name).engine)) return
+  if (!autoRestartSupportsEngine(readAgentEngineConfigSafe(name).engine)) return
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later

@@ -1,3 +1,4 @@
+import { CHANNEL_TOKEN_UNSET } from './agent-engine.js'
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
@@ -2328,7 +2329,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       }
       if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
       scaffoldAgentDir(name)
-      const command = execFileSync('bash', [join(PROJECT_ROOT, 'scripts/codex-agent.sh'), engineConfig.codexConfigDir!, dir], { encoding: 'utf-8', timeout: 10000 }).trim()
+      const command = `${CHANNEL_TOKEN_UNSET} && ${execFileSync('bash', [join(PROJECT_ROOT, 'scripts/codex-agent.sh'), engineConfig.codexConfigDir!, dir], { encoding: 'utf-8', timeout: 10000 }).trim()}`
       const session = agentSessionName(name)
       runTmux(agentTmuxTarget(name), ['new-session', '-d', '-s', session, command], { timeout: 10000 })
       requeueAbandonedAndNotify(name)
@@ -3193,7 +3194,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // channel-less agent, whose tools then reported 'failed to connect' until
     // the agent was restarted. A channel agent
     // re-exports its OWN dir right after this, via channelSetup below.
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
+    const unsetTokens = CHANNEL_TOKEN_UNSET
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and

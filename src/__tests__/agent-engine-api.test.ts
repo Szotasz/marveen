@@ -17,7 +17,7 @@ vi.mock('../web/agent-process.js', async original => ({
   ...await original<typeof import('../web/agent-process.js')>(),
   isAgentRunning: () => false, agentHasChannel: () => false,
 }))
-const { tryHandleAgents } = await import('../web/routes/agents.js')
+const { tryHandleAgents, listAgentSummaries } = await import('../web/routes/agents.js')
 const { agentDir, readAgentEngineConfig } = await import('../web/agent-config.js')
 const { scaffoldAgentDir } = await import('../web/agent-scaffold.js')
 afterAll(() => rmSync(sandbox, { recursive: true, force: true }))
@@ -90,4 +90,31 @@ describe('engine API and scaffold wiring', () => {
     expect(existsSync(join(agentDir('legacy'), '.claude', 'skills'))).toBe(true)
     expect(existsSync(join(agentDir('legacy'), 'AGENTS.md'))).toBe(false)
   })
+})
+
+it('T5 refuses invalid MCP before persisting any PUT fields or creating CODEX_HOME', async () => {
+  const dir = agentDir('agent-a')
+  mkdirSync(dir, { recursive: true })
+  const configPath = join(dir, 'agent-config.json')
+  const before = '{ "engine": "claude", "memoryIsolation": false }\n'
+  writeFileSync(configPath, before)
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { dashboard: { url: 'http://127.0.0.1:9/mcp' } } }))
+  const home = join(sandbox, 'preflight-home')
+  const response = await request('/api/agents/agent-a', 'PUT', { engine: 'codex', codexConfigDir: home, memoryIsolation: true })
+  expect(response.status).toBe(400)
+  expect(response.body.error).toContain('stdio')
+  expect(readFileSync(configPath, 'utf-8')).toBe(before)
+  expect(existsSync(home)).toBe(false)
+})
+
+it('T10 lists both agents when one has an unknown engine', () => {
+  for (const [name, config] of [['agent-a', '{"engine":"gpt"}'], ['agent-b', '{}']]) {
+    const dir = agentDir(name)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'agent-config.json'), config)
+  }
+  expect(() => listAgentSummaries()).not.toThrow()
+  const summaries = listAgentSummaries()
+  expect(summaries.map(agent => agent.name)).toEqual(expect.arrayContaining(['agent-a', 'agent-b']))
+  expect(summaries.find(agent => agent.name === 'agent-a')?.engine).toBe('claude')
 })

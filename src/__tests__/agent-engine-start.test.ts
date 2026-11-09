@@ -3,10 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { CHANNEL_TOKEN_UNSET } from '../web/agent-engine.js'
 
 const harness = vi.hoisted(() => ({
   calls: [] as { file: string; args: string[] }[],
-  command: 'export CODEX_HOME=/x && exec codex',
+  // command is the expected tmux command; launcherOutput is the unsanitized launcher result.
+  command: 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR && export CODEX_HOME=/x && exec codex',
+  launcherOutput: 'export CODEX_HOME=/x && exec codex',
 }))
 const sandbox = mkdtempSync(join(tmpdir(), 'agent-engine-start-'))
 const launcher = resolve('scripts/codex-agent.sh')
@@ -21,7 +24,7 @@ vi.mock('node:child_process', async original => ({
   execFileSync: vi.fn((file: string, args: readonly string[] = []) => {
     harness.calls.push({ file, args: [...args] })
     if (file === 'bash' && args[0] === join(sandbox, 'scripts/codex-agent.sh')) {
-      return `${harness.command}\n`
+      return `${harness.launcherOutput}\n`
     }
     return ''
   }),
@@ -99,4 +102,17 @@ describe('Codex agent start behaviour', () => {
     expect(launcherCalls()).toHaveLength(0)
     expect(sessionCalls()).toHaveLength(0)
   })
+})
+
+it('T7 prefixes the exact Codex tmux command and really scrubs inherited channel tokens', async () => {
+  expect(await startAgentProcess(name)).toEqual({ ok: true })
+  expect(sessionCalls()).toHaveLength(1)
+  expect(sessionCalls()[0].args.at(-1)).toBe(`${CHANNEL_TOKEN_UNSET} && ${harness.launcherOutput}`)
+  const env = { ...process.env, TELEGRAM_BOT_TOKEN: 'dummy' }
+  const control = spawnSync('bash', ['-c', 'env'], { env, encoding: 'utf-8' })
+  expect(control.status).toBe(0)
+  expect(control.stdout).toContain('TELEGRAM_BOT_TOKEN=dummy')
+  const scrubbed = spawnSync('bash', ['-c', `${CHANNEL_TOKEN_UNSET} && env`], { env, encoding: 'utf-8' })
+  expect(scrubbed.status).toBe(0)
+  expect(scrubbed.stdout).not.toContain('TELEGRAM_BOT_TOKEN=')
 })

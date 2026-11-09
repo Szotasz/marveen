@@ -1596,7 +1596,8 @@ export function detectPaneState(
 
   // The chevron prompt and context footer are also used by terminal agents
   // without Claude's framed input box. Keep delivery independent of engine.
-  const terminalPrompt = /(?:^|\n)›([^\n]*)\n(?:(?!›)[^\n]*\n){0,3}[^\n]*\d+% (?:context left|left)/.exec(pane)
+  // The footer must be the last non-blank line of the pane.
+  const terminalPrompt = /(?:^|\n)›([^\n]*)\n(?:(?!›)[^\n]*\n){0,3}[^\n]*\d+% (?:context left|left)[^\n]*\s*$/.exec(pane)
   if (terminalPrompt) {
     if (terminalPrompt[1].trim()) return opts.mergeTypingAsBusy ? 'busy' : 'typing'
     return 'idle'

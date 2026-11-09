@@ -1033,6 +1033,26 @@ export function validateAgentEngineConfig(name: string, config: Record<string, u
 }
 
 export function readAgentEngineConfig(name: string): AgentEngineConfig {
-  const config = JSON.parse(readFileOr(join(agentConfigRoot(name), 'agent-config.json'), '{}'))
+  let config: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(readFileOr(join(agentConfigRoot(name), 'agent-config.json'), '{}'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed as Record<string, unknown>
+  } catch { /* Malformed JSON has the same defaults as an absent config. */ }
   return { engine: resolveAgentEngine(config.engine), codexConfigDir: resolveCodexConfigDir(config.codexConfigDir) }
+}
+
+const invalidEngineWarnings = new Set<string>()
+
+export function readAgentEngineConfigSafe(name: string): AgentEngineConfig {
+  try {
+    return readAgentEngineConfig(name)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const key = JSON.stringify([name, message])
+    if (!invalidEngineWarnings.has(key)) {
+      invalidEngineWarnings.add(key)
+      logger.warn({ name, err: message }, 'agent-config.json engine is invalid; supervising the agent as claude')
+    }
+    return { engine: 'claude', codexConfigDir: null }
+  }
 }
