@@ -78,6 +78,9 @@ describe('PUT /api/kanban/:id -- unknown fields are rejected, no-ops do not refr
       last_status_at: card.created_at,
       labels: [{ id: 'l1', name: 'x', color: '#fff' }],
       blockers: [],
+      // GET /api/kanban embeds the computed in-progress dwell time (2026-11-03: the
+      // assignee editor 400'd on it until it was listed as read-only)
+      active_seconds: 120,
       assignee: 'zara',
     })
     expect(await tryHandleKanban(ctx)).toBe(true)
