@@ -73,7 +73,9 @@ One owner alert per incident through `scripts/notify.sh`: Slack first when
 for the other owner notifications, so an install whose owner channel is not
 Telegram is told too. The brake reads no channel token itself. The alert counts
 as sent only when `notify.sh` exits 0 (a channel delivered); otherwise it is
-retried, at most 3 times, then logged as `alert_gave_up`. Every target is signalled on its own through one checked path (identity,
+retried, at most 3 times, then logged as `alert_gave_up`. When Slack delivers
+but Telegram, wanted beside it, fails, `notify.sh` exits 1, so the owner can get
+the same alert on Slack up to 3 times: a duplicate, never silence. Every target is signalled on its own through one checked path (identity,
 owner, cgroup and never-kill re-checked right before each send); a process the brake
 cannot identify is never a target. One acting brake per install (an flock on
 `store/.ram-emergency-brake.lock`; a second one exits 3).
