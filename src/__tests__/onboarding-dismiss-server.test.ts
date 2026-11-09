@@ -123,7 +123,18 @@ function page(server: { dismissed: boolean; needsOnboarding?: boolean; refuse?: 
   const store = { ...stored }
   const localStorage = { getItem: (k: string) => store[k] ?? null, setItem: (k: string, v: string) => { store[k] = v }, removeItem: (k: string) => { delete store[k] } }
   const overlay = { hidden: false, classList: { remove() {}, add() {} } }
-  const document = { getElementById: () => overlay, body: { style: { overflow: 'hidden' } } }
+  // DOCKERFIXES1109 (2): the setup-resume banner and its two buttons are separate elements; an unknown id is null.
+  const button = () => {
+    const listeners: Array<() => unknown> = []
+    return { addEventListener: (_t: string, f: () => unknown) => { listeners.push(f) }, click: async () => { for (const f of listeners) await f() } }
+  }
+  const banner = { hidden: true }
+  const goBtn = button()
+  const closeBtn = button()
+  const els: Record<string, unknown> = { onboardingOverlay: overlay, setupResumeBanner: banner, setupResumeGoBtn: goBtn, setupResumeDismiss: closeBtn }
+  const document = { getElementById: (id: string) => els[id] ?? null, body: { style: { overflow: 'hidden' } } }
+  const session: Record<string, string> = {}
+  const sessionStorage = { getItem: (k: string) => session[k] ?? null, setItem: (k: string, v: string) => { session[k] = v } }
   const fetch = async (u: string, o?: { method?: string }) => {
     calls.push(`${o?.method ?? 'GET'} ${u}`)
     if (u === '/api/onboarding/dismiss') {
@@ -136,12 +147,13 @@ function page(server: { dismissed: boolean; needsOnboarding?: boolean; refuse?: 
   const fetchOnboardingStatus = async () => { calls.push('GET status'); return { needsOnboarding: server.needsOnboarding ?? true, dismissed: server.dismissed } }
   const fetchOnboardingAuth = async () => ({})
   const renderOnboarding = (s: unknown) => { rendered.push(s) }
-  const api = new Function('localStorage', 'document', 'fetch', 'fetchOnboardingStatus', 'fetchOnboardingAuth', 'renderOnboarding',
-    `${BLOCK}\nreturn { initOnboarding, dismissOnboarding, undismissOnboarding, onboardingDismissed }`)(
-    localStorage, document, fetch, fetchOnboardingStatus, fetchOnboardingAuth, renderOnboarding) as {
+  const api = new Function('localStorage', 'sessionStorage', 'document', 'fetch', 'fetchOnboardingStatus', 'fetchOnboardingAuth', 'renderOnboarding',
+    `${BLOCK}\nreturn { initOnboarding, dismissOnboarding, undismissOnboarding, onboardingDismissed, showSetupResumeBanner }`)(
+    localStorage, sessionStorage, document, fetch, fetchOnboardingStatus, fetchOnboardingAuth, renderOnboarding) as {
     initOnboarding: () => Promise<void>; dismissOnboarding: () => void; undismissOnboarding: () => void; onboardingDismissed: () => boolean
+    showSetupResumeBanner: () => Promise<void>
   }
-  return { api, calls, rendered, store, overlay }
+  return { api, calls, rendered, store, overlay, banner, goBtn, closeBtn, session }
 }
 const settle = () => new Promise((r) => setTimeout(r, 0))
 
@@ -181,7 +193,11 @@ describe('the dashboard reads and writes the machine flag (ONBOARDNOTG1108 b)', 
     const sameOrigin = page(server, first.store)
     await sameOrigin.api.initOnboarding()
     expect(sameOrigin.rendered).toEqual([])
-    expect(sameOrigin.calls).not.toContain('GET status')
+    // DOCKERFIXES1109 (2): the status IS read now (it used to be skipped on a local close), on purpose: the
+    // setup-resume banner needs needsOnboarding to know whether there is anything to come back to. The wizard itself
+    // still does not open (rendered stays empty), which is what this case is about.
+    expect(sameOrigin.calls).toContain('GET status')
+    expect(sameOrigin.banner.hidden).toBe(false)
   })
 
   it('the owner reopens it: DELETE, both records cleared, and the next load opens the wizard again', async () => {
@@ -201,5 +217,67 @@ describe('the dashboard reads and writes the machine flag (ONBOARDNOTG1108 b)', 
     const p = page({ dismissed: false, needsOnboarding: false })
     await p.api.initOnboarding()
     expect(p.rendered).toEqual([])
+  })
+})
+
+// DOCKERFIXES1109 (2): measured on the Docker trial (2026-11-08), whoever closed the wizard after creating the login had
+// no way back (the auth banner shows only while no login exists). The setup-resume banner is that way back.
+describe('the setup-resume banner (DOCKERFIXES1109)', () => {
+  it('closed on the machine, setup unfinished: the banner shows and the wizard stays closed', async () => {
+    const p = page({ dismissed: true })
+    await p.api.initOnboarding()
+    expect(p.banner.hidden).toBe(false)
+    expect(p.rendered).toEqual([])
+  })
+
+  it('closed, but the setup is finished: no banner', async () => {
+    const p = page({ dismissed: true, needsOnboarding: false })
+    await p.api.initOnboarding()
+    expect(p.banner.hidden).toBe(true)
+  })
+
+  it('not closed, setup unfinished: the wizard opens, no banner', async () => {
+    const p = page({ dismissed: false })
+    await p.api.initOnboarding()
+    expect(p.rendered.length).toBe(1)
+    expect(p.banner.hidden).toBe(true)
+  })
+
+  it('asked directly while the wizard is not closed, the banner stays hidden (no "come back" to an open wizard)', async () => {
+    const p = page({ dismissed: false })
+    await p.api.showSetupResumeBanner()
+    expect(p.banner.hidden).toBe(true)
+  })
+
+  it('closing the wizard brings the banner up', async () => {
+    const p = page({ dismissed: false })
+    await p.api.initOnboarding()
+    p.api.dismissOnboarding()
+    await settle()
+    expect(p.banner.hidden).toBe(false)
+  })
+
+  it('its button reopens the wizard and clears the close on the machine (DELETE)', async () => {
+    const server = { dismissed: true }
+    const p = page(server, { mvOnboardingDismissed: '1' })
+    await p.api.initOnboarding()
+    await p.goBtn.click()
+    await settle()
+    expect(p.calls).toContain('DELETE /api/onboarding/dismiss')
+    expect(p.rendered.length).toBe(1)
+    expect(p.banner.hidden).toBe(true)
+    expect(p.api.onboardingDismissed()).toBe(false)
+  })
+
+  it('its x hides it for this browser session only, and does not touch the wizard flags', async () => {
+    const p = page({ dismissed: true })
+    await p.api.initOnboarding()
+    await p.closeBtn.click()
+    expect(p.banner.hidden).toBe(true)
+    expect(p.session.mvSetupResumeHidden).toBe('1')
+    await p.api.showSetupResumeBanner()
+    expect(p.banner.hidden).toBe(true)
+    expect(p.calls).not.toContain('DELETE /api/onboarding/dismiss')
+    expect(p.calls).not.toContain('POST /api/onboarding/dismiss')
   })
 })
