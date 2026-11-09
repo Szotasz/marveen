@@ -16,6 +16,7 @@ const SYSTEM_FILES = new Set([
   'kanban-audit-state.json',
   // Settings and config overrides written by dashboard routes
   'config-overrides.json', 'dashboard-settings.json',
+  'mode-presets.json', // MODEPRESETS1109: owner-managed dashboard configuration.
   // Fleet and agent management
   'agents-desired.json', 'auto-restart.json', 'autonomy-config.json',
   // Auth and secrets

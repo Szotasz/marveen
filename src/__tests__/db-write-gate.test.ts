@@ -38,6 +38,7 @@ function scaffold(dir: string): void {
   writeFileSync(join(dir, 'scripts', 'self-pace-gate.mjs'), '')
   writeFileSync(join(dir, 'store', 'extra-hooks.json'), '{}')
   writeFileSync(join(dir, 'store', 'autonomy-config.json'), '{}')
+  writeFileSync(join(dir, 'store', 'mode-presets.json'), '{}') // MODEPRESETS1109
   writeFileSync(join(dir, 'store', 'agent-sender-role-gates.json'), '{}')
 }
 // The install is a main checkout (a .git directory), the worktree has a .git file, as git makes them.
@@ -216,6 +217,7 @@ describe('2. file-level writes of the database', () => {
 describe('3. this install\'s gate wiring and autonomy levels', () => {
   const REL = ['.claude/settings.json', '.claude/settings.local.json', 'scripts/hooks/gate.py', 'scripts/hooks/new.py',
     'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+    'store/mode-presets.json', // MODEPRESETS1109
     // GROMZOGATECONF1030 (c), Samu 59516: the sub-agents' sender-role gates, only the dashboard writes them.
     'store/agent-sender-role-gates.json',
     // APPROVALSLACK1030, Samu 66026: NOTIFY_SLACK_TARGET there names where the owner's approval requests go.
@@ -228,7 +230,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     'store/custom-providers.json', 'store/context-guard.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
-      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json', 'store/mode-presets.json',
       'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json'])
@@ -266,6 +268,15 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('the root comes from the gate\'s own place, not from the cwd: a worktree cwd does not move it', () => {
     expect(file('Write', join(root, 'store', 'autonomy-config.json'), wt)).toEqual(DENY_FILE)
     expect(file('Write', join(wt, 'store', 'autonomy-config.json'), root)).toEqual(ALLOW)
+  })
+  // MODEPRESETS1109: cover shell targeting as well as the protected-path pin above.
+  it('protects mode authority through shell writes and unresolved path prefixes', () => {
+    expect(INSTALL_FILE_GATE_MSG).toContain('store/mode-presets.json')
+    expect(bash('echo "{}" > store/mode-presets.json')).toEqual(DENY_FILE)
+    expect(bash('cd store && rm mode-presets.json')).toEqual(DENY_FILE)
+    expect(bash('cp /tmp/presets "$SOMEWHERE/store/mode-presets.json"')).toEqual(DENY_FILE)
+    expect(bash('cat store/mode-presets.json')).toEqual(ALLOW)
+    expect(bash('echo "{}" > store/mode-presets.json', wt)).toEqual(ALLOW)
   })
   it('another file of the install is not protected', () => {
     expect(file('Write', join(root, 'scripts', 'other.py'))).toEqual(ALLOW)

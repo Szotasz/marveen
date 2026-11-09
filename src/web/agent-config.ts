@@ -1019,3 +1019,14 @@ export function writeAgentCustomProvider(name: string, id: string | null): void 
   else delete config.customProvider
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
+
+// MODEPRESETS1109: provider and model must become visible together in one atomic RMW.
+export function writeAgentMode(name: string, customProvider: string, model: string): void {
+  if (!isValidModelId(model)) throw new InvalidModelIdError(model)
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (customProvider === '') delete config.customProvider
+  else config.customProvider = customProvider
+  config.model = model
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
