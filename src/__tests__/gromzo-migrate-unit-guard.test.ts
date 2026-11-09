@@ -80,6 +80,16 @@ describe('the migration runs as before', () => {
     const r = run({ units: { 'marveen-channels.service': ALWAYS }, systemctl: 'FAIL' })
     expect(r.migrated).toBe(true)
   })
+  it("the installer's own onfailure.conf drop-in (OnFailure= only, no Restart=), systemd cannot answer: migrated", () => {
+    // the shape install-linux.sh writes and the QA VPS carries (V34, Marveen 74428): it must not read as a Restart policy
+    const r = run({
+      units: { 'marveen-channels.service': ALWAYS },
+      dropins: { 'marveen-channels.service.d/onfailure.conf': '[Unit]\nOnFailure=marveen-notify@%n.service\n' },
+      systemctl: 'FAIL',
+    })
+    expect(r.migrated).toBe(true)
+    expect(r.out).toBe('gromzo-provider-migrate: migrated\nAFTER rc=0\n')
+  })
   it('no Linux channels unit (macOS KeepAlive, Docker supervisor): migrated, systemctl not even asked', () => {
     expect(run({ uname: 'Darwin', units: { 'marveen-channels.service': ONFAIL } }).migrated).toBe(true)
     const none = run({ units: {} })
