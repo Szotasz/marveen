@@ -2444,6 +2444,7 @@ window._i18n.hu = {
   'auth.banner.action':           'Belépés beállítása',
   'onboarding.resume.text':       'A beállítás még nincs kész.',
   'onboarding.resume.action':     'Beállítás-varázsló megnyitása',
+  'onboarding.resume.status_error': 'Nem sikerült lekérni a beállítás állapotát. Próbáld újra egy kicsit később.',
   'branch_drift.banner.text':     'Ez a telepítés a {branch} fejlesztői ágat követi, nem a kiadott main ágat, ezért kiadatlan kódot kaphat. Visszaállás a termék-ágra:',
   'branch_drift.notice.on_main':  'Követett ág: a kiadott termék-ág',
   'branch_drift.notice.off_main': 'Követett ág: {branch}. Ez nem a kiadott termék-ág (main), így a frissítések kiadatlan kódot hoznak.',
