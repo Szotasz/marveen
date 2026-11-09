@@ -31,14 +31,19 @@ export interface TopicCommandDeps {
   topicsFile: string
 }
 
+// The bot token usually lives only in the plugin's own state .env, not in
+// the install .env (channels.sh keeps it out of the shared environment), so
+// fall back to it the way the other dashboard Telegram readers do. The install
+// .env token wins when set; a non-Telegram provider gets no token. The state
+// dir is resolved at call time, so TELEGRAM_STATE_DIR is honoured.
+export function topicBotToken(provider: string = CHANNEL_PROVIDER, installToken: string = CHANNEL_TOKEN): string {
+  if (provider !== 'telegram') return ''
+  return installToken || (readChannelToken('telegram', join(channelStateDir('telegram'), '.env')) ?? '')
+}
+
 const defaultDeps: TopicCommandDeps = {
   createTopic: (chatId, name) => {
-    // The bot token usually lives only in the plugin's own state .env, not in
-    // the install .env (channels.sh keeps it out of the shared environment), so
-    // fall back to it the way the other dashboard Telegram readers do.
-    const token = CHANNEL_TOKEN || (CHANNEL_PROVIDER === 'telegram'
-      ? readChannelToken('telegram', join(channelStateDir('telegram'), '.env')) ?? ''
-      : '')
+    const token = topicBotToken()
     if (CHANNEL_PROVIDER !== 'telegram' || !token) {
       return Promise.reject(new Error('Telegram: a fő csatorna nem Telegram, vagy nincs bot token'))
     }
