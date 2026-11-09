@@ -155,7 +155,7 @@
         "hook": "skill-usage-capture",
         "gate": false,
         "purpose": "PostToolUse hook: log skill usage to the persistent skill_usage table.",
-        "fingerprint": "b09688f30018a02ac1a516786cdbbbd8c594f91616c43d4ac17a1ddd57d93a56"
+        "fingerprint": "43cdce9efa393106fecba1c91a85ba24ca600bb43317245aadec143d0a31ff16"
       },
       {
         "index": 7,
