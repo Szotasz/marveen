@@ -247,8 +247,20 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // Their writers are the plugin processes, the hooks, the daemons, the dashboard and the launcher, none of them a
   // sub-agent's tool call; the plugins' own access/configure skills hard-code ~/.claude/channels, so in a sub-agent
   // they would write the main agent's state, and denying them there is right. Left free: inbox/, sessions/,
-  // outbound-gate.log, Teams files/ and outbox/ (no trust reader measured).
+  // outbound-gate.log, Teams files/ and outbox/ (no trust reader measured). #2512's Telegram inbound-evidence log
+  // entries (TGINREPLAYGATE1104) resolved into this list: CHANNEL_STATE_FILES names both the current and the
+  // rotated file, under every state root, not only agents/<name>/.claude/channels/telegram.
   ...channelStateTargets(),
+  // ...and the two Telegram state directories above the evidence log, as targets only (not their contents, no `dir`)
+  // (TGINREPLAYGATE1104, #2512 review): classifyWord gives a pattern no 'ancestor', so without the entries a
+  // directory changer aimed at one of them (`rm -rf telegram/`, a `mv` of or onto channels/, `cp x telegram/`,
+  // `cp -r d/. telegram/`, rsync, `tar -C`) would take, replace or land on the log unnamed; a copy, rsync or
+  // extraction into them is judged by its landing as well (CPDESTDIR1104). A write naming another file inside them
+  // is denied only if CHANNEL_STATE_FILES lists that name (access.json it does; a look-alike like
+  // inbound-evidence.jsonl.bak does not). Not seen (the content-copy limit of claudeDirCopyIn): an archive extracted,
+  // or a directory's content copied, into the agent directory itself.
+  { rel: 'agents/*/.claude/channels/telegram', pattern: true },
+  { rel: 'agents/*/.claude/channels', pattern: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -1785,6 +1797,7 @@ export const SUBAGENT_FILE_GATE_MSG =
   'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
   'sem a Claude Code plugin-fajat (~/.claude/plugins, a telepites plugins/ mappaja, ~/marveen-local-plugins, a config-direk plugins/ mappaja es registry-jei) es a kozos ~/.claude/agents, skills, hooks fat, ' +
   'a `claude plugin` paranccsal sem (csak list, validate, marketplace list, --help), es `--plugin-dir`-rel sem (PLUGINCODEWRITE1104; plugin-deploy a fo agensen at); ' +
+  'sem barmely agens Telegram inbound-evidence naplojat (agents/<nev>/.claude/channels/telegram/inbound-evidence.jsonl es .1, es a folotte allo telegram/ es channels/ konyvtarat celzo parancsot; TGINREPLAYGATE1104: a pluginja irja, nem eszkozhivas); ' +
   'ha a cwd egy ilyen fan belul van, minden nem-olvaso parancs tilt: elobb lepj ki onnan. ' +
   'amit ez a kapu NEM lat (limit): egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +

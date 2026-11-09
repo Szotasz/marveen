@@ -1101,6 +1101,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'TELEGRAM_INBOUND_REPLAY_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Elveszett Telegram-üzenetek pótlása: ha egy csatornás al-ügynök újraindul, a Telegram plugin már a Claude Code kézfogása előtt átveheti az üzenetet, és ilyenkor a Claude Code némán eldobja. A dashboard percenként összeveti az ügynök inbound-evidence naplóját (az utolsó 15 perc) az átirataival, és amit a session sosem kapott meg, azt egyszer, a channel-coordinator keretezésével kézbesíti. Ha az átirat nem olvasható, nem küld semmit. Korlát: a naplót az ügynök saját OS-felhasználója írja, így egy ugyanazzal a felhasználóval futó ügynök vagy szkript is írhat bele, és amit beír, az csatornaüzenetként jut el az ügynökhöz. Az írókapu (db-write-gate) az al-ügynökök eszközhívásaiban a felismert parancsformákat tiltja erre a naplóra, de ez csak szöveg-fék, nem OS-határ: például egy korábban megírt szkriptfájl vagy egy értelmezőben futás közben összerakott útvonal átmegy rajta. Ezért alapból kikapcsolva; akkor kapcsold be, ha az ugyanazzal az OS-felhasználóval futó ügynökökben megbízol. A módosítás a következő percben életbe lép.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'PERMISSION_ALERT_MARKS',
     type: 'string',
     default: '15m,30m,1h,2h,8h,24h',
