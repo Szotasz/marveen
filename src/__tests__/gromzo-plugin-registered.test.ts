@@ -45,6 +45,11 @@ const CASES: Array<[string, string, Parameters<typeof fixture>[0], string | null
   ['enrolled, plugins file without the gromzo key', 'marveen', { sock: true, tokensDir: true, token: 'tok', plugins: OTHER_ONLY }, 'plugin_not_registered'],
   ['enrolled, an empty plugins file', 'marveen', { sock: true, tokensDir: true, token: 'tok', plugins: '' }, 'plugin_not_registered'],
   ['enrolled AND registered', 'marveen', { sock: true, tokensDir: true, token: 'tok', plugins: REGISTERED }, null],
+  // Dani 73921: two conditions failing at once pin the ORDER (a twin that checked the plugin before the enrolment, or
+  // the enrolment before the socket, gave the same READY/PENDING and passed every row above).
+  ['NOT enrolled AND no plugin: not_enrolled first', 'marveen', { sock: true, tokensDir: true }, 'not_enrolled'],
+  ['no socket AND not enrolled AND no plugin: mxd_socket first', 'marveen', {}, 'mxd_socket'],
+  ['a bad slug AND no socket: bad_slug first', 'Bad Slug!', {}, 'bad_slug'],
 ]
 
 describe('the pending reason: the shell and the TS twin agree on every input (GROMZOPLUGREG1109)', () => {
