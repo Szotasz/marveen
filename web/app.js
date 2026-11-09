@@ -14931,13 +14931,28 @@ async function loadOverviewTokens() {
       await fetch('/api/token-usage/collect', { method: 'POST' }).catch(() => {})
     }
     const now = Math.floor(Date.now() / 1000)
-    const res = await fetch(`/api/token-usage/summary?from=${now - 86400}&to=${now}`)
+    const [res, agentsRes] = await Promise.all([
+      fetch(`/api/token-usage/summary?from=${now - 86400}&to=${now}`),
+      fetch('/api/agents').catch(() => null),
+    ])
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const rows = await res.json()
+    // Rows are keyed by agent id; show the display name instead (the id stays
+    // in the tooltip). The main agent is not in /api/agents, so it goes through
+    // mainAgentDisplayName() like the Messages view. A failed /api/agents only
+    // costs the names, not the card.
+    const names = new Map()
+    try {
+      const agents = agentsRes && agentsRes.ok ? await agentsRes.json() : []
+      for (const a of Array.isArray(agents) ? agents : []) {
+        if (a && a.name) names.set(a.name, a.displayName || a.name)
+      }
+    } catch {}
+    const label = (id) => (id === mainAgentId() ? mainAgentDisplayName() : names.get(id) || id)
     const list = (Array.isArray(rows) ? rows : []).map((r) => {
       const read = r.totalCacheRead || 0
       const ctxIn = (r.totalInput || 0) + read + (r.totalCacheCreation || 0)
-      return { agent: r.agent, calls: r.totalCalls || 0, read, out: r.totalOutput || 0, ctxIn, total: ctxIn + (r.totalOutput || 0) }
+      return { agent: r.agent, name: label(r.agent), calls: r.totalCalls || 0, read, out: r.totalOutput || 0, ctxIn, total: ctxIn + (r.totalOutput || 0) }
     }).filter((r) => r.total > 0).sort((a, b) => b.total - a.total)
     if (list.length === 0) {
       box.innerHTML = `<div class="overview-token-total">${escapeHtml(t('overview.tokens.empty'))}</div>`
@@ -14954,7 +14969,7 @@ async function loadOverviewTokens() {
         out: tuFormatTokens(r.out),
       })
       return `<div class="overview-token-row">
-        <div class="overview-token-name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}</div>
+        <div class="overview-token-name" title="${escapeHtml(r.agent)}">${escapeHtml(r.name)}</div>
         <div class="overview-token-bar"><div class="overview-token-bar-fill" style="width:${pct}%"></div></div>
         <div class="overview-token-value">${escapeHtml(tuFormatTokens(r.total))}</div>
         <div class="overview-token-sub">${escapeHtml(sub)}</div>
