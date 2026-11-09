@@ -1546,6 +1546,10 @@ if ! npm ci --loglevel warn 2>"$_NPM_CI_LOG"; then
     rm -f "$_NPM_CI_LOG"
     fail "npm install sikertelen. Ellenorizd a fenti hibauzeneteket (pl. node-gyp OOM a better-sqlite3 forditasakor)."
   fi
+  # INSTALLDIRTYTREE1103: the fallback may rewrite the tracked lock into npm's
+  # canonical form; restore it so the fresh install leaves a clean tree (the
+  # next update's npm ci reinstalls from the tracked lock anyway).
+  git -C "$INSTALL_DIR" checkout -q -- package-lock.json 2>/dev/null || true
 fi
 rm -f "$_NPM_CI_LOG"
 ok "npm csomagok telepitve"

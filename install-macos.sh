@@ -1138,12 +1138,32 @@ cd "$INSTALL_DIR"
 resolve_service_node
 # Prepending NODE_BIN_DIR is what makes the rebuild target the SERVICE runtime:
 # npm resolves `node` through PATH, and node-gyp compiles against the node that
-# resolves. Same reason `npm install` runs here too -- it can fetch or build
+# resolves. Same reason the install runs under it too -- it can fetch or build
 # native prebuilds of its own.
-if ! PATH="$NODE_BIN_DIR:$PATH" npm install --loglevel warn \
-  || ! PATH="$NODE_BIN_DIR:$PATH" npm rebuild better-sqlite3 --build-from-source; then
+#
+# INSTALLDIRTYTREE1103: `npm ci` first, as install-linux.sh and update.sh do.
+# A plain `npm install` rewrites package-lock.json into npm's canonical form
+# (marveen2, 11-03: +1 line, better-sqlite3 "hasInstallScript"), and a tracked
+# file changed by the installer sends every later update down the stash path.
+# `npm install` stays as the fallback for a genuine lockfile desync; the lock
+# it may rewrite is restored afterwards, because node_modules is what the
+# service runs and the next update's `npm ci` reinstalls from the tracked lock.
+_NPM_CI_LOG=$(mktemp)
+if PATH="$NODE_BIN_DIR:$PATH" npm ci --loglevel warn 2>"$_NPM_CI_LOG"; then
+  _NPM_OK=1
+elif PATH="$NODE_BIN_DIR:$PATH" npm install --loglevel warn; then
+  _NPM_OK=1
+  git -C "$INSTALL_DIR" checkout -q -- package-lock.json 2>/dev/null || true
+else
+  _NPM_OK=0
+  echo -e "  ${DIM}--- npm ci kimenet ---${NC}"
+  cat "$_NPM_CI_LOG" >&2
+fi
+rm -f "$_NPM_CI_LOG"
+if [ "$_NPM_OK" != 1 ] || ! PATH="$NODE_BIN_DIR:$PATH" npm rebuild better-sqlite3 --build-from-source; then
   fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
 fi
+unset _NPM_OK
 ok "$(_t macos.npm_done)"
 
 # Build TypeScript
