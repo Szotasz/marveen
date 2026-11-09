@@ -3413,7 +3413,10 @@ export function kanbanAssigneeExists(name: string): boolean {
 // Read off kanban_card_events, which records from_status -> to_status per move.
 // A stay opens on any event whose to_status is 'in_progress' and closes on the
 // next event for that card; a card sitting in the column right now has an open
-// stay that runs to `now`.
+// stay that runs to `now`. The aggregation runs in SQL, not in a JS walk over
+// the table: a window LEAD over (PARTITION BY card_id ORDER BY created_at, id)
+// hands each event the created_at of its card's next event, and a GROUP BY
+// card_id sums the clamped differences -- no event row is materialised here.
 //
 // WHAT THIS NUMBER IS NOT. It is wall-clock time in the column, not time worked.
 // An agent that picks a card up at 09:00 and hands it back at 17:00 having spent
@@ -3428,36 +3431,44 @@ export function kanbanAssigneeExists(name: string): boolean {
 export function sumInProgressSeconds(cardIds: string[]): Map<string, number> {
   const out = new Map<string, number>()
   if (cardIds.length === 0) return out
-  const rows = db
-    .prepare('SELECT card_id, to_status, created_at FROM kanban_card_events ORDER BY card_id, created_at ASC, id ASC')
-    .all() as { card_id: string; to_status: string; created_at: number }[]
-  const wanted = new Set(cardIds)
   const now = Math.floor(Date.now() / 1000)
-  let openedAt: number | null = null
-  let current = ''
-  const flush = () => {
-    // An open stay at the end of a card's event list is still running: the card
-    // is in in_progress now, so it is charged up to the present moment.
-    if (current && wanted.has(current) && openedAt !== null) {
-      out.set(current, (out.get(current) ?? 0) + Math.max(0, now - openedAt))
-    }
-    openedAt = null
-  }
-  for (const r of rows) {
-    if (r.card_id !== current) {
-      flush()
-      current = r.card_id
-      // A card seen in the event table gets an entry even if it never entered
-      // in_progress: that is a measured zero, unlike a card with no rows at all.
-      if (wanted.has(current) && !out.has(current)) out.set(current, 0)
-    }
-    if (openedAt !== null) {
-      if (wanted.has(current)) out.set(current, (out.get(current) ?? 0) + Math.max(0, r.created_at - openedAt))
-      openedAt = null
-    }
-    if (r.to_status === 'in_progress') openedAt = r.created_at
-  }
-  flush()
+  // The walk as one statement. The requested ids travel as ONE bound JSON array
+  // (json_each), not one `?` per id, so a board read for a thousand cards cannot
+  // run into SQLite's variable limit; idx_kanban_events_card serves the card_id
+  // lookup. Prepared per call, like every other query here: tests re-init the
+  // database per case, and a statement cached at module level would be bound to
+  // a handle that is already closed.
+  const rows = db
+    .prepare(
+      `WITH ev AS (
+         SELECT card_id, to_status, created_at,
+                LEAD(created_at) OVER w AS next_at
+         FROM kanban_card_events
+         WHERE card_id IN (SELECT value FROM json_each(?))
+         WINDOW w AS (PARTITION BY card_id ORDER BY created_at ASC, id ASC)
+       )
+       SELECT card_id,
+              SUM(CASE WHEN to_status = 'in_progress'
+                       -- A NULL next_at means the stay is still open at the end
+                       -- of the card's event list: the card is in the column
+                       -- right now, so it is charged up to the present moment.
+                       -- MAX(0, ...) clamps the length: LEAD walks this same
+                       -- ordering, so a closed stay always has next_at >=
+                       -- created_at and cannot go negative. The only negative
+                       -- case is the open tail above, when the clock stepped
+                       -- back after the last event (now < created_at): it owes
+                       -- zero, never a negative stay.
+                       THEN MAX(0, COALESCE(next_at, ?) - created_at)
+                       -- 0 rather than a dropped row, so a card seen in the
+                       -- event table keeps its entry even when it never entered
+                       -- in_progress: a measured zero, unlike a card with no
+                       -- rows at all (which the GROUP BY simply omits).
+                       ELSE 0 END) AS secs
+       FROM ev
+       GROUP BY card_id`
+    )
+    .all(JSON.stringify(cardIds), now) as { card_id: string; secs: number }[]
+  for (const r of rows) out.set(r.card_id, r.secs)
   return out
 }
 
