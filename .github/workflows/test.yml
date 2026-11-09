@@ -84,6 +84,11 @@ jobs:
       # good, so its fail-direction cases are gate instruments (hermetic:
       # stubbed vault/supabase, throwaway dirs).
       - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
+      # PRECHECKCI1109: the memoria-heartbeat preCheck's SKIP is "no model turn" too,
+      # so the same rot argument holds; until now its tests ran only by hand, and
+      # a green CI said nothing about them (found in the #1791 review). Hermetic:
+      # throwaway state/transcript/log dirs and a fake HOME, the real wrapper runs.
+      - run: python3 scripts/__tests__/memoria-heartbeat-precheck.test.py
       # BONIKAPUHOOK1102: the billingo-hatralek-orszem issuing gate decides which
       # billing_errors rows may get an irreversible NAV document; its self-test
       # only ran by hand while it lived in the scheduled-task store. Hermetic:
