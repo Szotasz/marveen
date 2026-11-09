@@ -40,6 +40,7 @@ export type ModelId =
   | 'claude-opus-5'
   | 'claude-fable-5'
   | 'claude-fable-5-1'
+  | 'claude-fable-5-2'
   | string
 
 export interface ModelSuggestion {
@@ -133,6 +134,8 @@ const MODEL_COST_PER_M: Record<string, number> = {
   'claude-opus-5': 15,
   // Fable 5.1: a Fable 5 arat vettem at, mert a 5.1-re NINCS mert listaarunk.
   // FELTETELEZES, nem meres -- ha valaki merte, irja felul es vegye ki ezt a sort.
+  // Fable 5.2: 8 USD / 1M input (40 output), official models overview + pricing pages, read 2026-11-09 (FABLE52SELECTOR1109).
+  'claude-fable-5-2': 8,
   'claude-fable-5-1': 15,
   'claude-fable-5': 15,
   // Sonnet 5.5: 2 USD / 1M input, a hivatalos models/overview oldalrol olvasva (2026-09-28, SONNET55SELECTOR928).

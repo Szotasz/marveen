@@ -237,6 +237,15 @@ export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000
   const m = model.toLowerCase()
   if (m.includes('[1m]')) return 1_000_000
+  // Fable 5.2 (FABLE52SELECTOR1109, measured 2026-11-09): the model has a 1M
+  // window (official models overview), but Claude Code 2.1.319, the fleet's
+  // CLI, does not know the id yet: `claude -p --model claude-fable-5-2` warns
+  // [claude-code:unrecognized_model] and reports contextWindow 200000 /
+  // maxOutputTokens 32000 in modelUsage, where claude-fable-5-1 on the same CLI
+  // reports 1000000 / 64000. The session is capped at 200k client-side, and
+  // reading it against 1M would blind the proactive tiers (the 2026-07-26
+  // failure mode above). Drop this line once the CLI reports 1M for the id.
+  if (/fable-5-2\b/.test(m)) return 200_000
   if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
   // minimax-m3 is a special case, NOT a general "trust the vendor" precedent
   // (see deepseek-v4-pro below, which stays 200_000 on live measurement).

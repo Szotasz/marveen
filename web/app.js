@@ -19188,6 +19188,8 @@ const TU_MODEL_PRICING = {
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Fable 5.2: official pricing page, read 2026-11-09 (FABLE52SELECTOR1109): $8 in, $40 out, $10 5m cache write, $0.20 cache hit.
+  'claude-fable-5-2':    { in: 8.0,   out: 40.0,  cw: 10.00, cr: 0.20 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   // Haiku 5.5, from the official pricing page (2026-10-08): prompts up to 100k
   // tokens 0.10 / 0.50 (5m cache write 0.125, hit 0.01); prompts over 100k
