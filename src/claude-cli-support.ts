@@ -35,6 +35,10 @@ export interface ClaudeModelCliRequirement {
  * as a whole).
  */
 export const CLAUDE_MODEL_MIN_CLI: Readonly<Record<string, ClaudeModelCliRequirement>> = {
+  'claude-fable-5-2': {
+    minCli: '2.1.319',
+    measured: '2.1.169 -> 400 "Claude Code 2.1.169 does not support this model; version 2.1.290 or newer is required" (the API\'s own message, 2026-11-09 20:45 CET); 2.1.319 -> OK (claude -p, empty CLAUDE_CONFIG_DIR + fleet token, stop_reason end_turn, modelUsage key claude-fable-5-2, with a [claude-code:unrecognized_model] warning; main host, 2026-11-09 20:44 CET); 2.1.290-2.1.318 NOT measured, so they count as unsupported',
+  },
   'claude-fable-5-1': {
     minCli: '2.1.278',
     measured: '2.1.110 -> 400 unrecognized_model (hermes, 2026-09-23); 2.1.278 and 2.1.280 -> OK (owner Mac, 2026-09-22)',

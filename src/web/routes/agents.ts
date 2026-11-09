@@ -927,7 +927,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       cli: { version: cli.version, measuredAt: cli.measuredAt, error: cli.error, source: cli.source },
       claudeSupport,
       claude: [
-        { id: 'claude-fable-5-1', label: 'Fable 5.1 (legújabb Fable)', minCli: CLAUDE_MODEL_MIN_CLI['claude-fable-5-1'].minCli },
+        { id: 'claude-fable-5-2', label: 'Fable 5.2 (legújabb Fable)', minCli: CLAUDE_MODEL_MIN_CLI['claude-fable-5-2'].minCli },
+        { id: 'claude-fable-5-1', label: 'Fable 5.1', minCli: CLAUDE_MODEL_MIN_CLI['claude-fable-5-1'].minCli },
         // Opus 5.5: ONLY the 1M variant (owner decision 2026-09-23). The gate table is keyed on the
         // base id, so the [1m] variant inherits the 2.1.280 minimum -- pinned in picker-cli-gate.test.ts.
         { id: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M kontextus, legújabb Opus)', minCli: CLAUDE_MODEL_MIN_CLI['claude-opus-5-5'].minCli },
