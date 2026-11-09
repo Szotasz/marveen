@@ -289,6 +289,16 @@ describe('preset application refusals', () => {
     expect(result.body.code).toBe('mode_agent_token_forbidden')
     unchanged(before)
   })
+  it.each([
+    { kind: 'device', scope: 'full' },
+    { kind: 'federation' },
+  ] as const)('refuses a $kind credential before reading the body', async auth => {
+    const before = snapshot()
+    const result = await apply('invalid JSON', AGENT, auth)
+    expect(result.status).toBe(403)
+    expect(result.body.code).toBe('mode_credential_forbidden')
+    unchanged(before)
+  })
   it('malformed preset storage fails closed', async () => {
     writeFileSync(MODE_PRESETS_PATH, '{')
     const before = snapshot()
@@ -309,6 +319,13 @@ describe('preset application refusals', () => {
 })
 
 describe('atomic mode changes and lifecycle', () => {
+  it('accepts a bridged owner device', async () => {
+    const result = await hit(tryHandleAgents, 'POST', `/api/agents/${AGENT}/mode`, { preset: 'preset-cheap' }, { kind: 'device', scope: 'full' }, ownerCookie())
+    expect(result.status).toBe(200)
+    expect(result.body).toEqual({ ok: true, preset: 'preset-cheap', changed: true, restarted: true })
+    expect(audit()).toEqual([expect.objectContaining({ key: `agent-mode:${AGENT}`, actor: 'bridge:owner' })])
+    expect(runtime.restart).toHaveBeenCalledExactlyOnceWith(AGENT, { fresh: false })
+  })
   it.each(['', 'test-provider'])('the writer rejects an invalid model with provider %j', customProvider => {
     const before = snapshot()
     expect(() => writeAgentMode(AGENT, customProvider, 'bad model; id')).toThrow(InvalidModelIdError)
@@ -411,6 +428,30 @@ describe('atomic mode changes and lifecycle', () => {
     expect(snapshot()).toEqual(before)
     expect(runtime.restart).not.toHaveBeenCalled()
     expect(audit()).toEqual([])
+  })
+  it.each([false, true])('restores both files when auditing fails and permits a retry (missing files: %s)', async missingFiles => {
+    if (missingFiles) {
+      rmSync(CONFIG_PATH)
+      rmSync(GUARD_PATH)
+    }
+    const before = snapshot()
+    vi.mocked(logConfigChange).mockImplementationOnce(() => { throw new Error('test audit append failed') })
+    const result = await apply()
+    expect(result.status).toBe(500)
+    expect(result.body.error).toBe('test audit append failed')
+    expect(snapshot()).toEqual(before)
+    expect(runtime.restart).not.toHaveBeenCalled()
+    expect(audit()).toEqual([])
+    expect(logConfigChange).toHaveBeenCalledTimes(1)
+
+    // The one-shot failure has restored the real audit implementation for the retry.
+    vi.mocked(logConfigChange).mockClear()
+    const retry = await apply()
+    expect(retry.status).toBe(200)
+    expect(retry.body).toEqual({ ok: true, preset: 'preset-cheap', changed: true, restarted: true })
+    expect(logConfigChange).toHaveBeenCalledTimes(1)
+    expect(audit()).toHaveLength(1)
+    expect(runtime.restart).toHaveBeenCalledExactlyOnceWith(AGENT, { fresh: false })
   })
   it.each(['throw', 'failure'])('restart %s returns 502 with applied true and retains the audit', async failure => {
     if (failure === 'throw') runtime.restart.mockRejectedValueOnce(new Error('test restart failed'))
