@@ -38,6 +38,23 @@ async function request(path: string, method: string, body: unknown): Promise<{ s
   return result
 }
 
+it('T13 rejects inherited non-stdio MCP before creating an agent or CODEX_HOME', async () => {
+  const rootMcp = join(sandbox, '.mcp.json')
+  const before = existsSync(rootMcp) ? readFileSync(rootMcp) : undefined
+  const home = join(sandbox, 'create-preflight-home')
+  try {
+    writeFileSync(rootMcp, JSON.stringify({ mcpServers: { dashboard: { url: 'http://127.0.0.1:9/mcp' } } }))
+    const response = await request('/api/agents', 'POST', { name: 'pilot', description: 'x', engine: 'codex', codexConfigDir: home })
+    expect(response.status).toBe(400)
+    expect(response.body.error).toContain('stdio')
+    expect(existsSync(agentDir('pilot'))).toBe(false)
+    expect(existsSync(home)).toBe(false)
+  } finally {
+    if (before === undefined) rmSync(rootMcp, { force: true })
+    else writeFileSync(rootMcp, before)
+  }
+})
+
 describe('engine API and scaffold wiring', () => {
   it('rejects invalid engines and channel bindings on creation before probing Claude', async () => {
     for (const config of [{ engine: 'gpt' }, { engine: 'codex' }, { engine: 'codex', codexConfigDir: join(sandbox, 'home'), slack: 'bound' }]) {
@@ -117,4 +134,50 @@ it('T10 lists both agents when one has an unknown engine', () => {
   const summaries = listAgentSummaries()
   expect(summaries.map(agent => agent.name)).toEqual(expect.arrayContaining(['agent-a', 'agent-b']))
   expect(summaries.find(agent => agent.name === 'agent-a')?.engine).toBe('claude')
+})
+
+it('T14 preflights inherited MCP when the existing agent has no MCP file', async () => {
+  const dir = agentDir('agent-b')
+  mkdirSync(dir, { recursive: true })
+  const configPath = join(dir, 'agent-config.json')
+  writeFileSync(configPath, '{ "engine": "claude", "memoryIsolation": false }\n')
+  scaffoldAgentDir('agent-b')
+  rmSync(join(dir, '.mcp.json'))
+  const before = readFileSync(configPath)
+  const rootMcp = join(sandbox, '.mcp.json')
+  const rootBefore = existsSync(rootMcp) ? readFileSync(rootMcp) : undefined
+  const home = join(sandbox, 'missing-mcp-preflight-home')
+  try {
+    writeFileSync(rootMcp, JSON.stringify({ mcpServers: { dashboard: { url: 'http://127.0.0.1:9/mcp' } } }))
+    const response = await request('/api/agents/agent-b', 'PUT', { engine: 'codex', codexConfigDir: home })
+    expect(response.status).toBe(400)
+    expect(response.body.error).toContain('stdio')
+    expect(readFileSync(configPath)).toEqual(before)
+    expect(existsSync(home)).toBe(false)
+  } finally {
+    if (rootBefore === undefined) rmSync(rootMcp, { force: true })
+    else writeFileSync(rootMcp, rootBefore)
+  }
+})
+
+it('T15 refuses remote hosts for Codex while allowing clearing and Claude remote hosts', async () => {
+  const dir = agentDir('agent-a')
+  mkdirSync(dir, { recursive: true })
+  const configPath = join(dir, 'agent-config.json')
+  writeFileSync(configPath, JSON.stringify({ engine: 'codex', codexConfigDir: join(sandbox, 'remote-codex-home') }))
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: {} }))
+  scaffoldAgentDir('agent-a')
+  const before = readFileSync(configPath)
+  const response = await request('/api/agents/agent-a/remote', 'PUT', { host: 'h1', workdir: '/w' })
+  expect(response.status).toBe(400)
+  expect(response.body.error).toBe('Codex pilot agents must run locally as the dashboard user')
+  expect(readFileSync(configPath)).toEqual(before)
+  expect((await request('/api/agents/agent-a/remote', 'PUT', { host: '', workdir: '' })).status).toBe(200)
+
+  const claudeDir = agentDir('agent-b')
+  mkdirSync(claudeDir, { recursive: true })
+  writeFileSync(join(claudeDir, 'agent-config.json'), '{ "engine": "claude" }\n')
+  scaffoldAgentDir('agent-b')
+  const claudeResponse = await request('/api/agents/agent-b/remote', 'PUT', { host: 'h1', workdir: '/w' })
+  expect(claudeResponse.status).toBe(200)
 })

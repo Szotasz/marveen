@@ -117,6 +117,7 @@ import {
 import {
   writeAgentSettingsFromProfile,
   scaffoldAgentDir,
+  inheritedMcpConfigForNewAgent,
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
@@ -1347,6 +1348,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
+    if (engineConfig.engine === 'codex') {
+      try {
+        const inherited = inheritedMcpConfigForNewAgent(name, { log: false }).mcpServers
+        const servers = inherited && typeof inherited === 'object' && !Array.isArray(inherited)
+          ? inherited as Record<string, unknown> : {}
+        preflightCodexHome(engineConfig.codexConfigDir!, agentDir(name), servers)
+      } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
+    }
+
     if (data.engine !== undefined || data.codexConfigDir !== undefined) {
       mkdirSync(agentDir(name), { recursive: true })
       atomicWriteFileSync(join(agentDir(name), 'agent-config.json'), JSON.stringify(engineConfig, null, 2))
@@ -2141,6 +2151,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: { host?: string; workdir?: string }
     try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    if (String(data.host ?? '').trim() !== '' && readAgentEngineConfigSafe(name).engine === 'codex') {
+      json(res, { error: 'Codex pilot agents must run locally as the dashboard user' }, 400)
+      return true
+    }
     const result = writeAgentRemoteConfig(name, data.host ?? '', data.workdir ?? '')
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     // Config changed -> drop any cached status so the next poll reflects it.
@@ -3070,7 +3084,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (nextEngineConfig.engine === 'codex') {
         try {
           const mcpJson = join(agentDir(name), '.mcp.json')
-          const servers = existsSync(mcpJson) ? JSON.parse(readFileSync(mcpJson, 'utf-8')).mcpServers ?? {} : {}
+          const inherited = existsSync(mcpJson) ? undefined : inheritedMcpConfigForNewAgent(name, { log: false }).mcpServers
+          const servers = existsSync(mcpJson) ? JSON.parse(readFileSync(mcpJson, 'utf-8')).mcpServers ?? {}
+            : inherited && typeof inherited === 'object' && !Array.isArray(inherited) ? inherited as Record<string, unknown> : {}
           preflightCodexHome(nextEngineConfig.codexConfigDir!, agentDir(name), servers)
         } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
       }
