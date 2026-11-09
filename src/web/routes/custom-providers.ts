@@ -9,6 +9,20 @@ import {
   type AuthHeaderType,
 } from '../custom-providers.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
+import { listAllAgentNames, readAgentCustomProvider } from '../agent-config.js'
+
+// The agents whose agent-config.json names each provider, hidden workers included: an agent whose provider is
+// deleted no longer starts ("Custom provider ... not found"), so the delete question names them.
+export function providerUsers(): Map<string, string[]> {
+  const users = new Map<string, string[]>()
+  for (const name of listAllAgentNames()) {
+    const id = readAgentCustomProvider(name)
+    if (!id) continue
+    users.set(id, [...(users.get(id) ?? []), name])
+  }
+  return users
+}
 
 // GET/POST/DELETE /api/custom-providers
 // Owner-only: federation callers cannot manage custom providers.
@@ -25,7 +39,17 @@ export async function tryHandleCustomProviders(ctx: RouteContext): Promise<boole
 
   // GET /api/custom-providers
   if (path === '/api/custom-providers' && method === 'GET') {
-    json(res, { providers: listCustomProviders() })
+    const users = providerUsers()
+    json(res, { providers: listCustomProviders().map((p) => ({ ...p, usedBy: users.get(p.id) ?? [] })) })
+    return true
+  }
+
+  // APIAGENTWRITE1104: a provider's baseUrl is where an agent's whole prompt is sent (the same class as the
+  // OLLAMA_URL setting, #2513), so adding, replacing or removing one needs the owner, not the shared access token.
+  // Reading the list stays as it was.
+  const writes = (path === '/api/custom-providers' && method === 'POST') || (/^\/api\/custom-providers\/[^/]+$/.test(path) && method === 'DELETE')
+  if (writes && !mayActAsOwner(ctx.auth, req)) {
+    refuseOwner(res, 'Adding, changing or removing a custom provider needs the dashboard login (an owner session).')
     return true
   }
 

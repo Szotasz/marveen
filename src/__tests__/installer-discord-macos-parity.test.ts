@@ -13,6 +13,15 @@ const ROOT = join(__dirname, '..', '..')
 const MAC = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
 const LANG = readFileSync(join(ROOT, 'install-lang.sh'), 'utf-8')
 
+/** The Discord branch's managed-settings repair: from its presence check to the Slack branch. */
+function discordBranch(): string {
+  const start = MAC.indexOf('managed_has "$MANAGED_FILE" discord@claude-plugins-official')
+  const end = MAC.indexOf('Az AI asszisztensed Slack-en', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  return MAC.slice(start, end)
+}
+
 describe('macOS installer offers Discord with Linux parity', () => {
   it('the menu has a third option and a discord branch', () => {
     expect(MAC).toContain('3.${NC} Discord')
@@ -46,8 +55,7 @@ describe('macOS installer offers Discord with Linux parity', () => {
     // slack/teams install lists slack-channel+telegram+teams and BLOCKS every
     // plugin missing from it. A fresh telegram-only install never creates the
     // file, so the discord branch merges ONLY when the file already exists.
-    const discordEntry = "'plugin': 'discord', 'marketplace': 'claude-plugins-official'"
-    expect(MAC).toContain(discordEntry)
+    expect(discordBranch()).toContain('--add-plugin discord@claude-plugins-official')
     // And the slack-branch REQUIRED_JSON now allowlists discord too, so a
     // later provider switch is not silently blocked.
     expect(MAC).toContain('"plugin":"discord","marketplace":"claude-plugins-official"')
@@ -57,13 +65,14 @@ describe('macOS installer offers Discord with Linux parity', () => {
     // Review condition (#1306): an in-place json.dump truncates the file
     // before writing, and a {} parse-failure fallback would re-create the org
     // policy with ONLY discord in it -- muting every other channel host-wide.
-    // The shipped shape is the repo's safe merge: tmp + copymode + os.replace,
-    // and on a parse failure it exits without writing.
-    const block = MAC.slice(MAC.indexOf('DISCORDMERGEPY'), MAC.lastIndexOf('DISCORDMERGEPY'))
-    expect(block).toContain('os.replace(tmp, p)')
-    expect(block).toContain('shutil.copymode(p, tmp)')
-    expect(block).toContain('NOT writing')
-    expect(block).not.toContain("d = {}")
+    // MANAGEDSETTINGSWRITE1103: the branch calls the shared writer, merge only (no --create); the
+    // writer's refusal of an unparseable file and its mkstemp + os.replace are executed in
+    // installer-slack-managed-atomic.test.ts and pinned in scripts/__tests__/managed-settings-write.test.py.
+    // MACROOTFROMCLONE1106: the writer is the copy embedded in the installer (managed_write), never the clone's file.
+    const block = discordBranch()
+    expect(block).toContain('managed_write "$MANAGED_FILE" --add-plugin discord@claude-plugins-official')
+    expect(block).not.toContain('--create')
+    expect(block).not.toContain('python3 - "$MANAGED_FILE"')
   })
 
   it('the bun advisory covers discord, not only telegram', () => {

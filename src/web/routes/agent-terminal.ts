@@ -8,6 +8,7 @@ import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
 import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 import { exactTmuxTarget } from '../../tmux-target.js'
 
 // Per-agent dashboard terminal: live pane stream (SSE), keystroke injection,
@@ -118,9 +119,9 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   const { res, path, method, url } = ctx
 
   // --- terminal-input master toggle (owner-gated opt-in) ---------------
-  // GET returns the current state; POST {enabled:boolean} flips it. Both sit
-  // behind the global dashboard-token gate (web.ts), so only the operator can
-  // read or change it. This is the deliberate first step of the two-step opt-in:
+  // GET returns the current state; POST {enabled:boolean} flips it. GET sits
+  // behind the global dashboard-token gate (web.ts); POST also needs the owner
+  // (OWNERGATE3-1104), since the shared token is readable by every sub-agent. This is the deliberate first step of the two-step opt-in:
   // /keys stays 403 until this is ON. Every flip is audit-logged.
   if (path === '/api/terminal-input') {
     if (method === 'GET') {
@@ -128,6 +129,14 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       return true
     }
     if (method === 'POST') {
+      // OWNERGATE3-1104: flips store/terminal-input.json, the master switch that lets /keys type into ANY agent's
+      // pane; owner-only, before the body is read. Turning it OFF is gated too: no machine caller turns it off
+      // (none in scripts/, src/, the skills or the UI beyond the owner's own toggle), and an open OFF would let the
+      // shared token silently cut the owner's terminal mid-session.
+      if (!mayActAsOwner(ctx.auth, ctx.req)) {
+        refuseOwner(res, 'Turning terminal input on or off needs the dashboard login (an owner session).')
+        return true
+      }
       const body = await readBody(ctx.req)
       let enabled: unknown
       try { enabled = (JSON.parse(body.toString()) as { enabled?: unknown }).enabled } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
@@ -235,6 +244,14 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     const remote = ctx.req.socket?.remoteAddress ?? 'unknown'
     const xff = ctx.req.headers['x-forwarded-for'] ?? ''
     const ua = ctx.req.headers['user-agent'] ?? ''
+    // OWNERGATE3-1104: types arbitrary input into an agent's tmux pane, i.e. full control of that agent; the
+    // toggle below is a second switch, not an identity check (while it is ON, the shared token every sub-agent can
+    // read would pass it). Owner-only, before the toggle, the target lookup, the body and any tmux call.
+    if (!mayActAsOwner(ctx.auth, ctx.req)) {
+      logger.warn({ name, remote, xff, ua, auth: ctx.auth?.kind ?? 'none' }, 'agent-terminal: KEYS INJECTION REFUSED (no owner session)')
+      refuseOwner(res, 'Typing into an agent\'s terminal needs the dashboard login (an owner session).')
+      return true
+    }
     if (!readTerminalInputEnabled()) {
       logger.warn({ name, remote, xff, ua }, 'agent-terminal: KEYS INJECTION BLOCKED (toggle OFF)')
       json(res, { error: 'Terminal input is disabled. Enable it in the dashboard first.' }, 403)
@@ -289,6 +306,12 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   const loginMatch = path.match(/^\/api\/agents\/([^/]+)\/login$/)
   if (loginMatch && method === 'POST') {
     const name = decodeURIComponent(loginMatch[1])
+    // OWNERGATE3-1104: types the scripted /login sequence into the agent's pane and confirms it, i.e. starts a new
+    // Claude login for that agent (whose account it then runs on); owner-only, before the target lookup and any tmux.
+    if (!mayActAsOwner(ctx.auth, ctx.req)) {
+      refuseOwner(res, 'Starting an agent\'s Claude login needs the dashboard login (an owner session).')
+      return true
+    }
     const target = await resolveTarget(name)
     if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }

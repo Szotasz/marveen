@@ -1,0 +1,76 @@
+# Marveen with Docker Compose (HOSTINGERDOCKER1107). See docs/docker.md.
+#
+#   docker compose up -d                  Marveen + Ollama (semantic memory search)
+#   docker compose --profile tls up -d    + Caddy with automatic HTTPS, for MARVEEN_DOMAIN
+#   docker compose logs marveen           the first-run link to the dashboard
+#
+# The dashboard is published on this server's 127.0.0.1 only: reach it with the Marveen Bridge or an SSH tunnel, or
+# with your own domain through the tls profile. Never publish port 3420 on a public address: plain http carries the
+# login cookie and the access token unencrypted.
+
+name: marveen
+
+services:
+  marveen:
+    image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-latest}
+    build:
+      context: .
+      args:
+        MARVEEN_COMMIT: ${MARVEEN_COMMIT:-}
+    restart: unless-stopped
+    environment:
+      MARVEEN_CHANNEL: ${MARVEEN_CHANNEL:-telegram}
+      MARVEEN_AGENT_ID: ${MARVEEN_AGENT_ID:-marveen}
+      MARVEEN_LANG: ${MARVEEN_LANG:-en}
+      MARVEEN_OLLAMA_URL: ${MARVEEN_OLLAMA_URL:-http://ollama:11434}
+      MARVEEN_DOMAIN: ${MARVEEN_DOMAIN:-}
+      TZ: ${TZ:-UTC}
+      WEB_PORT: "3420"
+    ports:
+      - "127.0.0.1:3420:3420"
+    volumes:
+      - marveen-install:/opt/marveen
+      - marveen-home:/home/marveen
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+
+  # Once: the embedding model the memory search uses (the Linux installer pulls the same one).
+  ollama-pull:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["/bin/sh", "-c", "for i in $$(seq 1 30); do ollama pull nomic-embed-text && exit 0; sleep 5; done; exit 1"]
+    restart: "no"
+
+  caddy:
+    profiles: ["tls"]
+    image: ${CADDY_IMAGE:-caddy:2}
+    restart: unless-stopped
+    depends_on:
+      - marveen
+    environment:
+      MARVEEN_DOMAIN: ${MARVEEN_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  marveen-install:
+  marveen-home:
+  ollama-models:
+  caddy-data:
+  caddy-config:

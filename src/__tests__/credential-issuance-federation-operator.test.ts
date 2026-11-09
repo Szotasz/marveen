@@ -2,8 +2,8 @@
 // Once a dashboard login exists, issuing a federation peer's inbound token (add,
 // full-document PUT, rotate), revealing it, editing a peer (it re-points the
 // peer's outbound token), switching federation on, widening the operator switches and
-// listing the usernames take the owner's session; the bearer token keeps them
-// only for the first-run setup (no user yet).
+// listing the usernames take the owner's session. OWNERGATE4-1104: the bearer token no
+// longer keeps them for the first-run setup either (none of them is a first-run path).
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -92,16 +92,21 @@ afterAll(() => {
   rmSync(TMP, { recursive: true, force: true })
 })
 
-describe('first-run setup (no dashboard user yet): the token still issues', () => {
-  it('adds a peer, rotates and reveals its token, writes the switches and lists users', async () => {
+describe('first-run setup (no dashboard user yet): the token issues nothing', () => {
+  // OWNERGATE4-1104: flipped; every one of these is refused with setup_required and nothing is written.
+  it('adding a peer, rotate, reveal, the full PUT, the operator switches and the user list are 403 setup_required', async () => {
     const added = await addPeer(TOKEN_AUTH)
-    expect(added.status).toBe(201)
-    expect(typeof added.json().inboundToken).toBe('string')
-    expect((await rotate(TOKEN_AUTH)).status).toBe(200)
-    expect((await reveal(TOKEN_AUTH)).status).toBe(200)
-    expect((await putDoc(TOKEN_AUTH)).status).toBe(200)
-    expect((await putOperator(TOKEN_AUTH)).status).toBe(200)
-    expect((await listUsers(TOKEN_AUTH)).status).toBe(200)
+    expect(added.status).toBe(403)
+    expect(added.json()).not.toHaveProperty('inboundToken')
+    expect(getFederationConfig().peers).toEqual([])
+    seedPeer()
+    for (const r of [await rotate(TOKEN_AUTH), await reveal(TOKEN_AUTH), await putDoc(TOKEN_AUTH), await putOperator(TOKEN_AUTH), await listUsers(TOKEN_AUTH)]) {
+      expect(r.status).toBe(403)
+      expect(r.json().code).toBe('owner_session_required')
+      expect(r.json().setup_required).toBe(true)
+    }
+    expect(getFederationConfig().peers[0]!.inboundToken).toBe(IN_TOKEN)
+    expect(h.operatorAccess).toBeNull()
   })
 })
 

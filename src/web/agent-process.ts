@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
@@ -41,11 +41,14 @@ import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
-import { buildExtraChannelLaunch, enableExtraPlugins, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
+import { filterMainGromzoIds } from './main-gromzo-launch.js'
+import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
+import { copyProjectsOnce, currentAuthKeyMode, hostApiKey, isolatedDirReady, stampAllowed } from './auth-key-mode.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
@@ -71,7 +74,7 @@ import {
   type TmuxInvocation,
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
-import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, getProviderType, channelStateDir, providerCapabilities, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CONTINUE_OPT_OUT_REASON, decideContinueFlag, readContinueOptOut, verifyContinueLaunch } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
@@ -104,7 +107,7 @@ import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
-import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
+import { reapChannelOrphans, reapDetachedChannelClaudes, reapGromzoOrphans } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { notifyChannel, alertIsRedirected } from '../notify.js'
 
@@ -609,10 +612,15 @@ export function mainAgentConfigDirIfSeparate(): string | null {
 // then `claude plugin install`) both looked correct and were both erased
 // seconds later by the next restart. Keeping the extras enabled here is the
 // only place that survives, because this function is what does the erasing.
+//
+// GROMZOMAINAGENT1106: through the same gromzo filter as every main launcher (main-gromzo-launch.ts), so the
+// isolated main config does not enable a gromzo plugin the launch left out (no agent.sock, or a bad slug):
+// enabled there, it would still start as an MCP server, without MXD_AGENT, and exit.
 export function readExtraChannelPluginIds(): string[] {
   try {
-    const raw = readEnvFile(['CHANNEL_PLUGINS_EXTRA'])['CHANNEL_PLUGINS_EXTRA'] ?? ''
-    return raw.split(/\s+/).map(s => s.trim()).filter(Boolean)
+    const env = readEnvFile(['CHANNEL_PLUGINS_EXTRA', 'MAIN_AGENT_ID'])
+    const raw = env['CHANNEL_PLUGINS_EXTRA'] ?? ''
+    return filterMainGromzoIds(env['MAIN_AGENT_ID'] ?? '', raw.split(/\s+/).map(s => s.trim()).filter(Boolean))
   } catch {
     return []
   }
@@ -860,6 +868,38 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
   renameSync(tmp, path)
 }
 
+// MCPWRITEGATE1104 D4: which servers of an isolated .claude.json the dashboard copied from the shared config. Kept in
+// a file of its own next to .claude.json (Claude Code owns and rewrites .claude.json; an extra key there is not ours to
+// rely on). A missing or unreadable file is an empty set: nothing is then provably inherited.
+export const INHERITED_MCP_FILE = '.marveen-mcp-inherited.json'
+// Seeded into every agent before the provenance file existed, with a "/" root: removable without a record.
+const LEGACY_INHERITED_MCP_NAMES = new Set(['Filesystem'])
+
+function readInheritedMcpNames(cfgDir: string): Set<string> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(cfgDir, INHERITED_MCP_FILE), 'utf-8')) as { servers?: unknown }
+    return new Set(Array.isArray(parsed.servers) ? parsed.servers.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function writeInheritedMcpNames(cfgDir: string, names: Set<string>, perUser: boolean): void {
+  try {
+    writeJsonAtomic(join(cfgDir, INHERITED_MCP_FILE), { servers: [...names].sort() }, { groupShared: perUser })
+  } catch (err) {
+    logger.warn({ err, cfgDir }, 'isolated-config: could not write the inherited-MCP record')
+  }
+}
+
+// PLUGINCODEWRITE1104 (Samu 68214): a config-dir link is right only when it points at its own target. Any other
+// symlink (one a sub-agent redirected at /tmp/evil, by a tool call or a script) is replaced at the next spawn, so a
+// retargeted cache/marketplaces/agents/skills/hooks link does not survive a respawn. Not a text gate: it also covers
+// what the db-write-gate's command-text reading cannot see.
+export function linkPointsAt(link: string, target: string): boolean {
+  try { return resolve(dirname(link), readlinkSync(link)) === resolve(target) } catch { return false }
+}
+
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
 // shared ~/.claude.json.
 //
@@ -875,7 +915,8 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
 //   - a server missing from the isolated file is copied in,
 //   - an entry that already exists is NEVER overwritten -- Claude Code owns its
 //     evolved state, and a per-agent scoping decision must survive,
-//   - a server removed from the shared config is left in place,
+//   - a server removed from the shared config is left in place (one exception since MCPWRITEGATE1104 D4: a server
+//     provably copied from the shared config, see readInheritedMcpNames below),
 //   - a non-object mcpServers on either side means we do not touch it at all,
 //     because we cannot merge what we do not understand.
 //
@@ -899,6 +940,8 @@ function reconcileMcpServers(
   sharedDot: string,
   name: string,
   cwd: string,
+  cfgDir: string | null = null,
+  perUser = false,
 ): boolean {
   if (!existsSync(sharedDot)) return false
   let shared: Record<string, unknown>
@@ -934,6 +977,32 @@ function reconcileMcpServers(
     added.push(key)
   }
   logNotInherited(name, 'gap-fill', notInherited)
+  // MCPWRITEGATE1104 D4 (Samu 68033): the one exception to "additive only". A server this reconcile or the seed
+  // provably copied FROM the shared config (the provenance file next to .claude.json) is taken back out once the
+  // shared config no longer has it. An entry with no such record is the
+  // agent's own (e.g. a voice server it was given by hand) and is never removed, with one named exception: the
+  // filesystem server, which the pre-provenance seeds copied into every agent with a "/" root.
+  const removed: string[] = []
+  if (name !== MAIN_AGENT_ID && cfgDir) {
+    const inherited = readInheritedMcpNames(cfgDir)
+    const before = inherited.size
+    for (const key of Object.keys(own)) {
+      const provable = inherited.has(key) || LEGACY_INHERITED_MCP_NAMES.has(key)
+      // gone from the shared config only: a narrowed inheritable list leaves existing agents alone (MCPOROKLES923)
+      const stillShared = key in (shared.mcpServers as Record<string, unknown>)
+      if (provable && !stillShared) {
+        delete own[key]
+        inherited.delete(key)
+        removed.push(key)
+      }
+    }
+    for (const key of added) inherited.add(key)
+    if (removed.length > 0 || inherited.size !== before || added.length > 0) writeInheritedMcpNames(cfgDir, inherited, perUser)
+    if (removed.length > 0) {
+      logger.info({ name, removed }, 'isolated-config: removed inherited MCP servers that left the shared config')
+    }
+  }
+  if (removed.length > 0) cur.mcpServers = own
   // Log the skips even when nothing was added: a silent skip is how this class
   // of bug stays invisible, and the name alone tells the next reader where the
   // agent's real definition lives.
@@ -943,7 +1012,7 @@ function reconcileMcpServers(
       'isolated-config: skipped shared MCP servers the agent already defines in its own .mcp.json',
     )
   }
-  if (added.length === 0) return false
+  if (added.length === 0) return removed.length > 0
   cur.mcpServers = own
   logger.info({ name, added }, 'isolated-config: added missing MCP servers from the shared config')
   return true
@@ -1083,8 +1152,11 @@ function provisionIsolatedConfigDir(
       if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
         // Defensively drop a real .credentials.json that an older build may have
         // symlinked/copied here, so the env-var token is the only auth source.
+        // An own_team agent is the exception: its .credentials.json IS its own
+        // /login credential, written here by `claude auth login`, and deleting it
+        // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
         const stale = join(cfg, entry)
-        if (entry === '.credentials.json') {
+        if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
           try { rmSync(stale, { force: true }) } catch { /* absent */ }
         }
         continue
@@ -1092,7 +1164,7 @@ function provisionIsolatedConfigDir(
       const link = join(cfg, entry)
       let needsLink = true
       try {
-        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        if (lstatSync(link).isSymbolicLink() && linkPointsAt(link, join(realClaude, entry))) needsLink = false
         else rmSync(link, { recursive: true, force: true })
       } catch { /* absent -> create */ }
       if (needsLink) {
@@ -1119,6 +1191,11 @@ function provisionIsolatedConfigDir(
     // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
     // bearing when it was not.
     delete settings.hooks
+    // ENVRELAXGATE1104 follow-up (Dani 67912, Samu 67923): disableAllHooks never rides the clone either. In an agent's
+    // config dir it switches off every gate hook the project scope registers, so a value written into the shared
+    // ~/.claude/settings.json would turn the whole fleet's gates off on their next start. The agent scaffold already
+    // drops it from the project-scope settings (#2497); this is the user-scope copy.
+    delete settings.disableAllHooks
     // The shared env reaches this agent as is (the shared file wins for every
     // name it defines), so an auth-path name in it changes which account or
     // endpoint this agent runs on. Said out loud on every start, names only:
@@ -1173,7 +1250,7 @@ function provisionIsolatedConfigDir(
             // (#1305), so without this exclusion an isolated dir that already
             // carries the old derived hooks would inherit them right back as a
             // "target-only" key on every re-provision.
-            if (key !== 'enabledPlugins' && key !== 'hooks' && !(key in settings)) {
+            if (key !== 'enabledPlugins' && key !== 'hooks' && key !== 'disableAllHooks' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
             }
@@ -1219,7 +1296,7 @@ function provisionIsolatedConfigDir(
       if (!existsSync(target)) continue
       let needsLink = true
       try {
-        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        if (lstatSync(link).isSymbolicLink() && linkPointsAt(link, target)) needsLink = false
         else rmSync(link, { recursive: true, force: true })
       } catch { /* absent -> create */ }
       if (needsLink) {
@@ -1294,6 +1371,11 @@ function provisionIsolatedConfigDir(
         // shadow it, credentials included. Strip those before writing.
         stripProjectScopedCollisions(seed, cwd, name, notInheritedOnSeed)
         writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
+        // MCPWRITEGATE1104 D4: every server the seed kept came from the shared config; record that, so a later
+        // reconcile can take it back out when it leaves the shared config (and only then, and only these).
+        if (name !== MAIN_AGENT_ID && isPlainObject(seed.mcpServers)) {
+          writeInheritedMcpNames(cfg, new Set(Object.keys(seed.mcpServers)), perUser)
+        }
       } else {
         try {
           const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
@@ -1302,7 +1384,7 @@ function provisionIsolatedConfigDir(
             cur.hasCompletedOnboarding = true
             dirty = true
           }
-          if (reconcileMcpServers(cur, sharedDot, name, cwd)) dirty = true
+          if (reconcileMcpServers(cur, sharedDot, name, cwd, cfg, perUser)) dirty = true
           if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser })
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
@@ -1642,10 +1724,15 @@ export function stampFableOverageConsentSharedRoots(): void {
   }
 }
 
-export function resolveAgentProvider(name: string): ChannelProviderType {
-  const perAgent = readAgentChannelProvider(name)
+/** The provider a sub-agent's own agent-config value resolves to: one of the five sub-agent providers, else the
+ *  install's provider (an unknown or unaccepted value, 'gromzo' included, falls back). Pure, so it is unit-tested. */
+export function pickAgentProvider(perAgent: string | null, installProvider: ChannelProviderType): ChannelProviderType {
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
-  return CHANNEL_PROVIDER
+  return installProvider
+}
+
+export function resolveAgentProvider(name: string): ChannelProviderType {
+  return pickAgentProvider(readAgentChannelProvider(name), CHANNEL_PROVIDER)
 }
 
 export function agentSessionName(name: string): string {
@@ -1993,8 +2080,18 @@ export function getAgentRunningSince(name: string, session: string = agentSessio
 }
 
 
+/** GROMZONOPROVIDER1108 (Dani 73584, 73593): decided on the RESOLVED provider, never on what the agent wrote. A
+ *  sub-agent never takes a provider whose capabilities say sub-agents get none (subAgentDefault === 'none': gromzo,
+ *  the MAIN agent's Gromzo channel, which a sub-agent must never carry or speak through). An own value the resolver
+ *  does not accept ('gromzo', 'whatsapp', any string the agent wrote into its own config) falls back to the install's
+ *  provider and lands here as that provider, so it cannot open the door. Pure, so it is unit-tested. */
+export function subAgentMayUseProvider(resolved: ChannelProviderType): boolean {
+  return providerCapabilities(resolved).subAgentDefault !== 'none'
+}
+
 export function agentHasChannel(name: string): boolean {
   const agentProvider = resolveAgentProvider(name)
+  if (!subAgentMayUseProvider(agentProvider)) return false
   const dir = agentDir(name)
   const agentChannelDir = channelStateDir(agentProvider, dir)
   const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
@@ -2196,7 +2293,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
   const agentChannelDir = channelStateDir(agentProvider, dir)
-  const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
+  // GROMZONOPROVIDER1108 (Dani 73593): the launch path has its own guard, the same one agentHasChannel asks first, so a
+  // sub-agent never launches with a provider sub-agents may not use (gromzo), whatever a token reader would return.
+  const providerAllowed = subAgentMayUseProvider(agentProvider)
+  const token = providerAllowed ? readChannelToken(agentProvider, join(agentChannelDir, '.env')) : null
   // Backward compat: try legacy Telegram token if provider-aware lookup misses
   let hasChannel = !!token
   if (!token && agentProvider === 'telegram') {
@@ -2214,7 +2314,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   // state dir for the reaper, the state fence or the token probes to act on.
   const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,
     readAgentGromzo(name)
-      ? { slug: name, sockUsable: mxdAgentSockUsable() }
+      ? { slug: name, sockUsable: mxdAgentSockUsable(), tokenFile: gromzoTokenFile(name) }
       : undefined)
   // GROMZOGATECONF1030 (c): the agent's own agent-config.json is no gate source any more (the agent can write it).
   if (agentConfigCarriesSenderRoleGate(name)) {
@@ -2222,6 +2322,17 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   }
   if (extraLaunch.skipped.length > 0) {
     logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')
+  }
+  // GROMZOMXDINSTALL1102 Q5: the staged gromzo-local marketplace registered in the shared
+  // ~/.claude/plugins BEFORE this agent's isolated config is seeded from it (gromzo-marketplace.ts).
+  if (extraLaunch.gromzo === 'on') {
+    const reg = ensureGromzoMarketplace({
+      pluginsDir: join(homedir(), '.claude', 'plugins'),
+      pluginRoot: join(homedir(), 'marveen-local-plugins', 'gromzo'),
+      projectRoot: PROJECT_ROOT,
+    })
+    if (reg === 'registered') logger.info({ name }, 'gromzo: the gromzo-local marketplace registered')
+    else if (reg !== 'present') logger.warn({ name, reg }, 'gromzo: the gromzo-local marketplace is not registered')
   }
   if (extraLaunch.gromzo === 'skipped-no-socket' || extraLaunch.gromzo === 'skipped-bad-name') {
     logger.warn({ name, gromzo: extraLaunch.gromzo }, 'gromzo: configured but not loaded (no usable mxd agent.sock, or a name mxd refuses)')
@@ -2272,6 +2383,13 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
     } catch (err) {
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
+    }
+    // MXDAGENTSOCKID1106 (b): the gromzo plugins of the claudes killed above (and of this agent's old session)
+    // outlive them; a leftover keeps this agent's agent.sock binding and pops its messages.
+    try {
+      reapGromzoOrphans({ tmuxPath: tmuxBin() })
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-launch gromzo-orphan reap failed (continuing)')
     }
 
     // Custom provider check runs FIRST and BEFORE resolveOpenRouterModel, so
@@ -2356,8 +2474,19 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
     // Code picks it up without needing OAuth credentials at all.
     let apiKeyEnv = ''
+    // APIKEYSCOPE1107: the key an authMode=api agent runs on, stamped below once its config dir is known.
+    let apiKeyForApproval = ''
+    const keyMode = currentAuthKeyMode(join(PROJECT_ROOT, '.env'), FLEET_OAUTH_TOKEN_PATH)
     if (isClaude && authMode === 'api') {
-      const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
+      // Its own vault key, else the host key from .env, EXPLICITLY: it no longer arrives through the tmux global env
+      // on a subscription install (APIKEYSCOPE1107). Under the same launch-secret name, so clearLaunchSecrets cleans
+      // it. Neither -> the launch is refused: it would come up "Not logged in" or on a credential nobody chose.
+      const agentApiKey = getSecret(`agent-${name}-api-key`) || hostApiKey(join(PROJECT_ROOT, '.env'))
+      if (!agentApiKey) {
+        logger.error({ name }, 'authMode=api: no key (no vault agent-<name>-api-key and no ANTHROPIC_API_KEY in .env) -- agent NOT started')
+        return { ok: false, error: 'authMode=api: no API key (vault agent-<name>-api-key or .env ANTHROPIC_API_KEY)' }
+      }
+      apiKeyForApproval = agentApiKey.trim()
       if (agentApiKey) {
         // Ugyanaz a szabaly, mint a provider-againal: a kulcs FAJLBOL olvasva kerul be, hogy a
         // launch-parancs (es vele a `ps` sora) ne hordozza az erteket (LATENSKULCSARGV920).
@@ -2744,6 +2873,22 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // 2fb86ef2: a Claude agent with its own token must run isolated. On the
     // shared ~/.claude the rotating host credential wins over the env token, so
     // the agent would silently authenticate as the host, not with its own token.
+    // APIKEYSCOPE1107: an authMode=api agent that would run on the shared ~/.claude of a subscription install gets its
+    // own config dir: its key's approval stamp must never land in the shared ~/.claude.json (the main agent and the
+    // operator's own CLI read it and would switch to billing the key). Its project dir (memory, transcripts) is
+    // copied over once, modes kept; the dir must be past onboarding. Any step failing refuses the launch, loudly:
+    // a half-provisioned dir is not a success (Samu 72235).
+    if (isClaude && authMode === 'api' && !claudeConfigDir && keyMode !== 'keyonly' && name !== MAIN_AGENT_ID) {
+      const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
+      const copied = isolated
+        ? copyProjectsOnce(join(homedir(), '.claude', 'projects'), join(isolated, 'projects'), encodeClaudeProjectDir(dir))
+        : false
+      if (!isolated || !copied || !isolatedDirReady(isolated)) {
+        logger.error({ name, isolated, copied }, 'authMode=api: isolated config dir could not be provisioned (dir, project copy or onboarding state) -- agent NOT started; the shared ~/.claude.json must not carry its key approval')
+        return { ok: false, error: 'authMode=api: isolated config dir could not be provisioned' }
+      }
+      claudeConfigDir = isolated
+    }
     if (ownTokenFile && isClaude && !claudeConfigDir) {
       logger.error(
         { name, path: ownTokenFile },
@@ -2791,6 +2936,29 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
         customApiKeyForApproval,
       )
+    }
+    // APIKEYSCOPE1107: the API key's approval stamp, so the "Detected a custom API key" prompt (default No) never
+    // stops the pane: an authMode=api agent's key, or on a key-only install the host key for a fleet agent. Into the
+    // agent's own .claude.json; the shared ~/.claude.json only on a key-only install (stampAllowed). Anything else is
+    // a refused launch, never a silent stamp in the shared file.
+    // A key-only fleet agent that keeps the key (no own login: see inheritedAuthUnset) gets the host key EXPLICITLY,
+    // the very value stamped, not whatever the tmux global env carried since channels.sh last started (a rotated key
+    // would otherwise meet a stamp for the new one and stop at the prompt). By reference, never in argv.
+    let stampKey = apiKeyForApproval
+    if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile) {
+      const hostKey = hostApiKey(join(PROJECT_ROOT, '.env')).trim()
+      if (hostKey) {
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, hostKey)} && `
+        stampKey = hostKey
+      }
+    }
+    if (stampKey) {
+      const target = claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json')
+      if (!stampAllowed(target, keyMode)) {
+        logger.error({ name, keyMode }, 'API key approval would land in the shared ~/.claude.json on a subscription install -- agent NOT started')
+        return { ok: false, error: 'API key approval refused for the shared ~/.claude.json' }
+      }
+      stampCustomApiKeyApproval(target, stampKey)
     }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // VOICETOKENLEAK1101 PR-A0: scripts/marveen-api.sh reads the agent's OWN token when it has one (AGENT_TOKENS).
@@ -2856,15 +3024,17 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and
-    // every new pane inherits it. The Claude CLI prefers CLAUDE_CODE_OAUTH_TOKEN
-    // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
-    // reach the custom endpoint -> 401, even after the explicit export was removed.
+    // every new pane inherits it. Two credentials on one launch is ambiguous and a
+    // custom endpoint got the fleet token -> 401 (2026-08-05). (The precedence is the
+    // docs' one: ANTHROPIC_API_KEY outranks CLAUDE_CODE_OAUTH_TOKEN, measured
+    // 2026-11-07 on CLI 2.1.319, APIKEYSCOPE1107; the old "the CLI prefers the token"
+    // here was wrong.) So exactly one credential goes in.
     // An active `unset` at launch strips the inherited value before exec.
     // Fleet Claude-OAuth agents keep the token intact. An agent with its own
     // credential (own_team, a configured config dir, its own token file) also
     // drops an inherited ANTHROPIC_API_KEY, which outranks every OAuth path
     // (BYOSUBUNSET1018, inherited-auth-unset.ts).
-    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null })
+    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null, keyMode })
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
@@ -3168,6 +3338,12 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
       } catch (err) {
         logger.warn({ err, name }, 'post-stop channel-poller reap failed')
       }
+      // MXDAGENTSOCKID1106 (b): a gromzo plugin the kill-session left behind.
+      try {
+        reapGromzoOrphans({ tmuxPath: tmuxBin() })
+      } catch (err) {
+        logger.warn({ err, name }, 'post-stop gromzo-orphan reap failed')
+      }
     }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }
@@ -3297,10 +3473,10 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal: the card is closed with C-u then Down, never a digit (see
-// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
-// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
-// keep". A "0" there would silently disable feedback drafting for that agent,
+// Dismissal: the card is closed with one "0" into an empty prompt (see
+// feedbackDraftDismissPlan for why Down does not close it and why a digit goes
+// only into an empty input). Claude Code then offers "Turn off Claude-drafted
+// feedback? 0 to turn off · Esc to keep". A "0" there would silently disable feedback drafting for that agent,
 // so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
@@ -3346,33 +3522,108 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
-// Between C-u and Down: in one tmux call Down would reach the TUI before it
-// re-rendered the cleared input.
+// Between C-u and "0": in one tmux call the digit would reach the TUI before it
+// re-rendered the cleared input, and land after the leftover.
 const FEEDBACK_KEY_GAP_MS = 200
+
+// A hold sends no keystroke, so nothing on our side ever ends it: measured
+// 2026-11-02, the main session's card stayed up 3.5 hours and every scheduled
+// round in that window was skipped, with only an info line per attempt. After
+// this long the owner gets the manual fix, once per episode. Same idea as the
+// MAIN_PARKED_* ladder, but timed rather than counted: the dismisser runs on
+// every injector's refusal branch, so its call rate is not a clock.
+export const FEEDBACK_HOLD_OWNER_AFTER_MS = 10 * 60_000
+const feedbackHolds = new Map<string, { since: number; notified: boolean }>()
+
+// Pure, exported for tests.
+export function decideFeedbackHoldEscalation(sinceMs: number, nowMs: number, notified: boolean): boolean {
+  return !notified && nowMs - sinceMs >= FEEDBACK_HOLD_OWNER_AFTER_MS
+}
+
+function noteFeedbackHold(session: string, host: string | null, reason: string, nowMs: number): void {
+  const key = `${host ?? 'local'}:${session}`
+  const rec = feedbackHolds.get(key) ?? { since: nowMs, notified: false }
+  feedbackHolds.set(key, rec)
+  if (!decideFeedbackHoldEscalation(rec.since, nowMs, rec.notified)) return
+  rec.notified = true
+  const minutes = Math.round((nowMs - rec.since) / 60000)
+  logger.warn({ session, host, reason, minutes }, 'Feedback-draft modal held past the escalation window -- owner notified with the manual fix')
+  notifyChannel(
+    `🚨 A(z) ${session} pane-jén ~${minutes} perce áll a Claude Code visszajelzés-vázlat kártyája (${reason}), ` +
+    `és amíg ott van, az ütemező és az üzenet-kézbesítés nem jut be. A dashboard nem nyúl hozzá, mert nem biztonságos. ` +
+    `KÉZI FELOLDÁS: tmux attach -t ${session}; ha a promptban csak egy 0 áll, előbb Ctrl-U; ` +
+    `ha a prompt üres, 0 (bezárja a kártyát), ` +
+    `a "Turn off Claude-drafted feedback?" kérdésre Esc; kilépés: Ctrl-B d.`,
+  ).catch(() => { /* notify is best-effort */ })
+}
+
+function clearFeedbackHold(session: string, host: string | null): void {
+  feedbackHolds.delete(`${host ?? 'local'}:${session}`)
+}
+
+// After a "0" the card fires on a 400 ms debounce, so the opt-out question is
+// polled for rather than read once. And the card's Escape handler
+// ignores a press inside its settle window (shipped CLI), so the Escape waits
+// a little after the question is seen.
+const FEEDBACK_OPTOUT_POLL_MS = 200
+const FEEDBACK_OPTOUT_WAIT_MS = 3000
+const FEEDBACK_OPTOUT_ESC_SETTLE_MS = 800
+
+async function answerFeedbackOptOutAfterDigit(session: string, host: string | null): Promise<void> {
+  for (let waited = 0; waited < FEEDBACK_OPTOUT_WAIT_MS; waited += FEEDBACK_OPTOUT_POLL_MS) {
+    await delay(FEEDBACK_OPTOUT_POLL_MS)
+    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+    if (detectsFeedbackOptOutPrompt(pane)) {
+      await delay(FEEDBACK_OPTOUT_ESC_SETTLE_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
+      await delay(300)
+      return
+    }
+  }
+}
+
+// Slack past the card's input-ignore window, for the tmux keystroke and the render.
+const FEEDBACK_CARD_WAIT_SLACK_MS = 100
 
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-    if (!detectsFeedbackDraftModal(pane)) return
+    let pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+    if (!detectsFeedbackDraftModal(pane)) { clearFeedbackHold(session, host); return }
+    // The card's age is measured from this call's first capture, never from an
+    // earlier pass: a remembered sighting could belong to a card that has since
+    // closed, and would let a digit into the next card's ignore window. Our
+    // sighting is never earlier than the card, so the wait can only err long.
+    const seenAt = Date.now()
     // The input box is read from the ghost-stripped view: a dim autosuggest in an
     // empty box must not read as typed text. Detection stays on the plain capture.
-    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
-    if (plan.act === 'none') return
+    const planFor = (p: string) => feedbackDraftDismissPlan(
+      p, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION, Date.now() - seenAt,
+    )
+    let plan = planFor(pane)
+    if (plan.act === 'wait') {
+      // One more capture once the card is old enough, instead of a digit now.
+      await delay(plan.ms + FEEDBACK_CARD_WAIT_SLACK_MS)
+      pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+      plan = planFor(pane)
+      if (plan.act === 'wait') return
+    }
+    if (plan.act === 'none') { clearFeedbackHold(session, host); return }
     if (plan.act === 'hold') {
       logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      // With the footer in view the text reads as a parked line, and the
+      // parked-input janitor on the same refusal branch owns it (on the main
+      // session the MAIN_PARKED owner alert): a second page here would double it.
+      if (detectPaneState(pane) === 'typing') clearFeedbackHold(session, host)
+      else noteFeedbackHold(session, host, plan.reason, Date.now())
       return
     }
+    clearFeedbackHold(session, host)
     for (const [i, key] of plan.keys.entries()) {
       if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
       runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
     }
-    await delay(300)
-    const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-    if (detectsFeedbackOptOutPrompt(after)) {
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
-      await delay(300)
-    }
-    logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+    await answerFeedbackOptOutAfterDigit(session, host)
+    logger.info({ session, keys: plan.keys }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
   }
@@ -4849,6 +5100,32 @@ export function decideMainParkedEscalation(
   return 'none'
 }
 
+// The MAIN_PARKED owner page. With the feedback-draft card on the same frame the
+// parked line may be the dismisser's own "0" that the card ignored: the
+// feedback-hold page carries that hint, but a box that reads 'typing' is handed
+// here instead, so the hint has to travel on this page. Pure, exported for tests.
+export function mainParkedOwnerAlert(
+  session: string,
+  minutes: number,
+  parked: string,
+  redirected: boolean,
+  feedbackCardUp: boolean,
+): string {
+  const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
+  return (
+    `🚨 A fő ágens (${session}) input-mezőjében ~${minutes} perce áll egy parkolt sor, ` +
+    `és emiatt a csatorna nem dolgoz fel bejövő üzenetet. KÉZI FELOLDÁS (pár másodperc): ` +
+    `tmux attach -t ${session}, majd Ctrl-C és utána Ctrl-U (a sor törlése), végül kilépés: Ctrl-B d.` +
+    (feedbackCardUp
+      ? ` A pane-en a Claude Code visszajelzés-vázlat kártyája is áll: ha a parkolt sor csak egy 0, ` +
+        `lehet, hogy a kártya bezárásának maradéka. Ctrl-U után a prompt üres, ` +
+        `és a kártyát a következő kör bezárja (kézzel: 0, a "Turn off Claude-drafted feedback?" kérdésre Esc).`
+      : '') +
+    // No conversation content in an alert that goes to a non-owner chat.
+    (redirected ? '' : ` A parkolt sor eleje: "${preview}"`)
+  )
+}
+
 // MAINBOXPARK816 stage-1 surface: the heartbeat round (same process) reads this
 // and puts the fact into its prompt -- deliberately NOT the inter-agent queue,
 // because a message queued to the main agent would strand behind the very
@@ -4977,13 +5254,8 @@ async function clearStaleParkedInputInLane(
     let escalated = !!(prev && prev.sig === parked && prev.escalated)
     const stage = decideMainParkedEscalation(fails, escalated)
     if (stage === 'owner') {
-      const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
-        `🚨 A fő ágens (${session}) input-mezőjében ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce áll egy parkolt sor, ` +
-        `és emiatt a csatorna nem dolgoz fel bejövő üzenetet. KÉZI FELOLDÁS (pár másodperc): ` +
-        `tmux attach -t ${session}, majd Ctrl-C és utána Ctrl-U (a sor törlése), végül kilépés: Ctrl-B d.` +
-        // No conversation content in an alert that goes to a non-owner chat.
-        (alertIsRedirected() ? '' : ` A parkolt sor eleje: "${preview}"`),
+        mainParkedOwnerAlert(session, Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000), parked, alertIsRedirected(), detectsFeedbackDraftModal(b)),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')

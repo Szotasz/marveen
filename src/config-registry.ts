@@ -1,5 +1,7 @@
 import { homedir } from 'node:os'
 import { expandAndValidateConfigDir } from './config-dir-path.js'
+import { alertChatFormatError, alertChatProviderOf, OWNER_ALERT_CHAT_KEY } from './alert-chat-format.js'
+import { readEnvFile } from './env.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -90,6 +92,33 @@ export interface SettingDefinition {
    * control constrains could switch it off for itself (BASHSANDBOX1022 security review).
    */
   loosens?: (oldValue: string, newValue: string) => boolean
+  /**
+   * Optional: the key is OVERRIDES-ONLY (ENVRELAXGATE1104 step 2). Its value comes from the owner's override, else
+   * the registry default; a `.env` line counts only when it TIGHTENS (`loosens(default, envValue)` is false). The
+   * `.env` is a file a process can write without the dashboard's owner check, so it must never loosen a control.
+   * Every key with `loosens`, and every `module: 'security'` key, is overrides-only without this flag (isOverridesOnly).
+   */
+  overridesOnly?: boolean
+  /**
+   * Optional (NETTARGETENV1104): ANY change of this key through the Settings route needs the owner (an owner session or
+   * a full-scope device key), not the shared fleet token. Unlike `loosens` it does NOT make the key overrides-only: its
+   * .env line keeps working. For keys that choose a TARGET (where the token, a prompt or memory text is sent) and whose
+   * .env form is documented and used by remote installs.
+   */
+  ownerGated?: boolean
+}
+
+// ENVRELAXGATE1104 step 2: the keys whose `.env` value may only tighten. A `loosens` function marks a security
+// control, and the `security` module holds them by definition; the explicit flag covers a control with no loosens.
+export function isOverridesOnly(def: SettingDefinition): boolean {
+  return def.overridesOnly === true || typeof def.loosens === 'function' || def.module === 'security'
+}
+
+// Does this `.env` value count for an overrides-only key? Only when it does not loosen the registry default. A key
+// with no `loosens` function cannot tell a tightening from a loosening, so its `.env` value never counts.
+export function envValueTightens(def: SettingDefinition, envValue: string): boolean {
+  if (typeof def.loosens !== 'function') return false
+  return !def.loosens(String(def.default), envValue)
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -403,6 +432,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'AGENT_API_ORIGIN',
@@ -412,6 +443,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'FLEET_PYTHON_VENV',
@@ -459,6 +492,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'EMBED_URL',
@@ -468,6 +503,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'EMBED_MODEL',
@@ -497,6 +534,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
+    ownerGated: true,
   },
   {
     key: 'MEMORY_VECTOR_MIN_MARGIN',
@@ -614,6 +653,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: false,
+    // Where the owner's deliverables go: any change re-routes them, so it is overrides-only and a .env line never
+    // counts (ENVRELAXGATE1104 follow-up, Samu 68119).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   // --- Heartbeat module (hot-reload via settings-store) ---
   {
@@ -827,6 +869,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    // Switching it ON removes the curl/wget denies: a loosening (ENVRELAXGATE1104 step 2, EGM M4).
+    loosens: (oldValue: string, newValue: string) => !['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && ['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
   },
   {
     key: 'BASH_SANDBOX_AGENTS',
@@ -847,10 +891,12 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',
-    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy.',
+    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy. Egy D-vel kezdődő azonosítóra a jóváhagyás-kérések is közvetlenül ide mennek; minden változásáról a RÉGI cél értesítést kap.',
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // APPROVALSLACK1030 (Samu 66026): the owner's approval requests go here, so ANY change needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'NOTIFY_SLACK_ALERT_TARGET',
@@ -860,6 +906,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // Where every alert goes FIRST (slack-notify.mjs): any change re-routes them, like NOTIFY_SLACK_TARGET (Dani's #2500
+    // review). So it is overrides-only, and a .env line never counts.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'NOTIFY_TELEGRAM',
@@ -897,10 +946,55 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
     default: '',
-    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll.',
+    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll. Ha a Slack-reakciós jóváhagyás be van kapcsolva, ennek a felhasználónak a ✅/❌ reakciója dönt; minden változásáról a RÉGI azonosító DM-et kap.',
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // APPROVALSLACK1030 (2), Samu 65935: this id names whose Slack reaction approves, so ANY change of it needs the
+    // owner's session; with the shared token an agent could make itself the approver.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    // OWNERAUTHGUESS1106 (Samu 71849): the owner of the Telegram chat commands. With several paired DMs and the
+    // installer's ALLOWED_CHAT_ID=0 nobody is guessed any more: the commands stop until this is set. Not the memory key
+    // (ALLOWED_CHAT_ID), not OWNER_ALERT_CHAT_ID (a delivery target).
+    key: 'TELEGRAM_OWNER_USER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Telegram-felhasználói azonosítója (pozitív szám, a saját chated száma): ő futtathatja a chat-parancsokat (/status, /model ...). Üresen a régi szabály marad: egy pozitív ALLOWED_CHAT_ID, vagy ha az nincs, a fő bot egyetlen párosított DM-je. Ha több DM van párosítva (pl. gazda és családtag) és az ALLOWED_CHAT_ID nincs kitöltve, a rendszer nem találgat: a chat-parancsok addig nem futnak, amíg ezt be nem állítod. Csak azt dönti el, ki a gazda a parancsoknál: hova menjenek a riasztások, azt az OWNER_ALERT_CHAT_ID mondja meg, az emlékek pedig változatlanok.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    // a positive Telegram user id or empty; refused otherwise, never stored and ignored later
+    validate: (v: string) => (v.trim() === '' || /^[1-9][0-9]{0,19}$/.test(v.trim())
+      ? null
+      : 'Pozitív Telegram-felhasználói azonosító kell (a saját chated száma, pl. 1268077055); csoport (negatív szám) nem lehet. / A positive Telegram user id is required (your own chat number, e.g. 1268077055); a group (a negative number) is not allowed.'),
+    // whose chat commands run: ANY change needs the owner's session, as SLACK_OWNER_USER_ID
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    key: 'APPROVAL_SLACK_REACTIONS',
+    type: 'string',
+    default: 'off',
+    description: 'Slack-reakciós jóváhagyás (APPROVALSLACK1030): bekapcsolva (on) a jóváhagyás-kérés a gazda Slack-DM-jébe EGY üzenetként megy, és a gazda ✅ (jóváhagy) vagy ❌ (elutasít) reakcióját a szerver maga ellenőrzi. Csak kifejezett SLACK_OWNER_USER_ID mellett, és csak olyan kérésre, amelynek tartalmát a szerver ellenőrizni tudja (levélnél a teljes boríték, a horgonnyal egyezően); minden más kérésnél a döntés a dashboardon marad. Alapból KI.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    // Switching it ON opens one more way to approve: that needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
+    key: 'APPROVAL_SLACK_REPLIES',
+    type: 'string',
+    default: 'off',
+    description: 'Slack-válaszos jóváhagyás (APPROVALSLACK1030 B): bekapcsolva (on) a jóváhagyás-kérés a gazda Slack-DM-jébe EGY üzenetként megy, és a gazda beírt "mehet" (jóváhagy) vagy "nem" (elutasít) válaszát a szerver maga olvassa el: a kérés szálában, vagy közvetlenül a kérés után, ha közben senki más nem írt. Csak kifejezett SLACK_OWNER_USER_ID mellett. Leírás-alapú kérésnél a gazda a kérő ügynök leírását hagyja jóvá (vállalt kockázat). Az állandó kategóriák, a data_delete és a boríték nélküli levél a dashboardon marad. Alapból KI; a bekapcsolás a gazda döntése.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    // Switching it ON opens one more way to approve: that needs the owner's session (Samu 67693: the owner's own step).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
     key: 'SCHEDULED_DELIVERY_CHANNEL',
@@ -910,6 +1004,28 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'channels',
     secret: false,
     requiresRestart: false,
+    // Where the main agent's scheduled results go: any change re-routes them, so it is overrides-only and a .env line
+    // never counts (ENVRELAXGATE1104 follow-up, Samu 68119).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    // ISSUE2556X (marveen#2556): with two paired DMs and the installer's ALLOWED_CHAT_ID=0 the alert resolver refuses
+    // to guess, and every system alert was lost. This names the chat outright. Delivery only: it never makes anyone
+    // the owner (the command gate and the ledger keep ALLOWED_CHAT_ID / the sole DM entry), and the memory key stays
+    // ALLOWED_CHAT_ID.
+    key: OWNER_ALERT_CHAT_KEY,
+    type: 'string',
+    default: '',
+    description: 'Hova menjenek a rendszer-riasztások és a gazdának szóló értesítések (kvóta, lemez, beragadt munkamenet, biztonsági esemény, ütemezett feladat hibája, napi napló), a beállított csatornán (CHANNEL_PROVIDER) belül a gazda SZEMÉLYES chatjének azonosítójával: Telegramon a saját chated pozitív száma, Slacken a DM (D...) vagy a felhasználód (U...) azonosítója, Discordon a DM-csatornád azonosítója (ott az alakból nem látszik, hogy DM-e). Csoport vagy csatorna nem lehet, mert ott a riasztásokat és a jóváhagyások szövegét mindenki látná. Üresen (alapértelmezés) a mostani szabály marad: az ALLOWED_CHAT_ID, vagy ha az nincs beállítva, az egyetlen párosított DM. Akkor kell, ha a fő bothoz több ember is párosítva van, és az ALLOWED_CHAT_ID nincs kitöltve: ilyenkor a rendszer nem találgat, és e nélkül a riasztás elveszik. Csak a kézbesítést állítja: senkit nem tesz gazdává, a parancsok és az emlékek változatlanok.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    // the provider's own shape, read from the install .env as config.ts reads CHANNEL_PROVIDER (this module may not
+    // import config.ts); a wrong shape is refused here, never stored and silently ignored later
+    validate: (v: string) => alertChatFormatError(alertChatProviderOf(readEnvFile(['CHANNEL_PROVIDER'])['CHANNEL_PROVIDER']), v),
+    // Where the owner's alerts go: any change re-routes them (a security alert included), so it is overrides-only and
+    // a .env line never counts, as SCHEDULED_DELIVERY_CHANNEL (Samu 71763).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'MAIN_AGENT_CONFIG_DIR',
@@ -971,6 +1087,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'boolean',
     default: '0',
     description: 'Telegram-témák: ha a bot privát chatjében témák vannak, a válasz abba a témába megy, ahonnan az üzenet jött, és a gépelés-jelzés is ott látszik. Bekapcsolva a csatorna-indítás egy kiegészítést tesz a Telegram plugin forrására (scripts/patch-telegram-plugin.py), ami a bejövő üzenet téma-azonosítóját átadja az ügynöknek, és a reply toolt témába küldésre is képessé teszi; kikapcsolva a kiegészítést leveszi, és a plugin pontosan a mai. A privát chatben a témákat a BotFather-ben kell bekapcsolni. A riasztások, a jóváhagyás-kérések és a többi rendszerüzenet ettől függetlenül téma nélkül megy ki. Alapértelmezés: kikapcsolva. A módosítás a csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'TELEGRAM_REPLY_BUTTONS',
+    type: 'boolean',
+    default: '1',
+    description: 'Válasz-gombok a Telegramon: bekapcsolva az ügynök egy kérdés alá egy koppintással választható gombokat tehet (a reply tool buttons mezője). Kikapcsolva egy ügynök sem küld gombot: a nem üres buttons listát a csatorna eldobja, az üzenet gombok nélkül megy ki, és az ügynök a válaszban figyelmeztetést kap, hogy a választást sima szövegben kérje. Az üres lista ekkor is leveszi a korábban fent ragadt billentyűzetet. A kapcsolót a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: bekapcsolva. A módosítás a csatorna következő indításakor lép életbe; a már futó ügynökök a saját újraindításukig a régi viselkedéssel futnak.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

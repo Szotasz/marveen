@@ -161,7 +161,6 @@
  "renderWeekView>cb:tasks.forEach((task, idx) => {::style::idx * gap": "SAFE-NUM [n=1]: index times const gap = 4",
  "renderWeekView>cb:tasks.forEach((task, idx) => {::style::topPct": "SAFE-NUM [n=1]: topPct = ((h * 60 + m) / (24 * 60)) * 100, arithmetic result",
  "renderWeekView>cb:tasks.forEach((task, idx) => {::url:src::agent.avatar": "SAFE-PRE [n=1]: scheduleAgents come from /api/schedules/agents, server-built as /api/agents/<encodeURIComponent(n)>/avatar or /api/marveen/avatar (src/web/routes/schedules.ts); fallback literal; sits in a double-quoted src",
- "setupGromzoCard>requestQr::innerHTML=::qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })": "SAFE-PRE [n=1]: same library as setupMobileLogin (qrcode-generator@2.0.4, web/index.html:14); createSvgTag gets fixed numeric options only, the app URI goes to addData and comes out as QR modules (GROMZOOWNERQR1030)",
  "setupMobileLogin>render::innerHTML=::qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })": "SAFE-PRE [n=1]: qrcode-generator@2.0.4 loaded from the jsDelivr CDN (web/index.html:14), not vendored; createSvgTag gets fixed numeric options only and the URL goes to addData, rendered as QR modules; the libra",
  "setupTuTooltip>cb:canvas.addEventListener('mousemove', e => {::style-prop::top = (my - 10) + 'px'": "SAFE-NUM [n=1]: my is the mouse y offset inside the canvas (number)",
  "showBreakdownModal>cb:subtasks.forEach((st, i) => {::attr:data-idx::i": "SAFE-NUM [n=1]: forEach index",
@@ -175,6 +174,5 @@
  "tuFormatLocalShort::text::String(d.getMonth()+1).padStart(2,'0')": "SAFE-NUM [n=1]: d = new Date(ts * 1000): Date getters return numbers",
  "tuFormatTokens::return::String(n)": "SAFE-NUM [n=8]: isNaN(n) returns '0' first, so only a value that converts to a number reaches String(n)",
  "tuGetColor::style::TU_COLORS[agent] || tuAssignedColors[agent] || '#64748b'": "SAFE-CONST [n=4]: color = tuGetColor(a): TU_COLORS / tuAssignedColors palette (hex or generated hsl()) or \"#64748b\"; agent name is only a lookup key. A key like \"constructor\" would yield native-fun",
- "tuGetModelColor::style::TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length]": "SAFE-CONST [n=1]: fixed TU_MODEL_COLORS palette indexed by a number",
- "wireVaultScan>renderScanResults::text::f.allTargets.length": "SAFE-NUM [n=1]: number/count/date computed locally"
+ "tuGetModelColor::style::TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length]": "SAFE-CONST [n=1]: fixed TU_MODEL_COLORS palette indexed by a number"
 }

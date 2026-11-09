@@ -15,7 +15,8 @@
 # the managed layer is the simple, robust, correct-for-all-cases choice.
 #
 # Idempotent, reversible (delete the key), and a SAFE JSON merge (never sed):
-# existing managed keys -- e.g. allowedChannelPlugins -- are preserved.
+# existing managed keys -- e.g. allowedChannelPlugins -- are preserved, and a
+# file that is not a valid JSON object is left untouched (reported as manual).
 #
 # Managed-settings paths (authoritative, code.claude.com/docs/en/settings.md):
 #   macOS: /Library/Application Support/ClaudeCode/managed-settings.json
@@ -93,31 +94,22 @@ if ! $SUDO mkdir -p "$(dirname "$MANAGED_FILE")" 2>/dev/null; then
   exit 0
 fi
 
-# Safe JSON merge: load existing (or {}), set channelsEnabled=true, atomic write.
-if $SUDO python3 - "$MANAGED_FILE" <<'PY'
-import json, os, shutil, sys
-p = sys.argv[1]
-try:
-    d = json.load(open(p)) if os.path.exists(p) else {}
-    if not isinstance(d, dict):
-        d = {}
-except Exception:
-    d = {}
-d["channelsEnabled"] = True
-tmp = p + ".tmp"
-with open(tmp, "w") as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-# os.replace carries the TMP file's mode, i.e. whatever the umask allowed --
-# under `umask 077` that silently turned the managed file into a root-owned
-# 0600 and broke the unprivileged read above. Match the file being replaced, so
-# an admin who deliberately locked it down keeps that; only a file this script
-# CREATES gets the 0644 the header describes.
-if os.path.exists(p):
-    shutil.copymode(p, tmp)
-else:
-    os.chmod(tmp, 0o644)
-os.replace(tmp, p)
-PY
+# The write goes through the ONE shared writer (MANAGEDSETTINGSWRITE1103):
+# scripts/lib/managed-settings-write.py. The inline merge that lived here turned
+# an unparseable or non-object file into {} and wrote it back as root, dropping
+# every other managed key (allowedChannelPlugins too, muting every channel), and
+# it wrote a fixed `<file>.tmp` that a planted symlink could redirect. The
+# writer refuses a file it cannot parse, keeps every other key and the file's
+# mode (a new file gets 0644, whatever the umask), and writes through a fresh
+# mkstemp file in the same directory. -I: no import from cwd or PYTHONPATH.
+MSW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/managed-settings-write.py"
+if [ ! -f "$MSW" ]; then
+  echo "  ! channelsEnabled: a managed-settings iro hianyzik ($MSW) -- kezi root-lepes szukseges:"
+  echo "      sudo bash $0"
+  echo "MARVEEN_CHANNELS_GATE=manual"
+  exit 0
+fi
+if $SUDO python3 -I "$MSW" "$MANAGED_FILE" --create --channels-enabled
 then
   echo "  channelsEnabled=true beallitva a managed-settings-ben ($MANAGED_FILE)"
   echo "    (a bejovo channel-uzenetek team/enterprise orgnal is celba ernek; restart utan lep eletbe.)"

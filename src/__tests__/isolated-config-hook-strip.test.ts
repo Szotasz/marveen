@@ -93,3 +93,24 @@ describe('#1305: isolated-config clone strips hooks', () => {
     expect(readIsolated().hooks).toBeUndefined()
   })
 })
+
+// ENVRELAXGATE1104 follow-up: disableAllHooks switches every gate hook off; it must not reach an isolated config dir
+// from the shared file, nor survive there from an older copy.
+describe('isolated-config clone drops disableAllHooks', () => {
+  it('a shared disableAllHooks does not reach the clone', () => {
+    writeFileSync(join(fakeHome, '.claude', 'settings.json'), JSON.stringify({ ...SHARED, disableAllHooks: true }))
+    expect(ensureIsolatedChannelConfigDir(PROBE, null)).not.toBeNull()
+    const settings = readIsolated()
+    expect('disableAllHooks' in settings).toBe(false)
+    expect(settings.statusLine).toEqual(SHARED.statusLine)
+  })
+
+  it('a disableAllHooks already in the isolated dir is not inherited back, an agent-only key is', () => {
+    mkdirSync(join(probeDir, '.claude-config'), { recursive: true })
+    writeFileSync(isolatedSettings, JSON.stringify({ disableAllHooks: true, agentOnlyKey: 'must-survive' }))
+    ensureIsolatedChannelConfigDir(PROBE, null)
+    const settings = readIsolated()
+    expect('disableAllHooks' in settings).toBe(false)
+    expect(settings.agentOnlyKey).toBe('must-survive')
+  })
+})

@@ -44,7 +44,8 @@ function fakeCtx(path: string, method: string): {
   }
   const url = new URL(`http://localhost:3420${path}`)
   return {
-    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url } as RouteContext,
+    // The owner's browser login: deleting an agent needs the owner (OWNERGATE2-1104); this file is about the desired state.
+    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url, auth: { kind: 'session' } } as RouteContext,
     out,
   }
 }

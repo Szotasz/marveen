@@ -1,6 +1,6 @@
 // KILLSWITCH1022: the fleet freeze ("piros gomb"). Switching it on is open to any
 // dashboard credential (an agent may pull the brake); lifting it takes the owner,
-// through the SAME predicate as issuing credentials (mayIssueCredentials, #2163).
+// through the owner gate (mayActAsOwner, #2163; OWNERGATE4-1104: also before the first login).
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -139,10 +139,14 @@ describe('lifting it: the owner only, the #2163 predicate', () => {
     expect(isFleetFrozen()).toBe(false)
   })
 
-  it('before the first login exists the token is the one owner credential there is', async () => {
+  // OWNERGATE4-1104: unfreeze is no first-run path; an agent could otherwise lift the brake on an install without a login.
+  it('before the first login exists the token cannot lift it either: 403 setup_required, still frozen', async () => {
     await freeze(TOKEN)
-    expect((await unfreeze(TOKEN)).status).toBe(200)
-    expect(isFleetFrozen()).toBe(false)
+    const r = await unfreeze(TOKEN)
+    expect(r.status).toBe(403)
+    expect(r.json.code).toBe('owner_session_required')
+    expect(r.json.setup_required).toBe(true)
+    expect(isFleetFrozen()).toBe(true)
   })
 })
 
@@ -206,7 +210,7 @@ describe('the loops', () => {
     ['web/context-guard-runner.ts', /setInterval\(whileNotFrozen\('context-guard', sweep\), INTERVAL_MS\)/],
     ['web/context-restart-gate-runner.ts', /if \(frozenSkip\('context-restart-gate'\)\) \{\s*scheduleSweep\(name, DISABLED_RECHECK_MS\)\s*return\s*\}/],
     ['web/model-fallback-runner.ts', /setInterval\(whileNotFrozen\('model-fallback', sweep\), INTERVAL_MS\)/],
-    ['web/inbox-nudge-watcher.ts', /setInterval\(whileNotFrozen\('inbox-nudge', \(\) => \{ void tick\(\) \}\), INBOX_NUDGE_INTERVAL_MS\)/],
+    ['web/inbox-nudge-watcher.ts', /setInterval\(whileNotFrozen\('inbox-nudge', \(\) => \{ void runWatcherInterval\(\) \}\), VOICE_NUDGE_INTERVAL_MS\)/],
     ['web/stuck-input-watcher.ts', /setInterval\(whileNotFrozen\('stuck-input', \(\) => \{ void sweep\(\) \}\), INTERVAL_MS\)/],
     ['web/stuck-tool-call-watcher.ts', /setInterval\(whileNotFrozen\('stuck-tool-call', \(\) => \{ void sweep\(\) \}\), INTERVAL_MS\)/],
     ['web/channel-monitor.ts', /setInterval\(whileNotFrozen\('channel-monitor', \(\) => \{ void check\(\) \}\), 60000\)/],
@@ -303,9 +307,11 @@ describe("the dashboard's own Claude calls and the worker session", () => {
     expect(WORKER_FREEZE_GATE_CMD).toContain(join('scripts', 'hooks', 'fleet-freeze-gate.sh'))
   })
 
-  it('ensureWorkerCwd writes the worker settings through withFleetFreezeGate', () => {
+  it('ensureWorkerCwd writes the worker settings through withWorkerGates, which applies withFleetFreezeGate first', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-worker.ts'), 'utf-8')
-    expect(src).toMatch(/writeFileSync\(settingsPath, JSON\.stringify\(withFleetFreezeGate\(\{/)
+    expect(src).toMatch(/writeFileSync\(settingsPath, JSON\.stringify\(withWorkerGates\(withWorkerMailDeny\(\{/)
+    // ENVRELAXGATE1104: the worker gates build on the freeze gate, never instead of it
+    expect(src).toMatch(/export function withWorkerGates\(settings: WorkerSettings\): WorkerSettings \{\n  const out = withFleetFreezeGate\(settings\)/)
   })
 })
 

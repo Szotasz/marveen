@@ -56,7 +56,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
   taskstate-save <agent> <json-file>
-  approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>]
+  approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>] [--payload-file <json-file>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
@@ -347,6 +347,7 @@ def build_request(verb, args):
         return 'POST', f'/api/agent-taskstate/{agent}', record, headers, {}
     if verb == 'approval-request':
         content_hash = take_opt(args, '--content-hash')
+        payload_file = take_opt(args, '--payload-file')
         agent, category, timeout, description_file = positional(args, 4, verb)
         check(agent, NAME_RE, 'agent name')
         check(category, CATEGORY_KEY_RE, 'category key')
@@ -354,6 +355,16 @@ def build_request(verb, args):
         body = {'agent_id': agent, 'category': category, 'action_description': read_text(description_file), 'timeout_seconds': int(timeout)}
         if content_hash is not None:
             body['content_hash'] = check(content_hash, HASH_RE, 'content hash')
+        # APPROVALSLACK1030 (2): the letter itself ({"envelope": {...}}), so the server can recompute the anchor and
+        # show the owner what the approval is for; without it the decision stays on the dashboard.
+        if payload_file is not None:
+            try:
+                payload = json.loads(read_text(payload_file))
+            except ValueError as e:
+                fail_usage(f'approval-request: {payload_file} is not valid JSON ({e})')
+            if not isinstance(payload, dict) or not payload:
+                fail_usage('approval-request: the payload file must hold a non-empty JSON object')
+            body['action_payload'] = json.dumps(payload, ensure_ascii=False)
         return 'POST', '/api/approvals', body, headers, {}
     if verb == 'approval-status':
         (approval_id,) = positional(args, 1, verb)

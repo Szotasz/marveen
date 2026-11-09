@@ -34,7 +34,7 @@ const { tryHandleGromzo, setGromzoAgentDepsForTest, pushAvatarAfterAdd, avatarAf
 const { resetPendingGromzoConsents } = await import('../web/gromzo-agents.js')
 const { MxdDashError } = await import('../web/mxd-dash.js')
 const AVATAR_PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('PIXELBYTESPIXELBYTES')])
-const { MAIN_AGENT_ID: MAIN_ID } = await import('../config.js')
+const { MAIN_AGENT_ID: MAIN_ID, currentBotName } = await import('../config.js')
 const { requiresAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { createSession, revokeSession } = await import('../web/auth-sessions.js')
 const { isBlockedCrossOriginWrite } = await import('../web/csrf-origin.js')
@@ -187,6 +187,26 @@ describe('the Bridge: a full device key plus the owner session cookie', () => {
     expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
   })
 
+  // GROMZOBRIDGEWIZARD1107 D2: an action the Bridge makes on its key beside the owner's cookie leaves one audit line
+  // naming the owner; a read (the list, polled) does not; a session principal (a browser) is not logged this way.
+  it('a Bridge-key owner ACTION writes one audit line naming the owner and the device; a read writes none', async () => {
+    principal = FULL
+    logged.length = 0
+    expect((await agents({ Cookie: `${SESSION_COOKIE_NAME}=${sid}` })).status).toBe(200)
+    expect(logged.filter((l) => l.includes('owner action on a Bridge key'))).toEqual([])
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    const audit = logged.filter((l) => l.includes('owner action on a Bridge key'))
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toContain('"owner":"owner"')
+    expect(audit[0]).toContain('"device":"Macbookom"')
+    expect(audit[0]).toContain('"path":"/api/gromzo/owner-qr"')
+    expect(audit[0]).not.toContain(sid)
+    principal = { kind: 'session', user: 'owner' }
+    logged.length = 0
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(logged.filter((l) => l.includes('owner action on a Bridge key'))).toEqual([])
+  })
+
   it('the key plus a revoked (logged out), unknown or other-named cookie: 403', async () => {
     principal = FULL
     revokeSession(sid)
@@ -333,6 +353,34 @@ describe('the page that draws the secret', () => {
 })
 
 describe('GET /api/gromzo/status', () => {
+  // GROMZOBRIDGEWIZARD1107 Q2: ?owner=1 asks mxd for the owner seat (status {owner:true}); only a bool passes.
+  it('?owner=1: mxd is asked with owner:true, and only the bool passes; a plain status does not ask', async () => {
+    const asked: unknown[] = []
+    fake.script.set('status', (req) => { asked.push(req.owner); return { ok: true, running: true, linked: true, ...(req.owner === true ? { owner_seat: true } : {}) } })
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: true, ownerSeat: true })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: true })
+    expect(asked).toEqual([true, undefined])
+  })
+  it('?owner=1: an id-shaped or non-bool owner_seat never passes; an error passes only as a code; not linked: nothing', async () => {
+    for (const [reply, want] of [
+      [{ owner_seat: '@owner:chat.example' }, {}],
+      [{ owner_seat: 1 }, {}],
+      [{ owner_seat_error: 'unauthorized' }, { ownerSeatError: 'unauthorized' }],
+      [{ owner_seat_error: 'Bad Thing @x' }, {}],
+    ] as const) {
+      fake.script.set('status', { ok: true, running: true, linked: true, ...reply })
+      expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json(), JSON.stringify(reply)).toEqual({ available: true, running: true, linked: true, ...want })
+    }
+    fake.script.set('status', { ok: true, running: true, linked: false, owner_seat: true })
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: false })
+  })
+  it('?owner=1 on an mxd from before the field (it refuses the request): the plain status, no ownerSeat', async () => {
+    fake.seen.length = 0
+    fake.script.set('status', (req) => (req.owner !== undefined ? { ok: false, error: 'bad_request' } : { ok: true, running: true, linked: true }))
+    expect(await (await fetch(origin + '/api/gromzo/status?owner=1')).json()).toEqual({ available: true, running: true, linked: true })
+    expect(fake.seen).toEqual(['status', 'status'])
+  })
+
   it('linked and running', async () => {
     fake.script.set('status', { ok: true, running: true, linked: true, pending: { op: 'link', expires_in: 5 } })
     const r = await fetch(origin + '/api/gromzo/status')
@@ -350,6 +398,46 @@ describe('GET /api/gromzo/status', () => {
   it('a wrong dashboard uid (mxd forbidden) is reported', async () => {
     fake.script.set('status', { ok: false, error: 'forbidden' })
     expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: false, code: 'forbidden' })
+  })
+
+  // GROMZOLINKCONFIRM1106: a link that waits for the owner's confirmation, and the last refused one, reach the card.
+  it('not linked, a link waiting for confirmation: its seconds left pass, nothing else of the pending row', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: false, pending: { op: 'link', expires_in: 600, request_id: 'rq-secret' } })
+    const body = await (await fetch(origin + '/api/gromzo/status')).json()
+    expect(body).toEqual({ available: true, running: true, linked: false, linkPendingExpiresIn: 600 })
+    expect(JSON.stringify(body)).not.toContain('rq-secret')
+  })
+
+  it('an expired pending link passes as 0 seconds', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: false, pending: { op: 'link', expires_in: 0 } })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: false, linkPendingExpiresIn: 0 })
+  })
+
+  it('the last refusal passes as its kind only', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: false, last_refusal: { kind: 'owner_mismatch', at: 1793900000 } })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: false, linkRefusal: 'owner_mismatch' })
+  })
+
+  it('a pending or refusal field in any other shape is dropped', async () => {
+    for (const extra of [
+      { pending: { op: 'link', expires_in: '600' } },
+      { pending: { op: 'link', expires_in: -1 } },
+      { pending: { op: 'link', expires_in: 1.5 } },
+      { pending: { op: 'link', expires_in: 86401 } },
+      { pending: { op: 'relink', expires_in: 600 } },
+      { pending: 'link' },
+      { last_refusal: { kind: 'Owner Mismatch' } },
+      { last_refusal: { kind: '<b>x</b>' } },
+      { last_refusal: { kind: 42 } },
+    ]) {
+      fake.script.set('status', { ok: true, running: true, linked: false, ...extra })
+      expect(await (await fetch(origin + '/api/gromzo/status')).json(), JSON.stringify(extra)).toEqual({ available: true, running: true, linked: false })
+    }
+  })
+
+  it('a linked machine passes neither field, whatever mxd still holds', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true, pending: { op: 'link', expires_in: 300 }, last_refusal: { kind: 'expired' } })
+    expect(await (await fetch(origin + '/api/gromzo/status')).json()).toEqual({ available: true, running: true, linked: true })
   })
 
   it('POST on status is 405', async () => {
@@ -378,6 +466,7 @@ describe('the agent switch routes', () => {
       readFlag: (s) => flags.get(s) ?? false,
       writeFlag: (s, on) => { flags.set(s, on) },
       displayName: (s) => s,
+      gromzoName: (s) => s,
       isRunning: () => true,
       held: async () => new Set(),
       readAvatar: (s) => (s === 'zara' ? { ok: true, bytes: AVATAR_PNG } : s === 'samu' ? { ok: false, code: 'avatar_too_large' } : { ok: false, code: 'no_avatar' }),
@@ -472,6 +561,52 @@ describe('the agent switch routes', () => {
     expect(flags.size).toBe(0)
     expect(restarted).toEqual([])
     expect(logged.join('\n')).toContain('"added":"samu"')
+  })
+
+  // GROMZONAMETAKEN1106: the switch-on may carry the owner's name for Gromzo; the controller's name refusals are 409
+  // with their own code (the panel asks for another name instead of "try again later").
+  it('enable carries {"name"} to agent_add; without one the default name goes', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    const r = await post('zara/enable', { 'Content-Type': 'application/json' }, JSON.stringify({ name: 'Zara Segéd' }))
+    expect(r.status).toBe(200)
+    expect(calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'Zara Segéd' }])
+    resetPendingGromzoConsents(); calls.length = 0
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    expect((await post('zara/enable')).status).toBe(200)
+    expect(calls).toEqual([{ verb: 'agent_add', slug: 'zara', name: 'zara' }])
+  })
+
+  it('a name that is not a string, or a body that is not JSON: 400, mxd not asked', async () => {
+    for (const body of [JSON.stringify({ name: 7 }), JSON.stringify({ name: ['x'] }), '{not json']) {
+      const r = await post('zara/enable', { 'Content-Type': 'application/json' }, body)
+      expect(r.status, body).toBe(400)
+      expect(await r.json()).toEqual({ error: 'bad_request' })
+    }
+    expect(calls).toEqual([])
+  })
+
+  it('a name outside the controller\'s rule: 409 bad_display_name, mxd not asked', async () => {
+    const r = await post('zara/enable', { 'Content-Type': 'application/json' }, JSON.stringify({ name: 'Za/ra' }))
+    expect(r.status).toBe(409)
+    expect(await r.json()).toEqual({ error: 'bad_display_name' })
+    expect(calls).toEqual([])
+  })
+
+  for (const code of ['name_taken', 'bad_display_name', 'mixed_script', 'reserved_name']) {
+    it(`mxd's ${code} is a 409 carrying the code (not a 502)`, async () => {
+      replies.agent_add = [{ ok: false, error: code }]
+      const r = await post('zara/enable')
+      expect(r.status).toBe(409)
+      expect(await r.json()).toEqual({ error: code })
+    })
+  }
+
+  it('the name is read only on enable: consent and disable ignore a body name', async () => {
+    replies.agent_add = [{ ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 }]
+    await post('zara/enable')
+    replies.agent_add_check = [{ ok: true, state: 'pending' }]
+    const c = await post('zara/consent', { 'Content-Type': 'application/json' }, JSON.stringify({ name: 7 }))
+    expect(c.status).toBe(200)
   })
 
   it('no manual picture route (owner, Slack 15:48): POST .../avatar is not a route', async () => {
@@ -634,10 +769,9 @@ describe('the agent switch routes', () => {
     expect(rows.filter((r) => r.slug !== MAIN_ID).map((r) => [r.slug, r.avatarProblem])).toEqual([['samu', 'avatar_too_large'], ['zara', null]])
   })
 
-  it('codes map to statuses: a bad slug 400, unknown 404, the main agent 409, no pending 409, rate_limited 429, mxd down 503', async () => {
+  it('codes map to statuses: a bad slug 400, unknown 404, no pending 409, rate_limited 429, mxd down 503', async () => {
     expect((await post('Bad%20Slug/enable')).status).toBe(400)
     expect((await post('nobody/enable')).status).toBe(404)
-    expect((await post(encodeURIComponent(MAIN_ID) + '/disable')).status).toBe(409)
     expect((await post('zara/consent')).status).toBe(409)
     expect(calls).toEqual([])
     replies.agent_remove = [{ ok: false, error: 'rate_limited' }]
@@ -650,6 +784,70 @@ describe('the agent switch routes', () => {
       displayName: (s) => s, isRunning: () => true, held: async () => new Set(), restartOne: () => { throw new Error('no restart') }, now: () => Date.now(),
     })
     expect((await post('zara/disable')).status).toBe(503)
+  })
+})
+
+// GROMZOMAINAGENT1106: the main agent's switch through the same routes. Only the refusing paths of "restart" are
+// driven here: the owner-session path restarts the REAL main session (gateManualRestart + hardRestartMarveenChannels),
+// which a test must never reach; main-gromzo.test.ts covers it with injected collaborators.
+describe('the main agent through the agent switch routes', () => {
+  const calls: Array<Record<string, unknown>> = []
+  const restarted: string[] = []
+  const flags = new Map<string, boolean>()
+  beforeEach(() => {
+    calls.length = 0; restarted.length = 0; flags.clear()
+    resetPendingGromzoConsents()
+    setGromzoAgentDepsForTest({
+      call: async (req) => { calls.push(req); throw new Error('unscripted ' + req.verb) },
+      agents: () => ['samu', 'zara'],
+      readFlag: (s) => flags.get(s) ?? false,
+      writeFlag: (s, on) => { flags.set(s, on) },
+      displayName: (s) => s,
+      isRunning: () => true,
+      held: async () => new Set(),
+      restartOne: (s) => { restarted.push(s) },
+      now: () => Date.now(),
+    })
+  })
+  afterAll(() => setGromzoAgentDepsForTest(null))
+  const post = (p: string) => fetch(origin + '/api/gromzo/agents/' + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+
+  it('switch-off of the main agent: 200 removed, its flag off and a restart, and mxd is NOT asked to remove it', async () => {
+    flags.set(MAIN_ID, true)
+    const r = await post(encodeURIComponent(MAIN_ID) + '/disable')
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ state: 'removed' })
+    expect(flags.get(MAIN_ID)).toBe(false)
+    expect(restarted).toEqual([MAIN_ID])
+    expect(calls).toEqual([])
+  })
+
+  // GROMZONAMETAKEN1106 (the owner, Samu 71820): the route's own default for the main agent is the configured bot
+  // name (config currentBotName: the .env BOT_NAME, "Marveen" when unset), not its slug and no machine suggestion.
+  it('the main agent\'s switch-on asks for it under the configured bot name', async () => {
+    const seen: Array<Record<string, unknown>> = []
+    setGromzoAgentDepsForTest({
+      call: async (req) => { seen.push(req); return { ok: true, consent_id: 'consent-aaaaaaaaaaaa', expires_in: 600 } },
+      agents: () => ['samu', 'zara'], readFlag: () => false, writeFlag: () => {}, displayName: (s) => s,
+      isRunning: () => true, held: async () => new Set(), restartOne: () => {}, now: () => Date.now(),
+    })
+    const r = await post(encodeURIComponent(MAIN_ID) + '/enable')
+    expect(r.status).toBe(200)
+    expect(seen).toEqual([{ verb: 'agent_add', slug: MAIN_ID, name: currentBotName() }])
+  })
+
+  it('"restart" is the main agent\'s only: any other slug is 400, and nothing restarts', async () => {
+    expect((await post('zara/restart')).status).toBe(400)
+    expect(restarted).toEqual([])
+  })
+
+  it('"restart" sits behind the owner session like the other actions', async () => {
+    expect(requiresAuth('/api/gromzo/agents/' + MAIN_ID + '/restart', 'POST')).toBe(true)
+    for (const p of [{ kind: 'token' }, { kind: 'token', tokenAgent: 'samu', agent: 'samu' }, { kind: 'device', device: 'phone', deviceId: 1 }]) {
+      principal = p
+      expect((await post(encodeURIComponent(MAIN_ID) + '/restart')).status, JSON.stringify(p)).toBe(403)
+    }
+    expect(restarted).toEqual([])
   })
 })
 
@@ -670,6 +868,20 @@ describe('the held list from the real dash status (fake dash.sock)', () => {
     expect(fake.seen).toEqual(['status'])
   })
 
+  it('MXDAGENTSOCKID1106: one status call gives the list the protection and the fail-closed ratchet state', async () => {
+    fake.script.set('status', { ok: true, running: true, linked: true, agents: { running: ['zara'], held: [], protected: ['zara'], refused: [] }, ratchet_unreadable: true })
+    const body = await (await fetch(origin + '/api/gromzo/agents')).json()
+    expect(body.ratchetUnreadable).toBe(true)
+    expect((body.agents as Array<Record<string, unknown>>).every((x) => 'protection' in x)).toBe(true)
+    expect(fake.seen).toEqual(['status'])
+    // An mxd before the tokens: no protection, no banner.
+    fake.seen.length = 0
+    fake.script.set('status', { ok: true, running: true, linked: true })
+    const old = await (await fetch(origin + '/api/gromzo/agents')).json()
+    expect(old.ratchetUnreadable).toBe(false)
+    expect((old.agents as Array<{ protection: unknown }>).every((x) => x.protection === null)).toBe(true)
+  })
+
   it('no held_agents field (the empty case) or mxd down: nobody is held, the list still answers', async () => {
     fake.script.set('status', { ok: true, running: true, linked: true })
     let rows = (await (await fetch(origin + '/api/gromzo/agents')).json()).agents as Array<{ held: boolean }>
@@ -681,5 +893,95 @@ describe('the held list from the real dash status (fake dash.sock)', () => {
       rows = (await r.json()).agents
       expect(rows.some((x) => x.held)).toBe(false)
     } finally { env.MXD_DASH_SOCK = fake.path }
+  })
+})
+
+// GROMZOQRAUDITLOG1107: every owner-QR line names who asked (how the caller authenticated, the owner's login, the Bridge
+// device) and the mxd verbs asked, so a code's issue is traceable from the dashboard log alone (on 11-07 only sudo's
+// and sshd's logs told it). Never a secret, the session id, a token or an address.
+describe('the owner QR log names the caller', () => {
+  const FULL = { kind: 'device', device: 'Macbookom', deviceId: 3, scope: 'full' }
+  let sid = ''
+  beforeEach(() => {
+    const u = createDashboardUser('owner', 'x')
+    sid = createSession({ userId: u.id, username: u.username })
+  })
+  const withCookie = (c: string) => ({ 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE_NAME}=${c}` })
+  const qrLines = () => logged.filter((l) => l.includes('owner QR')).map((l) => JSON.parse(l)[0] as Record<string, unknown>)
+
+  it('issued, join: the session owner and the one verb asked', async () => {
+    fake.script.set('owner_invite', INVITE_OK)
+    expect((await postQr()).status).toBe(200)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite', kind: 'join', expires_in: 600 }])
+  })
+
+  it('issued, login: both verbs in order', async () => {
+    fake.script.set('owner_invite', { ok: false, error: 'owner_invite_already_issued' })
+    fake.script.set('owner_login_code', LOGIN_OK)
+    expect((await postQr()).status).toBe(200)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite>owner_login_code', kind: 'login', expires_in: 120 }])
+  })
+
+  it('refused by mxd: the caller and the verb that refused', async () => {
+    fake.script.set('owner_invite', { ok: false, error: 'consent_required' })
+    expect((await postQr()).status).toBe(409)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite', code: 'consent_required' }])
+  })
+
+  it('dash.sock unreachable: the caller and the verb that failed', async () => {
+    env.MXD_DASH_SOCK = fake.path + '.missing'
+    try {
+      expect((await postQr()).status).toBeGreaterThanOrEqual(500)
+    } finally { env.MXD_DASH_SOCK = fake.path }
+    const [line] = qrLines()
+    expect(line).toMatchObject({ via: 'dashboard', auth: 'session', owner: 'owner', asked: 'owner_invite' })
+    expect(typeof line?.code).toBe('string')
+  })
+
+  it('the Bridge: a full device key beside the owner cookie names the device and the owner', async () => {
+    principal = FULL
+    fake.script.set('owner_invite', INVITE_OK)
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(qrLines()).toEqual([{ via: 'dashboard', auth: 'device_full', device: 'Macbookom', owner: 'owner', asked: 'owner_invite', kind: 'join', expires_in: 600 }])
+  })
+
+  it('the shared token beside the owner cookie', async () => {
+    principal = { kind: 'token' }
+    fake.script.set('owner_invite', INVITE_OK)
+    expect((await postQr(withCookie(sid))).status).toBe(200)
+    expect(qrLines()[0]).toMatchObject({ auth: 'shared_token', owner: 'owner', kind: 'join' })
+  })
+
+  it('refused before mxd: a sub-agent token, a key without the cookie, nobody', async () => {
+    for (const [p, want] of [
+      [{ kind: 'token', tokenAgent: 'samu', agent: 'samu' }, { auth: 'agent_token', owner: '-' }],
+      [FULL, { auth: 'device_full', device: 'Macbookom', owner: '-' }],
+      [{ kind: 'none' }, { auth: 'none' }],
+    ] as const) {
+      principal = p as never
+      logged.length = 0
+      expect((await postQr()).status).toBe(403)
+      expect(qrLines(), JSON.stringify(p)).toEqual([{ via: 'dashboard', ...want, kind: (p as { kind: string }).kind }])
+    }
+    expect(fake.seen).toEqual([])
+  })
+
+  it('the canary: no secret, session id, cookie or address on any owner QR line', async () => {
+    principal = FULL
+    fake.script.set('owner_invite', INVITE_OK)
+    await postQr(withCookie(sid))
+    fake.script.set('owner_invite', { ok: false, error: 'owner_invite_already_issued' })
+    fake.script.set('owner_login_code', LOGIN_OK)
+    await postQr(withCookie(sid))
+    fake.script.set('owner_login_code', { ok: false, error: 'rate_limited' })
+    await postQr(withCookie(sid))
+    principal = { kind: 'session', user: 'owner' }
+    await postQr()
+    const lines = logged.filter((l) => l.includes('owner QR'))
+    expect(lines.length).toBe(4)
+    const all = lines.join('\n')
+    for (const s of [INVITE_OK.owner_secret, LOGIN_OK.login_secret, 'INVITESECRET', 'LOGINSECRET', 'marveen://', sid, SESSION_COOKIE_NAME, '127.0.0.1', 'chat.gromzo.com']) {
+      expect(all, s).not.toContain(s)
+    }
   })
 })

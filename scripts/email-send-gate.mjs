@@ -31,9 +31,9 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 // HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
@@ -445,7 +445,8 @@ const WRAPPERS = new Map([
   ['time', ['fo', ['format', 'output'], 0]],
   ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
     'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
-  ['env', ['uCS', ['unset', 'chdir', 'split-string'], 0]],
+  // ENVOPTHEAD1104: env is read by envHeads (a structural parser); the entry keeps env a wrapper for the depth bound
+  ['env', ['uCSPaLU', ['unset', 'chdir', 'split-string', 'argv0'], 0]],
   ['nohup', ['', [], 0]],
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
@@ -454,7 +455,15 @@ const WRAPPERS = new Map([
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
+  // ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program (see the python twin)
+  ['stdbuf', ['ioe', ['input', 'output', 'error'], 0]],
+  ['ionice', ['cnpPu', ['class', 'classdata', 'pid', 'pgid', 'uid'], 0]],
+  ['chrt', ['TPD', ['sched-runtime', 'sched-period', 'sched-deadline'], 1]],
+  ['caffeinate', ['tw', [], 0]],
 ])
+// JSCDSEND1104 (Bence 69588, Samu 69591): the homebrew g-prefixed GNU launchers read as their pair (see the python twin)
+const G_PREFIXED = ['env', 'timeout', 'nohup', 'nice', 'stdbuf']
+for (const n of G_PREFIXED) WRAPPERS.set('g' + n, WRAPPERS.get(n))
 const HEAD_DEPTH = 8
 
 // MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
@@ -526,6 +535,63 @@ function launcherHeads(toks, spec, d) {
   return heads.flatMap((h) => commandHeads(h, d + 1))
 }
 
+// ENVOPTHEAD1104: `env -S STRING` splits STRING into words and runs them (the words after it appended), so the
+// real command is inside the value; see the python twin. A value that does not split counts as a send (null).
+function envSplitHeads(value, rest, d) {
+  let segs
+  try { segs = segmentsTokens(value) } catch { return [null] }
+  if (!segs || !segs.length) segs = [[]]
+  segs[segs.length - 1] = [...segs[segs.length - 1], ...rest]
+  // Bence 69552: GNU env parses the options at the START of the split words too; the first segment goes back
+  // through env's own option parser (see the python twin)
+  return segs.flatMap((s, k) => commandHeads(k === 0 ? ['env', ...s] : s, d + 1))
+}
+
+// Samu 69521: env's options read STRUCTURALLY (see the python twin): the known no-value ones are stepped over, a
+// known value option takes its value (exact or a unique long prefix), anything else is undecidable (null: a send).
+const ENV_SHORT_NOVALUE = 'i0v'
+const ENV_LONG_NOVALUE = ['ignore-environment', 'null', 'debug', 'list-signal-handling', 'help', 'version', 'block-signal',
+  'default-signal', 'ignore-signal']
+const ENV_SHORT_VALUE = 'uCSPaLU'
+const ENV_LONG_VALUE = ['unset', 'chdir', 'split-string', 'argv0']
+function envHeads(toks, d) {
+  let i = 1
+  while (i < toks.length) {
+    const t = toks[i]
+    if (ENV_ASSIGN.test(t)) { while (i < toks.length && ENV_ASSIGN.test(toks[i])) i++; break } // NAME=VALUE ends the options
+    if (t === '--') { i++; break }
+    if (t === '-') { i++; continue } // the old spelling of -i
+    if (t.startsWith('--')) {
+      const name = envLongName(t)
+      if (name === 'split-string') {
+        const eq = t.indexOf('=')
+        return eq >= 0 ? envSplitHeads(t.slice(eq + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+      }
+      if (ENV_LONG_VALUE.includes(name)) { i += t.includes('=') ? 1 : 2; continue }
+      if (ENV_LONG_NOVALUE.includes(name)) { i++; continue }
+      return [null]
+    }
+    if (t.startsWith('-')) {
+      let step = 1
+      for (let x = 1; x < t.length; x++) {
+        const ch = t[x]
+        if (ENV_SHORT_NOVALUE.includes(ch)) continue
+        if (ENV_SHORT_VALUE.includes(ch)) {
+          const joined = x < t.length - 1
+          if (ch === 'S') return joined ? envSplitHeads(t.slice(x + 1), toks.slice(i + 1), d) : envSplitHeads(toks[i + 1] ?? '', toks.slice(i + 2), d)
+          step = joined ? 1 : 2
+          break
+        }
+        return [null]
+      }
+      i += step
+      continue
+    }
+    break
+  }
+  return commandHeads(toks.slice(i), d + 1)
+}
+
 function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
@@ -535,6 +601,7 @@ function commandHeads(toksIn, d = 0) {
   if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
+  if (w === 'env' || w === 'genv') return envHeads(toks, d)
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
@@ -796,6 +863,22 @@ export function wrapperDepthHit(cmd) {
   return heads.some((h) => h === null) && !heads.some((h) => h !== null && headIsSend(h, 0))
 }
 
+// JSCDSEND1104 (Samu 69516): a script run counts as a send when the script (found under the cwd or a cd / env -C
+// target) imports a mail library or names a mail API, and ALSO when it cannot be read: a missing script, an
+// undecidable path or cd. Then the way out of a false denial is a script that exists at run time, named so the gate
+// can find it.
+export function buildScriptSendMsg(botName, ownerName) {
+  return (
+    'TILTVA (governance hard-gate): a futtatott szkript levelet kuldhet, vagy a kapu nem tudja elolvasni. ' +
+    'Kuldesnek szamit, ha a szkript UTJA VALTOZOBOL JON, es a kapu nem tudja eldonteni, mi az erteke (ISSUE2582). ' +
+    'Cimzettet vivo futasnal (--to/--cc/--bcc vagy e-mail-cim a parancsban), es egy cd $(...) utan mindig, kuldesnek ' +
+    'szamit az is, ha a szkript a futas pillanataban NEM LETEZIK, vagy ha egy cd / env -C celkonyvtara nem dontheto el. ' +
+    'Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, es literalis uttal (vagy literalis cd utan) ' +
+    'futtasd. Valtozoval is mehet, ha UGYANEBBEN a parancsban, blokkon kivul, egyszer, literalis ertekkel allitod be ' +
+    '(D=/abszolut/ut; python3 $D/x.py), es nem $(...), $HOME vagy egy elozo hivas adja az erteket. ' + buildGateMsg(botName, ownerName)
+  )
+}
+
 export function buildWrapperDepthMsg() {
   return (
     'TILTVA (governance hard-gate): a parancs valodi fejet nem latom. ' +
@@ -973,12 +1056,62 @@ function readScriptHead(path, limit = SCRIPT_READ_LIMIT) {
   }
 }
 
-function resolveScriptPath(script, cwd) {
-  if (!script || UNDECIDABLE_PATH.test(script)) return null
+// JSCDSEND1104 (Bence 69475, Samu 69478): the python twin's cd handling (outgoing-copy-gate.py _cd_bases,
+// MAILGATESCRIPT1027 R1/R2), ported. This twin resolved a relative script under the cwd only, so
+// `cd <dir> && python3 send.py` read the cwd's file and a sender in <dir> was no send. The directories a relative
+// script may be under: the cwd, and every literal `cd DIR` target of the command (cumulative over chained cds, and
+// DIR alone under the cwd). undecidable: some `cd` names a directory that cannot be known here.
+const CD_OPTIONS = new Set(['-P', '-L', '-e', '-@'])
+
+function cdBases(cwd, cmdWords) {
+  const cwdAbs = typeof cwd === 'string' && isAbsolute(cwd)
+  let cur = cwdAbs ? cwd : null
+  const bases = cwdAbs ? [cwd] : []
+  let undecidable = false
+  let i = 0
+  while (i < cmdWords.length) {
+    const word = cmdWords[i]
+    if (word !== 'cd' && word !== 'pushd') { i++; continue }
+    i++
+    // Samu 69538: pushd DIR changes the directory like cd (its -n is stepped over: a DIR read as a target only adds a
+    // candidate); pushd +N / -N rotates the stack, which cannot be known here
+    while (i < cmdWords.length && (CD_OPTIONS.has(cmdWords[i]) || (word === 'pushd' && cmdWords[i] === '-n'))) i++
+    if (i < cmdWords.length && cmdWords[i] === '--') i++ // `--` ends the options: the next word is DIR
+    const d = i < cmdWords.length ? cmdWords[i] : null
+    const tilde = d !== null && (d === '~' || d.startsWith('~/'))
+    if (!d || d === '-' || (d.startsWith('~') && !tilde) || UNDECIDABLE_PATH.test(d)
+      || (word === 'pushd' && /^[+-]\d+$/.test(d))) { undecidable = true; cur = null; continue }
+    let next
+    if (tilde) next = join(homedir(), d.slice(1))
+    else if (isAbsolute(d)) next = d
+    else if (cur !== null) next = join(cur, d)
+    else {
+      // after an undecidable cd: where DIR is cannot be known, but DIR under the cwd is still one candidate (Samu 69648)
+      if (cwdAbs) bases.push(join(cwd, d))
+      undecidable = true; cur = null; continue
+    }
+    bases.push(next)
+    if (!tilde && !isAbsolute(d) && cwdAbs) bases.push(join(cwd, d))
+    cur = next
+  }
+  return { bases: [...new Set(bases.map((b) => resolve(b)))], undecidable }
+}
+
+// A relative script-shaped operand and a cd that cannot be resolved: what runs cannot be known (a send).
+function relativeUnderUndecidableCd(script, cwd, cmdWords) {
+  if (!script || isAbsolute(script) || script === '~' || script.startsWith('~/')) return false
+  if (!(SCRIPT_FILE.test(script) || script.includes('/'))) return false
+  return cdBases(cwd, cmdWords).undecidable
+}
+
+// Every absolute path the script operand can name: itself when absolute, `~` expanded, a relative one under the
+// cwd and under every literal `cd DIR` target of the command. May be empty.
+function resolveScriptPaths(script, cwd, cmdWords) {
+  if (!script || UNDECIDABLE_PATH.test(script)) return []
   let p = script
   if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1))
-  if (isAbsolute(p)) return p
-  return cwd ? resolve(cwd, p) : null
+  if (isAbsolute(p)) return [p]
+  return [...new Set(cdBases(cwd, cmdWords).bases.map((b) => resolve(b, p)))]
 }
 
 // node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
@@ -1008,12 +1141,19 @@ function addressFlagGiven(rest) {
   return false
 }
 
+// ENVOPTHEAD1104: the program an `env` #! line runs; -u, -C and -P take a value, NAME=VALUE is skipped.
+// Bence 69552: a #! line's env words go through the same env option parser as a command line's (see the python twin)
+function shebangEnvProgram(words) {
+  const progs = commandHeads(['env', ...words.filter(Boolean)]).filter((h) => h && h.length).map((h) => basename(h[0]))
+  return progs.find((p) => PYTHON.test(p) || (NODEISH.test(p) && p !== 'npx')) ?? progs[0] ?? ''
+}
+
 // 'py' | 'node' | null from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`).
 function shebangKind(text) {
   const m = /^#!\s*(\S+)([^\n]*)/.exec(text ?? '')
   if (!m) return null
   let prog = basename(m[1])
-  if (prog === 'env') prog = basename(m[2].trim().split(/\s+/).find((w) => w && !w.startsWith('-') && !w.includes('=')) ?? '')
+  if (prog === 'env' || prog === 'genv') prog = basename(shebangEnvProgram(m[2].trim().split(/\s+/)))
   if (PYTHON.test(prog)) return 'py'
   if (NODEISH.test(prog) && prog !== 'npx') return 'node'
   return null
@@ -1097,7 +1237,8 @@ function fileSends(path, text, kind, readScript) {
 // python runs a directory's __main__.py, and a zip app's __main__.py from inside the archive
 // (MAILGATEDIRZIP1027). The archive is not unpacked here, so a zip run by python is a send.
 const ZIP_MAGIC = 'PK\u0003\u0004'
-function scriptFileSends(path, kind, readScript) {
+// JSCDSEND1104: { readable, sends } like the python twin's _judge_candidates for one path.
+function judgeScript(path, kind, readScript) {
   let p = path
   let text = readScript(p)
   if (text === null && kind === 'py') {
@@ -1109,16 +1250,32 @@ function scriptFileSends(path, kind, readScript) {
     const pkg = readScript(join(path, 'package.json'))
     let main = null
     if (pkg !== null) {
-      try { main = JSON.parse(pkg)?.main ?? null } catch { return true }
+      try { main = JSON.parse(pkg)?.main ?? null } catch { return { readable: true, sends: true } }
     }
     const declared = typeof main === 'string' && main !== ''
     p = declared ? resolve(path, main) : join(path, 'index.js')
     text = readScript(p)
-    if (text === null && declared) return true
+    if (text === null && declared) return { readable: true, sends: true }
   }
-  if (text === null) return false
-  if (kind === 'py' && text.includes(ZIP_MAGIC)) return true
-  return fileSends(p, text, kind, readScript)
+  if (text === null) return { readable: false, sends: false }
+  if (kind === 'py' && text.includes(ZIP_MAGIC)) return { readable: true, sends: true }
+  return { readable: true, sends: fileSends(p, text, kind, readScript) }
+}
+
+function scriptFileSends(path, kind, readScript) {
+  return judgeScript(path, kind, readScript).sends
+}
+
+// Any readable candidate that sends is a send; the candidates are where the script may be (the cwd, each cd target).
+function judgeCandidates(paths, kind, readScript) {
+  let readable = false
+  for (const path of paths) {
+    const r = judgeScript(path, kind, readScript)
+    if (!r.readable) continue
+    readable = true
+    if (r.sends) return { readable: true, sends: true }
+  }
+  return { readable, sends: false }
 }
 
 // MAILGATEDIRZIP1027: MOD of `-m MOD` / `-mMOD` among the interpreter options, else null (the Python twin's
@@ -1138,29 +1295,49 @@ function pythonModule(rest) {
   }
   return null
 }
-function pythonModuleSends(module, cwd, readScript) {
-  if (!/^[\w.]+$/.test(module) || !cwd) return false
-  const rel = module.split('.').join('/')
-  return [rel + '.py', join(rel, '__main__.py')].some((c) => scriptFileSends(resolve(cwd, c), 'py', readScript))
+// JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
+// value) or an e-mail address anywhere in it. This gate (a hard deny) calls the fail-closed branches (an undecidable cd
+// or -m, a missing or unreadable script) a send ONLY on an addressed run: without an address, a script the gate cannot
+// read is no send (a developer's `cd $WT && python3 -m pytest`, a script written and run in one command). ISSUE2582
+// (Samu 72403): an undecidable SCRIPT PATH is no longer among them, it is a send on every run, as on the main gate.
+// A READABLE sender is a send either way, as it takes the address from inside. The main agent's approval gate (the
+// python twin) keeps the fail-closed branches on every run (its _FAIL_CLOSED_NEEDS_ADDRESS is false): this is the one
+// place the two gates differ, and script-run-cases.json holds both verdicts per row (main / sub).
+const FAIL_CLOSED_NEEDS_ADDRESS = true
+const EMAIL_IN_WORD = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
+function runIsAddressed(rest, cmdWords) {
+  return [...rest, ...cmdWords].some((w) => ADDRESS_FLAG.test(w) || EMAIL_IN_WORD.test(w))
 }
 
-function headRunsSenderScript(toks, cwd, readScript, depth) {
+function pythonModuleSends(module, cwd, readScript, cmdWords = [], addressed = false) {
+  if (!/^[\w.]+$/.test(module)) return false
+  const rel = module.split('.').join('/')
+  const { bases, undecidable } = cdBases(cwd, cmdWords)
+  if (undecidable && addressed) return true // JSCDSEND1104: a cd that cannot be resolved: fail-closed when addressed
+  const paths = bases.flatMap((b) => [resolve(b, rel + '.py'), resolve(b, rel, '__main__.py')])
+  return judgeCandidates(paths, 'py', readScript).sends
+}
+
+function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (!toks || !toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (WRAPPER_SHELL.test(prog)) {
     if (depth >= SHELL_C_DEPTH) return false
     for (let i = 0; i < rest.length - 1; i++) {
-      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1)) return true
+      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1, cmdWords)) return true
     }
     return false
   }
   let script
   let kind
+  // the fail-closed branches below fire when `addressed` (see FAIL_CLOSED_NEEDS_ADDRESS)
+  // Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
+  const addressed = !FAIL_CLOSED_NEEDS_ADDRESS || cmdWords.includes(SUBST_MARK) || runIsAddressed(rest, cmdWords)
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
-    if (module) return pythonModuleSends(module, cwd, readScript)
+    if (module) return pythonModuleSends(module, cwd, readScript, cmdWords, addressed)
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {
@@ -1169,32 +1346,625 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
     if (prog === 'npx' && script === null) return false
     if (addressFlagGiven(rest)) return true
     kind = 'node'
+  } else if (substArtefact(toks[0])) {
+    return false // Samu 69682: a piece of a cut command substitution, not a file that runs
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
-    // a directly executed file: its #! line picks the interpreter, else its extension
-    const path = resolveScriptPath(toks[0], cwd)
-    if (!path) return false
-    kind = shebangKind(readScript(path, SHEBANG_READ_LIMIT)) ??
-      (/\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null)
-    if (!kind) return false
-    if (addressFlagGiven(rest)) return true
-    return scriptFileSends(path, kind, readScript)
+    // a directly executed file: its #! line picks the interpreter, else its extension; every candidate on its own
+    const extKind = /\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null
+    if (addressed && relativeUnderUndecidableCd(toks[0], cwd, cmdWords)) return true
+    const addr = addressFlagGiven(rest)
+    let readable = false
+    for (const path of resolveScriptPaths(toks[0], cwd, cmdWords)) {
+      const head = readScript(path, SHEBANG_READ_LIMIT)
+      if (head === null) continue
+      const k = shebangKind(head) ?? extKind
+      if (!k) continue
+      if (addr) return true
+      readable = true
+      if (scriptFileSends(path, k, readScript)) return true
+    }
+    if (readable) return false
+    if (!extKind) return false // no candidate with a kind is readable: a #! line cannot be known, the extension gives none
+    // the kind is known and no candidate is readable: fail-closed when addressed (JSCDSEND1104); an undecidable path
+    // (`$D/x.py`) always (ISSUE2582, Samu 72403, the same tightening as above)
+    return addressed || UNDECIDABLE_PATH.test(toks[0])
   } else {
     return false
   }
   if (script === null) return false
-  const path = resolveScriptPath(script, cwd)
-  if (!path) return false
-  return scriptFileSends(path, kind, readScript)
+  // ISSUE2582 (Samu 72403): an undecidable SCRIPT PATH (`python3 $X`, `node $D/x.js`, a variable the command does not
+  // provably set) is a send on this gate too, addressed or not, as on the main gate. A TIGHTENING: before, an unaddressed
+  // one passed here, so `D=$(..); python3 $D/send.py` ran unread. An undecidable cd or -m keeps the older rule.
+  if (UNDECIDABLE_PATH.test(script)) return true
+  if (addressed && relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
+  let paths = resolveScriptPaths(script, cwd, cmdWords)
+  if (prog === 'node' && !/\.[^/]*$/.test(basename(script))) {
+    // Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+    if (addressed && paths.some((p) => readScript(p + '.node', SHEBANG_READ_LIMIT) !== null)) return true
+    paths = paths.flatMap((p) => [p, p + '.js', p + '.json'])
+  }
+  const { readable, sends } = judgeCandidates(paths, kind, readScript)
+  if (readable) return sends
+  // JSCDSEND1104: a missing script is a send when addressed; `bun test` is not
+  return addressed && (SCRIPT_FILE.test(script) || script.includes('/'))
 }
 
-export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0) {
+// Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
+// backtick cd reach cdBases as a bare `cd` (and the next segment's first word looked like its DIR). Read on the raw
+// command: such a cd or pushd is an undecidable cd.
+const SUBST_CD = /(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)/
+// the undecidable cd word handed on for it; also what tells headRunsSenderScript a substitution cd was seen
+const SUBST_MARK = '$CMD_SUBST_CD'
+
+// Samu 69682 (1): the tokenizer does not nest quotes inside a command substitution, so `H="$(cd "$(...)" && pwd)/x"`
+// comes out in pieces, and ` && pwd)/x` stood at a segment's head like a file run by path. A head that starts with
+// whitespace, or has more `)` than `(`, is such a piece: no file runs under that name. The python twin agrees.
+function substArtefact(t) {
+  if (/^\s/.test(t)) return true
+  let open = 0, close = 0
+  for (const ch of t) { if (ch === '(') open++; else if (ch === ')') close++ }
+  return close > open
+}
+
+// Samu 69682 (2): substitutions whose value is known from a literal path are resolved on the raw command before it is
+// tokenized: $(dirname P), $(basename P), $(realpath P), P a literal (quoted or not), nested too. A cd after one is a
+// literal cd. With a variable argument ("$0", $VAR, ${VAR}) the substitution becomes an outside variable: the cd is
+// undecidable, but no command-substitution mark (a script's own `cd "$(dirname "$0")"` must not be a deny). Any other
+// substitution, or one with options, stays as it is.
+const DET_SUBST = /\$\(\s*(dirname|basename|realpath)\s+(?:"([^"$`\\]*)"|'([^']*)'|([^\s$`'"()|;&<>*?[\]{}\\]+)|("?)(\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*|[0-9]))\5)\s*\)/
+const OUTSIDE_PATH_VAR = '$GATE_OUTSIDE_PATH'
+const SAFE_LITERAL = /^[^\s$`'"()|;&<>*?[\]{}\\]+$/
+function detSubstValue(fn, p, cwd) {
+  if (fn === 'dirname') {
+    const s = p.replace(/\/+$/, '') || '/'
+    if (s === '/') return '/'
+    const i = s.lastIndexOf('/')
+    if (i < 0) return '.'
+    return s.slice(0, i).replace(/\/+$/, '') || '/'
+  }
+  if (fn === 'basename') {
+    const s = p.replace(/\/+$/, '')
+    return s === '' ? '/' : s.split('/').pop()
+  }
+  const abs = isAbsolute(p) ? p : (typeof cwd === 'string' && isAbsolute(cwd) ? join(cwd, p) : null)
+  if (abs === null) return null
+  try { return realpathSync(abs) } catch { return resolve(abs) }
+}
+function resolveDeterministicSubst(cmd, cwd) {
+  let s = cmd
+  for (let n = 0; n < 16; n++) {
+    const m = DET_SUBST.exec(s)
+    if (!m) break
+    let v
+    if (m[6] !== undefined) v = OUTSIDE_PATH_VAR
+    else {
+      const p = m[2] ?? m[3] ?? m[4]
+      v = p === OUTSIDE_PATH_VAR ? OUTSIDE_PATH_VAR : detSubstValue(m[1], p, cwd)
+      if (v === null || !(v === OUTSIDE_PATH_VAR || SAFE_LITERAL.test(v))) break
+    }
+    s = s.slice(0, m.index) + v + s.slice(m.index + m[0].length)
+  }
+  return s
+}
+
+// Samu 69648 (2): a shell comment is no recipient and runs nothing. The python twin's shlex drops an unquoted `#...`;
+// this tokenizer kept it, so `cd $WT && python3 -m pytest # ask a@x.hu` was an addressed run here only. Dropped as bash
+// does: an unquoted `#` at the start of a word, up to the newline (kept, so the next line is still a command); a
+// quoted `#` is text. Run on the command after its heredoc bodies are cut (a body is data, not shell).
+function stripShellComments(cmd) {
+  let out = ''
+  let q = null
+  const parens = [] // Bence 69701: 's' for an open $( , 'p' for a plain ( -- which ) closes a command substitution
+  let substCloseAt = -1
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    // a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701, as the python twin's mask)
+    if (ch === '#' && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]) || (cmd[i - 1] === ')' && substCloseAt !== i - 1))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += '$('; i++; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+    out += ch
+  }
+  return out
+}
+
+// Samu 69648 (3a): `D=dir; cd $D` (also `export D=dir`) names a directory the command itself sets. That literal dir is
+// handed on as one more cd word, so a script there is read; the `cd $D` itself stays undecidable (the variable may be
+// set elsewhere when the assignment does not run). A VAR set only outside the command is not resolved.
+const VAR_REF = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$/
+function assignedCdDirs(segments) {
+  const vars = new Map()
+  const out = []
+  for (const toks of segments) {
+    const assigns = toks[0] === 'export' ? toks.slice(1) : toks
+    if (assigns.length && assigns.every((t) => ENV_ASSIGN.test(t))) {
+      for (const t of assigns) {
+        const eq = t.indexOf('=')
+        const v = t.slice(eq + 1)
+        if (v === '' || UNDECIDABLE_PATH.test(v)) vars.delete(t.slice(0, eq))
+        else vars.set(t.slice(0, eq), v)
+      }
+      continue
+    }
+    for (let i = 1; i < toks.length; i++) {
+      if (toks[i - 1] !== 'cd' && toks[i - 1] !== 'pushd' && !(toks[i - 1] === '--' && (toks[i - 2] === 'cd' || toks[i - 2] === 'pushd'))) continue
+      const m = VAR_REF.exec(toks[i])
+      const v = m ? vars.get(m[1] ?? m[2]) : undefined
+      if (v !== undefined) out.push(v)
+    }
+  }
+  return out
+}
+
+// ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal is filled in where its value
+// at run time is certain; everything else keeps the variable (today's verdict). The full proof is at the python twin's
+// _bind_literal_vars (outgoing-copy-gate.py); the two agree, script-run-cases.json binds them.
+// Samu 72415: a block keyword opens / closes a block (an assignment inside one does not bind). Dani (review of #2586):
+// the NAME may appear nowhere in the command but in its one assignment and its plain uses; eval / source / `.` / alias /
+// autoload / trap in command position (also behind command / builtin / exec / ...) switch the binding off.
+const BIND_GLOBAL_BLOCK = new Set(['eval', 'source', '.', 'alias', 'autoload', 'trap'])
+const BIND_PRECMD = new Set(['command', 'builtin', 'exec', 'noglob', 'nocorrect', '-', 'nohup', 'nice', 'time'])
+const BIND_OPEN = new Set(['if', 'while', 'until', 'case', '{', 'for', 'select'])
+const BIND_CLOSE = new Set(['fi', 'done', 'esac', '}'])
+const BIND_LEAD = new Set(['then', 'do', 'else', 'elif', '!', 'time'])
+function substEnd(cmd, i) {
+  // the index just past the `$(...)` or backtick substitution that starts at i (inside double quotes), else -1
+  if (cmd[i] === '`') {
+    for (let j = i + 1; j < cmd.length; j++) {
+      if (cmd[j] === '\\') { j++; continue }
+      if (cmd[j] === '`') return j + 1
+    }
+    return -1
+  }
+  let depth = 0
+  let q = null
+  for (let j = i + 1; j < cmd.length; j++) {
+    const c = cmd[j]
+    if (q) {
+      if (c === '\\' && q === '"') { j++; continue }
+      if (c === q) q = null
+    } else if (c === '\\') j++
+    else if (c === "'" || c === '"') q = c
+    else if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) return j + 1 }
+  }
+  return -1
+}
+const BIND_NAME = /[A-Za-z_][A-Za-z_0-9]*/y
+const BIND_LITERAL = /^[^\s$`'"()|;&<>*?[\]{}\\!~#]+$/
+const BIND_ASSIGN = /^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=/
+function bindName(s, at) {
+  BIND_NAME.lastIndex = at
+  const m = BIND_NAME.exec(s)
+  return m ? { name: m[0], end: at + m[0].length } : null
+}
+function heredocBodySpans(cmd) {
+  return [...cmd.matchAll(new RegExp(HEREDOC_RE.source, 'g'))].map((m) => [m.index + m[1].length + 1, m.index + m[0].length - m[2].length])
+}
+function bindScan(cmd) {
+  const spans = heredocBodySpans(cmd)
+  const segs = []
+  const stack = []
+  let depth = 0
+  let cur = { words: [], sepBefore: null, depth: 0 }
+  let word = null
+  let q = null
+  const newWord = (pos) => ({ text: '', quoted: false, escaped: false, refs: [], start: pos })
+  const endWord = () => { if (word !== null) { cur.words.push(word); word = null } }
+  const endSeg = (sep) => {
+    endWord()
+    cur.sepAfter = sep
+    if (cur.words.length) segs.push(cur)
+    cur = { words: [], sepBefore: sep, depth }
+  }
+  const n = cmd.length
+  let i = 0
+  while (i < n) {
+    const span = spans.find(([s]) => s === i)
+    if (span) { i = span[1]; continue } // a heredoc body: data, not shell
+    const ch = cmd[i]
+    if (q === "'") {
+      if (ch === "'") q = null
+      else word.text += ch // a single-quoted `$D` is the literal text: no ref is recorded, nothing is filled in
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < n) { // an escaped `\$D` is literal text too: no ref
+      if (word === null) word = newWord(i)
+      word.escaped = true // inside "..." a backslash may stay: the value is not certain, never bound
+      word.text += cmd[i + 1]
+      i += 2
+      continue
+    }
+    if (ch === '$' && i + 1 < n && (cmd[i + 1] === '{' || bindName(cmd, i + 1))) {
+      if (word === null) word = newWord(i)
+      if (cmd[i + 1] === '{') {
+        const m = bindName(cmd, i + 2)
+        if (m && cmd[m.end] === '}') {
+          if (!':[('.includes(cmd[m.end + 1] ?? 'x')) word.refs.push([m.name, i, m.end + 1]) // zsh modifier / subscript
+          word.text += cmd.slice(i, m.end + 1)
+          i = m.end + 1
+          continue
+        }
+        word.text += ch // ${D%x}, ${D:-x}, ...: not filled in (and ${D=x} cannot change a D set before)
+        i++
+        continue
+      }
+      const m = bindName(cmd, i + 1)
+      if (!':[('.includes(cmd[m.end] ?? 'x')) word.refs.push([m.name, i, m.end]) // zsh `$D:h` modifier, `$D[1]` subscript
+      word.text += cmd.slice(i, m.end)
+      i = m.end
+      continue
+    }
+    if (q === '"') {
+      if (ch === '"') q = null
+      else if (ch === '`' || cmd.startsWith('$(', i)) {
+        const end = substEnd(cmd, i)
+        if (end < 0) return null // an unclosed substitution: not read here
+        // a quoted "$(...)" runs in a subshell: nothing in it is filled in (a name in it is one more occurrence)
+        word.text += cmd.slice(i, end)
+        i = end
+        continue
+      } else word.text += ch
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      if (word === null) word = newWord(i)
+      word.quoted = true
+      q = ch
+      i++
+      continue
+    }
+    if (ch === '#' && word === null) {
+      while (i < n && cmd[i] !== '\n') i++
+      continue
+    }
+    if (ch === ' ' || ch === '\t') { endWord(); i++; continue }
+    if (ch === '\n' || ch === ';') { endSeg(';'); i++; continue }
+    if (ch === '`') {
+      if (stack.length && stack[stack.length - 1] === 'b') stack.pop()
+      else stack.push('b')
+      depth = stack.length
+      endSeg('(')
+      i++
+      continue
+    }
+    if (cmd.startsWith('$(', i)) { stack.push('s'); depth = stack.length; endSeg('('); i += 2; continue }
+    if (ch === '(') { stack.push('p'); depth = stack.length; endSeg('('); i++; continue }
+    if (ch === ')') { if (stack.length) stack.pop(); depth = stack.length; endSeg(')'); i++; continue }
+    if (ch === '&' || ch === '|') {
+      const prev = i ? cmd[i - 1] : ''
+      const nxt = i + 1 < n ? cmd[i + 1] : ''
+      if (ch === '&' && (prev === '<' || prev === '>' || nxt === '>')) {
+        if (word === null) word = newWord(i)
+        word.text += ch // a redirect (2>&1, &>), not a background run
+        i++
+        continue
+      }
+      if (ch === '|' && prev === '>') { word.text += ch; i++; continue } // >| is a redirect
+      if (cmd.startsWith('&&', i) || cmd.startsWith('||', i)) { endSeg(cmd.slice(i, i + 2)); i += 2; continue }
+      const pipeAmp = cmd.startsWith('|&', i)
+      endSeg(pipeAmp ? '|&' : ch)
+      i += pipeAmp ? 2 : 1
+      continue
+    }
+    if (word === null) word = newWord(i)
+    word.text += ch
+    i++
+  }
+  if (q) return null
+  endSeg(null)
+  return segs
+}
+export function bindLiteralVars(cmd) {
+  if (!cmd.includes('$') || !cmd.includes('=')) return cmd
+  const scanned = bindScan(cmd)
+  if (scanned === null) return cmd
+  const segs = scanned
+  const outside = outsideBodies(cmd, 0, cmd.length)
+  if (/(?<![A-Za-z0-9_])IFS(?![A-Za-z0-9_])/.test(outside)) return cmd
+  let block = 0 // how many blocks are open at the segment
+  for (const seg of segs) {
+    const words = seg.words
+    let k = 0
+    while (k < words.length && !words[k].quoted) {
+      const t = words[k].text
+      if (BIND_OPEN.has(t)) {
+        block++
+        if (t === 'for' || t === 'select' || t === 'case') { k = words.length; break } // the rest is a word list
+        k++
+        continue
+      }
+      if (BIND_CLOSE.has(t)) { block = Math.max(0, block - 1); k++; continue }
+      if (BIND_LEAD.has(t)) { k++; continue }
+      break
+    }
+    seg.block = block // eval / source / `.` ... in command position: boundIsPlain, quoted or not
+  }
+  const refCount = new Map()
+  for (const seg of segs) for (const w of seg.words) for (const [name] of w.refs) refCount.set(name, (refCount.get(name) ?? 0) + 1)
+  const binds = new Map() // name -> [segment index, value, conditional]
+  segs.forEach((seg, idx) => {
+    const words = seg.words
+    const assigns = words.length && words[0].text === 'export' && !words[0].quoted ? words.slice(1) : words
+    if (!assigns.length || !assigns.every((w) => BIND_ASSIGN.test(w.text))) return
+    if (seg.depth !== 0 || seg.block !== 0 || ![null, ';', '&&', '||'].includes(seg.sepAfter)) return
+    let conditional
+    if (seg.sepBefore === null || seg.sepBefore === ';') conditional = false
+    else if (seg.sepBefore === '&&') conditional = true
+    else return
+    for (const w of assigns) {
+      const eq = w.text.indexOf('=')
+      const name = w.text.slice(0, eq)
+      const value = w.text.slice(eq + 1)
+      if (w.escaped || !BIND_LITERAL.test(value) || name === 'IFS') continue
+      const occurrences = (outside.match(new RegExp(String.raw`(?<![A-Za-z0-9_])` + name + String.raw`(?![A-Za-z0-9_])`, 'g')) || []).length
+      if (occurrences !== 1 + (refCount.get(name) ?? 0)) continue // the name is named somewhere else: it may be set another way
+      binds.set(name, [idx, value, conditional])
+    }
+  })
+  if (!binds.size) return cmd
+  const edits = []
+  segs.forEach((seg, idx) => {
+    const words = seg.words
+    words.forEach((w, k) => {
+      const prev = k ? words[k - 1].text : null
+      const prev2 = k > 1 ? words[k - 2].text : null
+      if (prev === 'cd' || prev === 'pushd' || (prev === '--' && (prev2 === 'cd' || prev2 === 'pushd'))) return
+      for (const [name, start, end] of w.refs) {
+        const b = binds.get(name)
+        if (b === undefined || idx <= b[0]) continue
+        if (b[2] && segs.slice(b[0], idx).some((s) => s.sepAfter !== '&&')) continue
+        edits.push([start, end, b[1], name])
+      }
+    })
+  })
+  let bound = cmd
+  for (const [start, end, value] of [...edits].sort((a, b) => b[0] - a[0])) bound = bound.slice(0, start) + value + bound.slice(end)
+  // each bound name stands once in the bound command plus its uses left as they were (see the python twin)
+  const expected = new Map([...binds.keys()].map((n) => [n, 1 + (refCount.get(n) ?? 0) - edits.filter((e) => e[3] === n).length]))
+  return boundIsPlain(bound, expected) ? bound : cmd
+}
+
+// Dani (review of #2586, the computed name): the BOUND command is read once more; a variable-setting builtin anywhere,
+// a dynamic or quoted command name, arithmetic, an assigning ${...}, a subscript or [[ ... -eq ... ]] keep today's
+// verdict for the whole command (see the python twin's _bound_is_plain for the list and the shapes).
+const BIND_SETTERS = new Set(['read', 'declare', 'typeset', 'local', 'readonly', 'mapfile', 'readarray', 'getopts', 'let',
+  'unset', 'vared', 'zparseopts', 'zstyle', 'integer', 'float'])
+const BIND_DYNAMIC_TEXT = /\(\(|\$\[|\$\{[^}]*=|\$\{?[A-Za-z_][A-Za-z_0-9]*\[/
+const BIND_ARITH_TEST = /-(?:eq|ne|lt|le|gt|ge)\b/
+function boundIsPlain(bound, expected = new Map()) {
+  const outside = outsideBodies(bound, 0, bound.length)
+  for (const [name, count] of expected) {
+    if ((outside.match(new RegExp(String.raw`(?<![A-Za-z0-9_])` + name + String.raw`(?![A-Za-z0-9_])`, 'g')) || []).length !== count) return false
+  }
+  if (BIND_DYNAMIC_TEXT.test(outside)) return false
+  if (outside.includes('[[') && BIND_ARITH_TEST.test(outside)) return false
+  const segs = bindScan(bound)
+  if (segs === null) return false
+  for (const seg of segs) {
+    const words = seg.words
+    const texts = words.map((w) => w.text)
+    for (let i = 0; i < texts.length; i++) {
+      const t = texts[i]
+      const rest = texts.slice(i + 1)
+      if (BIND_SETTERS.has(t)) return false
+      if (t === 'export' && !rest.every((x) => BIND_ASSIGN.test(x))) return false
+      if ((t === 'printf' || t === 'print') && rest.some((x) => x.startsWith('-v'))) return false
+      if (t === 'set' && rest.some((x) => x.startsWith('-A') || x.startsWith('+A'))) return false
+    }
+    let k = 0
+    while (k < words.length && (BIND_OPEN.has(words[k].text) || BIND_CLOSE.has(words[k].text) || BIND_LEAD.has(words[k].text))) {
+      if (words[k].text === 'for' || words[k].text === 'select' || words[k].text === 'case') { k = words.length; break }
+      k++
+    }
+    while (k < words.length && BIND_ASSIGN.test(words[k].text)) k++
+    while (k < words.length && BIND_PRECMD.has(words[k].text)) k++
+    if (k < words.length) {
+      const head = words[k]
+      if (BIND_GLOBAL_BLOCK.has(head.text) || head.refs.length || head.text.includes('$') || head.text.includes('`')) return false
+    }
+  }
+  return true
+}
+
+// ISSUE2582 (B): a script written by a heredoc and then run in the same command is judged by its body (see the python
+// twin's _written_scripts for the exact conditions); every other case reads the disk as before.
+const WRITTEN_OPENER = new RegExp(
+  String.raw`^(?<pre>[^\n'"\x60\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
+  String.raw`|cat[ \t]+<<-?[ \t]*(?<q2>'?)(?<t2>\w+)\k<q2>[ \t]+>[ \t]*(?<p2>[^\s'"<>;&|$\x60]+)` +
+  String.raw`|tee[ \t]+(?<p3>[^\s'"<>;&|$\x60-][^\s'"<>;&|$\x60]*)(?:[ \t]+>[ \t]*\/dev\/null)?[ \t]+<<-?[ \t]*(?<q3>'?)(?<t3>\w+)\k<q3>` +
+  String.raw`)[ \t]*$`)
+function lexists(p) { try { lstatSync(p); return true } catch { return false } } // a dangling symlink counts too
+function outsideBodies(cmd, lo, hi) {
+  let out = ''
+  let pos = lo
+  for (const [s, e] of heredocBodySpans(cmd)) {
+    if (e <= lo || s >= hi) continue
+    out += cmd.slice(pos, Math.max(s, lo))
+    pos = Math.min(e, hi)
+  }
+  return out + cmd.slice(pos, hi)
+}
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Dani (review of #2586): the write must happen: only commands before it that cannot leave P there unnamed (a control
+// word is none), and a P that exists now is judged on disk too, which covers noclobber (see the python twin)
+const WRITTEN_SAFE_BEFORE = new Set(['mkdir', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep', 'date', 'pwd', 'ls', 'cd',
+  'pushd', 'rm', 'cat', 'tee', 'export', 'set'])
+function writtenSafeBefore(text) {
+  let segments
+  try { segments = segmentsTokens(text) } catch { return false }
+  for (const toks of segments) {
+    const head = toks.find((t) => !ENV_ASSIGN.test(t))
+    if (head !== undefined && !WRITTEN_SAFE_BEFORE.has(head)) return false
+  }
+  return true
+}
+export function writtenScripts(cmd, cwd) {
+  const out = new Map()
+  // a control word anywhere (outside the bodies) can make the write conditional: `if x; then :; cat > P <<TAG`
+  const hasCd = /(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)/.test(cmd)
+  for (const m of cmd.matchAll(new RegExp(HEREDOC_RE.source, 'g'))) {
+    const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
+    const openerEnd = m.index + m[1].length
+    const opener = cmd.slice(lineStart, openerEnd)
+    const w = WRITTEN_OPENER.exec(opener)
+    if (!w) continue
+    const g = w.groups
+    const path = g.p1 ?? g.p2 ?? g.p3
+    const quoted = Boolean(g.q1 || g.q2 || g.q3)
+    const bodyEnd = m.index + m[0].length - m[2].length
+    const body = cmd.slice(openerEnd + 1, bodyEnd)
+    if (!quoted && (body.includes('$') || body.includes('`'))) continue
+    let abs
+    if (isAbsolute(path)) abs = normalize(path)
+    else if (!hasCd && typeof cwd === 'string' && isAbsolute(cwd)) abs = normalize(join(cwd, path))
+    else continue
+    // the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
+    if (/(?:&&|\|\||\||\\)\s*$/.test(cmd.slice(0, lineStart))) continue
+    // nothing before the write can have left P there unnamed (so the write does not fail on it)
+    if (!writtenSafeBefore(outsideBodies(cmd, 0, lineStart) + (g.pre ?? ''))) continue
+    // counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py
+    const mention = new RegExp(String.raw`(?<![\w.-])` + reEscape(basename(path)) + String.raw`(?![\w.-])`, 'g')
+    const count = (s) => (s.match(mention) || []).length
+    if (count(outsideBodies(cmd, 0, lineStart)) || count(opener) !== 1 || count(outsideBodies(cmd, bodyEnd, cmd.length)) !== 1 ||
+        out.has(abs)) {
+      out.delete(abs)
+      continue
+    }
+    out.set(abs, body)
+  }
+  return out
+}
+
+export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
+  const bound = bindLiteralVars(cmdIn)
+  const allWritten = writtenScripts(bound, cwd)
+  // Dani (review of #2586): a P that exists now may survive the write: its body is judged next to the file on disk
+  for (const [path, body] of allWritten) {
+    if (!lexists(path)) continue
+    const kind = shebangKind(body.slice(0, SHEBANG_READ_LIMIT)) ?? (/\.py$/.test(path) ? 'py' : SCRIPT_FILE.test(path) ? 'node' : null)
+    const reader = (q, lim) => (normalize(q) === path ? body.slice(0, lim) : readScript(q, lim))
+    if (kind && judgeCandidates([path], kind, reader).sends) return true
+  }
+  const written = new Map([...allWritten].filter(([p]) => !lexists(p)))
+  if (written.size) {
+    const diskRead = readScript
+    readScript = (path, limit = SCRIPT_READ_LIMIT) => {
+      const body = typeof path === 'string' ? written.get(normalize(path)) : undefined
+      return body !== undefined ? body.slice(0, limit) : diskRead(path, limit)
+    }
+  }
+  const cmd = resolveDeterministicSubst(bound, cwd)
   let segments
   try {
-    segments = segmentsTokens(cmd)
+    segments = segmentsTokens(stripShellComments(cmd.replace(HEREDOC_RE, '$1')))
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
-  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth)))
+  // JSCDSEND1104: every word of the command, so a `cd DIR` before the run is seen; ENVOPTHEAD1104 (Bence 69475):
+  // `env -C DIR` runs its command in DIR, handed on as a `cd DIR` word (an undecidable DIR then makes it a send).
+  const flat = [...cdWords, ...segments.flat()]
+  const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...assignedCdDirs(segments).flatMap((d) => ['cd', d]),
+    ...(SUBST_CD.test(cmd) ? ['cd', SUBST_MARK] : [])]
+  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
+}
+
+// Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
+const ENV_LONG_OPTIONS = ['argv0', 'block-signal', 'chdir', 'debug', 'default-signal', 'ignore-environment', 'ignore-signal',
+  'list-signal-handling', 'null', 'split-string', 'unset', 'help', 'version']
+function envLongName(t) {
+  if (!t.startsWith('--') || t === '--') return null
+  const word = t.slice(2).split('=')[0]
+  if (ENV_LONG_OPTIONS.includes(word)) return word
+  const hits = ENV_LONG_OPTIONS.filter((o) => word && o.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+
+// (value, index after it) when the env word t at j is -S / --split-string (also a prefix or a cluster); else null
+function envSplitValue(t, words, j) {
+  if (t.startsWith('--')) {
+    if (envLongName(t) !== 'split-string') return null
+    const eq = t.indexOf('=')
+    return eq >= 0 ? [t.slice(eq + 1), j + 1] : [words[j + 1] ?? '', j + 2]
+  }
+  if (t.startsWith('-')) {
+    let k = -1
+    for (let x = 1; x < t.length; x++) if (ENV_SHORT_VALUE.includes(t[x])) { k = x; break }
+    if (k > 0 && t[k] === 'S') return k < t.length - 1 ? [t.slice(k + 1), j + 1] : [words[j + 1] ?? '', j + 2]
+  }
+  return null
+}
+
+// JSCDSEND1104: sudo -D/--chdir DIR, the same class as env -C; see the python twin.
+const SUDO_LONG_OPTIONS = ['askpass', 'auth-type', 'background', 'bell', 'chdir', 'chroot', 'close-from', 'command-timeout',
+  'edit', 'group', 'help', 'host', 'list', 'login', 'non-interactive', 'other-user', 'preserve-env', 'preserve-groups',
+  'prompt', 'remove-timestamp', 'reset-timestamp', 'role', 'set-home', 'shell', 'type', 'user', 'validate', 'version']
+const SUDO_LONG_VALUES = ['auth-type', 'chdir', 'chroot', 'close-from', 'command-timeout', 'group', 'host', 'other-user',
+  'prompt', 'role', 'type', 'user']
+function longName(t, names) {
+  if (!t.startsWith('--') || t === '--') return null
+  const word = t.slice(2).split('=')[0]
+  if (names.includes(word)) return word
+  const hits = names.filter((o) => word && o.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+const CHDIR_SPECS = new Map([
+  ['env', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
+  ['genv', [ENV_SHORT_VALUE, 'C', ENV_LONG_OPTIONS, ENV_LONG_VALUE]],
+  ['sudo', ['ughpCUrtDRT', 'D', SUDO_LONG_OPTIONS, SUDO_LONG_VALUES]],
+])
+
+// ENVOPTHEAD1104 / JSCDSEND1104: the directories `env -C DIR` and `sudo -D DIR` (also `--chdir DIR`, `--chdir=DIR`,
+// joined, in a cluster, by a unique prefix, and for env also inside an -S value) run their command in.
+function envChdirDirs(words, d = 0) {
+  const out = []
+  for (let i = 0; i < words.length; i++) {
+    const spec = CHDIR_SPECS.get(basename(words[i]))
+    if (!spec) continue
+    const [shortVal, chdirCh, longNames, longVals] = spec
+    let j = i + 1
+    while (j < words.length) {
+      const t = words[j]
+      if (t === '--' || !(t.startsWith('-') || ENV_ASSIGN.test(t))) break
+      if (basename(words[i]) === 'env' || basename(words[i]) === 'genv') {
+        const split = envSplitValue(t, words, j)
+        if (split) {
+          // Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+          let splitWords = []
+          try { splitWords = segmentsTokens(split[0]).flat() } catch { /* an unsplittable value is a send already */ }
+          if (d < HEAD_DEPTH) out.push(...envChdirDirs(['env', ...splitWords, ...words.slice(split[1])], d + 1))
+          break
+        }
+      }
+      const long = t.startsWith('--') ? longName(t, longNames) : null
+      if (t === '-' + chdirCh || (long === 'chdir' && !t.includes('='))) { if (j + 1 < words.length) out.push(words[j + 1]); j += 2; continue }
+      if (long === 'chdir') out.push(t.slice(t.indexOf('=') + 1))
+      else if (long && !t.includes('=') && longVals.includes(long)) j++ // its value
+      else if (t.startsWith('-') && !t.startsWith('--')) {
+        let k = -1
+        for (let x = 1; x < t.length; x++) if (shortVal.includes(t[x])) { k = x; break }
+        if (k > 0 && t[k] === chdirCh) {
+          if (k < t.length - 1) out.push(t.slice(k + 1))
+          else if (j + 1 < words.length) { out.push(words[j + 1]); j++ }
+        } else if (k === t.length - 1) j++
+      }
+      j++
+    }
+  }
+  return out
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
@@ -1895,6 +2665,7 @@ if (isInvokedDirectly()) {
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
+    if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and

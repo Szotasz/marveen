@@ -67,6 +67,23 @@ fi
 
 echo "verify-channels-health: session=$SESSION"
 
+# GROMZONOPROVIDER1108: a gromzo install has no Bun bridge, no bot.pid and no .bun/bin need: its primary channel is
+# the Gromzo plugin (Node) under the pane. Checked that way, then the usual verdict line and exit.
+_vch_provider="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'\r ')"
+if [ "$_vch_provider" = "gromzo" ]; then
+  if [ -n "$PANE_PID" ] && pgrep -P "$PANE_PID" -f '/gromzo-channel/' >/dev/null 2>&1; then
+    note "(gromzo) OK: the Gromzo plugin runs under pane pid=$PANE_PID"
+  elif [ -f "$INSTALL_DIR/scripts/main-gromzo-launch.sh" ] && . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" \
+       && ! main_gromzo_primary_ready "$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"; then
+    note "(gromzo) PENDING: mxd's agent socket is not usable or the main agent is not enrolled yet (the session runs without its Gromzo channel)"
+  else
+    note "(gromzo) FAIL: no Gromzo plugin under pane pid=${PANE_PID:-?}"; fail=1
+  fi
+  if [ "$fail" -eq 0 ]; then echo "verify-channels-health: HEALTHY"; else echo "verify-channels-health: UNHEALTHY"; fi
+  exit "$fail"
+fi
+unset _vch_provider
+
 # (a) bun bridge descendant under the ${MAIN_AGENT_ID}-channels tmux pane
 # Walk the pane shell's own process-tree (up to 4 levels deep) for a
 # "bun server.ts" process.  Every PID checked is a descendant of the
@@ -134,6 +151,26 @@ fi
 # combination is how a secondary inbound goes dead while everything else,
 # including the env the operator inspects first, looks correct.
 CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+# GROMZOMAINAGENT1106: the launchers drop the main agent's gromzo-channel id while mxd's agent.sock is not
+# usable or the main id fails mxd's slug rule (scripts/main-gromzo-launch.sh). That drop is on purpose, not a
+# half-mute: compare the argv against what the launchers would load, and say what was left out and why.
+if [ -n "$CHANNEL_PLUGINS_EXTRA" ] && [ -f "$INSTALL_DIR/scripts/main-gromzo-launch.sh" ]; then
+  # shellcheck source=scripts/main-gromzo-launch.sh
+  . "$INSTALL_DIR/scripts/main-gromzo-launch.sh"
+  # The RAW id (MAIN_AGENT_ID above is sanitized for the session name): the launchers judge the raw one.
+  _gz_raw_main="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  # shellcheck disable=SC2086
+  _gz_kept="$(main_gromzo_filter_ids "$_gz_raw_main" $CHANNEL_PLUGINS_EXTRA)"
+  case " $CHANNEL_PLUGINS_EXTRA " in
+    *" $MAIN_GROMZO_PLUGIN_ID "*)
+      case " $_gz_kept " in
+        *" $MAIN_GROMZO_PLUGIN_ID "*) ;;
+        *) note "(d) NOTE: $MAIN_GROMZO_PLUGIN_ID is listed but not loaded on purpose (mxd agent.sock not usable, or the main agent id fails the mxd slug rule)" ;;
+      esac ;;
+  esac
+  CHANNEL_PLUGINS_EXTRA="$_gz_kept"
+  unset _gz_raw_main _gz_kept
+fi
 if [ -z "$CHANNEL_PLUGINS_EXTRA" ]; then
   note "(d) SKIP: no CHANNEL_PLUGINS_EXTRA configured"
 elif [ -z "$CLAUDE_PID" ]; then

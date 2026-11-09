@@ -8,14 +8,14 @@
 //   3. the same born-approved POST for STANDING_CATEGORY (email_standing_recipient) -> every later
 //      letter to that address went out with no approval at all.
 // Approving (the born-approved POST and PATCH status=approved) now goes through the predicate that
-// guards issuing credentials (mayIssueCredentials, #2163): the owner's session, also when the
-// browser sends the stored token alongside it (so the owner approving from the dashboard gets no
-// 403); the bare token only before the first dashboard login exists. Reject and timeout stay open
+// guards owner actions (mayActAsOwner, #2163): the owner's session, also when the browser sends
+// the stored token alongside it (so the owner approving from the dashboard gets no 403); the bare
+// token never, not even before the first dashboard login exists (OWNERGATE4-1104). Reject and timeout stay open
 // to the token: with them an agent can only cancel a request, never gain a right.
 import { describe, it, expect, vi, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -42,14 +42,17 @@ type Auth = { kind: 'token' | 'session' | 'device'; agent?: string; user?: strin
 const TOKEN: Auth = { kind: 'token', agent: 'soma' }
 const OWNER: Auth = { kind: 'session', user: 'owner' }
 
-const GATE = join(process.cwd(), 'scripts', 'hooks', 'email-approval-gate.py')
+// ENVRELAXGATE1104: the gate reads only its own install's store, so it runs from the tmp install
+// (<td>/scripts -> the repo's scripts/; the gate takes its root from abspath, not realpath).
+symlinkSync(join(process.cwd(), 'scripts'), join(td, 'scripts'))
+const GATE = join(td, 'scripts', 'hooks', 'email-approval-gate.py')
 let letterNo = 0
 function letter(to = 'idegen@pelda.hu') {
   letterNo++
   return { tool_name: 'mcp__claude_ai_Gmail__send_message', tool_input: { to: [to], subject: `Teszt ${letterNo}`, body: `Kedves Ügyfelünk! Ez a(z) ${letterNo}. mérés.` } }
 }
 function gate(payload: unknown) {
-  const r = spawnSync('python3', [GATE], { input: JSON.stringify(payload), env: { ...process.env, EMAIL_APPROVAL_GATE_STORE: store, OUTGOING_COPY_GATE_RULES: join(store, 'no-rules.json') }, encoding: 'utf-8' })
+  const r = spawnSync('python3', [GATE], { input: JSON.stringify(payload), env: { ...process.env }, encoding: 'utf-8' })
   return { code: r.status, err: r.stderr }
 }
 // The gate's first deny names the anchor an approval must carry for exactly this letter.
@@ -182,10 +185,15 @@ describe('standing-recipient activation (STANDING_CATEGORY)', () => {
 })
 
 describe('before the first dashboard login exists', () => {
-  it('the token is the one credential there is: it may approve (first-run, as for issuing credentials)', async () => {
+  // OWNERGATE4-1104: approving is no first-run path: every sub-agent holds the token and could approve its own request.
+  it('the token may NOT approve: 403 owner_session_required + setup_required, the row stays pending', async () => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
     _clearSessionCacheForTest()
     const own = await post({ agent_id: 'soma', category: 'email_send', action_description: 'first-run' }, TOKEN)
-    expect((await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN)).status).toBe(200)
+    const r = await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN)
+    expect(r.status).toBe(403)
+    expect(r.body.code).toBe('owner_session_required')
+    expect(r.body.setup_required).toBe(true)
+    expect(getApproval(own.body.id)?.status).toBe('pending')
   })
 })

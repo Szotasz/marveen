@@ -1,0 +1,6 @@
+# HOSTINGERDOCKER1107, the tls profile: automatic HTTPS for MARVEEN_DOMAIN in front of the dashboard. Caddy sends the
+# original Host and X-Forwarded-Proto=https, so the dashboard marks its login cookie Secure, and the CSRF check sees the
+# public origin (DASHBOARD_PUBLIC_URL, written into .env from MARVEEN_DOMAIN).
+{$MARVEEN_DOMAIN} {
+	reverse_proxy marveen:3420
+}

@@ -33,7 +33,7 @@ const PINS: Record<string, Pin> = {
   'src/web/ssh-tmux.ts': { venv: 0, exempt: 1, why: 'remote launch over ssh: a local venv path means nothing on the remote host' },
   'scripts/monitor_agents.sh': { venv: 0, exempt: 1, why: 'tmux viewer: links existing agent windows, launches no claude' },
   'update.sh': { venv: 0, exempt: 2, why: "the updater's pinned node for its own npm/build steps" },
-  'install-macos.sh': { venv: 0, exempt: 3, why: "the installer's own PATH while installing bun/node" },
+  'install-macos.sh': { venv: 0, exempt: 2, why: "the installer's own PATH while installing bun/node (the two old bun lines are one in _install_bun, GROMZONOPROVIDER1108 A2)" },
   'install-linux.sh': { venv: 0, exempt: 7, why: "the installer's own PATH, and the lines it appends to the user's shell rc" },
   'install-lang.sh': { venv: 0, exempt: 2, why: "the installer's own PATH, and the line it appends to the user's shell rc" },
 }

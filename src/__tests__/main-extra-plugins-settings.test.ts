@@ -214,10 +214,10 @@ describe('every main-session launcher carries the flag', () => {
     expect(buildMainSessionRespawnCmd(base)).not.toContain('--settings')
   })
 
-  it('all three channel-monitor respawn sites pass the file next to the extras', () => {
+  it('all three channel-monitor respawn sites pass the file next to the extras, with the PRIMARY first (INSTALLDIRTYTREE1103)', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
     const extras = src.split('extraPluginIds: readExtraChannelPluginIds(),').length - 1
-    const flags = src.split('extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),').length - 1
+    const flags = src.split('extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),').length - 1
     expect(extras).toBe(3)
     expect(flags).toBe(extras)
   })
@@ -225,13 +225,100 @@ describe('every main-session launcher carries the flag', () => {
   it('channels.sh: both launch lines carry the flag, computed by the shared helper', () => {
     const sh = readFileSync(join(ROOT, 'scripts', 'channels.sh'), 'utf-8')
     expect(sh).toContain('. "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"')
-    expect(sh).toContain('EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"')
+    expect(sh).toContain('EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"')
     expect(sh.split('--dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ').length - 1).toBe(2)
   })
 
   it('channel-watchdog.sh: the respawn line carries the flag too', () => {
     const sh = readFileSync(join(ROOT, 'scripts', 'channel-watchdog.sh'), 'utf-8')
-    expect(sh).toContain('EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"')
+    expect(sh).toContain('EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PRIMARY_PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"')
     expect(sh).toContain('--dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ')
+    expect(sh).toContain('--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"')
+  })
+
+  it('stuck-modal-guard.sh: the respawn line carries the flag with the respawned primary', () => {
+    const sh = readFileSync(join(ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')
+    // GROMZOMAINAGENT1106: with the co-listen extras too, as channels.sh and the watchdog pass them.
+    expect(sh).toContain('SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"')
+    // GROMZONOPROVIDER1108: the channels argument is built once (a gromzo-pending respawn has no primary); for every
+    // other provider it is still the respawned primary plus the extras.
+    expect(sh).toContain('--dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"')
+    expect(sh).toContain('CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"')
+  })
+})
+
+// INSTALLDIRTYTREE1103: the primary channel plugin used to be enabled by WRITING the
+// tracked .claude/settings.json (the installers' `claude plugin enable --scope project`
+// and channels.sh's self-healing guard). Both rewrote the whole compact file
+// (~500 lines on marveen2, 11-03), so every fresh install was dirty and every update
+// went down the stash path. The primary now rides the same --settings file.
+describe('the primary channel plugin rides the flag file, never the tracked settings (INSTALLDIRTYTREE1103)', () => {
+  // resolve_plugin_ids() from channels.sh and the watchdog's case block, executed as-is.
+  const channelsSh = readFileSync(join(ROOT, 'scripts', 'channels.sh'), 'utf-8')
+  const watchdogSh = readFileSync(join(ROOT, 'scripts', 'channel-watchdog.sh'), 'utf-8')
+  const resolveFn = channelsSh.match(/^resolve_plugin_ids\(\) \{\n[\s\S]*?\n\}\n/m)![0]
+  const watchdogCase = watchdogSh.match(/^case "\$CHANNEL_PROVIDER" in\n  slack\)    PRIMARY_PLUGIN_ID=[\s\S]*?\nesac\n/m)![0]
+  const PROVIDERS = ['slack', 'telegram', 'discord', 'whatsapp', 'teams']
+  const channelsId = (prov: string) =>
+    execFileSync('bash', ['-c', `${resolveFn}\nresolve_plugin_ids "$1"; printf %s "$PLUGIN_ID"`, 'x', prov]).toString()
+
+  it('the watchdog maps every provider to the SAME primary id as channels.sh (executed)', () => {
+    for (const prov of PROVIDERS) {
+      const wd = execFileSync('bash', ['-c', `CHANNEL_PROVIDER="$1"\n${watchdogCase}printf %s "$PRIMARY_PLUGIN_ID"`, 'x', prov]).toString()
+      expect(wd).toBe(channelsId(prov))
+    }
+  })
+
+  for (const prov of ['slack', 'telegram']) {
+    it(`${prov}-primary: the file channels.sh launches with enables the primary (executed, shell and TS identical)`, () => {
+      const dir = mkdtempSync(join(tmpdir(), `mainxs ${prov}-`))
+      try {
+        const id = channelsId(prov)
+        expect(shellFlag(dir, id)).toBe(` --settings "${mainExtraPluginsSettingsPath(dir)}"`)
+        const sh = readFileSync(mainExtraPluginsSettingsPath(dir), 'utf-8')
+        expect(JSON.parse(sh)).toEqual({ enabledPlugins: { [id]: true } })
+        expect(readFileSync(writeMainExtraPluginsSettings(dir, [id])!, 'utf-8')).toBe(sh)
+        // With a co-listen extra the primary stays first and both are enabled.
+        const other = prov === 'slack' ? 'telegram@claude-plugins-official' : SLACK
+        shellFlag(dir, id, other)
+        expect(JSON.parse(readFileSync(mainExtraPluginsSettingsPath(dir), 'utf-8'))).toEqual({ enabledPlugins: { [id]: true, [other]: true } })
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    })
+  }
+
+  it('the flag file lives in a gitignored path: writing it leaves a clean tree (executed)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mainxs git-'))
+    try {
+      writeFileSync(join(dir, '.gitignore'), readFileSync(join(ROOT, '.gitignore')))
+      const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a]).toString()
+      git('init', '-q')
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.gitignore')
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base')
+      shellFlag(dir, SLACK)
+      writeMainExtraPluginsSettings(dir, [SLACK])
+      expect(git('status', '--porcelain', '--untracked-files=all')).toBe('')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('no installer or launcher writes the tracked project settings any more', () => {
+    for (const f of ['install-macos.sh', 'install-linux.sh']) {
+      const src = readFileSync(join(ROOT, f), 'utf-8')
+      expect(src, f).not.toMatch(/^[^#\n]*claude plugin enable/m)
+    }
+    expect(channelsSh).not.toContain('_ensure_plugin_enabled')
+    for (const f of ['channels.sh', 'channel-watchdog.sh', 'stuck-modal-guard.sh']) {
+      const src = readFileSync(join(ROOT, 'scripts', f), 'utf-8')
+      expect(src, f).not.toMatch(/^[^#\n]*(json\.dump|>|tee)[^#\n]*\.claude\/settings\.json/m)
+    }
+  })
+
+  it('sub-agent launchers never get the main flag file (#112: one socket per Slack app)', () => {
+    const agentProcess = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+    const watchdog = readFileSync(join(ROOT, 'scripts', 'watchdog.sh'), 'utf-8')
+    for (const [name, src] of [['agent-process.ts', agentProcess], ['watchdog.sh', watchdog]] as const) {
+      expect(src, name).not.toContain('main-extra-plugins')
+      expect(src, name).not.toContain('main_extra_settings_flag')
+      expect(src, name).not.toContain('writeMainExtraPluginsSettings')
+    }
   })
 })

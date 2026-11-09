@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { resolveOwnerChatId } from './owner-chat.js'
+import { ownerAlertChatOverride, resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { scheduleDecaySweep } from './decay-schedule.js'
@@ -31,6 +31,8 @@ import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
 import { startChannelRequestWatcher, stopChannelRequestWatcher } from './web/channel-request-watcher.js'
 import { startStoreWatcher, stopStoreWatcher } from './store-watcher.js'
+import { startSettingsHealth } from './settings-health.js'
+import { noticeNetTargetDrift } from './net-target-notice.js'
 import { AGENTS_BASE_DIR, agentDir, listAgentNames, readFileOr } from './web/agent-config.js'
 import { migrateSenderRoleGates } from './web/sender-role-gate-store.js'
 import {
@@ -540,7 +542,7 @@ async function main(): Promise<void> {
     // so a value read at startup would stay the placeholder for the life of
     // the process and the first digest would go nowhere.
     const runDigest = () => {
-      const chatId = resolveOwnerChatId()
+      const chatId = ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()
       if (!chatId) {
         logger.warn('Napi naplo kihagyva: nincs gazda-chat (nincs ALLOWED_CHAT_ID es nincs parositott csatorna)')
         return
@@ -625,6 +627,12 @@ async function main(): Promise<void> {
 
   // Store file audit watcher
   startStoreWatcher()
+
+  // ENVRELAXGATE1104 step 2: name the ignored .env security lines, and tell the owner (once per state change) when
+  // config-overrides.json turns unreadable.
+  startSettingsHealth()
+  // NETTARGETENV1104: tell the owner once when a network target's host changed since the last boot.
+  void noticeNetTargetDrift()
 
   // Web dashboard
   webServer = startWebServer(WEB_PORT)

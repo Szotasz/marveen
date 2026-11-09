@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { CHANNEL_CHAT_ID, MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readClaudePlans } from './claude-plans.js'
+import { readAgentAuthMode } from './agent-config.js'
 import { readClaudePlansState } from './claude-plans-state.js'
 import {
   SCHEDULED_TASKS_DIR, readScheduledTask, readRemovedDefaultTasks, writeScheduledTask,
@@ -185,6 +186,18 @@ export function rotationReadiness(): RotationReadiness {
     blockers.push({
       code: 'main_agent_not_isolated',
       message: 'A fő agent a közös ~/.claude-ot használja (MAIN_AGENT_ISOLATED_CONFIG=0), így a heartbeat minden körben döntés nélkül kilép. Kapcsold be a MAIN_AGENT_ISOLATED_CONFIG-ot: ez a fő agent hitelesítését a flotta tokenjére állítja, és a fő agent újraindításával jár, ezért nem kapcsoljuk be automatikusan.',
+    })
+  }
+
+  // MAINAUTH1107: on an API key the main agent does not run on a plan at all; the rotate-check refuses to decide.
+  let mainAuthMode = 'shared'
+  try { mainAuthMode = readAgentAuthMode(MAIN_AGENT_ID) } catch { mainAuthMode = 'shared' }
+  let mainPlanActive = false
+  try { mainPlanActive = !!readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID] } catch { mainPlanActive = false }
+  if (mainAuthMode === 'api' && !mainPlanActive) {
+    blockers.push({
+      code: 'main_agent_on_api_key',
+      message: 'A fő agent API-kulccsal fut (a dashboardon a hitelesítése API-kulcsra van állítva), ezért a rotáció a fő agentnél nem érvényesül.',
     })
   }
 

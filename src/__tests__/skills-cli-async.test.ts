@@ -78,7 +78,8 @@ async function call(method: string, path: string, body?: unknown) {
   const { res, chunks, done } = makeRes()
   const req = Object.assign(Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]), { headers: {} })
   const url = new URL('http://localhost' + path)
-  await tryHandleSkills({ req, res, path: url.pathname, method, url } as any)
+  // The owner's browser login: skill assign needs the owner (OWNERGATE3-1104); the gate itself is owner-gate-round3.test.ts.
+  await tryHandleSkills({ req, res, path: url.pathname, method, url, auth: { kind: 'session' } } as any)
   await done
   return { status: res.statusCode as number, headers: res.headers as Record<string, unknown>, body: Buffer.concat(chunks) }
 }

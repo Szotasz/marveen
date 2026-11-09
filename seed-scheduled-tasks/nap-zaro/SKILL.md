@@ -27,13 +27,14 @@ nem dokumentáció-javítás.)
 
 1. **Előkészítés, és kilépés, ha ma már lefutott.** Ez a kör NEM idempotens (a napló
    append-only), ezért egy kétszer kézbesített prompt két bejegyzést írna. Ha a mai naplóban
-   már van `Napzáró` bejegyzés, állj meg, és ne írj semmit.
+   már van `Napzáró` bejegyzés (vagy `Day close`: az angol változat címe, a telepítés nyelvváltásának
+   napján), állj meg, és ne írj semmit.
    ```bash
 PORT="$(sed -n 's/^WEB_PORT=//p' {{INSTALL_DIR}}/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 TOKEN="$(cat {{INSTALL_DIR}}/store/.dashboard-token)"
 TODAY="$(date +%F)"
 curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/daily-log?agent={{MAIN_AGENT_ID}}&date=$TODAY" \
-  | python3 -c "import json,sys; rows=json.load(sys.stdin); print('MAR_LEFUTOTT' if any('Napzáró' in r['content'] for r in rows) else 'last_ts=%d' % max([r['created_at'] for r in rows] or [0]))"
+  | python3 -c "import json,sys; rows=json.load(sys.stdin); print('MAR_LEFUTOTT' if any('Napzáró' in r['content'] or 'Day close' in r['content'] for r in rows) else 'last_ts=%d' % max([r['created_at'] for r in rows] or [0]))"
    ```
    A dátumot MINDIG add meg (`date=`): a végpont alapértéke UTC-nap, este 22 és éjfél között
    az a holnapi nap lenne.
@@ -143,5 +144,5 @@ python3 -c "import json,sys; print(json.dumps({'agent_id':'{{MAIN_AGENT_ID}}','c
 TXT
    ```
 
-4. **Ellenőrzés.** Kérd le újra a mai naplót, és nézd meg, hogy PONTOSAN egy `Napzáró`
-   bejegyzés van benne. Ha kettő, jelezd a kör végén, és NE töröld magadtól.
+4. **Ellenőrzés.** Kérd le újra a mai naplót, és nézd meg, hogy PONTOSAN egy `Napzáró` (vagy
+   `Day close`) bejegyzés van benne. Ha kettő, jelezd a kör végén, és NE töröld magadtól.

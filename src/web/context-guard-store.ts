@@ -69,12 +69,19 @@ export function writeContextGuardConfig(name: string, cfg: unknown): ContextGuar
  */
 export function mergeContextGuardConfig(name: string, patch: unknown): ContextGuardConfig {
   const raw = readRaw()
-  const current = name in raw ? normalizeContextGuardConfig(raw[name]) : { ...DEFAULT_CONTEXT_GUARD }
-  const fields = (patch && typeof patch === 'object' && !Array.isArray(patch)) ? patch as Record<string, unknown> : {}
-  const merged = normalizeContextGuardConfig({ ...current, ...fields })
+  const { merged } = previewContextGuardMerge(name, patch)
   raw[name] = merged
   atomicWriteFileSync(STORE_PATH, JSON.stringify(raw, null, 2))
   return merged
+}
+
+/** OWNERGATE3-1104: what mergeContextGuardConfig WOULD store, without writing: the normalized current config and
+ *  the normalized merge of the patch over it. The route compares the two (contextGuardWeakenings) before it writes. */
+export function previewContextGuardMerge(name: string, patch: unknown): { current: ContextGuardConfig; merged: ContextGuardConfig } {
+  const raw = readRaw()
+  const current = name in raw ? normalizeContextGuardConfig(raw[name]) : { ...DEFAULT_CONTEXT_GUARD }
+  const fields = (patch && typeof patch === 'object' && !Array.isArray(patch)) ? patch as Record<string, unknown> : {}
+  return { current, merged: normalizeContextGuardConfig({ ...current, ...fields }) }
 }
 
 /**

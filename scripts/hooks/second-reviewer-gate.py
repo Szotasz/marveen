@@ -67,21 +67,41 @@ def agent_name(payload: dict) -> str:
     return "unknown"
 
 
-def install_setting(root: str, key: str, default: str) -> str:
-    """Env first, then the install .env, then the default."""
-    v = os.environ.get(key)
-    if v and v.strip():
-        return v.strip()
+def env_file_value(root: str, key: str):
+    """The install .env's value of `key` as src/env-parse.ts reads it: the LAST
+    matching line wins, the value is trimmed and ONE pair of surrounding quotes
+    is stripped; None when absent or unreadable. Never os.environ
+    (ENVRELAXGATE1104 step 2): the hook runs in the reviewed agent's own
+    environment, which must not choose where the review goes."""
     try:
         with open(os.path.join(root, ".env"), encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(key + "="):
-                    val = line.split("=", 1)[1].strip()
-                    if val:
-                        return val
+            content = fh.read()
     except Exception:  # noqa: BLE001 -- a missing .env just means the default
-        pass
-    return default
+        return None
+    found = None
+    for line in content.split("\n"):
+        t = line.strip()
+        if not t or t.startswith("#") or "=" not in t:
+            continue
+        k, v = t.split("=", 1)
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if v[:1] in ('"', "'") and v.endswith(v[:1]):
+            v = v[1:-1]
+        found = v
+    return found
+
+
+DEFAULT_WEB_PORT = "3420"
+
+
+def web_port(root: str) -> str:
+    """The dashboard port from the install .env: 1-65535, else the default."""
+    v = env_file_value(root, "WEB_PORT")
+    if v is None or not re.fullmatch(r"[0-9]{1,5}", v) or not 1 <= int(v) <= 65535:
+        return DEFAULT_WEB_PORT
+    return str(int(v))
 
 
 def stop(msg: str):
@@ -111,10 +131,10 @@ def main():
     agent = agent_name(payload)
     try:
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        url = os.environ.get("SECOND_REVIEWER_URL") or \
-            "http://127.0.0.1:%s/api/review-action" % install_setting(root, "WEB_PORT", "3420")
-        token_file = os.environ.get("SECOND_REVIEWER_TOKEN_FILE") or \
-            os.path.join(root, "store", ".dashboard-token")
+        # The review always goes to this install's own dashboard with its own token
+        # (ENVRELAXGATE1104 step 2): no environment variable may redirect it.
+        url = "http://127.0.0.1:%s/api/review-action" % web_port(root)
+        token_file = os.path.join(root, "store", ".dashboard-token")
         with open(token_file, encoding="utf-8") as fh:
             token = fh.read().strip()
         if not token:

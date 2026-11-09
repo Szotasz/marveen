@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -25,6 +25,8 @@ import { join } from 'node:path'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRATCH = mkdtempSync(join(tmpdir(), 'hook-exit-inv-'))
+mkdirSync(join(SCRATCH, 'store'), { recursive: true })
+symlinkSync(join(ROOT, 'scripts'), join(SCRATCH, 'scripts'))
 
 const BAD_STDIN = 'this is not json'
 const nonDict = (tool: string) => JSON.stringify({ tool_name: tool, tool_input: ['not-a-dict'] })
@@ -70,12 +72,14 @@ const EXPECTED_VIOLATIONS: Record<string, { kind: 'non-dict' | 'bad-stdin'; reas
 
 function runHook(h: HookCase, input: string): number {
   try {
-    execFileSync(h.runner, [join(ROOT, h.script)], {
+    // Isolate side-effectful hooks from the checkout's real store: they run from a
+    // tmp install (SCRATCH, scripts/ linked to this repo's), whose store/ they
+    // write; no environment variable picks a hook's DB since ENVRELAXGATE1104.
+    execFileSync(h.runner, [join(SCRATCH, h.script)], {
       input,
       timeout: 15_000,
       stdio: ['pipe', 'ignore', 'ignore'],
-      // Isolate side-effectful hooks from the checkout's real store.
-      env: { ...process.env, LEDGER_DB_PATH: join(SCRATCH, 'ledger.db') },
+      env: { ...process.env },
     })
     return 0
   } catch (err) {

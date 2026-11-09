@@ -192,12 +192,23 @@ for key in MAIN_AGENT_ID BOT_NAME TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID; do
   val=$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2-)
   if [ -n "$val" ]; then ok "$key: present"; else fail "$key: MISSING"; fi
 done
+# OWNERAUTHGUESS1106 (Samu 71849): with several paired DMs and no explicit owner id the chat commands do not run
+# (nobody is guessed as the owner). Report only; the line comes from the same resolver the dashboard uses
+# (dist/owner-identity.js) and names no id.
+_owner_notice="$(node -e 'import(process.argv[1]).then((m) => { const n = m.ownerUnsetNotice(m.resolveOwnerIdentity()); if (n) process.stdout.write(n) }).catch(() => {})' "$INSTALL_DIR/dist/owner-identity.js" 2>/dev/null)"
+[ -n "$_owner_notice" ] && warn "$_owner_notice"
 # Auth: mirrors claudeAuthPresent() in src/web/routes/onboarding.ts -- there are
 # five legs, and only the first two live in .env. Checking .env alone reported a
 # perfectly authenticated macOS install (Keychain leg) as broken.
 # The Keychain probe is presence-only (no `-w`), so the secret never leaves it.
 API_KEY=$(grep -E "^ANTHROPIC_API_KEY=" .env 2>/dev/null | head -1 | cut -d= -f2-)
 OAUTH=$(grep -E "^CLAUDE_CODE_OAUTH_TOKEN=" .env 2>/dev/null | head -1 | cut -d= -f2-)
+# APIKEYSCOPE1107 (Samu 72223): where an API key in .env goes now, in the install's language. The value is never shown.
+if [ -n "$API_KEY" ] && . "$INSTALL_DIR/scripts/lib/auth-key-mode.sh" 2>/dev/null; then
+  _akm_line="$(auth_key_mode_notice "$(auth_key_mode "$INSTALL_DIR")" "$(cat "$INSTALL_DIR/.lang" 2>/dev/null || echo hu)")"
+  [ -n "$_akm_line" ] && warn "${_akm_line#Marveen: }"
+  unset _akm_line
+fi
 if [ -n "$API_KEY" ]; then
   ok "Claude auth: present (.env API key)"
 elif [ -n "$OAUTH" ]; then
@@ -259,7 +270,9 @@ fi
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
+  # VOICETOKENLEAK1101 round 3: the header comes from a process substitution (printf is a builtin: no child's argv,
+  # nothing on disk), never as -H "Authorization: Bearer <token>" on curl's argv, which ps shows to the same user.
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H @<(printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)") "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
   if [ "$HTTP" = "200" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else
@@ -311,6 +324,21 @@ if [ -f "store/channels-failures.log" ]; then
   fi
 else
   ok "No failure log"
+fi
+
+# --- Gromzo token protection (MXDAGENTSOCKID1106) ---
+# Report only: a warn here never fails the run. See scripts/lib/gromzo-protection-check.sh.
+. "$INSTALL_DIR/scripts/lib/gromzo-protection-check.sh"
+GZ_CTL_SOCK="$(gromzo_mxdctl_and_sock "$INSTALL_DIR/.env")"
+if [ -n "$GZ_CTL_SOCK" ]; then
+  echo -e "\n${BOLD}Gromzo${RESET}"
+  "${GZ_CTL_SOCK%%|*}" "${GZ_CTL_SOCK#*|}" status 2>/dev/null | gromzo_protection_lines | while IFS='|' read -r level msg; do
+    case "$level" in
+      ok)   ok "$msg" ;;
+      warn) warn "$msg" ;;
+      *)    echo "  - $msg" ;;
+    esac
+  done
 fi
 
 # --- Spotlight (macOS) ---

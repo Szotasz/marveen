@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os'
 
 const h = vi.hoisted(() => ({
   root: '',
+  lang: 'hu' as 'hu' | 'en',
   createAgentMessage: vi.fn(),
   gen: null as null | {
     started: Promise<void>
@@ -33,6 +34,12 @@ const h = vi.hoisted(() => ({
     soul: { promise: Promise<string>; resolve: (v: string) => void; reject: (e: Error) => void }
   },
 }))
+
+// PERSONAESC1107: the install's agent-text language, Hungarian unless a case sets it.
+vi.mock('../web/agent-text-lang.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../web/agent-text-lang.js')>()
+  return { ...orig, agentTextLang: () => h.lang }
+})
 
 vi.mock('../web/agent-config.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../web/agent-config.js')>()
@@ -108,7 +115,8 @@ function startCreate(): Promise<{ status: number; body: Record<string, any> }> {
     ;(req as unknown as EventEmitter).emit('end')
   })
   return tryHandleAgents(
-    { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext,
+    // The owner's browser login: creating an agent needs the owner (OWNERGATE2-1104); this file is about generation.
+    { req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'session' } } as unknown as RouteContext,
     join(PROJECT_ROOT, 'web'),
   ).then((handled) => {
     expect(handled).toBe(true)
@@ -130,6 +138,7 @@ beforeEach(() => {
   const started = new Promise<void>((r) => { markStarted = r })
   h.gen = { started, markStarted, claude: deferred<string>(), soul: deferred<string>() }
   h.createAgentMessage.mockReset()
+  h.lang = 'hu'
   // Unmeasured CLI = the model gate fails open; this test is not about it.
   process.env[CLI_VERSION_OVERRIDE_ENV] = ''
   resetClaudeCliVersionCache()
@@ -256,5 +265,25 @@ describe('POST /api/agents: untouched files still get written (the guard is not 
     expect(r.body.personalityPending).toBe(true)
     expect(r.body.personalitySkipped).toBeUndefined()
     expect(skipNotices()).toHaveLength(0)
+  })
+})
+
+describe('POST /api/agents: the placeholder on an English install (PERSONAESC1107, EGM review Major 1)', () => {
+  it('generation FAILS with AGENT_TEXT_LANG=en: the English placeholders land, no Hungarian in them', async () => {
+    h.lang = 'en'
+    const pending = startCreate()
+    await h.gen!.started
+    h.gen!.claude.reject(new Error('boom'))
+    h.gen!.soul.reject(new Error('boom'))
+    const r = await pending
+
+    for (const f of ['CLAUDE.md', 'SOUL.md']) {
+      expect(read(f), f).toContain('**NOTE: this is a TEMPLATE.**')
+      expect(read(f), f).not.toContain('SABLON')
+      expect(read(f).split('\n').filter((l) => /[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/.test(l)), f).toEqual([])
+    }
+    expect(read('CLAUDE.md')).toContain("with the user, the user's language")
+    expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(true)
+    expect(r.body.personalityPending).toBe(true)
   })
 })

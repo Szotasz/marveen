@@ -14,7 +14,16 @@
  * 400ing after it. The test below pins that no-regression alongside the new
  * `[1m]` support.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+// PUT now refuses a provider that does not exist. Other test files write and restore the same
+// store/custom-providers.json in parallel, so this file's provider is made known through a mock
+// rather than read back from that shared file mid-run.
+vi.mock('../web/custom-providers.js', async (orig) => {
+  const real = await orig<typeof import('../web/custom-providers.js')>()
+  const own = { id: '__test-provider', label: 'Test provider', baseUrl: 'http://127.0.0.1:0', authHeader: 'none' as const, vaultKey: null }
+  return { ...real, loadCustomProvider: (id: string) => (id === own.id ? own : real.loadCustomProvider(id)) }
+})
 import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -63,7 +72,8 @@ async function putAgentModel(body: unknown): Promise<{ status: number; body: any
     ;(req as unknown as EventEmitter).emit('end')
   })
   const handled = await tryHandleAgents(
-    { req, res, path: url.pathname, method: 'PUT', url } as unknown as RouteContext,
+    // The owner's browser login: customProvider needs the owner (APIAGENTWRITE1104); this file is about the model id.
+    { req, res, path: url.pathname, method: 'PUT', url, auth: { kind: 'session' } } as unknown as RouteContext,
     join(PROJECT_ROOT, 'web'),
   )
   expect(handled).toBe(true)

@@ -69,13 +69,19 @@ describe('[hidden] stays effective for class-styled containers', () => {
     },
   )
 
+  it('a modal footer can be hidden', () => {
+    // Regression: the SSH keygen modal kept its Generate button after the key was made, and the
+    // scan modal showed "Import selected" with nothing to import; both set footer.hidden = true.
+    expect(hasUnconditionalDisplay('modal-footer')).toBe(true)
+    expect(hasHiddenOverride('modal-footer')).toBe(true)
+  })
+
   // Pre-existing offenders found by the sweep when this guard was added. They
   // are NOT fixed here (each needs its own visual check -- some may never be
   // toggled via the attribute at all); the allowlist exists so the guard can
   // ship now and still fail on any NEW one. Shrink it as they get verified.
   const KNOWN = [
     'kanban-swimlane-board',
-    'modal-footer',
     'badge',
   ]
 

@@ -27,6 +27,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GATE = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from copy_gate_install import copy_gate_install, bare_install  # noqa: E402
 
 failed = []
 
@@ -39,9 +41,9 @@ def check(name, ok, detail=""):
 
 def run_gate(rules_path, payload):
     proc = subprocess.run(
-        [sys.executable, GATE], input=json.dumps(payload).encode(),
+        [sys.executable, copy_gate_install(rules_path)[0]], input=json.dumps(payload).encode(),
         capture_output=True,
-        env=dict(os.environ, OUTGOING_COPY_GATE_RULES=rules_path),
+        env=dict(os.environ),
     )
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
@@ -63,6 +65,12 @@ with tempfile.TemporaryDirectory() as td:
           code == 0, f"exit={code} err={err[:150]!r}")
     check("missing rules: the pass is LOUD (systemMessage names the absent check)",
           "systemMessage" in out and "HIANYZIK" in out and "nev-ellenorzes NELKUL" in out,
+          f"out={out[:200]!r}")
+    _j = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    check("missing rules: the agent gets the same warning (additionalContext, PreToolUse), and it stays a pass",
+          code == 0 and bool(_j.get("systemMessage"))
+          and _j.get("hookSpecificOutput") == {"hookEventName": "PreToolUse",
+                                               "additionalContext": _j["systemMessage"]},
           f"out={out[:200]!r}")
 
     # --- valid but empty: OPEN + LOUD ------------------------------------

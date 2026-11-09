@@ -1664,7 +1664,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   if (inners.length && depth >= MAX_DEPTH) return NESTING_LIMIT
   // Also with quotes and backslashes taken out: `cu''rl` and `c\url` run curl.
   const fetches = /\b(?:curl|wget)\b/.test(norm) || /\b(?:curl|wget)\b/.test(norm.replace(/['"\\]/g, ''))
-  let masked = maskInertLiterals(orig)
+  // GATECOMMENTQUOTE1104: a shell comment is inert in the mask, and taken out of the text read for words too, so its
+  // words are neither a call of a function nor a curl argument
+  const comments = []
+  let masked = maskInertLiterals(orig, undefined, false, comments)
+  if (masked !== null && masked.length === orig.length && comments.length) orig = blankRanges(orig, comments.map((k) => [k.start, k.end]))
   if (masked === null || masked.length !== orig.length) {
     for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
     // Since curl https:// and wget can leave the deny list, this hook is their only gate: a command

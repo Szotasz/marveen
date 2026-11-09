@@ -228,10 +228,12 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     expect(listDeviceKeys()).toHaveLength(0)
   })
 
+  // OWNERGATE4-1104: the caller below is the owner's session; the bare token pairs only the FIRST device of an install
+  // with no login (owner-gate-first-run.test.ts), and these tests enroll and revoke repeatedly.
   it('400s on a missing name or invalid key line without side effects', async () => {
-    const bad1 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: makeKeyLine().line, name: '' } })
+    const bad1 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'session', user: 'owner' }, body: { key_line: makeKeyLine().line, name: '' } })
     expect(bad1.statusCode).toBe(400)
-    const bad2 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: 'not a key', name: 'ok name' } })
+    const bad2 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'session', user: 'owner' }, body: { key_line: 'not a key', name: 'ok name' } })
     expect(bad2.statusCode).toBe(400)
     expect(listDeviceKeys()).toHaveLength(0)
   })
@@ -244,7 +246,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // would be worse than the original bug.
     const { line } = makeKeyLine()
     const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
-      auth: { kind: 'token' },
+      auth: { kind: 'session', user: 'owner' },
       body: { key_line: line, name: 'Route Phone', host: 'jaequas2605@gmail.com' },
     })
     expect(r.statusCode).toBe(400)
@@ -264,7 +266,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // control that passes on both outcomes is not a control, so the success and
     // failure cases are now told apart explicitly.
     const ok = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
-      auth: { kind: 'token' },
+      auth: { kind: 'session', user: 'owner' },
       body: { key_line: line, name: 'Route Phone', host: '100.124.123.12' },
     })
     expect(String(ok.json().error ?? '')).not.toMatch(/Invalid host/)
@@ -288,7 +290,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // a host-key file candidate instead: point readFile via a real file the
     // resolver checks -- not injectable here, so accept either outcome:
     const { line, installId } = makeKeyLine()
-    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: line, name: 'Route Phone' } })
+    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'session', user: 'owner' }, body: { key_line: line, name: 'Route Phone' } })
     if (r.statusCode === 400) {
       // No host key obtainable in this environment -- the documented hard-fail
       // path; assert it stayed side-effect-free.
@@ -312,7 +314,7 @@ describe('DELETE /api/auth/device-keys/:id for a paired key', () => {
     // (file deleted out-of-band), so removal cannot succeed.
     rmSync(join(sshDir, 'authorized_keys'), { force: true })
     process.env.MARVEEN_SSH_DIR = sshDir
-    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${outcome.deviceKeyId}`, { auth: { kind: 'token' } })
+    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${outcome.deviceKeyId}`, { auth: { kind: 'session', user: 'owner' } })
     expect(r.statusCode).toBe(200)
     // The key itself is revoked (dead) even though the ssh half failed...
     expect(listDeviceKeys()).toHaveLength(0)
@@ -327,7 +329,7 @@ describe('DELETE /api/auth/device-keys/:id for a paired key', () => {
     const { line, installId } = makeKeyLine()
     const outcome = await bridgeEnroll({ keyLine: line, name: 'Pair' }, testDeps())
     process.env.MARVEEN_SSH_DIR = sshDir
-    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${outcome.deviceKeyId}`, { auth: { kind: 'token' } })
+    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${outcome.deviceKeyId}`, { auth: { kind: 'session', user: 'owner' } })
     expect(r.statusCode).toBe(200)
     expect(r.json().ssh_removed).toBe(true)
     expect(authKeysContent()).toBe('')

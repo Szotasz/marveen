@@ -1,15 +1,18 @@
 // SETUPTOKENWIZ1022: the /api/claude-plans/login/* routes. The relay is a fake
 // (setup-token-login.test.ts and setup-token-pty-relay.test.ts cover it), the
 // live probe is a stub, the vault an in-memory Map; the owner gate is the REAL
-// mayIssueCredentials over an in-memory database.
+// owner gate (mayActAsOwnerOrFirstRun 'claude-plans-login', OWNERGATE4-1104) over an in-memory database.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-login-test-'))
+// A fresh install has its store dir (only the files are missing): the plan-login first-run check reads a missing
+// store DIR as holding a plan (fail closed, OWNERGATE4-1104 review), so the sandbox needs one.
+mkdirSync(join(tmpRoot, 'store'), { recursive: true })
 
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<object>()), PROJECT_ROOT: tmpRoot }))
 
@@ -119,7 +122,7 @@ function noTokenAnywhere() {
   expect(JSON.stringify(logged)).not.toContain(CODE.code)
 }
 
-describe('owner gate (mayIssueCredentials)', () => {
+describe('owner gate (mayActAsOwnerOrFirstRun)', () => {
   it('with a dashboard login, the shared token gets 403 on every login route and nothing starts', async () => {
     await addOwner()
     for (const [m, p, b] of [

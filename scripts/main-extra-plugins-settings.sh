@@ -17,9 +17,13 @@
 # store/main-agent-config.json sets `senderRoleGate` (MIOAPPTEAMSRV1025): one
 # session serves the owner and a team chat, and only this session reads the flag.
 #
-# Prints ` --settings "<file>"` (leading space) or nothing when there are no
-# extras and no gate, so the launch line is byte-identical for an install
-# without them. Same file and content as src/web/main-extra-plugins-settings.ts
+# INSTALLDIRTYTREE1103: the launchers pass the PRIMARY plugin id first, so the
+# file always enables the main channel as well. The tracked project
+# settings.json is never written at launch any more (that write reformatted the
+# whole file and left every customer tree dirty).
+#
+# Prints ` --settings "<file>"` (leading space) or nothing when no plugin id and
+# no gate were given. Same file and content as src/web/main-extra-plugins-settings.ts
 # writes (the test compares the two files).
 main_extra_settings_flag() {
   local install_dir="$1"; shift
@@ -67,7 +71,7 @@ if not ids and not policy:
 data = {"enabledPlugins": {i: True for i in ids}}
 if policy:
     # pythonHookCommand() in src/web/agent-scaffold.ts, for this one script.
-    inv = 'python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/sender-role-gate.py" --policy ' + policy
+    inv = 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/sender-role-gate.py" --policy ' + policy
     fail = ("governance-kapu (fail-closed): sender-role-gate.py: a kapu nem 0-val vagy 2-vel lepett ki "
             "(rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. "
             "Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.")

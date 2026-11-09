@@ -65,7 +65,7 @@ cd "$INSTALL_DIR"
 # The "nothing to deliver to" decision is made below, once both channels are
 # known (still before the model call).
 . "$INSTALL_DIR/scripts/lib/owner-chat.sh"
-CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")" || CHAT_ID=""
+CHAT_ID="$(resolve_alert_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")" || CHAT_ID=""
 
 # Delivery-proof sentinel. The dedup stamp must record "the briefing REACHED
 # the owner", not "the process exited 0" -- those diverged on 2026-09-13: the
@@ -113,7 +113,7 @@ SENTINEL="MORNING_SENT_OK_$(date +%s)_$$"
 # Not closed here (said in #1770 too): managed settings, an .mcp.json server env
 # block, a renamed plugin id. The pin in scripts/__tests__ refuses --channels on
 # any `claude -p` under scripts/.
-CHANNEL_PLUGINS_OFF='{"enabledPlugins":{"telegram@claude-plugins-official":false,"slack-channel@marveen-marketplace":false,"discord@claude-plugins-official":false,"googlechat@claude-channel-googlechat":false,"teams@marveen-marketplace":false}}'
+CHANNEL_PLUGINS_OFF='{"enabledPlugins":{"telegram@claude-plugins-official":false,"slack-channel@marveen-marketplace":false,"discord@claude-plugins-official":false,"googlechat@claude-channel-googlechat":false,"teams@marveen-marketplace":false,"gromzo-channel@gromzo-local":false}}'
 
 # Delivery token: the install .env first, then the same state dir that resolved
 # the owner chat (owner-chat.sh). Read BEFORE the model call; no token means no

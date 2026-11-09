@@ -440,10 +440,19 @@ def _basename(tok: str) -> str:
 
 def _mask_subshell_markers(cmd: str) -> str:
     """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
-    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom)."""
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
+
+    MAINGATENLCOMMENT1104: a shell comment is dropped HERE, as bash does: an unquoted `#` at the start of a word, up
+    to the newline (the newline itself still becomes `;`). shlex's own comment handling is off (_segments_tokens):
+    after this mask there is no newline left, so a shlex comment ran to the end of the command and swallowed the next
+    line's send; an apostrophe inside a comment flipped this mask into quote mode; and shlex starts a comment at a `#`
+    inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
+    stripShellComments (whitespace and ;&|())."""
     out = []
     q = None  # None | "'" | '"'
     i, n = 0, len(cmd)
+    parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
+    subst_close_at = -1
     while i < n:
         ch = cmd[i]
         if q:
@@ -456,10 +465,20 @@ def _mask_subshell_markers(cmd: str) -> str:
             q = ch; out.append(ch); i += 1; continue
         if ch == "\\" and i + 1 < n:
             out.append(cmd[i:i + 2]); i += 2; continue
+        # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
         if ch == "\n" or ch == "`":
             out.append(";"); i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s")
             out.append(";"); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
         out.append(ch); i += 1
     return "".join(out)
 
@@ -470,6 +489,7 @@ def _segments_tokens(cmd: str):
     lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
+    lex.commenters = ""  # MAINGATENLCOMMENT1104: the mask drops comments as bash does; shlex's would not
     segments, cur = [], []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
@@ -509,7 +529,8 @@ _WRAPPERS = {
     "time": ("fo", ("format", "output"), 0),
     "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
                              "role", "type", "chdir", "chroot", "command-timeout"), 0),
-    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    # ENVOPTHEAD1104: env is read by _env_heads (a structural parser); the entry keeps env a wrapper for the depth bound
+    "env": ("uCSPaLU", ("unset", "chdir", "split-string", "argv0"), 0),
     "nohup": ("", (), 0),
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
@@ -521,7 +542,18 @@ _WRAPPERS = {
     # first count found all sat inside quoted remote (ssh) command strings or heredoc
     # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
     "setsid": ("", (), 0),
+    # ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program, so the command behind
+    # them was never judged (measured on develop: all four were no send in front of a real sender).
+    "stdbuf": ("ioe", ("input", "output", "error"), 0),
+    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid"), 0),
+    "chrt": ("TPD", ("sched-runtime", "sched-period", "sched-deadline"), 1),  # then the priority, then the command
+    "caffeinate": ("tw", (), 0),
 }
+# JSCDSEND1104 (Bence 69588, Samu 69591): the homebrew coreutils install the GNU launchers with a g prefix (genv,
+# gtimeout, gnohup, gnice, gstdbuf); each reads as its pair. (chroot is no wrapper here, so gchroot has no pair.)
+_G_PREFIXED = ("env", "timeout", "nohup", "nice", "stdbuf")
+for _n in _G_PREFIXED:
+    _WRAPPERS["g" + _n] = _WRAPPERS[_n]
 _HEAD_DEPTH = 8
 
 # MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
@@ -640,6 +672,8 @@ def _command_heads(toks, _d: int = 0):
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    if w in ("env", "genv"):
+        return _env_heads(toks, _d)
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
         return _launcher_heads(toks, launcher, _d)
@@ -672,6 +706,205 @@ def _command_heads(toks, _d: int = 0):
     heads = []
     for s in starts:
         heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
+# Bence 69517: GNU env reads a long option by any unique prefix (getopt_long): `--c=DIR` is --chdir, `--spl=` is
+# --split-string. Its long options, as of coreutils 9.x.
+_ENV_LONG_OPTIONS = ("argv0", "block-signal", "chdir", "debug", "default-signal", "ignore-environment", "ignore-signal",
+                     "list-signal-handling", "null", "split-string", "unset", "help", "version")
+
+
+def _env_long_name(t):
+    """The env long option a `--word[=value]` names, by exact name or unique prefix; else None."""
+    if not t.startswith("--") or t == "--":
+        return None
+    word = t[2:].split("=", 1)[0]
+    if word in _ENV_LONG_OPTIONS:
+        return word
+    hits = [o for o in _ENV_LONG_OPTIONS if word and o.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _env_split_value(t, words, j):
+    """(value, index after it) when the env word `t` at `j` is -S / --split-string (also a prefix or a cluster)."""
+    if t.startswith("--"):
+        if _env_long_name(t) != "split-string":
+            return None
+        if "=" in t:
+            return t.split("=", 1)[1], j + 1
+        return (words[j + 1] if j + 1 < len(words) else ""), j + 2
+    if t.startswith("-"):
+        k = next((x for x, ch in enumerate(t[1:], 1) if ch in _ENV_SHORT_VALUE), -1)
+        if k > 0 and t[k] == "S":
+            if k < len(t) - 1:
+                return t[k + 1:], j + 1
+            return (words[j + 1] if j + 1 < len(words) else ""), j + 2
+    return None
+
+
+# JSCDSEND1104: sudo -D/--chdir DIR runs the command in DIR, like env -C (Bence 69517; sudo needs runcwd in sudoers
+# to allow it, so it is rare, but the class is the same). sudo's long options, read by unique prefix as getopt_long.
+_SUDO_LONG_OPTIONS = ("askpass", "auth-type", "background", "bell", "chdir", "chroot", "close-from", "command-timeout",
+                      "edit", "group", "help", "host", "list", "login", "non-interactive", "other-user",
+                      "preserve-env", "preserve-groups", "prompt", "remove-timestamp", "reset-timestamp", "role",
+                      "set-home", "shell", "type", "user", "validate", "version")
+_SUDO_LONG_VALUES = ("auth-type", "chdir", "chroot", "close-from", "command-timeout", "group", "host", "other-user",
+                     "prompt", "role", "type", "user")
+
+
+def _long_name(t, names):
+    if not t.startswith("--") or t == "--":
+        return None
+    word = t[2:].split("=", 1)[0]
+    if word in names:
+        return word
+    hits = [o for o in names if word and o.startswith(word)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# program -> (short options that take a value, the short chdir letter, long option names, long ones with a value).
+# env's entry is added below _ENV_SHORT_VALUE / _ENV_LONG_VALUE, so both readers share one list.
+_CHDIR_SPECS = {
+    "sudo": ("ughpCUrtDRT", "D", _SUDO_LONG_OPTIONS, _SUDO_LONG_VALUES),
+}
+
+
+def _env_chdir_dirs(words, _d=0):
+    """ENVOPTHEAD1104 (Bence 69475) / JSCDSEND1104: the directories `env -C DIR` (`--chdir DIR`, `--chdir=DIR`,
+    `-CDIR`, a cluster, a unique prefix, and inside an -S value, Bence 69552) and `sudo -D DIR` (the same forms) run
+    their command in. A relative script there is resolved under DIR, not the cwd: they are handed to the cd logic as
+    `cd DIR` words, which also makes an undecidable DIR a send."""
+    out = []
+    for i, w in enumerate(words):
+        spec = _CHDIR_SPECS.get(_basename(w))
+        if spec is None:
+            continue
+        short_val, chdir_ch, long_names, long_vals = spec
+        j = i + 1
+        while j < len(words):
+            t = words[j]
+            if t == "--" or not (t.startswith("-") or _ENV_ASSIGN.match(t)):
+                break
+            if _basename(w) in ("env", "genv"):
+                split = _env_split_value(t, words, j)
+                if split is not None:
+                    # Bence 69552: env parses the options at the start of the -S value (and the words after it) again
+                    value, after = split
+                    try:
+                        split_words = [x for seg in _segments_tokens(value) for x in seg]
+                    except ValueError:
+                        split_words = []  # an unsplittable value is already a send by _env_split_heads
+                    if _d < _HEAD_DEPTH:
+                        out += _env_chdir_dirs(["env"] + split_words + list(words[after:]), _d + 1)
+                    break
+            long = _long_name(t, long_names) if t.startswith("--") else None
+            if t == "-" + chdir_ch or (long == "chdir" and "=" not in t):
+                if j + 1 < len(words):
+                    out.append(words[j + 1])
+                j += 2
+                continue
+            if long == "chdir":
+                out.append(t.split("=", 1)[1])
+            elif long in long_vals and "=" not in t:
+                j += 1  # its value
+            elif t.startswith("-") and not t.startswith("--"):
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+                if k > 0 and t[k] == chdir_ch:
+                    if k < len(t) - 1:
+                        out.append(t[k + 1:])
+                    elif j + 1 < len(words):
+                        out.append(words[j + 1])
+                        j += 1
+                elif k == len(t) - 1:
+                    j += 1  # the value of another value option
+            j += 1
+    return out
+
+
+def _with_env_chdir(cmd_words):
+    words = list(cmd_words)
+    for d in _env_chdir_dirs(cmd_words):
+        words += ["cd", d]
+    return words
+
+
+# Samu 69521: env's options are read STRUCTURALLY, not by a list of the dangerous ones. The GNU coreutils and the
+# BSD/macOS env man pages: these take no value (and the three signal options only an attached `=SIG`) ...
+_ENV_SHORT_NOVALUE = "i0v"
+_ENV_LONG_NOVALUE = ("ignore-environment", "null", "debug", "list-signal-handling", "help", "version", "block-signal",
+                     "default-signal", "ignore-signal")
+# ... and these take one (-L/-U: macOS env's login class / user). Any other option, a future env version's new one
+# included, cannot be stepped over safely: the command behind it is undecidable, which counts as a send.
+_ENV_SHORT_VALUE = "uCSPaLU"
+_ENV_LONG_VALUE = ("unset", "chdir", "split-string", "argv0")
+_CHDIR_SPECS["env"] = _CHDIR_SPECS["genv"] = (_ENV_SHORT_VALUE, "C", _ENV_LONG_OPTIONS, _ENV_LONG_VALUE)
+
+
+def _env_heads(toks, _d):
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if _ENV_ASSIGN.match(t):
+            # NAME=VALUE ends the options (GNU env stops at the first non-option): the rest is more of them, then the command
+            while i < len(toks) and _ENV_ASSIGN.match(toks[i]):
+                i += 1
+            break
+        if t == "--":
+            i += 1
+            break
+        if t == "-":  # the old spelling of -i
+            i += 1
+            continue
+        if t.startswith("--"):
+            name = _env_long_name(t)
+            if name == "split-string":
+                value, after = (t.split("=", 1)[1], i + 1) if "=" in t else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                return _env_split_heads(value, toks[after:], _d)
+            if name in _ENV_LONG_VALUE:
+                i += 1 if "=" in t else 2
+                continue
+            if name in _ENV_LONG_NOVALUE:
+                i += 1
+                continue
+            return [None]
+        if t.startswith("-"):
+            step = 1
+            for x in range(1, len(t)):
+                ch = t[x]
+                if ch in _ENV_SHORT_NOVALUE:
+                    continue
+                if ch in _ENV_SHORT_VALUE:
+                    joined = x < len(t) - 1
+                    if ch == "S":
+                        value, after = (t[x + 1:], i + 1) if joined else ((toks[i + 1] if i + 1 < len(toks) else ""), i + 2)
+                        return _env_split_heads(value, toks[after:], _d)
+                    step = 1 if joined else 2
+                    break
+                return [None]
+            i += step
+            continue
+        break
+    return _command_heads(toks[i:], _d + 1)
+
+
+def _env_split_heads(value, rest, _d):
+    """ENVOPTHEAD1104: `env -S STRING` splits STRING into words and runs them (the words after it appended), so the
+    real command is inside the value. It was skipped as an option value, and `env -S "python3 send.py --to a@x"`
+    was no send. The value is split by this module's own tokenizer; one that does not split counts as a send."""
+    try:
+        segs = _segments_tokens(value)
+    except ValueError:
+        return [None]
+    if not segs:
+        segs = [[]]
+    segs[-1] = list(segs[-1]) + list(rest)
+    # Bence 69552: GNU env parses the options at the START of the split words too (`env -S "-C DIR python3 send.py"`
+    # runs python3 in DIR, measured with genv 9.10), so the first segment goes back through env's own option parser,
+    # as if it were `env <words> <rest>`, not with its first word taken as the program.
+    heads = []
+    for k, s in enumerate(segs):
+        heads += _command_heads((["env"] + list(s)) if k == 0 else s, _d + 1)
     return heads
 
 
@@ -1146,17 +1379,21 @@ def _cd_bases(cwd, cmd_words):
     undecidable = False
     i = 0
     while i < len(cmd_words):
-        if cmd_words[i] != "cd":
+        word = cmd_words[i]
+        if word not in ("cd", "pushd"):
             i += 1
             continue
         i += 1
-        while i < len(cmd_words) and cmd_words[i] in _CD_OPTIONS:
+        # Samu 69538: pushd DIR changes the directory like cd (its -n is stepped over: a DIR read as a target only adds a
+        # candidate); pushd +N / -N rotates the stack, which cannot be known here
+        while i < len(cmd_words) and (cmd_words[i] in _CD_OPTIONS or (word == "pushd" and cmd_words[i] == "-n")):
             i += 1
         if i < len(cmd_words) and cmd_words[i] == "--":
             i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
         d = cmd_words[i] if i < len(cmd_words) else None
         tilde = d is not None and (d == "~" or d.startswith("~/"))
-        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)):
+        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)
+                or (word == "pushd" and re.match(r"^[+-]\d+$", d))):
             undecidable = True
             cur = None
             continue
@@ -1167,6 +1404,9 @@ def _cd_bases(cwd, cmd_words):
         elif cur is not None:
             new = os.path.join(cur, d)
         else:
+            # after an undecidable cd: where DIR is cannot be known, but DIR under the cwd is still one candidate
+            if cwd_abs:
+                bases.append(os.path.join(cwd, d))
             undecidable = True
             cur = None
             continue
@@ -1236,14 +1476,22 @@ def _address_flag_given(rest) -> bool:
     return False
 
 
+def _shebang_env_program(words):
+    """The program an `env` #! line runs. ENVOPTHEAD1104 (Bence 69552): the line's words go through the same env
+    option parser as a command line's (a value option, a long prefix, -S with options at its start), so
+    `#!/usr/bin/env -S -a x python3` and `-S --c /tmp python3` are python3. An undecidable line names no program."""
+    progs = [_basename(h[0]) for h in _command_heads(["env"] + list(words)) if h]
+    return next((p for p in progs if _PYTHON.match(p) or (_NODEISH.match(p) and p != "npx")), progs[0] if progs else "")
+
+
 def _shebang_kind(text):
     """'py' | 'node' | None from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`)."""
     m = re.match(r"#!\s*(\S+)([^\n]*)", text or "")
     if not m:
         return None
     prog = _basename(m.group(1))
-    if prog == "env":
-        prog = _basename(next((w for w in m.group(2).split() if not w.startswith("-") and "=" not in w), ""))
+    if prog in ("env", "genv"):
+        prog = _basename(_shebang_env_program(m.group(2).split()))
     if _PYTHON.match(prog):
         return "py"
     if _NODEISH.match(prog) and prog != "npx":
@@ -1335,6 +1583,206 @@ def _file_sends(path, text, kind, read_script) -> bool:
     return False
 
 
+# COPYGATEDRAFTFP1104 (Samu 69301, Bence 69319): a python script given a --to/--cc/--bcc address used to be a send
+# before it was read (MAILGATESCRIPT1027), so an IMAP draft writer (`python3 draft.py --to a@x`, imaplib APPEND) needed
+# approval like a sender. The address rule now yields to the script judge ONLY when the script, and every local helper
+# it imports (read in turn), uses nothing but a short ALLOWLIST of modules a draft writer needs, in plain forms the walk
+# can follow. Everything else keeps the old rule (a send): any other module, standard library included (a stdlib module
+# can send or run code on its own: logging.handlers.SMTPHandler, timeit, pdb, cProfile ... -- Bence 69319), an
+# installed package, an import that cannot be parsed, code the judge cannot follow (dynamic import, exec/eval/compile,
+# getattr and friends, a dunder or private attribute, a module reached through another module's attribute:
+# `imaplib.socket`, `pathlib.os`), os and sys beyond a few plain attributes, the depth or file budget running out.
+# Exactly the imports of the draft writers (Samu 69321, Bence 69319); widening it is a gate decision, not a fix.
+_PY_DRAFT_MODULES = frozenset((
+    "imaplib", "email", "argparse", "json", "re", "datetime", "time", "base64", "pathlib", "textwrap", "html",
+    "mimetypes", "uuid", "hashlib", "getpass", "string", "os", "sys",
+))
+# os and sys only through these attributes (a bare `os`, passed on or aliased, is not followed)
+_PY_OS_ATTRS = frozenset(("path", "environ", "getenv", "getcwd"))
+_PY_SYS_ATTRS = frozenset(("argv", "exit", "stdin"))
+# Builtins that run code (or a pager, help()), and the reflective reaches, as bare names (`re.compile` is not `compile`)
+_PY_UNFOLLOWED_CODE = re.compile(
+    r"(?<![\w.])(?:__import__|exec|eval|compile|execfile|__builtins__|getattr|setattr|delattr|globals|locals|vars"
+    r"|__loader__|__spec__|breakpoint|help|get_type_hints)\b")
+# An attribute that reaches a module or a raw channel through another object: `imaplib.socket`, `pathlib.os`,
+# `argparse._os`, an IMAP object's own socket and raw writer (`.sock`, `.send`: SMTP spoken over a re-opened IMAP
+# connection), the stream class that runs a command (`IMAP4_stream`), and every private or dunder attribute except
+# on self / cls (`uuid._get_command_stdout`, `os.__dict__`, `type(x).__subclasses__`).
+_PY_REACH_ATTRS = ("os", "sys", "socket", "subprocess", "ssl", "posix", "nt", "builtins", "importlib", "smtplib",
+                   "logging", "shutil", "pty", "ctypes", "signal", "multiprocessing", "asyncio", "threading", "select",
+                   "selectors", "http", "urllib", "operator", "IMAP4_stream", "sock", "send", "sendall", "file",
+                   "readline", "shutdown", "sslobj", "get_type_hints")
+_PY_REACH = re.compile(r"\.\s*(?:" + "|".join(_PY_REACH_ATTRS) + r")\b|(?<!self)(?<!cls)\.\s*_[A-Za-z_]")
+# a class built on an imaplib class can override what the constructor checks (and reach the socket)
+_PY_IMAP_SUBCLASS = re.compile(r"\bclass\b[^\n:]*\([^)]*\bIMAP4")
+_PY_FROM_IMPORT = re.compile(r"\bfrom[ \t]+(\.*[\w.]*)[ \t]+import\b[ \t]*(\([^)]*\)|[\w.,* \t]*)")
+_PY_PLAIN_IMPORT = re.compile(r"\bimport[ \t]+([\w., \t]+)")
+_PY_WALK_FILES = 24
+_PY_WALK_DEPTH = 4
+
+
+def _py_module_files(dirs, dotted):
+    """The local files `import a.b` loads from one of dirs: each package __init__.py on the way and the module."""
+    out = []
+    parts = dotted.split(".")
+    for d in dirs:
+        for i in range(1, len(parts) + 1):
+            base = os.path.join(d, *parts[:i])
+            if i < len(parts):
+                out.append(os.path.join(base, "__init__.py"))
+            else:
+                out += [base + ".py", os.path.join(base, "__init__.py")]
+    return list(dict.fromkeys(os.path.normpath(p) for p in out))
+
+
+def _py_script_dirs(path):
+    dirs = [os.path.dirname(path)]
+    try:
+        real = os.path.dirname(os.path.realpath(path))
+        if real not in dirs:
+            dirs.append(real)
+    except (OSError, ValueError):
+        pass
+    return dirs
+
+
+def _py_imports(masked):
+    """(modules, froms, spans, ok). modules: (name, required) for each module a masked text imports, a relative one
+    with its leading dots; a `from M import x` also lists M.x as not required (x may be a submodule, or only a name).
+    froms: (M, [names]) per from-import. plains: (name, alias) per `import name [as alias]`. spans: the statements'
+    text ranges. ok=False when an `import` word is not one of the two plain forms (a continuation line, `import(`)."""
+    mods, froms, plains, spans = [], [], [], []
+    for m in _PY_FROM_IMPORT.finditer(masked):
+        spans.append((m.start(), m.end()))
+        mod = m.group(1)
+        if not mod:
+            return [], [], [], [], False
+        mods.append((mod, True))
+        names = []
+        for n in (m.group(2) or "").strip().strip("()").replace("\n", ",").split(","):
+            name = (n.split() or [""])[0]
+            if name:
+                names.append(name)
+                if name != "*":
+                    mods.append((mod + ("" if mod.endswith(".") else ".") + name, False))
+        froms.append((mod, names))
+    for m in _PY_PLAIN_IMPORT.finditer(masked):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        spans.append((m.start(), m.end()))
+        for n in m.group(1).split(","):
+            words = n.split()
+            if not words:
+                return [], [], [], [], False
+            mods.append((words[0], True))
+            plains.append((words[0], words[2] if len(words) >= 3 and words[1] == "as" else None))
+    # every `import` keyword must sit inside one of the parsed statements (a `\` continuation, `import(` ... do not)
+    for m in re.finditer(r"\bimport\b", masked):
+        if not any(a <= m.start() < b for a, b in spans):
+            return [], [], [], [], False
+    if "\\\n" in masked:
+        return [], [], [], [], False
+    return mods, froms, plains, spans, True
+
+
+def _py_code_unfollowed(masked, froms, plains, spans) -> bool:
+    """The allowlist's code rules over one masked file (see the block above)."""
+    for mod, alias in plains:
+        if alias and mod.split(".")[0] in ("os", "sys"):
+            return True
+    for mod, names in froms:
+        if mod.startswith("."):
+            continue
+        top = mod.split(".")[0]
+        for name in names:
+            if name == "*" or name.startswith("_") or name in _PY_REACH_ATTRS:
+                return True
+            if mod == "os" and name not in _PY_OS_ATTRS:
+                return True
+            if mod == "sys" and name not in _PY_SYS_ATTRS:
+                return True
+        if top not in ("os", "sys") and "*" in names:
+            return True
+    # the code outside the import statements
+    code = list(masked)
+    for a, b in spans:
+        code[a:b] = " " * (b - a)
+    code = "".join(code)
+    if _PY_UNFOLLOWED_CODE.search(code) or _PY_REACH.search(code) or _PY_IMAP_SUBCLASS.search(code):
+        return True
+    for m in re.finditer(r"(?<![\w.])(os|sys)\b", code):
+        attr = re.match(r"\s*\.\s*(\w+)", code[m.end():])
+        allowed = _PY_OS_ATTRS if m.group(1) == "os" else _PY_SYS_ATTRS
+        if not attr or attr.group(1) not in allowed:
+            return True
+    return False
+
+
+def _py_walk_verdict(path, text, read_script):
+    """'send' | 'unfollowed' | 'clean' for a readable python script and everything it imports (see the block above)."""
+    seen = {os.path.normpath(path)}
+    queue = [(os.path.normpath(path), text, 0)]
+    while queue:
+        cur, body, depth = queue.pop(0)
+        if len(body.encode("utf-8")) > _SCRIPT_READ_LIMIT or _ZIP_MAGIC in body:
+            return "send"
+        masked = _mask_prose_literals(body, "py")
+        # no separate mail-text check here: smtplib, the network clients and the process modules are all off the
+        # allowlist, so a file that sends is already "unfollowed" (the judge's own text check runs before the walk)
+        mods, froms, plains, spans, ok = _py_imports(masked)
+        if not ok or _py_code_unfollowed(masked, froms, plains, spans):
+            return "unfollowed"
+        dirs = _py_script_dirs(cur)
+        for mod, required in mods:
+            if mod.startswith("."):
+                rest = mod.lstrip(".")
+                base = os.path.dirname(cur)
+                for _ in range(len(mod) - len(rest) - 1):
+                    base = os.path.dirname(base)
+                files = _py_module_files([base], rest) if rest else [os.path.join(base, "__init__.py")]
+                local = [f for f in files if read_script(f, 1) is not None]
+                if not local and required and rest:
+                    return "unfollowed"
+            else:
+                top = mod.split(".")[0]
+                # a local file of the same name shadows the standard library: it is what runs, so it is read
+                local = [f for f in _py_module_files(dirs, mod) if read_script(f, 1) is not None]
+                if not local:
+                    if not required:
+                        continue
+                    if top not in _PY_DRAFT_MODULES or (top == "os" and mod not in ("os", "os.path")):
+                        return "unfollowed"
+                    continue
+            for f in local:
+                if f in seen:
+                    continue
+                if depth + 1 > _PY_WALK_DEPTH or len(seen) >= _PY_WALK_FILES:
+                    return "unfollowed"
+                t = read_script(f, _SCRIPT_READ_LIMIT + 1)
+                if t is None:
+                    return "unfollowed"
+                seen.add(f)
+                queue.append((f, t, depth + 1))
+    return "clean"
+
+
+def _py_address_run_sends(paths, read_script) -> bool:
+    """A python script run with an address flag: a send unless some candidate is readable and every readable
+    candidate walks 'clean' (COPYGATEDRAFTFP1104)."""
+    found = False
+    for path in paths:
+        text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None:
+            path = os.path.join(path, "__main__.py")
+            text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None:
+            continue
+        found = True
+        if _py_walk_verdict(path, text, read_script) != "clean":
+            return True
+    return not found
+
+
 # MAILGATEDIRZIP1027: python runs a directory's __main__.py, and a zip app's __main__.py from inside the
 # archive. The archive is not unpacked here, so a zip run by python is a send.
 _ZIP_MAGIC = "PK\x03\x04"
@@ -1397,15 +1845,31 @@ def _python_module(rest):
     return None
 
 
-def _python_module_sends(module, cwd, cmd_words, read_script) -> bool:
+# JSCDSEND1104 (Samu 69538 / 69623): a run is ADDRESSED when the command names a recipient: --to / --cc / --bcc (any
+# value) or an e-mail address anywhere in it. The two gates differ HERE, and only here:
+#   - the sub-agent gate (email-send-gate.mjs, a hard deny) calls the fail-closed branches (an undecidable cd or -m, a
+#     missing or unreadable script) a send only on an addressed run, or a developer's `cd $WT && python3 -m pytest`
+#     would be refused; an undecidable SCRIPT PATH is a send there on every run too (ISSUE2582, Samu 72403);
+#   - this gate (the main agent's approval gate) keeps them fail-closed on every run: it guards the owner's real mail,
+#     a script can carry the address inside, and the cost of a false positive is an approval request, not a denial.
+# A READABLE sender is a send on both. script-run-cases.json holds both expected verdicts per row (main / sub).
+_FAIL_CLOSED_NEEDS_ADDRESS = False
+_EMAIL_IN_WORD = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+
+
+def _run_is_addressed(rest, cmd_words) -> bool:
+    return any(_ADDRESS_FLAG.match(w) or _EMAIL_IN_WORD.search(w) for w in list(rest) + list(cmd_words))
+
+
+def _python_module_sends(module, cwd, cmd_words, read_script, addressed=False) -> bool:
     """MAILGATESCRIPT1027 R1: `python -m MOD` runs MOD.py or MOD/__main__.py under cwd or a cd target. An
     installed module cannot be read here, so with no readable candidate it is not a send."""
     if not re.match(r"^[\w.]+$", module):
         return False
     rel = module.replace(".", "/")
     bases, undecidable = _cd_bases(cwd, cmd_words)
-    if undecidable:
-        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed
+    if undecidable and addressed:
+        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed when addressed (JSCDSEND1104)
     paths = []
     for base in bases:
         paths += [os.path.normpath(os.path.join(base, rel + ".py")),
@@ -1425,13 +1889,24 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
             if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
                 return True
         return False
+    # the fail-closed branches below fire when `addressed`: on this gate always (see _FAIL_CLOSED_NEEDS_ADDRESS)
+    # Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
+    addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _SUBST_MARK in cmd_words or _run_is_addressed(rest, cmd_words)
     if _PYTHON.match(prog):
-        if _address_flag_given(rest):  # also under -m / -c, where no file is named
-            return True
         module = _python_module(rest)
+        script = None if module else _python_script_operand(rest)[0]
+        if _address_flag_given(rest):
+            # COPYGATEDRAFTFP1104: an address is a send (also under -m / -c, where no file is named), unless the script
+            # file and everything it imports is visible here and the walk finds no send (_py_walk_verdict). A PYTHON*
+            # setting in the command can change what an import loads, so it keeps the old rule. Bence 69343 / Samu
+            # 69345: code the interpreter runs at START-UP, before the script (a .pth line, sitecustomize,
+            # usercustomize in a writable site-packages), is not visible to the walk; only -I with -S (or -E -s -S)
+            # turns it off, so without them the old rule holds (the approval gate names the fix: draft_isolation_hint).
+            if not _address_run_judgeable(rest, module, script, cwd, cmd_words, toks[0]):
+                return True
+            return _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script)
         if module:
-            return _python_module_sends(module, cwd, cmd_words, read_script)
-        script = _python_script_operand(rest)[0]
+            return _python_module_sends(module, cwd, cmd_words, read_script, addressed)
         kind = "py"
     elif _NODEISH.match(prog):
         script = _node_script_operand(prog, rest)
@@ -1441,12 +1916,14 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if _address_flag_given(rest):
             return True
         kind = "node"
+    elif _subst_artefact(toks[0]):
+        return False  # Samu 69682: a piece of a cut command substitution, not a file that runs
     elif _SCRIPT_FILE.search(toks[0]) or "/" in toks[0]:
         # a directly executed file: its #! line picks the interpreter, else its extension
         # MAILGATESCRIPT1027 R1: every candidate is judged on its own, with its own kind
         paths = _resolve_script_paths(toks[0], cwd, cmd_words)
         ext_kind = "py" if re.search(r"\.py$", toks[0], re.I) else "node" if _SCRIPT_FILE.search(toks[0]) else None
-        if _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
+        if addressed and _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
             return True
         addr = _address_flag_given(rest)
         readable = False
@@ -1467,29 +1944,712 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if not ext_kind:
             # no candidate with a kind is readable: a #! line cannot be known, the extension gives none
             return False
-        return True  # the kind is known and no candidate is readable: fail-closed
+        # the kind is known and no candidate is readable: fail-closed when addressed; an undecidable path always
+        return addressed or bool(_UNDECIDABLE_PATH.search(toks[0]))
     else:
         return False
     if script is None:
         return False
     if _UNDECIDABLE_PATH.search(script):
-        return True  # what runs is undecidable here: fail-closed
-    if _relative_under_undecidable_cd(script, cwd, cmd_words):
+        return True  # what runs is undecidable here: a send, addressed or not (ISSUE2582: the JS twin agrees now)
+    if addressed and _relative_under_undecidable_cd(script, cwd, cmd_words):
         return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
-    readable, verdict = _judge_candidates(_resolve_script_paths(script, cwd, cmd_words), kind, read_script)
+    paths = _resolve_script_paths(script, cwd, cmd_words)
+    if prog == "node" and not re.search(r"\.[^/]*$", _basename(script)):
+        # Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+        if addressed and any(read_script(p + ".node", _SHEBANG_READ_LIMIT) is not None for p in paths):
+            return True
+        paths = [c for p in paths for c in (p, p + ".js", p + ".json")]
+    readable, verdict = _judge_candidates(paths, kind, read_script)
     if readable:
         return verdict
-    return bool(_SCRIPT_FILE.search(script) or "/" in script)  # a missing script is a send; `bun test` is not
+    # a missing script is a send when addressed; `bun test` is not
+    return addressed and bool(_SCRIPT_FILE.search(script) or "/" in script)
 
 
-def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
+# Samu 69538: the tokenizer cuts a command substitution out of its word, so `cd $(git rev-parse --show-toplevel)` and a
+# backtick cd reach _cd_bases as a bare `cd`. Read on the raw command: such a cd or pushd is an undecidable cd.
+_SUBST_CD = re.compile(r"""(?:^|[\s;&|(!{])(?:cd|pushd)(?:\s+-\S*)*\s+["']?[^\s;&|"']*(?:\$\(|`)""")
+_SUBST_MARK = "$CMD_SUBST_CD"  # the undecidable cd word handed on for it
+
+
+def _subst_artefact(t) -> bool:
+    """Samu 69682 (1): a head that starts with whitespace, or has more `)` than `(`, is a piece of a command
+    substitution the tokenizer cut (`H="$(cd "$(...)" && pwd)/x"`), not a file run by path. The JS twin agrees."""
+    return bool(re.match(r"\s", t)) or t.count(")") > t.count("(")
+
+
+# Samu 69682 (2): $(dirname P) / $(basename P) / $(realpath P) with a literal P are resolved on the raw command before
+# tokenizing (nested too); with a variable argument the substitution becomes an outside variable. See the JS twin.
+_DET_SUBST = re.compile(r"""\$\(\s*(dirname|basename|realpath)\s+(?:"([^"$`\\]*)"|'([^']*)'|([^\s$`'"()|;&<>*?\[\]{}\\]+)|("?)(\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*|[0-9]))\5)\s*\)""")
+_OUTSIDE_PATH_VAR = "$GATE_OUTSIDE_PATH"
+_SAFE_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\]+$""")
+
+
+def _det_subst_value(fn, p, cwd):
+    if fn == "dirname":
+        s = p.rstrip("/") or "/"
+        if s == "/":
+            return "/"
+        i = s.rfind("/")
+        if i < 0:
+            return "."
+        return s[:i].rstrip("/") or "/"
+    if fn == "basename":
+        s = p.rstrip("/")
+        return "/" if s == "" else s.split("/")[-1]
+    if os.path.isabs(p):
+        ab = p
+    elif isinstance(cwd, str) and os.path.isabs(cwd):
+        ab = os.path.join(cwd, p)
+    else:
+        return None
+    return os.path.realpath(ab) if os.path.exists(ab) else os.path.normpath(ab)
+
+
+def _resolve_deterministic_subst(cmd, cwd):
+    s = cmd
+    for _ in range(16):
+        m = _DET_SUBST.search(s)
+        if not m:
+            break
+        if m.group(6) is not None:
+            v = _OUTSIDE_PATH_VAR
+        else:
+            p = next(g for g in (m.group(2), m.group(3), m.group(4)) if g is not None)
+            v = _OUTSIDE_PATH_VAR if p == _OUTSIDE_PATH_VAR else _det_subst_value(m.group(1), p, cwd)
+            if v is None or not (v == _OUTSIDE_PATH_VAR or _SAFE_LITERAL.match(v)):
+                break
+        s = s[:m.start()] + v + s[m.end():]
+    return s
+
+
+_VAR_REF = re.compile(r"^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$")
+
+
+def _assigned_cd_dirs(segments):
+    """Samu 69648 (3a): `D=dir; cd $D` (also `export D=dir`): the literal dirs the command itself assigns to a cd's
+    variable, handed on as more cd words. The `cd $D` stays undecidable too; a VAR set only outside is not resolved."""
+    vars_, out = {}, []
+    for toks in segments:
+        assigns = toks[1:] if toks and toks[0] == "export" else toks
+        if assigns and all(_ENV_ASSIGN.match(t) for t in assigns):
+            for t in assigns:
+                name, v = t.split("=", 1)
+                if v == "" or _UNDECIDABLE_PATH.search(v):
+                    vars_.pop(name, None)
+                else:
+                    vars_[name] = v
+            continue
+        for i in range(1, len(toks)):
+            prev = toks[i - 1]
+            if prev not in ("cd", "pushd") and not (prev == "--" and i >= 2 and toks[i - 2] in ("cd", "pushd")):
+                continue
+            m = _VAR_REF.match(toks[i])
+            v = vars_.get(m.group(1) or m.group(2)) if m else None
+            if v is not None:
+                out.append(v)
+    return out
+
+
+def _py_isolated(rest) -> bool:
+    """The interpreter options before the script turn off every start-up code path: -I with -S (`-I -S`, `-IS`,
+    `-SI`), or -E with -s and -S. A joined -X / -W value and anything after a -c / -m letter is not an option letter."""
+    letters = set()
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t in _PY_OPT_WITH_ARG:
+            i += 2
+            continue
+        if t == "-" or t == "--" or not t.startswith("-") or t.startswith("--"):
+            if t.startswith("--") and t != "--":
+                i += 1
+                continue
+            break
+        for ch in t[1:]:
+            if ch in "cmXW":
+                break
+            letters.add(ch)
+        if re.search(r"[cm]", t[1:]):
+            break
+        i += 1
+    return ("I" in letters and "S" in letters) or {"E", "s", "S"} <= letters
+
+
+# Bence 69412 / Samu 69415: the walk is only meaningful for the real interpreter. A program merely NAMED python3 (an
+# absolute or relative path, a PATH change in the command, a shell function, alias or hash entry of that name) is
+# whatever it is, so the address rule holds for it. Accepted: a bare python/python3[.x] with no such change, or an
+# absolute path in a system bin directory. Stated limit: a PATH or alias set in a shell profile, and a same-named
+# program put into a writable system bin directory, are not visible in the command.
+_PY_BARE_INTERPRETER = re.compile(r"^python(?:3(?:\.\d+)?)?$")
+_PY_SYSTEM_INTERPRETER = re.compile(r"^/(?:usr/bin|usr/local/bin|opt/homebrew/bin)/python(?:3(?:\.\d+)?)?$")
+_PY_NAME_REBOUND = re.compile(r"\bpython[\w.]*\s*\(\s*\)|\bfunction\s+python|\balias\b|\bhash\b|\benable\b")
+# The tokenizer splits `python3() { ...; }` at the parentheses, so a function definition is found on the raw
+# command and handed on as this marker word.
+_PY_FUNC_DEF_RAW = re.compile(r"\bpython[\w.]*\s*\(\s*\)|\bfunction\s+python")
+_PY_REBOUND_MARK = "__python_name_rebound__"
+
+
+def _py_interpreter_is_real(prog_word, cmd_words) -> bool:
+    # a PATH change anywhere in the command (a prefix, export, env PATH=, PATH+=), or env -P (macOS: another search path)
+    if any(re.match(r"^PATH\+?=", w) for w in cmd_words):
+        return False
+    if "env" in cmd_words and any(w.startswith("-P") for w in cmd_words):
+        return False
+    if _PY_REBOUND_MARK in cmd_words or _PY_NAME_REBOUND.search(" ".join(cmd_words)):
+        return False
+    return bool(_PY_BARE_INTERPRETER.match(prog_word) or _PY_SYSTEM_INTERPRETER.match(prog_word))
+
+
+def _address_run_judgeable(rest, module, script, cwd, cmd_words, prog_word="python3") -> bool:
+    """A python run with an address may be judged by its script's content (the walk) only in these shapes."""
+    return not (module or script is None or _UNDECIDABLE_PATH.search(script)
+                or _relative_under_undecidable_cd(script, cwd, cmd_words)
+                or any(re.match(r"^PYTHON\w*=", w) for w in cmd_words)
+                or not _py_isolated(rest)
+                or not _py_interpreter_is_real(prog_word, cmd_words))
+
+
+def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
+    """True when a python run with an address is a send only because the interpreter was not isolated: run with -I -S
+    it would be judged by its content, and its script walks clean (the approval gate names the fix then)."""
     if read_script is None:
         read_script = _read_script_head
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
+        return False
+    cmd_words = [w for toks in segments for w in toks] + ([_PY_REBOUND_MARK] if _PY_FUNC_DEF_RAW.search(cmd) else [])
+    for toks in segments:
+        for h in _command_heads(toks):
+            if not h or not _PYTHON.match(_basename(h[0])):
+                continue
+            rest = h[1:]
+            if not _address_flag_given(rest) or _py_isolated(rest):
+                continue
+            module = _python_module(rest)
+            script = None if module else _python_script_operand(rest)[0]
+            if not _address_run_judgeable(["-I", "-S"] + list(rest), module, script, cwd, cmd_words, h[0]):
+                continue
+            if not _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script):
+                return True
+    return False
+
+
+# ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal. The script path was
+# undecidable, so on this gate every such run asked for an approval (10 harmless calls a day in the reporter's fleet).
+# _bind_literal_vars puts the value in place of `$D` / `${D}` on the RAW command, before anything else reads it, and
+# ONLY where the value at run time is certain. Anything it cannot prove keeps the variable, i.e. today's fail-closed
+# verdict. The proof, all of it required:
+#   - the assignment is a segment of its own (`D=v`, `export D=v`), at depth 0, run unconditionally (at the start or
+#     after `;` / a newline) or in a pure `&&` chain that reaches the use; its own end is `;`, a newline, `&&`, `||` or
+#     the end (a `|` or `&` puts it in a subshell, and a subshell's assignment is lost);
+#   - the value is a plain literal (no `$`, backtick, quote, glob or white space);
+#   - Dani (review of #2586): the NAME appears NOWHERE in the command (outside the heredoc bodies, quoted text included)
+#     but in that one assignment and in plain `$D` / `${D}` uses. Every other way to set it names it: a second or a
+#     prefix assignment, `D+=`, `D[i]=`, `for D`, `read D`, `printf -v D` (also after `builtin`), zsh `print -v D`,
+#     `exec {D}>`, `${D::=x}` / `${D:=x}`, `unset D`, `typeset D`, a function body, a trap string;
+#   - the assignment stands outside every block (if / while / until / for / select / case / `{`: a block may not run);
+#   - no eval, source / `.`, alias, autoload or trap in command position (also after command / builtin / exec /
+#     noglob / nocorrect / `-`): those run code the command does not show; and no IFS anywhere (no binding at all);
+#   - the use comes AFTER the assignment and is a plain `$D` / `${D}`, unquoted or double-quoted, and is not followed
+#     by `:`, `[` or `(` (zsh reads `$D:h` as a modifier and `$D[1]` as a subscript); `'$D'` and `\$D` are the
+#     literal text, `${D%x}` and the like are not filled in;
+#   - a `cd $D` / `pushd $D` word is left alone (_assigned_cd_dirs has its own, older rule for it).
+# Heredoc bodies are not touched (B below judges a body only when the shell does not expand it). The JS twin
+# (email-send-gate.mjs :: bindLiteralVars) does the same; script-run-cases.json binds the two.
+# Samu 72415 (measured on 7 days of the fleet's sub-agent calls): a `for` anywhere switched the binding off, and
+# `S=/x; for id in ...; do python3 $S/close.py $id; done` was 509 of the 635 calls the tightening would newly deny.
+# A block keyword now only opens / closes a block (an assignment inside one does not bind).
+_BIND_GLOBAL_BLOCK = frozenset(("eval", "source", ".", "alias", "autoload", "trap"))
+_BIND_PRECMD = frozenset(("command", "builtin", "exec", "noglob", "nocorrect", "-", "nohup", "nice", "time"))
+_BIND_OPEN = frozenset(("if", "while", "until", "case", "{", "for", "select"))
+_BIND_CLOSE = frozenset(("fi", "done", "esac", "}"))
+_BIND_LEAD = frozenset(("then", "do", "else", "elif", "!", "time"))
+_BIND_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+_BIND_LITERAL = re.compile(r"""^[^\s$`'"()|;&<>*?\[\]{}\\!~#]+$""")
+_BIND_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)(\[[^\]]*\])?(\+?)=")
+
+
+def _heredoc_body_spans(cmd: str):
+    """The (start, end) of every heredoc body in `cmd` (the text between the opener line and the closing tag)."""
+    return [(m.end(1) + 1, m.end() - len(m.group(2))) for m in _HEREDOC.finditer(cmd)]
+
+
+def _bind_scan(cmd: str):
+    """Segments of the raw command: a list of dicts {words, sep_before, sep_after, depth}. A word is a dict
+    {text (unquoted), quoted, escaped, refs [(name, start, end)], start}; a ref is an unquoted or double-quoted
+    `$NAME` / `${NAME}`. Returns None when the command cannot be read."""
+    spans = _heredoc_body_spans(cmd)
+    segs = []
+    cur = {"words": [], "sep_before": None, "depth": 0}
+    word = None
+    depth = 0
+    stack = []  # "s" for $( , "p" for ( , "b" for a backtick
+    q = None
+    i, n = 0, len(cmd)
+
+    def new_word(pos):
+        return {"text": "", "quoted": False, "escaped": False, "refs": [], "start": pos}
+
+    def end_word():
+        nonlocal word
+        if word is not None:
+            cur["words"].append(word)
+            word = None
+
+    def end_seg(sep):
+        nonlocal cur
+        end_word()
+        cur["sep_after"] = sep
+        if cur["words"]:
+            segs.append(cur)
+        elif segs and sep is not None:
+            pass
+        cur = {"words": [], "sep_before": sep, "depth": depth}
+
+    while i < n:
+        skip = next((e for s, e in spans if s == i), None)
+        if skip is not None:
+            i = skip  # a heredoc body: data, not shell
+            continue
+        ch = cmd[i]
+        if q == "'":
+            if ch == "'":
+                q = None
+            else:
+                word["text"] += ch  # a single-quoted `$D` is the literal text: no ref is recorded, nothing is filled in
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:  # an escaped `\$D` is literal text too: no ref
+            if word is None:
+                word = new_word(i)
+            word["escaped"] = True  # inside "..." a backslash may stay: the value is not certain, never bound
+            word["text"] += cmd[i + 1]
+            i += 2
+            continue
+        if ch == "$" and (i + 1 < n) and (cmd[i + 1] == "{" or _BIND_NAME.match(cmd, i + 1)):
+            if word is None:
+                word = new_word(i)
+            if cmd[i + 1] == "{":
+                m = _BIND_NAME.match(cmd, i + 2)
+                if m and m.end() < n and cmd[m.end()] == "}":
+                    if not (m.end() + 1 < n and cmd[m.end() + 1] in ":[("):  # zsh modifier / subscript: not plain
+                        word["refs"].append((m.group(0), i, m.end() + 1))
+                    word["text"] += cmd[i:m.end() + 1]
+                    i = m.end() + 1
+                    continue
+                word["text"] += ch  # ${D%x}, ${D:-x}, ...: not filled in (and ${D=x} cannot change a D set before)
+                i += 1
+                continue
+            m = _BIND_NAME.match(cmd, i + 1)
+            if not (m.end() < n and cmd[m.end()] in ":[("):  # zsh `$D:h` modifier, `$D[1]` subscript: not plain
+                word["refs"].append((m.group(0), i, m.end()))
+            word["text"] += cmd[i:m.end()]
+            i = m.end()
+            continue
+        if q == '"':
+            if ch == '"':
+                q = None
+            elif ch == "`" or (ch == "$" and cmd.startswith("$(", i)):
+                end = _subst_end(cmd, i)
+                if end < 0:
+                    return None  # an unclosed substitution: not read here
+                # a quoted "$(...)" runs in a subshell: nothing in it is filled in (a name in it is one more
+                # occurrence, so that name is never bound)
+                word["text"] += cmd[i:end]
+                i = end
+                continue
+            else:
+                word["text"] += ch
+            i += 1
+            continue
+        if ch in "'\"":
+            if word is None:
+                word = new_word(i)
+            word["quoted"] = True
+            q = ch
+            i += 1
+            continue
+        if ch == "#" and word is None:
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch in " \t":
+            end_word()
+            i += 1
+            continue
+        if ch == "\n" or ch == ";":
+            end_seg(";")
+            i += 1
+            continue
+        if ch == "`":
+            if stack and stack[-1] == "b":
+                stack.pop()
+            else:
+                stack.append("b")
+            depth = len(stack)
+            end_seg("(")
+            i += 1
+            continue
+        if cmd.startswith("$(", i):
+            stack.append("s")
+            depth = len(stack)
+            end_seg("(")
+            i += 2
+            continue
+        if ch == "(":
+            stack.append("p")
+            depth = len(stack)
+            end_seg("(")
+            i += 1
+            continue
+        if ch == ")":
+            if stack:
+                stack.pop()
+            depth = len(stack)
+            end_seg(")")
+            i += 1
+            continue
+        if ch in "&|":
+            prev = cmd[i - 1] if i else ""
+            nxt = cmd[i + 1] if i + 1 < n else ""
+            if ch == "&" and (prev in "<>" or nxt == ">"):
+                if word is None:
+                    word = new_word(i)
+                word["text"] += ch  # a redirect (2>&1, &>), not a background run
+                i += 1
+                continue
+            if ch == "|" and prev == ">":
+                word["text"] += ch  # >| is a redirect
+                i += 1
+                continue
+            if cmd.startswith("&&", i) or cmd.startswith("||", i):
+                end_seg(cmd[i:i + 2])
+                i += 2
+                continue
+            end_seg("|&" if cmd.startswith("|&", i) else ch)
+            i += 2 if cmd.startswith("|&", i) else 1
+            continue
+        if word is None:
+            word = new_word(i)
+        word["text"] += ch
+        i += 1
+    if q:
+        return None
+    end_seg(None)
+    return segs
+
+
+def _subst_end(cmd: str, i: int) -> int:
+    """The index just past the `$(...)` or backtick substitution that starts at i (inside double quotes), else -1."""
+    if cmd[i] == "`":
+        j = i + 1
+        while j < len(cmd):
+            if cmd[j] == "\\":
+                j += 2
+                continue
+            if cmd[j] == "`":
+                return j + 1
+            j += 1
+        return -1
+    depth, j, q = 0, i + 1, None
+    while j < len(cmd):
+        c = cmd[j]
+        if q:
+            if c == "\\" and q == '"':
+                j += 2
+                continue
+            if c == q:
+                q = None
+        elif c == "\\":
+            j += 2
+            continue
+        elif c in "'\"":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return -1
+
+
+def _bind_literal_vars(cmd: str) -> str:
+    """ISSUE2582 (A): see the note above. Returns `cmd` with the provable uses of literal variables filled in."""
+    if "$" not in cmd or "=" not in cmd:
+        return cmd
+    scanned = _bind_scan(cmd)
+    if scanned is None:
+        return cmd
+    segs = scanned
+    outside = _outside_bodies(cmd, 0, len(cmd))
+    if re.search(r"(?<![A-Za-z0-9_])IFS(?![A-Za-z0-9_])", outside):
+        return cmd
+    block = 0  # how many blocks are open at the segment
+    for seg in segs:
+        words = seg["words"]
+        k = 0
+        while k < len(words) and not words[k]["quoted"]:
+            t = words[k]["text"]
+            if t in _BIND_OPEN:
+                block += 1
+                if t in ("for", "select", "case"):
+                    k = len(words)  # the rest is the word list / the case word, not a command
+                    break
+                k += 1
+                continue
+            if t in _BIND_CLOSE:
+                block = max(0, block - 1)
+                k += 1
+                continue
+            if t in _BIND_LEAD:
+                k += 1
+                continue
+            break
+        seg["block"] = block  # eval / source / `.` ... in command position: _bound_is_plain, quoted or not
+    ref_count = {}
+    for seg in segs:
+        for w in seg["words"]:
+            for name, _s, _e in w["refs"]:
+                ref_count[name] = ref_count.get(name, 0) + 1
+    binds = {}  # name -> (segment index, value, conditional)
+    for idx, seg in enumerate(segs):
+        words = seg["words"]
+        assigns = words[1:] if words and words[0]["text"] == "export" and not words[0]["quoted"] else words
+        if not assigns or not all(_BIND_ASSIGN.match(w["text"]) for w in assigns):
+            continue
+        if seg["depth"] != 0 or seg["block"] != 0 or seg["sep_after"] not in (None, ";", "&&", "||"):
+            continue
+        if seg["sep_before"] in (None, ";"):
+            conditional = False
+        elif seg["sep_before"] == "&&":
+            conditional = True
+        else:
+            continue
+        for w in assigns:
+            name, value = w["text"].split("=", 1)
+            if w["escaped"] or not _BIND_LITERAL.match(value) or name == "IFS":
+                continue
+            occurrences = len(re.findall(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", outside))
+            if occurrences != 1 + ref_count.get(name, 0):
+                continue  # the name is named somewhere else: it may be set another way
+            binds[name] = (idx, value, conditional)
+    if not binds:
+        return cmd
+    edits = []
+    for idx, seg in enumerate(segs):
+        words = seg["words"]
+        for k, w in enumerate(words):
+            prev = words[k - 1]["text"] if k else None
+            prev2 = words[k - 2]["text"] if k > 1 else None
+            if prev in ("cd", "pushd") or (prev == "--" and prev2 in ("cd", "pushd")):
+                continue
+            for name, start, end in w["refs"]:
+                b = binds.get(name)
+                if b is None or idx <= b[0]:
+                    continue
+                if b[2] and any(segs[j]["sep_after"] != "&&" for j in range(b[0], idx)):
+                    continue
+                edits.append((start, end, b[1], name))
+    bound = cmd
+    for start, end, value, _name in sorted(edits, reverse=True):
+        bound = bound[:start] + value + bound[end:]
+    # in the bound command each bound name stands once (its assignment) plus its uses left as they were: a filled-in
+    # value that spells a bound name (`export "$A$B"=x` -> `export "SD"=x`) is one more assignment
+    expected = {n: 1 + ref_count.get(n, 0) - sum(1 for e in edits if e[3] == n) for n in binds}
+    return bound if _bound_is_plain(bound, expected) else cmd
+
+
+# Dani (review of #2586, the computed name): the name rule only sees a name WRITTEN in the command; a setter can build it
+# (`A=S; B=D; printf -v "$A$B" ...`, `unset "$A$B"`, `$((A$B=1))`, `${(P)X::=...}`, `x[$A$B=1]`, `[[ 1 -eq $A$B=1 ]]`), or
+# hide behind a dynamic or quoted command name (`C=printf; $C -v ...`, `"printf" -v ...`). So the BOUND command (every
+# provable use filled in) is read once more, and any of these anywhere keeps today's verdict for the whole command:
+#   - a variable-setting builtin as a word anywhere (quoted or not): read, declare, typeset, local, readonly, mapfile,
+#     readarray, getopts, let, unset, vared, zparseopts, zstyle, integer, float, and export unless its segment is the
+#     plain `export NAME=literal` form; printf / print with a -v word in the same segment; set -A / +A;
+#   - eval / source / `.` / alias / autoload / trap as a command, quoted or not, also behind command / builtin / exec;
+#   - a command word (after keywords, assignments and command / builtin / exec ...) that still holds a `$` or backtick;
+#   - `((`, `$[`, a `${` with `=` inside, a `$NAME[` / `${NAME[` subscript, or `[[` with an arithmetic comparison.
+_BIND_SETTERS = frozenset(("read", "declare", "typeset", "local", "readonly", "mapfile", "readarray", "getopts", "let",
+                           "unset", "vared", "zparseopts", "zstyle", "integer", "float"))
+_BIND_DYNAMIC_TEXT = re.compile(r"\(\(|\$\[|\$\{[^}]*=|\$\{?[A-Za-z_][A-Za-z_0-9]*\[")
+_BIND_ARITH_TEST = re.compile(r"-(?:eq|ne|lt|le|gt|ge)\b")
+
+
+def _bound_is_plain(bound: str, expected=None) -> bool:
+    outside = _outside_bodies(bound, 0, len(bound))
+    for name, count in (expected or {}).items():
+        if len(re.findall(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", outside)) != count:
+            return False
+    if _BIND_DYNAMIC_TEXT.search(outside):
+        return False
+    if "[[" in outside and _BIND_ARITH_TEST.search(outside):
+        return False
+    segs = _bind_scan(bound)
+    if segs is None:
+        return False
+    for seg in segs:
+        words = seg["words"]
+        texts = [w["text"] for w in words]
+        for i, t in enumerate(texts):
+            if t in _BIND_SETTERS:
+                return False
+            if t == "export" and not all(_BIND_ASSIGN.match(x) for x in texts[i + 1:]):
+                return False
+            if t in ("printf", "print") and any(x.startswith("-v") for x in texts[i + 1:]):
+                return False
+            if t == "set" and any(x.startswith(("-A", "+A")) for x in texts[i + 1:]):
+                return False
+        k = 0
+        while k < len(words) and (words[k]["text"] in _BIND_OPEN or words[k]["text"] in _BIND_CLOSE
+                                  or words[k]["text"] in _BIND_LEAD):
+            if words[k]["text"] in ("for", "select", "case"):
+                k = len(words)
+                break
+            k += 1
+        while k < len(words) and _BIND_ASSIGN.match(words[k]["text"]):
+            k += 1
+        while k < len(words) and words[k]["text"] in _BIND_PRECMD:
+            k += 1
+        if k < len(words):
+            head = words[k]
+            if head["text"] in _BIND_GLOBAL_BLOCK or head["refs"] or "$" in head["text"] or "`" in head["text"]:
+                return False
+    return True
+
+
+# ISSUE2582 (B): `cat > /x/new.py <<'EOF' ... EOF` and then `python3 /x/new.py` in the same command. The file does not
+# exist yet when the gate runs, and a missing script is a send on this gate (JSCDSEND1104). The script that runs is the
+# heredoc body, so the body is what is judged -- with the same reader as a file on disk, local imports included. Only
+# when the body is certainly what the file holds at run time:
+#   - the opener is exactly `cat > P <<TAG`, `cat <<TAG > P` or `tee P <<TAG` (optionally `> /dev/null` after tee),
+#     at the start of its line or after a quote-free `...;` (the `;` makes the write unconditional), nothing after it:
+#     a `>>` / `tee -a` appends, so the old content would run too;
+#   - the tag is quoted (`<<'EOF'`) or the body has no `$` and no backtick (an unquoted body is expanded by the shell);
+#   - P is absolute after (A), or relative in a command with no cd / pushd / env -C;
+#   - Dani (review of #2586): the write must HAPPEN. Before it only commands that cannot create P without naming it
+#     (mkdir, echo, printf, true, :, test, [, sleep, date, pwd, ls, cd, pushd, rm, cat, tee, export, set, and
+#     assignments): an unzip, git, cp -r or any program could leave P there, read-only, and the write would fail; a
+#     control word before it (if, while, do, `{`, ...) is no such command either, so a conditional write is out. And P
+#     must not exist when the gate runs: if it does, the body AND the file on disk are judged, and either one sending is
+#     a send. That also covers noclobber (set -C, setopt noclobber): it only stops the write over an EXISTING P;
+#   - P is named exactly twice in the command: the write and one run. Another write, a cp, mv or sed -i on it, or a
+#     second run would change what runs, so they keep today's verdict.
+# Every other case reads the disk as before (and a missing file stays fail-closed).
+_WRITTEN_OPENER = re.compile(
+    r"""^(?P<pre>[^\n'"`\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
+    r"""|cat[ \t]+<<-?[ \t]*(?P<q2>'?)(?P<t2>\w+)(?P=q2)[ \t]+>[ \t]*(?P<p2>[^\s'"<>;&|$`]+)"""
+    r"""|tee[ \t]+(?P<p3>[^\s'"<>;&|$`-][^\s'"<>;&|$`]*)(?:[ \t]+>[ \t]*/dev/null)?[ \t]+<<-?[ \t]*(?P<q3>'?)(?P<t3>\w+)(?P=q3)"""
+    r""")[ \t]*$""")
+
+
+_WRITTEN_SAFE_BEFORE = frozenset(("mkdir", "echo", "printf", "true", ":", "test", "[", "sleep", "date", "pwd", "ls", "cd",
+                                  "pushd", "rm", "cat", "tee", "export", "set"))
+
+
+def _written_safe_before(text: str) -> bool:
+    """Every command in `text` (what runs before the write) is one that cannot create a file without naming it."""
+    try:
+        segments = _segments_tokens(text)
+    except ValueError:
+        return False
+    for toks in segments:
+        head = next((t for t in toks if not _ENV_ASSIGN.match(t)), None)
+        if head is not None and head not in _WRITTEN_SAFE_BEFORE:
+            return False
+    return True
+
+
+
+
+def _written_scripts(cmd: str, cwd):
+    """ISSUE2582 (B): {absolute path: heredoc body} for the scripts this command writes and then runs (see above)."""
+    out = {}
+    has_cd = bool(re.search(r"(?:^|[\s;&|(])(?:cd|pushd)(?:\s|$)|(?:^|[\s;&|(])(?:g?env)\s[^\n]*(?:-C|--chdir)", cmd))
+    for m in _HEREDOC.finditer(cmd):
+        line_start = cmd.rfind("\n", 0, m.start()) + 1
+        opener = cmd[line_start:m.end(1)]
+        w = _WRITTEN_OPENER.match(opener)
+        if not w:
+            continue
+        path = w.group("p1") or w.group("p2") or w.group("p3")
+        quoted = bool(w.group("q1") or w.group("q2") or w.group("q3"))
+        body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        if not quoted and ("$" in body or "`" in body):
+            continue
+        if os.path.isabs(path):
+            ab = os.path.normpath(path)
+        elif not has_cd and isinstance(cwd, str) and os.path.isabs(cwd):
+            ab = os.path.normpath(os.path.join(cwd, path))
+        else:
+            continue
+        # the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
+        if re.search(r"(?:&&|\|\||\||\\)\s*$", cmd[:line_start]):
+            continue
+        # nothing before the write can have left P there unnamed (so the write does not fail on it)
+        if not _written_safe_before(_outside_bodies(cmd, 0, line_start) + (w.group("pre") or "")):
+            continue
+        # counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py
+        mention = re.compile(r"(?<![\w.-])" + re.escape(os.path.basename(path)) + r"(?![\w.-])")
+        before = _outside_bodies(cmd, 0, line_start)
+        after = _outside_bodies(cmd, m.end() - len(m.group(2)), len(cmd))
+        if (mention.search(before) or len(mention.findall(opener)) != 1 or len(mention.findall(after)) != 1
+                or ab in out):
+            out.pop(ab, None)
+            continue
+        out[ab] = body
+    return out
+
+
+def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
+    """cmd[lo:hi] with every heredoc body cut out (a body is data: a path named there is no shell word)."""
+    out, pos = [], lo
+    for s, e in _heredoc_body_spans(cmd):
+        if e <= lo or s >= hi:
+            continue
+        out.append(cmd[pos:max(s, lo)])
+        pos = min(e, hi)
+    out.append(cmd[pos:hi])
+    return "".join(out)
+
+
+def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
+    if read_script is None:
+        read_script = _read_script_head
+    cmd = _bind_literal_vars(cmd)
+    written = _written_scripts(cmd, cwd)
+    # Dani (review of #2586): a P that exists now may survive the write (read-only, noclobber set elsewhere): its body
+    # is judged NEXT TO the file on disk (which the normal reading below judges), and a sending body is a send
+    for path, body in [(p, b) for p, b in written.items() if os.path.lexists(p)]:
+        kind = _shebang_kind(body[:_SHEBANG_READ_LIMIT]) or (
+            "py" if path.endswith(".py") else "node" if _SCRIPT_FILE.search(path) else None)
+        if kind and _judge_candidates(
+                [path], kind, lambda q, lim, _p=path, _b=body: _b[:lim] if os.path.normpath(q) == _p
+                else read_script(q, lim))[1]:
+            return True
+    written = {p: b for p, b in written.items() if not os.path.lexists(p)}
+    if written:
+        disk_read = read_script
+
+        def read_script(path, limit=_SCRIPT_READ_LIMIT):  # noqa: F811 -- ISSUE2582 (B): the written body wins
+            body = written.get(os.path.normpath(path)) if isinstance(path, str) else None
+            return body[:limit] if body is not None else disk_read(path, limit)
+    cmd = _resolve_deterministic_subst(cmd, cwd)
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
-    cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
+    cmd_words = _with_env_chdir(list(_cd_words) + [w for toks in segments for w in toks])
+    for d in _assigned_cd_dirs(segments):
+        cmd_words += ["cd", d]
+    if _SUBST_CD.search(cmd):
+        cmd_words += ["cd", _SUBST_MARK]
+    if _PY_FUNC_DEF_RAW.search(cmd):
+        cmd_words.append(_PY_REBOUND_MARK)
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
                for toks in segments for h in _command_heads(toks))
 
@@ -1822,13 +2982,26 @@ def spaced_en_dashes(prose: str) -> int:
 # NOT silent: every run appends a loud line to the gate log, because a
 # protection whose absence is invisible only protects until someone touches
 # the tree. File shape: {"bad_name_patterns": ["<python-regex>", ...]}
-_LOCAL_RULES = os.environ.get(
-    "OUTGOING_COPY_GATE_RULES",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                 "store", "outgoing-copy-gate-rules.json"),
-)
+# Always the install's own file (ENVRELAXGATE1104): the hook runs in the checked
+# agent's environment, so no environment variable may hand it other rules. A test
+# runs the hook from a tmp install (<tmp>/scripts linked to the repo's; abspath,
+# not realpath, keeps <tmp> as the root).
+_LOCAL_RULES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                            "store", "outgoing-copy-gate-rules.json")
 
 _GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+
+
+def pass_with_warning(msg: str) -> str:
+    """A non-blocking warning, for BOTH readers. `systemMessage` is shown on
+    the host's terminal only and never enters the model's request; the agent
+    that just made the call learns of it only through
+    `hookSpecificOutput.additionalContext` (measured 2026-11-08 on our own
+    transcripts: systemMessage 0/6, PreToolUse additionalContext 7/7)."""
+    return json.dumps({
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg},
+    })
 
 
 def _gate_log(message: str) -> None:
@@ -2077,11 +3250,23 @@ _TECH_COMMON = r"""
 # CSAK a token-/ekezet-vizsgalat vaghatja ki ezeket: mindharom ag kepes egy
 # tulajdonnevet a toldalekaval egyutt elnyelni, ezert a nev-szabaly nem kapja meg.
 _TECH_SUFFIXED = r"""
-        \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
+        \d+(?:[.:,]\d+)*-[a-záéíóöőúüű]+(?![^\W\d_])   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor), csak magyar latin betu
+      | \d+(?:[.:,]\d+)*[\ \u00a0\u202f]?[%‰°$€£]-[a-záéíóöőúüű]+(?![^\W\d_])   # szam + mertekegyseg-jel + toldalek (30%-ot, 2‰-es, 90°-os, 5€-t)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
       | (?:(?<![\w-])--)?\b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek), --flag alakban is
 """
+# COPYGATEHOMONUM1105 (2026-11-06): the plain number branch (the first line above) took ANY Unicode letter as its suffix
+# ([^\W\d_]+), so a Cyrillic or Greek letter in such a suffix was masked away before the homoglyph rule ran. It now
+# takes Hungarian Latin letters only, with the end of the suffix pinned, the same rule as its unit-sign sibling below.
+# ISSUE1838COPYGATE (#2543, 2026-11-05): the number branch wanted a DIGIT right before the hyphen, so a suffix after a
+# unit sign ('30%-ot', '2‰-es', '90°-os', '5€-es') was cut at the hyphen and its fragment checked as a standalone word:
+# 'ot' -> 'öt', 'es' -> 'és'. Suffixes that are not dictionary words ('20%-kal', '15%-át') passed by luck. The second
+# branch takes number + sign + suffix whole, with an optional (also non-breaking) space before the sign ('30 %-ot').
+# Its suffix is Hungarian Latin letters ONLY, unlike the branch above: TECHNICAL also feeds the homoglyph rule
+# (mixed_script_words runs on the stripped prose), and a Cyrillic letter in such a suffix must still reach it.
+# The lookahead pins the END of the suffix (Dani, #2545 review): without it a suffix that starts Latin and ends
+# Cyrillic or Greek had its Latin part eaten, the rest was a single-script fragment, and no mixed word was seen.
 # FLAGDASH1030 (2026-10-30): the hyphenated-identifier branch above used to eat only the word part of a
 # '--select-release-current' flag, so strip_technical() left the leading '--' between two spaces, and the double-hyphen
 # rule counted it as a dash in prose: 'plesk installer --select-release-current --upgrade-installed-components' was
@@ -2347,9 +3532,15 @@ def http_channel_gate(cmd: str) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
-        warn = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
-        sys.stderr.write(warn + "\n")
-        _gate_log(warn)
+        head = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
+        # stderr on exit 0 and the gate log never reach the sending agent;
+        # only additionalContext does, so it learns the send went out unchecked.
+        # The model gets the exception TYPE only: a repr can carry the text
+        # being processed (e.g. a UnicodeEncodeError quotes it).
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -2434,9 +3625,11 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
-        sys.stderr.write(warn + "\n")
-        _gate_log(warn)
+        head = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))  # type only, see above
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -2455,10 +3648,10 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     # nincs mit jelezni, a Telegram-ag ott csendben marad. Minden mas nem-ok
     # allapot (missing/empty/invalid) figyelmeztetest kap.
     if RULES_STATE in RULES_LOUD:
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
             f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
-            "Potold a store/outgoing-copy-gate-rules.json-t."}))
+            "Potold a store/outgoing-copy-gate-rules.json-t."))
     sys.exit(0)
 
 
@@ -2750,7 +3943,7 @@ def inter_agent_homoglyph_gate(cmd: str) -> None:
                f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
                "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
         _gate_log(msg)
-        print(json.dumps({"systemMessage": msg}))
+        print(pass_with_warning(msg))
         sys.exit(0)
     try:
         mixed = mixed_script_words(text)
@@ -2801,7 +3994,11 @@ def main():
         _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
                   f"-- a vizsgalat nem futtathato (tool={tool!r}).")
         if re.search(r"telegram.*__reply$", tool, re.I):
-            sys.exit(0)  # Telegram stays fail-open by design
+            # Telegram stays fail-open by design, but not silently.
+            print(pass_with_warning(
+                f"outgoing-copy-gate: a Telegram-hivas tool_input mezoje nem szotar, hanem {shape} "
+                "-- FAIL-OPEN atengedes, ez az uzenet a szoveg-ellenorzes NELKUL ment ki."))
+            sys.exit(0)
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, a hivas tool_input mezoje nem szotar, hanem "
             f"{shape} -- a kimeno szoveg igy nem olvashato ki, tehat nem vizsgalhato.\n"
@@ -2932,12 +4129,12 @@ def main():
         # Fail-OPEN, but never silent: the send goes out WITHOUT the name
         # check, and the user must see that on the surface they are using --
         # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "outgoing-copy-gate: a NEV-SZABALY fajl "
             + ("HIANYZIK" if RULES_STATE == RULES_MISSING else "URES (nincs minta)")
             + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
             "Ha kell a vedelem, hozd letre a fajlt: "
-            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
+            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'))
     sys.exit(0)
 
 

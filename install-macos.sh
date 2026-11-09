@@ -51,10 +51,265 @@ managed_settings_notice() {
   echo -e "    $(_t managed.notice_sudo)"
 }
 
+# MACROOTFROMCLONE1106: the installer's root steps run no code from the clone. The clone is the user's, so
+# anything running as that user (an agent) can rewrite it; a root step that ran a clone file would run the
+# agent's code as root on the next install. So:
+#   - the managed-settings writer is EMBEDDED below, byte for byte the same as
+#     scripts/lib/managed-settings-write.py (a test holds the two equal), and runs as
+#     /usr/bin/sudo /usr/bin/python3 -I -S - : no cwd import, no site-packages, no PATH lookup;
+#   - every root call names its program by absolute path (a PATH entry like ~/.bun/bin is the user's);
+#   - right after the last root step the sudo login is dropped and the password the Bridge passed in is
+#     unset, BEFORE any clone code (npm, the build, the sourced helpers) runs.
+# The boundary: the installer itself runs no clone code as root and leaves the password out of clone code's
+# reach. It does not protect the user's login environment (profile, PATH, HOME): against an agent running as
+# the same user only a separate admin account separates. The macOS sudoers secure_path: not measured.
+managed_write() { # $1 = the managed file, then the writer's flags; the writer's own exit code
+  /usr/bin/sudo /usr/bin/python3 -I -S - "$@" <<'MSW_PY'
+#!/usr/bin/env python3
+"""The ONE safe writer of Claude Code's machine-wide managed-settings.json (MANAGEDSETTINGSWRITE1103).
+
+Every installer path that touches the org-policy file calls this, instead of its own inline
+merge. The inline copies had two faults:
+
+1. scripts/ensure-managed-channels-enabled.sh turned an unreadable or non-object file into {}
+   and wrote it back, as root. That silently dropped every other managed key, including the
+   allowedChannelPlugins list, and so muted every channel host-wide.
+2. All of them wrote a FIXED tmp name (`<file>.tmp`) with a plain open(), which follows a
+   symlink, then copymode/chmod on that path (also following it), then os.replace. Whoever can
+   write the directory can make a root process write and chmod a file of its choosing.
+   (The same class was fixed in the Bridge's gromzo-root.sh on review of Bridge #99.)
+
+The rules here:
+- an existing file that is not valid JSON or not a JSON object: NOT written, exit 1;
+- the file, if it exists, must be a regular file (not a symlink) owned by the effective user;
+- the directory must be owned by the effective user and not group- or other-writable;
+- changes are additive only: plugins are appended once, channelsEnabled is set true; every
+  other key and entry stays; an unchanged file is not rewritten;
+- the write: a fresh mkstemp file in the same directory (O_EXCL, unpredictable name), mode and
+  owner set on the fd (an existing file keeps its mode, a new one gets 0644 so the
+  unprivileged session can read the policy), written through the fd, then os.replace; the
+  tmp is removed on any error.
+
+The ownership checks use the EFFECTIVE uid: root when the installer runs this with sudo, the
+test user in the tests, so the same code is measured in both.
+
+Usage: managed-settings-write.py <file> [--create] [--channels-enabled] [--add-plugin NAME@MARKET]...
+  --create  write the file if it does not exist (otherwise a missing file is left alone, exit 0)
+Exit: 0 written or nothing to do; 1 refused (the reason on stderr), nothing changed.
+"""
+import json
+import os
+import stat
+import sys
+import tempfile
+
+
+def refuse(msg):
+    print("managed-settings NOT written: %s" % msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_args(argv):
+    if not argv or argv[0].startswith("-"):
+        refuse("usage: managed-settings-write.py <file> [--create] [--channels-enabled] [--add-plugin NAME@MARKET]...")
+    path, create, enable, plugins = argv[0], False, False, []
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--create":
+            create = True
+        elif a == "--channels-enabled":
+            enable = True
+        elif a == "--add-plugin" and i + 1 < len(argv):
+            name, sep, market = argv[i + 1].partition("@")
+            if not sep or not name or not market:
+                refuse("bad --add-plugin value: %r (want NAME@MARKETPLACE)" % argv[i + 1])
+            plugins.append({"plugin": name, "marketplace": market})
+            i += 1
+        else:
+            refuse("unknown argument: %r" % a)
+        i += 1
+    return path, create, enable, plugins
+
+
+def check_dir(d, euid):
+    try:
+        st = os.lstat(d)
+    except OSError as e:
+        refuse("the directory %s cannot be read: %s" % (d, e.strerror))
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        refuse("%s is not a plain directory" % d)
+    if st.st_uid != euid:
+        refuse("the directory %s is not owned by uid %d" % (d, euid))
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        refuse("the directory %s is group- or other-writable" % d)
+
+
+def main(argv):
+    path, create, enable, plugins = parse_args(argv)
+    euid = os.geteuid()
+    d = os.path.dirname(os.path.abspath(path))
+    check_dir(d, euid)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        st = None
+    if st is None:
+        if not create:
+            print("managed-settings: %s does not exist, nothing to merge" % path)
+            return 0
+        data, mode = {}, 0o644
+    else:
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            refuse("%s is not a regular file" % path)
+        if st.st_uid != euid:
+            refuse("%s is not owned by uid %d" % (path, euid))
+        try:
+            with open(path, "rb") as f:
+                data = json.loads(f.read().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            refuse("%s is not valid JSON (%s); an org-policy file is never rebuilt from scratch" % (path, type(e).__name__))
+        if not isinstance(data, dict):
+            refuse("%s is not a JSON object" % path)
+        mode = stat.S_IMODE(st.st_mode)
+    before = json.dumps(data, sort_keys=True)
+    if plugins:
+        have = data.get("allowedChannelPlugins")
+        if have is None:
+            have = []
+        if not isinstance(have, list):
+            refuse("allowedChannelPlugins in %s is not a list" % path)
+        for p in plugins:
+            if not any(isinstance(e, dict) and e.get("plugin") == p["plugin"]
+                       and e.get("marketplace") == p["marketplace"] for e in have):
+                have.append(p)
+        data["allowedChannelPlugins"] = have
+    if enable:
+        data["channelsEnabled"] = True
+    if json.dumps(data, sort_keys=True) == before and st is not None:
+        print("managed-settings: %s already has everything, not rewritten" % path)
+        return 0
+    fd, tmp = tempfile.mkstemp(prefix=".managed-settings.", suffix=".tmp", dir=d)
+    try:
+        os.fchmod(fd, mode)
+        os.fchown(fd, euid, os.getegid() if euid != 0 else 0)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    print("managed-settings: %s written" % path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+MSW_PY
+}
+# Read as the user, nothing written: 0 when the file already has every wanted entry (NAME@MARKETPLACE, or
+# --channels for channelsEnabled), so an already-correct host asks for no password (the gate's old rule).
+# A wrong answer only means a needless or skipped write, never code run as root.
+managed_has() {
+  /usr/bin/python3 -I -S - "$@" 2>/dev/null <<'MSH_PY'
+import json, sys
+path, want = sys.argv[1], sys.argv[2:]
+try:
+    d = json.load(open(path))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+have = set()
+for p in d.get("allowedChannelPlugins") or []:
+    if isinstance(p, dict):
+        have.add("%s@%s" % (p.get("plugin"), p.get("marketplace")))
+for w in want:
+    if w == "--channels":
+        if d.get("channelsEnabled") is not True:
+            sys.exit(1)
+    elif w not in have:
+        sys.exit(1)
+sys.exit(0)
+MSH_PY
+}
+# 0 = a root-owned regular file, not group/other-writable, with every parent dir root-owned and not
+# group/other-writable unless sticky (/tmp). The macOS twin of install-linux.sh root_only_path (BSD stat).
+macos_root_only_path() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  macos_root_only_chain "$1"
+}
+# 0 = a mode (the last four octal digits of stat %p) that only the owner can write: no group or other write
+# bit, unless the sticky bit is set (/tmp). Anything but four octal digits is refused. A function of its own so
+# the rule is tested on mode strings: a root-owned, admin-group-writable dir (0775) is writable by the admin
+# installing user and so by every agent of theirs, and no test host has one to stat.
+macos_mode_root_only() {
+  case "$1" in [0-7][0-7][0-7][0-7]) ;; *) return 1 ;; esac
+  [ $(( 8#$1 & 8#022 )) -eq 0 ] || [ $(( 8#$1 & 8#1000 )) -ne 0 ]
+}
+# The same rule for a path and every dir above it, without the regular-file test (a dir chain).
+macos_root_only_chain() {
+  local p="$1" m
+  while :; do
+    [ "$(/usr/bin/stat -f '%u' "$p" 2>/dev/null)" = 0 ] || return 1
+    m="$(/usr/bin/stat -f '%p' "$p" 2>/dev/null)" || return 1
+    m="${m: -4}"
+    macos_mode_root_only "$m" || return 1
+    [ "$p" = / ] && break
+    p="$(dirname "$p")"
+  done
+  return 0
+}
+# The global npm install as root (NPMPERM1's sudo route): only from root-owned node and npm, under a clean
+# environment (no user PATH for npm's `env node`, no user HOME/.npmrc). Otherwise refused, with the manual step.
+root_npm_install_global() { # $1 = the package
+  local npm node npm_real node_real
+  npm="$(command -v npm 2>/dev/null)" || npm=""
+  node="$(command -v node 2>/dev/null)" || node=""
+  [ -n "$npm" ] && [ -n "$node" ] || return 1
+  npm_real="$(/usr/bin/python3 -I -S -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$npm")" || return 1
+  node_real="$(/usr/bin/python3 -I -S -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$node")" || return 1
+  macos_root_only_path "$npm_real" && macos_root_only_path "$node_real" || return 1
+  # the names on PATH (often links) sit in a root-only dir chain, so nobody swaps them after this check
+  macos_root_only_chain "$(dirname "$npm")" && macos_root_only_chain "$(dirname "$node")" || return 1
+  /usr/bin/sudo /usr/bin/env -i PATH="$(dirname "$node_real"):/usr/bin:/bin:/usr/sbin:/sbin" HOME=/var/root \
+    "$node_real" "$npm_real" install -g "$1"
+}
+
 # Error-translation layer (NPMPERM1 kor): minden stderr egy log-fajlba is
 # megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
 # forditani az upstream hibat (explain_install_error, install-lang.sh).
 INSTALL_ERRLOG=$(mktemp "${TMPDIR:-/tmp}/marveen-install-stderr.XXXXXX")
+# INSTSTDERRTMP1104: the copy holds whatever a failing tool printed (a token in a
+# URL, a password a broken prompt echoed back), and it outlived every run in the
+# customer's TMPDIR. Only explain_install_error reads it, on the way out (fail()
+# and on_error() call it before exit), so it leaves with the process: removed on
+# EXIT, which bash runs after those calls on every exit path, and turned into an
+# exit by INT/TERM so an interrupted run cleans up too.
+cleanup_install_errlog() {
+  [ -n "${INSTALL_ERRLOG:-}" ] || return 0
+  rm -f "$INSTALL_ERRLOG"
+  # The tee behind `exec 2>` starts asynchronously; a run that exits within its
+  # first milliseconds can unlink the file before tee opened it, and `tee -a`
+  # then creates it again (measured in the test). Close our end of the pipe so
+  # tee sees EOF, give it a moment, and remove a re-created file once more.
+  exec 2>&-
+  local i=0
+  while [ "$i" -lt 10 ]; do
+    [ -e "$INSTALL_ERRLOG" ] && rm -f "$INSTALL_ERRLOG"
+    sleep 0.05 2>/dev/null || break
+    i=$((i + 1))
+  done
+  return 0
+}
+trap cleanup_install_errlog EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 exec 2> >(tee -a "$INSTALL_ERRLOG" >&2)
 
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
@@ -247,20 +502,130 @@ if [ "$MISSING" -eq 1 ]; then
   echo -e "${GREEN}$(_t macos.deps_installed)${NC}"
 fi
 
-# Bun (required by Telegram channels plugin)
-export PATH="$HOME/.bun/bin:$PATH"
-if ! command -v bun &>/dev/null; then
-  echo -e "  ${ORANGE}$(_t macos.installing_bun)${NC}"
-  curl -fsSL https://bun.sh/install | bash 2>/dev/null
-  # Source the profile that bun installer modified
-  [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null
-  [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null
-  export PATH="$HOME/.bun/bin:$PATH"
-  if ! command -v bun &>/dev/null; then
-    echo -e "  ${RED}✗${NC} $(_t macos.bun_install_failed)"
+# Bun: no longer here. GROMZONOPROVIDER1108: installed after the channel choice ("bun-install" below), only for a
+# channel whose plugin runs on Bun (telegram, discord).
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+# BUNTIMEOUT1108 (ported, GROMZONOPROVIDER1108): the Linux installer's Bun path, here too. It was a bare
+# `curl | bash 2>/dev/null` under set -e: no time limit, no retry, no npm fallback, the reason thrown away.
+# macOS has no `timeout`: _mac_timeout uses one when installed (coreutils), else the system perl runs the command in
+# its OWN process group and, past the limit, signals the whole group (TERM, then KILL after 10 s), so the vendor
+# script's own download is cut too; exit 124 on the limit, like timeout(1).
+_mac_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout --kill-after=10 "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout --kill-after=10 "$secs" "$@"; return $?; fi
+  /usr/bin/perl -e 'my $t = shift; my $pid = fork; die "fork: $!" unless defined $pid;
+    if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    local $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 10; kill "KILL", -$pid; waitpid($pid, 0); exit 124 };
+    alarm $t; waitpid($pid, 0); alarm 0;
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$secs" "$@"
+}
+_run_remote_installer() {
+  local label="$1" url="$2" check="$3"
+  shift 3
+  local tries="${REMOTE_INSTALL_TRIES:-3}" n=1 rc dir script log
+  # No fixed /tmp fallback name: the installer runs as root, and a predictable path that it fills and then runs could
+  # be replaced by another local user (Dani 73434). Without a private temp dir the step stops.
+  if ! dir="$(mktemp -d 2>/dev/null)" || [ -z "$dir" ]; then
+    warn "$label: nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)."
+    return 1
   fi
-fi
-check_cmd "bun" "Bun runtime"
+  script="$dir/install.sh"
+  log="$dir/install.log"
+  while [ "$n" -le "$tries" ]; do
+    : > "$log"
+    rc=0
+    if curl -fsSL --connect-timeout "${REMOTE_INSTALL_CONNECT_TIMEOUT:-20}" --max-time "${REMOTE_INSTALL_FETCH_TIMEOUT:-60}" \
+         -o "$script" "$url" 2>>"$log"; then
+      if _mac_timeout "${REMOTE_INSTALL_TIMEOUT:-300}" bash "$script" "$@" </dev/null >>"$log" 2>&1; then
+        rc=0
+      else
+        rc=$?
+      fi
+    else
+      rc=$?
+      echo "(the installer script could not be downloaded from $url, curl exit $rc)" >>"$log"
+    fi
+    hash -r
+    if "$check"; then
+      rm -rf "$dir"
+      return 0
+    fi
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+      warn "$label: a(z) $n/$tries. probalkozas tullepte az idokorlatot (${REMOTE_INSTALL_TIMEOUT:-300} mp)."
+    else
+      warn "$label: a(z) $n/$tries. probalkozas sikertelen (kilepesi kod: $rc)."
+    fi
+    n=$((n + 1))
+    if [ "$n" -le "$tries" ]; then sleep "${REMOTE_INSTALL_RETRY_DELAY:-5}"; fi
+  done
+  echo -e "  ${DIM}$label telepito utolso sorai:${NC}"
+  tail -n 15 "$log" 2>/dev/null | sed 's/^/    /'
+  rm -rf "$dir"
+  return 1
+}
+
+_install_bun_from_npm() {
+  if ! command -v npm >/dev/null 2>&1; then
+    warn "Bun (npm tartalek): az npm nem elerheto."
+    return 1
+  fi
+  ensure_global_npm_writable auto || true
+  local log rc=0 npm_prefix npm_bun real
+  if ! log="$(mktemp 2>/dev/null)" || [ -z "$log" ]; then
+    warn "Bun (npm tartalek): nem tudtam privat ideiglenes fajlt letrehozni (mktemp)."
+    return 1
+  fi
+  if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+    # Dani 73629: as root ONLY through root_npm_install_global (root-owned node and npm, a root-only dir chain, env -i,
+    # HOME=/var/root), never a plain `sudo npm`, which resolves npm and its config from the user's side. No time limit,
+    # as in the Claude step: a password-asking sudo needs the terminal, which a process group under _mac_timeout lacks.
+    if ! root_npm_install_global "bun@${BUN_PIN}" >"$log" 2>&1; then
+      rc=1
+      echo -e "  ${RED}✗${NC} $(_t macos.root_npm_bun_failed)"
+      echo "    sudo npm install -g bun@${BUN_PIN}"
+    fi
+    # the sudo login ends here, as after the Claude step
+    command /usr/bin/sudo -K 2>/dev/null || true
+  else
+    _mac_timeout "${REMOTE_INSTALL_TIMEOUT:-300}" npm install -g "bun@${BUN_PIN}" </dev/null >"$log" 2>&1 || rc=$?
+  fi
+  hash -r
+  # The bun this npm install put in, by npm's own prefix: `command -v bun` could name an older bun earlier on PATH
+  # (Dani 73434).
+  # An empty prefix would make this "/bin/bun" (Dani 73504, the TMPPROBE1108 Linux fix, ported): no prefix, no link.
+  npm_prefix="$(npm prefix -g 2>/dev/null || true)"
+  npm_bun="${npm_prefix:+$npm_prefix/bin/bun}"
+  if [ "$rc" = 0 ] && [ -n "$npm_bun" ] && [ -x "$npm_bun" ] && "$npm_bun" --version >/dev/null 2>&1; then
+    real="$(readlink -f "$npm_bun" 2>/dev/null || echo "$npm_bun")"
+    mkdir -p "$BUN_INSTALL/bin"
+    ln -sf "$real" "$BUN_INSTALL/bin/bun"
+    ln -sf bun "$BUN_INSTALL/bin/bunx"
+    rm -f "$log"
+    return 0
+  fi
+  warn "Bun (npm tartalek): sikertelen (kilepesi kod: $rc)."
+  echo -e "  ${DIM}Bun (npm tartalek) utolso sorai:${NC}"
+  tail -n 15 "$log" 2>/dev/null | sed 's/^/    /'
+  rm -f "$log"
+  return 1
+}
+
+_install_bun() {
+  if _run_remote_installer "Bun (GitHub-letoltes)" https://bun.sh/install _bun_present; then
+    ok "bun telepitve: $("$BUN_INSTALL/bin/bun" --version 2>/dev/null)"
+    return 0
+  fi
+  warn "A Bun GitHub-letoltese nem sikerult; tartalek: npm install -g bun@${BUN_PIN} (registry.npmjs.org)."
+  if _install_bun_from_npm && _bun_present; then
+    ok "bun telepitve (npm tartalek): $("$BUN_INSTALL/bin/bun" --version 2>/dev/null)"
+    return 0
+  fi
+  fail "A Bun telepitese nem sikerult: a GitHub-letoltes (bun.sh/install) es az npm-tartalek (bun@${BUN_PIN}) is bukott, az okot a fenti sorok mutatjak. Ellenorizd, hogy a gep eleri-e a github.com-ot vagy a registry.npmjs.org-ot, majd inditsd ujra a telepitest."
+}
+_bun_present() { [ -x "$BUN_INSTALL/bin/bun" ] && "$BUN_INSTALL/bin/bun" --version >/dev/null 2>&1; }
+BUN_PIN="1.4.4"
 
 # Check Claude Code CLI
 echo ""
@@ -275,7 +640,13 @@ if ! command -v claude &>/dev/null; then
       fail "$(_t npm.aborted)"
     fi
     if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
-      sudo npm install -g @anthropic-ai/claude-code
+      if ! root_npm_install_global @anthropic-ai/claude-code; then
+        echo -e "  ${RED}✗${NC} $(_t macos.root_npm_refused)"
+        echo "    sudo npm install -g @anthropic-ai/claude-code"
+        fail "$(_t npm.aborted)"
+      fi
+      # the sudo login ends here: the user-level steps below run no root step until the managed block
+      command /usr/bin/sudo -K 2>/dev/null || true
     else
       npm install -g @anthropic-ai/claude-code
     fi
@@ -299,7 +670,7 @@ INSTALL_STEP="claude-setup"
 # Bypass Permissions promptokon. Tehat a flag-set FOLY-RA `auth login`
 # ELOTT, hogy ezek a defensive default-ok mindenkeppen a helyukre keruljenek.
 mkdir -p "$HOME/.claude"
-python3 - <<'PYEOF'
+/usr/bin/python3 -I -S - <<'PYEOF'
 import json, os, pathlib
 p = pathlib.Path(os.path.expanduser("~/.claude.json"))
 data = {}
@@ -317,7 +688,7 @@ try:
 except Exception:
     pass
 PYEOF
-python3 - <<'PYEOF'
+/usr/bin/python3 -I -S - <<'PYEOF'
 import json, os, pathlib
 p = pathlib.Path(os.path.expanduser("~/.claude/settings.json"))
 data = {}
@@ -432,13 +803,17 @@ echo -e "${DIM}$(_t macos.channel_select_hint)${NC}"
 echo -e "  ${BOLD}1.${NC} $(_t macos.channel_option_1)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo -e "  ${BOLD}3.${NC} Discord"
+echo -e "  ${BOLD}4.${NC} $(_t channel_option_gromzo)"
 echo ""
-read -rp "$(_t prompt_channel_select_macos)" PROVIDER_CHOICE
+read -rp "$(_t prompt_channel_select4)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
 elif [ "$PROVIDER_CHOICE" = "3" ]; then
   CHANNEL_PROVIDER="discord"
+elif [ "$PROVIDER_CHOICE" = "4" ] || [ "$PROVIDER_CHOICE" = "gromzo" ]; then
+  # GROMZONOPROVIDER1108: the main agent talks only through Gromzo (no bot token, no Bun); accepted as 4 or by name.
+  CHANNEL_PROVIDER="gromzo"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -525,44 +900,17 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
   if [ -f "$MANAGED_FILE" ]; then
     managed_settings_notice
-    HAS_DISCORD=$(sudo python3 -c "
-import json, sys
-try:
-  d = json.load(open('$MANAGED_FILE'))
-  have = {(p.get('plugin'),p.get('marketplace')) for p in d.get('allowedChannelPlugins', [])}
-  sys.exit(0 if ('discord','claude-plugins-official') in have else 1)
-except: sys.exit(1)
-" 2>/dev/null && echo "yes" || echo "no")
-    if [ "$HAS_DISCORD" = "no" ]; then
+    # Read as the user (MACROOTFROMCLONE1106): an already-allowed discord needs no password.
+    if ! managed_has "$MANAGED_FILE" discord@claude-plugins-official; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      # Safe JSON merge (same shape as ensure-managed-channels-enabled.sh):
-      # tmp file + copymode + os.replace, so no interruption can leave a
-      # truncated managed-settings behind. And an org-policy file is NEVER
-      # rebuilt from scratch: on a parse failure we say so and leave it
-      # untouched -- a {} fallback would silently drop the OTHER channels'
-      # allowlist entries, muting them host-wide.
-      if sudo python3 - "$MANAGED_FILE" <<'DISCORDMERGEPY'
-import json, os, shutil, sys
-p = sys.argv[1]
-try:
-    d = json.load(open(p))
-except Exception as e:
-    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(d, dict):
-    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
-    sys.exit(1)
-plugins = d.get('allowedChannelPlugins', [])
-entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
-if entry not in plugins:
-    plugins.append(entry)
-d['allowedChannelPlugins'] = plugins
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-shutil.copymode(p, tmp)
-os.replace(tmp, p)
-DISCORDMERGEPY
+      # Merge only, the file is never created here: the shared writer
+      # (MANAGEDSETTINGSWRITE1103, scripts/lib/managed-settings-write.py).
+      # An org-policy file is NEVER rebuilt from scratch: one that is not a
+      # valid JSON object is left untouched and the call fails, because a {}
+      # fallback would silently drop the OTHER channels' allowlist entries,
+      # muting them host-wide. Every other key and the file mode stay; the
+      # write goes through a fresh mkstemp file and os.replace.
+      if managed_write "$MANAGED_FILE" --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
       else
@@ -572,6 +920,11 @@ DISCORDMERGEPY
       fi
     fi
   fi
+elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # GROMZONOPROVIDER1108: no bot, no token: the Gromzo channel is connected later from the Marveen Bridge.
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed a Gromzo alkalmazason at kommunikal veled; bot-token nem kell.${NC}"
+  echo -e "${DIM}  A Gromzot a Marveen Bridge-ben kotod be a telepites utan.${NC}"
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -604,54 +957,23 @@ else
     # the Teams bot is silently dropped (online but never replies). This is the
     # per-customer sudo-elimination: the installer (already sudo) allows teams
     # at install time, so no manual managed-settings edit is needed later.
-    HAS_ALL=$(sudo python3 -c "
-import json, sys
-required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace'),('discord','claude-plugins-official')]
-try:
-  d = json.load(open('$MANAGED_FILE'))
-  plugins = d.get('allowedChannelPlugins', [])
-  have = {(p.get('plugin'),p.get('marketplace')) for p in plugins}
-  sys.exit(0 if all(r in have for r in required) else 1)
-except: sys.exit(1)
-" 2>/dev/null && echo "yes" || echo "no")
-    if [ "$HAS_ALL" = "no" ]; then
+    # Read as the user (MACROOTFROMCLONE1106): a file that already allows all four needs no password.
+    if ! managed_has "$MANAGED_FILE" slack-channel@marveen-marketplace telegram@claude-plugins-official \
+      teams@marveen-marketplace discord@claude-plugins-official; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      # Safe JSON merge (same shape as the Discord branch / #1306): tmp file +
-      # copymode + os.replace, so no interruption can leave a truncated
-      # managed-settings behind. And an org-policy file is NEVER rebuilt from
-      # scratch: on a parse failure we say so and leave it untouched -- the old
+      # Additive merge through the shared writer (MANAGEDSETTINGSWRITE1103,
+      # scripts/lib/managed-settings-write.py; same call as the Discord branch).
+      # An org-policy file is NEVER rebuilt from scratch: one that is not a
+      # valid JSON object is left untouched and the call fails -- the old
       # empty-object fallback silently dropped every OTHER managed key
-      # (channelsEnabled, other allowlists) host-wide. The old shape also
-      # piped through `sudo tee`, which TRUNCATES the file even when the merge
-      # process fails -- a failed merge left an EMPTY org-policy file behind.
-      if sudo python3 - "$MANAGED_FILE" <<'SLACKMERGEPY'
-import json, os, shutil, sys
-p = sys.argv[1]
-required = [
-    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
-    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
-]
-try:
-    d = json.load(open(p))
-except Exception as e:
-    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(d, dict):
-    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
-    sys.exit(1)
-plugins = d.get('allowedChannelPlugins', [])
-for entry in required:
-    if not any(p2.get('plugin') == entry['plugin'] and p2.get('marketplace') == entry['marketplace'] for p2 in plugins):
-        plugins.append(entry)
-d['allowedChannelPlugins'] = plugins
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-shutil.copymode(p, tmp)
-os.replace(tmp, p)
-SLACKMERGEPY
+      # (channelsEnabled, other allowlists) host-wide, and the older `sudo tee`
+      # shape TRUNCATED the file even when the merge failed. Every other key and
+      # the file mode stay; the write goes through a fresh mkstemp file.
+      if managed_write "$MANAGED_FILE" \
+        --add-plugin slack-channel@marveen-marketplace \
+        --add-plugin telegram@claude-plugins-official \
+        --add-plugin teams@marveen-marketplace \
+        --add-plugin discord@claude-plugins-official
       then
         echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
       else
@@ -664,29 +986,19 @@ SLACKMERGEPY
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
-    sudo mkdir -p "$MANAGED_DIR"
-    # Fresh file: still tmp + os.replace, so an interrupted install can never
-    # leave a truncated/empty org-policy file that a later run would then
-    # refuse to touch (the merge above declines unparseable files by design).
-    if sudo python3 - "$MANAGED_FILE" <<'SLACKCREATEPY'
-import json, os, sys
-p = sys.argv[1]
-required = [
-    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
-    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
-    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
-]
-tmp = p + '.tmp'
-with open(tmp, 'w') as f:
-    f.write(json.dumps({'allowedChannelPlugins': required}, indent=2) + "\n")
-# A fresh tmp inherits the caller's umask; under `umask 077` that leaves a
-# root-owned 0600 policy the unprivileged session cannot read, so the channel
-# policy silently never takes effect (the exact trap documented in
-# scripts/ensure-managed-channels-enabled.sh) -- pin the world-readable mode.
-os.chmod(tmp, 0o644)
-os.replace(tmp, p)
-SLACKCREATEPY
+    /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR"
+    # Fresh file through the same shared writer (--create): a fresh mkstemp file
+    # and os.replace, so an interrupted install can never leave a truncated or
+    # empty org-policy file that a later run would then refuse to touch (the
+    # merge above declines unparseable files by design). A new file gets 0644
+    # whatever the umask: under `umask 077` a root-owned 0600 policy is one the
+    # unprivileged session cannot read, so it silently never takes effect. If a
+    # file appeared meanwhile, --create merges into it instead of replacing it.
+    if managed_write "$MANAGED_FILE" --create \
+      --add-plugin slack-channel@marveen-marketplace \
+      --add-plugin telegram@claude-plugins-official \
+      --add-plugin teams@marveen-marketplace \
+      --add-plugin discord@claude-plugins-official
     then
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
     else
@@ -701,23 +1013,35 @@ fi
 # >= 2.1.205 silently drops channel-plugin INBOUND notifications on a team/
 # enterprise org unless managed-settings has channelsEnabled:true (harmless /
 # no-op on a personal org). Idempotent + preserves existing managed keys.
+# MACROOTFROMCLONE1106: the embedded writer does it, not the clone's
+# scripts/ensure-managed-channels-enabled.sh (that script ran the clone's writer as root). Its separate
+# call stays separate from the plugin merge above, so an allowlist the writer refuses never keeps
+# channelsEnabled from being set. ORGGATESILENT806: never fails the install, and the outcome reaches the
+# final summary (CHANNELS_GATE_STATE).
 CHANNELS_GATE_STATE="manual"
-if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+MANAGED_DIR="/Library/Application Support/ClaudeCode"
+MANAGED_FILE="$MANAGED_DIR/managed-settings.json"
+if managed_has "$MANAGED_FILE" --channels; then
+  echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
+  CHANNELS_GATE_STATE="ok"
+else
   managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
-  # ORGGATESILENT806: the gate script must never fail the install (exit 0 on
-  # every path -- a personal org is a legitimate no-op), but its OUTCOME must
-  # not vanish either: it prints a MARVEEN_CHANNELS_GATE=ok|manual verdict
-  # line, and the final summary below repeats it -- with the exact root
-  # command when manual. Silent skipping was the bug, not skipping.
-  CHANNELS_GATE_OUT="$(bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" 2>&1 || true)"
-  # The verdict line is machine-facing; the customer sees only the human lines.
-  echo "$CHANNELS_GATE_OUT" | grep -v "MARVEEN_CHANNELS_GATE=" || true
-  case "$CHANNELS_GATE_OUT" in
-    *MARVEEN_CHANNELS_GATE=ok*) CHANNELS_GATE_STATE="ok" ;;
-    *) CHANNELS_GATE_STATE="manual" ;;
-  esac
+  if /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled; then
+    echo "  channelsEnabled=true beallitva a managed-settings-ben ($MANAGED_FILE)"
+    echo "    (a bejovo channel-uzenetek team/enterprise orgnal is celba ernek; restart utan lep eletbe.)"
+    CHANNELS_GATE_STATE="ok"
+  else
+    echo "  ! channelsEnabled: a managed-settings frissitese sikertelen (a zaro osszegzes mondja a kezi lepest)."
+  fi
 fi
+
+# MACROOTFROMCLONE1106: the LAST root step is above. From here on clone code runs (npm install and the build,
+# the sourced helpers, the clone's scripts), so first the sudo login goes and the password the Bridge passed
+# in (headless-sudo-macos.sh) is unset. `command` keeps this line out of the Bridge's sudo -> run_priv rewrite.
+command /usr/bin/sudo -K 2>/dev/null || true
+unset __MARVEEN_SUDO_PW
+unset -f run_priv
 
 read -rp "$(_t prompt_bot_name)" BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
@@ -790,6 +1114,23 @@ resolve_service_node() {
 }
 
 # Step 5: Install dependencies
+INSTALL_STEP="bun-install"
+# GROMZONOPROVIDER1108: Bun only for a channel plugin that runs on it (telegram, discord); Slack and Gromzo run on Node.
+# MACROOTFROMCLONE1106 still holds: the profile is never sourced; bun's installer only adds its bin dir to it.
+case "$CHANNEL_PROVIDER" in
+  telegram|discord)
+    if command -v bun &>/dev/null; then
+      ok "bun mar telepitve: $(bun --version)"
+    else
+      echo -e "  ${ORANGE}$(_t macos.installing_bun)${NC}"
+      _install_bun
+    fi
+    ;;
+  *)
+    ok "Bun nem kell (${CHANNEL_PROVIDER}: a csatorna Node-on fut)"
+    ;;
+esac
+
 INSTALL_STEP="npm-install"
 echo ""
 echo -e "${BOLD}$(_t section_5)${NC}"
@@ -918,6 +1259,8 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
     env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
   fi
+elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  : # GROMZONOPROVIDER1108: no token keys
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
   env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
@@ -980,27 +1323,35 @@ else
   # Probe the way a SERVICE runs: isolated config dir (so the Keychain and the
   # operator's shell cannot make a broken install look healthy) carrying ONLY
   # the credential the launchd units will get.
-  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
-  # A 401 here is the VERDICT this gate exists to report, not an installer
-  # error. Unguarded, the capture reached the ERR trap and on_error() exited 1 --
-  # blaming the enclosing `fi` -- so the BROKEN branch below (and its
-  # `scripts/auth.sh` hint) was unreachable in exactly the case it was written
-  # for. `&& ... || ...` keeps the failure out of the trap and preserves rc.
-  _probe_rc=0
-  if [ -n "$_svc_token" ]; then
-    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
-      CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+  # TMPPROBE1108 (Dani 73504): no fixed /tmp fallback name. This dir is claude's CLAUDE_CONFIG_DIR next to the SERVICE
+  # token; a predictable one another local user created first could carry a settings.json whose hooks run commands
+  # with it. Without a private dir the probe is skipped and the state is UNKNOWN (said below).
+  _probe_cfg="$(mktemp -d 2>/dev/null)" || _probe_cfg=""
+  if [ -z "$_probe_cfg" ]; then
+    warn "Az auth-proba kimarad: nem tudtam privat ideiglenes konyvtarat letrehozni (mktemp -d)."
+    INSTALL_AUTH_STATE="UNKNOWN"
   else
-    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
-      ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    # A 401 here is the VERDICT this gate exists to report, not an installer
+    # error. Unguarded, the capture reached the ERR trap and on_error() exited 1 --
+    # blaming the enclosing `fi` -- so the BROKEN branch below (and its
+    # `scripts/auth.sh` hint) was unreachable in exactly the case it was written
+    # for. `&& ... || ...` keeps the failure out of the trap and preserves rc.
+    _probe_rc=0
+    if [ -n "$_svc_token" ]; then
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    else
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    fi
+    _probe_out=${_probe_out:0:200}
+    if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+      INSTALL_AUTH_STATE="OK"
+    else
+      INSTALL_AUTH_STATE="BROKEN"
+    fi
+    rm -rf "$_probe_cfg" 2>/dev/null || true
   fi
-  _probe_out=${_probe_out:0:200}
-  if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
-    INSTALL_AUTH_STATE="OK"
-  else
-    INSTALL_AUTH_STATE="BROKEN"
-  fi
-  rm -rf "$_probe_cfg" 2>/dev/null || true
 fi
 unset _svc_token _svc_apikey
 
@@ -1023,16 +1374,19 @@ case "$INSTALL_AUTH_STATE" in
 esac
 echo -e "  ${GREEN}✓${NC} $(_t macos.dirs_created)"
 
+# SEEDRENDERLITERAL1108 / PERSONARENDERLITERAL1108: the persona renders and the seeding loops below render through the
+# shared lib (scripts/lib/seed-refresh.sh render_seed_template / render_persona_file): a name typed here with &, / or \
+# goes in literally, a failed render never truncates its target, and the seeded bytes are the ones the seed refresh
+# compares against later. The lib ships in this tree; without it the tree is broken.
+[ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ] && . "$INSTALL_DIR/scripts/lib/seed-refresh.sh"
+command -v render_persona_file >/dev/null 2>&1 || fail "scripts/lib/seed-refresh.sh is missing: the install tree is incomplete"
+
 # Generate CLAUDE.md from template
 if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
-  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-      -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-      -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
-      -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-      -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-      -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-      "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
+  # PERSONARENDERLITERAL1108: the shared literal render, through a temp file (the target is never truncated)
+  RENDER_CHAT_ID="$CHAT_ID" RENDER_TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")" \
+    render_persona_file "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template decide)" "$INSTALL_DIR/CLAUDE.md" \
+    || fail "CLAUDE.md could not be rendered from its template; nothing was written"
   echo -e "  ${GREEN}✓${NC} $(_t macos.claude_md_generated)"
 else
   echo -e "  ${ORANGE}⚠${NC} CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
@@ -1042,9 +1396,8 @@ fi
 # Sub-agents get theirs from the LLM generator, but the main agent didn't
 # have one before, so the dashboard showed "Nincs SOUL.md".
 if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
-  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-      -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-      "$INSTALL_DIR/templates/SOUL.md.template" > "$INSTALL_DIR/SOUL.md"
+  render_persona_file "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" SOUL.md.template decide)" "$INSTALL_DIR/SOUL.md" \
+    || fail "SOUL.md could not be rendered from its template; nothing was written"
   echo -e "  ${GREEN}✓${NC} $(_t macos.soul_md_generated)"
 elif [ ! -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
   echo -e "  ${ORANGE}⚠${NC} SOUL.md.template nem talalhato, SOUL.md nem generalhato"
@@ -1074,12 +1427,8 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       mkdir -p "$target/$sub"
       for f in "$tpl$sub"*; do
         [ -f "$f" ] || continue
-        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$f" > "$target/$sub$(basename "$f")"
+        # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+        render_seed_template < "$f" > "$target/$sub$(basename "$f")"
       done
     done
     INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
@@ -1089,7 +1438,8 @@ fi
 
 # Setup channel state directory
 CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
-mkdir -p "$CHANNEL_DIR"
+# GROMZONOPROVIDER1108: gromzo keeps no channel state here (no token, no access.json), so no empty dir for it.
+[ "$CHANNEL_PROVIDER" = "gromzo" ] || mkdir -p "$CHANNEL_DIR"
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   (umask 077 && echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > "$CHANNEL_DIR/.env")
@@ -1138,7 +1488,11 @@ ACCESSEOF
 fi
 
 # Install channel plugin
-if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
+# GROMZONOPROVIDER1108: on gromzo there is no channel plugin to install here (the Bridge's Gromzo step brings it).
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  PLUGIN_ID=""
+  ok "Gromzo: a csatorna-plugint a Bridge Gromzo-lepese hozza (itt nincs mit telepiteni)"
+elif [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
@@ -1152,6 +1506,9 @@ else
   PLUGIN_SHORT="slack-channel"
 fi
 
+if [ -z "$PLUGIN_ID" ]; then
+  :
+else
 echo -e "  ${CHANNEL_PROVIDER} plugin telepites..."
 claude plugin marketplace add "$PLUGIN_MARKETPLACE" 2>/dev/null || true
 if claude plugin install "$PLUGIN_ID" 2>/dev/null; then
@@ -1168,16 +1525,16 @@ else
     echo ""
   fi
 fi
-
-# Enable plugin at project scope so --channels can boot-time activate it
-cd "$INSTALL_DIR"
-if claude plugin enable "$PLUGIN_SHORT@marveen-marketplace" --scope project 2>/dev/null || \
-   claude plugin enable "$PLUGIN_ID" --scope project 2>/dev/null; then
-  ok "${CHANNEL_PROVIDER} plugin project-scope-ban engedelyezve"
-else
-  warn "Plugin project-scope enable sikertelen. Futtasd kezzel:"
-  echo -e "  ${DIM}cd $INSTALL_DIR && claude plugin enable ${PLUGIN_ID} --scope project${NC}"
 fi
+
+# INSTALLDIRTYTREE1103: NO `claude plugin enable --scope project` here. That
+# call rewrote the TRACKED .claude/settings.json (the whole file reformatted, ~500
+# lines, plus a wrong "<provider>@marveen-marketplace" key for Telegram/Discord),
+# so every fresh install left a dirty tree and every later update had to stash.
+# channels.sh enables the primary plugin for the main session through its
+# launch-time --settings file (store/.main-extra-plugins.settings.json), which
+# outranks the project scope and is gitignored.
+cd "$INSTALL_DIR"
 
 # Install skill-factory (self-learning meta-skill)
 SKILLS_DIR="$HOME/.claude/skills"
@@ -1185,6 +1542,14 @@ if [ -d "$INSTALL_DIR/skills/skill-factory" ]; then
   mkdir -p "$SKILLS_DIR/skill-factory"
   cp -r "$INSTALL_DIR/skills/skill-factory/"* "$SKILLS_DIR/skill-factory/"
   echo -e "  ${GREEN}✓${NC} $(_t macos.skill_factory_installed)"
+fi
+
+# PERSONAESC1107 seed A: the seeders' language (scripts/lib/seed-lang.sh, read only: the persona render above decided it).
+# On en a seeded Markdown file comes from i18n/en/<its repo path> when that exists. Without the lib, Hungarian as before.
+SEED_LANG=hu
+if [ -f "$INSTALL_DIR/scripts/lib/seed-lang.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/seed-lang.sh"
+  SEED_LANG="$(seed_lang "$INSTALL_DIR")"
 fi
 
 # Seed skills: fleet-level skills from seed-skills/ into ~/.claude/skills/
@@ -1204,7 +1569,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     mkdir -p "$target"
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
+      seed_src="$f"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$(basename "$f")" "${SEED_LANG:-hu}")"
+      cp "$seed_src" "$target/$(basename "$f")"
     done
     # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
     # verbatim and with their mode bits; its SKILL.md points into them.
@@ -1215,7 +1582,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
       case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
       mkdir -p "$target/$(dirname "$rel")"
-      cp -p "$skill_dir$rel" "$target/$rel"
+      seed_src="$skill_dir$rel"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$rel" "${SEED_LANG:-hu}")"
+      cp -p "$seed_src" "$target/$rel"
     done
     SEED_NEW=$((SEED_NEW + 1))
   done
@@ -1249,12 +1618,10 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       mkdir -p "$target/$sub"
       for f in "$tpl$sub"*; do
         [ -f "$f" ] || continue
-        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$f" > "$target/$sub$(basename "$f")"
+        seed_src="$f"
+        command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
+        # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+        render_seed_template < "$seed_src" > "$target/$sub$(basename "$f")"
       done
     done
     INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
@@ -1527,6 +1894,9 @@ DASHBOARD_PLIST="com.${SERVICE_ID}.dashboard"
 CHANNELS_PLIST="com.${SERVICE_ID}.channels"
 
 # Dashboard service
+# ISSUE2490 (b1): TERM and LANG exactly as the channels plist below. After a reboot either job can be the one that
+# creates the tmux server (the dashboard's worker session often wins, agent-worker.ts), and the server's global
+# environment is its creator's: without these the whole fleet ran in a server with no TERM and no LANG.
 cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1555,6 +1925,10 @@ cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
     <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+    <key>LANG</key>
+    <string>${LANG:-en_US.UTF-8}</string>
   </dict>
   <key>SoftResourceLimits</key>
   <dict>
@@ -1749,7 +2123,9 @@ if { [ "$CHANNEL_PROVIDER" = "telegram" ] || [ "$CHANNEL_PROVIDER" = "discord" ]
   echo -e "  ${DIM}Utana: source ~/.zshrc && ./scripts/start.sh${NC}"
 fi
 PLUGIN_CHECK_PATTERN="${CHANNEL_PROVIDER}"
-if ! claude plugin list 2>/dev/null | grep -q "$PLUGIN_CHECK_PATTERN"; then
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  ok "Gromzo: a csatorna-plugint a Bridge Gromzo-lepese ellenorzi"
+elif ! claude plugin list 2>/dev/null | grep -q "$PLUGIN_CHECK_PATTERN"; then
   echo -e "  ${RED}✗${NC} ${CHANNEL_PROVIDER} plugin nincs telepítve."
   echo -e "  ${BOLD}Javitas:${NC} claude plugin install ${PLUGIN_ID}"
   echo -e "  ${DIM}Utana: ./scripts/stop.sh && ./scripts/start.sh${NC}"
@@ -1875,9 +2251,18 @@ DASH_TOKEN=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
-if [ -n "$DASH_TOKEN" ]; then
+# INSTSTDERRTMP1104: the token URL only to a terminal, the same rule the server
+# keeps (src/web.ts). Redirected (the Bridge, a CI log, `> file`), the line would
+# leave a root-equivalent credential in whatever captured it.
+if [ -n "$DASH_TOKEN" ] && [ -t 1 ]; then
   echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
+elif [ -n "$DASH_TOKEN" ]; then
+  _hint="$(_t dash.token_file_hint)"
+  # An older install-lang.sh (standalone run) answers an unknown key with the key itself.
+  [ "$_hint" = "dash.token_file_hint" ] && _hint="  (store/.dashboard-token)"
+  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
+  echo -e "  ${DIM}${_hint}${NC}"
 else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
   echo -e "  ${DIM}$(_t dash.no_token_hint)${NC}"
@@ -1887,7 +2272,8 @@ if [ "${CHANNELS_GATE_STATE:-manual}" = "ok" ]; then
   echo -e "  ${GREEN}✓${NC} Org-szintu channel-kapu: channelsEnabled=true a managed-settings-ben"
 else
   echo -e "  ${ORANGE}!${NC} Org-szintu channel-kapu NINCS beallitva (team/enterprise orgnal a bejovo uzenetek elakadnak)."
-  echo -e "    Kezi root-lepes: ${BOLD}sudo bash \"$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh\"${NC}"
+  # MACROOTFROMCLONE1106: the key itself, not a clone script to run as root.
+  echo -e "    Kezi root-lepes: a ${BOLD}/Library/Application Support/ClaudeCode/managed-settings.json${NC} fajlba (rootkent szerkesztve) keruljon: ${BOLD}\"channelsEnabled\": true${NC}"
 fi
 echo ""
 echo -e "  ${DIM}$(_t next_steps.title)${NC}"

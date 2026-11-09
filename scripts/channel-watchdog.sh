@@ -105,6 +105,18 @@ SESSION="${MAIN_AGENT_ID}-channels"
 # respawn the same CLAUDE_CONFIG_DIR the main agent is actually running under.
 CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+# INSTALLDIRTYTREE1103: the primary plugin id, mapped EXACTLY as channels.sh's
+# resolve_plugin_ids() does. It used to be "<provider>@claude-plugins-official"
+# for every provider, which is not the Slack/WhatsApp/Teams id; it also goes into
+# the --settings file below, now the only place the primary gets enabled.
+case "$CHANNEL_PROVIDER" in
+  slack)    PRIMARY_PLUGIN_ID="slack-channel@marveen-marketplace" ;;
+  whatsapp) PRIMARY_PLUGIN_ID="whatsapp@marveen-marketplace" ;;
+  teams)    PRIMARY_PLUGIN_ID="teams@marveen-marketplace" ;;
+  discord)  PRIMARY_PLUGIN_ID="discord@claude-plugins-official" ;;
+  gromzo)   PRIMARY_PLUGIN_ID="gromzo-channel@gromzo-local" ;;
+  *)        PRIMARY_PLUGIN_ID="telegram@claude-plugins-official" ;;
+esac
 # Extra co-listen plugins, derived EXACTLY as channels.sh does (see the
 # EXTRA_CHANNELS block there). Without this a watchdog respawn silently drops
 # every secondary provider: the session comes back on the primary channel only,
@@ -114,16 +126,53 @@ CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 # respawn dropped the secondary inbound for ~20 minutes while the primary kept
 # working, so neither the probes nor the agent itself noticed.
 CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+# GROMZOMAINAGENT1106: the same gromzo filter and launch exports as channels.sh. The slug is read raw from
+# .env here: MAIN_AGENT_ID above is stripped to [a-zA-Z0-9_-] for the session name, which is not mxd's rule.
+_GZ_MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+GROMZO_ENV=""
+# shellcheck source=scripts/main-gromzo-launch.sh
+if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+  # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+  CHANNEL_PLUGINS_EXTRA="$(main_gromzo_filter_ids "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+  # shellcheck disable=SC2086
+  GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+else
+  # No helper (a half-updated tree): every other extra (Slack co-listen) stays; only the gromzo id goes, since
+  # it must never start without its exports (Dani 71308 (2)).
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+fi
+# GROMZONOPROVIDER1108: on a gromzo install the Gromzo plugin is the PRIMARY (never also an extra), exactly as in
+# channels.sh: with its exports when the main agent can take it, else a gromzo-pending respawn without it.
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+  if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$_GZ_MAIN_ID"; then
+    GROMZO_ENV="$(main_gromzo_env "$_GZ_MAIN_ID" "$PRIMARY_PLUGIN_ID")"
+  else
+    GROMZO_ENV=""
+    PRIMARY_PLUGIN_ID=""
+  fi
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+if [ -n "$PRIMARY_PLUGIN_ID" ]; then
+  CHANNELS_ARG="--channels plugin:${PRIMARY_PLUGIN_ID}${EXTRA_CHANNELS}"
+elif [ -n "$EXTRA_CHANNELS" ]; then
+  CHANNELS_ARG="--channels${EXTRA_CHANNELS}"
+else
+  CHANNELS_ARG=""
+fi
 # SLACKDMVESZT1006: same --settings file as channels.sh, or the respawn comes
 # back with the extras disabled by the project scope.
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
 # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
-EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PRIMARY_PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
@@ -253,7 +302,9 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
-      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
+      # APIKEYSCOPE1107: an own login unsets BOTH inherited credentials, as channels.sh and the monitor do;
+      # without it the pane-auth file (sourced first) would hand this login the fleet token and the key.
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan -- same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token. See channels.sh's identical
@@ -265,7 +316,15 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
-  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
+  # MAINAUTH1107: the credential this respawn runs on, decided and written by the same module the boot and the
+  # dashboard use (pane-auth file + post-file + key approval), right before the respawn. Only the config-dir mode
+  # the respawn really uses (CFG_ENV set) counts. No contract line = the files the last launch wrote stay.
+  _ma_mode=""; _ma_dir=""
+  if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
+  _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+  _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
+  [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line
 fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does
@@ -280,6 +339,7 @@ case "$CHANNEL_PROVIDER" in
   whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
   teams)    STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  gromzo)   STATE_ENV_VAR="GROMZO_STATE_DIR" ;;  # no state dir: STATE_DIR_ENV stays empty (no .env)
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
 MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
@@ -290,7 +350,16 @@ STATE_DIR_ENV=""
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
 # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+# APIKEYSCOPE1107: the respawned main session sources the same 0600 pane-auth file channels.sh wrote for it
+# (TOKENARGV929: the token, and the key whenever .env has one; nothing in argv). Until now a respawn got its
+# credentials only from the tmux server global env, and the key no longer lives there on a subscription install.
+# BEFORE CFG_ENV, so an own-login mode (explicit/rotated) unsets both again and an isolated/token mode exports
+# its own token over it. A missing file is not an error (the chain goes on).
+PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth"); } && "
+# MAINAUTH1107: the post-file right AFTER CFG_ENV (api: the token unset; subscription: the key unset), so neither the
+# config branch nor the tmux global env can add the other credential back.
+PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

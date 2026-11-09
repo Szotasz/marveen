@@ -46,7 +46,7 @@ describe('the probe matches the CONFIGURED provider, not a hardcoded telegram', 
   it('filters candidate pollers by the resolved provider dir', () => {
     const pollerScan = src.split('\n').find((l) => l.includes('ps -axo pid,command'))
     expect(pollerScan, 'poller scan line not found').toBeDefined()
-    expect(pollerScan).toContain('"/${CHANNEL_PROVIDER}/"')
+    expect(pollerScan).toContain('"/${PROBE_PLUGIN_SEG}/"')
     expect(pollerScan).not.toContain("'/telegram/'")
   })
 })

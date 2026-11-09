@@ -495,6 +495,9 @@ nav { display: flex; gap: 4px; }
 }
 .team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
 .team-node-meta { font-size: 12px; color: var(--text-muted); }
+/* Owner-written tagline: it says what the agent does, so it reads stronger
+   than the muted role line it replaces, and wraps instead of widening the node. */
+.team-node-tagline { color: var(--text); text-align: center; overflow-wrap: anywhere; }
 .team-connector {
   width: 2px;
   height: 16px;
@@ -862,6 +865,35 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Board summary strip (card ed3c8caf, #569): same look as the ongoing strip. */
+.kanban-summary[hidden] { display: none; }
+.kanban-summary {
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border-left: 3px solid #3b82f6;
+}
+.kanban-summary-head { display: flex; align-items: center; gap: 10px; cursor: pointer; flex-wrap: wrap; }
+.kanban-summary-totals { font-size: 13px; color: var(--text-muted); }
+.kanban-summary-body { display: grid; gap: 6px; margin-top: 8px; }
+.kanban-summary-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.kanban-summary-who { font-size: 13px; font-weight: 600; color: var(--text); min-width: 90px; }
+.kanban-summary-kind { font-size: 12px; color: var(--text-muted); margin-left: 4px; }
+.kanban-summary-kind-stuck { color: #d97706; }
+.kanban-summary-more { font-size: 12px; color: var(--text-muted); }
+.kanban-summary-chip {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border, transparent);
+  border-radius: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.kanban-summary-chip:hover { border-color: #3b82f6; }
 /* Ongoing tasks strip: one slim row above the board (see KANBAN_ONGOING_LABEL). */
 .kanban-ongoing[hidden] { display: none; }
 .kanban-ongoing {
@@ -1928,6 +1960,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agent-model-badge.opus { background: rgba(217,119,87,0.12); color: var(--accent); }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
+/* The agent's custom provider was deleted: it will not start until it gets another model. */
+.agent-model-badge.provider-missing { background: var(--danger-soft); color: var(--danger); }
 
 /* Context-window-used badge (Agents grid card). Tiers mirror context-guard's
    own default actPct/hardPct (90%/97%) -- see contextPctBadgeHtml in app.js. */
@@ -2760,6 +2794,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .hint { font-weight: 400; color: var(--text-muted); }
 
+/* Base look for a .input field outside a styled container: without it the field
+   was the browser's unstyled white box (the Vault add forms, the Background
+   tasks and Ideas filters, the idea detail selects). No width, so nothing moves;
+   the container rules (.form-group input, .notes-form .input, ...) are more
+   specific and keep their own look. */
+.input {
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+.input:focus { border-color: var(--accent); }
+
 .form-group input,
 .form-group textarea,
 .form-group select {
@@ -3009,6 +3060,16 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .badge-paused {
   background: rgba(217, 119, 87, 0.12);
   color: var(--accent);
+}
+.badge-not-firing {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.schedule-not-firing {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .badge-heartbeat {
   background: rgba(200, 80, 120, 0.12);
@@ -3592,6 +3653,15 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.5;
+}
+/* Card 3ddb2b1d (#572): the title line above the one-line snippet. */
+.mem-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
 }
 .mem-content-short {
   white-space: nowrap;
@@ -4770,14 +4840,33 @@ a.oss-inv-name:hover { text-decoration: underline; }
   margin-left: 6px;
 }
 
+/* The inputs take a full row each and the buttons wrap under them, right
+   aligned: in one row an input's intrinsic width pushed Save/Cancel out past
+   the card's right edge. */
 .vault-card-edit-form {
-  padding: 10px 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
   align-items: center;
 }
-.vault-card-edit-form .input { flex: 1; }
+.vault-card-edit-form .input { flex: 1 1 100%; }
+/* .input has no base style, so these fields were the browser's white box. */
+.vault-card-edit-form .input,
+.connector-external-add .input {
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+.vault-card-edit-form .input:focus,
+.connector-external-add .input:focus { border-color: var(--accent); }
 
 /* === SSH Vault Section === */
 .ssh-section {
@@ -4786,6 +4875,7 @@ a.oss-inv-name:hover { text-decoration: underline; }
   border-top: 1px solid var(--border);
 }
 .ssh-key-store-section { margin-top: 28px; }
+.vault-secrets-header { margin-top: 28px; }
 
 /* Key assign select in card/table */
 .ssh-key-select {
@@ -5201,6 +5291,8 @@ a.oss-inv-name:hover { text-decoration: underline; }
 }
 .modal-close:hover { color: var(--text); }
 .modal-body { padding: 16px 20px; }
+/* The class's display:flex outranks the browser's [hidden] default; the keygen and scan modals hide their footer. */
+.modal-footer[hidden] { display: none; }
 .modal-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 12px; }
 .modal-footer {
   display: flex;
@@ -7612,13 +7704,9 @@ a.oss-inv-name:hover { text-decoration: underline; }
   line-height: 1.4;
 }
 
-/* === Gromzo card: owner QR (GROMZOOWNERQR1030) === */
+/* === Gromzo card (GROMZOOWNERQR1030; its owner QR moved to the Bridge, GROMZOBRIDGEWIZARD1107 D5a) === */
 .gromzo-card .gromzo-status { font-size: 13px; color: var(--text-muted); margin: 6px 0 12px; }
 .gromzo-card .mobile-login-warn { text-align: left; margin-top: 10px; }
-.gromzo-qr-area { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 14px; }
-.gromzo-qr-area[hidden] { display: none; }
-.gromzo-qr-area .mobile-login-warn, .gromzo-qr-area .modal-desc { text-align: center; max-width: 420px; }
-.gromzo-countdown { font-size: 13px; font-variant-numeric: tabular-nums; margin: 0; }
 .gromzo-owner-info { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 4px 0 14px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-card); }
 .gromzo-owner-info[hidden] { display: none; }
 .gromzo-owner-info-text { margin: 0; font-size: 13px; color: var(--text); }
@@ -7636,6 +7724,9 @@ a.oss-inv-name:hover { text-decoration: underline; }
 .gromzo-agent-state.is-warn { color: var(--accent); }
 .gromzo-agent-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
 .gromzo-agent-row .btn-compact { min-height: 36px; }
+/* GROMZONAMETAKEN1106: the agent's name on Gromzo, shown on a row after a name refusal. */
+.gromzo-agent-namefield { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; font-size: 12px; color: var(--text-muted); max-width: 360px; }
+.gromzo-agent-namefield input { width: 100%; }
 
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
@@ -8018,6 +8109,16 @@ body {
 }
 .mv-auth-card button:hover { background: var(--accent-hover); }
 .mv-auth-card button:disabled { opacity: 0.6; cursor: default; }
+/* The overlay's second button (Cancel, or Later on the Bridge offer) reads as the shared secondary button, centered;
+   the rule above would otherwise paint it as a second primary. */
+.mv-auth-card button.btn-secondary {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  justify-content: center;
+}
+.mv-auth-card button.btn-secondary:hover { background: var(--bg-input); border-color: var(--accent); color: var(--accent); }
 .mv-auth-err {
   color: var(--danger);
   font-size: 13px;
@@ -8416,3 +8517,63 @@ body {
 }
 .gromzo-card > summary.gromzo-summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text-muted); user-select: none; }
 .gromzo-card[open] > summary.gromzo-summary { margin-bottom: 8px; color: var(--text); }
+
+/* Card ca046c9a (#570): hot memories with no write for N days. */
+.mem-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid #dc3c3c;
+  background: rgba(220, 60, 60, 0.06);
+}
+.mem-stale-banner button { margin-left: auto; }
+/* display:flex above would beat the hidden attribute: an empty red strip on every other tab. */
+.mem-stale-banner[hidden] { display: none; }
+/* Card f9242cd3 (#571): the FELULIRJA chain. */
+.mem-chain { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+.mem-chain-chip {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  background: transparent;
+  color: #6a9bcc;
+  border: 1px solid rgba(106, 155, 204, 0.5);
+}
+.mem-chain-chip.partial { border-style: dashed; }
+.mem-chain-chip.replaced { color: #b07a1e; border-color: rgba(176, 122, 30, 0.5); }
+.mem-ref-preview {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-left: 3px solid rgba(106, 155, 204, 0.6);
+  background: rgba(106, 155, 204, 0.06);
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mem-ref-preview-head { font-weight: 600; margin-bottom: 4px; opacity: .8; }
+.mem-use-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: var(--text-secondary, #888);
+  border: 1px solid rgba(128, 128, 128, 0.35);
+}
+.mem-use-badge.none {
+  opacity: 0.6;
+  font-style: italic;
+}
+.mem-stale-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: #dc3c3c;
+  border: 1px solid rgba(220, 60, 60, 0.45);
+}

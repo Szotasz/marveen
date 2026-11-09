@@ -27,6 +27,7 @@ import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY } from './hook-registration-guard.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { injectDbWriteGate, injectEmailSendGate, pythonHookCommand, isUnsafeHookCommand, EMAIL_GATE_MATCHER } from './agent-scaffold.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -480,6 +481,57 @@ export function withFleetFreezeGate(settings: WorkerSettings): WorkerSettings {
   return { ...settings, hooks: { ...hooks, PreToolUse: preToolUse } }
 }
 
+// ENVRELAXGATE1104 (Samu 67818, Marveen 67806). Lives here, not in agent-scaffold.ts: these entries reach the two
+// workers ONLY, never a sub-agent (sub-agents keep the email-send-gate's hard deny). The two workers (marveen-worker, marveen-worker-fast) run the main
+// agent's runAgent prompts (heartbeat, daily digest, second review, schedule prompts) on untrusted text, with Bash and
+// Write, in their own CLAUDE_CONFIG_DIR. The main agent's tracked project settings never reach them (their cwd is
+// outside the install), so only the fleet-freeze gate ran there. This puts the outgoing-copy gate on them the way the
+// main agent carries it, on Bash and the email tools. EMAIL_GATE_MATCHER already starts with `Bash|`, so ONE entry
+// covers both (two entries would run the gate twice on every Bash call). The Telegram/Discord copy entries are left
+// out: the worker has every channel plugin disabled. The command is absolute (the tracked file's $CLAUDE_PROJECT_DIR
+// form would point into the worker's own home there). The send side is the sub-agents' hard email-send-gate (see
+// withWorkerGates), not the main agent's approval gate.
+export const WORKER_MAIL_GATE_MATCHER = EMAIL_GATE_MATCHER
+
+function injectWorkerMailGate(existing: Record<string, unknown>, script: string): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', script))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    // same dedupe discipline as injectTelegramCopyGate: only this script under this matcher is replaced
+    ...prev.filter((e) => !(JSON.stringify(e).includes(script) && (e as { matcher?: unknown })?.matcher === WORKER_MAIL_GATE_MATCHER)),
+    { matcher: WORKER_MAIL_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] },
+  ]
+}
+
+export function injectWorkerCopyGate(existing: Record<string, unknown>): void {
+  injectWorkerMailGate(existing, 'outgoing-copy-gate.py')
+}
+
+/**
+ * ENVRELAXGATE1104 (Samu 67818, 67900): the worker's gates, written into its own settings on every boot. The
+ * fleet-freeze gate stays FIRST; then the db-write-gate and the email-send-gate (both the sub-agents' own generators)
+ * and the outgoing-copy gate on Bash and the email tools. The email-send-gate is the sub-agents' HARD one, not the
+ * main agent's approval gate (Dani 67895, least privilege): a worker has no legitimate send, a send is always refused,
+ * a draft is held to the recipient ledger, and no approval request would appear under the main agent's name. Every
+ * other entry is kept, and none is duplicated.
+ *
+ * The worker's hook has CLAUDE_PROJECT_DIR = its own home (ctx.home, outside the install), so the db-write-gate takes
+ * it for a sub-agent: its sub-agent list applies (the install .env, the gate-rule files, the shared ~/.claude
+ * settings, its own config dir's settings). That is right: it works on untrusted text.
+ */
+export function withWorkerGates(settings: WorkerSettings): WorkerSettings {
+  const out = withFleetFreezeGate(settings)
+  injectDbWriteGate(out)
+  injectEmailSendGate(out)
+  injectWorkerCopyGate(out)
+  return out
+}
+
 /**
  * Build (idempotently) the worker's isolated cwd + CLAUDE_CONFIG_DIR:
  *  - empty project .mcp.json (defense in depth);
@@ -487,8 +539,9 @@ export function withFleetFreezeGate(settings: WorkerSettings): WorkerSettings {
  *    (so auth/transcripts/marketplaces stay shared, persona memory does not);
  *  - settings.json with every channel plugin disabled (no 409);
  *  - .credentials.json seeded from the host login (subscription auth);
- *  - .claude.json with projects[ctx.home] mirroring projects[PROJECT_ROOT]
- *    so the worker inherits Marveen's project-scoped MCP servers.
+ *  - .claude.json with projects[ctx.home] mirroring projects[PROJECT_ROOT],
+ *    but with NO user-scope MCP server and only the allowlisted mail server
+ *    of the project scope (buildWorkerClaudeJson, WORKERMCPSEND1104).
  * No CLAUDE.md is written here: the cwd is outside PROJECT_ROOT, so the worker
  * boots with a neutral context.
  */
@@ -551,7 +604,12 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   // skipDangerousModePermissionPrompt: suppress the "Bypass Permissions mode"
   // first-run warning so the headless worker (launched with
   // --dangerously-skip-permissions) reaches its prompt without a blocking modal.
-  writeFileSync(settingsPath, JSON.stringify(withFleetFreezeGate({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }), null, 2) + '\n')
+  // WORKERMCPSEND1104 part 2: the kept mail server's non-reading tools denied by name; disableAllHooks and env dropped.
+  // The same kept server is the ONLY entry of the strict MCP config the worker is launched with.
+  const keptMcp = existsSync(join(homedir(), '.claude.json')) ? workerMcpServers() : {}
+  const mailServers = Object.keys(keptMcp)
+  writeFileSync(workerMcpConfigPath(ctx), JSON.stringify({ mcpServers: keptMcp }, null, 2) + '\n', { mode: 0o600 })
+  writeFileSync(settingsPath, JSON.stringify(withWorkerGates(withWorkerMailDeny({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }, mailServers)), null, 2) + '\n')
 
   // Subscription auth: materialise the host login JSON as .credentials.json AND
   // clear the stale path-hashed Keychain entry that would shadow it (see the
@@ -573,16 +631,12 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
     const homeClaudeJson = join(homedir(), '.claude.json')
     const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
-    stampWorkerFirstRun(parsed)
-    const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
-    const base = (projects[PROJECT_ROOT] && typeof projects[PROJECT_ROOT] === 'object')
-      ? projects[PROJECT_ROOT] as Record<string, unknown>
-      : {}
-    const trusted = { ...base, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
     const keys = new Set<string>([ctx.home])
     try { keys.add(realpathSync(ctx.home)) } catch { /* dir may not resolve yet */ }
-    for (const k of keys) projects[k] = { ...trusted }
-    parsed.projects = projects
+    const { droppedUser, droppedProject } = buildWorkerClaudeJson(parsed, PROJECT_ROOT, keys, tryResolveFromPath('npx'))
+    if (droppedUser.length || droppedProject.length) {
+      logger.info({ droppedUser, droppedProject }, 'worker: MCP servers left out of the worker config (only the allowlisted mail server stays)')
+    }
     writeFileSync(join(ctx.configDir, '.claude.json'), JSON.stringify(parsed, null, 2) + '\n', { mode: 0o600 })
   } catch (err) {
     logger.warn({ err }, 'worker: failed to materialise .claude.json (worker may park on a first-run modal)')
@@ -602,6 +656,162 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
  * Pure (mutates the parsed object only) so it is unit-testable; idempotent and
  * harmless on CC versions that do not know these keys.
  */
+// WORKERMCPSEND1104: the MCP servers a worker may keep. The only worker prompt that uses MCP is the heartbeat, and it
+// only READS mail (src/heartbeat.ts); no worker prompt uses any other server. A server stays only when its launch has
+// EXACTLY this shape: `npx` (or the host's resolved npx path), then only -y/--yes flags, then one of these packages
+// (an optional @version suffix allowed), and nothing after it (Dani's #2499 review: an "any argv word" match kept a
+// `sh -c ...` or another package that merely named this one), a plain version or `latest` only after the @, and no
+// env key or unknown config key (the #2499 delta). Every other server, and every non-stdio (url) server, drops out. Fail-closed: an install with another mail server loses mail in the heartbeat, visibly.
+export const WORKER_MAIL_MCP_PACKAGES: readonly string[] = ['@gongrzhe/server-gmail-autoauth-mcp']
+
+// What may follow `<package>@`: a plain semver version or the `latest` tag. Any other npm spec after the @ (an
+// `npm:` alias, a URL, `file:`, `github:`) installs something else under the allowlisted name (Dani's #2499 delta).
+const PLAIN_VERSION_RE = /^(?:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?|latest)$/
+
+/** Is this npx argument exactly an allowlisted package, bare or with a plain @version / @latest? */
+function isAllowlistedPackageSpec(token: string): boolean {
+  return WORKER_MAIL_MCP_PACKAGES.some((pkg) =>
+    token === pkg || (token.startsWith(pkg + '@') && PLAIN_VERSION_RE.test(token.slice(pkg.length + 1))))
+}
+
+// The config keys a kept mail server may carry. An `env` with any key drops the entry: NODE_OPTIONS or
+// npm_config_* change what npx runs, and the mail server needs none (measured on this install: an empty env).
+const WORKER_MCP_CONFIG_KEYS = new Set(['type', 'command', 'args', 'env'])
+function hasOnlyPlainConfig(c: Record<string, unknown>): boolean {
+  if (!Object.keys(c).every((k) => WORKER_MCP_CONFIG_KEYS.has(k))) return false
+  if (c.env === undefined) return true
+  return !!c.env && typeof c.env === 'object' && !Array.isArray(c.env) && Object.keys(c.env as object).length === 0
+}
+
+const NPX_YES_FLAGS = new Set(['-y', '--yes'])
+
+/** Is this launch exactly `npx [-y|--yes]... <allowlisted package>[@version]`? */
+function isAllowlistedMailLaunch(command: string, args: unknown[], npxPath: string | null): boolean {
+  if (command !== 'npx' && !(npxPath && command === npxPath)) return false
+  if (!args.every((a) => typeof a === 'string')) return false
+  const words = args as string[]
+  let i = 0
+  while (i < words.length && NPX_YES_FLAGS.has(words[i])) i++
+  return i === words.length - 1 && isAllowlistedPackageSpec(words[i])
+}
+
+/**
+ * Splits project MCP servers into the ones a worker keeps (the allowlisted mail server) and the dropped names.
+ * npxPath: the host's resolved npx (an absolute path), accepted as the command besides the bare `npx`.
+ */
+export function filterWorkerMcpServers(servers: unknown, npxPath: string | null = null): { kept: Record<string, unknown>; dropped: string[] } {
+  const kept: Record<string, unknown> = {}
+  const dropped: string[] = []
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return { kept, dropped }
+  for (const [name, cfg] of Object.entries(servers as Record<string, unknown>)) {
+    const c = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg as { type?: unknown; command?: unknown; args?: unknown; url?: unknown } : null
+    const stdio = !!c && (c.type === undefined || c.type === 'stdio') && c.url === undefined && typeof c.command === 'string'
+    const args = stdio ? (c!.args === undefined ? [] : c!.args) : null
+    if (stdio && Array.isArray(args) && hasOnlyPlainConfig(c as Record<string, unknown>) && isAllowlistedMailLaunch(c!.command as string, args, npxPath)) kept[name] = cfg
+    else dropped.push(name)
+  }
+  return { kept, dropped }
+}
+
+/**
+ * The worker's .claude.json from the host's (parsed ~/.claude.json): the first-run chrome pre-accepted, the
+ * user-scope MCP servers REMOVED (WORKERMCPSEND1104: they reached every worker), and projects[<worker home keys>]
+ * mirroring projects[projectRoot] trusted, with only the allowlisted mail server kept. Pure; mutates `parsed`.
+ * Returns the dropped server names (names only, for the log).
+ */
+export function buildWorkerClaudeJson(
+  parsed: { projects?: Record<string, unknown>; mcpServers?: unknown; hasCompletedOnboarding?: boolean; [k: string]: unknown },
+  projectRoot: string,
+  homeKeys: Iterable<string>,
+  npxPath: string | null = null,
+): { droppedUser: string[]; droppedProject: string[] } {
+  stampWorkerFirstRun(parsed)
+  const droppedUser = (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers))
+    ? Object.keys(parsed.mcpServers as Record<string, unknown>)
+    : []
+  parsed.mcpServers = {}
+  const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
+  const base = (projects[projectRoot] && typeof projects[projectRoot] === 'object')
+    ? projects[projectRoot] as Record<string, unknown>
+    : {}
+  const { kept, dropped } = filterWorkerMcpServers(base.mcpServers, npxPath)
+  const trusted = { ...base, mcpServers: kept, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
+  for (const k of homeKeys) projects[k] = { ...trusted }
+  parsed.projects = projects
+  return { droppedUser, droppedProject: dropped }
+}
+
+// WORKERMCPSEND1104 part 2: the kept mail server's tools, classified. A worker may only READ mail (the heartbeat's
+// search); every other tool of the server is denied by name in the worker's own settings. Deny binds in bypass mode,
+// an allow cannot carve out of a deny, so a per-tool deny list is the documented form; a test pins the server's
+// measured tool list against these two sets, and an unknown tool name fails it (fail-closed classification).
+export const WORKER_MAIL_READ_TOOLS: readonly string[] = ['search_emails', 'read_email', 'list_email_labels', 'list_filters', 'get_filter']
+export const WORKER_MAIL_DENIED_TOOLS: readonly string[] = [
+  'send_email', 'draft_email', 'modify_email', 'batch_modify_emails', 'delete_email', 'batch_delete_emails',
+  'create_label', 'update_label', 'delete_label', 'get_or_create_label',
+  'create_filter', 'create_filter_from_template', 'delete_filter', 'download_attachment',
+]
+
+/** 'read' or 'deny' for a known mail-server tool; 'unknown' otherwise (a test fails on it). */
+export function classifyWorkerMailTool(tool: string): 'read' | 'deny' | 'unknown' {
+  if (WORKER_MAIL_READ_TOOLS.includes(tool)) return 'read'
+  if (WORKER_MAIL_DENIED_TOOLS.includes(tool)) return 'deny'
+  return 'unknown'
+}
+
+/** The server segment of an MCP tool name as Claude Code builds it: characters other than [A-Za-z0-9_-] become `_`. */
+export function mcpServerSegment(server: string): string {
+  return server.replace(/[^A-Za-z0-9_-]/g, '_')
+}
+
+// The keys a worker's settings.json must not carry: disableAllHooks switches its gates off, env rewrites the
+// environment of the worker and of every MCP server it starts (NODE_OPTIONS, npm_config_*). The same two keys the
+// agent scaffold drops on spawn (#2497); here ensureWorkerCwd drops them on every worker start.
+export const WORKER_SETTINGS_STRIPPED_KEYS: readonly string[] = ['disableAllHooks', 'env']
+
+/**
+ * The worker settings with the stripped keys gone and permissions.deny carrying one entry per denied mail tool of each
+ * kept mail server. Earlier entries of that shape are replaced, never duplicated; every other deny entry is kept.
+ * Pure (returns a new object).
+ */
+export function withWorkerMailDeny(settings: WorkerSettings, mailServers: string[]): WorkerSettings {
+  const out: WorkerSettings = { ...settings }
+  for (const k of WORKER_SETTINGS_STRIPPED_KEYS) delete out[k]
+  const perms = (out.permissions && typeof out.permissions === 'object' && !Array.isArray(out.permissions)
+    ? { ...(out.permissions as Record<string, unknown>) }
+    : {}) as Record<string, unknown>
+  const isOurs = (e: unknown) => typeof e === 'string' && /^mcp__.+__(.+)$/.test(e) && WORKER_MAIL_DENIED_TOOLS.includes(e.replace(/^mcp__.+__/, ''))
+  const prev = Array.isArray(perms.deny) ? (perms.deny as unknown[]).filter((e) => !isOurs(e)) : []
+  const ours = mailServers.flatMap((srv) => WORKER_MAIL_DENIED_TOOLS.map((t) => `mcp__${mcpServerSegment(srv)}__${t}`))
+  perms.deny = [...prev, ...ours]
+  out.permissions = perms
+  return out
+}
+
+/** The MCP servers a worker keeps (the allowlisted mail server), from the host's ~/.claude.json; none on any error. */
+export function workerMcpServers(hostClaudeJson: string = join(homedir(), '.claude.json'), npxPath: string | null = tryResolveFromPath('npx')): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(readFileSync(hostClaudeJson, 'utf-8')) as { projects?: Record<string, { mcpServers?: unknown }> }
+    return filterWorkerMcpServers(parsed.projects?.[PROJECT_ROOT]?.mcpServers, npxPath).kept
+  } catch {
+    return {}
+  }
+}
+
+/** The names of the mail servers a worker keeps (none on any read error). */
+export function workerMailServerNames(hostClaudeJson: string = join(homedir(), '.claude.json'), npxPath: string | null = tryResolveFromPath('npx')): string[] {
+  return Object.keys(workerMcpServers(hostClaudeJson, npxPath))
+}
+
+/**
+ * WORKERMCPSEND1104 part 2 (measured 2026-11-04, work/workermcpsend-docs.md): the worker starts with
+ * --strict-mcp-config --mcp-config <this file>, which loads ONLY the servers in the file: no user-scope server, no
+ * project .mcp.json, no ancestor .mcp.json. ensureWorkerCwd writes it on every start with the kept mail server alone.
+ */
+export function workerMcpConfigPath(ctx: { configDir: string }): string {
+  return join(ctx.configDir, 'worker-mcp.json')
+}
+
 export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
   parsed.hasCompletedOnboarding = true
   const seen = Number(parsed.fullscreenUpsellSeenCount)
@@ -714,7 +924,9 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `${ROOT_SANDBOX_ENV}; ` +
     customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
-    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)} ` +
+    // WORKERMCPSEND1104 part 2: only the servers in the worker's own MCP config, nothing from any other source.
+    `--strict-mcp-config --mcp-config ${shArg(workerMcpConfigPath(ctx))}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --

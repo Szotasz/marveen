@@ -63,20 +63,23 @@ check("_fit_output threads reply_tool through to _build_output", "reply_tool" in
 import subprocess
 import tempfile
 
-REPLAY = os.path.join(HOOKS, "ledger-replay.py")
-
-
 def replay_output(source):
+    # A tmp install (<tmp>/scripts linked to the repo's): the hooks' ledger DB is
+    # <tmp>/store/claudeclaw.db; no environment variable picks it (ENVRELAXGATE1104).
     with tempfile.TemporaryDirectory() as tmp:
-        env = dict(os.environ, LEDGER_DB_PATH=os.path.join(tmp, "ledger.db"),
-                   MARVEEN_AGENT_ID="replay-e2e", MAIN_AGENT_ID="replay-e2e")
+        os.makedirs(os.path.join(tmp, "store"))
+        os.symlink(os.path.dirname(HOOKS), os.path.join(tmp, "scripts"))
+        tmp_hooks = os.path.join(tmp, "scripts", "hooks")
+        REPLAY = os.path.join(tmp_hooks, "ledger-replay.py")
+        env = dict(os.environ, MARVEEN_AGENT_ID="replay-e2e", MAIN_AGENT_ID="replay-e2e")
+        env.pop("LEDGER_DB_PATH", None)
         seed = (
             "import sys; sys.path.insert(0, sys.argv[1]); import ledger_lib;"
             "src = sys.argv[2] or None;"
             "ledger_lib.log_inbound('replay-e2e', '4242', '1', 'nyitott kerdes',"
             " '2026-09-25T10:00:00Z', source=src)"
         )
-        subprocess.run([sys.executable, "-c", seed, HOOKS, source or ""],
+        subprocess.run([sys.executable, "-c", seed, tmp_hooks, source or ""],
                        env=env, check=True, cwd=tmp)
         res = subprocess.run([sys.executable, REPLAY], input=json.dumps({"cwd": tmp}),
                              env=env, cwd=tmp, capture_output=True, text=True, timeout=60)

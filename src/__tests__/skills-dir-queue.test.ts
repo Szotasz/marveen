@@ -257,7 +257,8 @@ describe('skill directory operations run one at a time', () => {
     await waitForLog('zip start')
     // The delete queues at once; the assign reads its body first, so it queues behind it.
     const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s6')
-    const asg = call(tryHandleSkills, 'POST', '/api/skills/s6/assign', { agents: ['a1'] })
+    // The owner's browser login: skill assign needs the owner (OWNERGATE3-1104); the gate itself is owner-gate-round3.test.ts.
+    const asg = call(tryHandleSkills, 'POST', '/api/skills/s6/assign', { agents: ['a1'] }, { kind: 'session' })
     const [e, d, a] = await Promise.all([exp, del, asg])
     expect(e.status).toBe(200)
     expect(d.status).toBe(200)

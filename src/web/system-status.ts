@@ -29,6 +29,7 @@ import { readConfiguredMainModel } from './channel-monitor.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
 import { readMarveenTelegramConfig } from './telegram.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
+import { resolveOwnerIdentity, ownerUnsetNotice } from '../owner-identity.js'
 import { readGateConfig } from './context-restart-gate-store.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, type QuotaSnapshot, type QuotaWindow } from './quota.js'
 import { getAgentRunningSince } from './agent-process.js'
@@ -251,6 +252,7 @@ const PLUGIN_PATCHES = [
   { name: 'quote', marker: 'MARVEEN-PATCH(quote1101)', label: ' (idézet-részlet)', fallback: 'egy idézett válasznál az idézett részlet nem jut el az ágenshez' },
   { name: 'silent', marker: 'MARVEEN-PATCH(tgsilent)', label: ' (hangtalan válasz)', fallback: 'minden válasz hanggal érkezik, a státuszüzenetek is' },
   { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
+  { name: 'pairtext', marker: 'MARVEEN-PATCH(pairtext)', label: ' (párosítás-szöveg)', fallback: 'a párosításnál a bot Claude Code-ot mond, a jóváhagyás viszont a dashboardon van' },
   { name: 'invis', marker: 'MARVEEN-PATCH(invis1024)', label: ' (láthatatlan karakterek)', fallback: 'a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket' },
 ]
 // Switchable (TELEGRAM_TOPICS_ENABLED): expected only when the last channel
@@ -465,6 +467,15 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
             // The cache may or may not carry the leading @ -- normalise, never double it.
             const bot = cfg.botUsername ? `@${cfg.botUsername.replace(/^@+/, '')}` : notMeasurable('a bot neve még nincs lekérdezve')
             return `${bot} · tulajdonos chat: ${chat ?? notMeasurable('nincs ALLOWED_CHAT_ID')}`
+          },
+        },
+        {
+          // OWNERAUTHGUESS1106 (Samu 71849): the owner works from the dashboard, so a switched-off command gate is
+          // shown here, with where to set the owner.
+          label: 'Chat-parancsok', source: 'TELEGRAM_OWNER_USER_ID + ALLOWED_CHAT_ID + channels/telegram/access.json',
+          collect: () => {
+            const identity = resolveOwnerIdentity()
+            return ownerUnsetNotice(identity) ?? (identity.chatId ? 'engedélyezve (a gazda azonosítva)' : notMeasurable('nincs párosított gazda'))
           },
         },
         {

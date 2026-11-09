@@ -29,12 +29,13 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { mcpFileTargets } from './hooks/mcp-file-targets.mjs'
 
 // The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
 const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
@@ -414,7 +415,7 @@ const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 // passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
   const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
-  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)))
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)), ctx?.rgConfigNamed)
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -448,21 +449,29 @@ const PROTECTED_MENTION_RX =
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
 // `mentions(text)` says whether a text names the protected object.
-function readOnlyMentionAllowed(seg, mentions) {
+// `rgConfigNamed`: the WHOLE command names RIPGREP_CONFIG_PATH (an export or an assignment in another segment
+// reaches rg too, Dani 71589), so rg is no read anywhere in it.
+function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   const s = String(seg ?? '').trim()
   if (!mentions(s)) return true
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
   const cmd = (words[i] ?? '').replace(/^.*\//, '')
-  if (!ALLOWLIST_READERS.has(cmd)) return false
+  // `git grep` reads too (EGRESSFP1106 (c)), in the narrow form gitGrepReadOnly accepts; a leading VAR=x in front of
+  // git (GIT_PAGER, GIT_CONFIG_PARAMETERS, ...) can make it run a program, so then it is not a read.
+  const gitRead = cmd === 'git' && i === 0 && gitGrepReadOnly(words.slice(i + 1))
+  if (!ALLOWLIST_READERS.has(cmd) && !gitRead) return false
+  // rg runs a program with --pre (EGRESSFP1106, Samu 71567), and a RIPGREP_CONFIG_PATH prefix can bring --pre in from
+  // a file: then it is not a read.
+  if (cmd === 'rg' && (rgConfigNamed || !rgReadOnly(words.slice(i + 1), i > 0))) return false
   // A command substitution inside the read runs a command of its own: each piece after a `$(` or a backtick (to its
   // `)`, the naive segments may have cut it) is measured with this same rule (Dani 57649: `echo $(cp /tmp/a
   // <allowlist>)` passed as a read).
   if (/\$\(|`/.test(s)) {
     for (const piece of s.split(/\$\(|`/).slice(1)) {
       const inner = piece.split(')')[0].replace(/^["'\s]+|["'\s]+$/g, '')
-      if (inner && !readOnlyMentionAllowed(inner, mentions)) return false
+      if (inner && !readOnlyMentionAllowed(inner, mentions, rgConfigNamed)) return false
     }
   }
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
@@ -473,8 +482,167 @@ function readOnlyMentionAllowed(seg, mentions) {
   return true
 }
 
-export function protectedStoreBashSegmentAllowed(seg) {
-  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text))
+export function protectedStoreBashSegmentAllowed(seg, ctx) {
+  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
+}
+
+// EGRESSFP1106 (c): `git grep` only reads, except where git runs a program of its choosing:
+//   - -O / --open-files-in-pager[=<pager>] opens the matches in a pager it RUNS (also inside a short-option
+//     cluster, -nO..., and as an abbreviation, --open..., which git's option parser accepts);
+//   - -c <name>=<value> / --config-env set any config (core.pager, alias.*, ...) for this run;
+//   - -p / --paginate and any other global option this list does not know: refused, not interpreted.
+// The accepted global options are -C <dir>, --no-pager, -P, --no-optional-locks, --git-dir=, --work-tree=.
+// `words` are the words after `git`, split on whitespace like readOnlyMentionAllowed's (a quoted pattern may span
+// several words: they are read as more arguments, so a stray -O spelling in a pattern refuses, never admits).
+export function gitGrepReadOnly(words) {
+  let k = 0
+  for (; k < words.length; k++) {
+    const w = words[k]
+    if (w === '-C') { k++; continue }
+    if (w === '--no-pager' || w === '-P' || w === '--no-optional-locks') continue
+    if (/^--(?:git-dir|work-tree)=/.test(w)) continue
+    break // anything else ends the accepted global options, and only `grep` may stand here (so -c, -p: refused)
+  }
+  if (words[k] !== 'grep') return false
+  for (const w of words.slice(k + 1)) {
+    if (/^-[^-]/.test(w) && w.includes('O')) return false
+    const long = w.startsWith('--') ? w.slice(2).split('=')[0] : null
+    if (long !== null && /^o/.test(long) && 'open-files-in-pager'.startsWith(long)) return false
+    // --textconv runs the textconv program the config names, with the file as its argument (Dani 71554, git 2.50.1).
+    // Its abbreviations count from --textc (--text alone is -a, a read).
+    if (long !== null && long.length >= 5 && /^textc/.test(long) && 'textconv'.startsWith(long)) return false
+  }
+  return true
+}
+
+// rg is a reader, except --pre <program> / --pre=<program> (rg runs it on every file), and any environment prefix
+// (RIPGREP_CONFIG_PATH names a config file that may hold --pre). --pre-glob only narrows --pre; --pretty is a read.
+const RG_CONFIG_ENV_RX = /RIPGREP_CONFIG_PATH/
+// a bare HOME word: not $HOME / ${HOME} (a read), not part of a longer name (HOMEBREW_X, MY_HOME)
+const HOME_TOUCH_RX = /(?<![$\w{])HOME(?!\w)/
+export function rgReadOnly(words, envPrefix = false) {
+  if (envPrefix) return false
+  return !words.some((w) => w === '--pre' || w.startsWith('--pre='))
+}
+
+// EGRESSFP1106 (a): the segments the protected-store and allowlist rules judge. A separator inside a quoted string
+// is no separator: `grep -n "a\|b" f` is one grep, but the naive split made `b" f` a command of its own, which is no
+// reader, so a plain grep from the project root was denied. The cut is made on maskInertLiterals' mask (same
+// length as the joined source) and every segment keeps its ORIGINAL text, so a quoted name is still read as a
+// mention. Fail-closed to the naive split, which only ever cuts MORE:
+//   - unresolved quoting (an unterminated quote, a "$(...)" or backtick in double quotes) -> naive;
+//   - any heredoc -> naive: a heredoc body is one masked region, and `bash <<EOF` with an `echo` first and a
+//     `cp ... <allowlist>` on the next body line would otherwise read as one echo.
+export function protectedSegments(command) {
+  return protectedSplit(command).segs
+}
+
+// protectedSegments plus what the definite-assignment rule needs: the separator after each segment ('' after the
+// last) and the mask. `quoteAware` false = the naive fallback, where no separator is known.
+function protectedSplit(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const heredocs = []
+  const masked = maskInertLiterals(src, heredocs)
+  if (masked == null || masked.length !== src.length || heredocs.length) {
+    return { segs: splitSegments(command), seps: null, masked: null, quoteAware: false }
+  }
+  const segs = []
+  const seps = []
+  let start = 0
+  for (const m of masked.matchAll(SEGMENT_SEP_RX)) {
+    segs.push(src.slice(start, m.index).trim())
+    seps.push(m[0] === '\n' ? ';' : m[0])
+    start = m.index + m[0].length
+  }
+  segs.push(src.slice(start).trim())
+  seps.push('')
+  return { segs, seps, masked, quoteAware: true }
+}
+
+// EGRESSFP1106 (b): a variable that is DEFINITELY a literal when a segment runs is read only as that literal there,
+// not also as "any text". Without this, `L=/abs/dir; ... cd <root> && docker run -v $L/out:/out ...` read `$L/out`
+// as `*/out`, and from the project root `*` can be local-hooks. Rule (Samu 71460), all of it, else the unresolved
+// reading STAYS:
+//   - the command has no subshell, group, substitution or compound command: no unquoted ( ) { } or backtick (a
+//     `${NAME}` is fine), and no segment starts with if/then/elif/else/fi/for/while/until/do/done/case/esac/
+//     select/function/coproc;
+//   - no segment can set a variable another way: source, `.`, eval, read, mapfile, readarray, getopts, unset,
+//     export, local, declare, typeset, readonly, let, `printf -v`;
+//   - the name is assigned exactly ONCE in the whole command (NAME= or NAME+=, quoted text excluded), in a segment
+//     that is only literal NAME=value words, and the use comes after it;
+//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES, any BASH*/ZSH*: Dani 71554);
+//   - every separator from that assignment to the use is && or ; (or a newline);
+//   - from the last ; before the assignment up to it there is no || (`a || F=x && use $F` can run use without F);
+//   - the separator right before the assignment is not a pipe or & (that would run it in a subshell).
+// Returns, per segment, a Map name -> literal value.
+const COMPOUND_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select', 'function', 'coproc', '{', '}', '(', ')', '((', '[[' ])
+// Names the SHELL itself sets or rewrites: an assignment to one is no definite literal. `PWD=/tmp/q; cd .; cp -R x/.
+// $PWD` copies into the real cwd (cd resets PWD; measured in bash and zsh, Dani 71554), `cd /` resets OLDPWD, and $_,
+// RANDOM, SECONDS, LINENO ... change on their own. zsh's lower-case twins (dirstack, cdpath, ...) are listed too; any
+// BASH* / ZSH* name is excluded by prefix.
+const SHELL_MANAGED_NAMES = new Set(['PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH', 'cdpath', 'IFS', 'RANDOM', 'SRANDOM',
+  'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID', 'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG',
+  'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path', 'argv', 'status', 'psvar',
+  'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
+const VAR_SETTERS = new Set(['source', '.', 'eval', 'read', 'mapfile', 'readarray', 'getopts', 'unset', 'export', 'local', 'declare', 'typeset', 'readonly', 'let'])
+export function definiteAssignments(split) {
+  const none = split.segs.map(() => new Map())
+  if (!split.quoteAware) return none
+  const shape = split.masked.replace(/\$\{[A-Za-z_]\w*\}/g, '')
+  if (/[(){}`]/.test(shape)) return none
+  const firstWords = split.segs.map((s) => {
+    const w = s.split(/\s+/)
+    let i = 0
+    while (i < w.length && /^[A-Za-z_]\w*\+?=/.test(w[i])) i++
+    return { cmd: w[i] ?? '', rest: w.slice(i + 1) }
+  })
+  for (const { cmd, rest } of firstWords) {
+    if (COMPOUND_WORDS.has(cmd) || VAR_SETTERS.has(cmd)) return none
+    if (cmd === 'printf' && rest.includes('-v')) return none
+  }
+  // assignments of each name anywhere in the unquoted text
+  const counts = new Map()
+  for (const m of split.masked.matchAll(/(?:^|[\s;&|])([A-Za-z_]\w*)\+?=/g)) counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
+  // literal-only assignment segments
+  const defs = [] // { at, name, value }
+  split.segs.forEach((s, at) => {
+    const words = shellWords(s)
+    if (!words || !words.length) return
+    const pairs = []
+    for (const w of words) {
+      const m = ASSIGN_RX.exec(w.value)
+      if (!m || w.dollar) return
+      const v = w.value.slice(m[0].length)
+      if (/[$`\u0000]/.test(v)) return
+      pairs.push([m[1], v])
+    }
+    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !/^(?:BASH|ZSH)_?/.test(name)) defs.push({ at, name, value })
+  })
+  const out = split.segs.map(() => new Map())
+  for (const d of defs) {
+    const before = d.at > 0 ? split.seps[d.at - 1] : ';'
+    if (!['&&', ';'].includes(before)) continue
+    // no || from the last ; before the assignment
+    let k = d.at - 1
+    let orBefore = false
+    while (k >= 0 && split.seps[k] !== ';') { if (split.seps[k] === '||') orBefore = true; k-- }
+    if (orBefore) continue
+    // A CONDITIONAL assignment (an && before it in its own ;-list: `false && F=x`) resolves only inside that && chain.
+    // Past a ; the use runs whether or not the assignment did, with F empty: `false && F=x; cp a ${F}local-hooks/b`
+    // writes into the protected dir (Samu 71530). An unconditional one (first in its list) holds for the rest.
+    const conditional = before === '&&'
+    for (let u = d.at + 1; u < split.segs.length; u++) {
+      if (!['&&', ';'].includes(split.seps[u - 1])) break
+      if (conditional && split.seps[u - 1] === ';') break
+      out[u].set(d.name, d.value)
+    }
+  }
+  return out
+}
+
+function substituteDefinite(text, definite) {
+  if (!definite?.size) return text
+  return text.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)(?!\w)/g, (m, a, b) => definite.has(a ?? b) ? definite.get(a ?? b) : m)
 }
 
 // Does a native file-tool call target one of the protected store files? By name anywhere
@@ -533,9 +701,16 @@ export function cwdAfterSegment(seg, ctx) {
   if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
   const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
   if (name === 'popd' || !arg || arg.dollar || /[$`*?[]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
+  // a ~ under a HOME the command set itself is not the real home (EGRESSHOME1106); ~+ / ~- / ~N are the cwd, the
+  // previous cwd and the dir stack (Dani 71720), never the home: unknown here
+  if ((ctx.homeTouched && arg.value.startsWith('~')) || DIR_TILDE_WORD_RX.test(arg.value)) { ctx.cwd = null; return }
   const target = expandHome(arg.value)
   ctx.cwd = target.startsWith('/') ? resolve(target) : (ctx.cwd ? resolve(ctx.cwd, target) : null)
 }
+
+// ~+, ~-, ~N, ~+N, ~-N at a word start, followed by / or the word's end (bash and zsh tilde expansion, Dani 71720)
+const DIR_TILDE_RX = /(^|[\s=:'"])~(?:[+-]?\d+|[+-])(?=\/|$|[\s;&|'"])/g
+const DIR_TILDE_WORD_RX = /^~(?:[+-]?\d+|[+-])(?:\/|$)/
 
 function substituteAssignments(text, assigns) {
   const used = [...(assigns?.keys() ?? [])].filter((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(text))
@@ -555,8 +730,17 @@ function substituteAssignments(text, assigns) {
 
 // Does this text spell a protected name? See "WHAT MENTIONS MEANS" above.
 export function protectedMention(text, ctx) {
-  // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve
-  const src = String(text ?? '').replace(/\$(?=['"])/g, '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve -- unless the command gives HOME
+  // a value of its own (EGRESSHOME1106, Dani 71590): then $HOME, ${HOME} and a leading ~ stay unresolved (any text),
+  // since `HOME=.; cp -R x/. $HOME` (or `~`) writes into the cwd, not the real home.
+  // A word-start ~+ (= $PWD), ~- (= $OLDPWD), ~N / ~+N / ~-N (the dir stack) is always unresolved: it is the cwd or a
+  // directory the gate does not track, so `cp -R x/. ~+` from the root writes into the root (Dani 71720).
+  const unquoted = String(text ?? '').replace(/\$(?=['"])/g, '').replace(DIR_TILDE_RX, '$1$PWD')
+  const raw = ctx?.homeTouched
+    ? unquoted.replace(/(^|[\s=:'"])~(?=\/|$|[\s;&|'"])/g, '$1$HOME')
+    : unquoted.replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  // a variable that is definitely a literal here (definiteAssignments, EGRESSFP1106 (b)) has no unresolved reading
+  const src = substituteDefinite(raw, ctx?.definite)
   for (const t of substituteAssignments(src, ctx?.assigns)) {
     if (scheduleSurfaceVariants(t).some(mentionsProtectedName)) return true
     // implicit or `+` concatenation glued, every other quote kept as a word break:
@@ -575,9 +759,24 @@ export function protectedMention(text, ctx) {
 // as a mention.
 const DIR_WRITERS = new Set(['cp', 'mv', 'ln', 'install', 'rsync', 'tar', 'bsdtar', 'gtar', 'unzip', 'cpio', 'patch', 'ditto', '7z', '7za'])
 
+// A curl header argument, `-H "Name: value"`, is a header, never a path, so what its
+// value expands to cannot name a protected file. The fleet's documented dashboard call,
+// `-H "Authorization: Bearer $(cat store/.dashboard-token)"`, was denied from the project
+// root: the substitution stood for any text, and there `*` could be local-hooks. The
+// argument POSITION decides, not the file's content (reading the content at gate time
+// races a command that rewrites the file before its own substitution runs, review on
+// #2495). Only a double-quoted value that opens with a fixed header name, and whose
+// expansions are plain variables or a `$(cat PATH)` / `$(< PATH)` read: a substitution
+// that runs anything else keeps the whole argument unresolved.
+const CURL_HEADER_ARG_RX = /(^|\s)(?:-H|--header)(?:\s+|=)"[A-Za-z][\w-]*:(?:[^"`$\\]|\$\(\s*(?:cat\s+|<\s*)[\w./@+-]+\s*\)|\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*)*"(?=\s|$)/g
+function inertCurlHeaders(src) {
+  const first = src.trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? ''
+  return first.replace(/^.*\//, '') === 'curl' ? src.replace(CURL_HEADER_ARG_RX, '$1-H HEADER') : src
+}
+
 // A glob, brace or unresolved word that can expand onto a protected name.
 function protectedPatternWord(text, ctx) {
-  const src = String(text).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, '')
+  const src = inertCurlHeaders(String(text).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, ''))
   // An unresolved expansion is read as any text. One that STARTS a word may be an
   // absolute path, so that word has no known parent directory.
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
@@ -805,7 +1004,7 @@ function dquoteEnd(src, from) {
   return -1
 }
 
-export function maskInertLiterals(command, heredocs, lenient = false) {
+export function maskInertLiterals(command, heredocs, lenient = false, comments = null) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
   let cur = ''
   let i = 0
@@ -866,6 +1065,24 @@ export function maskInertLiterals(command, heredocs, lenient = false) {
       const inner = src.slice(i + 1, j)
       if (!lenient && /\$\(|`/.test(inner)) return null // may run a command -> not inert
       cur += blank(src.slice(i, j + 1)); i = j + 1; continue
+    }
+
+    // GATECOMMENTQUOTE1104: an unquoted # at a word start comments out the rest of the line. Its text is inert, and a
+    // quote character in it must not pair with one on a later line: it did, so a later line read as quoted text and a
+    // command there was never judged. A word start is the line start or after whitespace, ; & or | (not after `(`:
+    // zsh's `*(#qD)` is a glob qualifier). A comment holding a command substitution or a backtick: not resolved here
+    // (null, the caller reads more, not less). `comments` (optional) receives each comment's { start, end }.
+    // Dani's review of #2524: after `(` or `)` a # comments out the line in bash and zsh too (a subshell, `$(`), but
+    // zsh's EXTENDED_GLOB reads `(#i)...` and `(...)#` as glob syntax: not resolved here (null, the whole command is
+    // read). Only a `(` that follows a glob character in the same word stays a qualifier (`*(#qD)`).
+    if (c === '#' && i > 0 && (src[i - 1] === ')' || (src[i - 1] === '(' && !/[*?\]]/.test(src[i - 2] ?? '')))) return null
+    if (c === '#' && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
+      const nl = src.indexOf('\n', i)
+      const end = nl < 0 ? src.length : nl
+      const body = src.slice(i, end)
+      if (/\$\(|`/.test(body)) return null
+      if (Array.isArray(comments)) comments.push({ start: i, end })
+      cur += blank(body); i = end; continue
     }
 
     cur += c; i++
@@ -1172,7 +1389,9 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // audit trail, the login sessions and users, the device keys, the SSH vault.
 // Used by scripts/hooks/db-write-gate.mjs through scheduleSurfaceDeny's
 // `surface: 'security'` mode, for every agent including the main one.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']
+// approval_slack_posts (APPROVALSLACK1030 (2)): the posted Slack request the server checks the owner's reaction
+// against; an agent that could write it could point a request at a message it controls.
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
@@ -1590,13 +1809,19 @@ function resolveFlatSubst(cmd, opts) {
 // quotes or heredoc bodies do not split (maskInertLiterals decides that), and
 // a heredoc body is handed back to the segment whose `<<` owns it. Returns null
 // when the quoting cannot be resolved -- the caller then denies.
-const SEGMENT_SEP_RX = /\|\||&&|\|&|;;|[;|\n]|(?<![<>])&(?!>)/g
+// A `|` right after a `>` is the `>|` (noclobber-override) redirection, not a pipe (ENVRELAXGATE1104, measured: the
+// db-write-gate read `echo x >| <protected>` as `echo x >` piped into running the protected path, and let it through).
+const SEGMENT_SEP_RX = /\|\||&&|\|&|;;|[;\n]|(?<!>)\||(?<![<>])&(?!>)/g
 export function shellSegments(command, opts) {
   const src = resolveFlatSubst(resolveCatSubst(resolveLiteralHeredocSubst(String(command ?? '')), opts), opts)
     .replace(/\\\r?\n/g, ' ')
   const heredocs = []
-  const masked = maskInertLiterals(src, heredocs)
+  const comments = []
+  const masked = maskInertLiterals(src, heredocs, false, comments)
   if (masked == null || masked.length !== src.length) return null
+  // GATECOMMENTQUOTE1104: a comment is no part of its segment's words (same length, so the ranges still line up)
+  let plain = src
+  for (const k of comments) plain = plain.slice(0, k.start) + ' '.repeat(k.end - k.start) + plain.slice(k.end)
   const ranges = []
   let start = 0
   for (const m of masked.matchAll(SEGMENT_SEP_RX)) {
@@ -1608,7 +1833,7 @@ export function shellSegments(command, opts) {
   for (const r of ranges) {
     // a range that lies inside a heredoc body/terminator belongs to its owner
     if (heredocs.some((h) => r.start >= h.bodyStart && r.end <= h.end)) continue
-    const own = src.slice(r.start, r.end)
+    const own = plain.slice(r.start, r.end)
     // an empty range (`a |<newline>b`) is skipped WITHOUT touching the previous
     // separator: the pipe before it still connects to the next real command
     if (!own.trim()) continue
@@ -1846,9 +2071,12 @@ const READ_ONLY_FS = new Set([
 ])
 const TEXT_FILTERS = new Set(['grep', 'egrep', 'fgrep', 'head', 'tail', 'wc', 'cut', 'tr', 'nl', 'cat', 'uniq', 'column', 'sort', 'sed'])
 const FIND_ACTION_RX = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/
-// sed: only -n/-E/-r and line-range print/delete scripts (`1,60p`, `$d`) -- no
-// `w file`, no `e command`, no -i.
-const SED_SCRIPT_RX = /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?[pd];?)+$/
+// sed: only -n/-E/-r and print/delete scripts -- a line range (`1,60p`, `$d`), a /regex/ address (`/^X=/p`), or a
+// substitution printing its result (`s/^WEB_PORT=//p`, the seed skills' port read, ENVRELAXGATE1104) with only the
+// g/p/I/i/number flags -- no `w file`, no `e command`, no second command, no -i.
+const SED_ADDR = String.raw`(?:\d+|\$|/(?:[^/\\\n]|\\.)*/)`
+const SED_PART = String.raw`(?:[^/\\\n]|\\.)*`
+const SED_SCRIPT_RX = new RegExp(String.raw`^(?:(?:${SED_ADDR}(?:,${SED_ADDR})?)?(?:[pd]|s/${SED_PART}/${SED_PART}/[gpIi0-9]*);?)+$`)
 function sedIsPrintOnly(words) {
   let script = 0
   for (const w of words.slice(1)) {
@@ -2228,6 +2456,292 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
 // Native file tools: a path through a *scheduled-tasks directory (same scope
 // as SCHEDULE_DIR_REF_RX, see there).
 const SCHEDULE_DIR_PATH_RX = /scheduled-tasks([/\\]|$)/i
+
+// The base denies every path through a task dir. The one exception is a REPO COPY (isRepoCopyPath below):
+// a task dir of the STORE is the store. The runner's store and the linked config
+// dirs sit below a store parent (~/.claude, ~/.claude-config, <agent>/.claude-config,
+// ~/.channels-config); this install's own scheduled-tasks/ and seed-scheduled-tasks/ are
+// copied into the store at start. A fleet's config repo keeps a DIFFERENT copy of task
+// prompts (<repo>/common/scheduled-tasks/...), edited in a git worktree and deployed only
+// through review: a native Edit/Write of such a copy is not a self-schedule. The path is
+// judged in its canonical form: `..` resolved and the deepest existing ancestor resolved
+// through symlinks (realDeep, a dangling link is followed), so a copy-looking path that
+// links onto the store is the store. Three spellings are judged and any one denies: the kernel's
+// view, the same after the lexical `..` folding, and the lexical spelling itself (a store behind a
+// symlinked ~/.claude is still named .claude). The decision is made when the hook runs: a symlink
+// swapped in later is not seen. The Bash branch is unchanged (git can run a pager or a helper).
+const STORE_PARENT_SEGMENTS = new Set(['.claude', '.claude-config', '.channels-config'])
+function isStoreTaskPath(canonical, root = PROJECT_ROOT) {
+  const segs = canonical.split(/[\\/]+/).map((s) => s.toLowerCase())
+  // a store parent segment followed by a task dir segment, wherever the pair sits in the path
+  const firstParent = segs.findIndex((s) => STORE_PARENT_SEGMENTS.has(s))
+  const lastTaskDir = segs.map((s) => s.endsWith('scheduled-tasks')).lastIndexOf(true)
+  if (firstParent >= 0 && lastTaskDir > firstParent) return true
+  // the store parents of this home, resolved when the hook runs: a task dir under the TARGET of a symlinked
+  // ~/.claude (dotfiles/cc/<task dir>) is the store although no segment of that path says so
+  const lower = canonical.toLowerCase()
+  for (const name of STORE_PARENT_SEGMENTS) {
+    const real = realDeep(join(homedir(), name)).toLowerCase()
+    if (lower.startsWith(real + sep) && SCHEDULE_DIR_PATH_RX.test(lower.slice(real.length))) return true
+  }
+  // ...and the same for the store parents of every agent of this install (<install>/agents/<name>/.claude-config
+  // linked to a target of another name): the target path is the store as well. An agents/ dir that cannot be
+  // listed for any reason but "missing" denies, like the HOME loop never lets a task dir under a store pass.
+  let agentNames
+  try { agentNames = readdirSync(join(root, 'agents')) } catch (e) {
+    if (!e || e.code !== 'ENOENT') return true
+    agentNames = []
+  }
+  for (const agent of agentNames) {
+    for (const name of STORE_PARENT_SEGMENTS) {
+      const real = realDeep(join(root, 'agents', agent, name)).toLowerCase()
+      if (lower.startsWith(real + sep) && SCHEDULE_DIR_PATH_RX.test(lower.slice(real.length))) return true
+    }
+  }
+  // the install root's own task dirs, without regard to letter case (the name rule above is case-insensitive)
+  for (const d of ['scheduled-tasks', 'seed-scheduled-tasks']) {
+    const dir = realDeep(join(root, d)).toLowerCase()
+    if (lower === dir || lower.startsWith(dir + sep)) return true
+  }
+  return false
+}
+// The ONLY allowing branch (the base denied EVERY task dir path, so a path
+// the store rules do not name must not pass by default): a repo copy. R is the nearest ancestor of the
+// canonical path that holds a `.git` (a directory, or a FILE for a git worktree; the file system is
+// looked at, no git process runs in a hook), and the path below R is exactly common/scheduled-tasks/...
+// (letter case ignored) with no store parent segment (.claude, .claude-config, .channels-config) in it.
+// HOME itself may be R. Anything else denies.
+function isRepoCopyPath(canonical) {
+  let cur = canonical
+  for (;;) {
+    const up = dirname(cur)
+    if (up === cur) return false
+    cur = up
+    try { lstatSync(join(cur, '.git')); break } catch { /* no .git here: walk up */ }
+  }
+  const segs = relative(cur, canonical).split(/[\\/]+/).map((x) => x.toLowerCase())
+  if (segs.length < 3 || segs[0] !== 'common' || segs[1] !== 'scheduled-tasks') return false
+  return !segs.some((x) => STORE_PARENT_SEGMENTS.has(x))
+}
+function scheduleDirPathDenied(fp, cwd, root = PROJECT_ROOT) {
+  if (!SCHEDULE_DIR_PATH_RX.test(fp)) return false
+  // an absolute spelling that keeps every `..` as written (a symlink before a `..` is followed by the kernel,
+  // not folded away), a leading ~/ expanded and a relative path taken from the hook's cwd
+  const abs = fp.startsWith('~/') ? homedir() + sep + fp.slice(2) : isAbsolute(fp) ? fp : (cwd || process.cwd()) + sep + fp
+  // three spellings, any one denies: the kernel's view (symlinks followed), the same after the lexical
+  // `..` folding, and the lexical spelling itself (the store behind a symlinked ~/.claude is still named .claude)
+  const forms = [realDeep(abs), realDeep(resolve(abs)), resolve(abs)]
+  if (forms.some((c) => isStoreTaskPath(c, root))) return true
+  // not the store: a task dir path still denies unless it is a repo copy in EVERY spelling (the store rules above
+  // deny on any one, so the one allowing branch must hold on all of them: a `..` that folds onto an unnamed
+  // store is no copy even when the kernel's view is one)
+  return !forms.every((c) => isRepoCopyPath(c))
+}
+
+// A scheduler command word the shell builds from quotes or a backslash ('crontab' -r, cr''ontab, c\rontab)
+// reads as the same command, but the OS-scheduler rule matches the MASKED text (quoted = data) and a
+// quoted or escaped name passed. The command word of each code segment is judged in its dequoted form
+// too; a plain $VAR / "$VAR" / ${VAR} command word is resolved when the SAME command assigned it a
+// literal in an earlier assignment-only segment (X=crontab; $X -r). Arguments, quoted messages and
+// heredoc bodies are not command words and stay data. PARTIAL by design: a name glued from several
+// variables or copied through another variable is not resolved (accepted limit).
+// Only a name that matches BECAUSE of the dequoting or the resolution is judged here: when the plain spelling
+// of the segment already matches the rule, the rule above decided it (its read-listing exemption included).
+// So a dequoted name has no read exemption: crontab -l written as cr""ontab -l is denied as well.
+// A resolved name is carried into the shell code a segment hands to another shell (eval, sh -c, $(...)),
+// through opts.vars: every literal value this command ever gave a name (an assignment behind && / || / if may or may
+// not have run, so each literal stays a candidate), plus the NAME=literal prefixes a child inherits.
+const LITERAL_VALUE = '[^$`(){}<>;&|*[\\\\\\s]*'
+const LITERAL_ASSIGNMENT_RX = new RegExp(`^([A-Za-z_][A-Za-z0-9_]*)=(${LITERAL_VALUE})$`)
+const ANSI_ASSIGNMENT_RX = /^([A-Za-z_][A-Za-z0-9_]*)=\$'([A-Za-z0-9_./-]*)'$/
+const ANY_ASSIGNMENT_RX = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/
+const VARIABLE_WORD_RX = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$/
+const DEFAULT_WORD_RX = new RegExp(`^\\$\\{([A-Za-z_][A-Za-z0-9_]*)(:?)[-=](${LITERAL_VALUE})\\}$`)
+const MAX_WORD_COMBINATIONS = 256
+const DECLARATION_BUILTINS = new Set(['export', 'declare', 'readonly', 'local', 'typeset'])
+const literalAssignment = (w) => {
+  const m = w.ansi ? ANSI_ASSIGNMENT_RX.exec(w.value) : LITERAL_ASSIGNMENT_RX.exec(w.value)
+  return m ? [m[1], m[2]] : null
+}
+// `text` with the code of every backtick or $( ) substitution blanked: that code is decided on its own (the bodies
+// of the caller), so a scheduler name inside it must not stand for the command word of the segment.
+function blankSubstitutions(text) {
+  let out = ''
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') { out += text.slice(i, i + 2); i++; continue }
+    if (text[i] === '`') {
+      const e = text.indexOf('`', i + 1)
+      const end = e === -1 ? text.length - 1 : e
+      out += ' '.repeat(end - i + 1)
+      i = end
+      continue
+    }
+    if (text[i] === '$' && text[i + 1] === '(') {
+      let depth = 0
+      let j = i + 1
+      for (; j < text.length; j++) {
+        if (text[j] === '(') depth++
+        else if (text[j] === ')' && --depth === 0) break
+      }
+      const end = j >= text.length ? text.length - 1 : j
+      out += ' '.repeat(end - i + 1)
+      i = end
+      continue
+    }
+    out += text[i]
+  }
+  return out
+}
+// The command without its heredocs: each operator (with the file descriptor in front of it, 0<<EOF) and each body with
+// its terminator are cut out, using the ranges the mask resolved. The mask copies the rest of an operator line as
+// written, so a `;` inside a quoted redirect target (`cmd <<EOF 2>"a;b"`) cut the segment into two halves that do not
+// parse, and the dequoted check skipped both; without the operator the quoting is plain again and the segment splits
+// the way the shell reads it. Quoting the mask cannot resolve (null) leaves the command as it is. The mask resolves
+// one heredoc per line, so the cut repeats until nothing is left to cut (a second operator on the same line).
+function withoutHeredocs(command) {
+  let cur = String(command ?? '')
+  for (let round = 0; round < 4; round++) {
+    const next = cutHeredocsOnce(cur)
+    if (next === cur) break
+    cur = next
+  }
+  return cur
+}
+function cutHeredocsOnce(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const heredocs = []
+  if (maskInertLiterals(src, heredocs) == null || heredocs.length === 0) return command
+  const cuts = []
+  for (const h of heredocs) {
+    const op = /^<<-?\s*(?:'[^']*'|"[^"]*"|[A-Za-z_]\w*)/.exec(src.slice(h.opStart))
+    if (!op) return command
+    const fd = /(?:^|[\s;&|(])(\d+|\{[A-Za-z_]\w*\})$/.exec(src.slice(0, h.opStart))
+    cuts.push([fd ? h.opStart - fd[1].length : h.opStart, h.opStart + op[0].length, ' '])
+    cuts.push([h.bodyStart, h.end, ''])
+  }
+  cuts.sort((x, y) => x[0] - y[0])
+  let out = ''
+  let at = 0
+  for (const [from, to, fill] of cuts) {
+    if (from < at) return command // overlapping ranges: not understood
+    out += src.slice(at, from) + fill
+    at = to
+  }
+  return out + src.slice(at)
+}
+// One code segment the way the OS-scheduler rule reads it: a heredoc operator dropped (the segment of the command as
+// written still carries it, without its body), quoted = data and substitution code blanked (that code is decided on
+// its own). A segment that reaches this point parsed into plain words, so its quoting resolves; if it does not
+// anyway, '' gives no exemption and the dequoted word is judged.
+function schedulerRuleView(own) {
+  const masked = maskInertLiterals(own.replace(/<<-?\s*(?:'[^']*'|"[^"]*"|[A-Za-z_]\w*)/g, ' '))
+  return masked == null ? '' : blankSubstitutions(masked)
+}
+// Both readings of the command are judged, the text as written and the text without its heredocs, and either one
+// denies: the cut only ever ADDS what the first reading could not parse. The mask can read a `<<` that is no
+// operator (in a comment, in $((1<<2)), in a here-string) as one, so the cut may also remove real code; the first
+// reading still sees that code.
+function dequotedSchedulerDeny(command, inherited) {
+  const plainView = scanDequoted(command, inherited)
+  const cut = withoutHeredocs(command)
+  if (cut === command) return plainView
+  const cutView = scanDequoted(cut, inherited)
+  const vars = new Map()
+  for (const [name, set] of [...plainView.vars, ...cutView.vars]) {
+    if (!vars.has(name)) vars.set(name, new Set())
+    for (const value of set) vars.get(name).add(value)
+  }
+  return { deny: plainView.deny || cutView.deny, vars }
+}
+function scanDequoted(command, inherited) {
+  const addTo = (map, name, value) => {
+    if (!map.has(name)) map.set(name, new Set())
+    map.get(name).add(value)
+  }
+  const vars = new Map() // name -> the set of literal values it was ever given
+  for (const [name, v] of inherited ?? []) for (const value of typeof v === 'string' ? [v] : v) addTo(vars, name, value)
+  const childEnv = new Map() // NAME=literal prefixes of a command: its child shell inherits them
+  let deny = false
+  for (const seg of codeSegments(command)) {
+    const words = splitCodeWords(seg.own)
+    if (words == null) continue
+    let args = argWords(words)
+    // for NAME in literal
+    if (args.length === 4 && args[0].value === 'for' && args[2].value === 'in' && !args[3].ansi && new RegExp(`^${LITERAL_VALUE}$`).test(args[3].value)) {
+      addTo(vars, args[1].value, args[3].value)
+      continue
+    }
+    // export / declare / readonly / local / typeset [-options] NAME=literal: assignments that outlive the segment
+    const declaration = args.length > 0 && DECLARATION_BUILTINS.has(args[0].value)
+    if (declaration) {
+      let k = 1
+      while (args[k] && /^[-+]/.test(args[k].value)) k++
+      args = args.slice(k)
+    }
+    if ((declaration || args.length > 0) && args.every((w) => ANY_ASSIGNMENT_RX.test(w.value))) {
+      // an assignment-only segment: the shell keeps these values for the later segments
+      for (const w of args) {
+        const lit = literalAssignment(w)
+        if (lit) addTo(vars, lit[0], lit[1])
+      }
+      continue
+    }
+    // every value a word can take: a name holds each literal it was ever given
+    // null = an empty expansion: the shell drops it, the next word moves up
+    const noEmpty = (v) => (v === '' ? null : v)
+    const candidates = args.map((w) => {
+      if (w.ansi) return [w.value]
+      const ref = VARIABLE_WORD_RX.exec(w.value)
+      const name = ref ? ref[1] ?? ref[2] : null
+      if (name != null && vars.has(name)) return [...vars.get(name)].map(noEmpty)
+      const dflt = DEFAULT_WORD_RX.exec(w.value) // ${NAME:-literal}, ${NAME-literal}, ${NAME:=literal}, ${NAME=literal}
+      if (dflt) {
+        const [, dname, colon, lit] = dflt
+        if (!vars.has(dname)) return [noEmpty(lit)]
+        // the :- and := forms also take the literal when the name is set but EMPTY; - and = only when it is unset
+        return [...new Set([...vars.get(dname)].map((v) => (v === '' ? noEmpty(colon ? lit : '') : v)))]
+      }
+      return [w.value]
+    })
+    // only the words the scheduler rule reads (wrapper and assignment prefixes, the command word and what follows it)
+    // are listed in every reading; a later argument keeps its first reading, so a long argument list of
+    // many-valued names is not read as a scheduler. A word that can BE a prefix in some reading (empty, a wrapper,
+    // an assignment) is not the command word.
+    const prefixLike = (v) => v == null || CMD_WRAPPERS.has(v) || RESERVED_LEAD.has(v) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(v)
+    const cmdAt = candidates.findIndex((options) => !options.some(prefixLike))
+    if (cmdAt >= 0) for (let k = cmdAt + 6; k < candidates.length; k++) candidates[k] = [candidates[k][0]]
+    // NAME=literal prefixes in front of the command word reach the child shell's environment
+    for (let k = 0; k < args.length && ANY_ASSIGNMENT_RX.test(args[k].value); k++) {
+      const lit = literalAssignment(args[k])
+      if (lit) addTo(childEnv, lit[0], lit[1])
+    }
+    let combinations = [[]]
+    for (const options of candidates) {
+      combinations = combinations.flatMap((prefix) => options.map((v) => [...prefix, v]))
+      // too many readings to list: read as a scheduler (fail-closed)
+      if (combinations.length > MAX_WORD_COMBINATIONS) {
+        deny = true
+        combinations = []
+        break
+      }
+    }
+    // the plain-spelling test sees the text the way the rule above does (quoted = data), not the raw segment:
+    // a quoted decoy such as 2>"/tmp/a;crontab" must not switch the dequoted check off
+    const plain = schedulerRuleView(seg.own.trim())
+    for (const reading of combinations) {
+      const values = reading.filter((v) => v != null)
+      // a reserved word in front of the command (then, do, {, !) is not the command word
+      let lead = 0
+      while (values.length - lead > 1 && RESERVED_LEAD.has(values[lead])) lead++
+      // one flat word per argument: a separator or a space INSIDE a quoted argument cannot start a new command
+      const joined = values.slice(lead).map((v) => v.replace(/[\s;&|(`]/g, '_')).join(' ')
+      if (SCHEDULER_RX.test(joined) && !SCHEDULER_RX.test(plain)) deny = true
+    }
+  }
+  const out = new Map()
+  for (const [name, set] of [...vars, ...childEnv]) for (const value of set) addTo(out, name, value)
+  return { deny, vars: out }
+}
 
 // Pure decision: does this tool call set up self-pace / self-injection?
 // Any exception inside the decision is a DENY: a gate that throws must never
@@ -3159,9 +3673,69 @@ export function tmuxInjectsPane(words) {
   return false
 }
 
+// --- MCP tools (MCPWRITEGATE1104) -------------------------------------------------------------------------------
+// An MCP tool reaches local paths through its own arguments (hooks/mcp-file-targets.mjs names them, by the TOOL's
+// name, never the server's). Each path is judged by this gate's own native Write branch, so a protected name added
+// there is covered here without a second list. A mover's path, and a directory a file lands in under a name the call
+// does not fix, is also denied when it IS, or is above, a directory this gate guards: the store, local-hooks/, a
+// scheduled-tasks directory, a Claude config directory (where the self-schedule store lives). A relative path is
+// measured against the payload cwd AND the project dir (an MCP server resolves it against its own start cwd).
+// This gate runs for sub-agents only; the 'other' class (read, send) is judged as a file (D1, Samu 68033).
+function mcpDirDeny(raw, base, opts) {
+  const w = String(raw)
+  const abs = resolve(base, w === '~' || w.startsWith('~/') ? expandHome(w === '~' ? '~/' : w) : w)
+  const key = pathKey(abs)
+  const allowlistPath = opts.allowlistPath ?? DEFAULT_ALLOWLIST_PATH
+  const localHooks = join(dirname(allowlistPath), '..', 'local-hooks')
+  const guarded = [opts.storeDir ?? DEFAULT_STORE_DIR, dirname(allowlistPath), localHooks, join(homedir(), '.claude')]
+  for (const g of guarded) {
+    const gk = pathKey(g)
+    if (sameKey(key, gk) || underKey(gk, key)) return true
+  }
+  if (underKey(key, pathKey(localHooks))) return true
+  return nameForms(abs).some((f) => SCHEDULE_DIR_PATH_RX.test(f) || STORE_PARENTS.includes(basename(f)))
+}
+
+function mcpDecide(name, toolInput, opts) {
+  const m = mcpFileTargets(name, toolInput)
+  if (!m) return { deny: false }
+  if (m.cls !== 'other' && (m.missingPath || m.truncated)) return { deny: true, reason: 'mcp-path' }
+  const cwd = opts.cwd ? resolve(String(opts.cwd)) : process.cwd()
+  const bases = [...new Set([cwd, opts.projectDir ? resolve(String(opts.projectDir)) : null].filter(Boolean))]
+  for (const t of m.targets) {
+    for (const base of bases) {
+      const v = decide('Write', { file_path: t.path }, { ...opts, cwd: base })
+      if (v.deny) return { deny: true, reason: v.reason ? `mcp-${v.reason}` : 'mcp-schedule' }
+      // a mover's paths come marked dir (mcp-file-targets.mjs)
+      if (m.cls !== 'other' && t.dir && mcpDirDeny(t.path, base, opts)) return { deny: true, reason: 'mcp-dir' }
+    }
+  }
+  // A base INSIDE a directory this gate guards (Dani 68255): there every bare name is a path into it, so the bare
+  // leaves the classifier left out go through the native Write branch too. Outside one this costs nothing.
+  if (m.bare?.length) {
+    for (const base of bases) {
+      if (!mcpBaseInsideGuarded(base, opts)) continue
+      for (const b of m.bare) {
+        const v = decide('Write', { file_path: b }, { ...opts, cwd: base })
+        if (v.deny) return { deny: true, reason: v.reason ? `mcp-${v.reason}` : 'mcp-schedule' }
+      }
+    }
+  }
+  return { deny: false }
+}
+
+function mcpBaseInsideGuarded(base, opts) {
+  const key = pathKey(base)
+  const allowlistPath = opts.allowlistPath ?? DEFAULT_ALLOWLIST_PATH
+  const guarded = [opts.storeDir ?? DEFAULT_STORE_DIR, dirname(allowlistPath), join(dirname(allowlistPath), '..', 'local-hooks')]
+  if (guarded.some((g) => underKey(key, pathKey(g)))) return true
+  return nameForms(base).some((f) => SCHEDULE_DIR_PATH_RX.test(f) || f.split('/').some((s) => STORE_PARENTS.includes(s)))
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
+  if (/^mcp__/i.test(name)) return mcpDecide(name, toolInput, opts)
   // Native file tools writing the self-schedule store would bypass any Bash regex.
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
@@ -3169,7 +3743,7 @@ function decide(toolName, toolInput, opts = {}) {
     if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
     if (fileToolTargetsProtectedStoreFile(toolInput, opts.storeDir, opts.cwd)) return { deny: true, reason: 'protected-store-file' }
     // ...and the dashboard's schedule store, which the runner turns into turns
-    if (SCHEDULE_DIR_PATH_RX.test(fp)) return { deny: true }
+    if (scheduleDirPathDenied(fp, opts.cwd, opts.projectRoot ?? PROJECT_ROOT)) return { deny: true }
   }
   if (name === 'Bash') {
     // The schedule surface is judged on the RAW command, before the payload and
@@ -3188,7 +3762,6 @@ function decide(toolName, toolInput, opts = {}) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
-    const protectedCtx = protectedContext(naiveSegs, opts.allowlistPath, opts.cwd)
     for (const seg of naiveSegs) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
@@ -3204,10 +3777,25 @@ function decide(toolName, toolInput, opts = {}) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+    }
+    // The protected store files and the allowlist judge the segments the shell runs (protectedSegments,
+    // EGRESSFP1106 (a)): a `|` or `;` inside a quoted grep pattern does not make a command of its own.
+    // Unresolved quoting or a heredoc falls back to the naive split.
+    const protSplit = protectedSplit(safeCommand)
+    const protSegs = protSplit.segs
+    const protectedCtx = protectedContext(protSegs, opts.allowlistPath, opts.cwd)
+    const definite = definiteAssignments(protSplit)
+    // the name spelled anywhere, also split by quotes or a backslash (RIPGREP_CONFIG_PAT""H= is the same variable)
+    protectedCtx.rgConfigNamed = RG_CONFIG_ENV_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
+    // HOME as a bare word anywhere (HOME=, export/unset/read HOME, for HOME in ...), also split by quotes: the command
+    // may change it, so neither $HOME nor ~ is the real home in it (EGRESSHOME1106)
+    protectedCtx.homeTouched = HOME_TOUCH_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
+    for (const [idx, seg] of protSegs.entries()) {
+      protectedCtx.definite = definite[idx]
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).
-      if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
+      if (!protectedStoreBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'protected-store-file' }
       // the egress allowlist and the extra hooks: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
       cwdAfterSegment(seg, protectedCtx)
@@ -3225,6 +3813,9 @@ function decide(toolName, toolInput, opts = {}) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg) && !transientUnitOk) return { deny: true }
     }
+    // ...and the same rule on the dequoted command word of each code segment
+    const dequoted = dequotedSchedulerDeny(String(toolInput?.command ?? ''), opts.vars)
+    if (!transientUnitOk && dequoted.deny) return { deny: true }
     // Shell code handed to another shell (sh -c, eval, here-strings, heredocs,
     // tmux -c) is decided recursively; quoted, it was blanked above. The RAW
     // command is used: safeCommand blanks heredoc bodies and data payloads.
@@ -3235,14 +3826,14 @@ function decide(toolName, toolInput, opts = {}) {
     // the code of each outermost substitution is a command of its own (scanShellCode does not look inside one)
     for (const body of bodies) {
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
-      const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1 })
+      const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
     const scan = scanShellCode(rawCommand)
     for (const code of scan.codes) {
       if (code.ansi) return { deny: true, reason: 'shell-code' }
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
-      const inner = decide('Bash', { command: code.value }, { ...opts, depth: depth + 1 })
+      const inner = decide('Bash', { command: code.value }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
     if (scan.bad) return { deny: true, reason: 'shell-code' }
@@ -3287,6 +3878,13 @@ const ALLOWLIST_GATE_MSG =
   'Ugyanigy NEM irhatod a store/extra-hooks.json-t es a local-hooks/ alatti szkripteket (minden ' +
   'sub-agens hookjai): ha kell egy, kerd a fo agenst. ' +
   'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
+
+const MCP_GATE_MSG =
+  'MCP-eszkoz ut-argumentuma TILTOTT (MCPWRITEGATE1104, sub-agensre): a hivas egy utja az utemezo store-t, a ' +
+  'scheduled-tasks/ vagy egy Claude config-konyvtarat, az egress-allowlistet, a local-hooks/-t vagy egy vedett store-fajlt ' +
+  'eri el (irva, mozgatva, vagy ismeretlen nevu fajlt teve bele), vagy egy ismert fajl-iro MCP-eszkoz ut nelkul a szerver ' +
+  'alapertelmezett helyere irna. Adj meg kifejezett, a munkakonyvtaradon beluli celutat es egyszeru fajlnevet; ha vedett ' +
+  'fajl kell, kerd a fo agenst.'
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
@@ -3377,12 +3975,16 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
   }
   try {
     const selfAgent = selfAgentFromProjectDir(process.env.CLAUDE_PROJECT_DIR)
-    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent })
+    // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
+    const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
+    if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.bare.length) allow()
+    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent, projectDir: process.env.CLAUDE_PROJECT_DIR || null })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
         : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
-        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG : GATE_MSG)
+        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
+        : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG : GATE_MSG)
     }
     allow()
   } catch (err) {

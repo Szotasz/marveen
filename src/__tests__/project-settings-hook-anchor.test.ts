@@ -90,7 +90,7 @@ const EXPECTED: Record<string, string[]> = {
     'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
     'memory-frontmatter-bash-gate.py @ Bash',
     // APPROVALDBGATE1030: security tables, the database file, the install's gate wiring
-    'db-write-gate.mjs @ Bash|Write|Edit|MultiEdit|NotebookEdit',
+    'db-write-gate.mjs @ ^(?:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$',
     // Refuses a Bash command whose own text the shell would re-scan (a backtick
     // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
     // any internal error, so it cannot wedge a session.

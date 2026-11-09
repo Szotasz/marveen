@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyGateInstall } from './helpers/copy-gate-install.js'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -40,11 +41,11 @@ function file(name: string, content: string): string {
   return p
 }
 function gate(cmd: string): { code: number | null; out: string; err: string } {
-  const r = spawnSync('python3', [GATE], {
+  const r = spawnSync('python3', [copyGateInstall(join(dir, 'rules.json')).hook], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: cmd }, hook_event_name: 'PreToolUse' }),
     encoding: 'utf-8',
-    // hermetic: rules path (and so the gate log) inside the test dir
-    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT, OUTGOING_COPY_GATE_RULES: join(dir, 'rules.json') },
+    // hermetic: the hook runs from a tmp install inside the test dir, so its rules and log are there
+    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT },
   })
   return { code: r.status, out: r.stdout, err: r.stderr }
 }
@@ -149,14 +150,18 @@ describe('inter-agent message: an UNINTERPRETABLE body PASSES, loudly (fail-open
     it(name, () => {
       const r = gate(cmd)
       expect(r.code).toBe(0)
-      const sm = JSON.parse(r.out.trim()).systemMessage as string
+      const j = JSON.parse(r.out.trim())
+      const sm = j.systemMessage as string
       expect(sm).toMatch(reason)
       expect(sm).toContain('homoglifa-ellenorzes NELKUL')
+      // systemMessage is terminal-only; the agent that sent the message learns
+      // that it went out unchecked only through additionalContext.
+      expect(j.hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', additionalContext: sm })
     })
   }
   it('and leaves a line in the gate log', () => {
     gate(`${POST} --data-binary @/nincs/ilyen/log-proba.json`)
-    const log = join(dir, 'outgoing-copy-gate.log')
+    const log = join(copyGateInstall(join(dir, 'rules.json')).store, 'outgoing-copy-gate.log')
     expect(existsSync(log)).toBe(true)
     expect(readFileSync(log, 'utf-8')).toContain('log-proba.json')
   })

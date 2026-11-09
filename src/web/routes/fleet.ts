@@ -2,11 +2,11 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
-// FLEETIMPORTGATE1022: two of these calls take the owner's session (mayIssueCredentials, the
-// predicate that guards issuing credentials), because the fleet's one shared token reaches
+// FLEETIMPORTGATE1022: two of these calls take the owner's session (mayActAsOwner, the owner
+// gate; OWNERGATE4-1104: also before the first dashboard login exists), because the fleet's one shared token reaches
 // them from every agent. An export with a vault password hands out the vault's master key and
 // every secret, encrypted with a password the caller chose. An applied import overwrites
 // store/autonomy-config.json (an agent could raise email_send to 3 and switch the mail approval
@@ -26,8 +26,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
       return true
     }
-    if (vaultPassword && !mayIssueCredentials(ctx.auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+    if (vaultPassword && !mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, 'Exporting the fleet with its secrets needs the dashboard login (an owner session).')
       return true
     }
     try {
@@ -54,8 +54,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/fleet/import' && method === 'POST') {
     const apply = ctx.url.searchParams.get('apply') === 'true'
     // Before the body is read: a refused apply does no work at all.
-    if (apply && !mayIssueCredentials(ctx.auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+    if (apply && !mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, 'Applying a fleet import needs the dashboard login (an owner session).')
       return true
     }
 

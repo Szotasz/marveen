@@ -68,7 +68,20 @@ MAX_ESCAPES=4                                  # ensure_modal_closed bound
 # makes claude exit immediately while the alert would falsely say "respawned".
 # %q-quoted at interpolation (like the model id), so a hostile value can't break
 # out of the respawn shell-string.
-RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-plugin:telegram@claude-plugins-official}"
+# GROMZONOPROVIDER1108 (EGM review): the default follows the install's CHANNEL_PROVIDER, mapped EXACTLY as
+# channels.sh's resolve_plugin_ids() does. It used to be telegram for every install, so a respawn on a Slack, Teams,
+# Discord or Gromzo install came back on the Telegram plugin.
+_smg_provider="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'\r ')"
+case "$_smg_provider" in
+  slack)    _smg_default="plugin:slack-channel@marveen-marketplace" ;;
+  whatsapp) _smg_default="plugin:whatsapp@marveen-marketplace" ;;
+  teams)    _smg_default="plugin:teams@marveen-marketplace" ;;
+  discord)  _smg_default="plugin:discord@claude-plugins-official" ;;
+  gromzo)   _smg_default="plugin:gromzo-channel@gromzo-local" ;;
+  *)        _smg_default="plugin:telegram@claude-plugins-official" ;;
+esac
+RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-$_smg_default}"
+unset _smg_provider _smg_default
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
 
@@ -191,7 +204,7 @@ alert_owner() {
   # /dev/null: a skipped alert must say why (no DM entry, several DM entries,
   # no access.json). Not captured with 2>&1 -- any stderr noise on the success
   # path would then become part of the chat id.
-  chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env")" || chat=""
+  chat="$(resolve_alert_chat_id "$INSTALL_DIR/.env")" || chat=""
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured): $msg"; return 1
   fi
@@ -359,6 +372,55 @@ run_guard() {
   CLAUDE_Q="$(printf '%q' "$CLAUDE")"
   # W2: %q-quote the (config-overridable) plugin id, same treatment as the model.
   local PLUGIN_Q; PLUGIN_Q="$(printf '%q' "$RESPAWN_PLUGIN")"
+  # INSTALLDIRTYTREE1103: the primary plugin is no longer enabled in the tracked
+  # project settings.json -- channels.sh passes it in a launch-time --settings
+  # file instead. A respawn without that flag would come back with the Slack /
+  # WhatsApp / Teams primary disabled by the shipped project false (deaf main).
+  # GROMZOMAINAGENT1106: the co-listen extras, derived EXACTLY as channels.sh and channel-watchdog.sh do. This
+  # respawn used to pass the primary alone, so it half-muted every extra (Slack co-listen, the main agent's
+  # Gromzo channel) until the next full restart. The gromzo id passes only with a usable agent.sock and a valid
+  # mxd slug, and its MXD_AGENT/MXD_SCOPE go in as exports of this command (scripts/main-gromzo-launch.sh).
+  local _extra _gz_main GROMZO_ENV="" EXTRA_Q="" _p
+  _extra="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  _gz_main="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  local CHAN_ARG=""
+  if [ "$RESPAWN_PLUGIN" = "plugin:gromzo-channel@gromzo-local" ]; then
+    # GROMZONOPROVIDER1108: the Gromzo plugin is the PRIMARY; as in channels.sh it is never also an extra, and it
+    # comes back only when the main agent can take it (main_gromzo_primary_ready); otherwise the respawn is a
+    # gromzo-pending session (no Gromzo channel), and channels.sh's poll restarts it once it is ready.
+    _extra="$(printf '%s\n' $_extra | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+    for _p in $_extra; do
+      [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
+    done
+    if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null && main_gromzo_primary_ready "$_gz_main"; then
+      GROMZO_ENV="$(main_gromzo_env "$_gz_main" gromzo-channel@gromzo-local)"
+      CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"
+    elif [ -n "$EXTRA_Q" ]; then
+      CHAN_ARG="--channels${EXTRA_Q}"
+    fi
+    EXTRA_Q=""
+    _extra_done=1
+  elif . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+    # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+    _extra="$(main_gromzo_filter_ids "$_gz_main" $_extra)"
+    # shellcheck disable=SC2086
+    GROMZO_ENV="$(main_gromzo_env "$_gz_main" $_extra)"
+  else
+    # No helper (a half-updated tree): never pass the gromzo id without its exports.
+    _extra="$(printf '%s\n' $_extra | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  fi
+  if [ "${_extra_done:-0}" != 1 ]; then
+    for _p in $_extra; do
+      [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
+    done
+    CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"
+  fi
+  unset _extra_done
+  local SETTINGS_FLAG=""
+  if . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh" 2>/dev/null; then
+    # shellcheck disable=SC2086
+    SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"
+  fi
 
   # CFGDIR686: the main-agent isolated-config decision belongs on EVERY respawn
   # path, not just the watchdog's. PR #686 fixed the 401 outage by giving
@@ -378,8 +440,11 @@ run_guard() {
     # rather than hard-coding 'telegram' -- a renamed install would otherwise get
     # a config dir that belongs to a different channel.
     local _prov="${RESPAWN_PLUGIN#plugin:}"; _prov="${_prov%%@*}"
-    local _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
-    _cfg_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 2>>"$STORE/channels-failures.log" || true)"
+    local _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line
+    # The contract rides fd 3 (as in channels.sh and channel-watchdog.sh): a log line the dist module prints on
+    # stdout must not become the mode line (MAINAUTH1107: this caller read stdout until now).
+    _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+    _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
     _cfg_mode="${_cfg_line%%	*}"
     _cfg_rest="${_cfg_line#*	}"
     if [ "$_cfg_mode" = "token" ]; then
@@ -391,7 +456,9 @@ run_guard() {
     fi
     if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
       if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
-        CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
+        # APIKEYSCOPE1107: an own login unsets BOTH inherited credentials, as channels.sh and the monitor do;
+        # without it the pane-auth file (sourced first) would hand this login the fleet token and the key.
+        CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY && "
       elif [ "$_cfg_mode" = "token" ]; then
         # Token-mode rotated plan -- same credential-less dir as `isolated`, but
         # export THAT plan's vault-stored token. See channels.sh's identical
@@ -403,6 +470,13 @@ run_guard() {
       fi
       log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
     fi
+    # MAINAUTH1107: the credential this respawn runs on, from the same module the boot and the dashboard use, right
+    # before the respawn (see channel-watchdog.sh). No contract line = the files the last launch wrote stay.
+    _ma_mode=""; _ma_dir=""
+    if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
+    _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+    _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
+    [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
   fi
 
   # FLEETVENV923: the fleet venv's bin/ first, exactly as channels.sh boots the
@@ -410,7 +484,15 @@ run_guard() {
   . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
   local FLEET_VENV_PREFIX; FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
   # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  # APIKEYSCOPE1107: the respawned main session sources the same 0600 pane-auth file channels.sh wrote for it
+  # (TOKENARGV929: the token, and the key whenever .env has one; nothing in argv). Until now a respawn got its
+  # credentials only from the tmux server global env, and the key no longer lives there on a subscription install.
+  # BEFORE CFG_ENV, so an own-login mode (explicit/rotated) unsets both again and an isolated/token mode exports
+  # its own token over it. A missing file is not an error (the chain goes on).
+  local PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth"); } && "
+  # MAINAUTH1107: the post-file right AFTER CFG_ENV (see channel-watchdog.sh).
+  local PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

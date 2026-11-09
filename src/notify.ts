@@ -1,7 +1,11 @@
-import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID } from './config.js'
-import { normalizeChatId, resolveAlertOwnerChat } from './owner-chat.js'
+import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID, STORE_DIR } from './config.js'
+import { normalizeChatId, resolveAlertDeliveryChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { mainGromzoPrimaryReady } from './web/main-gromzo-launch.js'
+import { MAIN_AGENT_ID } from './config.js'
 import { markIfTestRun } from './test-run-marker.js'
 import type { sendSlackNotification as SendSlack } from './slack-notify.js'
 
@@ -87,17 +91,41 @@ export async function deliverWithSlack(
 export async function sendOwnerSlackDm(
   text: string,
   send?: typeof SendSlack,
+  opts: {
+    verdict?: (channel: string, owner: string | null) => Promise<'ok' | 'foreign' | 'unknown'>
+    drift?: (current: string) => Promise<boolean>
+  } = {},
 ): Promise<{ attempted: boolean; sent: boolean; error?: string }> {
   const setting = await loadSetting()
-  if (!(await slackTargetFor('owner', setting))) return { attempted: false, sent: false }
-  let sendFn: typeof SendSlack
+  const target = await slackTargetFor('owner', setting)
+  if (!target) return { attempted: false, sent: false }
+  let sn: typeof import('./slack-notify.js')
   try {
-    sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
+    sn = await import('./slack-notify.js')
   } catch {
     return { attempted: true, sent: false, error: 'slack_module_unavailable' }
   }
+  const sendFn = send ?? sn.sendSlackNotification
+  // Dani 66036: a change made AROUND the settings route (a script writing the overrides, an .env edit) is caught here,
+  // before the next owner DM: the OLD target is told first, then the new one is recorded.
+  await (opts.drift ?? noticeTargetDrift)(target)
+  // APPROVALSLACK1030 (Samu 66026): the bot has no im:write, so conversations.open (the 'dm' path) fails with
+  // missing_scope (measured, Marveen 66022) and this DM never arrived. A raw D id in NOTIFY_SLACK_TARGET (the one
+  // scripts/notify.sh already writes to) is posted to directly; first the confidentiality check (Dani 66016 (b)).
+  const direct = /^D[A-Z0-9]{6,}$/.test(target) ? target : null
+  const ownerUserId = setting('SLACK_OWNER_USER_ID')
+  if (direct) {
+    const owner = sn.resolveOwnerUserId(ownerUserId, (() => {
+      try { const f = `${sn.mainSlackStateDir()}/access.json`; return existsSync(f) ? readFileSync(f, 'utf-8') : null } catch { return null }
+    })())
+    const verdict = await (opts.verdict ?? sn.ownerDmVerdict)(direct, owner)
+    if (verdict === 'foreign') {
+      logger.error({ channel: direct }, 'owner Slack DM NOT sent: someone other than the owner writes in that channel (NOTIFY_SLACK_TARGET)')
+      return { attempted: true, sent: false, error: 'dm_channel_foreign' }
+    }
+  }
   // raw: the request's text is the requesting agent's, shown as written (Dani 55614 F1).
-  const r = await sendFn('dm', markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID'), raw: true })
+  const r = await sendFn(direct ?? 'dm', markIfTestRun(text), { ownerUserId, raw: true })
   return r.ok ? { attempted: true, sent: true } : { attempted: true, sent: false, error: r.error }
 }
 
@@ -117,7 +145,7 @@ export interface ChannelSendResult {
  * the result has to describe the one send it made.
  */
 export async function sendOwnerMessage(text: string): Promise<ChannelSendResult> {
-  const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  const owner = resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
   if (!CHANNEL_TOKEN || !owner.chatId) {
     const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
@@ -137,7 +165,7 @@ export interface AlertMeta {
 }
 
 type AlertRecipient = 'owner' | 'alert-chat'
-type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped'
+type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped' | 'relayed' | 'queued'
 
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
@@ -173,6 +201,114 @@ let ownerChatMissingSink: OwnerChatMissingSink | null = null
 let lastOwnerChatMissingSignalAt = 0
 const OWNER_CHAT_MISSING_SIGNAL_MS = 60 * 60 * 1000
 
+// GROMZONOPROVIDER1108: the owner relay of a gromzo install, registered by the dashboard at start (web.ts), like the
+// owner-chat-missing sink above. Every alert goes through; dedup of repeated alerts is the callers' (as for a chat).
+let ownerRelaySink: OwnerChatMissingSink | null = null
+// The agent-text language of the install (AGENT_TEXT_LANG, else DASHBOARD_LANG): a test seam; the dashboard sets it.
+let relayLang: () => 'hu' | 'en' = () => 'hu'
+export function setOwnerRelayLang(fn: () => 'hu' | 'en'): void {
+  relayLang = fn
+}
+
+export function setOwnerRelaySink(sink: OwnerChatMissingSink | null): void {
+  ownerRelaySink = sink
+}
+
+// GROMZONOPROVIDER1108 (Samu 73588): while the install is gromzo-pending the main agent has no Gromzo channel, so it
+// could not deliver a relayed alert. The alert is kept, durable, in the store (one JSON line each, 0600, the newest
+// GROMZO_PENDING_ALERTS_MAX), and flushGromzoPendingOwnerAlerts() hands them to the main agent once it is live (the
+// dashboard sweep calls it). Never dropped in silence.
+export const GROMZO_PENDING_ALERTS_FILE = 'gromzo-owner-alerts.pending.jsonl'
+const GROMZO_PENDING_ALERTS_MAX = 50
+// Dani 73601: "ready" (mxd's socket + the main agent enrolled) is not yet delivery. channels.sh notices it on its own
+// 60 s poll and restarts the unit, and only the NEW session loads the Gromzo plugin; a relay before that lands in the
+// old session, which has no Gromzo tool and is then replaced. So an alert goes out only while the dashboard sweep has
+// SEEN the Gromzo plugin alive in the main session (setGromzoMainLive); otherwise it is kept. A process that is not
+// the dashboard never sees the sweep, so it keeps its alerts too, and the dashboard flushes them.
+let gromzoMainLive = false
+export function setGromzoMainLive(live: boolean): void {
+  gromzoMainLive = live
+}
+const defaultPendingCheck = (): boolean => !gromzoMainLive || !mainGromzoPrimaryReady(MAIN_AGENT_ID)
+let pendingCheck: () => boolean = defaultPendingCheck
+/** Test seam for the pending check (the real one reads the sweep's liveness, mxd's socket and the token file); null
+ *  restores the real one. */
+export function setGromzoPendingCheck(fn: (() => boolean) | null): void {
+  pendingCheck = fn ?? defaultPendingCheck
+}
+
+function queueGromzoOwnerAlert(text: string): boolean {
+  try {
+    const p = join(STORE_DIR, GROMZO_PENDING_ALERTS_FILE)
+    appendFileSync(p, JSON.stringify({ at: new Date().toISOString(), text }) + '\n', { mode: 0o600 })
+    const lines = readFileSync(p, 'utf-8').split('\n').filter(Boolean)
+    if (lines.length > GROMZO_PENDING_ALERTS_MAX) writeFileSync(p, lines.slice(-GROMZO_PENDING_ALERTS_MAX).join('\n') + '\n', { mode: 0o600 })
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'gromzo pending owner alert could not be kept')
+    return false
+  }
+}
+
+/** Hands every kept alert to the main agent (through the relay sink) once it is live, as ONE message (one main-agent
+ *  round, not one per alert); returns how many alerts it carried. A `.flushing` file left by a crash between the two
+ *  renames goes first and is never overwritten; a relay that fails keeps it for the next sweep (Dani 73601). */
+export function flushGromzoPendingOwnerAlerts(): number {
+  if (!ownerRelaySink || pendingCheck()) return 0
+  const p = join(STORE_DIR, GROMZO_PENDING_ALERTS_FILE)
+  const taken = `${p}.flushing`
+  if (!existsSync(taken)) {
+    if (!existsSync(p)) return 0
+    try { renameSync(p, taken) } catch { return 0 }
+  }
+  const texts: string[] = []
+  for (const line of readFileSync(taken, 'utf-8').split('\n').filter(Boolean)) {
+    try {
+      const { text } = JSON.parse(line) as { text: string }
+      if (typeof text === 'string') texts.push(text)
+    } catch { /* a broken line is skipped, the rest still goes */ }
+  }
+  if (texts.length > 0) {
+    const combined = texts.length === 1 ? texts[0] : texts.map((t, i) => `(${i + 1}/${texts.length}) ${t}`).join('\n')
+    if (!relayOwnerViaMainAgent(combined)) {
+      logger.warn({ kept: texts.length }, 'gromzo: the kept alerts could not be relayed; they stay for the next sweep')
+      return 0
+    }
+  }
+  try { renameSync(taken, `${taken}.done`) } catch { /* best-effort */ }
+  logger.info({ delivered: texts.length }, 'gromzo: the alerts kept while pending went to the main agent')
+  return texts.length
+}
+
+function relayOwnerViaMainAgent(text: string, meta?: AlertMeta): boolean {
+  let pending = false
+  try { pending = pendingCheck() } catch { pending = false }
+  if (pending) {
+    const kept = queueGromzoOwnerAlert(text)
+    logAlertDelivery(meta, 'owner', kept ? 'queued' : 'failed')
+    if (kept) logger.warn('Owner alert kept: the install is gromzo-pending (no Gromzo channel yet); it goes out when the main agent is live')
+    return kept
+  }
+  if (!ownerRelaySink) {
+    logAlertDelivery(meta, 'owner', 'skipped')
+    logger.warn('Channel ertesites kihagyva: gromzo telepites, es ebben a folyamatban nincs fo-ugynok tovabbito')
+    return false
+  }
+  try {
+    let lang: 'hu' | 'en' = 'hu'
+    try { lang = relayLang() } catch { /* the default */ }
+    ownerRelaySink(lang === 'en'
+      ? '[owner-alert] An alert for the owner. Send it to them over Gromzo (the owner DM), word for word, and do not answer it here: ' + text
+      : '[owner-alert] Riasztás a tulajdonosnak. Küldd el neki a Gromzón (a tulajdonosi DM-be), szó szerint, és ne válaszolj rá itt: ' + text)
+    logAlertDelivery(meta, 'owner', 'relayed')
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'gromzo owner relay could not be queued')
+    logAlertDelivery(meta, 'owner', 'failed')
+    return false
+  }
+}
+
 export function setOwnerChatMissingSink(sink: OwnerChatMissingSink | null): void {
   ownerChatMissingSink = sink
   lastOwnerChatMissingSignalAt = 0
@@ -201,7 +337,12 @@ export async function notifyOwner(text: string, meta?: AlertMeta): Promise<boole
 }
 
 async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
-  // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
+  // GROMZONOPROVIDER1108: a gromzo install has no bot token and no owner chat id: the owner lives in the Gromzo app,
+  // reached through the MAIN agent (its Gromzo channel has the owner DM). The alert goes to the main agent's inbox
+  // with a relay instruction; without a registered sink (a process that never opens the database) the log line is it.
+  if (CHANNEL_PROVIDER === 'gromzo') return relayOwnerViaMainAgent(text, meta)
+  // CHATID0 -- resolveAlertDeliveryChat (resolveAlertOwnerChat with the owner's OWNER_ALERT_CHAT_ID in front,
+  // ISSUE2556X), not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
   // guard used to PASS on exactly the installs that had no owner chat: the
@@ -214,7 +355,7 @@ async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
   // a single paired DM entry counts as the owner, never a group or channel,
   // and with several entries the alert is not sent (a guess would reach a
   // stranger). The reason is logged, so a skipped alert is visible.
-  const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  const owner = resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
   // The skipped send gets its delivery line here, ahead of the branch below,
   // which stays as it is (card 3ed09d25 extends that branch).
   if (!CHANNEL_TOKEN || !owner.chatId) logAlertDelivery(meta, 'owner', 'skipped')
@@ -355,11 +496,113 @@ export const notifyTelegram = notifyChannel
 // recovery path must never depend on, or be noisy about, Telegram being wired.
 export async function notifySecurityEvent(text: string): Promise<void> {
   // Silent when NEITHER channel is configured; a Slack-only install still gets it.
-  const hasTelegram = !!CHANNEL_TOKEN && !!resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
+  const hasTelegram = !!CHANNEL_TOKEN && !!resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
   if (!hasTelegram && !(await slackTargetFor('owner'))) return
   try {
     await notifyOwner(text)
   } catch {
     /* never let a notification failure break the recovery action itself */
+  }
+}
+
+/**
+ * APPROVALSLACK1030 (Samu 66026): NOTIFY_SLACK_TARGET names where the owner's approval requests go (a raw D id is
+ * posted to directly). When it changes, the OLD target is told, so a change made around the gate (a text brake) is
+ * still seen where the owner was reading. Never throws; logged either way. Exported for tests.
+ */
+export async function announceSlackTargetChange(oldTarget: string, newTarget: string, opts: { send?: typeof SendSlack; now?: Date; lang?: 'hu' | 'en' } = {}): Promise<{ sent: boolean; reason?: string }> {
+  const before = oldTarget.trim()
+  const after = newTarget.trim()
+  if (!before) return { sent: false, reason: 'no_old_target' }
+  if (before === after) return { sent: false, reason: 'unchanged' }
+  try {
+    // APPROVALTAGEN1108: in the install's approval-text language (the explicit AGENT_TEXT_LANG).
+    const { OWNER_TEXT, formatMoment } = await import('./web/approval-texts.js')
+    const lang = opts.lang ?? (await import('./web/agent-text-lang.js')).approvalTextLang()
+    const text = OWNER_TEXT[lang].targetChanged(before, after, formatMoment(opts.now ?? new Date(), lang))
+    const send = opts.send ?? (await import('./slack-notify.js')).sendSlackNotification
+    const r = await send(before, text, { raw: true })
+    if (r.ok) {
+      logger.warn({ before, after }, 'owner Slack target changed: the old target was told')
+      return { sent: true }
+    }
+    logger.warn({ before, after, error: r.error }, 'owner Slack target changed: telling the OLD target FAILED')
+    return { sent: false, reason: r.error ?? 'send_failed' }
+  } catch (err) {
+    logger.warn({ err }, 'owner Slack target changed: telling the old target threw')
+    return { sent: false, reason: 'error' }
+  }
+}
+
+/** The owner Slack target last announced (Dani 66036): a store file behind the db-write-gate. */
+export function announcedTargetPath(storeDir: string = STORE_DIR): string {
+  return `${storeDir}/.owner-slack-target`
+}
+
+/**
+ * Dani 66036: compares the owner Slack target in effect with the one last announced. On a difference the OLD target is
+ * told (announceSlackTargetChange) and the new one recorded, so a change that went around the settings route is seen
+ * at the next owner DM. The first sight (no record, no old value given) only records. Never throws.
+ */
+export async function noticeTargetDrift(
+  current: string,
+  opts: { fallbackOld?: string; read?: () => string | null; write?: (v: string) => void; announce?: (oldT: string, newT: string) => Promise<unknown> } = {},
+): Promise<boolean> {
+  const read = opts.read ?? (() => { try { const f = announcedTargetPath(); return existsSync(f) ? readFileSync(f, 'utf-8') : null } catch { return null } })
+  const write = opts.write ?? ((v: string) => { try { writeFileSync(announcedTargetPath(), v, { mode: 0o600 }) } catch (err) { logger.warn({ err }, 'owner Slack target record could not be written') } })
+  const announce = opts.announce ?? ((o: string, n: string) => announceSlackTargetChange(o, n))
+  try {
+    const stored = read()
+    const now = current.trim()
+    const old = (stored ?? opts.fallbackOld ?? '').trim()
+    if (stored === null && !opts.fallbackOld) { write(now); return false }
+    if (old === now) { if (stored === null || stored.trim() !== now) write(now); return false }
+    await announce(old, now)
+    write(now)
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'owner Slack target drift check failed')
+    return false
+  }
+}
+
+/**
+ * APPROVALSLACK1030 (2), Dani 65925 / Samu 65935: the Slack id whose reaction approves changed. The OLD owner gets a DM
+ * about it, so a change made around the gate (a text brake, not an OS boundary) is still seen by the person it
+ * replaced. The effective ids resolve as the DM target does (the setting, else the single allowFrom entry). Never
+ * throws; the result is logged either way. Exported for tests (send and readAccess are injectable).
+ */
+export async function announceSlackOwnerChange(
+  oldSetting: string,
+  newSetting: string,
+  opts: { send?: typeof SendSlack; readAccess?: () => string | null; now?: Date; lang?: 'hu' | 'en' } = {},
+): Promise<{ sent: boolean; reason?: string }> {
+  try {
+    const sn = await import('./slack-notify.js')
+    const access = opts.readAccess ? opts.readAccess() : (() => {
+      try {
+        const f = `${sn.mainSlackStateDir()}/access.json`
+        return existsSync(f) ? readFileSync(f, 'utf-8') : null
+      } catch { return null }
+    })()
+    const before = sn.resolveOwnerUserId(oldSetting, access)
+    const after = sn.resolveOwnerUserId(newSetting, access)
+    if (!before) return { sent: false, reason: 'no_old_owner' }
+    if (before === after) return { sent: false, reason: 'unchanged' }
+    // APPROVALTAGEN1108: in the install's approval-text language (the explicit AGENT_TEXT_LANG).
+    const { OWNER_TEXT, formatMoment } = await import('./web/approval-texts.js')
+    const lang = opts.lang ?? (await import('./web/agent-text-lang.js')).approvalTextLang()
+    const text = OWNER_TEXT[lang].ownerChanged(before, after, formatMoment(opts.now ?? new Date(), lang))
+    const send = opts.send ?? sn.sendSlackNotification
+    const r = await send('dm', text, { ownerUserId: before, raw: true })
+    if (r.ok) {
+      logger.warn({ before, after }, 'approval Slack owner changed: the old owner was told')
+      return { sent: true }
+    }
+    logger.warn({ before, after, error: r.error }, 'approval Slack owner changed: telling the OLD owner FAILED')
+    return { sent: false, reason: r.error ?? 'send_failed' }
+  } catch (err) {
+    logger.warn({ err }, 'approval Slack owner changed: telling the old owner threw')
+    return { sent: false, reason: 'error' }
   }
 }

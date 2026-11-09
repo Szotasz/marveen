@@ -44,17 +44,34 @@
 //
 // Decision logic is pure (decideNudgePreflight/recordNudge) with a thin IO
 // shell, mirroring decideStuckInputRecovery.
+//
+// Voice channel fast path: a row FROM the voice channel
+// (VOICE_CHANNEL_ID, the owner speaking in a live call through the relay) is a
+// question someone is waiting for on the line. The steady-stream guards above
+// (MIN_PENDING_AGE_MS, NUDGE_DEBOUNCE_MS, the 20 s cadence) made every spoken
+// question wait 21-25 s. The watcher now runs every VOICE_NUDGE_INTERVAL_MS: the
+// voice step nudges for a voice row at once, with the same idle check and
+// abort-on-busy send, and the 20 s body runs when its period has elapsed (one
+// interval, so web.ts stops both). It cannot become a nudge storm: it nudges only
+// for a voice row id it has not nudged for yet (one nudge covers every row the
+// drain then claims), and the two steps never run at the same time. Only the
+// relay's device key may write as the voice id (routes/messages.ts), so no fleet
+// agent can open this lane. Every other row keeps the 20 s path and its guards.
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { getPendingMessages } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { agentFacingLang } from './agent-text-lang.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, clearFeedbackModalAndRecheck } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
 import { whileNotFrozen } from './fleet-freeze.js'
+import { voiceChannelSenderId } from '../delivery-order.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
 export const INBOX_NUDGE_INTERVAL_MS = 20_000
+// The watcher's interval; the 20 s body still runs every INBOX_NUDGE_INTERVAL_MS (see header).
+export const VOICE_NUDGE_INTERVAL_MS = 2_000
 // A message younger than this is left alone: a concurrently-starting turn (or
 // the send that just created it) may claim it in seconds anyway.
 export const MIN_PENDING_AGE_MS = 10_000
@@ -99,6 +116,7 @@ export interface NudgeState {
   budgetLogged: boolean
   lastBusyLogAt: number
   absenceLogged: boolean
+  lastVoiceNudgedId: number // the newest voice row a fast nudge was sent for
 }
 
 export const INITIAL_NUDGE_STATE: NudgeState = Object.freeze({
@@ -110,6 +128,7 @@ export const INITIAL_NUDGE_STATE: NudgeState = Object.freeze({
   budgetLogged: false,
   lastBusyLogAt: 0,
   absenceLogged: false,
+  lastVoiceNudgedId: 0,
 })
 
 export type NudgePreflight =
@@ -183,12 +202,31 @@ export function recordNudge(state: NudgeState, now: number, oldestId: number): N
   }
 }
 
-function resolveLang(): 'hu' | 'en' {
-  try {
-    return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu'
-  } catch {
-    return 'hu'
+/** The newest pending row from the voice channel that no fast nudge has covered yet,
+ *  or null (voice lane off, no voice row, or every voice row already nudged for). */
+export function decideVoiceNudge(
+  rows: ReadonlyArray<{ id: number; from_agent: string }>,
+  voiceId: string | null,
+  lastVoiceNudgedId: number,
+): number | null {
+  if (voiceId === null) return null
+  let newest: number | null = null
+  for (const r of rows) {
+    if (r.from_agent === voiceId && r.id > lastVoiceNudgedId && (newest === null || r.id > newest)) newest = r.id
   }
+  return newest
+}
+
+/** State advance for a fast voice nudge. It also sets lastNudgeAt, so the 20 s path
+ *  keeps its debounce floor behind it (no second nudge for the same drain); the hourly budget and the
+ *  stale-spell fields belong to the 20 s path and stay as they are. */
+export function recordVoiceNudge(state: NudgeState, now: number, voiceRowId: number): NudgeState {
+  return { ...state, lastNudgeAt: now, lastVoiceNudgedId: voiceRowId }
+}
+
+// PERSONAESC1107: AGENT_TEXT_LANG when set, else DASHBOARD_LANG as before (agent-text-lang.ts agentFacingLang).
+function resolveLang(): 'hu' | 'en' {
+  return agentFacingLang(() => getEffectiveSettingValue('DASHBOARD_LANG'))
 }
 
 let state: NudgeState = { ...INITIAL_NUDGE_STATE }
@@ -196,6 +234,80 @@ let state: NudgeState = { ...INITIAL_NUDGE_STATE }
 /** Test seam. */
 export function _resetNudgeStateForTest(): void {
   state = { ...INITIAL_NUDGE_STATE }
+  tickRunning = false
+  lastSlowTickAt = Number.NEGATIVE_INFINITY
+}
+
+// The steps never send at the same time (the second would type a second nudge into a
+// pane the first one just made busy); a call that finds another one running simply skips.
+let tickRunning = false
+// Monotonic stamp (performance.now): a wall-clock step (NTP, resume from sleep) must not move the 20 s schedule.
+let lastSlowTickAt = Number.NEGATIVE_INFINITY
+async function exclusive(fn: () => Promise<void>): Promise<void> {
+  if (tickRunning) return
+  tickRunning = true
+  try {
+    await fn()
+  } finally {
+    tickRunning = false
+  }
+}
+
+/** The 20 s tick (exported for tests). */
+export function runInboxNudgeTick(): Promise<void> {
+  return exclusive(tick)
+}
+
+/** The voice-channel step alone (exported for tests). */
+export function runVoiceNudgeTick(): Promise<void> {
+  return exclusive(voiceTick)
+}
+
+/** One interval call -- the voice step, then the 20 s body when its period has elapsed
+ *  (a voice nudge just sent sets lastNudgeAt, so the body's debounce keeps it from nudging again). */
+export function runWatcherInterval(nowMono = performance.now()): Promise<void> {
+  return exclusive(async () => {
+    await voiceTick()
+    if (nowMono - lastSlowTickAt >= INBOX_NUDGE_INTERVAL_MS) {
+      lastSlowTickAt = nowMono
+      await tick()
+    }
+  })
+}
+
+async function voiceTick(): Promise<void> {
+  try {
+    const now = Date.now()
+    const pending = getPendingMessages(MAIN_AGENT_ID)
+    const target = decideVoiceNudge(pending, voiceChannelSenderId(), state.lastVoiceNudgedId)
+    if (target === null) return
+    if (!sessionExistsOnHost(null, MAIN_CHANNELS_SESSION)) return
+    if (!(await isSessionReadyForPrompt(MAIN_CHANNELS_SESSION, null))
+      && !(await clearFeedbackModalAndRecheck(MAIN_CHANNELS_SESSION, null))) {
+      return // busy: the next fast tick retries (the voice row is not marked)
+    }
+    const prev = state
+    state = recordVoiceNudge(state, now, target)
+    let result: 'sent' | 'aborted-busy' | 'skipped-locked'
+    try {
+      result = await sendPromptToSession(MAIN_CHANNELS_SESSION, nudgeText(resolveLang()), null, {
+        onBusyTimeout: 'abort',
+        idleTimeoutMs: 2_000,
+      })
+    } catch (err) {
+      state = prev
+      logger.warn({ err, voiceRowId: target }, 'inbox nudge: voice send threw; nothing typed, state restored')
+      return
+    }
+    if (result === 'aborted-busy' || result === 'skipped-locked') {
+      state = prev
+      logger.info({ inboxNudgeSkipped: result, voiceRowId: target }, 'inbox nudge: voice nudge not typed; retrying next tick')
+      return
+    }
+    logger.info({ inboxNudge: true, voice: true, voiceRowId: target, pending: pending.length }, 'inbox nudge: voice-channel row, prompted the main agent at once')
+  } catch (err) {
+    logger.warn({ err }, 'inbox nudge: voice tick error')
+  }
 }
 
 async function tick(): Promise<void> {
@@ -292,6 +404,7 @@ async function tick(): Promise<void> {
 }
 
 export function startInboxNudgeWatcher(): NodeJS.Timeout {
-  setTimeout(whileNotFrozen('inbox-nudge', () => { void tick() }), INBOX_NUDGE_INITIAL_DELAY_MS).unref()
-  return setInterval(whileNotFrozen('inbox-nudge', () => { void tick() }), INBOX_NUDGE_INTERVAL_MS)
+  lastSlowTickAt = performance.now() // the 20 s body first runs one period after start, as before
+  setTimeout(whileNotFrozen('inbox-nudge', () => { void runInboxNudgeTick() }), INBOX_NUDGE_INITIAL_DELAY_MS).unref()
+  return setInterval(whileNotFrozen('inbox-nudge', () => { void runWatcherInterval() }), VOICE_NUDGE_INTERVAL_MS)
 }

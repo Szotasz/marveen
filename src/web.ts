@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -27,7 +27,8 @@ import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { createAgentMessage } from './db.js'
-import { setOwnerChatMissingSink } from './notify.js'
+import { setOwnerChatMissingSink, setOwnerRelayLang, setOwnerRelaySink } from './notify.js'
+import { approvalTextLang } from './web/agent-text-lang.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startScheduleRunner, startHeartbeatGapGuard } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
@@ -100,10 +101,10 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
-import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
+import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
-import { tryHandleGromzo } from './web/routes/gromzo.js'
+import { initGromzoConsentWatch, tryHandleGromzo } from './web/routes/gromzo.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
@@ -451,11 +452,36 @@ export function startWebServer(port = 3420): http.Server {
   if (servicesOff && !webOnly) logger.warn({ reason: services.reason }, 'Second instance: background services disabled (start it with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1 in the environment to run them)')
   if (services.override) logger.warn({ reason: services.reason }, 'Second instance with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1: background services RUN (schedule runner included)')
 
+  // GROMZOBRIDGEWIZARD1107 D1: a pending Gromzo approval comes back after a restart; the server checks it on its own only
+  // with the background services on (finishing a switch restarts a live session).
+  initGromzoConsentWatch({ watch: !servicesOff })
+
   const routerInterval = servicesOff ? undefined : startMessageRouter()
   if (!servicesOff) logger.info('Agent message router started (5s poll)')
   // Card 3ed09d25: an alert whose owner chat cannot be resolved reaches the main
   // agent's inbox (once an hour) instead of vanishing; the log line fires every time.
   if (!servicesOff) setOwnerChatMissingSink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
+  // GROMZONOPROVIDER1108: on a gromzo install every owner alert goes to the main agent, which relays it over Gromzo.
+  if (!servicesOff) setOwnerRelaySink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
+  setOwnerRelayLang(() => approvalTextLang())
+  // GROMZONOPROVIDER1108: update.sh's provider migration leaves a marker; the owner hears it once, through the main
+  // agent (the install now talks through Gromzo). The marker is renamed after the notice, so it is said once.
+  if (!servicesOff) {
+    const marker = join(STORE_DIR, 'gromzo-provider-migrated.json')
+    if (existsSync(marker)) {
+      try {
+        createAgentMessage('system', MAIN_AGENT_ID, approvalTextLang() === 'en'
+          ? '[owner-notice] Tell the owner over Gromzo, in one sentence: Marveen\'s channel is Gromzo from now on (it was a ' +
+            'Telegram setting with no token, so the main session kept restarting). To undo: CHANNEL_PROVIDER_PREV in the install settings.'
+          : '[owner-notice] Tájékoztasd a tulajdonost a Gromzón, egy mondatban: a Marveen csatornája mostantól a Gromzo ' +
+            '(korábban egy Telegram-beállítás volt token nélkül, ezért a fő munkamenet újra és újra elindult). ' +
+            'Visszaállítás: CHANNEL_PROVIDER_PREV a telepítés beállításaiban.')
+        renameSync(marker, `${marker}.notified`)
+      } catch (err) {
+        logger.warn({ err }, 'gromzo provider migration notice could not be queued')
+      }
+    }
+  }
 
   const scheduleInterval = servicesOff ? undefined : startScheduleRunner()
   if (!servicesOff) logger.info('Schedule runner started (60s poll)')
@@ -585,6 +611,7 @@ export function startWebServer(port = 3420): http.Server {
   // token estimates stay fresh without requiring a manual dashboard visit.
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
+  const approvalReactionInterval = startApprovalReactionSweeper()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.
@@ -839,6 +866,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(kanbanArchiveInterval)
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
+    clearInterval(approvalReactionInterval)
     clearInterval(authSessionSweepInterval)
     eventLoopLag.stop()
     clearInterval(updateCheckerInterval)

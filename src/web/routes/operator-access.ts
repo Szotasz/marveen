@@ -3,14 +3,14 @@
 // -- 'full' or 'operator' -- may neither read nor change what an operator gets,
 // the same rule as user and device-key administration in routes/auth.ts.
 // Every change lands in config_change_log with the actor.
-// Changing the switches widens what existing operator keys reach, so once a
-// dashboard login exists the PUT takes the owner's session (mayIssueCredentials,
-// DEVKEYFOLLOW1022); reading them stays open to both owner lanes.
+// Changing the switches widens what existing operator keys reach, so the PUT takes
+// the owner's session (mayActAsOwner, DEVKEYFOLLOW1022), also before the first
+// dashboard login exists (OWNERGATE4-1104); reading them stays open to both owner lanes.
 
 import { readBody, json } from '../http-helpers.js'
 import { logConfigChange } from '../../db.js'
 import { normaliseOperatorAccess, readOperatorAccess, writeOperatorAccess } from '../operator-access.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { bridgeOwner, mayActAsOwner, ownerCookieSession, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const OWNER_KINDS = ['token', 'session']
@@ -19,7 +19,7 @@ const MAX_BODY = 4096
 export async function tryHandleOperatorAccess(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   if (path !== '/api/operator-access') return false
-  if (!auth || !OWNER_KINDS.includes(auth.kind)) {
+  if (!auth || (!OWNER_KINDS.includes(auth.kind) && !bridgeOwner(auth, req))) {
     json(res, { error: 'Forbidden for this credential type' }, 403)
     return true
   }
@@ -28,8 +28,8 @@ export async function tryHandleOperatorAccess(ctx: RouteContext): Promise<boolea
     return true
   }
   if (method === 'PUT') {
-    if (!mayIssueCredentials(auth, req)) {
-      json(res, OWNER_SESSION_REQUIRED, 403)
+    if (!mayActAsOwner(auth, req)) {
+      refuseOwner(res, 'Changing what an operator key may reach needs the dashboard login (an owner session).')
       return true
     }
     let parsed: unknown
@@ -42,7 +42,7 @@ export async function tryHandleOperatorAccess(ctx: RouteContext): Promise<boolea
     const before = readOperatorAccess()
     const next = normaliseOperatorAccess(parsed)
     writeOperatorAccess(next)
-    const actor = auth.kind === 'session' ? `session:${auth.user ?? '?'}` : 'token'
+    const actor = auth.kind === 'session' ? `session:${auth.user ?? '?'}` : auth.kind === 'device' ? `bridge:${ownerCookieSession(req) ?? '?'}` : 'token'
     logConfigChange('operator-access', JSON.stringify(before), JSON.stringify(next), actor)
     json(res, next)
     return true

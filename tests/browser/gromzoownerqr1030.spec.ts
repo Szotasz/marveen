@@ -133,11 +133,17 @@ test.describe('GROMZOOWNERQR1030 -- Gromzo card on Settings', () => {
     expect(errors.filter((e) => !/429/.test(e)), `page errors: ${errors.join(' | ')}`).toEqual([])
   })
 
-  test('Bridge-key install and the owner-session refusal have their own sentences', async ({ page }) => {
-    await open(page, 'en', { status: 409, body: { error: 'consent_required' } })
-    await page.locator('#gromzoAddPhoneBtn').click()
-    await expect(page.locator('#gromzoError')).toHaveText(/Bridge key/)
-  })
+  // DASHSOCKPEER1106 (#2575): the owner QR card always gets consent_required since marveen-mxd #89 took the owner's codes
+  // off dash.sock, so the card has its own sentence (gromzo.qr.err.consent_required): ask for the phone QR in the
+  // Marveen Bridge. The shared "Bridge key ... contact support" sentence stays the agents panel's.
+  for (const [lang, want] of [['en', /Get the phone QR code in the Marveen Bridge/], ['hu', /A telefonos QR-kódot a Marveen Bridge-ben kéred/]] as const) {
+    test(`consent_required on the owner QR card (${lang}): the card's own sentence sends the owner to the Bridge menu`, async ({ page }) => {
+      await open(page, lang, { status: 409, body: { error: 'consent_required' } })
+      await page.locator('#gromzoAddPhoneBtn').click()
+      await expect(page.locator('#gromzoError')).toHaveText(want)
+      await expect(page.locator('#gromzoError')).not.toHaveText(/Bridge key|Bridge-kulcs/)
+    })
+  }
 
   // GROMZORESETWAIT1031 (Samu 58730): during the identity reset lock the owner sees when to ask again; a stalled
   // reset says so; with no time the sentence stays the general one.

@@ -20,8 +20,9 @@ passes LOUDLY.
 
 Also carries a regression pass over the checks this task must NOT touch:
 accents, em dash, double-hyphen, mixed-script (homoglyph). Drives the hook as
-a subprocess against an isolated OUTGOING_COPY_GATE_RULES file so the real
-store/outgoing-copy-gate-rules.json is never touched. Run:
+a subprocess from a tmp install per rules file (copy_gate_install.py), so the
+real store/outgoing-copy-gate-rules.json is never touched; since ENVRELAXGATE1104
+no environment variable picks the rules file. Run:
   python3 scripts/__tests__/outgoing-copy-gate.test.py
 Exit 0 = all pass; non-zero = a failure (message on stderr).
 """
@@ -33,6 +34,9 @@ import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from copy_gate_install import copy_gate_install, bare_install  # noqa: E402
+_BARE_PARENT = tempfile.mkdtemp(prefix="copy-gate-bare-")
 
 CLEAN_HU = "Szia! Koszonom szepen, holnap kuldom at a szamlat es a reszleteket."
 # proper accents, no dash, no homoglyph, no bad name -- a payload that should
@@ -52,12 +56,9 @@ def write_rules(path, data):
 def run_hook(payload, rules_file=None, cwd=None, extra_env=None):
     env = dict(os.environ)
     env.update(extra_env or {})
-    if rules_file is not None:
-        env["OUTGOING_COPY_GATE_RULES"] = rules_file
-    else:
-        env.pop("OUTGOING_COPY_GATE_RULES", None)
+    hook = copy_gate_install(rules_file)[0] if rules_file is not None else bare_install(_BARE_PARENT)[0]
     p = subprocess.run(
-        [sys.executable, HOOK],
+        [sys.executable, hook],
         input=json.dumps(payload),
         capture_output=True, text=True, env=env, timeout=20, cwd=cwd,
     )
@@ -88,6 +89,22 @@ def check_true(name, cond, detail=""):
         FAILS.append(name)
 
 
+def reaches_model(out, code):
+    """A pass-with-warning must carry the SAME text in additionalContext: a
+    systemMessage alone is shown on the terminal and never reaches the agent.
+    It must also stay a PASS: exit 0, and hookSpecificOutput holds exactly
+    these two keys, so a permissionDecision ("deny"/"ask") slipped into the
+    warning helper fails here instead of passing because the text matches."""
+    try:
+        j = json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        return False
+    hso = j.get("hookSpecificOutput") or {}
+    return (code == 0
+            and bool(j.get("systemMessage"))
+            and hso == {"hookEventName": "PreToolUse", "additionalContext": j["systemMessage"]})
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="copygate-") as tmp:
 
@@ -99,10 +116,14 @@ def main():
         check("missing file: email fail-OPEN (exit 0)", code, 0)
         check_true("missing file: the pass is LOUD (systemMessage names the absent check)",
                    "systemMessage" in out and "HIANYZIK" in out, out)
+        check_true("missing file: the email warning reaches the agent (additionalContext)",
+                   reaches_model(out, code), out)
 
         code, out, err = run_hook(telegram_payload(CLEAN_HU_OK), rules_file=missing)
         check("missing file: telegram fail-open (exit 0)", code, 0)
         check_true("missing file: telegram warns via systemMessage", "NEV-SZABALY" in out, out)
+        check_true("missing file: the telegram warning reaches the agent (additionalContext)",
+                   reaches_model(out, code), out)
 
         # --- 2. CORRUPT file (unparseable JSON) -----------------------------
         corrupt = rules_path(tmp, "corrupt.json")
@@ -166,6 +187,14 @@ def main():
 
         code, out, err = run_hook(telegram_payload(bad_body), rules_file=active)
         check("active rule, bad name present: telegram blocks (exit 2)", code, 2)
+
+        # ENVRELAXGATE1104: a rules file named in the environment is not read.
+        sanctioned_empty = rules_path(tmp, "env-empty.json")
+        write_rules(sanctioned_empty, {"no_name_rule": True, "no_name_rule_reason": "teszt: env-bol adott ures szabaly"})
+        code, out, err = run_hook(email_payload(bad_body), rules_file=active,
+                                  extra_env={"OUTGOING_COPY_GATE_RULES": sanctioned_empty})
+        check("ENVRELAXGATE1104: an environment rules path does not replace the install's rules (exit 2)", code, 2)
+        check_true("ENVRELAXGATE1104: the install's name rule still fires", "HELYTELEN NEV" in err, err)
 
         # --- 5. Regression: checks this task must not touch -----------------
         # 5a. em dash

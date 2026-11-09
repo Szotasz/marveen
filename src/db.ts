@@ -472,9 +472,12 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
   // keep their attachment identity so a respawned session can still download
   // and transcribe them; reply_to_message_id lets an inbound quote be
-  // retraced after the fact (df3b48a7) (mirrors _MIGRATION_COLUMNS in
-  // scripts/hooks/ledger_lib.py).
-  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id']) {
+  // retraced after the fact (df3b48a7); source names the channel (PROVIDERVAK908,
+  // it was missing here, so a DB only this path created had no source column);
+  // sender_id / sender_name / sender_role say who sent an inbound and in what
+  // role (LEDGERROLELABEL1104). Mirrors _MIGRATION_COLUMNS in
+  // scripts/hooks/ledger_lib.py, locked by conversation-ledger-schema.test.ts.
+  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role']) {
     const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
     if (!cols.some(c => c.name === col)) {
       db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)
@@ -722,6 +725,24 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_versions_mid ON memory_versions(memory_id, superseded_at)`)
+  // Card a9dfb378 (#573): a real "was it used" signal. accessed_at cannot be
+  // it: every search hit stamps it, relaxed near-misses included, so on the
+  // owner store (measured 2026-10-17) 658 of 703 cold rows and all 115 hot
+  // rows read "accessed within 30 days". This table logs only the events that
+  // mean an agent actually reached for the row: a read by id, a top hit of a
+  // search that matched as asked, a partial FELULIRJA reference from another
+  // row. A separate table rather than a column: no UPDATE on memories, so the
+  // FTS-sync and updated_at triggers never fire for a use.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_uses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id INTEGER NOT NULL,
+      used_at INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('read','search','reference')),
+      agent_id TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_uses_mid ON memory_uses(memory_id, used_at)`)
 
   // Daily logs table
   db.exec(`
@@ -1197,6 +1218,10 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
+  // UNBLOCKS925: the one named case besides STOP/urgent that may reach a busy pane. NULL for every older row and for
+  // every row whose sender did not ask; the only stored value is 'unblocks' (src/web/unblocks-interrupt.ts). Unlike
+  // urgent, the flag is the main agent's own explicit field on POST /api/messages, never inferred from the text.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN affects_current_work TEXT') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -1713,6 +1738,41 @@ export function initDatabase(dbPathOverride?: string): void {
   // only; never updated. NULL (every older row) = no grant: the filer's own
   // token, and the main token, behave as before.
   try { db.exec('ALTER TABLE approvals ADD COLUMN for_agent TEXT') } catch { /* already exists */ }
+  // APPROVALSLACK1030 (2): the request as it was posted into the owner's Slack DM, for the server's own reaction check.
+  // The owner id is a SNAPSHOT taken at posting (a later change of SLACK_OWNER_USER_ID does not move an open request);
+  // text_sha256 is over the exact posted text; decided_at closes the row once (a later reaction change only logs).
+  // A security table: the db-write-gate denies an agent's write on it, like approvals.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_slack_posts (
+      approval_id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      text_sha256 TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      bot_user_id TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      decision TEXT,
+      last_checked_ms INTEGER
+    )
+  `)
+  // Dani 66059: the sweeper rotates by the last check, so old unanswered requests cannot starve a newer one.
+  try { db.exec('ALTER TABLE approval_slack_posts ADD COLUMN last_checked_ms INTEGER') } catch { /* already exists */ }
+  // APPROVALSLACK1030 B (the owner's decision of 11-04): the owner's typed reply decides too, read by the server.
+  // content_basis: what the DM showed (envelope / server_filed / description); the reaction decides only on the first
+  // two (#2452's rule), the reply on all three. reaction_mode / reply_mode: which decision this post was offered (a row
+  // from before this change was a reaction post). decided_by_ts: the owner message that decided, unique per channel, so
+  // one owner message decides one request. binding: thread / next_message. notice_ts: the server's own thread notice,
+  // the only non-owner message the thread may hold before the owner's reply.
+  for (const col of [
+    'content_basis TEXT', 'reaction_mode INTEGER NOT NULL DEFAULT 1', 'reply_mode INTEGER NOT NULL DEFAULT 0',
+    'decided_by_ts TEXT', 'binding TEXT', 'notice_ts TEXT',
+    // APPROVALTAGEN1108: the language the post was made in (its words decide); NULL = hu, as every older row.
+    'lang TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_slack_posts_decided_by ON approval_slack_posts(channel, decided_by_ts) WHERE decided_by_ts IS NOT NULL')
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -2298,6 +2358,59 @@ export function touchMemoriesAccessed(ids: number[]): void {
   db.prepare(`UPDATE memories SET accessed_at = ? WHERE id IN (${placeholders})`).run(now, ...ids)
 }
 
+export type MemoryUseKind = 'read' | 'search' | 'reference'
+
+// The same agent reaching for the same row the same way within this window is
+// one use, not several: a hook that re-runs one search every turn would
+// otherwise turn use_count into a poll counter.
+const MEMORY_USE_DEDUP_SECONDS = 600
+
+/** Card a9dfb378 (#573): log real uses (see the memory_uses table). Ids that
+ *  no longer exist are skipped. Returns how many rows were logged. */
+export function recordMemoryUse(ids: number[], kind: MemoryUseKind, agentId?: string | null): number {
+  if (ids.length === 0) return 0
+  const now = Math.floor(Date.now() / 1000)
+  const agent = agentId || null
+  const ins = db.prepare(
+    `INSERT INTO memory_uses (memory_id, used_at, kind, agent_id)
+     SELECT ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?)
+       AND NOT EXISTS (SELECT 1 FROM memory_uses
+                       WHERE memory_id = ? AND kind = ? AND agent_id IS ? AND used_at > ?)`,
+  )
+  let n = 0
+  db.transaction(() => {
+    for (const id of new Set(ids)) {
+      n += ins.run(id, now, kind, agent, id, id, kind, agent, now - MEMORY_USE_DEDUP_SECONDS).changes
+    }
+  })()
+  return n
+}
+
+export interface MemoryUseSummary { last_used_at: number; use_count: number }
+
+/** Last use and use count per id, for the ids given. An id with no logged use
+ *  is absent from the map. */
+export function getMemoryUseSummaries(ids: number[]): Map<number, MemoryUseSummary> {
+  const out = new Map<number, MemoryUseSummary>()
+  if (ids.length === 0) return out
+  const stmt = db.prepare(
+    `SELECT memory_id, MAX(used_at) AS last_used_at, COUNT(*) AS use_count
+     FROM memory_uses WHERE memory_id IN (SELECT value FROM json_each(?)) GROUP BY memory_id`,
+  )
+  for (const r of stmt.all(JSON.stringify([...new Set(ids)])) as { memory_id: number; last_used_at: number; use_count: number }[]) {
+    out.set(r.memory_id, { last_used_at: r.last_used_at, use_count: r.use_count })
+  }
+  return out
+}
+
+/** When use logging began on this store: the first logged use, or null. The
+ *  UI needs it to say "no use since <date>" instead of a bare "never". */
+export function getMemoryUseTrackingStart(): number | null {
+  const r = db.prepare('SELECT MIN(used_at) AS t FROM memory_uses').get() as { t: number | null }
+  return r.t ?? null
+}
+
 export function decayMemories(): void {
   const oneWeekAgo = Math.floor(Date.now() / 1000) - 7 * 86400
   // Gentler decay: 0.5% per day, only for memories older than 1 week
@@ -2305,7 +2418,10 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange): Memory[] {
+// staleBefore (card ca046c9a, #570): only rows whose LAST WRITE
+// (updated_at, or created_at when it was never updated) is older than this
+// unix time -- the "hot for a week and nobody touched it" view.
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2317,11 +2433,13 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // 2026-10-17 on the owner store, the dashboard Hot tab (no agent filter,
   // limit 50) showed 6 of 115 hot memories.
   //
-  // The date range (card f90928e3) goes into the query for the same reason.
+  // The date range (card f90928e3) and the stale cut-off (card ca046c9a) go
+  // into the query for the same reason.
   const dt = tsClause('created_at', range)
+  const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
   return db
-    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(chatId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -2429,20 +2547,22 @@ function scheduleEmbedding(id: number, content: string, keywords: string | undef
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange, staleBefore?: number): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
   // after a bulk import and make LIMIT/OFFSET non-total without it. The date
-  // range (card f90928e3) is part of the key for the same reason, and goes
-  // into the query ahead of the LIMIT, never after it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}`
+  // range (card f90928e3) and the stale cut-off (card ca046c9a) are part of
+  // the key for the same reason, and go into the query ahead of the LIMIT,
+  // never after it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}:${staleBefore ?? ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
   const dt = tsClause('created_at', range)
+  const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
   const result = db.prepare(
-    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
-  ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -2490,7 +2610,9 @@ export function searchAgentMemories(
   }
 }
 
-export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number } {
+export const HOT_STALE_DAYS = 7
+
+export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number; staleHot: number; staleHotDays: number } {
   const total = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as {c:number}).c
   const withEmbedding = (db.prepare('SELECT COUNT(*) as c FROM memories WHERE embedding IS NOT NULL').get() as {c:number}).c
   const agentRows = db.prepare('SELECT agent_id, COUNT(*) as c FROM memories GROUP BY agent_id').all() as {agent_id:string, c:number}[]
@@ -2499,7 +2621,13 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   const byTier: Record<string, number> = {}
   for (const r of agentRows) byAgent[r.agent_id] = r.c
   for (const r of tierRows) byTier[r.category] = r.c
-  return { total, byAgent, byTier, withEmbedding }
+  // Card ca046c9a (#570): hot rows with no write for HOT_STALE_DAYS. Nothing
+  // moves a hot memory down on its own, so the count is the to-do list.
+  // Retracted rows are left out, as the listing leaves them out.
+  const staleHot = (db.prepare(
+    "SELECT COUNT(*) as c FROM memories WHERE category = 'hot' AND retracted_at IS NULL AND COALESCE(updated_at, created_at) < ?"
+  ).get(Math.floor(Date.now() / 1000) - HOT_STALE_DAYS * 86400) as {c:number}).c
+  return { total, byAgent, byTier, withEmbedding, staleHot, staleHotDays: HOT_STALE_DAYS }
 }
 
 /** One stored memory row, as the destructive-write paths need to see it. */
@@ -2559,6 +2687,7 @@ export function deleteMemoryById(id: number): boolean {
   if (!before) return false
   db.transaction(() => {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
+    db.prepare('DELETE FROM memory_uses WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
   forgetCachedEmbedding(id)
@@ -3284,7 +3413,10 @@ export function kanbanAssigneeExists(name: string): boolean {
 // Read off kanban_card_events, which records from_status -> to_status per move.
 // A stay opens on any event whose to_status is 'in_progress' and closes on the
 // next event for that card; a card sitting in the column right now has an open
-// stay that runs to `now`.
+// stay that runs to `now`. The aggregation runs in SQL, not in a JS walk over
+// the table: a window LEAD over (PARTITION BY card_id ORDER BY created_at, id)
+// hands each event the created_at of its card's next event, and a GROUP BY
+// card_id sums the clamped differences -- no event row is materialised here.
 //
 // WHAT THIS NUMBER IS NOT. It is wall-clock time in the column, not time worked.
 // An agent that picks a card up at 09:00 and hands it back at 17:00 having spent
@@ -3299,36 +3431,44 @@ export function kanbanAssigneeExists(name: string): boolean {
 export function sumInProgressSeconds(cardIds: string[]): Map<string, number> {
   const out = new Map<string, number>()
   if (cardIds.length === 0) return out
-  const rows = db
-    .prepare('SELECT card_id, to_status, created_at FROM kanban_card_events ORDER BY card_id, created_at ASC, id ASC')
-    .all() as { card_id: string; to_status: string; created_at: number }[]
-  const wanted = new Set(cardIds)
   const now = Math.floor(Date.now() / 1000)
-  let openedAt: number | null = null
-  let current = ''
-  const flush = () => {
-    // An open stay at the end of a card's event list is still running: the card
-    // is in in_progress now, so it is charged up to the present moment.
-    if (current && wanted.has(current) && openedAt !== null) {
-      out.set(current, (out.get(current) ?? 0) + Math.max(0, now - openedAt))
-    }
-    openedAt = null
-  }
-  for (const r of rows) {
-    if (r.card_id !== current) {
-      flush()
-      current = r.card_id
-      // A card seen in the event table gets an entry even if it never entered
-      // in_progress: that is a measured zero, unlike a card with no rows at all.
-      if (wanted.has(current) && !out.has(current)) out.set(current, 0)
-    }
-    if (openedAt !== null) {
-      if (wanted.has(current)) out.set(current, (out.get(current) ?? 0) + Math.max(0, r.created_at - openedAt))
-      openedAt = null
-    }
-    if (r.to_status === 'in_progress') openedAt = r.created_at
-  }
-  flush()
+  // The walk as one statement. The requested ids travel as ONE bound JSON array
+  // (json_each), not one `?` per id, so a board read for a thousand cards cannot
+  // run into SQLite's variable limit; idx_kanban_events_card serves the card_id
+  // lookup. Prepared per call, like every other query here: tests re-init the
+  // database per case, and a statement cached at module level would be bound to
+  // a handle that is already closed.
+  const rows = db
+    .prepare(
+      `WITH ev AS (
+         SELECT card_id, to_status, created_at,
+                LEAD(created_at) OVER w AS next_at
+         FROM kanban_card_events
+         WHERE card_id IN (SELECT value FROM json_each(?))
+         WINDOW w AS (PARTITION BY card_id ORDER BY created_at ASC, id ASC)
+       )
+       SELECT card_id,
+              SUM(CASE WHEN to_status = 'in_progress'
+                       -- A NULL next_at means the stay is still open at the end
+                       -- of the card's event list: the card is in the column
+                       -- right now, so it is charged up to the present moment.
+                       -- MAX(0, ...) clamps the length: LEAD walks this same
+                       -- ordering, so a closed stay always has next_at >=
+                       -- created_at and cannot go negative. The only negative
+                       -- case is the open tail above, when the clock stepped
+                       -- back after the last event (now < created_at): it owes
+                       -- zero, never a negative stay.
+                       THEN MAX(0, COALESCE(next_at, ?) - created_at)
+                       -- 0 rather than a dropped row, so a card seen in the
+                       -- event table keeps its entry even when it never entered
+                       -- in_progress: a measured zero, unlike a card with no
+                       -- rows at all (which the GROUP BY simply omits).
+                       ELSE 0 END) AS secs
+       FROM ev
+       GROUP BY card_id`
+    )
+    .all(JSON.stringify(cardIds), now) as { card_id: string; secs: number }[]
+  for (const r of rows) out.set(r.card_id, r.secs)
   return out
 }
 
@@ -4479,6 +4619,110 @@ export function getDoneEvidence(cardId: string): { since: number; comments: numb
 
 // --- Heartbeat helpers ---
 
+// --- Board summary (card ed3c8caf, #569) ---
+// "What happened on the board" per agent, for the morning look: what each agent
+// closed in the window, which of its cards are stuck (the getStuckKanbanCards
+// measurement, not a second definition), and what waits on the owner. Agent
+// names are lowercased and the bot name folds into the main agent id, so
+// "Marveen" and "marveen" are one row. done_evidence is read only when the
+// column exists (it arrives with #566), so this works on either schema.
+
+export interface BoardSummaryCardRef {
+  id: string
+  seq?: number
+  title: string
+}
+
+export interface BoardSummaryAgent {
+  agent: string
+  // closed_by: who moved the card to done (the event actor, folded), shown in
+  // the tooltip; the row itself is the card's assignee (see getBoardSummary).
+  closed: Array<BoardSummaryCardRef & { closed_at: number; closed_by: string | null; evidence: string | null }>
+  stuck: Array<BoardSummaryCardRef & { status: KanbanCard['status']; idle_days: number }>
+}
+
+export interface BoardSummary {
+  since: number
+  agents: BoardSummaryAgent[]
+  owner_waiting: { count: number; cards: BoardSummaryCardRef[] }
+}
+
+export const BOARD_SUMMARY_OWNER_CAP = 10
+
+export function getBoardSummary(opts: {
+  since: number
+  ownerName: string
+  botName: string
+  mainAgentId: string
+}): BoardSummary {
+  const fold = (name: string | null | undefined): string | null => {
+    const n = (name ?? '').trim().toLowerCase()
+    if (!n) return null
+    return n === opts.botName.toLowerCase() ? opts.mainAgentId.toLowerCase() : n
+  }
+  const owner = opts.ownerName.trim().toLowerCase()
+  const hasEvidence = (db.prepare('PRAGMA table_info(kanban_cards)').all() as Array<{ name: string }>)
+    .some((c) => c.name === 'done_evidence')
+  // The closing event, not the card's current status: a card closed and then
+  // reopened in the window still shows who closed it and when. Only a real
+  // transition counts: a card BORN done (createKanbanCard writes its opening
+  // row with from_status NULL) is a record, not work closed. A card closed
+  // twice in the window is listed once, at its latest close.
+  const closedRows = db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title, c.assignee, e.actor, e.created_at AS closed_at
+           ${hasEvidence ? ', c.done_evidence AS evidence' : ', NULL AS evidence'}
+    FROM kanban_card_events e
+    JOIN kanban_cards c ON c.id = e.card_id
+    WHERE e.to_status = 'done' AND e.from_status IS NOT NULL AND e.created_at >= ?
+    ORDER BY e.created_at ASC
+  `).all(opts.since) as Array<BoardSummaryCardRef & {
+    assignee: string | null; actor: string | null; closed_at: number; evidence: string | null
+  }>
+
+  const byAgent = new Map<string, BoardSummaryAgent>()
+  const row = (agent: string): BoardSummaryAgent => {
+    let r = byAgent.get(agent)
+    if (!r) { r = { agent, closed: [], stuck: [] }; byAgent.set(agent, r) }
+    return r
+  }
+  const latestClose = new Map<string, (typeof closedRows)[number]>()
+  for (const r of closedRows) latestClose.set(r.id, r)
+  for (const r of latestClose.values()) {
+    // Whose work it was: the card's assignee, not the actor of the move. On an
+    // install where one agent does the merges/closes, attributing by actor
+    // would put almost every close under that one agent and hide who did the
+    // work. The actor is kept as closed_by for the tooltip; it is the row only
+    // when the card has no assignee.
+    const agent = fold(r.assignee) ?? fold(r.actor)
+    if (!agent || agent === owner) continue
+    row(agent).closed.push({
+      id: r.id, seq: r.seq, title: r.title, closed_at: r.closed_at, closed_by: fold(r.actor), evidence: r.evidence,
+    })
+  }
+  const stuck = getStuckKanbanCards({ plannedDays: 7, activeDays: 3, creatorCommentWindowSec: 600 }).stuck
+  for (const s of stuck) {
+    const agent = fold(s.assignee)
+    if (!agent || agent === owner) continue
+    row(agent).stuck.push({ id: s.id, seq: s.seq, title: s.title, status: s.status, idle_days: s.idle_days })
+  }
+
+  const ownerRows = db.prepare(`
+    SELECT id, rowid AS seq, title FROM kanban_cards
+    WHERE archived_at IS NULL AND status = 'waiting' AND lower(trim(assignee)) = ?
+    ORDER BY updated_at DESC
+  `).all(owner) as BoardSummaryCardRef[]
+
+  const agents = [...byAgent.values()].sort((a, b) =>
+    (b.closed.length + b.stuck.length) - (a.closed.length + a.stuck.length) || a.agent.localeCompare(b.agent))
+  return {
+    since: opts.since,
+    agents,
+    owner_waiting: { count: ownerRows.length, cards: ownerRows.slice(0, BOARD_SUMMARY_OWNER_CAP) },
+  }
+}
+
+// --- Heartbeat helpers ---
+
 export interface HeartbeatKanbanSummary {
   urgent: KanbanCard[]
   in_progress: KanbanCard[]
@@ -4793,6 +5037,9 @@ export interface AgentMessage {
   // The SENDER's own id for a federated inbound row (the bridge's `ref`), so a completion
   // receipt can name the message the peer knows. Null for local rows and older federated ones.
   remote_ref?: string | null
+  // UNBLOCKS925: 'unblocks' when the main agent flagged the row as releasing a blocker of the recipient's current
+  // work; null or absent otherwise. Optional in the type for the same reason as urgent.
+  affects_current_work?: string | null
 }
 
 export function createAgentMessage(
@@ -4801,7 +5048,7 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null },
+  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null; affectsCurrentWork?: string | null },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
@@ -4814,9 +5061,10 @@ export function createAgentMessage(
   // per-pair budget, decidePriority). An urgent row is above high by its own column; the route stores it 0.
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
   const remoteRef = opts?.remoteRef ?? null
+  const affectsCurrentWork = opts?.affectsCurrentWork ?? null
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -4829,6 +5077,7 @@ export function createAgentMessage(
     stop_authorized: stopAuthorized,
     priority,
     remote_ref: remoteRef,
+    affects_current_work: affectsCurrentWork,
   }
 }
 
@@ -5327,6 +5576,36 @@ export function closeMessageAsRecipient(id: number, recipient: string, status: '
   return db.prepare(sql).run(...args).changes > 0
 }
 
+// The close a PEER'S completion receipt performs on the row WE sent it (routes/federation.ts,
+// applyFederatedReceipt). The peer names our id, so the id alone is a claim: the write
+// itself requires that the row was addressed to THIS peer (`to_agent` = '<peer>/<agent>',
+// case-insensitive on the system: validateInboxPayload stores it lowercase now, but rows
+// written before that normalization may carry an uppercase prefix, see
+// failPendingFederatedMessages), that a LOCAL agent sent it (no '/' in from_agent: a peer's
+// own row relayed through us is not ours to close), and that it is still open. One
+// statement, like closeMessageAsRecipient, so nothing slips between a check and the update.
+//
+// The peer's text is NOT written into `result`. That field carries the bridge's
+// "fed:<peer>:<remote id>" trace (setMessageResult), and for local rows only local
+// recipients write it; peer-controlled text there would reach our sending agent without the
+// federation framing the inbound receipt message gets. The receipt body is already
+// delivered as that message, so the row only gains a pointer to it:
+// "<existing result> receipt:<receipt message id>". Returns false when 0 rows changed.
+export function closeOutboundByFederatedReceipt(id: number, peerId: string, status: 'done' | 'failed', receiptMessageId: number): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const prefix = `${peerId.toLowerCase()}/`
+  const pointer = `receipt:${receiptMessageId}`
+  const guard = "id = ? AND lower(substr(to_agent, 1, ?)) = ? AND instr(from_agent, '/') = 0 AND status NOT IN ('done', 'failed')"
+  const resultExpr = "CASE WHEN result IS NULL OR result = '' THEN ? ELSE result || ' ' || ? END"
+  const sql = status === 'done'
+    ? `UPDATE agent_messages SET status = 'done', result = ${resultExpr}, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE ${guard}`
+    : `UPDATE agent_messages SET status = 'failed', result = ${resultExpr}, completed_at = ? WHERE ${guard}`
+  const args = status === 'done'
+    ? [pointer, pointer, now, now, id, prefix.length, prefix]
+    : [pointer, pointer, now, id, prefix.length, prefix]
+  return db.prepare(sql).run(...args).changes > 0
+}
+
 // Status-guarded fail for the federation bridge's terminal branches: it must
 // only fire (and only bounce a failure notice) when THIS call actually closed
 // a still-pending row. The unguarded markMessageFailed above would also
@@ -5784,12 +6063,19 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
   })
 }
 
+// Runs that actually happened. A tick the scheduler dropped without running
+// anything ('skipped', 'skipped-precheck', 'skipped-usage-limit', ...) or a
+// 'missed' slot is a log line, not a run: counting them made the overview's
+// "tasks today" tile report hundreds of runs on a quiet install whose
+// 2-minute ledger drain is almost always skipped by its token-free preCheck.
+const RAN_STATUS_SQL = "status NOT LIKE 'skipped%' AND status != 'missed'"
+
 export function countTaskRunsBetween(fromTs: number, toTs?: number): number {
   if (toTs === undefined) {
-    const row = db.prepare('SELECT COUNT(*) as c FROM task_runs WHERE ts >= ?').get(fromTs) as { c: number }
+    const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ${RAN_STATUS_SQL}`).get(fromTs) as { c: number }
     return row.c
   }
-  const row = db.prepare('SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ts < ?').get(fromTs, toTs) as { c: number }
+  const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ts >= ? AND ts < ? AND ${RAN_STATUS_SQL}`).get(fromTs, toTs) as { c: number }
   return row.c
 }
 
@@ -6485,9 +6771,12 @@ export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' |
   return db.prepare(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
 }
 
+// The idea's attachments and comments go with it (no foreign keys hold them). Its idea_status_log rows stay: that
+// table is an audit log, read by the audit page and pruned by AUDIT_LOG_RETENTION_DAYS, so it outlives the idea.
 export function deleteIdea(id: string): boolean {
   const remove = db.transaction(() => {
     db.prepare('DELETE FROM idea_attachments WHERE idea_id = ?').run(id)
+    db.prepare('DELETE FROM idea_comments WHERE idea_id = ?').run(id)
     return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
   })
   return remove()
@@ -7046,8 +7335,10 @@ export function queryAuditLog(opts: {
     const logRows = db.prepare(logSql).all(...logParams) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
     for (const r of logRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, entry_type: 'log' })
 
-    // memories
-    let memSql = 'SELECT id, agent_id, content, category, keywords, created_at FROM memories WHERE 1=1'
+    // memories. A daily-log entry's `[Napló ...]` mirror (linked in daily_log_memory)
+    // is the same entry the log rows above already list, so it is left out here, the
+    // way recall leaves it out (#2428). Real memories and unmirrored log rows stay.
+    let memSql = `SELECT id, agent_id, content, category, keywords, created_at FROM memories WHERE ${NOT_MIRROR}`
     const memParams: unknown[] = []
     if (from)  { memSql += ' AND created_at >= ?'; memParams.push(from) }
     if (to)    { memSql += ' AND created_at <= ?'; memParams.push(to) }
@@ -7484,6 +7775,99 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
         telegram_message_id = COALESCE(?, telegram_message_id)
     WHERE id = ? AND status = 'pending'
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+}
+
+// APPROVALSLACK1030 (2): the posted request (approval_slack_posts).
+export interface ApprovalSlackPostRow {
+  approval_id: string
+  channel: string
+  ts: string
+  text_sha256: string
+  owner_user_id: string
+  bot_user_id: string
+  posted_at: number
+  decided_at: number | null
+  decision: string | null
+  last_checked_ms: number | null
+  content_basis: string | null
+  reaction_mode: number
+  reply_mode: number
+  decided_by_ts: string | null
+  binding: string | null
+  notice_ts: string | null
+  lang: string | null
+}
+
+export function recordApprovalSlackPost(p: {
+  approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string
+  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean; lang?: 'hu' | 'en'
+}): boolean {
+  return db.prepare(`
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode, lang)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000),
+    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0, p.lang === 'en' ? 'en' : null).changes > 0
+}
+
+/**
+ * Posts still waiting for the owner: undecided, the request pending and not timed out. The least recently checked come
+ * first (never checked before any checked one), then the oldest: a sweep takes the head of this list and stamps what it
+ * checked, so every pending post is reached within ceil(pending / SWEEP_MAX_PER_ROUND) rounds, however many older
+ * requests the owner leaves unanswered (Dani 66059: oldest-first starved a newer request until the old ones expired).
+ */
+export function pendingApprovalSlackPosts(limit = 50): ApprovalSlackPostRow[] {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    SELECT p.* FROM approval_slack_posts p JOIN approvals a ON a.id = p.approval_id
+    WHERE p.decided_at IS NULL AND a.status = 'pending' AND (a.timeout_at IS NULL OR a.timeout_at > ?)
+    ORDER BY COALESCE(p.last_checked_ms, 0) ASC, p.posted_at ASC, p.rowid ASC LIMIT ?
+  `).all(now, limit) as ApprovalSlackPostRow[]
+}
+
+export function getApprovalSlackPost(approvalId: string): ApprovalSlackPostRow | undefined {
+  return db.prepare('SELECT * FROM approval_slack_posts WHERE approval_id = ?').get(approvalId) as ApprovalSlackPostRow | undefined
+}
+
+/** Stamps the moment the sweeper last asked Slack about this post (the rotation key of pendingApprovalSlackPosts). */
+export function markApprovalSlackPostChecked(approvalId: string, atMs: number = Date.now()): void {
+  db.prepare('UPDATE approval_slack_posts SET last_checked_ms = ? WHERE approval_id = ?').run(atMs, approvalId)
+}
+
+/** The server's own thread notice on [approvalId]'s post (the one non-owner message the thread may hold). */
+export function setApprovalSlackNotice(approvalId: string, ts: string): void {
+  db.prepare('UPDATE approval_slack_posts SET notice_ts = ? WHERE approval_id = ? AND notice_ts IS NULL').run(ts, approvalId)
+}
+
+export type SlackDecisionOutcome = 'recorded' | 'already_decided' | 'reply_already_used'
+
+/**
+ * One decision from Slack, in ONE transaction (APPROVALSLACK1030 B, egm M7): the post row closes once, with the owner
+ * message that decided (unique per channel: one owner message, one decision); then the request is resolved, and an
+ * approval only while it is still pending and not past its timeout (the Slack reads before this were async). The
+ * second return value says whether the request itself changed.
+ */
+export function decideApprovalFromSlack(p: {
+  approvalId: string; decision: string; status: 'approved' | 'rejected'; resolvedBy: string
+  decidedByTs?: string | null; binding?: string | null
+}): { outcome: SlackDecisionOutcome; changed: boolean } {
+  const now = Math.floor(Date.now() / 1000)
+  try {
+    return db.transaction(() => {
+      const closed = db.prepare(`
+        UPDATE approval_slack_posts SET decided_at = ?, decision = ?, decided_by_ts = ?, binding = ?
+        WHERE approval_id = ? AND decided_at IS NULL
+      `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
+      if (!closed) return { outcome: 'already_decided' as const, changed: false }
+      const changed = db.prepare(`
+        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
+        WHERE id = ? AND status = 'pending' AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
+      `).run(p.status, now, p.resolvedBy, p.approvalId, p.status, now).changes > 0
+      return { outcome: 'recorded' as const, changed }
+    })()
+  } catch (err) {
+    if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'reply_already_used', changed: false }
+    throw err
+  }
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

@@ -25,7 +25,7 @@ vi.mock('../web/agent-config.js', async (orig) => {
   return { ...actual, agentDir: (name: string) => join(SANDBOX, 'agents', name) }
 })
 
-const { parseExtraChannels, buildExtraChannelLaunch, enableExtraPlugins, wantsGromzo, mxdAgentSockUsable, GROMZO_PLUGIN_ID } = await import('../web/agent-extra-channels.js')
+const { parseExtraChannels, buildExtraChannelLaunch, enableExtraPlugins, wantsGromzo, mxdAgentSockUsable, GROMZO_PLUGIN_ID, gromzoTokenFile, gromzoTokenExport } = await import('../web/agent-extra-channels.js')
 const { ensureIsolatedChannelConfigDir, scopeChannelPlugins, CHANNEL_PLUGIN_IDS } = await import('../web/agent-process.js')
 const { decideContinueFlag } = await import('../web/channel-continue-policy.js')
 const { pluginInTree, combineLiveness } = await import('../web/extra-channel-liveness.js')
@@ -108,6 +108,32 @@ describe('GROMZOAGENTS1028: the Gromzo channel rides the extra-channel launch', 
     expect(l.pluginIds).toEqual([SL, GROMZO_PLUGIN_ID])
     expect(l.envExports).toContain('export SLACK_STATE_DIR=')
     expect(l.envExports.endsWith('export MXD_AGENT="zara" && export MXD_SCOPE="both" && ')).toBe(true)
+  })
+  it('MXDAGENTSOCKID1106: the token path goes in after MXD_AGENT when mxd has one, and only then', () => {
+    const on = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true, tokenFile: '/run/marveen-mxd/tokens/samu.token' })
+    expect(on.envExports).toBe('export MXD_AGENT="samu" && export MXD_SCOPE="both" && export MXD_AGENT_TOKEN_FILE="/run/marveen-mxd/tokens/samu.token" && ')
+    for (const tokenFile of [null, undefined]) {
+      expect(buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: true, tokenFile }).envExports).not.toContain('MXD_AGENT_TOKEN_FILE')
+    }
+    // A path the shell could misread never reaches the export.
+    for (const bad of ['/x/"y/samu.token', '/x/$y/samu.token', '/x/`y`/samu.token', '/x\\y/samu.token']) {
+      expect(gromzoTokenExport(bad), bad).toBe('')
+    }
+  })
+  it('MXDAGENTSOCKID1106: gromzoTokenFile is <agent.sock dir>/tokens/<slug>.token, only when the tokens dir exists', () => {
+    const d = mkdtempSync(join(tmpdir(), 'gz-tok-'))
+    try {
+      const sock = join(d, 'agent.sock')
+      expect(gromzoTokenFile('samu', sock)).toBeNull()
+      writeFileSync(join(d, 'tokens'), '')
+      expect(gromzoTokenFile('samu', sock), 'a file named tokens is not the dir').toBeNull()
+      rmSync(join(d, 'tokens'))
+      mkdirSync(join(d, 'tokens'))
+      expect(gromzoTokenFile('samu', sock)).toBe(join(d, 'tokens', 'samu.token'))
+      expect(gromzoTokenFile('Samu', sock), 'a slug mxd refuses').toBeNull()
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
   })
   it('no usable agent.sock: skipped, contributing nothing (fail-safe, like a tokenless extra)', () => {
     const l = buildExtraChannelLaunch([], 'slack', AGENT, none, { slug: 'samu', sockUsable: false })
@@ -242,7 +268,7 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
 
   it('reads the extras once, from agent-config, against the resolved primary', () => {
-    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name)\n      ? { slug: name, sockUsable: mxdAgentSockUsable() }\n      : undefined)')
+    expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n    readAgentGromzo(name)\n      ? { slug: name, sockUsable: mxdAgentSockUsable(), tokenFile: gromzoTokenFile(name) }\n      : undefined)')
   })
   it('GROMZOSCOPEBOTH1031: the gromzo scope reads no sender-role gate, and no owner-only warning is left', () => {
     expect(SRC).not.toContain('readAgentSenderRoleGateClosesTools')
@@ -270,7 +296,7 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   })
   it('every isolation provisioner call passes the extras', () => {
     const calls = FN.match(/ensureIsolatedChannelConfigDir\([^)]*\)/g) ?? []
-    expect(calls.length).toBe(3)
+    expect(calls.length).toBe(4) // APIKEYSCOPE1107: the authMode=api isolation is the 4th
     for (const c of calls) expect(c).toContain('extraLaunch.pluginIds')
   })
   it('a resumed launch with extras is verified, primary AND extras, with the fresh fallback', () => {

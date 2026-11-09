@@ -139,6 +139,9 @@ function mainAgentId() {
       }
     }
     const res = await originalFetch(input, init)
+    // An owner action refused for want of the owner's session: offer the password login (Samu 65968). Not awaited:
+    // the caller gets its answer as before.
+    if (res.status === 403) void maybeOfferOnOwnerRefusal(res, isSameOriginApi)
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
@@ -204,13 +207,22 @@ function mainAgentId() {
         '<div class="mv-auth-err" id="mv-login-err"></div>' +
       '</form>'
     document.body.appendChild(overlay)
+    if (opts && opts.later) {
+      // BRIDGEPWLOGIN1101: the offer on opening the Bridge says what the login is for.
+      const desc = overlay.querySelector('.mv-auth-desc')
+      if (desc) desc.textContent = tr('auth.login.bridge_desc', 'Sign in with your dashboard password to approve, decide and change settings from here.')
+    }
     if (opts && opts.cancellable) {
       const cancel = document.createElement('button')
       cancel.type = 'button'
       cancel.id = 'mv-login-cancel'
       cancel.className = 'btn-secondary btn-compact'
-      cancel.textContent = tr('auth.login.cancel', 'Cancel')
-      cancel.addEventListener('click', () => overlay.remove())
+      cancel.textContent = opts.later ? tr('auth.login.later', 'Later') : tr('auth.login.cancel', 'Cancel')
+      cancel.addEventListener('click', () => {
+        // "Later" quiets the offer for this run of the window (sessionStorage), not for good.
+        if (opts.later) { try { sessionStorage.setItem(LOGIN_LATER_KEY, '1') } catch { /* storage blocked */ } }
+        overlay.remove()
+      })
       overlay.querySelector('#mv-login-form').appendChild(cancel)
     }
     const form = overlay.querySelector('#mv-login-form')
@@ -249,6 +261,56 @@ function mainAgentId() {
   }
 
   window.mvShowLogin = (opts) => showLoginOverlay(opts)
+
+  // ONBOARDOWNERPW1107: the onboarding wizard's own sign-in (its first step). On the unwrapped fetch, like the overlay
+  // above: through the wrapper a wrong password's 401 would wipe the stored token or Bridge key and open the full-screen
+  // login. Returns only the outcome; the caller clears its password fields.
+  window.mvPasswordLogin = async (username, password) => {
+    try {
+      const r = await originalFetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      let retryAfter = 0
+      if (r.status === 429) { try { retryAfter = (await r.json()).retry_after_s || 0 } catch { /* ignore */ } }
+      return { ok: r.ok, status: r.status, retryAfter }
+    } catch {
+      return { ok: false, status: 0, retryAfter: 0 }
+    }
+  }
+
+  // BRIDGEPWLOGIN1101 (Samu 64763, plan A; the moment: Samu 65968): the Bridge opens the dashboard with its device key,
+  // which never makes the owner. Most Bridge use needs no owner session, so nothing is offered on load: the offer comes
+  // when an owner action is first refused (403 owner_session_required, maybeOfferOnOwnerRefusal in the fetch wrapper),
+  // once per page, and only when a password login exists and no owner session rides on this window. "Later" quiets it
+  // for this run. The key stays: the overlay's login adds the cookie beside it, and the owner gates take the pair. Only
+  // a full key gets owner_session in the status at all, so an operator key is never offered this. The refusal's own
+  // toast still shows, the fallback when the overlay does not open.
+  const LOGIN_LATER_KEY = 'mv-login-later'
+  const ownerOffer = { seen: false }
+  function maybeOfferOnOwnerRefusal(res, isApi) {
+    if (ownerOffer.seen || !isApi || !res || res.status !== 403) return Promise.resolve()
+    return res.clone().json().then((b) => {
+      if (ownerOffer.seen || !b || b.code !== 'owner_session_required') return
+      ownerOffer.seen = true
+      return offerOwnerLoginOnce()
+    }).catch(() => { /* not JSON, or the offer failed: the caller's toast stands */ })
+  }
+  async function offerOwnerLoginOnce() {
+    try { if (sessionStorage.getItem(LOGIN_LATER_KEY) === '1') return } catch { /* storage blocked: offer it */ }
+    // ONBOARDOWNERPW1107: while the onboarding wizard is open, its first step is the sign-in; no second form over it.
+    if (typeof document !== 'undefined' && document.getElementById('onboardingOverlay')?.classList.contains('active')) return
+    if (!sessionToken) return
+    let s = null
+    try {
+      const r = await originalFetch('/api/auth/status', { headers: { Authorization: 'Bearer ' + sessionToken }, cache: 'no-store' })
+      if (r.ok) s = await r.json()
+    } catch { return }
+    if (!s || s.method !== 'device' || !s.login_available || s.owner_session !== false) return
+    showLoginOverlay({ cancellable: true, later: true })
+  }
+  window.mvOfferOwnerLogin = offerOwnerLoginOnce
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
   // The user pastes the access token (the value after ?token= in the server's
@@ -379,8 +441,6 @@ function switchPage(pageId) {
   if (pageId !== 'agents') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
-  // GROMZOOWNERQR1030: the owner QR never outlives the Settings page.
-  if (pageId !== 'settings' && typeof window.clearGromzoQr === 'function') window.clearGromzoQr()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
@@ -923,8 +983,107 @@ async function loadKanban() {
     populateProjectSuggestions()
     setupAssigneeFilter()
     renderKanban()
+    renderKanbanSummary()
   } catch (err) {
     console.error('Kanban betöltés hiba:', err)
+  }
+}
+
+// Card ed3c8caf (#569): the per-agent board summary strip. Best-effort: a
+// failed fetch leaves the strip hidden, the board itself is unaffected.
+async function renderKanbanSummary() {
+  const box = document.getElementById('kanbanSummary')
+  const body = document.getElementById('kanbanSummaryBody')
+  const totals = document.getElementById('kanbanSummaryTotals')
+  if (!box || !body || !totals) return
+  let data
+  try {
+    const r = await fetch('/api/kanban/summary?hours=24')
+    if (!r.ok) return
+    data = await r.json()
+  } catch { return }
+  const agents = Array.isArray(data?.agents) ? data.agents : []
+  const ownerWaiting = data?.owner_waiting || { count: 0, cards: [] }
+  const closed = agents.reduce((n, a) => n + a.closed.length, 0)
+  const stuck = agents.reduce((n, a) => n + a.stuck.length, 0)
+  box.hidden = closed + stuck + ownerWaiting.count === 0
+  totals.textContent = t('kanban.summary.totals', { closed, stuck, owner: ownerWaiting.count })
+  body.innerHTML = ''
+
+  const cardChip = (ref, extra) => {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'kanban-summary-chip'
+    chip.textContent = (ref.seq ? '#' + ref.seq : '') + (extra ? ' ' + extra : '')
+    chip.title = ref.title || ''
+    chip.addEventListener('click', () => {
+      const target = kanbanCards.find((c) => c.id === ref.id)
+      if (target) showCardDetail(target)
+      else showToast(t('kanban.toast.blocker_not_on_board'))
+    })
+    return chip
+  }
+  const line = (label, chips) => {
+    const row = document.createElement('div')
+    row.className = 'kanban-summary-row'
+    const who = document.createElement('span')
+    who.className = 'kanban-summary-who'
+    who.textContent = label
+    row.appendChild(who)
+    for (const c of chips) row.appendChild(c)
+    body.appendChild(row)
+  }
+  const moreMarker = (n) => {
+    const more = document.createElement('span')
+    more.className = 'kanban-summary-more'
+    more.textContent = t('kanban.summary.more', { n })
+    return more
+  }
+  // Per-agent chip cap per kind: a long stuck list (hundreds of chips) would
+  // make the strip several screens tall on a phone. The totals line still
+  // counts everything; the rest is one "+N" marker, like the owner list.
+  const AGENT_CHIP_CAP = 12
+  if (ownerWaiting.count > 0) {
+    const chips = ownerWaiting.cards.map((c) => cardChip(c))
+    if (ownerWaiting.count > ownerWaiting.cards.length) chips.push(moreMarker(ownerWaiting.count - ownerWaiting.cards.length))
+    line(t('kanban.summary.owner'), chips)
+  }
+  for (const a of agents) {
+    const chips = []
+    if (a.closed.length) {
+      const lab = document.createElement('span')
+      lab.className = 'kanban-summary-kind'
+      lab.textContent = t('kanban.summary.closed')
+      chips.push(lab)
+      for (const c of a.closed.slice(0, AGENT_CHIP_CAP)) {
+        const chip = cardChip(c, c.evidence ? '✓' : '')
+        const tip = [c.title]
+        // The row is the assignee; who moved it to done goes in the tooltip.
+        if (c.closed_by && c.closed_by !== a.agent) tip.push(t('kanban.summary.closed_by', { actor: c.closed_by }))
+        if (c.evidence) tip.push(`${t('kanban.summary.evidence')}: ${c.evidence}`)
+        chip.title = tip.join('\n')
+        chips.push(chip)
+      }
+      if (a.closed.length > AGENT_CHIP_CAP) chips.push(moreMarker(a.closed.length - AGENT_CHIP_CAP))
+    }
+    if (a.stuck.length) {
+      const lab = document.createElement('span')
+      lab.className = 'kanban-summary-kind kanban-summary-kind-stuck'
+      lab.textContent = t('kanban.summary.stuck')
+      chips.push(lab)
+      for (const c of a.stuck.slice(0, AGENT_CHIP_CAP)) chips.push(cardChip(c, t('kanban.summary.idle_days', { n: c.idle_days })))
+      if (a.stuck.length > AGENT_CHIP_CAP) chips.push(moreMarker(a.stuck.length - AGENT_CHIP_CAP))
+    }
+    line(a.agent, chips)
+  }
+  try {
+    box.open = localStorage.getItem('marveen.kanbanSummaryOpen') === '1'
+  } catch { /* storage blocked: stays collapsed */ }
+  if (!box.dataset.wired) {
+    box.dataset.wired = '1'
+    box.addEventListener('toggle', () => {
+      try { localStorage.setItem('marveen.kanbanSummaryOpen', box.open ? '1' : '0') } catch { /* ignore */ }
+    })
   }
 }
 
@@ -3356,8 +3515,28 @@ function attachOverlayCloseGuard(overlay, check = () => confirmUnsavedInputClose
   })
 }
 
-// Wizard open
-addBtn.addEventListener('click', () => {
+// OWNERGATE2-1104: creating an agent (POST /api/agents, then the PUT of its CLAUDE.md/SOUL.md) needs the owner. The
+// public status says whether this window can act as the owner: no login set up yet (the token is the owner then), a
+// browser login, or the owner's session cookie beside the token or the Bridge key. An unknown answer opens the
+// wizard anyway; the server's own gate still decides.
+async function canActAsOwnerNow() {
+  try {
+    const r = await fetch('/api/auth/status', { cache: 'no-store' })
+    if (!r.ok) return true
+    const s = await r.json()
+    return Boolean(s && (s.setup_required || s.method === 'session' || s.owner_session === true))
+  } catch {
+    return true
+  }
+}
+
+// Wizard open: without the owner, the login comes first, so no create starts that the server would refuse halfway.
+addBtn.addEventListener('click', async () => {
+  if (!(await canActAsOwnerNow())) {
+    showToast(t('common.owner_session_required'))
+    if (typeof window.mvShowLogin === 'function') window.mvShowLogin({ cancellable: true })
+    return
+  }
   resetWizard()
   openModal(agentWizardOverlay)
   setTimeout(() => agentName.focus(), 200)
@@ -3526,6 +3705,8 @@ function resetWizard() {
   agentName.value = ''
   agentDesc.value = ''
   agentModel.value = 'inherit'
+  document.getElementById('agentModelCustomModelId').value = ''
+  updateCustomModelIdRow(agentModel)
   loadAvailableModels()
   loadOllamaModels()
   selectedAvatar = null
@@ -3560,12 +3741,21 @@ function updateWizardUI() {
   document.getElementById('wizardStep3').hidden = wizardStep !== 3
 }
 
+// The model ID field shows with a custom provider, as in the agent editor.
+agentModel.addEventListener('change', () => updateCustomModelIdRow(agentModel))
+
 // Step 1 -> Step 2 (generate)
 document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   const name = agentName.value.trim()
   const desc = agentDesc.value.trim()
+  // A custom provider goes in its own field with the model id typed beside it, as the agent editor saves it.
+  const modelVal = agentModel.value
+  const customProvider = modelVal.startsWith('custom:') ? modelVal.slice('custom:'.length) : null
+  const customModelInput = document.getElementById('agentModelCustomModelId')
+  const customModelId = customProvider ? customModelInput.value.trim() : ''
   if (!name) { agentName.focus(); return }
   if (!desc) { agentDesc.focus(); return }
+  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
 
   wizardStep = 2
   updateWizardUI()
@@ -3581,7 +3771,8 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       body: JSON.stringify({
         name,
         description: desc,
-        model: agentModel.value,
+        model: customProvider ? customModelId : modelVal,
+        customProvider,
         profile: document.getElementById('agentProfile').value,
       }),
     })
@@ -3699,6 +3890,9 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 
 // === Toast ===
 function showToast(msg, duration = 3000) {
+  // Some callers pass a type word ('error') where the duration goes. The delay was then NaN, which setTimeout runs
+  // at once: the toast was gone before it could be seen. Anything but a finite number means the default.
+  if (typeof duration !== 'number' || !Number.isFinite(duration)) duration = 3000
   toast.textContent = msg
   toast.classList.add('visible')
   setTimeout(() => toast.classList.remove('visible'), toastDuration(msg, duration))
@@ -3722,8 +3916,38 @@ async function readActionReply(res) {
   return { ok: res.ok, status: res.status, body: body && typeof body === 'object' ? body : {} }
 }
 
+// OWNERGATE2-1104: a strict owner gate refused and no dashboard login exists yet (setup_required: true). Signing in
+// cannot help then, so the text says to CREATE the login first, and the create-login form is opened for it.
 function ownerSessionText(body) {
-  return body && body.code === 'owner_session_required' ? t('common.owner_session_required') : ''
+  if (!body || body.code !== 'owner_session_required') return ''
+  if (body.setup_required === true) {
+    openCreateLoginSettings()
+    return t('common.owner_login_setup_required')
+  }
+  return t('common.owner_session_required')
+}
+
+// OWNERGATE2-1104: opens the create-login form (renderCreateLoginForm), which lives only in the Dashboard login card on
+// Settings, the Security tab: the same way the setup banner's button gets there. Open modals close through their own
+// guard first (unsaved input asks; a modal kept open keeps the user where they are). The onboarding overlay is only
+// hidden for this page load, never dismissed, so it comes back on the next load once the login exists.
+let createLoginOpening = false
+async function openCreateLoginSettings() {
+  if (createLoginOpening) return
+  createLoginOpening = true
+  try {
+    for (const ov of document.querySelectorAll('.modal-overlay.active')) {
+      if (ov.id === 'onboardingOverlay') { ov.classList.remove('active'); ov.hidden = true; document.body.style.overflow = ''; continue }
+      await requestOverlayClose(ov)
+      if (ov.classList.contains('active')) return
+    }
+    try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'security') } catch { /* storage blocked */ }
+    if (typeof switchPage === 'function') switchPage('settings')
+    const link = document.querySelector('.sb-link[data-page="settings"]')
+    if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
+  } finally {
+    createLoginOpening = false
+  }
 }
 
 function refusalReason(res, body) {
@@ -4186,6 +4410,12 @@ function applyMarveenReadonlyMode(readOnly) {
   if (authModeGroup) authModeGroup.hidden = readOnly
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
+  // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
+  const mainAuthGroup = document.getElementById('mainAuthGroup')
+  if (mainAuthGroup) {
+    mainAuthGroup.hidden = !readOnly
+    if (readOnly) loadMainAuthPanel()
+  }
   const note = document.getElementById('marveenReadonlyNote')
   if (note) note.hidden = !readOnly
 }
@@ -4333,7 +4563,11 @@ function renderAgents() {
         </div>
       </div>
       <div class="agent-card-footer">
-        <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
+        ${agent.missingCustomProvider || agent.brokenCustomModel
+          ? `<span class="agent-model-badge provider-missing" title="${escapeHtml(agent.missingCustomProvider
+              ? t('agents.model.provider_missing_card', { id: agent.missingCustomProvider })
+              : t('agents.model.custom_model_broken', { model: agent.brokenCustomModel }))}">⚠ ${escapeHtml(modelLabel)}</span>`
+          : `<span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>`}
         ${contextPctBadgeHtml(agent.name)}
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
@@ -4572,7 +4806,8 @@ async function openAgentDetail(agentName) {
       }
       sel.value = cpVal
       const modelInput = document.getElementById('editAgentModelCustomModelId')
-      if (modelInput) modelInput.value = mv
+      // A model saved as the picker value ("custom:<id>") is no model id: leave the field empty, so a save asks for one.
+      if (modelInput) modelInput.value = mv.startsWith('custom:') ? '' : mv
     } else {
       if (!Array.from(sel.options).some(o => o.value === mv)) {
         const opt = document.createElement('option')
@@ -4589,6 +4824,7 @@ async function openAgentDetail(agentName) {
     // onto a disabled option still reads back, but the order must not matter).
     if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
     updateCustomModelIdRow(sel)
+    markMissingCustomProvider(sel, customProviderId, customProviderId ? null : (mv.startsWith('custom:') ? mv : null))
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -4927,10 +5163,113 @@ function updateProcessControl(agent) {
 // RESTARTFORCEUI1018: the server refuses a manual main restart while the pane is busy or unreadable (409
 // restart-blocked, manual-restart-gate.ts), so a click never cuts a running turn by accident. A stuck main
 // agent can read busy for good, so the refusal is not the end: a second confirm sends an explicit force.
+// MAINAUTHSWITCH1107 (APIKULCSINDITAS1004 D): the main agent's authentication switch. Reads the main agent's detail
+// (authMode, hasApiKey, mainAuthLaunched = what the last launch ran on), saves through the owner-gated PUT, then
+// restarts through the same gated path as the restart button.
+function mainAuthSelected() {
+  return document.querySelector('input[name="mainAuthMode"]:checked')?.value || 'shared'
+}
+function renderMainAuthSections() {
+  const api = mainAuthSelected() === 'api'
+  document.getElementById('mainAuthApiSection').hidden = !api
+}
+function mainAuthRunningText(d) {
+  const l = d && d.mainAuthLaunched
+  if (!l || !l.effective) return t('agents.main_auth.running_unknown')
+  const base = t('agents.main_auth.running_' + l.effective)
+  if (l.configured === 'api' && l.effective !== 'api' && l.conflict) {
+    const reason = t('agents.main_auth.reason_' + String(l.conflict).replace(/-/g, '_'))
+    return t('agents.main_auth.not_honoured').replace('{reason}', reason) + ' ' + base
+  }
+  return base
+}
+async function loadMainAuthPanel() {
+  const group = document.getElementById('mainAuthGroup')
+  if (!group) return
+  document.getElementById('mainAuthError').hidden = true
+  document.getElementById('mainAuthApiKey').value = ''
+  let d = null
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`)
+    if (res.ok) d = await res.json()
+  } catch { /* shown as unknown */ }
+  const mode = d && d.authMode === 'api' ? 'api' : 'shared'
+  for (const r of document.querySelectorAll('input[name="mainAuthMode"]')) r.checked = r.value === mode
+  const status = document.getElementById('mainAuthKeyStatus')
+  status.textContent = d && d.hasApiKey ? t('agents.main_auth.key_stored') : t('agents.main_auth.key_missing')
+  status.style.color = d && d.hasApiKey ? 'var(--success)' : 'var(--warning)'
+  document.getElementById('mainAuthRunning').textContent = mainAuthRunningText(d)
+  renderMainAuthSections()
+}
+document.querySelectorAll('input[name="mainAuthMode"]').forEach((r) => r.addEventListener('change', renderMainAuthSections))
+
+document.getElementById('mainAuthApplyBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('mainAuthApplyBtn')
+  const errorDiv = document.getElementById('mainAuthError')
+  errorDiv.hidden = true
+  const mode = mainAuthSelected()
+  const payload = { authMode: mode }
+  const key = document.getElementById('mainAuthApiKey').value.trim()
+  if (mode === 'api' && key) payload.apiKey = key
+  btn.disabled = true
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      errorDiv.textContent = refusalReason(res, reply.body)
+      errorDiv.hidden = false
+      return
+    }
+    document.getElementById('mainAuthApiKey').value = ''
+    if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'))
+    const restarted = await restartMainAgentGated()
+    showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'))
+    setTimeout(() => { loadMainAuthPanel() }, 20000)
+    loadMainAuthPanel()
+  } catch (err) {
+    errorDiv.textContent = err && err.message ? err.message : String(err)
+    errorDiv.hidden = false
+  } finally {
+    btn.disabled = false
+  }
+})
+
+
+
 function postMarveenRestart(force) {
   return force
     ? fetch('/api/marveen/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }) })
     : fetch('/api/marveen/restart', { method: 'POST' })
+}
+
+// The main agent's gated restart: a busy or unreadable pane asks before forcing (the restart button and the
+// MAINAUTHSWITCH1107 switch share it). Resolves true when restarted, false when the owner declined the force;
+// throws on a failed restart.
+async function restartMainAgentGated() {
+  let res = await postMarveenRestart(false)
+  if (res.status === 409) {
+    const blocked = await res.clone().json().catch(() => ({}))
+    if (blocked.error === 'restart-blocked') {
+      const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
+      const forced = await confirmDialog({
+        title: t('agents.confirm.hard_restart_title'),
+        message: t(key),
+        okLabel: t('agents.confirm.force_restart_ok'),
+        danger: true,
+      })
+      if (!forced) { showToast(t('agents.toast.restart_not_forced')); return false }
+      res = await postMarveenRestart(true)
+    }
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || t('agents.toast.restart_failed'))
+  }
+  return true
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
@@ -4944,26 +5283,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    let res = await postMarveenRestart(false)
-    if (res.status === 409) {
-      const blocked = await res.clone().json().catch(() => ({}))
-      if (blocked.error === 'restart-blocked') {
-        const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        const forced = await confirmDialog({
-          title: t('agents.confirm.hard_restart_title'),
-          message: t(key),
-          okLabel: t('agents.confirm.force_restart_ok'),
-          danger: true,
-        })
-        if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
-        res = await postMarveenRestart(true)
-      }
-    }
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('agents.toast.restart_failed'))
-    }
-    showToast(t('agents.toast.marveen_restarted'))
+    if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {
@@ -5271,6 +5591,7 @@ async function loadAvailableModels() {
     for (const gid of cpGroupIds) {
       const g = document.getElementById(gid)
       if (!g) continue
+      g.label = '🔧 ' + t('providers.optgroup')
       g.innerHTML = ''
       if (customProviders.length === 0) { g.style.display = 'none'; continue }
       g.style.display = ''
@@ -5284,6 +5605,33 @@ async function loadAvailableModels() {
     updateCustomModelIdRow(document.getElementById('editAgentModel'))
     updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
+}
+
+// A provider deleted since the agent got it stays selected, so the agent's real setting shows, but the option and a
+// line under the picker say it is gone: the agent does not start until it gets another model.
+async function markMissingCustomProvider(sel, providerId, brokenModel = null) {
+  const warn = document.getElementById('editAgentModelProviderMissing')
+  if (!warn) return
+  warn.textContent = t('agents.model.provider_missing')
+  warn.hidden = true
+  // A model saved as the picker value with no provider beside it: say so, whatever the provider list holds.
+  // No option is marked: the provider may exist, and picking it again (with a model id) is the fix, so any change hides it.
+  if (brokenModel) {
+    warn.textContent = t('agents.model.custom_model_broken', { model: brokenModel })
+    warn.hidden = false
+    return
+  }
+  if (!providerId) return
+  const agent = currentAgent
+  let ids = null
+  try {
+    const r = await fetch('/api/custom-providers')
+    if (r.ok) ids = ((await r.json()).providers || []).map(p => p.id)
+  } catch { /* unknown: say nothing rather than a false alarm */ }
+  if (!ids || ids.includes(providerId) || currentAgent !== agent) return
+  const opt = Array.from(sel.options).find(o => o.value === `custom:${providerId}`)
+  if (opt) { opt.textContent = '🔧 ' + t('agents.model.provider_deleted', { id: providerId }); opt.dataset.deleted = '1' }
+  warn.hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
 }
 
 function updateCustomModelIdRow(selectEl) {
@@ -5401,8 +5749,13 @@ async function toggleCuratedModel(id, name, checked) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, name, checked }),
     })
-    if (!res.ok) throw new Error('save failed')
-    const data = await res.json()
+    // OWNERGATE3-1104: the server may refuse (403 owner_session_required); say why before the rollback below.
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+      throw new Error('save failed')
+    }
+    const data = reply.body
     openrouterCurated = new Set((Array.isArray(data.models) ? data.models : []).map(m => m.id))
     // Repopulate the dropdown "kézi" optgroups without disturbing selections.
     loadAvailableModels()
@@ -5486,7 +5839,9 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
 }
 
 document.getElementById('editAgentModel').addEventListener('change', () => {
-  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+  const sel = document.getElementById('editAgentModel')
+  updateCustomModelIdRow(sel)
+  document.getElementById('editAgentModelProviderMissing').hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
 })
 
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
@@ -5494,9 +5849,11 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   const selectVal = document.getElementById('editAgentModel').value
   const isCustom = selectVal.startsWith('custom:')
   const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
-  const newModel = isCustom
-    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
-    : selectVal
+  // The model id is required with a custom provider: the picker value ("custom:<id>") used to be saved as the model.
+  const customModelInput = document.getElementById('editAgentModelCustomModelId')
+  const customModelId = isCustom ? customModelInput.value.trim() : ''
+  if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
+  const newModel = isCustom ? customModelId : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
@@ -5709,9 +6066,10 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
     })
-    if (!res.ok) throw new Error()
-    const body = await res.json()
-    if (currentAgent) currentAgent.autoRestart = body.autoRestart
+    // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
+    const reply = await readActionReply(res)
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
+    if (currentAgent) currentAgent.autoRestart = reply.body.autoRestart
     showToast(t('agents.toast.auto_restart_saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -5869,7 +6227,9 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ responseMode: modeEl.value, voiceModel: modelEl.value }),
     })
-    if (!r.ok) throw new Error()
+    // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
+    const reply = await readActionReply(r)
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) })); return }
     showToast('Hangbeállítás mentve')
   } catch { showToast('Hiba a mentés során') }
 })
@@ -6004,8 +6364,13 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     })
-    const data = await res.json()
-    if (data.ok && data.authUrl) {
+    // OWNERGATE3-1104: a refusal (403 owner_session_required) is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body
+    if (!reply.ok) {
+      errorDiv.textContent = refusalReason(res, data)
+      errorDiv.hidden = false
+    } else if (data.ok && data.authUrl) {
       const urlEl = document.getElementById('authFlowUrl')
       urlEl.href = safeHref(data.authUrl) || '#'
       urlEl.textContent = data.authUrl
@@ -6794,7 +7159,10 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
   })
   if (!confirmed) return
   try {
-    await fetch(`${channelApiBase()}`, { method: 'DELETE' })
+    // OWNERGATE2-1104: the server may refuse (403 owner_session_required); a refusal is never shown as done.
+    const res = await fetch(`${channelApiBase()}`, { method: 'DELETE' })
+    const reply = await readActionReply(res)
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
     showToast(t('channel.toast.disconnected', { provider: provLabel }))
     await openAgentDetail(currentAgent.name)
     loadAgents()
@@ -7345,13 +7713,25 @@ function renderPendingRetries(container, rows) {
       const row = e.currentTarget.closest('.pending-retry-row')
       const id = row?.dataset.id
       if (!id) return
-      if (!confirm(t('tasks.confirm.cancel_pending'))) return
+      const r = rows.find(x => String(x.id) === id)
+      const confirmed = await confirmDialog({
+        title: t('tasks.confirm.cancel_pending_title'),
+        // Without an agent name the text drops the parentheses instead of printing an empty pair.
+        message: (r && r.agentName)
+          ? t('tasks.confirm.cancel_pending', { name: r.taskName || id, agent: r.agentName })
+          : t('tasks.confirm.cancel_pending_no_agent', { name: (r && r.taskName) || id }),
+        okLabel: t('tasks.confirm.cancel_pending_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
         const res = await fetch(`/api/schedules/pending/${encodeURIComponent(id)}`, { method: 'DELETE' })
-        if (!res.ok) throw new Error('cancel failed')
+        // The server's reasons are English API texts ("Pending retry not found"): a translated toast instead,
+        // and the list is reloaded, since a 404 means the retry is already gone.
+        if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))
         loadPendingRetries()
-      } catch (err) {
-        console.error('Pending retry cancel hiba:', err)
+      } catch {
+        showToast(t('tasks.toast.cancel_pending_error'))
       }
     })
   })
@@ -7371,6 +7751,29 @@ function cronCadence(cron) {
 }
 const CADENCE_ICON = { 0: '⚡', 1: '☀️', 2: '📅', 3: '🗓️', 5: '•' }
 
+// A task the runner skips (#2429). GET /api/schedules carries `registry` per task:
+// 'ok' when the runner fires it, else the reason it does not ('unregistered',
+// 'hash-mismatch', 'no-hash', 'registry-error'). Such a row says "not firing"
+// in place of active/paused, with the reason and the fix in the row itself (a
+// tooltip alone is invisible on touch). An answer without the field (an older
+// server) renders as before.
+const SCHEDULE_REGISTRY_REASONS = ['unregistered', 'hash-mismatch', 'no-hash', 'registry-error']
+
+function scheduleNotFiring(task) {
+  return !!task && typeof task.registry === 'string' && task.registry !== 'ok'
+}
+
+function scheduleStatusBadge(task) {
+  if (scheduleNotFiring(task)) return `<span class="badge badge-not-firing">${t('tasks.status.not_firing')}</span>`
+  return `<span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>`
+}
+
+function scheduleNotFiringNote(task) {
+  if (!scheduleNotFiring(task)) return ''
+  const reason = SCHEDULE_REGISTRY_REASONS.includes(task.registry) ? t('tasks.registry.' + task.registry) : task.registry
+  return `<div class="schedule-not-firing">${escapeHtml(t('tasks.status.not_firing_tip', { reason, name: task.dirName || task.name }))}</div>`
+}
+
 function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
@@ -7384,13 +7787,14 @@ function makeScheduleRow(task) {
         <div class="schedule-title">
           ${escapeHtml(task.description || task.name)}
           ${task.type === 'heartbeat' ? '<span class="badge badge-heartbeat">💓 heartbeat</span>' : ''}
-          <span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
+          ${scheduleStatusBadge(task)}
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
           <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
+        ${scheduleNotFiringNote(task)}
       </div>
       <div class="schedule-actions">
         <button class="btn-icon" data-action="run" title="${t('tasks.btn.run_now')}">
@@ -8088,12 +8492,107 @@ async function saveMemoryFromModal() {
 }
 document.getElementById('saveMemBtn').addEventListener('click', saveMemoryFromModal)
 
+// Card ca046c9a (#570): nothing moves a hot memory down on its own, so hot rows
+// pile up. The stats endpoint counts the ones with no write for staleHotDays;
+// the Hot tab shows that count and lets the viewer list only those.
+let memStaleInfo = { count: 0, days: 7 }
+let memStaleOnly = false
+// Inline preview of a referenced memory under the chip row, toggled per id.
+async function toggleMemRefPreview(item, refId) {
+  const box = item.querySelector('.mem-ref-preview')
+  if (!box) return
+  if (!box.hidden && box.dataset.refId === String(refId)) {
+    box.hidden = true
+    return
+  }
+  box.hidden = false
+  box.dataset.refId = String(refId)
+  box.textContent = t('memories.chain.loading')
+  try {
+    const res = await fetch(`/api/memories/${refId}`)
+    if (!res.ok) throw new Error(String(res.status))
+    const m = await res.json()
+    box.textContent = ''
+    const head = document.createElement('div')
+    head.className = 'mem-ref-preview-head'
+    head.textContent = `#${m.id} · ${tierLabels[m.category] || m.category} · ${m.agent_id || ''}`
+    const body = document.createElement('div')
+    body.className = 'mem-ref-preview-body'
+    body.textContent = m.content
+    box.append(head, body)
+  } catch {
+    box.textContent = t('memories.chain.not_found', { id: refId })
+  }
+}
+
+// #573: when the server began logging real uses (0 = nothing logged yet).
+let memUseSince = 0
+
+// The "used" chip: last real use by an agent (read by id, a top search hit
+// that matched as asked, a partial FELULIRJA reference), or that there is none
+// since logging began. Not the write age and not accessed_at.
+function memUseChip(mem) {
+  const since = memUseSince ? new Date(memUseSince * 1000).toLocaleDateString('hu-HU') : ''
+  if (!mem.last_used_at) {
+    return `<span class="mem-use-badge none" title="${escapeHtml(t('memories.use.none_title', { since: since || '-' }))}">${escapeHtml(t('memories.use.none'))}</span>`
+  }
+  const days = Math.floor((Date.now() / 1000 - Number(mem.last_used_at)) / 86400)
+  const label = days <= 0 ? t('memories.use.today', { count: mem.use_count }) : t('memories.use.days', { days, count: mem.use_count })
+  return `<span class="mem-use-badge" title="${escapeHtml(t('memories.use.title', { since: since || '-' }))}">${escapeHtml(label)}</span>`
+}
+
+function memLastWrite(mem) {
+  return Number(mem.updated_at || mem.created_at || 0)
+}
+
+function renderMemStaleBanner() {
+  const el = document.getElementById('memStaleBanner')
+  if (!el) return
+  const q = memSearchInput.value.trim()
+  if (currentMemTier !== 'hot' || q || (memStaleInfo.count === 0 && !memStaleOnly)) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.hidden = false
+  el.textContent = ''
+  const text = document.createElement('span')
+  text.textContent = t('memories.stale.banner', { count: memStaleInfo.count, days: memStaleInfo.days })
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact'
+  btn.id = 'memStaleToggle'
+  btn.textContent = memStaleOnly ? t('memories.stale.show_all') : t('memories.stale.only_stale')
+  btn.addEventListener('click', () => {
+    memStaleOnly = !memStaleOnly
+    loadMemories()
+  })
+  el.append(text, btn)
+}
+
+async function moveMemTier(mem, tier) {
+  try {
+    const res = await fetch(`/api/memories/${mem.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier, updated_by: 'dashboard' }),
+    })
+    if (!res.ok) throw new Error(String(res.status))
+    showToast(t('memories.stale.moved', { tier: tierLabels[tier] || tier }))
+    loadMemories()
+    loadMemStats()
+  } catch {
+    showToast(t('common.error_save'))
+  }
+}
+
 async function loadMemStats() {
   try {
     const res = await fetch('/api/memories/stats')
     const stats = await res.json()
     const embCount = stats.withEmbedding || 0
     const embPct = stats.total > 0 ? Math.round(embCount / stats.total * 100) : 0
+    memStaleInfo = { count: stats.staleHot || 0, days: stats.staleHotDays || 7 }
+    renderMemStaleBanner()
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
@@ -8131,6 +8630,8 @@ async function loadMemories() {
   }
   if (agent) params.set('agent', agent)
   if (currentMemTier) params.set('tier', currentMemTier)
+  // stale_days is listing-only on the server (400 with q), so a search wins.
+  if (currentMemTier === 'hot' && memStaleOnly && !q) params.set('stale_days', String(memStaleInfo.days))
   params.set('limit', '50')
 
   try {
@@ -8143,6 +8644,8 @@ async function loadMemories() {
     // with res.json() alone threw it away, so a viewer saw fifty rescued rows
     // as fifty hits. The header is only set on a search (q), not on listing.
     renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
+    memUseSince = Number(res.headers.get('X-Memory-Use-Since')) || 0
+    renderMemStaleBanner()
     renderMemories(memories)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
@@ -8173,6 +8676,66 @@ function renderMemSearchLabel(header) {
   el.append(strong, body, raw)
 }
 
+// #571: the chain chips of one memory card. Every interpolation is a
+// Number() or an escapeHtml(t(...)), so the HTML is safe by construction.
+function memChainChipsHtml(supersedes, supersededBy) {
+  let html = ''
+  for (const r of supersedes) {
+    const key = r.partial ? 'memories.chain.supersedes_part' : 'memories.chain.supersedes'
+    html += `<button type="button" class="mem-chain-chip${r.partial ? ' partial' : ''}" data-ref-id="${Number(r.id)}">${escapeHtml(t(key, { id: Number(r.id) }))}</button>`
+  }
+  if (supersededBy) {
+    html += `<button type="button" class="mem-chain-chip replaced" data-ref-id="${Number(supersededBy)}">${escapeHtml(t('memories.chain.superseded_by', { id: Number(supersededBy) }))}</button>`
+  }
+  return html
+}
+
+// Card 3ddb2b1d (#572): a short title line instead of the first 120 characters.
+// Measured 2026-10-17 on a copy of the owner store (1377 rows): the first
+// sentence or "HEADER:" segment of the first line is the title; median 58,
+// 90th percentile 87 characters. A leading "FELULIRJA <id>:" is dropped (the
+// chain chip says it). When the first segment is only a date, time or status
+// word ("2026-10-03 16:02", "LEZARVA 2026-09-09 03:3x") the next segment is
+// added, otherwise the title would say nothing.
+const MEM_TITLE_MAX = 90
+// The marker ends at the first '.' or ':' FOLLOWED BY A SPACE, so a time inside
+// it ("FELULIRJA a 20:35-os allapotot.") does not end it early.
+const MEM_TITLE_PREFIX = /^\s*(?:fel[uü]l[ií]rja\b[^\n]{0,40}?[:.](?=\s)\s*|aktu[aá]lis[,:]?\s*)/i
+const MEM_TITLE_SPLIT = /(?<=.{12})(?:[.:;!?](?=\s)| -- | — )/
+const MEM_TITLE_NOISE = /\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}(?::\d{2})?x?|\d{1,2}:\dx|\b(?:BST|GMT|UTC)\b|\b(?:lez[aá]rva|friss[ií]tve|aktu[aá]lis|[aá]llapot|k[eé]sz|nyitott|sz[aá]l)\b|[~()[\],.\-:]/gi
+
+function memTitleParts(content) {
+  const body = String(content || '').replace(MEM_TITLE_PREFIX, '')
+  const nl = body.indexOf('\n')
+  const line = (nl >= 0 ? body.slice(0, nl) : body).trim()
+  const lead = body.length - body.trimStart().length
+  let head = line
+  let consumed = line.length
+  const m = MEM_TITLE_SPLIT.exec(line)
+  if (m) {
+    head = line.slice(0, m.index)
+    consumed = m.index + m[0].length
+    if (head.replace(MEM_TITLE_NOISE, '').replace(/\s+/g, '').length < 10) {
+      const restLine = line.slice(consumed)
+      const m2 = MEM_TITLE_SPLIT.exec(restLine.trimStart())
+      const skip = restLine.length - restLine.trimStart().length
+      const next = m2 ? restLine.trimStart().slice(0, m2.index) : restLine.trimStart()
+      head = `${head}: ${next}`
+      consumed += skip + (m2 ? m2.index + m2[0].length : next.length)
+    }
+  }
+  let title = head.trim().replace(/[.:;]+$/, '')
+  if (title.length > MEM_TITLE_MAX) {
+    const cut = title.slice(0, MEM_TITLE_MAX)
+    const sp = cut.lastIndexOf(' ')
+    title = (sp > MEM_TITLE_MAX * 0.55 ? cut.slice(0, sp) : cut).replace(/[\s,;(-]+$/, '') + '…'
+    // A clipped title has not said all of its segment: the snippet repeats it.
+    consumed = 0
+  }
+  const rest = body.slice(lead + consumed).replace(/^[\s.:;!?—-]+/, '').replace(/\s+/g, ' ').trim()
+  return { title: title || String(content || '').slice(0, MEM_TITLE_MAX), rest }
+}
+
 function renderMemories(memories) {
   memList.innerHTML = ''
   memEmpty.hidden = memories.length > 0
@@ -8184,8 +8747,18 @@ function renderMemories(memories) {
     const tier = mem.tier || mem.category || 'warm'
     const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
-    const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
+    const { title: memTitle, rest: memRest } = memTitleParts(mem.content)
     const agentLabel = mem.agent_id || mainAgentId()
+    const ageDays = Math.floor((Date.now() / 1000 - memLastWrite(mem)) / 86400)
+    const isStaleHot = tier === 'hot' && memLastWrite(mem) > 0 && ageDays >= memStaleInfo.days
+    const supersedes = Array.isArray(mem.chain_refs) ? mem.chain_refs : []
+    const supersededBy = mem.chain_replaced_by || null
+    // Move targets: a stale hot row may go to warm or cold; a fully replaced
+    // row that is not cold yet gets the cold button.
+    const moveTargets = []
+    if (isStaleHot) moveTargets.push('warm', 'cold')
+    else if (supersededBy && tier !== 'cold') moveTargets.push('cold')
+    const chainChips = memChainChipsHtml(supersedes, supersededBy)
 
     // Build keywords HTML
     let keywordsHtml = ''
@@ -8202,11 +8775,16 @@ function renderMemories(memories) {
         <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
         <span class="mem-date">${escapeHtml(mem.created_label || '')}</span>
         ${typeof mem.salience === 'number' ? `<span class="mem-salience" title="Relevancia ertek">S: ${mem.salience.toFixed(2)}</span>` : ''}
+        ${memUseChip(mem)}
+        ${isStaleHot ? `<span class="mem-stale-badge" title="${escapeHtml(t('memories.stale.age_title'))}">${escapeHtml(t('memories.stale.age', { days: ageDays }))}</span>` : ''}
       </div>
-      <div class="mem-content-short">${escapeHtml(shortContent)}</div>
+      ${chainChips ? `<div class="mem-chain">${chainChips}</div><div class="mem-ref-preview" hidden></div>` : ''}
+      <div class="mem-title">${escapeHtml(memTitle)}</div>
+      ${memRest ? `<div class="mem-content-short">${escapeHtml(memRest)}</div>` : ''}
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">
+        ${moveTargets.map(tg => `<button class="btn-secondary mem-move-btn" data-move-tier="${escapeHtml(tg)}" style="padding:6px 14px; font-size:12px;">${escapeHtml(t(tg === 'warm' ? 'memories.stale.to_warm' : 'memories.stale.to_cold'))}</button>`).join('')}
         <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.edit')}</button>
         <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.delete')}</button>
       </div>
@@ -8214,9 +8792,23 @@ function renderMemories(memories) {
 
     // Toggle expand
     item.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-danger') || e.target.closest('.btn-secondary')) return
+      if (e.target.closest('.btn-danger') || e.target.closest('.btn-secondary') || e.target.closest('.mem-chain') || e.target.closest('.mem-ref-preview')) return
       item.classList.toggle('expanded')
     })
+
+    for (const chip of item.querySelectorAll('[data-ref-id]')) {
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation()
+        toggleMemRefPreview(item, chip.dataset.refId)
+      })
+    }
+
+    for (const b of item.querySelectorAll('[data-move-tier]')) {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation()
+        moveMemTier(mem, b.dataset.moveTier)
+      })
+    }
 
     // Edit
     const editBtn = item.querySelector('[data-edit-memid]')
@@ -9302,8 +9894,10 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ env: envData }),
     })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // OWNERGATE3-1104: a refusal (403 owner_session_required) is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body
+    if (!reply.ok) throw new Error(refusalReason(res, data))
     closeModal(catalogInstallOverlay)
     showToast(data.message || t('connectors.toast.installed'))
     // Reload both views
@@ -9328,8 +9922,10 @@ async function catalogUninstall(item) {
   if (!confirmed) return
   try {
     const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // OWNERGATE3-1104: an owner-session refusal is shown in the page language (refusalReason).
+    const reply = await readActionReply(res)
+    const data = reply.body || {}
+    if (!reply.ok) throw new Error(refusalReason(res, reply.body))
     showToast(data.message || t('connectors.toast.removed'))
     loadCatalog()
     loadConnectors()
@@ -9980,11 +10576,17 @@ async function loadVault() {
       const item = document.createElement('div')
       item.className = 'connector-external-item'
       const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
-      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="Torles" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
+      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="${t('common.btn.delete')}" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
-        if (!confirm(`Torlod: ${s.label}?`)) return
+        const confirmed = await confirmDialog({
+          title: t('vault.confirm.delete_title'),
+          message: t('vault.confirm.delete', { name: s.label }),
+          okLabel: t('vault.confirm.delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         const res = await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
-        if (!res.ok) { showToast('Törlés sikertelen'); return }
+        if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
         loadVault()
       })
       list.appendChild(item)
@@ -10015,7 +10617,7 @@ async function loadVault() {
     })
     if (!res.ok) {
       const e = await res.json().catch(() => ({}))
-      showToast('Mentés sikertelen: ' + (e.error || res.status))
+      showToast(t('vault.toast.save_failed', { msg: e.error || res.status }))
       return
     }
     idInput.value = ''
@@ -10113,10 +10715,10 @@ function renderSshKeys() {
       <td class="ssh-table-mono" style="font-size:11px">${k.fingerprint ? escapeHtml(k.fingerprint.slice(0,28)) + '…' : ''}</td>
       <td class="ssh-table-mono">${k.createdAt ? new Date(k.createdAt).toLocaleDateString('hu-HU') : ''}</td>
       <td><div class="ssh-table-actions">
-        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="Publikus kulcs másolása">
+        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="${escapeHtml(t('vault.ssh.keys.copy_title'))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
-        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="Törlés">
+        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="${escapeHtml(t('common.btn.delete'))}">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
         </button>
       </div></td>
@@ -10139,15 +10741,30 @@ function renderSshKeys() {
   })
   tbody.querySelectorAll('.ssh-key-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Biztosan törlöd ezt a kulcsot?')) return
-      await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      const key = _sshKeys.find(k => k.id === btn.dataset.id)
+      // Deleting a key unassigns it server-side, so name the servers that lose it.
+      const servers = _sshServers
+        .filter(s => (s.sshKeyId || s.assignedKeyId || s.vaultKeyId) === btn.dataset.id)
+        .map(s => `"${s.name || s.id}"`)
+      let message = t('vault.ssh.confirm.key_delete', { name: (key && key.label) || btn.dataset.id })
+      if (servers.length) message += '\n\n' + t('vault.ssh.confirm.key_delete_servers', { servers: servers.join(', ') })
+      const confirmed = await confirmDialog({
+        title: t('vault.ssh.confirm.key_delete_title'),
+        message,
+        okLabel: t('vault.ssh.confirm.key_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
+      const res = await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      if (!res.ok) showToast(t('vault.toast.delete_error'))
       await loadSshKeys()
+      await loadSshServers()
     })
   })
 }
 
 function _refreshKeySelects() {
-  const opts = ['<option value="">-- Nincs kulcs --</option>',
+  const opts = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
   ].join('')
   document.querySelectorAll('.ssh-key-select').forEach(sel => {
@@ -10158,7 +10775,7 @@ function _refreshKeySelects() {
 }
 
 function _sshKeyBadge(status) {
-  const labels = { ok: 'OK', missing: 'Hiányzó', expired: 'Lejárt' }
+  const labels = { ok: t('vault.ssh.status.ok'), missing: t('vault.ssh.status.missing'), expired: t('vault.ssh.status.expired') }
   const icons = {
     ok: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
     missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
@@ -10169,17 +10786,17 @@ function _sshKeyBadge(status) {
 
 function _sshKeyAssignSelect(s) {
   const currentKeyId = s.sshKeyId || s.assignedKeyId || s.vaultKeyId || ''
-  const opts = ['<option value="">-- Nincs kulcs --</option>',
+  const opts = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => {
       const sel = (currentKeyId && currentKeyId === k.id) ? ' selected' : ''
       return `<option value="${escapeHtml(k.id)}"${sel}>${escapeHtml(k.label || k.id)}</option>`
     })
   ].join('')
-  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="Kulcs hozzárendelése">${opts}</select>`
+  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('vault.ssh.assign_title'))}">${opts}</select>`
 }
 
 function _sshInfoBtn(s) {
-  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="Telepítési útmutató">i</button>`
+  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="${escapeHtml(t('vault.ssh.install_title'))}">i</button>`
 }
 
 function renderSshServers() {
@@ -10231,10 +10848,10 @@ function renderSshServers() {
         <div style="display:flex;align-items:center;gap:4px;width:100%">
           ${_sshKeyAssignSelect(s)}
           <div class="ssh-card-actions">
-            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.edit'))}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
-            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.delete'))}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
             </button>
           </div>
@@ -10253,10 +10870,10 @@ function renderSshServers() {
       <td>${_sshKeyAssignSelect(s)}</td>
       <td style="color:var(--text-muted)">${escapeHtml(s.desc || '')}</td>
       <td><div class="ssh-table-actions">
-        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.edit'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
-        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="${escapeHtml(t('common.btn.delete'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
         </button>
       </div></td>
@@ -10267,11 +10884,18 @@ function renderSshServers() {
   document.querySelectorAll('.ssh-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
-      if (!confirm(`Törlöd: ${id}?`)) return
+      const server = _sshServers.find(s => s.id === id)
+      const confirmed = await confirmDialog({
+        title: t('vault.ssh.confirm.server_delete_title'),
+        message: t('vault.ssh.confirm.server_delete', { name: (server && server.name) || id }),
+        okLabel: t('vault.ssh.confirm.server_delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
         await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
         await loadSshServers()
-      } catch { showToast('Törlés sikertelen') }
+      } catch { showToast(t('vault.toast.delete_error')) }
     })
   })
 
@@ -10292,7 +10916,7 @@ function renderSshServers() {
       if (keySel) keySel.value = server.sshKeyId || server.assignedKeyId || server.vaultKeyId || ''
 
       const titleEl = document.getElementById('sshAddPanelTitle')
-      if (titleEl) titleEl.textContent = `Szerver szerkesztése – ${server.name}`
+      if (titleEl) titleEl.textContent = t('vault.ssh.form.edit_title', { name: server.name })
 
       const panel = document.getElementById('sshAddPanel')
       panel.hidden = false
@@ -10328,6 +10952,8 @@ function openSshKeygenModal(callback) {
   document.getElementById('sshKeygenSpinner').hidden = true
   document.getElementById('sshKeygenResult').hidden = true
   document.getElementById('sshKeygenFooter').hidden = false
+  document.getElementById('sshKeygenSubmitBtn').hidden = false
+  document.getElementById('sshKeygenDoneBtn').hidden = true
   document.getElementById('sshKeygenForm').hidden = false
   document.getElementById('sshKeygenPubkeyBox').value = ''
   _sshKeygenCallback = callback || null
@@ -10340,15 +10966,17 @@ function openSshKeygenModal(callback) {
   const closeBtn = document.getElementById('sshKeygenClose')
   const submitBtn = document.getElementById('sshKeygenSubmitBtn')
   const copyBtn = document.getElementById('sshKeygenCopyBtn')
+  const doneBtn = document.getElementById('sshKeygenDoneBtn')
   if (!overlay) return
 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
   closeBtn.addEventListener('click', () => closeModal(overlay))
+  doneBtn.addEventListener('click', () => closeModal(overlay))
 
   submitBtn.addEventListener('click', async () => {
     const label = document.getElementById('sshKeygenLabelInput').value.trim()
     const username = document.getElementById('sshKeygenUserInput').value.trim()
-    if (!label || !username) { showToast('Cimke és felhasználónév megadása kötelező'); return }
+    if (!label || !username) { showToast(t('vault.ssh.toast.label_user_required')); return }
 
     document.getElementById('sshKeygenForm').hidden = true
     document.getElementById('sshKeygenSpinner').hidden = false
@@ -10362,23 +10990,33 @@ function openSshKeygenModal(callback) {
         body: JSON.stringify({ label, username }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Generálás sikertelen'); resetKeygenForm(); return }
+      if (!res.ok) {
+        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || t('vault.ssh.keygen.failed')))
+        resetKeygenForm()
+        if (data.code === 'label_taken') document.getElementById('sshKeygenLabelInput').focus()
+        return
+      }
 
       const pubkey = data.publicKey || (data.key && data.key.publicKey) || ''
       document.getElementById('sshKeygenPubkeyBox').value = pubkey
       document.getElementById('sshKeygenSpinner').hidden = true
       document.getElementById('sshKeygenResult').hidden = false
+      // The key is made: the footer offers Close, not a second Generate.
+      submitBtn.hidden = true
+      doneBtn.hidden = false
+      document.getElementById('sshKeygenFooter').hidden = false
+      doneBtn.focus()
 
       await loadSshKeys()
       if (_sshKeygenCallback) _sshKeygenCallback(data.key || data)
-    } catch { showToast('Hálózati hiba'); resetKeygenForm() }
+    } catch { showToast(t('vault.toast.network_error')); resetKeygenForm() }
   })
 
   copyBtn?.addEventListener('click', () => {
     const val = document.getElementById('sshKeygenPubkeyBox').value
     navigator.clipboard.writeText(val).then(() => {
-      copyBtn.textContent = 'Másolva!'
-      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Másolás' }, 2000)
+      copyBtn.textContent = t('common.copied')
+      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ' + escapeHtml(t('common.copy')) }, 2000)
     }).catch(() => {})
   })
 
@@ -10387,6 +11025,8 @@ function openSshKeygenModal(callback) {
     document.getElementById('sshKeygenSpinner').hidden = true
     document.getElementById('sshKeygenResult').hidden = true
     document.getElementById('sshKeygenFooter').hidden = false
+    submitBtn.hidden = false
+    doneBtn.hidden = true
   }
 })()
 
@@ -10425,9 +11065,9 @@ async function _sshInfoLoadKey(keyId, serverUser) {
 
   const cmd2text = pubkey
     ? `echo "${pubkey}" >> ~/.ssh/authorized_keys`
-    : `echo "<publikus kulcs ide>" >> ~/.ssh/authorized_keys`
+    : `echo "${t('vault.ssh.install.pubkey_here')}" >> ~/.ssh/authorized_keys`
   document.getElementById('sshInfoCmd2').textContent = cmd2text
-  document.getElementById('sshInfoPubkey').textContent = pubkey || '(kulcs nem elérhető)'
+  document.getElementById('sshInfoPubkey').textContent = pubkey || t('vault.ssh.install.pubkey_missing')
 
   const overlay = document.getElementById('sshInfoOverlay')
   overlay.querySelectorAll('.ssh-code-copy').forEach(btn => {
@@ -10450,7 +11090,7 @@ function _sshInfoLoadServer(serverId) {
   document.getElementById('sshInfoServerName').textContent = server ? server.name : (serverId || '')
 
   const keySel = document.getElementById('sshInfoKeySelect')
-  keySel.innerHTML = ['<option value="">-- Nincs kulcs --</option>',
+  keySel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.no_key'))}</option>`,
     ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
   ].join('')
   const assignedKeyId = (server && (server.sshKeyId || server.assignedKeyId || server.vaultKeyId)) || ''
@@ -10466,11 +11106,11 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     // Key-only mode: hide server selector, reset server context
     serverSection.hidden = true
     _sshInfoServerId = null
-    document.getElementById('sshInfoServerName').textContent = 'Új szerver'
+    document.getElementById('sshInfoServerName').textContent = t('vault.ssh.install.new_server')
 
     // Populate key selector without a pre-selected key
     const keySel = document.getElementById('sshInfoKeySelect')
-    keySel.innerHTML = ['<option value="">-- Válassz kulcsot --</option>',
+    keySel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.choose_key'))}</option>`,
       ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
     ].join('')
     // Pre-select whatever is chosen in the form's key dropdown
@@ -10486,7 +11126,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     // Normal mode: show server selector, pick first server by default
     serverSection.hidden = false
     const serverSel = document.getElementById('sshInfoServerSelect')
-    serverSel.innerHTML = ['<option value="">-- Válassz szervert --</option>',
+    serverSel.innerHTML = [`<option value="">${escapeHtml(t('vault.ssh.choose_server'))}</option>`,
       ..._sshServers.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.host)})</option>`)
     ].join('')
 
@@ -10553,7 +11193,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
   function resetSshAddForm() {
     _sshEditingId = null
     const titleEl = document.getElementById('sshAddPanelTitle')
-    if (titleEl) titleEl.textContent = 'Szerver hozzáadása'
+    if (titleEl) titleEl.textContent = t('vault.ssh.form.add_title')
     document.getElementById('sshNameInput').value = ''
     document.getElementById('sshHostInput').value = ''
     document.getElementById('sshUserInput').value = ''
@@ -10592,7 +11232,12 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     const port = parseInt(document.getElementById('sshPortInput').value, 10) || 22
     const desc = document.getElementById('sshDescInput').value.trim()
     const sshKeyId = document.getElementById('sshKeySelectInput')?.value || null
-    if (!name || !host || !user) { showToast('Név, IP és felhasználó megadása kötelező'); return }
+    // Point at the first empty required field, as the new-skill form does.
+    const missing = !name ? ['sshNameInput', 'vault.ssh.form.name_required']
+      : !host ? ['sshHostInput', 'vault.ssh.form.host_required']
+      : !user ? ['sshUserInput', 'vault.ssh.form.user_required']
+      : null
+    if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1])); return }
     const isEdit = !!_sshEditingId
     try {
       const res = await fetch(
@@ -10605,13 +11250,13 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        showToast(err.error || 'Hiba a mentéskor'); return
+        showToast(err.error || t('common.error_save')); return
       }
       resetSshAddForm()
       panel.hidden = true
       await loadSshServers()
-      showToast(isEdit ? 'Szerver frissítve' : 'Szerver hozzáadva')
-    } catch { showToast('Hálózati hiba') }
+      showToast(t(isEdit ? 'vault.ssh.toast.server_updated' : 'vault.ssh.toast.server_added'))
+    } catch { showToast(t('vault.toast.network_error')) }
   })
 
   cardViewBtn?.addEventListener('click', () => {
@@ -10630,7 +11275,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     tableView.hidden = false
   })
 
-  // Kulcstároló "Új kulcs generálása" button
+  // SSH key store "New key" button
   document.getElementById('sshKeyNewBtn')?.addEventListener('click', () => {
     openSshKeygenModal()
   })
@@ -10674,7 +11319,7 @@ function renderVaultGrid(secrets) {
     card.className = 'vault-card'
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
-    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
+    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${escapeHtml(t('vault.binding_count', { n: bindingCount }))}">${escapeHtml(t('vault.binding_count', { n: bindingCount }))}</span>` : ''
     card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn-secondary btn-compact vault-card-edit" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
     list.appendChild(card)
   }
@@ -10708,7 +11353,7 @@ function renderVaultGrid(secrets) {
       const initialLabel = label === id ? '' : label
       const form = document.createElement('div')
       form.className = 'vault-card-edit-form'
-      form.innerHTML = `<input type="text" class="input vault-edit-label" maxlength="200" value="${escapeHtml(initialLabel)}" placeholder="${escapeHtml(id)}" aria-label="${escapeHtml(t('vault.field.desc_label'))}" style="font-size:13px;margin-bottom:6px"><input type="password" class="input vault-edit-value" value="" placeholder="${escapeHtml(t('vault.edit.value_placeholder'))}" aria-label="${escapeHtml(t('vault.field.value_label'))}" autocomplete="new-password" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
+      form.innerHTML = `<input type="text" class="input vault-edit-label" maxlength="200" value="${escapeHtml(initialLabel)}" placeholder="${escapeHtml(id)}" aria-label="${escapeHtml(t('vault.field.desc_label'))}" style="font-size:13px"><input type="password" class="input vault-edit-value" value="" placeholder="${escapeHtml(t('vault.edit.value_placeholder'))}" aria-label="${escapeHtml(t('vault.field.value_label'))}" autocomplete="new-password" style="font-size:13px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
       card.appendChild(form)
       const labelInput = form.querySelector('.vault-edit-label')
       const input = form.querySelector('.vault-edit-value')
@@ -10760,9 +11405,15 @@ function renderVaultGrid(secrets) {
   list.querySelectorAll('.vault-card-delete').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
-      if (!confirm(`Torlod: ${id}?`)) return
+      const confirmed = await confirmDialog({
+        title: t('vault.confirm.delete_title'),
+        message: t('vault.confirm.delete', { name: id }),
+        okLabel: t('vault.confirm.delete_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       const res = await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      if (!res.ok) { showToast('Törlés sikertelen'); return }
+      if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
       loadVaultPage()
       loadVault()
     })
@@ -10861,7 +11512,7 @@ function renderVaultGrid(secrets) {
       }
       if (secrets.length === 0) {
         const opt = document.createElement('option')
-        opt.textContent = '-- Nincs vault kulcs --'
+        opt.textContent = t('vault.bind.no_secret')
         opt.disabled = true
         secretSelect.appendChild(opt)
       }
@@ -10876,7 +11527,7 @@ function renderVaultGrid(secrets) {
       }
       if (mcpConnectors.length === 0) {
         const opt = document.createElement('option')
-        opt.textContent = '-- Nincs MCP szerver --'
+        opt.textContent = t('vault.bind.no_server')
         opt.disabled = true
         serverSelect.appendChild(opt)
       }
@@ -10884,7 +11535,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } catch (err) {
       console.error('Vault bind modal error:', err)
-      showToast('Hiba a hozzarendeles betoltesekor: ' + err.message)
+      showToast(t('vault.bind.load_error', { msg: err.message }))
     }
   })
 
@@ -10893,7 +11544,7 @@ function renderVaultGrid(secrets) {
     const serverName = serverSelect.value
     const envVar = envVarInput.value.trim()
     if (!vaultSecretId || !serverName || !envVar) {
-      statusEl.textContent = 'Minden mezo kitoltese kotelezo'
+      statusEl.textContent = t('vault.bind.all_required')
       statusEl.className = 'vault-bind-status error'
       statusEl.hidden = false
       return
@@ -10909,24 +11560,24 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.ok) {
-        statusEl.textContent = `Hozzarendelve! ${data.synced || 0} fajl frissitve.`
+        statusEl.textContent = t('vault.bind.done', { n: data.synced || 0 })
         statusEl.className = 'vault-bind-status success'
         statusEl.hidden = false
         loadVaultPage()
         loadVault()
         setTimeout(() => { closeModal(overlay) }, 1500)
       } else {
-        statusEl.textContent = data.error || 'Hiba tortent'
+        statusEl.textContent = data.error || t('common.error')
         statusEl.className = 'vault-bind-status error'
         statusEl.hidden = false
       }
     } catch (err) {
-      statusEl.textContent = 'Halozati hiba'
+      statusEl.textContent = t('vault.toast.network_error')
       statusEl.className = 'vault-bind-status error'
       statusEl.hidden = false
     } finally {
       saveBtn.disabled = false
-      saveBtn.textContent = 'Hozzarendeles'
+      saveBtn.textContent = t('vault.btn.bind')
     }
   })
 })()
@@ -10942,7 +11593,7 @@ function renderVaultGrid(secrets) {
 
   scanBtn.addEventListener('click', async () => {
     scanBtn.disabled = true
-    scanBtn.textContent = 'Kereses...'
+    scanBtn.textContent = t('common.searching')
     try {
       const res = await fetch('/api/vault/scan')
       const data = await res.json()
@@ -10951,7 +11602,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } finally {
       scanBtn.disabled = false
-      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Scan &amp; Import'
+      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> ' + escapeHtml(t('vault.btn.scan'))
     }
   })
 
@@ -10960,21 +11611,21 @@ function renderVaultGrid(secrets) {
 
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true
-    syncBtn.textContent = 'Szinkron...'
+    syncBtn.textContent = t('vault.btn.syncing')
     try {
       const res = await fetch('/api/vault/sync', { method: 'POST' })
       const data = await res.json()
       if (data.updated > 0) {
-        showToast(`${data.updated} .mcp.json frissitve`)
+        showToast(t('vault.sync.updated', { n: data.updated }))
       } else {
-        showToast('Nincs szinkronizalando kotes')
+        showToast(t('vault.sync.nothing'))
       }
       if (data.errors?.length) {
-        showToast('Hibak: ' + data.errors.join(', '))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
       }
     } finally {
       syncBtn.disabled = false
-      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Szinkron'
+      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> ' + escapeHtml(t('vault.btn.sync'))
     }
   })
 
@@ -10988,9 +11639,8 @@ function renderVaultGrid(secrets) {
     if (actionable.length === 0) {
       empty.hidden = false
       footer.hidden = true
-      if (findings.length > 0) {
-        empty.textContent = `${findings.length} erzekeny ertek talalva, de mind mar a Vault-ban van.`
-      }
+      // Set both ways: an earlier all-in-the-Vault scan must not leave its count behind.
+      empty.textContent = findings.length > 0 ? t('vault.scan.all_in_vault', { n: findings.length }) : t('vault.scan.empty')
       return
     }
     empty.hidden = true
@@ -11014,7 +11664,7 @@ function renderVaultGrid(secrets) {
         <div class="vault-scan-info">
           <div class="vault-scan-server">${escapeHtml(f.serverName)}</div>
           <div class="vault-scan-env">${escapeHtml(f.envVar)} = <code>${escapeHtml(f.maskedValue)}</code></div>
-          <div class="vault-scan-targets">${f.allTargets.length} fajlban</div>
+          <div class="vault-scan-targets">${escapeHtml(t('vault.scan.in_files', { n: f.allTargets.length }))}</div>
         </div>
         <div class="vault-scan-id">
           <input type="text" class="input vault-scan-vault-id" value="${escapeHtml(f.suggestedVaultId)}" data-key="${escapeHtml(key)}" style="font-size:12px;width:180px">
@@ -11057,10 +11707,10 @@ function renderVaultGrid(secrets) {
       })
     }
 
-    if (imports.length === 0) { showToast('Nincs kivalasztott elem'); return }
+    if (imports.length === 0) { showToast(t('vault.scan.none_selected')); return }
 
     importBtn.disabled = true
-    importBtn.textContent = 'Importalas...'
+    importBtn.textContent = t('common.importing')
 
     try {
       const res = await fetch('/api/vault/import', {
@@ -11070,14 +11720,14 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.imported > 0) {
-        showToast(`${data.imported} kulcs importalva, ${data.bound} kotes letrehozva`)
+        showToast(t('vault.scan.imported', { imported: data.imported, bound: data.bound }))
       }
       if (data.errors?.length) {
-        showToast('Hibak: ' + data.errors.join(', '))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
       }
     } finally {
       importBtn.disabled = false
-      importBtn.textContent = 'Kivalasztottak importalasa'
+      importBtn.textContent = t('vault.scan.import_btn')
     }
     closeModal(overlay)
     loadVaultPage()
@@ -11097,7 +11747,7 @@ async function loadExternalPaths() {
     for (const p of paths) {
       const item = document.createElement('div')
       item.className = 'connector-external-item'
-      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="Torles">&times;</button>`
+      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="${t('common.btn.delete')}">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
         await fetch('/api/connectors/external-paths', {
           method: 'DELETE',
@@ -12448,6 +13098,7 @@ function renderPendingSkills(box, list) {
     head.appendChild(pendingEl('strong', null, p.name))
     const where = p.target && p.target.scope === 'agent'
       ? t('skills.pending.target_agent', { agent: p.target.agent })
+      : p.target && p.target.scope === 'project' ? t('skills.pending.target_project')
       : t('skills.pending.target_global')
     const src = p.source === 'import' ? t('skills.pending.source_import')
       : p.source === 'propose' ? t('skills.pending.source_propose', { agent: p.proposedBy || '?' })
@@ -13018,6 +13669,10 @@ function renderTeamGraph(container, data, opts = {}) {
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
+    // The owner-written tagline ("P+R", "JIRA ügyintéző") says what the agent
+    // does; when set it takes the role line, and the role moves to the tooltip.
+    const tagline = (node.tagline || '').trim()
+    if (tagline) div.title = roleLabel
     // Same pulsing dot the agent cards use, instead of the '●' that used to be
     // baked into the translation -- a static glyph read as "stopped" next to a
     // card whose dot was breathing.
@@ -13033,7 +13688,7 @@ function renderTeamGraph(container, data, opts = {}) {
     div.innerHTML = `
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
-      <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
+      <div class="team-node-meta${tagline ? ' team-node-tagline' : ''}">${escapeHtml(tagline || roleLabel)}</div>
       <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
     if (node.id !== mainAgentId) {
@@ -13726,6 +14381,8 @@ document.getElementById('chatRefreshBtn')?.addEventListener('click', () => {
 function renderTeamEditor(agent, allAgents) {
   const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
+  const taglineInput = document.getElementById('editTeamTagline')
+  if (taglineInput) taglineInput.value = agent.tagline || ''
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
   const emptyOpt = document.createElement('option')
@@ -13779,6 +14436,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   const delegates = Array.from(document.querySelectorAll('#editTeamDelegatesList input[type=checkbox]:checked')).map(cb => cb.value)
   const trustFrom = Array.from(document.querySelectorAll('#editTeamTrustFromList input[type=checkbox]:checked')).map(cb => cb.value)
   const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
+  const tagline = (document.getElementById('editTeamTagline')?.value || '').trim()
   const originalText = btn.textContent
   btn.disabled = true
   btn.textContent = t('team.save_saving')
@@ -13792,6 +14450,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         delegatesTo: role === 'leader' ? delegates : [],
         trustFrom,
         autoDelegation: role === 'leader' ? autoDelegation : false,
+        tagline,
       }),
     })
     if (!res.ok) throw new Error()
@@ -14253,7 +14912,7 @@ async function loadOverview() {
     const taskDiff = d.tasksToday - d.tasksYesterday
     document.getElementById('statTasksSub').textContent = taskDiff === 0 ? t('overview.stat.same_as_yesterday') : (taskDiff > 0 ? '+' + taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim() : taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim())
     document.getElementById('statMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
-    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
+    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${t('overview.stat.sub.categories', { n: d.memories.categories })}`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     renderQuotaStrip(d.quota, d.quotaFable)
@@ -14420,6 +15079,37 @@ function wireBranchDriftBanner() {
   })
 }
 
+// === Update-conflict guard (UPDATECONFLICT1105) ===
+// scripts/update-conflict-guard.sh (run by start.sh) repairs, or refuses to repair, what a conflicted auto-stash pop
+// left in a tracked file, and writes a report; /api/updates carries it as `conflictGuard`. One sentence: what
+// happened and where the backup is. Dismissal persists per browser and per guard run (`at`), so a later run re-warns.
+// textContent only: the paths are file names from the install, never markup.
+const UPDATE_CONFLICT_DISMISS_PREFIX = 'marveen.update-conflict-dismissed.'
+function updateConflictGuardUI(status) {
+  const banner = document.getElementById('updateConflictBanner')
+  if (!banner) return
+  const g = status && status.conflictGuard
+  let dismissed = false
+  try { dismissed = !!(g && localStorage.getItem(UPDATE_CONFLICT_DISMISS_PREFIX + g.at) === '1') } catch { /* storage blocked */ }
+  if (!g || !g.state || dismissed) { banner.hidden = true; return }
+  const paths = Array.isArray(g.paths) && g.paths.length ? g.paths.join(', ') : '?'
+  const stash = typeof g.stash === 'string' ? g.stash.split(':')[0] : 'git stash'
+  const textEl = document.getElementById('updateConflictBannerText')
+  if (textEl) textEl.textContent = t('update_conflict.banner.' + g.state, { paths, backup: g.backup || 'store/', stash })
+  banner.dataset.at = String(g.at)
+  banner.hidden = false
+}
+function wireUpdateConflictBanner() {
+  const dismiss = document.getElementById('updateConflictDismiss')
+  if (!dismiss) return
+  dismiss.addEventListener('click', () => {
+    const banner = document.getElementById('updateConflictBanner')
+    const at = banner && banner.dataset.at
+    try { if (at) localStorage.setItem(UPDATE_CONFLICT_DISMISS_PREFIX + at, '1') } catch { /* storage blocked */ }
+    if (banner) banner.hidden = true
+  })
+}
+
 function renderBranchNotice(status) {
   const el = document.getElementById('updatesBranchNotice')
   if (!el) return
@@ -14445,6 +15135,7 @@ async function pollUpdatesBadge() {
     window._updatesStatus = data
     renderUpdatesBadge(data)
     updateBranchDriftUI(data)
+    updateConflictGuardUI(data)
   } catch {}
 }
 
@@ -14490,7 +15181,12 @@ async function loadUpdates() {
     renderUpdatesVersion(data)
     updateBranchDriftUI(data)
     renderBranchNotice(data)
-    if (data.error) {
+    if (data.deployment === 'docker') {
+      // HOSTINGERDOCKER1107: the image owns the version (no git checkout here): say how to update instead of a failure.
+      summary.className = 'updates-summary'
+      summary.textContent = t('updates.docker_managed')
+      applyBtn.hidden = true
+    } else if (data.error) {
       summary.className = 'updates-summary error'
       summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}`
       applyBtn.hidden = true
@@ -14563,6 +15259,8 @@ async function renderCliUpdateOffer(fresh) {
   if (!box) return
   let d
   try { d = await (await fetch('/api/updates/cli' + (fresh ? '?fresh=1' : ''))).json() } catch { box.hidden = true; return }
+  // HOSTINGERDOCKER1107: in the container the claude CLI comes with the image; nothing to install from here.
+  if (d.deployment === 'docker') { box.hidden = true; return }
   const esc = escapeHtmlUpdates
   const lines = []
   lines.push(`<strong>${esc(t('updates.cli.title'))}</strong>`)
@@ -14741,6 +15439,14 @@ async function pollUpdateOutcome(resetBtn) {
         setTimeout(() => window.location.reload(), 2000)
         return
       }
+      if (st === 'warning') {
+        // ANETTUPDATESTASH1102: the update applied, but something needs a
+        // human (stash conflict, settings.json gate). No auto-reload: it
+        // would wipe this message before anyone reads it.
+        if (resetBtn) resetBtn()
+        showToast(t('updates.toast.warning', { old: result.old || '', new: result.new || '', msg: result.message || '' }), 30000)
+        return
+      }
       if (st === 'rolled-back') {
         if (resetBtn) resetBtn()
         showToast(t('updates.toast.rolled_back', { old: result.old || '', msg: result.message || '' }))
@@ -14806,43 +15512,86 @@ function onboardingCurrentStep(s) {
 // Operator can dismiss the wizard (skip/close). A false positive must never
 // lock the dashboard, so the choice persists across reloads; normal UI still
 // covers any real setup that remains.
+// ONBOARDNOTG1108 (b): the close is remembered on the machine too (POST /api/onboarding/dismiss, the status's
+// `dismissed`). localStorage is bound to the origin, and the Bridge opens the dashboard on a new local port on every
+// connect, so a close kept only there was lost on every Bridge open. localStorage stays as the fallback for a caller the
+// server refuses (no owner session yet): that close holds on this origin, as before.
 const ONBOARDING_DISMISS_KEY = 'mvOnboardingDismissed'
+let onboardingDismissedOnServer = false
 function onboardingDismissed() {
+  if (onboardingDismissedOnServer) return true
   try { return localStorage.getItem(ONBOARDING_DISMISS_KEY) === '1' } catch { return false }
+}
+// Best effort: a refusal or a network error leaves the browser-local close in place.
+async function saveOnboardingDismissed(dismissed) {
+  try { await fetch('/api/onboarding/dismiss', { method: dismissed ? 'POST' : 'DELETE' }) } catch { /* offline */ }
 }
 function dismissOnboarding() {
   try { localStorage.setItem(ONBOARDING_DISMISS_KEY, '1') } catch { /* private mode */ }
+  onboardingDismissedOnServer = true
+  saveOnboardingDismissed(true)
   const overlay = document.getElementById('onboardingOverlay')
   if (overlay) { overlay.classList.remove('active'); overlay.hidden = true }
   document.body.style.overflow = ''
 }
+// The owner reopens the wizard (the auth banner): both records are cleared.
+function undismissOnboarding() {
+  try { localStorage.removeItem(ONBOARDING_DISMISS_KEY) } catch { /* storage blocked */ }
+  onboardingDismissedOnServer = false
+  saveOnboardingDismissed(false)
+}
 async function initOnboarding() {
   if (onboardingDismissed()) return
   const s = await fetchOnboardingStatus()
-  if (!s || !s.needsOnboarding) return
-  renderOnboarding(s)
+  if (!s) return
+  if (s.dismissed === true) { onboardingDismissedOnServer = true; return }
+  if (!s.needsOnboarding) return
+  renderOnboarding(s, await fetchOnboardingAuth())
 }
 async function refreshOnboarding() {
   const s = await fetchOnboardingStatus()
-  if (s) renderOnboarding(s)
+  if (s) renderOnboarding(s, await fetchOnboardingAuth())
+}
+// ONBOARDOWNERPW1107 (owner decision, 11-07): the wizard's FIRST step is the dashboard login, so every later step runs
+// in the owner's session (the Bridge key or the token plus the owner cookie) and never stops on a "go to Settings"
+// text. owner_session is in the status only for a caller that could hold it (the shared token, a FULL device key, a
+// session); false means this window can become the owner by creating or signing in to the login. An operator key or a
+// sub-agent token gets no such field, so no sign-in step it could never complete; an unreadable status skips the step
+// too, and the server's gate decides.
+async function fetchOnboardingAuth() {
+  try {
+    const r = await fetch('/api/auth/status', { cache: 'no-store' })
+    return r.ok ? await r.json() : null
+  } catch {
+    return null
+  }
+}
+function onboardingNeedsLogin(auth) {
+  return !!auth && auth.owner_session === false
+}
+// The bar's step for an onboarding step (onboardingCurrentStep, 1-4): the login is 1, the rest move one along.
+function onboardingDisplayStep(base, auth) {
+  return onboardingNeedsLogin(auth) ? 1 : base + 1
 }
 let onboardingChannelProvider = 'telegram'
 let onboardingAgentId = null
 // The step-3 tab is a static HTML label ("Telegram bot") that renderStaticI18n's generic data-i18n sweep would otherwise reset
 // to the Telegram wording on every language switch, so both call sites re-apply the provider-specific text here.
 function applyOnboardingProviderTab() {
-  const el = document.querySelector('#onboardingSteps .onboarding-step[data-ostep="3"] span:last-child')
+  const el = document.querySelector('#onboardingSteps .onboarding-step[data-ostep="4"] span:last-child')
   if (el) el.textContent = onboardingChannelProvider === 'slack' ? t('onboarding.step2.tab_slack') : t('onboarding.step2.tab')
 }
-function renderOnboarding(s) {
+function renderOnboarding(s, auth) {
   if (onboardingDismissed()) return
   const overlay = document.getElementById('onboardingOverlay')
   if (!overlay) return
   if (s.channelProvider) onboardingChannelProvider = s.channelProvider
   if (s.agentId) onboardingAgentId = s.agentId
   applyOnboardingProviderTab()
-  const step = onboardingCurrentStep(s)
-  if (step === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
+  const base = onboardingCurrentStep(s)
+  if (base === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
+  const loginStep = onboardingNeedsLogin(auth)
+  const step = onboardingDisplayStep(base, auth)
   overlay.hidden = false
   overlay.classList.add('active')
   document.body.style.overflow = 'hidden'
@@ -14855,20 +15604,121 @@ function renderOnboarding(s) {
   // of step 4 -- say so, or a fresh installer reads step 2's "saved" as "done"
   // and every later "bot token not found" as a failure (BK bootcamp, 07-28).
   const flowNote = document.getElementById('onbFlowNote')
-  if (flowNote) flowNote.textContent = step === 4 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
+  if (flowNote) flowNote.textContent = step === 5 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
   const body = document.getElementById('onboardingBody')
-  if (step === 1) body.innerHTML = onbIdentityHtml(s)
-  else if (step === 2) body.innerHTML = onbStep1Html(s)
-  else if (step === 3) body.innerHTML = onbStep2Html(s)
+  if (loginStep) {
+    body.innerHTML = onbLoginHtml(auth)
+    wireOnboardingLogin(auth)
+    return
+  }
+  if (base === 1) body.innerHTML = onbIdentityHtml(s)
+  else if (base === 2) body.innerHTML = onbStep1Html(s)
+  else if (base === 3) body.innerHTML = onbStep2Html(s)
   else body.innerHTML = onbStep3Html(s)
-  wireOnboarding(step)
+  wireOnboarding(base)
   // Step 3, token already on disk, managed-settings.json still missing: the status GET already knows this (no probe/write/restart triggered),
   // so show the sudo command right away instead of waiting for a Save click. Retry just re-polls status -- no token POST, no channel restart.
-  if (step === 3 && s.sudoCommand) showSudoModal(s.sudoCommand, () => refreshOnboarding())
+  if (base === 3 && s.sudoCommand) showSudoModal(s.sudoCommand, () => refreshOnboarding())
 }
 function onbMsg(text, isErr) {
   const el = document.getElementById('onbMsg')
   if (el) { el.textContent = text; el.className = 'onb-msg' + (isErr ? ' err' : ' ok') }
+}
+// ONBOARDOWNERPW1107: the login step, three forms. (a) no login yet: create it, then sign in with it at once;
+// (b) a login exists but this window holds no owner session: sign in; (c) only disabled logins: neither works over HTTP,
+// the machine-local CLI is the way. Own ids (onbLogin*): the Settings auth card has its own create form.
+function onbLoginHtml(auth) {
+  if (auth && auth.setup_required) {
+    return `<p>${escapeHtml(t('onboarding.login.create_desc'))}</p>`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.username'))}</label>`
+      + `<input id="onbLoginUser" type="text" class="onb-input" maxlength="64" autocomplete="username" autocapitalize="off" spellcheck="false">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.card.new_password'))}</label>`
+      + `<input id="onbLoginPass" type="password" class="onb-input" autocomplete="new-password">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.card.repeat_password'))}</label>`
+      + `<input id="onbLoginPass2" type="password" class="onb-input" autocomplete="new-password">`
+      + `<button class="btn-primary btn-compact" id="onbLoginCreateBtn">${escapeHtml(t('onboarding.login.create_btn'))}</button>`
+      + `<div id="onbMsg" class="onb-msg"></div>`
+  }
+  if (auth && auth.login_available) {
+    return `<p>${escapeHtml(t('onboarding.login.signin_desc'))}</p>`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.username'))}</label>`
+      + `<input id="onbLoginUser" type="text" class="onb-input" maxlength="64" autocomplete="username" autocapitalize="off" spellcheck="false">`
+      + `<label class="form-label-sm">${escapeHtml(t('auth.login.password'))}</label>`
+      + `<input id="onbLoginPass" type="password" class="onb-input" autocomplete="current-password">`
+      + `<button class="btn-primary btn-compact" id="onbLoginSignInBtn">${escapeHtml(t('auth.login.submit'))}</button>`
+      + `<div id="onbMsg" class="onb-msg"></div>`
+  }
+  return `<p>${escapeHtml(t('onboarding.login.disabled_only'))}</p><div id="onbMsg" class="onb-msg"></div>`
+}
+// The sign-in after a create, or on its own. On success the page reloads, like the login overlay: the cookie and the
+// stored token or key stay, and the wizard comes back on its next step with the whole page in the owner's session.
+async function onbSignIn(username, password) {
+  const r = await window.mvPasswordLogin(username, password)
+  if (r.ok) { window.location.reload(); return true }
+  if (r.status === 429) onbMsg(t('auth.login.err_throttled') + (r.retryAfter ? ` (${r.retryAfter}s)` : ''), true)
+  else if (r.status === 401) onbMsg(t('auth.login.err_invalid'), true)
+  else onbMsg(t('auth.login.err_network'), true)
+  return false
+}
+function wireOnboardingLogin(auth) {
+  const field = (id) => document.getElementById(id)
+  const clearPasswords = () => { for (const id of ['onbLoginPass', 'onbLoginPass2']) { const el = field(id); if (el) el.value = '' } }
+  const createBtn = field('onbLoginCreateBtn')
+  if (createBtn) createBtn.addEventListener('click', async () => {
+    const username = (field('onbLoginUser').value || '').trim()
+    const p1 = field('onbLoginPass').value || ''
+    const p2 = field('onbLoginPass2').value || ''
+    if (!username || !p1) { onbMsg(t('auth.login.err_empty'), true); return }
+    if (p1 !== p2) { onbMsg(t('auth.card.err_mismatch'), true); return }
+    createBtn.disabled = true; onbMsg(t('onboarding.saving'))
+    try {
+      const r = await fetch('/api/auth/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password: p1 }) })
+      const d = await r.json().catch(() => ({}))
+      if (r.ok) {
+        const signedIn = await onbSignIn(username, p1)
+        clearPasswords()
+        if (!signedIn) {
+          // The login exists, this window is not signed in: the step turns into the sign-in form.
+          await refreshOnboarding()
+          onbMsg(t('onboarding.login.created_signin'), true)
+        }
+        return
+      }
+      clearPasswords()
+      if (r.status === 403 || r.status === 409) {
+        // Another window created the login meanwhile (the server creates only one): sign in with it instead.
+        await refreshOnboarding()
+        onbMsg(t('onboarding.login.taken_signin'), true)
+        return
+      }
+      createBtn.disabled = false
+      onbMsg(d.error || t('auth.card.err_generic'), true)
+    } catch {
+      clearPasswords()
+      createBtn.disabled = false
+      onbMsg(t('auth.login.err_network'), true)
+    }
+  })
+  const signInBtn = field('onbLoginSignInBtn')
+  if (signInBtn) signInBtn.addEventListener('click', async () => {
+    const username = (field('onbLoginUser').value || '').trim()
+    const password = field('onbLoginPass').value || ''
+    if (!username || !password) { onbMsg(t('auth.login.err_empty'), true); return }
+    signInBtn.disabled = true
+    const ok = await onbSignIn(username, password)
+    clearPasswords()
+    if (!ok) signInBtn.disabled = false
+  })
+}
+// ONBOARDOWNERPW1107: an owner refusal inside the wizard. When this window can become the owner, the wizard goes back
+// to its login step (true). Otherwise (an operator key, a sub-agent token, an unreadable status, or a session the gate
+// still refused) the caller shows the server's own reason, and nothing jumps to Settings: ownerSessionText would open
+// the Settings page and hide the wizard, the very stop the owner ruled out.
+async function onbOwnerRefused(d) {
+  if (!d || d.code !== 'owner_session_required') return false
+  if (!onboardingNeedsLogin(await fetchOnboardingAuth())) return false
+  await refreshOnboarding()
+  return true
 }
 function onbIdentityHtml(s) {
   return `<p>${escapeHtml(t('onboarding.identity.desc'))}</p>`
@@ -14941,7 +15791,8 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentName, ownerName }) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { idBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+        if (!res.ok) { idBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
         // The name is live in the .env now -- repaint the chrome from
         // /api/marveen so the sidebar/title reflect it immediately, and
         // surface the automatic channels restart (same pattern as the
@@ -14965,7 +15816,7 @@ function wireOnboarding(step) {
       try {
         const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { authBtn.disabled = false; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
+        if (!res.ok) { authBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
         // Fresh-install path: the server restarts the (previously
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
@@ -15025,7 +15876,8 @@ function wireOnboarding(step) {
           showSudoModal(d.sudoCommand, () => botBtn.click())
           return
         }
-        if (!res.ok) { botBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+        if (!res.ok) { botBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
         // The server restarts the channels session so the new bot token goes
         // live. Do NOT advance on a timer: the restart response is a dispatch
         // receipt, and the cold start is ~minutes. Wait for the MEASURED
@@ -15095,7 +15947,8 @@ function wireOnboarding(step) {
           try {
             const res = await fetch(`/api/agents/${encodeURIComponent(onboardingAgentId || mainAgentId())}/channels/${onboardingChannelProvider}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: b.dataset.code }) })
             const d = await res.json().catch(() => ({}))
-            if (!res.ok) { b.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+            // ONBOARDOWNERPW1107: an owner refusal takes the wizard back to its login step (onbOwnerRefused); otherwise the reason.
+            if (!res.ok) { b.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.error || t('onboarding.error'), true); return }
             onbMsg(t('onboarding.step3.approved'))
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
@@ -15524,7 +16377,7 @@ async function loadBgTasks() {
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <span style="font-size:12px;color:var(--text-muted)">${esc(task.started_label)}</span>
-            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
+            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)}, ${jsArg(task.agent_id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
         <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(task.prompt)}</div>
@@ -15556,14 +16409,21 @@ async function viewBgTask(id) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
     document.getElementById('bgModalClose').addEventListener('click', () => modal.remove())
   } catch {
-    showToast('Hiba')
+    showToast(t('bgTasks.load_error'))
   }
 }
 
-async function cancelBgTask(id) {
-  if (!confirm(t('bgTasks.cancel.confirm'))) return
+async function cancelBgTask(id, agent) {
+  // The server kills the task's tmux session; the output so far is kept on the task.
+  const confirmed = await confirmDialog({
+    title: t('bgTasks.cancel.title'),
+    message: agent ? t('bgTasks.cancel.confirm', { id, agent }) : t('bgTasks.cancel.confirm_no_agent', { id }),
+    okLabel: t('bgTasks.cancel.ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
-    const res = await fetch(`/api/background-tasks/${id}`, { method: 'DELETE' })
+    const res = await fetch(`/api/background-tasks/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (res.ok) {
       showToast(t('bgTasks.toast.stopped'))
       loadBgTasks()
@@ -15571,7 +16431,7 @@ async function cancelBgTask(id) {
       showToast(t('bgTasks.toast.stop_error'))
     }
   } catch {
-    showToast('Hiba')
+    showToast(t('bgTasks.toast.stop_error'))
   }
 }
 
@@ -15780,7 +16640,11 @@ function _renderApprovalsTable() {
            <button class="btn-danger btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
          </div>`
       : (() => {
-          const resolvedBy = escapeHtml(a.resolved_by || '')
+          // APPROVALSLACK1030 B: a decision taken in Slack gets a readable label; the raw value stays beside it.
+          const rawBy = a.resolved_by || ''
+          const byLabel = rawBy.startsWith('slack_reply:') ? t('approvals.by.slack_reply')
+            : rawBy.startsWith('slack_reaction:') ? t('approvals.by.slack_reaction') : ''
+          const resolvedBy = byLabel ? `${escapeHtml(byLabel)} <span style="opacity:0.7">(${escapeHtml(rawBy)})</span>` : escapeHtml(rawBy)
           if (!a.resolved_at) return `<span style="font-size:12px;color:var(--text-muted)">${resolvedBy}</span>`
           const resolvedDate = new Date(a.resolved_at * 1000)
           const requestedDate = a.requested_at ? new Date(a.requested_at * 1000) : null
@@ -15941,6 +16805,8 @@ async function renderAuthCard() {
   const body = document.getElementById('authCardBody')
   if (!body) return
   const status = await fetchAuthStatus()
+  // ONBOARDFOLLOW1107: the card may have left the page while the status was on its way; a newer render owns it then.
+  if (!body.isConnected) return
   if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
   if (status.setup_required) { renderCreateLoginForm(body) }
   else if (status.method === 'session') { renderSessionPanel(body, status) }
@@ -16372,8 +17238,10 @@ function renderTokenModePanel(body, status) {
   body.appendChild(btn)
 }
 
-// Dismissible setup banner: shown only when the operator is authed via the token
-// and has not yet created a browser login. Dismissal persists per browser.
+// Dismissible setup banner: shown only when no browser login exists yet and this window can create one: the
+// access token, or (OWNERGATE4-1104) the full device key the first device pairing gave this window (the Bridge). The
+// status carries owner_session only for a full key, never for an operator key, so that is the full-key test here.
+// Dismissal persists per browser.
 const AUTH_BANNER_DISMISS_KEY = 'marveen.auth-banner-dismissed'
 
 async function initAuthBanner() {
@@ -16382,7 +17250,8 @@ async function initAuthBanner() {
   let dismissed = false
   try { dismissed = localStorage.getItem(AUTH_BANNER_DISMISS_KEY) === '1' } catch { /* storage blocked */ }
   const status = await fetchAuthStatus()
-  const show = !!status && status.authenticated && status.method === 'token' && status.setup_required && !dismissed
+  const canCreate = !!status && (status.method === 'token' || (status.method === 'device' && 'owner_session' in status))
+  const show = !!status && status.authenticated && canCreate && status.setup_required && !dismissed
   banner.hidden = !show
 }
 
@@ -16395,12 +17264,17 @@ function wireAuthBanner() {
     try { localStorage.setItem(AUTH_BANNER_DISMISS_KEY, '1') } catch { /* storage blocked */ }
     banner.hidden = true
   })
-  if (go) go.addEventListener('click', () => {
-    // Land on the Security tab, where the auth card lives now.
-    try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'security') } catch { /* storage blocked */ }
-    if (typeof switchPage === 'function') switchPage('settings')
-    const link = document.querySelector('.sb-link[data-page="settings"]')
-    if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
+  // Land on the Security tab, where the auth card lives now (openCreateLoginSettings, shared with the 403 setup_required path).
+  // ONBOARDOWNERPW1107 (Samu 72423): while the onboarding is unfinished, the banner takes the owner back to the wizard,
+  // which opens on its login step (a closed wizard is reopened); otherwise to the Security tab as before.
+  if (go) go.addEventListener('click', async () => {
+    const s = await fetchOnboardingStatus()
+    if (s && s.needsOnboarding) {
+      undismissOnboarding()
+      renderOnboarding(s, await fetchOnboardingAuth())
+      return
+    }
+    openCreateLoginSettings()
   })
 }
 
@@ -16408,6 +17282,7 @@ document.addEventListener('DOMContentLoaded', () => {
   wireAuthBanner()
   initAuthBanner()
   wireBranchDriftBanner()
+  wireUpdateConflictBanner()
   wireFleetFreeze()
 })
 
@@ -16477,10 +17352,16 @@ function wireFleetFreeze() {
   setInterval(pollFleetFreeze, FLEET_FREEZE_POLL_MS)
 }
 
+// ONBOARDFOLLOW1107: Settings can be loaded again while a run still waits for /api/settings (opened twice, a language
+// switch). Only the newest run may touch the panels after its await: an older one clearing #settingsTabPanels would tear
+// out the auth card the newer run moved into the Security panel (the card left the page, and the pending renderAuthCard
+// wrote into a detached body). tests/browser/settings-load-race.spec.ts.
+let settingsLoadGen = 0
 async function loadSettings() {
   const tabNav = document.getElementById('settingsTabNav')
   const tabPanels = document.getElementById('settingsTabPanels')
   if (!tabNav || !tabPanels) return
+  const gen = ++settingsLoadGen
 
   // Park the auth card back outside the panels before wiping them: a previous
   // loadSettings run moved it INTO the Security panel, and clearing
@@ -16503,7 +17384,19 @@ async function loadSettings() {
   try {
     const res = await fetch('/api/settings')
     if (!res.ok) throw new Error('fetch failed')
-    const { settings } = await res.json()
+    const { settings, overridesFile } = await res.json()
+    if (gen !== settingsLoadGen) return // a newer run owns the panels now
+
+    // ENVRELAXGATE1104 step 2: an unreadable config-overrides.json drops every saved value, a tightening one too.
+    const overridesBanner = document.getElementById('settingsOverridesBanner')
+    if (overridesBanner) overridesBanner.remove()
+    if (overridesFile && overridesFile.state === 'unreadable') {
+      const banner = document.createElement('p')
+      banner.id = 'settingsOverridesBanner'
+      banner.style.cssText = 'padding:12px 24px;color:var(--danger, var(--text));font-size:13px'
+      banner.textContent = t('settings.overrides_unreadable').replace('{cause}', String(overridesFile.cause ?? '?'))
+      tabNav.parentNode?.insertBefore(banner, tabNav)
+    }
 
     const byModule = new Map()
     for (const s of settings) {
@@ -16690,7 +17583,7 @@ async function loadSettings() {
       const btn = document.createElement('button')
       btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
       btn.dataset.tab = mod
-      btn.textContent = 'Provider-ok'
+      btn.textContent = t('providers.tab')
       btn.addEventListener('click', () => activateSettingsTab(mod))
       tabNav.appendChild(btn)
 
@@ -16710,6 +17603,7 @@ async function loadSettings() {
       }
     }
   } catch (err) {
+    if (gen !== settingsLoadGen) return // a stale run's failure must not wipe the newer run's panels either
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
 }
@@ -17182,7 +18076,12 @@ async function resumeClaudePlanLogin() {
 // POST /api/claude-plans/rotate for the main agent (agentId defaults to it
 // server-side). Restarts the main agent's session, hence the confirm.
 async function switchToClaudePlan(plan) {
-  if (!confirm(t('settings.claude_plans.confirm_switch', { label: plan.label }))) return
+  const confirmed = await confirmDialog({
+    title: t('settings.claude_plans.confirm_switch_title'),
+    message: t('settings.claude_plans.confirm_switch', { label: plan.label }),
+    okLabel: t('settings.claude_plans.confirm_switch_ok'),
+  })
+  if (!confirmed) return
   try {
     const res = await fetch('/api/claude-plans/rotate', {
       method: 'POST',
@@ -17202,10 +18101,47 @@ async function switchToClaudePlan(plan) {
   await loadClaudePlansList()
 }
 
-async function deleteClaudePlan(id) {
-  if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
-  await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
-  if (claudePlanFormEditing?.id === id) resetClaudePlanForm()
+// The agents set to a plan: the rotation's record (the main agent included) and every agent whose own claudePlan
+// field points at it (set in the agent editor, which the rotation does not record). After the delete they all
+// stop using the plan from their next start (resolveAgentConfigDir reports planUnresolved). If the agent list
+// cannot be read, the rotation's record is still named.
+async function claudePlanUsers(planId, rotationUsers = []) {
+  const users = new Set(rotationUsers)
+  try {
+    const res = await fetch('/api/agents')
+    const list = res.ok ? await res.json() : []
+    for (const a of Array.isArray(list) ? list : []) if (a && a.claudePlan === planId && a.name) users.add(a.name)
+  } catch {}
+  return [...users]
+}
+
+async function deleteClaudePlan(plan, rotationUsers = []) {
+  const id = plan.id
+  const users = await claudePlanUsers(id, rotationUsers)
+  let message = t('settings.claude_plans.confirm_delete', { label: plan.label || id })
+  // Only a token-mode plan has a token in the Vault, and the server removes only that one (deleteOwnTokenSecret);
+  // a configDir plan loses nothing there.
+  if (plan.tokenSecretId) message += ' ' + t('settings.claude_plans.confirm_delete_token')
+  if (users.length) message += '\n\n' + t('settings.claude_plans.confirm_delete_used_by', { agents: users.map(n => `"${n}"`).join(', ') })
+  const confirmed = await confirmDialog({
+    title: t('settings.claude_plans.confirm_delete_title'),
+    message,
+    okLabel: t('settings.claude_plans.confirm_delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
+  // OWNERGATE2-1104: the server may refuse (403 owner_session_required); show why instead of a silent no-op.
+  try {
+    const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    const reply = await readActionReply(res)
+    if (!reply.ok) {
+      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+    } else if (claudePlanFormEditing?.id === id) {
+      resetClaudePlanForm()
+    }
+  } catch {
+    showToast(t('common.not_done', { msg: t('common.error') }))
+  }
   await loadClaudePlansList()
 }
 
@@ -17436,7 +18372,9 @@ async function loadClaudePlansList() {
       delBtn.className = 'claude-plan-delete'
       delBtn.title = t('common.btn.delete')
       delBtn.textContent = '×'
-      delBtn.addEventListener('click', () => deleteClaudePlan(plan.id))
+      // The agents the rotation has on this plan; deleteClaudePlan adds the ones set to it in the agent editor.
+      const planUsers = Object.entries(state.activePlanByAgent || {}).filter(([, id]) => id === plan.id).map(([agent]) => agent)
+      delBtn.addEventListener('click', () => deleteClaudePlan(plan, planUsers))
       actions.appendChild(delBtn)
       row.appendChild(actions)
 
@@ -17449,14 +18387,14 @@ async function loadClaudePlansList() {
 
 
 async function renderProvidersContent(container) {
-  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">' + escapeHtml(t('common.loading')) + '</p>'
   try {
     const res = await fetch('/api/custom-providers')
     if (!res.ok) throw new Error('fetch failed')
     const { providers } = await res.json()
     buildProvidersUI(container, providers)
   } catch {
-    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">' + escapeHtml(t('providers.load_error')) + '</p>'
   }
 }
 
@@ -17465,7 +18403,7 @@ function buildProvidersUI(container, providers) {
 
   const notice = document.createElement('p')
   notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
-  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  notice.textContent = t('providers.notice')
   container.appendChild(notice)
 
   if (providers.length > 0) {
@@ -17474,10 +18412,11 @@ function buildProvidersUI(container, providers) {
     const table = document.createElement('table')
     table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
     table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
-      <th style="text-align:left;padding:6px 8px">Név</th>
-      <th style="text-align:left;padding:6px 8px">Base URL</th>
-      <th style="text-align:left;padding:6px 8px">Auth</th>
-      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.name'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.base_url'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.auth'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.vault_key'))}</th>
+      <th style="text-align:left;padding:6px 8px">${escapeHtml(t('providers.col.used_by'))}</th>
       <th style="padding:6px 8px"></th>
     </tr></thead><tbody id="customProvidersTableBody"></tbody>`
     tableWrap.appendChild(table)
@@ -17490,10 +18429,11 @@ function buildProvidersUI(container, providers) {
         <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
         <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
         <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
-        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : `<em style="color:var(--text-muted)">${escapeHtml(t('providers.none'))}</em>`}</td>
+        <td style="padding:6px 8px">${(p.usedBy || []).length ? escapeHtml(p.usedBy.join(', ')) : `<em style="color:var(--text-muted)">${escapeHtml(t('providers.none'))}</em>`}</td>
         <td style="padding:6px 8px;text-align:right;white-space:nowrap">
-          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
-          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">${escapeHtml(t('common.btn.edit'))}</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">${escapeHtml(t('common.btn.delete'))}</button>
         </td>`
       tbody.appendChild(tr)
     }
@@ -17507,25 +18447,40 @@ function buildProvidersUI(container, providers) {
     tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.providerDelete
-        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        const p = providers.find(x => x.id === id)
+        // An agent whose provider is gone no longer starts, so name the agents that use it.
+        const users = (p && p.usedBy) || []
+        let message = t('providers.confirm.delete', { name: (p && p.label) || id })
+        if (users.length) message += '\n\n' + t('providers.confirm.delete_used_by', { agents: users.map(n => `"${n}"`).join(', ') })
+        const confirmed = await confirmDialog({
+          title: t('providers.confirm.delete_title'),
+          message,
+          okLabel: t('providers.confirm.delete_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         try {
           const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
-          if (!r.ok) throw new Error()
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}))
+            showToast(err.error || t('providers.toast.delete_error'))
+            return
+          }
           renderProvidersContent(container)
           loadAvailableModels()
-        } catch { alert('Hiba a törléskor.') }
+        } catch { showToast(t('providers.toast.delete_error')) }
       })
     })
   } else {
     const empty = document.createElement('p')
     empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
-    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    empty.textContent = t('providers.empty')
     container.appendChild(empty)
   }
 
   const addBtn = document.createElement('button')
   addBtn.className = 'btn-primary btn-compact'
-  addBtn.textContent = '+ Új provider'
+  addBtn.textContent = '+ ' + t('providers.new_btn')
   addBtn.addEventListener('click', () => openAddProviderModal(container))
   container.appendChild(addBtn)
 }
@@ -17543,42 +18498,42 @@ function openAddProviderModal(container, editProvider = null) {
   overlay.innerHTML = `
     <div class="modal" style="max-width:480px">
       <div class="modal-header">
-        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <h2>${escapeHtml(t(isEdit ? 'providers.modal.edit_title' : 'providers.modal.add_title'))}</h2>
         <button class="modal-close" id="addProviderModalClose">&times;</button>
       </div>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
         <div class="form-group">
-          <label class="form-label">Megjelenő név *</label>
-          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+          <label class="form-label">${escapeHtml(t('providers.field.label'))} *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="${escapeHtml(t('providers.field.label_ph'))}" value="${v('label')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
-          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
-          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
+          <label class="form-label">${escapeHtml(t('providers.field.id'))} * <small style="color:var(--text-muted)">${escapeHtml(t('providers.field.id_chars'))}</small></label>
+          <input type="text" id="cpId" class="input" placeholder="${escapeHtml(t('providers.field.id_ph'))}" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">${escapeHtml(t('providers.field.id_help'))}</small>
         </div>
         <div class="form-group">
-          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <label class="form-label">${escapeHtml(t('providers.field.base_url'))} * <small style="color:var(--text-muted)">${escapeHtml(t('providers.field.base_url_hint'))}</small></label>
           <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Auth header *</label>
+          <label class="form-label">${escapeHtml(t('providers.field.auth'))} *</label>
           <select id="cpAuthHeader" class="input">
             <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
             <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
-            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>${escapeHtml(t('providers.field.auth_none'))}</option>
           </select>
         </div>
         <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
-          <label class="form-label">Vault kulcs neve *</label>
-          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
-          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+          <label class="form-label">${escapeHtml(t('providers.field.vault_key'))} *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="${escapeHtml(t('providers.field.vault_key_ph'))}" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">${escapeHtml(t('providers.field.vault_key_help'))}</small>
         </div>
         <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
-          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+          ${escapeHtml(t('providers.modal.note'))}
         </p>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
-          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+          <button class="btn-secondary" id="addProviderCancelBtn">${escapeHtml(t('common.btn.cancel'))}</button>
+          <button class="btn-primary" id="addProviderSaveBtn">${escapeHtml(t('common.btn.save'))}</button>
         </div>
       </div>
     </div>`
@@ -17599,10 +18554,13 @@ function openAddProviderModal(container, editProvider = null) {
     const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
     const authHeader = overlay.querySelector('#cpAuthHeader').value
     const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
-    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
-      alert('Töltsd ki az összes kötelező mezőt.')
-      return
-    }
+    // Point at the first empty required field, in the form's order, as the add-server form does.
+    const missing = !label ? ['#cpLabel', 'providers.form.label_required']
+      : !id ? ['#cpId', 'providers.form.id_required']
+      : !baseUrl ? ['#cpBaseUrl', 'providers.form.base_url_required']
+      : (authHeader !== 'none' && !vaultKey) ? ['#cpVaultKey', 'providers.form.vault_key_required']
+      : null
+    if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1])); return }
     try {
       const r = await fetch('/api/custom-providers', {
         method: 'POST',
@@ -17611,13 +18569,13 @@ function openAddProviderModal(container, editProvider = null) {
       })
       if (!r.ok) {
         const err = await r.json().catch(() => ({}))
-        alert(err.error || 'Hiba a mentéskor.')
+        showToast(err.error || t('providers.toast.save_error'))
         return
       }
       overlay.remove()
       renderProvidersContent(container)
       loadAvailableModels()
-    } catch { alert('Hiba a mentéskor.') }
+    } catch { showToast(t('providers.toast.save_error')) }
   })
 }
 
@@ -17665,6 +18623,15 @@ function buildSettingRow(def) {
   if (def.source === 'override') metaParts.push(t('settings.meta.overridden'))
   meta.textContent = metaParts.join(' · ')
   info.appendChild(meta)
+  // ENVRELAXGATE1104 step 2: a .env line for this security key is ignored (it would loosen it). The server sends a
+  // marker only, never the .env value.
+  if (def.envIgnored) {
+    const ignored = document.createElement('div')
+    ignored.className = 'settings-row-meta settings-env-ignored'
+    ignored.style.color = 'var(--warning, var(--text-muted))'
+    ignored.textContent = t('settings.meta.env_ignored')
+    info.appendChild(ignored)
+  }
 
   row.appendChild(info)
 
@@ -19496,7 +20463,7 @@ function openIdeaEdit(id) {
 
 async function saveIdea() {
   const title = document.getElementById('ideaTitleInput').value.trim()
-  if (!title) { showToast(t('common.title') + ' ' + t('common.error'), 'error'); return }
+  if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'error'); return }
   const impactRaw = document.getElementById('ideaImpactInput').value
   const effortRaw = document.getElementById('ideaEffortInput').value
   const body = {
@@ -19508,18 +20475,39 @@ async function saveIdea() {
     impact: impactRaw ? parseInt(impactRaw) : null,
     effort: effortRaw ? parseInt(effortRaw) : null,
   }
-  if (ideaEditId) {
-    await fetch(`/api/ideas/${ideaEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  } else {
-    await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, status: 'new' }) })
-  }
+  // A failed save keeps the modal open with what was typed, and says so.
+  try {
+    const res = ideaEditId
+      ? await fetch(`/api/ideas/${encodeURIComponent(ideaEditId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      : await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, status: 'new' }) })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(err.error || t('ideas.toast.save_error'), 'error')
+      return
+    }
+  } catch { showToast(t('ideas.toast.save_error'), 'error'); return }
   closeModal(document.getElementById('ideaModalOverlay'))
   loadIdeasPage()
 }
 
 async function deleteIdeaItem(id) {
-  if (!confirm(t('kanban.confirm.delete'))) return
-  await fetch(`/api/ideas/${id}`, { method: 'DELETE' })
+  const idea = ideasAll.find(i => i.id === id) || ideas.find(i => i.id === id)
+  // The server deletes the idea's attachments (and their files) and its comments with it, so say so.
+  const confirmed = await confirmDialog({
+    title: t('ideas.confirm.delete_title'),
+    message: t('ideas.confirm.delete', { title: (idea && idea.title) || id }) + '\n\n' + t('ideas.confirm.delete_children'),
+    okLabel: t('ideas.confirm.delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showToast(err.error || t('ideas.toast.delete_error'), 'error')
+      return
+    }
+  } catch { showToast(t('ideas.toast.delete_error'), 'error'); return }
   loadIdeasPage()
 }
 
@@ -19529,7 +20517,9 @@ async function openIdeaDetail(id) {
   const idea = ideas.find(i => i.id === id)
   if (!idea) return
   ideaDetailId = id
-  const statusLabel = STATUS_LABELS[idea.status] || idea.status
+  // STATUS_LABELS holds functions (the language can change): call it, as the list does.
+  const statusLabelFn = STATUS_LABELS[idea.status]
+  const statusLabel = typeof statusLabelFn === 'function' ? statusLabelFn() : (statusLabelFn || idea.status)
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
@@ -19571,7 +20561,7 @@ async function loadIdeaAttachments(id) {
           <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
         </div>
         <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
-        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))})">${t('ideas.detail.attach.delete')}</button>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))}, ${jsArg(a.filename)})">${t('ideas.detail.attach.delete')}</button>
       </div>`).join('')
   } catch {
     list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
@@ -19610,8 +20600,14 @@ document.getElementById('ideaAttachmentInput')?.addEventListener('change', async
   }
 })
 
-async function deleteIdeaAttachmentItem(encodedId) {
-  if (!confirm(t('ideas.detail.attach.confirm_delete'))) return
+async function deleteIdeaAttachmentItem(encodedId, filename) {
+  const confirmed = await confirmDialog({
+    title: t('ideas.detail.attach.confirm_delete_title'),
+    message: t('ideas.detail.attach.confirm_delete', { name: filename || '' }),
+    okLabel: t('ideas.detail.attach.confirm_delete_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/ideas/attachments/${encodedId}`, { method: 'DELETE' })
     if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -19801,7 +20797,8 @@ async function handleAgentLogin(agentName, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phase }),
     })
-    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status) }
+    // OWNERGATE3-1104: an owner-session refusal is shown in the page language (refusalReason).
+    if (!res.ok) { const reply = await readActionReply(res); throw new Error(refusalReason(res, reply.body)) }
     if (phase === 'start') {
       btn.dataset.phase = 'confirm'
       btn.textContent = t('agents.auth.btn_confirm')
@@ -19829,6 +20826,8 @@ let terminalFit = null
 // server enforces the same gate independently (fail-closed). Owner flips it via
 // the checkbox in the modal header (POST /api/terminal-input).
 let terminalInputEnabled = false
+// When the last refused-keystroke toast was shown (OWNERGATE3-1104), to show at most one every 5 s.
+let terminalKeysRefusalToastAt = 0
 
 function syncTerminalInputToggleUI() {
   const cb = document.getElementById('terminalInputToggle')
@@ -19942,9 +20941,18 @@ function openTerminalModal(agentName) {
     }
     const special = ESC_TO_SPECIAL[data]
     const body = special ? { special } : { keys: data }
+    // OWNERGATE3-1104: a refused keystroke (403 owner_session_required, or the toggle OFF on the server) was dropped
+    // silently; say why, at most once every 5 s, so typing does not stack a toast per key.
     fetch(`/api/agents/${encodeURIComponent(agentName)}/keys`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    }).then(async (r) => {
+      if (r.ok) return
+      const reply = await readActionReply(r)
+      const now = Date.now()
+      if (now - terminalKeysRefusalToastAt < 5000) return
+      terminalKeysRefusalToastAt = now
+      showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }))
     }).catch(() => {})
   })
 
@@ -19970,13 +20978,22 @@ document.getElementById('terminalClose')?.addEventListener('click', () => {
 // state, POST it, then reconcile with the server's authoritative response.
 document.getElementById('terminalInputToggle')?.addEventListener('change', (e) => {
   const desired = e.target.checked === true
+  // OWNERGATE3-1104: the server may refuse (403 owner_session_required). Show why, and re-read the real state from
+  // GET: a refused OFF leaves the switch ON on the server, so the UI must not show it as off.
   fetch('/api/terminal-input', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: desired }),
   })
-    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-    .then(d => {
-      terminalInputEnabled = d.enabled === true
+    .then(async r => {
+      const reply = await readActionReply(r)
+      if (!reply.ok) {
+        showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }))
+        const cur = await fetch('/api/terminal-input').then(g => (g.ok ? g.json() : null)).catch(() => null)
+        terminalInputEnabled = cur ? cur.enabled === true : false
+        syncTerminalInputToggleUI()
+        return
+      }
+      terminalInputEnabled = reply.body.enabled === true
       syncTerminalInputToggleUI()
       showToast(terminalInputEnabled ? 'Terminal input enabled (audit-logged)' : 'Terminal input disabled')
     })
@@ -20741,140 +21758,69 @@ async function openResearchDoc(agent, name) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
 })()
 
-// === Gromzo card: the owner's QR code (GROMZOOWNERQR1030, MOBILRELOGINDASH1025) ===
-// POST /api/gromzo/owner-qr answers with the app's URI: the registration code while
-// the owner seat is free, afterwards a new phone's login code. The URI carries a live
-// secret, so: it is drawn client-side into #gromzoQr (an SVG of modules, no text,
-// no attribute holding it), shown for at most 2 minutes (or less if the code expires
-// sooner), then wiped; closing the panel and leaving the page wipe it too. Nothing
-// is stored, nothing is copyable, the request is no-store.
+// GROMZOLINKCONFIRM1106: the Gromzo card's status line, pure so the tests can run it. A link that waits for the
+// owner's confirmation says where to confirm and until when (on 2026-11-06 the owner saw only "not linked yet"
+// and the request ran out); a refused or expired one says what to do next. A new pending request wins over an
+// older refusal.
+const GROMZO_LINK_REFUSAL_KINDS = ['expired', 'refused', 'owner_mismatch', 'not_found']
+function gromzoStatusLine(s, nowMs) {
+  if (!s || !s.available) {
+    if (s && (s.code === 'not_running' || s.code === 'no_access')) return { key: 'gromzo.status.not_running' }
+    return { key: 'gromzo.status.unknown', params: { code: String((s && s.code) || '?') } }
+  }
+  if (s.linked) return { key: 'gromzo.status.linked' }
+  if (Number.isInteger(s.linkPendingExpiresIn)) {
+    if (s.linkPendingExpiresIn <= 0) return { key: 'gromzo.status.link_expired' }
+    return { key: 'gromzo.status.link_pending', until: nowMs + s.linkPendingExpiresIn * 1000 }
+  }
+  if (typeof s.linkRefusal === 'string') {
+    if (GROMZO_LINK_REFUSAL_KINDS.includes(s.linkRefusal)) return { key: 'gromzo.status.link_' + s.linkRefusal }
+    return { key: 'gromzo.status.link_failed', params: { kind: s.linkRefusal } }
+  }
+  return { key: 'gromzo.status.not_linked' }
+}
+
+// GROMZOLINKCONFIRM1106 follow-up (Dani, #2555 review): the deadline in the UI's own language (24-hour clock in both),
+// and the re-read of a pending link, both pure so the tests run the shipped code: 15 s after a pending line, once,
+// and only while the card is still on the page.
+const GROMZO_STATUS_REFRESH_MS = 15000
+function gromzoUntilText(untilMs, lang) {
+  return new Date(untilMs).toLocaleTimeString(lang === 'en' ? 'en-GB' : 'hu-HU', { hour: '2-digit', minute: '2-digit' })
+}
+function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
+  return setT(() => { if (isConnected()) reload() }, GROMZO_STATUS_REFRESH_MS)
+}
+
+// === Gromzo card: the link status (GROMZOOWNERQR1030; GROMZOBRIDGEWIZARD1107 D5a) ===
+// The phone hookup and a new phone's code are the Marveen Bridge's ("Gromzo bekötése" wizard). The card's own owner
+// QR is gone: dash.sock never hands out the owner's codes (marveen-mxd #89), so it always ended on consent_required.
+// The card keeps the link status line; the agents are setupGromzoAgents below.
 ;(function setupGromzoCard() {
   const card = document.getElementById('gromzoCard')
   if (!card) return
   const statusEl = document.getElementById('gromzoStatus')
-  const btn = document.getElementById('gromzoAddPhoneBtn')
-  const errEl = document.getElementById('gromzoError')
-  const area = document.getElementById('gromzoQrArea')
-  const qrBox = document.getElementById('gromzoQr')
-  const hintEl = document.getElementById('gromzoQrHint')
-  const cdEl = document.getElementById('gromzoCountdown')
-  const closeBtn = document.getElementById('gromzoQrClose')
-  const SHOW_MAX_S = 120
-  let timer = null
 
-  function clearQr(expiredNote) {
-    if (timer) { clearInterval(timer); timer = null }
-    qrBox.replaceChildren()
-    hintEl.textContent = ''
-    cdEl.textContent = ''
-    area.hidden = true
-    btn.disabled = false
-    if (expiredNote) showError(t('gromzo.qr.expired'))
-  }
-
-  function showError(msg) {
-    errEl.textContent = msg
-    errEl.hidden = !msg
-  }
-
-  function errorText(code) {
-    const key = 'gromzo.err.' + code
-    const s = t(key)
-    return s === key ? t('gromzo.err.generic', { code }) : s
-  }
-
+  // While a link waits for the owner's confirmation the line is read again, so the card turns to "linked" on its
+  // own once the owner confirms (or to "expired" when the 15 minutes run out). Only while the card is on the page.
+  let statusRefresh = null
   async function loadStatus() {
+    if (statusRefresh) { clearTimeout(statusRefresh); statusRefresh = null }
     statusEl.textContent = t('gromzo.status.loading')
     try {
       const r = await fetch('/api/gromzo/status', { cache: 'no-store' })
       const s = r.ok ? await r.json() : { available: false, code: 'http_' + r.status }
-      if (s.available) {
-        statusEl.textContent = t(s.linked ? 'gromzo.status.linked' : 'gromzo.status.not_linked')
-      } else if (s.code === 'not_running' || s.code === 'no_access') {
-        statusEl.textContent = t('gromzo.status.not_running')
+      const line = gromzoStatusLine(s, Date.now())
+      if (line.until) {
+        statusEl.textContent = t(line.key, { until: gromzoUntilText(line.until, window._lang) })
+        statusRefresh = gromzoScheduleStatusRefresh(() => statusEl.isConnected, () => { statusRefresh = null; loadStatus() }, setTimeout)
       } else {
-        statusEl.textContent = t('gromzo.status.unknown', { code: String(s.code || '?') })
+        statusEl.textContent = t(line.key, line.params)
       }
     } catch (e) {
       statusEl.textContent = t('gromzo.status.unknown', { code: 'network' })
     }
   }
   window.loadGromzoCard = loadStatus
-
-  async function requestQr() {
-    clearQr(false)
-    showError('')
-    if (typeof qrcode !== 'function') { showError(t('gromzo.qr.lib_error')); return }
-    btn.disabled = true
-    statusEl.textContent = t('gromzo.qr.generating')
-    let data = null
-    try {
-      const r = await fetch('/api/gromzo/owner-qr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-        cache: 'no-store',
-      })
-      if (!r.ok) {
-        let code = 'http_' + r.status
-        let wait = null
-        try {
-          const b = await r.json()
-          code = String(b.code || b.error || code)
-          if (Number.isInteger(b.retry_after) && b.retry_after > 0) wait = b.retry_after
-        } catch { /* keep the HTTP code */ }
-        // GROMZORESETWAIT1031: during the identity reset lock, when the code can be asked again.
-        // owner_session_required: the card's own notice says it, with the login button (no second message).
-        if (code === 'owner_session_required' && typeof window.gromzoOwnerLogin === 'function') window.gromzoOwnerLogin(true)
-        else showError(code === 'identity_reset_in_progress' && wait !== null
-          ? t('gromzo.err.identity_reset_wait', { min: Math.max(1, Math.ceil(wait / 60)) })
-          : errorText(code))
-        btn.disabled = false
-        loadStatus()
-        return
-      }
-      data = await r.json()
-    } catch (e) {
-      showError(t('gromzo.err.generic', { code: 'network' }))
-      btn.disabled = false
-      loadStatus()
-      return
-    }
-    loadStatus()
-    const ttl = Math.max(1, Math.min(SHOW_MAX_S, Number(data && data.expires_in) || SHOW_MAX_S))
-    const hint = t(data && data.kind === 'login' ? 'gromzo.qr.login_hint' : 'gromzo.qr.join_hint')
-    try {
-      const qr = qrcode(0, 'M')
-      qr.addData(String(data && data.uri || ''))
-      qr.make()
-      qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })
-    } catch (e) {
-      data = null
-      showError(t('gromzo.err.generic', { code: 'qr' }))
-      btn.disabled = false
-      return
-    }
-    data = null // the URI is in no variable past this point, only in the drawing
-    hintEl.textContent = hint
-    area.hidden = false
-    const until = Date.now() + ttl * 1000
-    const tick = () => {
-      const left = Math.ceil((until - Date.now()) / 1000)
-      if (left <= 0) { clearQr(true); return }
-      cdEl.textContent = t('gromzo.qr.countdown', { sec: left })
-    }
-    tick()
-    timer = setInterval(tick, 1000)
-  }
-
-  btn.addEventListener('click', requestQr)
-  closeBtn.addEventListener('click', () => clearQr(false))
-  // The card is a collapsed <details>: folding it away wipes the code as well.
-  card.addEventListener('toggle', () => { if (!card.open) clearQr(false) })
-  window.addEventListener('pagehide', () => clearQr(false))
-  // A hidden tab wipes it too; leaving the Settings page does (switchPage).
-  document.addEventListener('visibilitychange', () => { if (document.hidden) clearQr(false) })
-  window.clearGromzoQr = () => clearQr(false)
 })()
 
 // === Gromzo card: which agents are on Gromzo (GROMZOAGENTPICK1101) ===
@@ -20886,14 +21832,23 @@ async function openResearchDoc(agent, name) {
 ;(function setupGromzoAgents() {
   const listEl = document.getElementById('gromzoAgentList')
   const errEl = document.getElementById('gromzoAgentsError')
+  // MXDAGENTSOCKID1106: mxd could not read its protection state, so it counts every agent as protected (Samu 71344 (1)).
+  const ratchetEl = document.getElementById('gromzoAgentsRatchet')
   if (!listEl || !errEl) return
   const POLL_MS = 6000
   // slug -> { kind: 'pending'|'busy'|'error'|'restarting', text?, until? } (this page's view only)
   const local = new Map()
   let rows = []
   let pollTimer = null
+  // GROMZONAMETAKEN1106: the name the agent gets on Gromzo. A row shows a name field once the controller refused its
+  // name (at the switch-on or at the approval). The codes that mean "pick another name", never "try again later".
+  const NAME_CODES = ['name_taken', 'reserved_name', 'bad_name', 'bad_display_name', 'mixed_script']
+  const nameDraft = new Map() // slug -> what the owner typed (survives the list's re-renders)
+  const nameAsk = new Set() // slugs whose last switch-on came back with a name code
 
   function agentErr(code) {
+    // The controller says name_taken for a taken AND a reserved name: one sentence that asks for another name.
+    if (code === 'name_taken') code = 'reserved_name'
     for (const key of ['gromzo.agents.err.' + code, 'gromzo.err.' + code]) {
       const s = t(key)
       if (s !== key) return s
@@ -20912,8 +21867,24 @@ async function openResearchDoc(agent, name) {
     errEl.hidden = !msg
   }
 
+  // GROMZOMAINAGENT1106: the main agent's own launch side (the server's mainLaunch), after the shared
+  // local/pending states. "running" is observed (the running session was started with the plugin), not
+  // assumed from the switch.
+  function mainStateOf(row) {
+    switch (row.mainLaunch) {
+      case 'running': return { cls: 'is-on', text: t('gromzo.agents.main.running') }
+      case 'restart_waiting': return { cls: 'is-pending', text: t(row.gromzo ? 'gromzo.agents.main.restart_waiting_on' : 'gromzo.agents.main.restart_waiting_off') }
+      case 'waiting_mxd': return { cls: 'is-pending', text: t('gromzo.agents.main.waiting_mxd') }
+      case 'held': return { cls: 'is-error', text: t('gromzo.agents.state.held') }
+      case 'marketplace_failed': return { cls: 'is-error', text: t('gromzo.agents.main.marketplace_failed') }
+      case 'env_failed': return { cls: 'is-error', text: t('gromzo.agents.main.env_failed') }
+      case 'restart_failed': return { cls: 'is-error', text: t('gromzo.agents.main.restart_failed') }
+      case 'on_unknown': return { cls: 'is-on', text: t('gromzo.agents.state.on') }
+      default: return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.main.off') }
+    }
+  }
+
   function stateOf(row) {
-    if (row.main) return { cls: 'is-on', text: t('gromzo.agents.state.main') }
     const l = local.get(row.slug)
     if (l && l.kind === 'busy') return { cls: '', text: t('gromzo.agents.state.busy') }
     if (l && l.kind === 'restarting') return { cls: 'is-on', text: t('gromzo.agents.state.restarting') }
@@ -20924,10 +21895,24 @@ async function openResearchDoc(agent, name) {
       return { cls: 'is-pending', text: t('gromzo.agents.state.pending', { min }) }
     }
     if (row.held) return { cls: 'is-error', text: t('gromzo.agents.state.held') }
+    if (row.main) return mainStateOf(row)
     return row.gromzo ? { cls: 'is-on', text: t('gromzo.agents.state.on') } : { cls: '', text: t('gromzo.agents.state.off') }
   }
 
+  // Not on a held row: mxd asks for a held agent again only under the name it lists (marveen-mxd main.rs is_held), so a
+  // new name there could not take effect (Dani 71877).
+  function nameFieldShown(row, pending) {
+    return !pending && !row.gromzo && !row.held && nameAsk.has(row.slug)
+  }
+
+  function nameFor(row) {
+    return nameDraft.has(row.slug) ? nameDraft.get(row.slug) : (row.gromzoName || row.name || row.slug)
+  }
+
   function render() {
+    // A re-render (the poll, a reload) must not take the name field from under the owner's typing.
+    const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.gromzoName : undefined
+    const sel = focused !== undefined ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null
     listEl.replaceChildren()
     for (const row of rows) {
       const li = document.createElement('li')
@@ -20950,11 +21935,45 @@ async function openResearchDoc(agent, name) {
         pic.textContent = t('gromzo.agents.avatar.' + row.avatarProblem)
         main.append(pic)
       }
+      // MXDAGENTSOCKID1106: the agent's agent.sock protection. Refused: its plugin sends no token for a protected
+      // agent; unprotected: running for 10 minutes without a token yet. Protected shows nothing.
+      if (row.protection === 'refused' || row.protection === 'unprotected') {
+        const prot = document.createElement('span')
+        prot.className = 'gromzo-agent-state ' + (row.protection === 'refused' ? 'is-error' : 'is-warn')
+        prot.textContent = t('gromzo.agents.prot.' + row.protection)
+        main.append(prot)
+      }
+      // The main agent: switching it on or off restarts the main conversation, so the row says so up front.
+      if (row.main) {
+        const note = document.createElement('span')
+        note.className = 'gromzo-agent-state gromzo-agent-note'
+        note.textContent = t('gromzo.agents.main.note')
+        main.append(note)
+      }
       li.append(main)
-      if (!row.main) {
+      {
         const l = local.get(row.slug)
         const pending = (l && l.kind === 'pending') || (row.pendingUntil && row.pendingUntil > Date.now())
         const disabled = !!pending || !!(l && (l.kind === 'busy' || l.kind === 'restarting'))
+        if (nameFieldShown(row, pending)) {
+          const field = document.createElement('label')
+          field.className = 'gromzo-agent-namefield'
+          const cap = document.createElement('span')
+          cap.textContent = t('gromzo.agents.name.label')
+          const input = document.createElement('input')
+          input.type = 'text'
+          input.className = 'input'
+          input.maxLength = 64
+          input.autocomplete = 'off'
+          input.spellcheck = false
+          input.value = nameFor(row)
+          input.disabled = disabled
+          input.dataset.gromzoName = row.slug
+          input.addEventListener('input', () => nameDraft.set(row.slug, input.value))
+          input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !input.disabled) { e.preventDefault(); switchOn(row) } })
+          field.append(cap, input)
+          main.append(field)
+        }
         const label = row.name || row.slug
         const mk = (on, primary, textKey) => {
           const b = document.createElement('button')
@@ -20968,12 +21987,26 @@ async function openResearchDoc(agent, name) {
         const actions = document.createElement('div')
         actions.className = 'gromzo-agent-actions'
         // A held agent: mxd lists it but its last start held it back; ask for a new approval, or take it off.
+        if (row.main && row.mainLaunch === 'restart_waiting' && !pending) {
+          const b = document.createElement('button')
+          b.className = 'btn-primary btn-compact'
+          b.textContent = t('gromzo.agents.main.btn_restart')
+          b.disabled = disabled
+          b.addEventListener('click', () => restartMain(row))
+          actions.append(b)
+        }
         if (row.held) actions.append(mk(true, true, 'gromzo.agents.btn.reapprove'))
-        if (row.gromzo) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
+        // A held sub-agent always gets the switch-off, flag on or not (Dani 71938): mxd lists it, the switch-off is its
+        // agent_remove, and it is the way to another name the held sentence names.
+        if (row.gromzo || (row.held && !row.main)) actions.append(mk(false, false, 'gromzo.agents.btn.off'))
         else if (!row.held) actions.append(mk(true, true, 'gromzo.agents.btn.on'))
         li.append(actions)
       }
       listEl.append(li)
+    }
+    if (focused !== undefined) {
+      const again = [...listEl.querySelectorAll('input[data-gromzo-name]')].find((x) => x.dataset.gromzoName === focused)
+      if (again && !again.disabled) { again.focus(); if (sel) try { again.setSelectionRange(sel[0], sel[1]) } catch { /* not a text field */ } }
     }
   }
 
@@ -21000,40 +22033,75 @@ async function openResearchDoc(agent, name) {
     } catch { logoutBtn.hidden = true }
   }
 
+  // The protection banner: the fail-closed ratchet, or (Samu 71546) the state not available after a failed load.
+  function showProtBanner(key) {
+    if (!ratchetEl) return
+    ratchetEl.textContent = key ? t(key) : ''
+    ratchetEl.hidden = !key
+  }
+
   async function loadAgents() {
     showError('')
+    // Dani 71532 (1): a failed reload must not leave the last answer's "every agent protected" banner standing.
+    showProtBanner(null)
     try {
       const r = await fetch('/api/gromzo/agents', { cache: 'no-store' })
       if (!r.ok) {
         const code = await codeOf(r)
         rows = []; render()
         window.gromzoOwnerLogin(code === 'owner_session_required')
-        if (code !== 'owner_session_required') showError(agentErr(code))
+        if (code !== 'owner_session_required') {
+          showError(agentErr(code))
+          showProtBanner('gromzo.agents.prot.unavailable')
+        }
         if (logoutBtn) logoutBtn.hidden = true
         return
       }
       window.gromzoOwnerLogin(false)
       void showLogoutIfDevice()
-      rows = (await r.json()).agents || []
+      const body = await r.json()
+      rows = body.agents || []
+      showProtBanner(body.ratchetUnreadable === true ? 'gromzo.agents.prot.ratchet_unreadable' : null)
       for (const row of rows) if (row.pendingUntil && row.pendingUntil > Date.now() && !local.has(row.slug)) local.set(row.slug, { kind: 'pending', until: row.pendingUntil })
       render()
       ensurePolling()
     } catch {
       rows = []; render(); showError(agentErr('network'))
+      showProtBanner('gromzo.agents.prot.unavailable')
     }
   }
 
-  async function post(slug, action) {
+  async function post(slug, action, body) {
     return fetch('/api/gromzo/agents/' + encodeURIComponent(slug) + '/' + action, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store',
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : '{}', cache: 'no-store',
     })
   }
 
+  // A name code: the row keeps (or gets) its name field, prefilled with the name just refused, and says why.
+  function nameRefused(row, code, tried) {
+    nameAsk.add(row.slug)
+    if (!nameDraft.has(row.slug) && tried) nameDraft.set(row.slug, tried)
+    // A held sub-agent has no name field (mxd asks for it again only under its listed name): its way to another name is
+    // switching it off (agent_remove), then on again. The main agent's switch-off does not remove it from mxd, so it
+    // keeps the general sentence (Dani 71903).
+    const text = row.held && !row.main && code === 'name_taken' ? t('gromzo.agents.err.name_taken_held') : agentErr(code)
+    local.set(row.slug, { kind: 'error', text })
+  }
+
   async function switchOn(row) {
+    if (row.main && !confirm(t('gromzo.agents.main.confirm_on'))) return
+    const withName = nameFieldShown(row, false)
+    const name = withName ? nameFor(row).trim() : ''
     local.set(row.slug, { kind: 'busy' }); render()
     try {
-      const r = await post(row.slug, 'enable')
-      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      const r = await post(row.slug, 'enable', withName ? { name } : null)
+      if (!r.ok) {
+        const code = await codeOf(r)
+        if (NAME_CODES.includes(code)) nameRefused(row, code, name || row.gromzoName || row.name)
+        else local.set(row.slug, { kind: 'error', text: agentErr(code) })
+        render(); return
+      }
+      nameAsk.delete(row.slug)
       const b = await r.json()
       if (b.state === 'pending') local.set(row.slug, { kind: 'pending', until: Date.now() + (Number(b.expires_in) || 600) * 1000 })
       else local.delete(row.slug)
@@ -21044,7 +22112,7 @@ async function openResearchDoc(agent, name) {
   }
 
   async function switchOff(row) {
-    if (!confirm(t('gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
+    if (!confirm(t(row.main ? 'gromzo.agents.main.confirm_off' : 'gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'disable')
@@ -21052,6 +22120,23 @@ async function openResearchDoc(agent, name) {
       local.set(row.slug, { kind: 'restarting' })
       await loadAgents()
       setTimeout(() => { if (local.get(row.slug)?.kind === 'restarting') { local.delete(row.slug); loadAgents() } }, 15000)
+    } catch {
+      local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
+    }
+  }
+
+  // GROMZOMAINAGENT1106: the main conversation's restart, when the pane was busy at the switch. The server
+  // asks the pane gate again; a busy pane keeps the row on "waiting", never forced.
+  async function restartMain(row) {
+    if (!confirm(t('gromzo.agents.main.confirm_restart'))) return
+    local.set(row.slug, { kind: 'busy' }); render()
+    try {
+      const r = await post(row.slug, 'restart')
+      if (!r.ok) { local.set(row.slug, { kind: 'error', text: agentErr(await codeOf(r)) }); render(); return }
+      const b = await r.json()
+      local.delete(row.slug)
+      if (b.state === 'restart_waiting') local.set(row.slug, { kind: 'error', text: t('gromzo.agents.main.still_busy') })
+      await loadAgents()
     } catch {
       local.set(row.slug, { kind: 'error', text: agentErr('network') }); render()
     }
@@ -21071,6 +22156,8 @@ async function openResearchDoc(agent, name) {
           if (code === 'no_pending') local.delete(slug)
           // The approval belonged to another agent and mxd added THAT one (its switch here stays off).
           else if (code === 'consent_mismatch' && added) local.set(slug, { kind: 'error', text: t('gromzo.agents.err.consent_mismatch_added', { slug: added }) })
+          // The controller checks the name again when the approval is used (a member may have taken it meanwhile).
+          else if (NAME_CODES.includes(code)) { const row = rows.find((x) => x.slug === slug); if (row) nameRefused(row, code, nameFor(row)); else local.set(slug, { kind: 'error', text: agentErr(code) }) }
           else if (!['not_running', 'timeout', 'rate_limited', 'too_soon', 'unavailable', 'io'].includes(code)) local.set(slug, { kind: 'error', text: agentErr(code) })
           continue
         }

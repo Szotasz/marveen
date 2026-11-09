@@ -26,6 +26,8 @@ import { tmpdir } from 'node:os'
 
 const ROOT = join(__dirname, '..', '..')
 const UPDATE = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
+// DOCKERSEEDREFRESH1108: the refresh rules moved to scripts/lib/seed-refresh.sh (update.sh sources it).
+const SHELL_SRC = UPDATE + '\n' + readFileSync(join(ROOT, 'scripts', 'lib', 'seed-refresh.sh'), 'utf-8')
 
 function sliceShellFn(src: string, name: string): string | null {
   const start = src.indexOf(`${name}() {`)
@@ -35,19 +37,16 @@ function sliceShellFn(src: string, name: string): string | null {
   return src.slice(start, end + 2)
 }
 
-// Required functions + the helpers this round added (optional, so the same
-// harness also runs against the pre-fix update.sh for the red-before check).
-const REQUIRED = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file',
-  'refresh_untouched_seeds', 'run_seed_refresh', 'register_seeded_schedules']
-const OPTIONAL = ['sched_pre_verify_once', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
-const UPDATE_FUNCS = [
-  ...REQUIRED.map((n) => {
-    const f = sliceShellFn(UPDATE, n)
-    if (!f) throw new Error(`function ${n}() not found in update.sh`)
-    return f
-  }),
-  ...OPTIONAL.map((n) => sliceShellFn(UPDATE, n)).filter((f): f is string => f !== null),
-].join('\n')
+// Every function the refresh runs is required (DOCKERSEEDREFRESH1108, EGM N1: the former optional list let a loader
+// that missed a moved function stay green with no coverage).
+const REQUIRED = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'refresh_one_seed_file',
+  'refresh_untouched_seeds', 'run_seed_refresh', 'seed_refresh_groups', 'seed_tracked_files', 'register_seeded_schedules',
+  'sched_pre_verify_once', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
+const UPDATE_FUNCS = REQUIRED.map((n) => {
+  const f = sliceShellFn(SHELL_SRC, n)
+  if (!f) throw new Error(`function ${n}() not found in update.sh or scripts/lib/seed-refresh.sh`)
+  return f
+}).join('\n')
 
 const FAKE_CLI = String.raw`
 const fs = require('fs'), path = require('path'), crypto = require('crypto')

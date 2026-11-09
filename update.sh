@@ -12,6 +12,14 @@ NC='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
+
+# HOSTINGERDOCKER1107: in the container the image owns the code (docker/code-sync.py) and the claude CLI version; a
+# git pull here would be overwritten by the next start, or fail on a tree with no .git. Update with a new image.
+if [ -f "$INSTALL_DIR/.env" ] && grep -qx 'MARVEEN_DEPLOYMENT=docker' "$INSTALL_DIR/.env"; then
+  echo "This Marveen runs in a container, and its image owns the version: update it with a new image"
+  echo "(docker compose pull && docker compose up -d). update.sh does nothing here."
+  exit 3
+fi
 # ── Language (saved by installer, falls back to HU) ──────────────────────────
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 export MARVEEN_LANG
@@ -262,6 +270,14 @@ else
 fi
 echo ""
 
+# DOCKERSEEDREFRESH1108: the seed-refresh rules live in scripts/lib/seed-refresh.sh (shared with the Docker image). Loaded
+# here, BEFORE the pull, so the run that pulls keeps executing the old update.sh with the old rules; the next run gets
+# the new pair. Without it (a torn checkout) only the seed refresh is skipped (run_seed_refresh says so).
+if [ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ]; then
+  # shellcheck source=scripts/lib/seed-refresh.sh
+  . "$INSTALL_DIR/scripts/lib/seed-refresh.sh" || true
+fi
+
 # Guard 1: derive the release branch from the current checkout and refuse
 # only a detached HEAD. The pull below targets origin/<CURRENT_BRANCH>, so
 # an install tracking any release branch (main, develop, ...) self-updates
@@ -366,11 +382,22 @@ fi
 #
 # AUTO_STASH=1 (set by the dashboard's "Frissítés stash-elve" button)
 # turns the block into a managed stash + pop pattern: stash before
-# pulling, restore after a successful update. If the pop fails because
-# the upstream change conflicts with the stash, we drop the stash and
-# emit a warning so the operator does not lose work silently -- the
-# stash entry is also kept in `git stash list` for manual recovery.
+# pulling, restore after a successful update. If the pop conflicts with
+# the upstream change, pop_auto_stash() below puts the conflicted paths back
+# to the upstream version, KEEPS the stash entry in `git stash list` (git
+# never drops a stash whose pop failed), and makes the outcome a loud
+# non-success. The old wording here ("we drop the stash and emit a warning")
+# was wrong twice: nothing was dropped, and the conflict markers were left in
+# the working tree (ANETTUPDATESTASH1102).
 STASHED_AUTO=0
+# INSTALLDIRTYTREE1103: first undo the drift the INSTALL itself left in tracked
+# files (the reformatted .claude/settings.json, the Bridge's headless installer,
+# the npm lock line). Only provably generated changes are restored; anything a
+# human changed stays and meets the guard below as before. Best effort: a
+# missing python3 or a failing helper never blocks the update.
+if [ -f "$INSTALL_DIR/scripts/install-drift-repair.py" ] && command -v python3 >/dev/null 2>&1; then
+  python3 "$INSTALL_DIR/scripts/install-drift-repair.py" --install-dir "$INSTALL_DIR" 2>&1 | sed 's/^/  /' || true
+fi
 # HEARTBEAT.md is rewritten by the agent every heartbeat tick (self-modifying).
 # Exclude it from the dirty check; the preflight ignores it too. It will be
 # auto-overwritten on the next heartbeat anyway, so no data loss.
@@ -399,6 +426,101 @@ if [ -n "$DIRTY" ]; then
   fi
 fi
 
+# ANETTUPDATESTASH1102 (field report, 2026-11-02): a dashboard "stash + update"
+# run whose pop conflicted left <<<<<<< markers in the TRACKED
+# .claude/settings.json and install-macos.sh, printed one FIGYELEM line, and
+# restarted the services anyway. Claude Code does not load an invalid
+# settings.json, so every project-scope hook in it (email approval, outgoing
+# copy gate) silently stopped running, while the update reported success.
+#
+# pop_auto_stash() is the single pop for both restore points. On a failed pop:
+#   - every conflicted path goes back to the upstream (HEAD) version, so no
+#     tracked file is left with conflict markers in it;
+#   - the index is reset (a conflicted pop leaves the cleanly merged part
+#     staged); the working tree keeps those cleanly restored local changes;
+#   - the stash entry stays in `git stash list` -- it is the operator's only
+#     copy of the conflicted local edits -- and is named in the outcome;
+#   - UPDATE_WARN is set, which turns the final verdict into "warning".
+# A pop that git refused because an untracked file of the stash is in the way
+# ("already exists, no checkout") is NOT all-or-nothing (Dani, measured on git
+# 2.50.1): the TRACKED edits come back, the untracked ones do not, and the
+# stash is kept. So the outcome never says "nothing came back"; it lists, per
+# path, what is in the working tree now and what is only in the stash
+# (stash_restore_report).
+STASH_POP_FAILED=0
+STASH_CONFLICT_PATHS=""
+UPDATE_WARN=""
+add_update_warn() { UPDATE_WARN="${UPDATE_WARN:+$UPDATE_WARN }$1"; }
+# Per path of the kept stash (stash@{0}, the one whose pop just failed): is the
+# stashed version in the working tree now, or only in the stash? Tracked paths
+# compare against stash@{0}, untracked ones against its third parent. A path
+# the stash deleted is skipped (nothing to put back).
+STASH_RESTORED=""
+STASH_NOT_RESTORED=""
+stash_restore_report() {
+  local p src
+  STASH_RESTORED=""; STASH_NOT_RESTORED=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    git cat-file -e "stash@{0}:$p" 2>/dev/null || continue
+    if [ -f "$p" ] && git show "stash@{0}:$p" 2>/dev/null | cmp -s - "$p"; then
+      STASH_RESTORED="${STASH_RESTORED:+$STASH_RESTORED, }$p"
+    else
+      STASH_NOT_RESTORED="${STASH_NOT_RESTORED:+$STASH_NOT_RESTORED, }$p"
+    fi
+  done < <(git stash show --name-only 'stash@{0}' 2>/dev/null)
+  if git rev-parse -q --verify 'stash@{0}^3' >/dev/null 2>&1; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      src="stash@{0}^3:$p"
+      if [ -f "$p" ] && git show "$src" 2>/dev/null | cmp -s - "$p"; then
+        STASH_RESTORED="${STASH_RESTORED:+$STASH_RESTORED, }$p"
+      else
+        STASH_NOT_RESTORED="${STASH_NOT_RESTORED:+$STASH_NOT_RESTORED, }$p"
+      fi
+    done < <(git ls-tree -r --name-only 'stash@{0}^3' 2>/dev/null)
+  fi
+  return 0
+}
+pop_auto_stash() {
+  if git stash pop; then
+    STASHED_AUTO=0
+    return 0
+  fi
+  # Handled here: the entry stays in `git stash list`; never pop it twice.
+  STASHED_AUTO=0
+  STASH_POP_FAILED=1
+  local conflicted p
+  conflicted="$(git diff --name-only --diff-filter=U 2>/dev/null)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if git cat-file -e "HEAD:$p" 2>/dev/null; then
+      git checkout HEAD -- "$p" >/dev/null 2>&1 || true
+    else
+      # Upstream deleted it; the operator's copy is still in the stash.
+      git rm -q -f -- "$p" >/dev/null 2>&1 || true
+    fi
+  done <<< "$conflicted"
+  git reset -q >/dev/null 2>&1 || true
+  STASH_CONFLICT_PATHS="$(printf '%s\n' "$conflicted" | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+  stash_restore_report
+  if [ -n "$STASH_CONFLICT_PATHS" ]; then
+    add_update_warn "A helyi valtozasok visszatetele utkozott, ezek a fajlok a frissitett (upstream) valtozatukon maradtak: ${STASH_CONFLICT_PATHS}."
+  else
+    add_update_warn "A git nem tudta az osszes helyi valtozast visszatenni (pl. egy fajl mar ott volt)."
+  fi
+  add_update_warn "Visszakerult: ${STASH_RESTORED:-semmi}. NEM kerult vissza, csak a stash-ben van: ${STASH_NOT_RESTORED:-semmi}. A stash megmaradt (git stash list, \"marveen-update-auto-stash\"); megnezni: git diff HEAD 'stash@{0}' -- <fajl>."
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo -e "${RED}WARNING:${NC} Auto-stash pop failed; the stash remains in 'git stash list'."
+    [ -n "$STASH_CONFLICT_PATHS" ] && echo -e "          Conflicted paths were put back to the upstream version: ${STASH_CONFLICT_PATHS}"
+  else
+    echo -e "${RED}FIGYELEM:${NC} Az auto-stash visszatetele nem sikerult; a stash benne marad a 'git stash list'-ben."
+    [ -n "$STASH_CONFLICT_PATHS" ] && echo -e "          Az utkozo fajlok a frissitett valtozatukra alltak vissza: ${STASH_CONFLICT_PATHS}"
+  fi
+  echo "          Manualisan kezeld: git stash list / git diff HEAD 'stash@{0}' -- <fajl> / git stash drop (csak ellenorzes utan)"
+  return 1
+}
+
 # Restore an auto-stash before an EARLY exit (AHEAD-check / pull-failure /
 # build-failure below) -- any exit between the stash push above and the
 # normal restore point further down would otherwise strand the operator's
@@ -408,17 +530,47 @@ fi
 restore_stash_before_exit() {
   if [ "$STASHED_AUTO" = "1" ]; then
     echo -e "  Auto-stash visszaallitasa (korai kilepes elott)..."
-    if git stash pop; then
-      STASHED_AUTO=0
-    else
-      if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-        echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
-      else
-        echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
-      fi
-      echo "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
+    if ! pop_auto_stash; then
+      RESULT_MSG="${RESULT_MSG:+$RESULT_MSG }${UPDATE_WARN}"
+      # A clean exit (e.g. "already up to date") must not stay "success".
+      [ "$RESULT_STATUS" = "success" ] && RESULT_STATUS="warning"
     fi
   fi
+}
+
+# ANETTUPDATESTASH1102 (b): the tracked .claude/settings.json carries the
+# project-scope hooks. If it is not valid JSON when the services restart,
+# Claude Code ignores it and the hooks stop with no error anywhere. Gate:
+# an invalid copy is saved under store/ and the upstream (HEAD) version is put
+# back, so the agents restart on a valid file; the outcome becomes "warning".
+# agents/*/.claude/settings.json are generated, not tracked: an invalid one is
+# reported, not rewritten.
+settings_json_valid() {
+  node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$1" >/dev/null 2>&1
+}
+settings_json_gate() {
+  local f=".claude/settings.json" save a bad=""
+  if [ -f "$f" ] && ! settings_json_valid "$f"; then
+    save="store/settings.json.invalid-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p store 2>/dev/null || true
+    cp "$f" "$save" 2>/dev/null || save=""
+    if git cat-file -e "HEAD:$f" 2>/dev/null && git checkout HEAD -- "$f" >/dev/null 2>&1 && settings_json_valid "$f"; then
+      add_update_warn "A .claude/settings.json ervenytelen JSON volt, a frissitett (ervenyes) valtozatra allt vissza${save:+, a hibas peldany: $save}."
+      echo -e "${RED}FIGYELEM:${NC} .claude/settings.json ervenytelen volt; visszaallitva a HEAD valtozatra${save:+ (hibas peldany: $save)}."
+    else
+      add_update_warn "A .claude/settings.json ervenytelen JSON, es nem sikerult visszaallitani: a projekt-hookok NEM futnak. Kezi javitas kell."
+      echo -e "${RED}HIBA:${NC} .claude/settings.json ervenytelen, es nem allithato vissza; a projekt-hookok nem futnak."
+    fi
+  fi
+  for a in agents/*/.claude/settings.json; do
+    [ -f "$a" ] || continue
+    settings_json_valid "$a" || bad="${bad:+$bad, }$a"
+  done
+  if [ -n "$bad" ]; then
+    add_update_warn "Ervenytelen JSON, az ugynok hookjai nem futnak: ${bad}."
+    echo -e "${RED}FIGYELEM:${NC} ervenytelen ugynok-settings.json: ${bad}"
+  fi
+  return 0
 }
 
 # UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
@@ -1069,6 +1221,16 @@ scrub_rc_secrets() {
   return 0
 }
 
+# GROMZONOPROVIDER1108: the ONE automatic provider migration: a Bridge (Gromzo) install that was written
+# as telegram with no bot token, and whose mxd is linked, becomes CHANNEL_PROVIDER=gromzo (PREV kept, reversible); any
+# other shape is untouched. The script says what it did in one line; it never fails the update.
+migrate_gromzo_provider() {
+  [ -f "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  node "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" "$INSTALL_DIR" 2>/dev/null || true
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
@@ -1079,6 +1241,7 @@ run_unit_maintenance() {
   strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
   scrub_rc_secrets
+  migrate_gromzo_provider
   return 0
 }
 run_unit_maintenance
@@ -1115,60 +1278,6 @@ run_unit_maintenance
 SEED_REFRESH_UPDATED=0
 SEED_REFRESH_KEPT=0
 
-# Render a template stream the same way the seeder does. Keep in sync with the
-# sed blocks in the seeding loops below and in install-linux.sh.
-render_seed_template() {
-  # {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
-  # (substituteTemplatePlaceholders) -- without it here, any shipped task using
-  # that form (ledger-live-drain does) hash-mismatches every rendered historical
-  # version and is permanently classified "touched", so it never refreshes.
-  sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
-      -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
-      -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
-      -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
-      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
-      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
-}
-
-# A top-level task-config.json on stdin, as the dashboard seeder writes it
-# (agent-scaffold.ts copyTaskConfigWithAgentRewrite): parsed, a string "agent"
-# set to MAIN_AGENT_ID, re-serialised as 2-space JSON plus a newline, and NO
-# placeholder substitution. Unparseable input comes out as is (the seeder's
-# byte-copy fallback). #2285: comparing against the placeholder render instead
-# kept the shipped literal "agent": "marveen", so on any other MAIN_AGENT_ID the
-# untouched copy never matched and a config fix never arrived.
-render_seeded_task_config() {
-  MAIN_AGENT_ID="${MAIN_AGENT_ID:-}" node -e '
-    let raw = ""
-    process.stdin.setEncoding("utf8")
-    process.stdin.on("data", (d) => { raw += d })
-    process.stdin.on("end", () => {
-      let cfg
-      try { cfg = JSON.parse(raw) } catch { process.stdout.write(raw); return }
-      if (cfg && typeof cfg === "object" && typeof cfg.agent === "string") cfg.agent = process.env.MAIN_AGENT_ID
-      process.stdout.write(JSON.stringify(cfg, null, 2) + "\n")
-    })'
-}
-
-# The bytes a seeder writes for the shipped file on stdin. $1 = mode, $2 = its
-# path (repo-relative or the source file; only the file name is read).
-#   verbatim  as is (seed-skills)
-#   template  the identity placeholders (the shell seeders: seed-scheduled-tasks)
-#   seeded    what ensureDefaultScheduledTasks writes for the top-level
-#             scheduled-tasks: task-config.json via render_seeded_task_config,
-#             any other file with the placeholders
-render_seed_stream() {
-  case "$1" in
-    template) render_seed_template ;;
-    seeded)
-      case "$2" in
-        */task-config.json|task-config.json) render_seeded_task_config ;;
-        *) render_seed_template ;;
-      esac ;;
-    *) cat ;;
-  esac
-}
-
 # True (0) iff $1 (an installed file) is byte-identical to ANY historical version
 # of $2 (a repo-relative path), rendered by mode $3 (render_seed_stream).
 seed_copy_is_untouched() {
@@ -1185,129 +1294,17 @@ seed_copy_is_untouched() {
   return 1
 }
 
-# Render one shipped file the way the seeder would write it ($1 = source, $2 = mode).
-render_seed_file() {
-  render_seed_stream "$2" "$1" <"$1"
-}
-
-# Scheduled-task registry: take the registry verdict of the task dir being
-# refreshed, ONCE per dir, right before its first file is rewritten or added
-# (sched_pre_ok: "" = not asked yet, 1 = trusted, 0 = not trusted, u = unknown /
-# no CLI). A no-op outside a scheduled-task dir. Reads/sets the per-dir state
-# refresh_untouched_seeds keeps (sched_task, sched_pre_ok, name).
-sched_pre_verify_once() {
-  if [ "${sched_task:-0}" = "1" ] && [ -z "${sched_pre_ok:-}" ]; then
-    sched_pre_rc=0
-    sched_task_verified_ok "$name" || sched_pre_rc=$?
-    case "$sched_pre_rc" in 0) sched_pre_ok=1 ;; 1) sched_pre_ok=0 ;; *) sched_pre_ok=u ;; esac
-  fi
-}
-
-# Refresh ONE installed copy of a shipped file if it is provably untouched.
-# $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
-refresh_one_seed_file() {
-  f="$1"; installed="$2"; rel="$3"; mode="$4"
-  # Already identical to what we would write -> not an update. Without this
-  # the run is not idempotent: it would rewrite the same bytes and report a
-  # refresh on every single update, which is exactly the kind of constant
-  # signal that stops being read.
-  want="$(render_seed_file "$f" "$mode" | shasum -a 256 | awk '{print $1}')"
-  have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
-  [ "$want" = "$have" ] && return 0
-  if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
-    sched_pre_verify_once
-    if [ "$mode" = "verbatim" ]; then
-      cp "$f" "$installed"
-    else
-      render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-    fi
-    SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
-    sched_dir_refreshed=1
-  else
-    SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
-  fi
-  return 0
-}
-
-# Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
-# root, $3 = verbatim|template, $4 = which subdirs ship: "references" (a task's
-# references/ only, the default) or "all" (every subdir: a skill's scripts/,
-# references/, ...; SEEDSKILLSUB1018).
-refresh_untouched_seeds() {
-  src_rel="$1"; target_root="$2"; mode="${3:-verbatim}"; subdirs="${4:-references}"
-  [ -d "$INSTALL_DIR/$src_rel" ] || return 0
-  [ -d "$target_root" ] || return 0
-  for d in "$INSTALL_DIR/$src_rel"/*/; do
-    [ -d "$d" ] || continue
-    name="$(basename "$d")"
-    [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
-    # Scheduled-task registry: the registry hash covers the WHOLE task dir,
-    # references/ included, so every write below (a top-level file, a
-    # references/ file refreshed, a missing references/ file added) sits inside
-    # the same bracket: verify once before the first write
-    # (sched_pre_verify_once), re-register once after the last one.
-    sched_task=0
-    case "$target_root" in */scheduled-tasks) sched_task=1 ;; esac
-    sched_pre_ok=""
-    sched_dir_refreshed=0
-    for f in "$d"*; do
-      [ -f "$f" ] || continue
-      base="$(basename "$f")"
-      installed="$target_root/$name/$base"
-      [ -f "$installed" ] || continue           # never add files to an existing dir
-      refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$base" "$mode"
-    done
-    # SEEDREFDIR1018: the references/ subdir a SKILL.md points at. An existing
-    # copy follows the same untouched-only rule. A MISSING one is the single
-    # exception to "never add files": it is added only when the installed
-    # SKILL.md is now byte-identical to the shipped one -- that copy runs our
-    # text, and our text points at the file. A locally edited SKILL.md is the
-    # operator's, so its directory gets nothing added.
-    skill_current=0
-    if [ -f "${d}SKILL.md" ] && [ -f "$target_root/$name/SKILL.md" ]; then
-      want="$(render_seed_file "${d}SKILL.md" "$mode" | shasum -a 256 | awk '{print $1}')"
-      have="$(shasum -a 256 <"$target_root/$name/SKILL.md" | awk '{print $1}')"
-      [ "$want" = "$have" ] && skill_current=1
-    fi
-    # Subdir files: the TRACKED ones only, the same set the seed loops copy
-    # (an untracked or ignored file can be a secret; SEEDSKILLSUB1018). Read
-    # into a variable first: the loop body must update the counters in THIS
-    # shell, not in a pipeline subshell.
-    tracked="$(git -C "$d" ls-files 2>/dev/null)"
-    while IFS= read -r rel; do
-      case "$rel" in */*) ;; *) continue ;; esac
-      [ "$subdirs" = "all" ] || case "$rel" in references/*) ;; *) continue ;; esac
-      f="$d$rel"
-      [ -f "$f" ] || continue
-      installed="$target_root/$name/$rel"
-      if [ -f "$installed" ]; then
-        refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$rel" "$mode"
-      elif [ "$skill_current" = "1" ]; then
-        sched_pre_verify_once
-        mkdir -p "$(dirname "$installed")"
-        if [ "$mode" = "verbatim" ]; then
-          cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
-        else
-          render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-        fi
-        SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
-        sched_dir_refreshed=1
-      fi
-    done <<EOF_TRACKED
-$tracked
-EOF_TRACKED
-    # Scheduled-task registry: a refreshed scheduled task changed on disk, so its registry
-    # hash must be renewed or the runner refuses it -- but ONLY when the task is
-    # provably trusted, and right now (not at the end of the whole run), so the
-    # runner's ticks in between do not flag it as "NOT firing".
-    if [ "$sched_task" = "1" ] && [ "$sched_dir_refreshed" = "1" ]; then
-      register_refreshed_schedule "$name" "$sched_pre_ok" "$target_root/$name" "$d" "$mode"
-    fi
-  done
-  return 0
+# The shipped files under a seed dir $1, relative to it: what git tracks (an untracked or ignored file can be a secret;
+# SEEDSKILLSUB1018). A seam of scripts/lib/seed-refresh.sh; the Docker image defines its own.
+seed_tracked_files() {
+  git -C "$1" ls-files 2>/dev/null
 }
 
 run_seed_refresh() {
+  if ! command -v refresh_untouched_seeds >/dev/null 2>&1; then
+    echo "  seed refresh skipped: $INSTALL_DIR/scripts/lib/seed-refresh.sh is missing"
+    return 0
+  fi
   # Self-initialising counters: the function must not depend on a caller having
   # set them, or it dies under `set -u` the moment it is called from anywhere
   # else (a test harness found exactly that).
@@ -1321,18 +1318,7 @@ run_seed_refresh() {
     OWNER_NAME="${OWNER_NAME:-$(sed -n 's/^OWNER_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
     WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
   fi
-  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim" "all"
-  if [ -n "${MAIN_AGENT_ID:-}" ]; then
-    refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
-    # SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir (dream-engine,
-    # memoria-heartbeat, reggeli-napindito, ledger-live-drain) was seeded by
-    # ensureDefaultScheduledTasks but never refreshed -- a one-shot seed, so
-    # every shipped fix reached new installs only. Measured on the reference
-    # host: 5/5 live seeded copies had drifted. Same untouched-only rule.
-    # "seeded", not "template": that seeder rewrites the config's agent field and
-    # substitutes nothing in it (#2285, render_seeded_task_config).
-    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "seeded"
-  fi
+  seed_refresh_groups
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
   fi
@@ -1384,67 +1370,14 @@ register_seeded_schedules() {
 # operator review.
 SCHED_REVIEW_NAMES=""
 
-# True (0) iff every entry of the installed task dir $1 is shipped content:
-#   - a regular top-level file (no symlink) byte-identical to the current
-#     shipped version of the same file in the seed source dir $2 (rendered when
-#     $3 = "template"), or
-#   - the references/ subdir (SEEDREFDIR1018) or a file under it: the subdir
-#     a real directory (no symlink) that the seed has too, and each file in it
-#     byte-identical to a file git TRACKS at the same path in the seed (the same
-#     set the seed loops copy).
-# Any other entry fails: an extra file with no shipped counterpart (e.g. a
-# planted preCheck script), a symlink, any other subdir.
-sched_task_all_shipped() {
-  _sa_dir="${1%/}"; _sa_src="${2%/}"; _sa_mode="${3:-verbatim}"
-  [ -d "$_sa_dir" ] || return 1
-  _sa_list="$(find "$_sa_dir" -mindepth 1 2>/dev/null)" || return 1
-  [ -n "$_sa_list" ] || return 1
-  _sa_tracked="$(git -C "$_sa_src" ls-files 2>/dev/null)"
-  while IFS= read -r _sa_entry; do
-    [ -n "$_sa_entry" ] || continue
-    _sa_rel="${_sa_entry#"$_sa_dir"/}"
-    [ ! -L "$_sa_entry" ] || return 1
-    _sa_seed="$_sa_src/$_sa_rel"
-    case "$_sa_rel" in
-      references)
-        [ -d "$_sa_entry" ] && [ ! -L "$_sa_seed" ] && [ -d "$_sa_seed" ] || return 1
-        continue ;;
-      references/*)
-        [ -f "$_sa_entry" ] || return 1
-        printf '%s\n' "$_sa_tracked" | grep -qxF -- "$_sa_rel" || return 1 ;;
-      */*) return 1 ;;
-      *) [ -f "$_sa_entry" ] || return 1 ;;
-    esac
-    [ ! -L "$_sa_seed" ] && [ -f "$_sa_seed" ] || return 1
-    _sa_want="$(render_seed_file "$_sa_seed" "$_sa_mode" | shasum -a 256 | awk '{print $1}')"
-    _sa_have="$(shasum -a 256 <"$_sa_entry" 2>/dev/null | awk '{print $1}')"
-    [ -n "$_sa_have" ] && [ "$_sa_want" = "$_sa_have" ] || return 1
-  done <<EOF_SA
-$_sa_list
-EOF_SA
-  return 0
-}
-
-# $1 task name, $2 pre-refresh verdict (1 = trusted, 0 = not trusted,
-# u = unknown), $3 installed dir, $4 seed source dir, $5 verbatim|template.
-register_refreshed_schedule() {
-  _rr_name="$1"; _rr_pre="$2"; _rr_dir="$3"; _rr_src="$4"; _rr_mode="${5:-verbatim}"
-  if [ "$_rr_pre" = "1" ] || sched_task_all_shipped "$_rr_dir" "$_rr_src" "$_rr_mode"; then
-    SCHED_REGISTER_NAMES="$_rr_name"
-    register_seeded_schedules
-    return 0
-  fi
-  SCHED_REVIEW_NAMES="${SCHED_REVIEW_NAMES:-} $_rr_name"
-  if [ "$_rr_pre" = "0" ]; then
-    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a frissites elott sem volt megbizhato, es a konyvtaraban nem csak szallitott tartalom van. A runner addig kihagyja. Atnezes utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
-  else
-    # No usable CLI: on the first update to a guard build (old dist) the
-    # dashboard's one-time backfill will register AND fire this task as it is
-    # on disk, so "the runner skips it" would be false here.
-    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a registry-ellenorzes nem futott (nincs vagy nem mukodik: $INSTALL_DIR/dist/web/schedule-registry-cli.js verify), a frissites elotti allapota ISMERETLEN, es a konyvtaraban nem csak szallitott tartalom van. Ha ez az elso frissites a registry-t tartalmazo buildre, a dashboard egyszeri backfillje az elso indulaskor regisztralja es a runner futtatni fogja: nezd at MOST ($_rr_dir). Kulonben build utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
-  fi
-  return 0
-}
+# PERSONAESC1107 seed A: the seeds' language, read only (scripts/lib/seed-lang.sh -> persona-template.sh agent_text_lang;
+# update.sh never decides it). Every seeding and refresh below reads i18n/en/<rel> for <rel> on en when it exists.
+# Without the helper (a tree from before seed A): Hungarian, as before.
+SEED_LANG=hu
+if [ -f "$INSTALL_DIR/scripts/lib/seed-lang.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/seed-lang.sh"
+  SEED_LANG="$(seed_lang "$INSTALL_DIR")"
+fi
 
 run_seed_refresh
 
@@ -1686,7 +1619,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     mkdir -p "$target"
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
+      seed_src="$f"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$(basename "$f")" "${SEED_LANG:-hu}")"
+      cp "$seed_src" "$target/$(basename "$f")"
     done
     # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
     # verbatim and with their mode bits; its SKILL.md points into them.
@@ -1697,7 +1632,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
       case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
       mkdir -p "$target/$(dirname "$rel")"
-      cp -p "$skill_dir$rel" "$target/$rel"
+      seed_src="$skill_dir$rel"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$rel" "${SEED_LANG:-hu}")"
+      cp -p "$seed_src" "$target/$rel"
     done
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
@@ -1721,7 +1658,12 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     # in the task dir), so it is preserved across a force-reseed. Tasks the user
     # authored themselves have no seed-scheduled-tasks/ source -> never visited.
     SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
+    # SEEDRENDERLITERAL1108: the loop renders through the lib update.sh sourced at the top; a torn checkout without it
+    # skips the new-task seeding with one line (the next update seeds them).
+    _seed_render_ok=1
+    command -v render_seed_template >/dev/null 2>&1 || { _seed_render_ok=0; echo "  new seed tasks skipped: $INSTALL_DIR/scripts/lib/seed-refresh.sh is missing"; }
     for tpl in "$SEED_SCHED_DIR"/*/; do
+      [ "${_seed_render_ok:-1}" = 1 ] || break
       [ -d "$tpl" ] || continue
       task_name=$(basename "$tpl")
       target="$SCHED_TARGET_DIR/$task_name"
@@ -1754,12 +1696,10 @@ if [ -d "$SEED_SCHED_DIR" ]; then
           # literal placeholder in its URLs. Same placeholder set on both paths,
           # or a template silently means different things depending on which
           # script created the copy.
-          sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-              -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-              -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-              -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-              -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-              "$f" > "$target/$sub$(basename "$f")"
+          seed_src="$f"
+          command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
+          # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+          render_seed_template < "$seed_src" > "$target/$sub$(basename "$f")"
         done
       done
       SCHED_REGISTER_NAMES="${SCHED_REGISTER_NAMES:-} $task_name"
@@ -1803,15 +1743,13 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
     [ -f "$CLAUDE_MD" ] && cp "$CLAUDE_MD" "$CLAUDE_MD.backup-$(date +%Y%m%d-%H%M%S)"
     REGEN_CHAT_ID=""
     [ -f "$INSTALL_DIR/.env" ] && REGEN_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-    sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-        -e "s/{{CHAT_ID}}/$REGEN_CHAT_ID/g" \
-        -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-        -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-        -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-        -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-        "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
-    echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
+    # PERSONARENDERLITERAL1108: the shared literal render, through a temp file: a failed render keeps CLAUDE.md as it was.
+    if RENDER_CHAT_ID="$REGEN_CHAT_ID" RENDER_TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")" \
+      render_persona_file "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template)" "$CLAUDE_MD"; then
+      echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
+    else
+      echo -e "  ${RED}HIBA:${NC} a CLAUDE.md nem renderelhető a sablonból; a régi fájl változatlan maradt."
+    fi
   elif [ -f "$CLAUDE_MD" ]; then
     KNOWN_IDS=" ${MAIN_AGENT_ID} ${BOT_NAME} "
     if [ -d "$INSTALL_DIR/agents" ]; then
@@ -1943,8 +1881,7 @@ fi
 # stash.
 if [ "$STASHED_AUTO" = "1" ]; then
   echo -e "  Auto-stash visszaallitasa..."
-  if git stash pop; then
-    STASHED_AUTO=0
+  if pop_auto_stash; then
     if [ "${SKIP_BUILD:-0}" != "1" ]; then
       echo -e "  Ujraforditas a visszaallitott helyi valtozasokkal..."
       if ! retry 2 3 npm run build --silent; then
@@ -1958,15 +1895,11 @@ if [ "$STASHED_AUTO" = "1" ]; then
         echo "$NEW_VERSION_FULL" > "$BUILT_COMMIT_FILE"
       fi
     fi
-  else
-    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-      echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
-    else
-      echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
-    fi
-    echo -e "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
   fi
 fi
+
+# ANETTUPDATESTASH1102 (b): never restart onto an invalid settings.json.
+settings_json_gate
 
 # Restart services -- via a DETACHED finalizer.
 #
@@ -1993,8 +1926,10 @@ cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
 #   $5 RESULT_FILE  $6 BUILT_COMMIT_FILE  $7 NEW_SHORT  $8 NODE_PIN_DIR
 #   $9 NOTIFY (1 = also send a channel report after the outcome; used by the
 #             unattended auto-update task, silent for a dashboard-triggered run)
+#   $10 WARN (ANETTUPDATESTASH1102: non-empty = the update applied but needs a
+#             human -- stash conflict or settings.json gate; verdict "warning")
 INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
-RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"
+RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"; WARN="${10:-}"
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
@@ -2024,18 +1959,19 @@ _write() { # status phase code message
 # notify.sh), because at 4am the Telegram plugin may be down and the finalizer
 # runs detached with no tmux session. Silent (NOTIFY!=1) for manual runs, where
 # the dashboard UI already polls /api/updates/status.
-_notify() { # status
+_notify() { # status [message]
   [ "$NOTIFY" = "1" ] || return 0
   [ -x "$INSTALL_DIR/scripts/notify.sh" ] || [ -f "$INSTALL_DIR/scripts/notify.sh" ] || return 0
   local msg
   case "$1" in
+    warning)     msg="⚠️ Auto-update lement (${OLD_SHORT} -> ${NEW_SHORT}), a dashboard válaszol, DE kézi figyelem kell: $2" ;;
     success)     msg="✅ Auto-update kész: ${OLD_SHORT} -> ${NEW_SHORT}. A dashboard újraindult, és válaszol (health OK)." ;;
     rolled-back) msg="⚠️ Auto-update: a frissítés nem sikerült (a dashboard nem indult), visszaálltunk a korábbi működő verzióra (${OLD_SHORT}). Részletek: store/update.log" ;;
     *)           msg="🔴 Auto-update SIKERTELEN: a dashboard a frissítés ÉS a rollback után sem válaszol a ${PORT} porton. Kézi beavatkozás kell. Részletek: store/update.log" ;;
   esac
   bash "$INSTALL_DIR/scripts/notify.sh" "$msg" >/dev/null 2>&1 || true
 }
-_finish() { _write "$1" "$2" "$3" "$4"; _notify "$1"; exit "$3"; }
+_finish() { _write "$1" "$2" "$3" "$4"; _notify "$1" "$4"; exit "$3"; }
 _health() { local i=0; while [ "$i" -lt 20 ]; do
   curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null && return 0
   sleep 1; i=$(( i + 1 )); done; return 1; }
@@ -2080,6 +2016,14 @@ fi
 _stage health
 if _health; then
   _stage write-verdict
+  # ANETTUPDATESTASH1102: an applied update that left something for a human is
+  # never a plain "success" -- the UI and the channel report must say so.
+  if [ -n "$WARN" ]; then
+    if [ -n "$UNIT_DRIFT" ]; then
+      WARN="${WARN} Ezen felul enabled unit(ok) nem active: ${UNIT_DRIFT}."
+    fi
+    _finish warning restart 0 "$WARN"
+  fi
   if [ -n "$UNIT_DRIFT" ]; then
     _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
   fi
@@ -2116,7 +2060,7 @@ FINALIZE_LAUNCHED=1
 # MARVEEN_UPDATE_NOTIFY=1 (set by the unattended auto-update task) makes the
 # finalizer send a channel report after the restart+health outcome. A manual
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
-FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}")
+FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}" "$UPDATE_WARN")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
 # ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
 # trace at all, so a run that died mid-restart looked identical to one that
@@ -2155,6 +2099,21 @@ elif command -v setsid >/dev/null 2>&1; then
   setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 else
   bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+fi
+
+# ENVRELAXGATE1104 step 2: a .env line that would LOOSEN a security key no longer counts (the .env may only tighten
+# one; loosening is the Settings page's, behind the owner login). Name each such key here, the name only, so a
+# hand-written line does not fall back to the default in silence. A warning, never a failure.
+_env_check_cli="$INSTALL_DIR/dist/settings-env-check-cli.js"
+if [ -f "$_env_check_cli" ] && command -v node >/dev/null 2>&1; then
+  _ignored_env_keys="$(node "$_env_check_cli" 2>/dev/null || true)"
+  for _ik in $_ignored_env_keys; do
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "  ${ORANGE:-}⚠${NC:-} The .env line for ${_ik} is IGNORED: it would loosen a security control. Set it on the Settings page instead."
+    else
+      echo -e "  ${ORANGE:-}⚠${NC:-} A .env ${_ik} sora NEM hat: egy biztonsági kapcsolót lazítana. A Beállítások oldalon állítható."
+    fi
+  done
 fi
 
 echo ""

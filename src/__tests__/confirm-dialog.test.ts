@@ -487,3 +487,430 @@ describe('the connector removes and deletes use it', () => {
     expect(EN).toContain(`'${key}':`)
   })
 })
+
+describe('the Claude plan delete uses it', () => {
+  const between = (from: string, to: string) => {
+    const i = APP.indexOf(from)
+    const j = i < 0 ? -1 : APP.indexOf(to, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  }
+  const DEL = between('async function deleteClaudePlan(', '\n}\n')
+  const USERS = between('async function claudePlanUsers(', '\n}\n')
+
+  it('the handler was found', () => {
+    expect(DEL).not.toBe('')
+    expect(USERS).not.toBe('')
+  })
+
+  // The real deleteClaudePlan and claudePlanUsers, with the dialog captured and the Hungarian texts filled in.
+  function load(agentList: unknown, answer = false) {
+    const asked: string[] = []
+    const calls: Array<{ url: string; method: string }> = []
+    const tr = (key: string, vars: Record<string, string> = {}) => {
+      const line = HU.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+      const text = line.slice(line.indexOf(':') + 1).trim().replace(/^'|',?$/g, '')
+      return text.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
+    }
+    const fetchStub = async (url: string, init: { method?: string } = {}) => {
+      calls.push({ url, method: init.method || 'GET' })
+      if (url === '/api/agents') {
+        if (agentList instanceof Error) throw agentList
+        return { ok: true, json: async () => agentList }
+      }
+      return { ok: true, json: async () => ({ ok: true }) }
+    }
+    const run = new Function('confirmDialog', 't', 'fetch', 'showToast', 'loadClaudePlansList',
+      `${USERS}\n}\n${DEL}\n}\nreturn deleteClaudePlan`)(
+      async (o: { message: string }) => { asked.push(o.message); return answer },
+      tr, fetchStub, () => {}, async () => {},
+    ) as (plan: Record<string, unknown>, rotationUsers?: string[]) => Promise<void>
+    return { run, asked, calls }
+  }
+
+  it('the Vault sentence only for a token-mode plan: a configDir plan has no token there', async () => {
+    const h = load([])
+    await h.run({ id: 'p1', label: 'Mappás', configDir: '/home/x/.claude-p1' })
+    await h.run({ id: 'p2', label: 'Tokenes', tokenSecretId: 'claude-plan-token-p2' })
+    expect(h.asked[0]).toContain('"Mappás"?')
+    expect(h.asked[0]).not.toContain('Vault')
+    expect(h.asked[1]).toContain('"Tokenes"? A tokenje a Vaultból is törlődik.')
+  })
+
+  it('the agents set to the plan in the agent editor are named too, next to the rotation record, once each', async () => {
+    const h = load([
+      { name: 'kutato', claudePlan: 'p1' },
+      { name: 'irnok', claudePlan: 'p1' },
+      { name: 'masik', claudePlan: 'p9' },
+      { name: 'semmi', claudePlan: null },
+    ])
+    await h.run({ id: 'p1', label: 'Mappás', configDir: '/x' }, ['fo', 'irnok'])
+    expect(h.asked[0]).toContain('\n\nEzek az ügynökök erre a planre vannak állítva: "fo", "irnok", "kutato".')
+    expect(h.asked[0]).not.toMatch(/masik|semmi/)
+  })
+
+  it('no agent on the plan: no second paragraph; an unreadable agent list still names the rotation record', async () => {
+    const none = load([{ name: 'masik', claudePlan: 'p9' }])
+    await none.run({ id: 'p1', label: 'Mappás', configDir: '/x' })
+    expect(none.asked[0]).not.toContain('\n\n')
+    const broken = load(new Error('network'))
+    await broken.run({ id: 'p1', label: 'Mappás', configDir: '/x' }, ['fo'])
+    expect(broken.asked[0]).toContain('"fo"')
+  })
+
+  it('a "no" sends no DELETE, a "yes" sends it after the question', async () => {
+    const no = load([])
+    await no.run({ id: 'p1', label: 'Mappás', configDir: '/x' })
+    expect(no.calls.filter(c => c.method === 'DELETE')).toEqual([])
+    const yes = load([], true)
+    await yes.run({ id: 'p1', label: 'Mappás', configDir: '/x' })
+    expect(yes.calls.filter(c => c.method === 'DELETE')).toEqual([{ url: '/api/claude-plans/p1', method: 'DELETE' }])
+  })
+
+  it('a danger confirmDialog with its own title and button, naming the plan by its label, no native confirm()', () => {
+    expect(DEL).toContain('const confirmed = await confirmDialog({')
+    expect(DEL).toContain("title: t('settings.claude_plans.confirm_delete_title')")
+    expect(DEL).toContain("t('settings.claude_plans.confirm_delete', { label: plan.label || id })")
+    expect(DEL).toContain("okLabel: t('settings.claude_plans.confirm_delete_ok')")
+    expect(DEL).toContain('danger: true')
+    expect(DEL).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a "no" stops it, before the request', () => {
+    const ask = DEL.indexOf('const confirmed = await confirmDialog({')
+    const guard = DEL.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(DEL.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the agents on the plan are named in a second paragraph, from the rotation state and the agent list', () => {
+    expect(APP).toContain("const planUsers = Object.entries(state.activePlanByAgent || {}).filter(([, id]) => id === plan.id).map(([agent]) => agent)")
+    expect(APP).toContain("delBtn.addEventListener('click', () => deleteClaudePlan(plan, planUsers))")
+    expect(DEL).toContain('const users = await claudePlanUsers(id, rotationUsers)')
+    expect(DEL).toContain("if (plan.tokenSecretId) message += ' ' + t('settings.claude_plans.confirm_delete_token')")
+    expect(DEL).toContain("if (users.length) message += '\\n\\n' + t('settings.claude_plans.confirm_delete_used_by', { agents: ")
+  })
+
+  it('the old texts are gone, and the keys are in both languages with their placeholders', () => {
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).not.toContain('regisztry')
+      for (const key of ['settings.claude_plans.confirm_delete', 'settings.claude_plans.confirm_delete_title', 'settings.claude_plans.confirm_delete_ok',
+        'settings.claude_plans.confirm_delete_used_by', 'settings.claude_plans.confirm_delete_token', 'settings.claude_plans.confirm_switch', 'settings.claude_plans.confirm_switch_title', 'settings.claude_plans.confirm_switch_ok']) {
+        expect(lang, key).toContain(`'${key}':`)
+      }
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).toContain('{label}')
+      // The Vault is its own sentence, added only for a token-mode plan.
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete':"))).not.toContain('Vault')
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_delete_used_by':"))).toContain('{agents}')
+      expect(lang.split('\n').find(l => l.includes("'settings.claude_plans.confirm_switch':"))).toContain('{label}')
+    }
+    expect(HU.split('\n').find(l => l.includes("'settings.claude_plans.confirm_switch':"))).not.toMatch(/agent|session/)
+  })
+})
+
+describe('the Vault deletes use it', () => {
+  const SITES = [
+    ['delete a secret from the Connectors list', "<span class=\"github-repo-date\">${escapeHtml(s.id)} &middot; ${date}</span>", 'vault.confirm.delete', "{ method: 'DELETE' })"],
+    ['delete an SSH key', "tbody.querySelectorAll('.ssh-key-delete-btn').forEach", 'vault.ssh.confirm.key_delete', "{ method: 'DELETE' })"],
+    ['delete an SSH server', "document.querySelectorAll('.ssh-delete-btn').forEach", 'vault.ssh.confirm.server_delete', "{ method: 'DELETE' })"],
+    ['delete a secret from the Vault page', "list.querySelectorAll('.vault-card-delete').forEach", 'vault.confirm.delete', "{ method: 'DELETE' })"],
+  ] as const
+
+  const handler = (anchor: string, request: string) => {
+    const i = APP.indexOf(anchor)
+    const j = i < 0 ? -1 : APP.indexOf(request, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + request.length)
+  }
+
+  it.each(SITES)('%s: a danger confirmDialog with its own title and button, no native confirm()', (_name, anchor, key, request) => {
+    const src = handler(anchor, request)
+    expect(src, 'handler or its request not found').not.toBe('')
+    expect(src).toContain('await confirmDialog({')
+    expect(src).toContain(`title: t('${key}_title')`)
+    expect(src).toContain(`t('${key}', { name: `)
+    expect(src).toMatch(/\bmessage(: t\(|,)/)
+    expect(src).toContain(`okLabel: t('${key}_ok')`)
+    expect(src).toContain('danger: true')
+    expect(src).not.toMatch(/(^|[^.\w])confirm\(/)
+  })
+
+  it.each(SITES)('%s: a "no" stops it -- the answer is checked before the request', (_name, anchor, _key, request) => {
+    const body = handler(anchor, request)
+    expect(body, 'handler or its request not found').not.toBe('')
+    const ask = body.indexOf('const confirmed = await confirmDialog({')
+    const guard = body.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(body.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the SSH key question names the servers that lose the key, and both lists reload after it', () => {
+    const src = handler("tbody.querySelectorAll('.ssh-key-delete-btn').forEach", 'await loadSshServers()')
+    expect(src, 'handler or its server reload not found').not.toBe('')
+    expect(src, 'the server reload must be in this handler').not.toContain('function _refreshKeySelects')
+    expect(src).toContain('_sshServers')
+    expect(src).toContain("if (servers.length) message += '\\n\\n' + t('vault.ssh.confirm.key_delete_servers', { servers: ")
+    expect(src).toContain('if (!res.ok) showToast(')
+    expect(src).toContain('await loadSshKeys()')
+    for (const lang of [HU, EN]) {
+      const line = lang.split('\n').find(l => l.includes("'vault.ssh.confirm.key_delete_servers':")) || ''
+      expect(line).toContain('{servers}')
+    }
+  })
+
+  it('the hard-coded questions and the "Törlés sikertelen" toast are gone', () => {
+    expect(APP).not.toContain('`Torlod: ${s.label}?`')
+    expect(APP).not.toContain('`Torlod: ${id}?`')
+    expect(APP).not.toContain('`Törlöd: ${id}?`')
+    expect(APP).not.toContain('Biztosan törlöd ezt a kulcsot?')
+    expect(APP).not.toContain("showToast('Törlés sikertelen')")
+  })
+
+  it('no unaccented "Torles" tooltip is left', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    expect(APP).not.toContain('title="Torles"')
+    expect(HTML).not.toContain('title="Torles"')
+  })
+
+  it('the Vault and Paths sections have no unaccented labels left, and they translate', () => {
+    const HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    for (const gone of ['titkositott', 'Kulcs nev ', 'placeholder="Ertek"', '>Hozzaad<', ' Utvonalak ']) expect(HTML).not.toContain(gone)
+    for (const key of ['connectors.vault_section', 'connectors.vault_id_ph', 'connectors.vault_value_ph', 'connectors.external_paths']) {
+      expect(HTML).toContain(`"${key}"`)
+      expect(HU).toContain(`'${key}':`)
+      expect(EN).toContain(`'${key}':`)
+    }
+  })
+
+  it.each([...new Set(SITES.flatMap(([, , key]) => [key, `${key}_title`, `${key}_ok`]))])('%s is in both languages and names the item', (key) => {
+    expect(HU).toContain(`'${key}':`)
+    expect(EN).toContain(`'${key}':`)
+    if (!key.endsWith('_title') && !key.endsWith('_ok')) {
+      for (const lang of [HU, EN]) {
+        const line = lang.split('\n').find(l => l.includes(`'${key}':`)) || ''
+        expect(line).toContain('{name}')
+      }
+    }
+  })
+})
+
+describe('the pending retry cancel and the background task stop use it', () => {
+  const between = (from: string, to: string) => {
+    const i = APP.indexOf(from)
+    const j = i < 0 ? -1 : APP.indexOf(to, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  }
+  const PENDING = between("container.querySelectorAll('[data-action=\"cancel-pending\"]').forEach", '\n}\n')
+  const BG = between('async function cancelBgTask(', '\n}\n')
+  const VIEW = between('async function viewBgTask(', '\n}\n')
+
+  it('the handlers were found', () => {
+    for (const part of [PENDING, BG, VIEW]) expect(part).not.toBe('')
+  })
+
+  it('the pending retry cancel: a danger confirmDialog naming the task and its agent, no native confirm()', () => {
+    expect(PENDING).toContain('const confirmed = await confirmDialog({')
+    expect(PENDING).toContain("title: t('tasks.confirm.cancel_pending_title')")
+    expect(PENDING).toContain("t('tasks.confirm.cancel_pending', { name: r.taskName || id, agent: r.agentName })")
+    expect(PENDING).toContain("t('tasks.confirm.cancel_pending_no_agent', { name: (r && r.taskName) || id })")
+    expect(PENDING).toContain("okLabel: t('tasks.confirm.cancel_pending_ok')")
+    expect(PENDING).toContain('danger: true')
+    expect(PENDING).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a failed cancel says so in a translated toast instead of only the console, and the list is reloaded', () => {
+    expect(PENDING).toContain("if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))")
+    expect(PENDING).toContain("catch {\n        showToast(t('tasks.toast.cancel_pending_error'))")
+    expect(PENDING).not.toContain('console.error')
+  })
+
+  it('the background task stop: a danger confirmDialog naming the task and its agent, no native confirm()', () => {
+    expect(BG).toContain('const confirmed = await confirmDialog({')
+    expect(BG).toContain("title: t('bgTasks.cancel.title')")
+    expect(BG).toContain("t('bgTasks.cancel.confirm', { id, agent })")
+    expect(BG).toContain("okLabel: t('bgTasks.cancel.ok')")
+    expect(BG).toContain('danger: true')
+    expect(BG).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    expect(APP).toContain('onclick="cancelBgTask(${jsArg(task.id)}, ${jsArg(task.agent_id)})"')
+  })
+
+  it('without an agent name the question has no empty parentheses', async () => {
+    // The real cancelBgTask, with the dialog captured and "no" answered.
+    const asked: string[] = []
+    const tr = (key: string, vars: Record<string, string> = {}) => {
+      const line = HU.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+      const text = line.slice(line.indexOf(':') + 1).trim().replace(/^'|',?$/g, '')
+      return text.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
+    }
+    const run = new Function('confirmDialog', 't', 'fetch', `${BG}\n}\nreturn cancelBgTask`)(
+      async (o: { message: string }) => { asked.push(o.message); return false },
+      tr,
+      () => { throw new Error('no request after a "no"') },
+    )
+    await run('bg-1', 'marketing')
+    await run('bg-2', '')
+    await run('bg-3', undefined)
+    expect(asked[0]).toContain('bg-1 (marketing)?')
+    for (const m of asked.slice(1)) {
+      expect(m).not.toContain('()')
+      expect(m).toMatch(/bg-\d\? A futó munka megszakad/)
+    }
+    expect(PENDING).toContain('message: (r && r.agentName)\n')
+  })
+
+  it('a "no" stops both, before the request', () => {
+    for (const handler of [PENDING, BG]) {
+      const ask = handler.indexOf('const confirmed = await confirmDialog({')
+      const guard = handler.indexOf('if (!confirmed) return')
+      expect(ask).toBeGreaterThan(-1)
+      expect(guard).toBeGreaterThan(ask)
+      expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+    }
+  })
+
+  it('the hard-coded "Hiba" toasts are gone from the background task section', () => {
+    expect(BG).not.toContain("showToast('Hiba')")
+    expect(VIEW).not.toContain("showToast('Hiba')")
+    expect(BG).toContain("showToast(t('bgTasks.toast.stop_error'))")
+    expect(VIEW).toContain("showToast(t('bgTasks.load_error'))")
+  })
+
+  it('the keys are in both languages, with their placeholders', () => {
+    for (const key of ['tasks.confirm.cancel_pending', 'tasks.confirm.cancel_pending_title', 'tasks.confirm.cancel_pending_ok', 'tasks.toast.cancel_pending_error',
+      'tasks.confirm.cancel_pending_no_agent', 'bgTasks.cancel.confirm_no_agent',
+      'bgTasks.cancel.confirm', 'bgTasks.cancel.title', 'bgTasks.cancel.ok', 'bgTasks.toast.stop_error', 'bgTasks.load_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      const pending = lang.split('\n').find(l => l.includes("'tasks.confirm.cancel_pending':")) ?? ''
+      expect(pending).toContain('{name}')
+      expect(pending).toContain('{agent}')
+      const bg = lang.split('\n').find(l => l.includes("'bgTasks.cancel.confirm':")) ?? ''
+      expect(bg).toContain('{id}')
+      expect(bg).toContain('{agent}')
+      for (const key of ['tasks.confirm.cancel_pending_no_agent', 'bgTasks.cancel.confirm_no_agent']) {
+        const line = lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+        expect(line, key).not.toContain('{agent}')
+        expect(line, key).not.toContain('(')
+      }
+    }
+  })
+})
+
+describe('the custom provider delete uses it', () => {
+  const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
+  const handler = (() => {
+    const i = APP.indexOf(anchor)
+    const end = "catch { showToast(t('providers.toast.delete_error')) }"
+    const j = i < 0 ? -1 : APP.indexOf(end, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j + end.length)
+  })()
+
+  it('a danger confirmDialog with its own title and button, naming the provider, no native confirm()', () => {
+    expect(handler, 'handler not found').not.toBe('')
+    expect(handler).toContain('const confirmed = await confirmDialog({')
+    expect(handler).toContain("title: t('providers.confirm.delete_title')")
+    expect(handler).toContain("t('providers.confirm.delete', { name: (p && p.label) || id })")
+    expect(handler).toContain("okLabel: t('providers.confirm.delete_ok')")
+    expect(handler).toContain('danger: true')
+    expect(handler).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+  })
+
+  it('a "no" stops it -- the answer is checked before the request', () => {
+    const ask = handler.indexOf('const confirmed = await confirmDialog({')
+    const guard = handler.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+  })
+
+  it('the question names the agents that use the provider, from the list\'s usedBy', () => {
+    expect(handler).toContain('const users = (p && p.usedBy) || []')
+    expect(handler).toContain("if (users.length) message += '\\n\\n' + t('providers.confirm.delete_used_by', { agents: ")
+  })
+
+  it('a failed delete shows a translated toast, or the server\'s reason', () => {
+    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'))")
+    expect(handler).toContain('loadAvailableModels()')
+  })
+
+  it('the hard-coded question and error are gone, and the keys are in both languages', () => {
+    expect(APP).not.toContain('providert?`')
+    expect(APP).not.toContain("alert('Hiba a törléskor.')")
+    for (const key of ['providers.confirm.delete_title', 'providers.confirm.delete', 'providers.confirm.delete_used_by', 'providers.confirm.delete_ok', 'providers.toast.delete_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'providers.confirm.delete':"))).toContain('{name}')
+      expect(lang.split('\n').find(l => l.includes("'providers.confirm.delete_used_by':"))).toContain('{agents}')
+    }
+  })
+})
+
+describe('the idea and idea attachment deletes use it', () => {
+  const between = (from: string, to: string) => {
+    const i = APP.indexOf(from)
+    const j = i < 0 ? -1 : APP.indexOf(to, i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  }
+  const IDEA = between('async function deleteIdeaItem(', '\n}\n')
+  const ATTACH = between('async function deleteIdeaAttachmentItem(', '\n}\n')
+
+  it('the handlers were found', () => {
+    expect(IDEA).not.toBe('')
+    expect(ATTACH).not.toBe('')
+  })
+
+  it('the idea delete: a danger confirmDialog with its own title and button, naming the idea, no native confirm()', () => {
+    expect(IDEA).toContain('const confirmed = await confirmDialog({')
+    expect(IDEA).toContain("title: t('ideas.confirm.delete_title')")
+    expect(IDEA).toContain("t('ideas.confirm.delete', { title: (idea && idea.title) || id })")
+    expect(IDEA).toContain("okLabel: t('ideas.confirm.delete_ok')")
+    expect(IDEA).toContain('danger: true')
+    expect(IDEA).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    // it borrowed the Kanban card's question before
+    expect(IDEA).not.toContain('kanban.confirm.delete')
+  })
+
+  it('the idea delete says that its attachments and comments go with it', () => {
+    expect(IDEA).toContain("'\\n\\n' + t('ideas.confirm.delete_children')")
+  })
+
+  it('the attachment delete: a danger confirmDialog naming the file, no native confirm()', () => {
+    expect(ATTACH).toContain('const confirmed = await confirmDialog({')
+    expect(ATTACH).toContain("title: t('ideas.detail.attach.confirm_delete_title')")
+    expect(ATTACH).toContain("t('ideas.detail.attach.confirm_delete', { name: filename || '' })")
+    expect(ATTACH).toContain("okLabel: t('ideas.detail.attach.confirm_delete_ok')")
+    expect(ATTACH).toContain('danger: true')
+    expect(ATTACH).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    expect(APP).toContain('onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))}, ${jsArg(a.filename)})"')
+  })
+
+  it('a "no" stops both, before the request', () => {
+    for (const handler of [IDEA, ATTACH]) {
+      const ask = handler.indexOf('const confirmed = await confirmDialog({')
+      const guard = handler.indexOf('if (!confirmed) return')
+      expect(ask).toBeGreaterThan(-1)
+      expect(guard).toBeGreaterThan(ask)
+      expect(handler.slice(0, guard)).not.toMatch(/\bfetch\(/)
+    }
+  })
+
+  it('a failed idea delete shows the server\'s reason or a translated toast, and the list is not reloaded as if it worked', () => {
+    expect(IDEA).toContain("showToast(err.error || t('ideas.toast.delete_error'), 'error')")
+    expect(IDEA).toContain("catch { showToast(t('ideas.toast.delete_error'), 'error'); return }")
+    expect(IDEA).toContain("showToast(err.error || t('ideas.toast.delete_error'), 'error')\n      return\n    }")
+    expect(IDEA.indexOf('loadIdeasPage()')).toBeGreaterThan(IDEA.indexOf('if (!res.ok) {'))
+  })
+
+  it('the keys are in both languages, with their placeholders', () => {
+    for (const key of ['ideas.confirm.delete_title', 'ideas.confirm.delete', 'ideas.confirm.delete_children', 'ideas.confirm.delete_ok',
+      'ideas.detail.attach.confirm_delete', 'ideas.detail.attach.confirm_delete_title', 'ideas.detail.attach.confirm_delete_ok', 'ideas.toast.delete_error']) {
+      for (const lang of [HU, EN]) expect(lang, key).toContain(`'${key}':`)
+    }
+    for (const lang of [HU, EN]) {
+      expect(lang.split('\n').find(l => l.includes("'ideas.confirm.delete':"))).toContain('{title}')
+      expect(lang.split('\n').find(l => l.includes("'ideas.detail.attach.confirm_delete':"))).toContain('{name}')
+    }
+  })
+})

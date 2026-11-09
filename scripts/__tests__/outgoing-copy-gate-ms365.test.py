@@ -18,6 +18,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from copy_gate_install import copy_gate_install, bare_install  # noqa: E402
 TEXT = "Kedves Ügyfelünk! Köszönjük a megkeresést, a választ hamarosan küldjük."
 
 failed = []
@@ -30,8 +32,8 @@ def check(name, ok, detail=""):
 
 
 def run_hook(payload, rules_file):
-    env = dict(os.environ, OUTGOING_COPY_GATE_RULES=rules_file)
-    p = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
+    env = dict(os.environ)
+    p = subprocess.run([sys.executable, copy_gate_install(rules_file)[0]], input=json.dumps(payload), capture_output=True,
                        text=True, env=env, timeout=20)
     return p.returncode, p.stdout, p.stderr
 

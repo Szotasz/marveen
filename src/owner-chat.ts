@@ -28,9 +28,12 @@
 //    ALLOWED_CHAT_ID exactly as before. Fixing that is a separate card with a
 //    migration, and must never ship in the same release as this.
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { ALLOWED_CHAT_ID, CHANNEL_CHAT_ID, MAIN_AGENT_ID } from './config.js'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { ALLOWED_CHAT_ID, CHANNEL_CHAT_ID, CHANNEL_PROVIDER, MAIN_AGENT_ID } from './config.js'
 import { channelStateDir, type ChannelProviderType } from './channel-provider.js'
+import { logger } from './logger.js'
+import { alertChatFormatError, alertChatValue, OWNER_ALERT_CHAT_KEY } from './alert-chat-format.js'
 
 /**
  * The .env value that names the owner chat for a given provider. ALLOWED_CHAT_ID
@@ -174,4 +177,83 @@ export function soleDmOwner(raw: Record<string, unknown> | null): AlertOwnerChat
     return { chatId: null, reason: 'no owner chat: .env placeholder/empty and access.json has no DM entry (groups/channels are never used)' }
   }
   return { chatId: null, reason: `no owner chat: .env placeholder/empty and access.json has ${entries.size} DM entries, refusing to guess` }
+}
+
+// ---------------------------------------------------------------- OWNER_ALERT_CHAT_ID (ISSUE2556X, marveen#2556)
+//
+// The owner names the chat their alerts go to on the dashboard's settings page (an overrides-only registry key: a
+// .env line never counts). It is a DELIVERY target and nothing else:
+//   - it wins in resolveAlertDeliveryChat (notify.ts), and through ownerAlertChatOverride in front of
+//     resolveOwnerChatId at each delivery call site (the daily log, the welcome and avatar messages, the approval
+//     notification, the command-task and scheduler alerts): `ownerAlertChatOverride(p) ?? resolveOwnerChatId(...)`,
+//     written out at the call site so a test that stubs resolveOwnerChatId keeps stubbing what the site calls;
+//   - resolveOwnerChatId and resolveAlertOwnerChat are unchanged: the command gate (routes/commands.ts,
+//     midturn-commands.ts) still learns who the owner is from them, and so does every other caller that is not a
+//     delivery. A delivery setting must never make anyone the owner.
+// Unset (empty or "0"), every resolver answers exactly as before. The key names a chat on the install's channel
+// (CHANNEL_PROVIDER): a caller asking for another provider (the Telegram-only sends on a Slack install) does not get
+// it. A value in the wrong shape for that provider is not used; it is logged as an error once per value, and the
+// caller's own rule answers (its reason says so when that rule finds no chat either).
+
+export type OwnerAlertChat = { chatId: string; invalid?: undefined } | { chatId: null; invalid?: string }
+
+// The install's store/config-overrides.json, the file settings-store reads (STORE_DIR = <project root>/store).
+// OWNER_ALERT_CHAT_ID is an overrides-only string key with the default '': the store answers the override when the
+// file holds one, else ''; a missing or unreadable file is ''. This reads that file directly, the way the shell and
+// Python ports do, and is parity-tested against the store (settings-overrides-only.test.ts). Importing settings-store
+// here instead would pull config.ts's STORE_DIR into every consumer of notify.ts, whose tests mock config.js.
+export const OVERRIDES_FILE = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'config-overrides.json')
+export function readOverrideValue(key: string, path: string = OVERRIDES_FILE): string | number | undefined {
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
+    const v = data[key]
+    return typeof v === 'string' || typeof v === 'number' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const reportedAlertChatErrors = new Set<string>()
+
+export function readOwnerAlertChat(
+  provider: ChannelProviderType,
+  read: () => unknown = () => readOverrideValue(OWNER_ALERT_CHAT_KEY),
+  installProvider: ChannelProviderType = CHANNEL_PROVIDER,
+): OwnerAlertChat {
+  if (provider !== installProvider) return { chatId: null }
+  // gromzo has no alert chat: the owner is reached through the main agent (GROMZONOPROVIDER1108).
+  if (provider === 'gromzo') return { chatId: null }
+  let raw: unknown
+  try { raw = read() } catch { return { chatId: null } }
+  const value = alertChatValue(raw)
+  if (value === null) return { chatId: null }
+  const err = alertChatFormatError(provider, value)
+  if (!err) return { chatId: value }
+  const seen = `${provider}\u0000${value}`
+  if (!reportedAlertChatErrors.has(seen)) {
+    reportedAlertChatErrors.add(seen)
+    logger.error({ key: OWNER_ALERT_CHAT_KEY, provider }, `${OWNER_ALERT_CHAT_KEY} is set but is not a ${provider} chat id -- NOT used; the alerts follow the old rule until it is fixed on the settings page`)
+  }
+  return { chatId: null, invalid: err }
+}
+
+/** The alert resolver with the owner's OWNER_ALERT_CHAT_ID in front (notify.ts). */
+export function resolveAlertDeliveryChat(
+  readAccessFile: (path: string) => string = (p) => readFileSync(p, 'utf-8'),
+  configured: string | null = CHANNEL_CHAT_ID,
+  provider: ChannelProviderType = CHANNEL_PROVIDER,
+  override: OwnerAlertChat = readOwnerAlertChat(provider),
+): AlertOwnerChat {
+  if (override.chatId) return { chatId: override.chatId }
+  const base = resolveAlertOwnerChat(readAccessFile, configured, provider)
+  if (base.chatId === null && override.invalid) {
+    return { chatId: null, reason: `${base.reason}; ${OWNER_ALERT_CHAT_KEY} is set but invalid for ${provider}` }
+  }
+  return base
+}
+
+/** The owner's OWNER_ALERT_CHAT_ID for a DELIVERY on `provider`, or null (unset, invalid, or another provider).
+ *  Never for deciding who the owner is. */
+export function ownerAlertChatOverride(provider: ChannelProviderType = 'telegram'): string | null {
+  return readOwnerAlertChat(provider).chatId
 }

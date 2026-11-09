@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/taskstate-replay.py",
+            "command": "python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/taskstate-replay.py",
             "timeout": 15
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/clear-replay.py",
+            "command": "python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/clear-replay.py",
             "timeout": 15
           }
         ]
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/clear-capture.py",
+            "command": "python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/clear-capture.py",
             "timeout": 15
           }
         ]
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -105,7 +105,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -117,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -127,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -138,52 +138,52 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py; exit 0'",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/taskstate-stub.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/taskstate-stub.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/taskstate-stub.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/taskstate-stub.py; exit 0'",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py; exit 0'",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-lookup-nudge.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-lookup-nudge.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-lookup-nudge.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/memory-lookup-nudge.py; exit 0'",
             "timeout": 3
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py; exit 0'",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py; exit 0'",
             "timeout": 45
           }
           ,{
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
             "timeout": 15
           }
           ,{
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -215,7 +215,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -225,7 +225,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -235,7 +235,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/shell-rescan-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/shell-rescan-guard.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/shell-rescan-guard.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/shell-rescan-guard.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -246,12 +246,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -260,7 +260,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py --stop; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py --stop; exit 0'",
             "timeout": 10
           }
         ]

@@ -149,7 +149,9 @@ describe('onboarding routes refuse a body that did not arrive in full', () => {
     setImmediate(() => req.destroy())
     const res = { setHeader() {}, writeHead(s: number) { status = s }, end(b?: string) { out = b ?? '' } }
     const url = new URL(`http://localhost${path}`)
-    await tryHandleOnboarding({ req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'token' } } as any)
+    // The owner's session: claude-auth's first-run path now opens only while no Claude credential exists, and the
+    // machine running this test may hold one (OWNERGATE4-1104 review); this file is about the cut-off body.
+    await tryHandleOnboarding({ req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'session' } } as any)
     return { status, json: out ? JSON.parse(out) : null }
   }
 

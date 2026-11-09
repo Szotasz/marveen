@@ -30,9 +30,17 @@ INSTALL = os.path.dirname(os.path.dirname(HERE))
 SRC = os.path.join(INSTALL, "scripts", "voice", "_vtools.py")
 
 tmp = tempfile.mkdtemp(prefix="voice-speak-test-")
-os.environ["LEDGER_DB_PATH"] = os.path.join(tmp, "ledger.db")
+# ENVRELAXGATE1104: the ledger DB is always <install>/store/claudeclaw.db (no
+# environment variable picks it), so the voice call is pointed at a tmp install
+# (scripts/ linked to the repo's) through MARVEEN_INSTALL_DIR, the dashboard's own
+# way of naming the install.
+INST = os.path.join(tmp, "install")
+os.makedirs(os.path.join(INST, "store"))
+os.symlink(os.path.join(INSTALL, "scripts"), os.path.join(INST, "scripts"))
+LEDGER = os.path.join(INST, "store", "claudeclaw.db")
+os.environ.pop("LEDGER_DB_PATH", None)
 os.environ["MAIN_AGENT_ID"] = "mainagent"
-os.environ.pop("MARVEEN_INSTALL_DIR", None)
+os.environ["MARVEEN_INSTALL_DIR"] = INST
 os.environ.pop("VOICE_PITCH", None)
 os.environ.pop("VOICE_TAIL_PAD_S", None)
 PROSODY_VARS = ("VOICE_LENGTH_SCALE", "VOICE_SENTENCE_SILENCE", "VOICE_NOISE_SCALE", "VOICE_NOISE_W_SCALE")
@@ -95,9 +103,9 @@ class Stub:
 
 
 def ledger_rows():
-    if not os.path.exists(os.environ["LEDGER_DB_PATH"]):
+    if not os.path.isfile(LEDGER):
         return []
-    con = sqlite3.connect(os.environ["LEDGER_DB_PATH"])
+    con = sqlite3.connect(LEDGER)
     try:
         return con.execute(
             "SELECT agent_id, chat_id, direction, message_id, text FROM conversation_log ORDER BY rowid"
@@ -108,7 +116,7 @@ def ledger_rows():
 
 def reset_ledger():
     try:
-        os.unlink(os.environ["LEDGER_DB_PATH"])
+        os.unlink(LEDGER)
     except OSError:
         pass
 
@@ -163,7 +171,8 @@ for label, path in (("source tree", SRC), ("installed copy", os.path.join(instal
     os.environ.pop("VOICE_PITCH", None)
 
     # 5) a ledger that cannot be written never fails an already-sent voice
-    os.environ["LEDGER_DB_PATH"] = os.path.join(tmp, "no-such-dir", "ledger.db")
+    reset_ledger()
+    os.makedirs(LEDGER)  # the DB path is a directory: sqlite cannot open it
     Stub(v)
     try:
         v.speak("/voices/x.onnx", SUB_STATE, 12345, "Szia")
@@ -171,7 +180,7 @@ for label, path in (("source tree", SRC), ("installed copy", os.path.join(instal
     except Exception as e:  # noqa: BLE001
         ok, err = False, repr(e)
     check(f"[{label}] ledger failure does not raise", ok, "" if ok else err)
-    os.environ["LEDGER_DB_PATH"] = os.path.join(tmp, "ledger.db")
+    os.rmdir(LEDGER)
 
     def run_prosody(env):
         old_err, sys.stderr = sys.stderr, io.StringIO()

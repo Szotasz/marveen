@@ -39,7 +39,7 @@ beforeEach(() => { drains = 0 })
 function run(prompt: string): Promise<{ code: number | null; stdout: string }> {
   return new Promise(resolve => {
     const p = spawn('python3', [join(install, 'scripts', 'hooks', 'inbox-drain.py')], {
-      env: { ...process.env, WEB_PORT: String(port), MAIN_AGENT_ID: 'marveen', MARVEEN_AGENT_ID: 'marveen', LEDGER_DB_PATH: join(install, 'store', 'x.db') },
+      env: { ...process.env, WEB_PORT: String(port), MAIN_AGENT_ID: 'marveen', MARVEEN_AGENT_ID: 'marveen' },
     })
     let stdout = ''
     p.stdout.on('data', d => { stdout += d })

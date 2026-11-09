@@ -61,13 +61,13 @@ describe('patch-telegram-plugin.py', () => {
   it('2nd run is a no-op: returns `already`, byte-identical, silent', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' } }])
     const once = readFileSync(server, 'utf-8')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', pairtext: 'already' } }])
   })
 
   it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
@@ -82,7 +82,7 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).toContain("bot.command('help', async ctx => {")
     expect(text).toContain('elsokor922-fwd')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' })
   })
 
   // #1530 review: owner write commands need evidence the owner's chat sent
@@ -392,7 +392,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(r.stderr).toMatch(/LOUD: reply send options not found exactly once.*the kbd patch left out, the reply tool has no buttons/)
     expect(readFileSync(server, 'utf-8')).not.toContain(KBD)
     // silent anchors on the same send-options line, so it is left out with kbd
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched', pairtext: 'patched' })
   })
 
   it('each of the three new anchors, when moved, leaves every kbd line out on a fresh file', () => {
@@ -1421,7 +1421,7 @@ describe('invis: invisible characters (invis1024)', () => {
     expect(text).toContain('MARVEEN-PATCH(cmd920-evid)')
     expect(text).toContain('MARVEEN-PATCH(c67f5f34-kbd)')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content', pairtext: 'patched' })
     const once = readFileSync(server, 'utf-8')
     expect(run(['--state', state]).status).toBe(0)
     expect(readFileSync(server, 'utf-8')).toBe(once)
@@ -1430,7 +1430,7 @@ describe('invis: invisible characters (invis1024)', () => {
   it('the --state JSON names the invis patch like the others', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' })
   })
 
   it('system-status measures the invis patch on its own, with this marker', () => {
@@ -1438,10 +1438,10 @@ describe('invis: invisible characters (invis1024)', () => {
     try {
       const d = join(dir, 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
       mkdirSync(d, { recursive: true })
-      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'quote1101', 'tgsilent', 'c67f5f34-kbd'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
+      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'quote1101', 'tgsilent', 'c67f5f34-kbd', 'pairtext'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
       const state = join(dir, 'state.json')
       writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', kbd: 'already', invis: 'anchor-missing:channel content' } },
+        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', kbd: 'already', invis: 'anchor-missing:channel content', pairtext: 'already' } },
       ] }))
       expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (láthatatlan karakterek): 0.0.7 (anchor-missing:channel content) · a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket')
     } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -1469,6 +1469,125 @@ describe.skipIf(sh === '')('channels.sh wiring (review #1529, point 1)', () => {
   })
 
   it('an isolated/explicit config dir is handed to the patcher, so it writes the cache the session launches from', () => {
-    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_cfg_dir" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
+    // MAINCFGDIRUNSET1107: the _cfg_* names are unset before the patchers run, so they read a stable copy that is
+    // set where the config dir is decided (the old pin held the empty $_cfg_dir in place).
+    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_MAIN_CFG_DIR" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
+    const setAt = code.indexOf('_MAIN_CFG_DIR="$_cfg_dir"')
+    expect(setAt).toBeGreaterThan(-1)
+    expect(setAt).toBeLessThan(code.indexOf('unset _cfg_raw _cfg_line _cfg_mode _cfg_dir'))
+  })
+})
+
+// TELEGRAM_REPLY_BUTTONS off (owner request 2026-11-03: no answer buttons to anyone, from any agent). The same kbd
+// patch with three lines different: a non-empty list sends NO reply_markup and the result warns the agent; an empty
+// list still removes a keyboard left under the input field; switching is the usual in-place rebuild.
+describe('kbd: TELEGRAM_REPLY_BUTTONS off', () => {
+  const NOTE = /-- buttons disabled on this install \(TELEGRAM_REPLY_BUTTONS off\): the message went out WITHOUT buttons/
+
+  it('a non-empty list: the message goes out with NO reply_markup on any chunk, the result warns; not a tool error', async () => {
+    expect(run(['--buttons', 'off']).status).toBe(0)
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const res = await h.call({ chat_id: '42', text: 'Első rész|A: elfogadod, B: már megoldva?', buttons: ['A. Elfogadom', 'B. Már megoldva'] })
+    expect(res.isError).toBeUndefined()
+    expect(res.content[0].text).toMatch(/^sent 2 parts \(ids: 1, 2\) /)
+    expect(res.content[0].text).toMatch(NOTE)
+    expect(h.sent).toHaveLength(2)
+    expect(h.sent.map(s => 'reply_markup' in s.opts)).toEqual([false, false])
+    // a label that the ON side refuses is not refused here either: nothing of it is sent
+    const odd = await h.call({ chat_id: '-1001234567890', text: 'Kérdés', buttons: ['/model opus'] })
+    expect(odd.isError).toBeUndefined()
+    expect(odd.content[0].text).toMatch(NOTE)
+    expect('reply_markup' in h.sent[2].opts).toBe(false)
+  })
+
+  it('an empty list still removes a keyboard shown earlier; no buttons: no reply_markup and no warning', async () => {
+    run(['--buttons', 'off'])
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const empty = await h.call({ chat_id: '42', text: 'Köszönöm, rögzítettem.', buttons: [] })
+    expect(h.sent[0].opts.reply_markup).toEqual({ remove_keyboard: true })
+    expect(empty.content[0].text).toBe('sent (id: 1)')
+    const plain = await h.call({ chat_id: '42', text: 'Sima válasz' })
+    expect('reply_markup' in h.sent[1].opts).toBe(false)
+    expect(plain.content[0].text).toBe('sent (id: 2)')
+  })
+
+  it('a buttons value that is not a list is a tool error before anything is sent', async () => {
+    run(['--buttons', 'off'])
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const res = await h.call({ chat_id: '42', text: 'Kérdés', buttons: 'A' })
+    expect(res.isError).toBe(true)
+    expect(res.content[0].text).toMatch(/^reply failed: buttons: a list/)
+    expect(h.sent).toHaveLength(0)
+  })
+
+  it('the schema says the buttons are disabled; every inserted line carries the marker; the file still parses', () => {
+    run(['--buttons', 'off'])
+    const text = readFileSync(server, 'utf-8')
+    expect(text).toContain("description: 'Answer buttons are DISABLED on this install")
+    expect(text).not.toContain('Optional one-tap answer buttons')
+    for (const l of kbdLines(text)) expect(l.endsWith(' ' + KBD_MARKER)).toBe(true)
+    expect(kbdLines(text)).toHaveLength(35) // the ON side's 34, plus the result warning
+    expect(syntaxErrors(text)).toEqual([])
+  })
+
+  it('switching: on -> off -> on gives the fresh ON file byte for byte, off twice is `already`, the state says which side', () => {
+    const state = join(cache, 'state.json')
+    run(['--state', state])
+    const on = readFileSync(server, 'utf-8')
+    run(['--buttons', 'off', '--state', state])
+    const off = readFileSync(server, 'utf-8')
+    expect(off).not.toBe(on)
+    expect(readState(state).files[0].patches.kbd).toBe('patched')
+    expect((readState(state) as unknown as { buttons: string }).buttons).toBe('off')
+    run(['--buttons', 'off', '--state', state])
+    expect(readFileSync(server, 'utf-8')).toBe(off)
+    expect(readState(state).files[0].patches.kbd).toBe('already')
+    run(['--buttons', 'on', '--state', state])
+    expect(readFileSync(server, 'utf-8')).toBe(on)
+    expect((readState(state) as unknown as { buttons: string }).buttons).toBe('on')
+  })
+
+  it('taking it back = deleting the marked lines: byte-identical to the file patched without kbd; topics on works with it', () => {
+    run(['--buttons', 'off'])
+    const off = readFileSync(server, 'utf-8')
+    const withoutKbd = off.split('\n').filter(l => !l.includes(KBD)).join('\n')
+    expect(withoutKbd).toBe(patchedWithoutKbd(readFileSync(FIXTURE, 'utf-8')))
+    run(['--buttons', 'off', '--topics', 'on'])
+    expect(syntaxErrors(readFileSync(server, 'utf-8'))).toEqual([])
+  })
+
+  it('a --buttons value other than on or off: exit 2, nothing patched', () => {
+    const r = run(['--buttons', 'no'])
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/--buttons takes on or off, got 'no'; nothing patched/)
+    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(FIXTURE, 'utf-8'))
+  })
+
+  it('without --buttons the install setting decides: config-overrides.json, then .env, else on', () => {
+    const py = [
+      'import importlib.util, json, os, sys, tempfile',
+      'spec = importlib.util.spec_from_file_location("patcher", sys.argv[1])',
+      'p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)',
+      'out = []',
+      'for overrides, env in json.load(sys.stdin):',
+      '    with tempfile.TemporaryDirectory() as install:',
+      '        os.mkdir(os.path.join(install, "store"))',
+      '        if overrides is not None:',
+      '            with open(os.path.join(install, "store", "config-overrides.json"), "w") as f: json.dump(overrides, f)',
+      '        if env is not None:',
+      '            with open(os.path.join(install, ".env"), "w") as f: f.write(env)',
+      '        out.append(p.buttons_setting(install))',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const rows: Array<[unknown, string | null, boolean]> = [
+      [null, null, true],
+      [{ TELEGRAM_REPLY_BUTTONS: '0' }, null, false],
+      [{ TELEGRAM_REPLY_BUTTONS: false }, 'TELEGRAM_REPLY_BUTTONS=1\n', false],
+      [null, 'TELEGRAM_REPLY_BUTTONS=0\n', false],
+      [{ TELEGRAM_TOPICS_ENABLED: '1' }, 'TELEGRAM_REPLY_BUTTONS=1\n', true],
+    ]
+    const r = spawnSync('python3', ['-c', py, SCRIPT], { input: JSON.stringify(rows.map(([o, e]) => [o, e])), encoding: 'utf-8', timeout: 30_000 })
+    expect(r.stderr).toBe('')
+    expect(JSON.parse(r.stdout)).toEqual(rows.map(([, , want]) => want))
   })
 })

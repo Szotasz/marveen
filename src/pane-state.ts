@@ -1349,7 +1349,12 @@ export function detectsModelConsentDialog(pane: string): boolean {
 // cheaper failure. Gating on the footer's "N feedback draft" counter would
 // prune it, but that string TRUNCATES on a narrow pane, and a false negative
 // here costs a 10-minute silent stall.
-const FEEDBACK_DRAFT_OPTIONS_RX = /^[^\S\n]*│.*?\d+ to review\b.*?\d+ to send\b.*?\d+ to dismiss\b/
+// While the prompt holds text the card swaps its option line for "clear text
+// to review, send, or dismiss" (measured 2026-11-04, Claude Code 2.1.318, both
+// layouts); the binary also carries "clear text to open review or (to)
+// dismiss". Without that form a card over a clipped box with a lone leftover
+// "0" read as no card at all: no keystroke, no hold, no page.
+const FEEDBACK_DRAFT_OPTIONS_RX = /^[^\S\n]*│.*?(?:\d+ to review\b.*?\d+ to send\b.*?\d+ to dismiss\b|\bclear text to (?:open )?review\b.*?\bdismiss\b)/
 const PROMPT_MARKER_RX = /^[^\S\n]*❯/
 
 export function detectsFeedbackDraftModal(pane: string): boolean {
@@ -1395,39 +1400,104 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
 
 export type FeedbackDismissPlan =
   | { act: 'none' }
-  | { act: 'keys'; keys: Array<'C-u' | 'Down'> }
+  | { act: 'keys'; keys: Array<'C-u' | '0'> }
   | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
+  | { act: 'wait'; ms: number }
+
+// The card ignores a digit typed within this long of its appearing (shipped CLI).
+export const FEEDBACK_CARD_INPUT_IGNORE_MS = 600
 
 /**
- * What the dismisser may type at a feedback-draft modal. NEVER A DIGIT. The card
- * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
- * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
- * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
- * that did not fire stays in the input, the next attempt makes it two digits, and a
- * longer input never fires again, so every later attempt only appends (an agent
- * sat not-ready behind a growing `❯ 0000`). And "2" sends the draft. The measured
- * manual recipe is C-u, then Down: Down moves focus to the footer, which stops the
- * band above the prompt from rendering.
- * C-u clears only what is provably a digit-typing dismisser's leftover -- an empty
- * or all-digit input -- and NEVER on the main session, whose box may hold an
- * operator's reply; there even digits may be a numbered answer, so only an empty
- * prompt gets its Down. Anything else gets no keystroke.
+ * What the dismisser may type at a feedback-draft modal: a single "0" into an
+ * EMPTY prompt, after C-u only where the input is provably a dismisser's
+ * leftover. The card does not read a keypress: it watches the prompt INPUT VALUE
+ * and fires only when the input changes to exactly one digit, after a 400 ms
+ * debounce, ignoring a digit typed within 600 ms of the card appearing (measured
+ * in the shipped CLI). A digit that did not fire stays in the input, and a longer
+ * input never fires again (an agent once sat not-ready behind a growing `❯ 0000`),
+ * so the "0" goes only into an empty input, where it makes the input exactly one
+ * digit; a "0" that did not fire reads as typed text on the next attempt and holds
+ * (and escalates) instead of appending. "2" would send the draft.
+ * Down does NOT close the card: measured 2026-11-02 (2.1.312) with the card
+ * clipping the box, and 2026-11-04 (2.1.318) in both layouts, the card stayed up
+ * unchanged, while "0" closed it and the opt-out question followed. The earlier
+ * recipe (C-u, then Down) left an unclipped card up on every attempt.
+ * C-u clears only an all-digit input, and NEVER on the main session, whose box may
+ * hold an operator's reply; there even digits may be a numbered answer. Anything
+ * else gets no keystroke. A clipped box (inputBoxClippedBelowCard) is never
+ * cleared either: rows below the capture are unseen.
  * Two captures: `pane`, the plain one the detector reads (the card's own text
  * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
  * ghost-stripped one the input box is read from (otherwise an empty prompt
  * showing an autosuggest reads as occupied and the card stays up).
+ * `cardSeenForMs`: how long ago the caller first saw this card (null: just now).
+ * A "0" typed inside the card's 600 ms ignore window stays in the input. On a
+ * sub-agent the next attempt clears it with C-u, and in a clipped box it holds
+ * and pages with the lone-0 hint; an unclipped main box gets neither (no C-u,
+ * and its footer hands the leftover to the parked-input path). So there the
+ * "0" waits until the card was seen at least FEEDBACK_CARD_INPUT_IGNORE_MS ago.
  */
-export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
+export function feedbackDraftDismissPlan(
+  pane: string,
+  inputView: string | null,
+  isMainSession: boolean,
+  cardSeenForMs: number | null = null,
+): FeedbackDismissPlan {
   if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
-  const box = inputView == null ? null : liveInputBox(inputView)
-  if (box == null) return { act: 'hold', reason: 'input-unreadable' }
-  // Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
-  // indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
-  // a typed "2 2" does not.
-  const typed = box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
-  if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
-  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
+  if (inputView == null) return { act: 'hold', reason: 'input-unreadable' }
+  const box = liveInputBox(inputView)
+  if (box == null) {
+    // Rows below the capture are unseen, so the clipped box is never cleared,
+    // and only an empty one gets its "0".
+    const clipped = inputBoxClippedBelowCard(pane, inputView)
+    if (clipped == null) return { act: 'hold', reason: 'input-unreadable' }
+    return typedInBox(clipped) === '' ? { act: 'keys', keys: ['0'] } : { act: 'hold', reason: 'input-occupied' }
+  }
+  const typed = typedInBox(box)
+  if (typed === '') {
+    const seen = cardSeenForMs ?? 0
+    if (isMainSession && seen < FEEDBACK_CARD_INPUT_IGNORE_MS) return { act: 'wait', ms: FEEDBACK_CARD_INPUT_IGNORE_MS - seen }
+    return { act: 'keys', keys: ['0'] }
+  }
+  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', '0'] }
   return { act: 'hold', reason: 'input-occupied' }
+}
+
+// Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
+// indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
+// a typed "2 2" does not.
+function typedInBox(box: string): string {
+  return box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+}
+
+// The card can make the frame taller than the pane. Measured 2026-11-02 on two
+// 24x80 panes (the main session and a sub-agent, Claude Code 2.1.312): the
+// capture ENDS at the prompt row, the box's bottom rule and the idle footer are
+// cut off, so liveInputBox finds no footer and a single rule and reads null.
+// The main session sat behind that 'input-unreadable' hold for 3.5 hours.
+// Read the box from the last rule below the card's option line to the end of
+// the capture, and only when nothing but the box follows that rule. `pane` and
+// `inputView` are two captures of the same frame (the ghost strip removes
+// characters, never rows); a row-count mismatch means the frame moved between
+// them and reads null.
+function inputBoxClippedBelowCard(pane: string, inputView: string): string | null {
+  const plain = pane.split('\n')
+  const view = inputView.split('\n')
+  if (plain.length !== view.length) return null
+  let optionsAt = -1
+  for (let i = plain.length - 1; i >= 0; i--) {
+    if (FEEDBACK_DRAFT_OPTIONS_RX.test(plain[i])) { optionsAt = i; break }
+  }
+  if (optionsAt < 0) return null
+  let rule = -1
+  for (let i = view.length - 1; i > optionsAt; i--) {
+    if (BOX_SEP_RX.test(view[i])) { rule = i; break }
+  }
+  if (rule < 0) return null
+  const inner = view.slice(rule + 1)
+  const firstNonEmpty = inner.find((row) => row.trim().length > 0)
+  if (firstNonEmpty == null || !firstNonEmpty.startsWith('❯')) return null
+  return inner.join('\n')
 }
 
 export interface DetectPaneStateOptions {

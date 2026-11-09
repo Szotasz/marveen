@@ -30,6 +30,13 @@ import owner_chat  # noqa: E402
 # Stop-hook reply guard kept blocking on an already-answered message.
 REPLY_TOOL_RX = re.compile(r"^mcp__plugin_[A-Za-z0-9_-]+__reply$")
 
+# GROMZOLEDGERIN1102: the Gromzo reply names its conversation in its RESULT, not
+# in its input (the input has reply_to / to: "owner", never a chat id). The
+# plugin (marveen-mxd plugin/gromzo-channel, withLedgerChat) adds one line
+# "chat_id: gz<20 hex>" to the result of a reply that went to the owner DM.
+GROMZO_REPLY_TOOL = "mcp__plugin_gromzo-channel_gromzo__reply"
+GROMZO_CHAT_RX = re.compile(r"(?m)^chat_id: (gz[0-9a-f]{20})$")
+
 
 def _owner_chat():
     # CHATID0: LEDGER_OWNER_CHAT keeps precedence (an explicit hook-env
@@ -123,6 +130,50 @@ def _extract_message_id(payload):
     return None
 
 
+def _result_texts(result, depth=0):
+    """Every text in a tool result, whatever its shape (Dani 67668: four shapes
+    measured, two were missed): a plain string, a JSON string of any of these, a
+    {"content": [...]} or {"text": "..."} dict, or a content-block list."""
+    if depth > 3:
+        return []
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except Exception:
+            return [result]
+        if isinstance(parsed, (dict, list)):
+            return _result_texts(parsed, depth + 1)
+        return [result]
+    if isinstance(result, dict):
+        out = []
+        if isinstance(result.get("text"), str):
+            out.append(result["text"])
+        if "content" in result:
+            out.extend(_result_texts(result["content"], depth + 1))
+        return out
+    if isinstance(result, list):
+        out = []
+        for block in result:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                out.append(block["text"])
+            elif isinstance(block, str):
+                out.append(block)
+        return out
+    return []
+
+
+def _gromzo_chat(payload):
+    """The ledger key a Gromzo reply's result names, or None.
+
+    Only a whole line in the plugin's exact shape counts ("chat_id: gz" + 20
+    hex), so no other text can name a conversation."""
+    for text in _result_texts(payload.get("tool_response")):
+        m = GROMZO_CHAT_RX.search(text)
+        if m:
+            return m.group(1)
+    return None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -136,7 +187,19 @@ def main():
         sys.exit(0)
     agent_id = ledger_lib.agent_id_from_payload(payload)
     tool_input = payload.get("tool_input") or {}
+    # TEAMSCONV1020: the Teams reply tool takes conversation_id instead of
+    # chat_id; without it every Teams reply fell through to the owner's
+    # Telegram chat and was filed under the wrong conversation.
     chat_id = tool_input.get("chat_id")
+    if chat_id is None:
+        chat_id = tool_input.get("conversation_id")
+    # GROMZOLEDGERIN1102: for the Gromzo reply the key in its result wins over any
+    # chat_id the input carries (the reply tool takes none, so one there is the
+    # model's guess, possibly stale).
+    if tool == GROMZO_REPLY_TOOL:
+        gromzo = _gromzo_chat(payload)
+        if gromzo is not None:
+            chat_id = gromzo
     chat_id = "" if chat_id is None else str(chat_id).strip()
     if chat_id in ("", "0"):
         chat_id = _owner_chat()

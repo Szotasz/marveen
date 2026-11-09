@@ -147,7 +147,8 @@ function fakeCtx(method: string, path: string, body: unknown, auth: RouteContext
 }
 
 describe('POST /api/auth/device-keys with a scope', () => {
-  const owner = { kind: 'token' } as RouteContext['auth']
+  // OWNERGATE4-1104: the owner as a session; the bare token mints only the first key of an install with no login.
+  const owner = { kind: 'session', user: 'owner' } as RouteContext['auth']
 
   it('an operator key defaults to 90 days', async () => {
     const { ctx, out } = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator' }, owner)

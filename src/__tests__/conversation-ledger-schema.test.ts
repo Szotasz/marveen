@@ -36,6 +36,21 @@ describe('conversation_log schema: db.ts migration == ledger_lib.py (no drift)',
     expect(b).toEqual(a)
   })
 
+  // LEDGERROLELABEL1104: the columns ADDED after the table first shipped are a
+  // second list in each place (db.ts's migration loop, ledger_lib.py's
+  // _MIGRATION_COLUMNS). They drifted once already (db.ts never added `source`),
+  // and the CREATE TABLE comparison above cannot see it.
+  it('the migration column lists are identical (db.ts loop == _MIGRATION_COLUMNS)', () => {
+    const loop = dbts.match(/for \(const col of \[([^\]]*)\]\) \{\s*const cols = db\.prepare\("PRAGMA table_info\(conversation_log\)"\)/)
+    expect(loop, 'the db.ts conversation_log migration loop').not.toBeNull()
+    const tsCols = [...loop![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
+    const block = lib.match(/_MIGRATION_COLUMNS = \(([\s\S]*?)\n\)/)
+    expect(block, '_MIGRATION_COLUMNS in ledger_lib.py').not.toBeNull()
+    const pyCols = [...block![1].matchAll(/^\s*\("([a-z_]+)",\s*"TEXT"\)/gm)].map((m) => m[1])
+    expect(tsCols).toEqual(pyCols)
+    expect(pyCols).toEqual(['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role'])
+  })
+
   it('both constrain direction to in/out', () => {
     expect(dbts).toMatch(/direction\s+TEXT\s+NOT NULL\s+CHECK\(direction IN \('in','out'\)\)/)
     expect(lib).toMatch(/direction\s+TEXT\s+NOT NULL\s+CHECK\(direction IN \('in','out'\)\)/)
