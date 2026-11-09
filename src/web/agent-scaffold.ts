@@ -1,3 +1,4 @@
+import { scaffoldCodexHome } from './agent-engine.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
@@ -11,7 +12,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, readJsonObjectForWrite, agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
@@ -3409,6 +3410,12 @@ export function scaffoldAgentDir(name: string) {
       const resolved = resolveTemplatePlaceholders(localizeSettingsTemplate(readFileSync(tplPath, 'utf-8')))
       atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
+  }
+  const engineConfig = readAgentEngineConfig(name)
+  if (engineConfig.engine === 'codex') {
+    validateAgentEngineConfig(name, readJsonObjectForWrite(join(dir, 'agent-config.json')))
+    const servers = JSON.parse(readFileSync(mcpJson, 'utf-8')).mcpServers ?? {}
+    scaffoldCodexHome(engineConfig.codexConfigDir!, dir, servers)
   }
 }
 

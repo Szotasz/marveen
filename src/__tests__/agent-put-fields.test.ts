@@ -63,6 +63,7 @@ describe('checkAgentPutFields', () => {
     // A field added to this list widens what the endpoint can change, so the
     // list is pinned: growing it should require editing this test too.
     expect([...AGENT_PUT_WRITABLE_FIELDS]).toEqual([
+      'engine', 'codexConfigDir',
       'claudeMd', 'soulMd', 'mcpJson', 'model',
       'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
       'modelProfile', 'customProvider',

@@ -82,7 +82,7 @@ const CHANNEL_SECRET_DIRS = ['approved'] as const
 // point at paths/credentials that only exist on the source machine. Stripped on
 // import so an imported agent starts as a clean local agent the operator can
 // re-point if needed.
-const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile'] as const
+const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'codexConfigDir', 'oauthTokenFile'] as const
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))

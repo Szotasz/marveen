@@ -146,7 +146,7 @@ describe('the writers are gated too (POST/PUT model)', () => {
     const put = src.indexOf("if (data.model !== undefined) {")
     expect(put).toBeGreaterThan(-1)
     expect(src.slice(put, put + 400)).toContain('refuseIfCliCannotLaunch(String(data.model))')
-    const post = src.indexOf("const cliGate = await refuseIfCliCannotLaunch(model)")
+    const post = src.indexOf("const cliGate = engineConfig.engine === 'codex' ? null : await refuseIfCliCannotLaunch(model)")
     expect(post).toBeGreaterThan(-1)
   })
 })

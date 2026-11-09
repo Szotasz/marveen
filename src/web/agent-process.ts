@@ -40,7 +40,7 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
@@ -106,7 +106,7 @@ import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
+import { scaffoldAgentDir, enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -2317,6 +2317,26 @@ export function shouldBriefAfterStart(
 export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+
+  // Dispatch before Claude authentication, plans, rotation or model resolution.
+  try {
+    const engineConfig = readAgentEngineConfig(name)
+    if (engineConfig.engine === 'codex') {
+      validateAgentEngineConfig(name, readJsonObjectForWrite(join(dir, 'agent-config.json')))
+      if (name === MAIN_AGENT_ID || agentHasChannel(name) || readAgentExtraChannels(name).length) {
+        return { ok: false, error: 'Codex agents cannot own channel bindings' }
+      }
+      if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
+      scaffoldAgentDir(name)
+      const command = execFileSync('bash', [join(PROJECT_ROOT, 'scripts/codex-agent.sh'), engineConfig.codexConfigDir!, dir], { encoding: 'utf-8', timeout: 10000 }).trim()
+      const session = agentSessionName(name)
+      runTmux(agentTmuxTarget(name), ['new-session', '-d', '-s', session, command], { timeout: 10000 })
+      requeueAbandonedAndNotify(name)
+      return { ok: true }
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.

@@ -492,7 +492,10 @@ describe('requeue wiring', () => {
     const start = src.indexOf('export async function startAgentProcess(')
     expect(start).toBeGreaterThan(0)
     const body = src.slice(start, src.indexOf('\nexport ', start + 1))
-    const call = body.indexOf('requeueAbandonedAndNotify(name)')
+    // ENGINEPILOT: the codex engine branch requeues early on its own success
+    // path; this pin is about the Claude flow, whose requeue is the LAST call
+    // in the function body.
+    const call = body.lastIndexOf('requeueAbandonedAndNotify(name)')
     const brief = body.indexOf('scheduleRecoveryBrief(')
     expect(call).toBeGreaterThan(brief)
     expect(brief).toBeGreaterThan(0)

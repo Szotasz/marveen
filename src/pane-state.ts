@@ -1594,6 +1594,14 @@ export function detectPaneState(
   // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
+  // The chevron prompt and context footer are also used by terminal agents
+  // without Claude's framed input box. Keep delivery independent of engine.
+  const terminalPrompt = /(?:^|\n)›([^\n]*)\n(?:(?!›)[^\n]*\n){0,3}[^\n]*\d+% (?:context left|left)/.exec(pane)
+  if (terminalPrompt) {
+    if (terminalPrompt[1].trim()) return opts.mergeTypingAsBusy ? 'busy' : 'typing'
+    return 'idle'
+  }
+
   if (!hasIdleFooter(paneLines)) {
     // Footer-less fresh-session / welcome-screen: a PARKED \u276F input box still
     // means the agent has a delivered message waiting to submit. Classify it

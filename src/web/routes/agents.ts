@@ -1,4 +1,6 @@
 import { readPlanTokenStatus, type PlanTokenLaunchStatus } from '../plan-token-launch.js'
+import { validateAgentEngine, syncCodexInstructions, type AgentEngine } from '../agent-engine.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, DEFAULT_MODEL } from '../agent-config.js'
 import { isSingleLineEnvValue } from '../../env.js'
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
@@ -616,6 +618,8 @@ export interface AgentSummary {
   securityProfile: string
   /** Named Claude subscription plan id (see claude-plans.ts), or null when the
    *  agent uses the raw claudeConfigDir / default resolution. */
+  engine: AgentEngine
+  codexConfigDir: string | null
   claudePlan: string | null
   /** SUBPLANTOKEN1110: the last launch outcome of a token-mode plan (store/plan-token-launch/<name>.json:
    *  plan-token | failed | refused | pending | fleet-fallback, with the vault reference id and a reason --
@@ -784,6 +788,7 @@ function getAgentSummary(name: string): AgentSummary {
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
+    ...readAgentEngineConfig(name),
     claudePlan: readAgentClaudePlan(name),
     planTokenLaunch: name === MAIN_AGENT_ID ? null : readPlanTokenStatus(name),
     team: readAgentTeam(name),
@@ -1303,6 +1308,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
+    let engineConfig
+    try { engineConfig = validateAgentEngine(data) }
+    catch (err) { json(res, { error: (err as Error).message }, 400); return true }
     const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
     // A custom provider is stored apart from the model id, as the editor's PUT does. The wizard used to send its
     // picker value ("custom:<id>") as the model, so the agent ran that string as a model and the provider was on no
@@ -1314,7 +1322,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // guarded (fresh probe, like the gate below) so a create on a CLI that
     // cannot run the shipped default gets the previous tier, not a 422 for a
     // model the caller never picked.
-    const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
+    const model = resolveModelId(rawModel || (engineConfig.engine === 'codex' ? DEFAULT_MODEL : await launchableInstallDefault('agent-create', { fresh: true })))
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -1326,7 +1334,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (customProvider && !loadCustomProvider(customProvider)) { json(res, { error: `Unknown custom provider: ${customProvider}` }, 400); return true }
     // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
-    const cliGate = await refuseIfCliCannotLaunch(model)
+    const cliGate = engineConfig.engine === 'codex' ? null : await refuseIfCliCannotLaunch(model)
     if (cliGate) { json(res, cliGate, 422); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     // The main agent lives in PROJECT_ROOT, not under agents/, so the existsSync
@@ -1339,6 +1347,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
+    if (data.engine !== undefined || data.codexConfigDir !== undefined) {
+      mkdirSync(agentDir(name), { recursive: true })
+      atomicWriteFileSync(join(agentDir(name), 'agent-config.json'), JSON.stringify(engineConfig, null, 2))
+    }
     scaffoldAgentDir(name)
     writeAgentModel(name, model)
     if (customProvider) writeAgentCustomProvider(name, customProvider)
@@ -1446,6 +1458,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       if (templateWritten) personalityPendingDetail = detail
     }
+
+    if (engineConfig.engine === 'codex') syncCodexInstructions(agentDir(name))
 
     // A skip is never silent: besides the log line, the main agent hears which
     // files were left alone, because the HTTP caller may be long gone by the
@@ -1653,6 +1667,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const setupMatch = matchChannelRoute(path, '')
   if (setupMatch && method === 'POST') {
     const [name, provider] = setupMatch
+    if (readAgentEngineConfig(name).engine === 'codex') {
+      json(res, { error: 'Codex agents cannot own channel bindings' }, 400); return true
+    }
     const isMain = name === MAIN_AGENT_ID
     // Marveen lives at PROJECT_ROOT, not under agents/marveen/ -- skip the
     // dir check for the main agent and route writes to ~/.claude/channels/.
@@ -3012,6 +3029,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
+      engine?: AgentEngine; codexConfigDir?: string
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
       modelProfile?: string | null
@@ -3041,6 +3059,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
+    const enginePath = join(configRoot, 'agent-config.json')
+    const currentEngineConfig = readJsonObjectForWrite(enginePath)
+    let nextEngineConfig
+    try {
+      nextEngineConfig = validateAgentEngineConfig(name, { ...currentEngineConfig, ...data })
+    } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
+    if (data.engine !== undefined || data.codexConfigDir !== undefined) {
+      if (isAgentRunning(name)) { json(res, { error: 'Stop the agent before changing its engine configuration' }, 409); return true }
+      atomicWriteFileSync(enginePath, JSON.stringify({ ...currentEngineConfig, ...nextEngineConfig }, null, 2))
+      if (nextEngineConfig.engine === 'codex') scaffoldAgentDir(name)
+    }
+
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
@@ -3053,6 +3083,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.claudeMd !== undefined) {
       atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
+      if (nextEngineConfig.engine === 'codex') syncCodexInstructions(configRoot)
       // A stale dashboard-editor buffer can carry a pre-federation snapshot
       // (or a block from a since-disabled state): reconcile the managed
       // federation section right after the write, not just at boot -- the
