@@ -149,6 +149,30 @@ else
   fail "start: user-manager installs keep the --user branch (log: $(cat "$LOG"))"
 fi
 
+# --- SERVICE_ID set apart from MAIN_AGENT_ID ---------------------------------
+# The installer names the units after SERVICE_ID. When .env sets it apart (a
+# renamed agent keeping its old units), start/stop must act on those units,
+# not on <MAIN_AGENT_ID>-*: measured on a live install, the update's restart
+# hit "Unit not found" and left the old dashboard running for days.
+printf 'MAIN_AGENT_ID=testslug\nSERVICE_ID="unitslug"\n' > "$INSTALL/.env"
+
+# 8. stop.sh acts on the SERVICE_ID units.
+FAKE_SYSTEM_UNIT=0 FAKE_USER_MANAGER=1 run_script stop.sh
+if grep -q -- "^--user stop unitslug-dashboard unitslug-channels$" "$LOG"; then
+  pass "stop: units are named after SERVICE_ID when set"
+else
+  fail "stop: units are named after SERVICE_ID when set (log: $(cat "$LOG"))"
+fi
+
+# 9. start.sh acts on the SERVICE_ID units.
+FAKE_SYSTEM_UNIT=0 FAKE_USER_MANAGER=1 run_script start.sh
+if grep -q -- "^--user start unitslug-dashboard unitslug-channels$" "$LOG"; then
+  pass "start: units are named after SERVICE_ID when set"
+else
+  fail "start: units are named after SERVICE_ID when set (log: $(cat "$LOG"))"
+fi
+echo "MAIN_AGENT_ID=testslug" > "$INSTALL/.env"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
