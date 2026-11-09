@@ -53,6 +53,8 @@ async function importKey(privateKey: string) {
     path: '/api/vault/ssh-keys/import',
     method: 'POST',
     url: new URL('http://127.0.0.1:3420/api/vault/ssh-keys/import'),
+    // VAULTSSHOWNER1109: SSH writes are owner actions; this suite tests value handling, so the caller is the owner.
+    auth: { kind: 'session', user: 'owner' },
   }
   await tryHandleVaultSshKeys(ctx)
   return { res, json: () => JSON.parse(res.body || '{}') }
