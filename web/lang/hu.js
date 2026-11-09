@@ -2171,7 +2171,7 @@ window._i18n.hu = {
   'onboarding.identity.saved_restarted': 'Név elmentve, az ügynök újraindul az új névvel. Egy pillanat.',
   'onboarding.identity.saved_restart_failed': 'A név elmentve, de az ügynök újraindítása nem sikerült. Indítsd újra kézzel: {cmd} (macOS-en a grafikus bejelentkezés egy termináljából), aztán térj vissza ide.',
   'onboarding.identity.saved_restart_needed': 'Név elmentve. A futó ügynök a következő újraindításakor veszi fel az új nevet.',
-  'onboarding.title':            'Marveen beállítása',
+  'onboarding.title':            '{brand} beállítása',
   'onboarding.subtitle':         'Fejezd be a beállítást innen, a dashboardból, SSH nélkül.',
   'onboarding.saving':           'Mentés...',
   'onboarding.error':            'Hiba történt.',

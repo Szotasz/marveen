@@ -2168,7 +2168,7 @@ window._i18n.en = {
   'onboarding.identity.saved_restarted': 'Name saved, the agent is restarting with its new name. One moment.',
   'onboarding.identity.saved_restart_failed': 'Name saved, but restarting the agent failed. Restart it by hand: {cmd} (on macOS from a terminal of the GUI login), then come back here.',
   'onboarding.identity.saved_restart_needed': 'Name saved. The running agent picks up its new name on its next restart.',
-  'onboarding.title':            'Set up Marveen',
+  'onboarding.title':            'Set up {brand}',
   'onboarding.subtitle':         'Finish setup here, from the dashboard, no SSH needed.',
   'onboarding.saving':           'Saving...',
   'onboarding.error':            'Something went wrong.',
