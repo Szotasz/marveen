@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process'
 import {
   GROMZO_NEEDS_AUTH_KEY, NEEDS_AUTH_CACHE_FILE, clearGromzoNeedsAuth, describeNeedsAuthClear, launchLoadsGromzo, mainNeedsAuthConfigDir,
 } from '../web/gromzo-needs-auth.js'
-import { clearGromzoNeedsAuthBeforeRespawn } from '../web/channel-monitor.js'
+import { buildMainSessionRespawnCmd, clearGromzoNeedsAuthBeforeRespawn, respawnCmdConfigDir } from '../web/channel-monitor.js'
 
 const REPO = join(__dirname, '..', '..')
 // The entry exactly as Claude Code 2.1.319 wrote it on the VPS (V31), next to another server's entry.
@@ -216,24 +216,33 @@ describe('channels.sh: the REAL cleanup block before the launch', () => {
 })
 
 describe('the dashboard respawn: clearGromzoNeedsAuthBeforeRespawn', () => {
-  it('a respawn with the Gromzo channel clears the isolated dir it launches with', () => {
+  const base = { claudePath: '/x/claude', channelStateEnv: { name: 'GROMZO_STATE_DIR', dir: '/s' }, mainAgentId: 'marveen', gromzoTokenFile: null }
+  it('a REAL built respawn with the Gromzo channel clears the isolated dir that command exports', () => {
     const d = dir()
     const f = put(d, `{${OTHER},${GZ}}`)
-    clearGromzoNeedsAuthBeforeRespawn('a && claude --channels plugin:gromzo-channel@gromzo-local', { isolatedConfigDir: d })
+    const cmd = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: true, config: { isolatedConfigDir: d, fleetToken: true } } as never)
+    expect(respawnCmdConfigDir(cmd)).toBe(d)
+    clearGromzoNeedsAuthBeforeRespawn(cmd)
     expect(readFileSync(f, 'utf8')).toBe(`{${OTHER}}`)
   })
-  it('a respawn without it leaves the file alone', () => {
+  it('a pending respawn (no Gromzo channel) or another provider leaves the file alone', () => {
     const d = dir()
     const f = put(d, `{${GZ}}`)
-    clearGromzoNeedsAuthBeforeRespawn('a && claude --channels plugin:slack-channel@x', { isolatedConfigDir: d })
+    const pending = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: false, config: { isolatedConfigDir: d, fleetToken: true } } as never)
+    const slack = buildMainSessionRespawnCmd({ ...base, pluginId: 'slack-channel@x', config: { isolatedConfigDir: d, fleetToken: true } } as never)
+    clearGromzoNeedsAuthBeforeRespawn(pending)
+    clearGromzoNeedsAuthBeforeRespawn(slack)
     expect(readFileSync(f, 'utf8')).toBe(`{${GZ}}`)
   })
-  it('all three respawn-pane sites of the main session call it, with the same config the command was built with', () => {
+  it('a command without CLAUDE_CONFIG_DIR (the shared root): no dir from the command', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: true, config: { isolatedConfigDir: null, fleetToken: true } } as never)
+    expect(respawnCmdConfigDir(cmd)).toBe(null)
+  })
+  it('all three respawn-pane sites call it right after the command is built, with that command', () => {
     const src = readFileSync(join(REPO, 'src', 'web', 'channel-monitor.ts'), 'utf8')
     const respawns = src.split("execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd]").length - 1
     expect(respawns).toBe(3)
-    expect(src.match(/clearGromzoNeedsAuthBeforeRespawn\(claudeCmd, respawnConfig\)\n\s*execFileSync\(tmuxBin\(\), \['respawn-pane', '-k', '-t', exactTmuxTarget\(MAIN_CHANNELS_SESSION\), claudeCmd\]/g)?.length).toBe(3)
-    expect(src.match(/const respawnConfig = mainRespawnConfigWithAuth\(\)\n\s*const claudeCmd = buildMainSessionRespawnCmd\(\{/g)?.length).toBe(3)
-    expect(src).not.toContain('config: mainRespawnConfigWithAuth(),')
+    expect(src.match(/const claudeCmd = buildMainSessionRespawnCmd\(\{\n(?:.*\n)*?\s*\}\)\n\s*clearGromzoNeedsAuthBeforeRespawn\(claudeCmd\)\n/g)?.length).toBe(3)
+    expect(src.match(/const claudeCmd = buildMainSessionRespawnCmd\(\{/g)?.length).toBe(3)
   })
 })
