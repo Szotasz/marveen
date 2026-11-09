@@ -4643,6 +4643,21 @@ function startAgentsBusyPoll() {
 function stopAgentsBusyPoll() {
   if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
 }
+// The poll only serves the Overview and Agents pages, and a hidden tab needs
+// neither: stop it while the tab is hidden, and when the tab is shown again on
+// one of those pages, restart it (startAgentsBusyPoll refreshes at once).
+// Same rule as the kanban auto-refresh.
+function agentsBusyPollPageOpen() {
+  return ['overviewPage', 'agentsPage'].some((id) => {
+    const page = document.getElementById(id)
+    return !!page && !page.hidden
+  })
+}
+function onAgentsBusyPollVisibility() {
+  if (document.hidden) stopAgentsBusyPoll()
+  else if (agentsBusyPollPageOpen()) startAgentsBusyPoll()
+}
+document.addEventListener('visibilitychange', onAgentsBusyPollVisibility)
 async function refreshAgentTerminalBusy() {
   let entries
   try {
@@ -16077,8 +16092,9 @@ populateAvatarGrid()
 loadMemAgents()
 loadOverview()
 // The overview is the landing page without going through switchPage(), so its
-// live team-graph border needs the busy poll started here too.
-if (!document.getElementById('overviewPage').hidden) startAgentsBusyPoll()
+// live team-graph border needs the busy poll started here too. A tab opened in
+// the background starts it on its first visibilitychange instead.
+if (!document.hidden && !document.getElementById('overviewPage').hidden) startAgentsBusyPoll()
 loadAvailableModels()
 loadOllamaModels()
 {
