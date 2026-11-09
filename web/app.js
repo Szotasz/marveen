@@ -179,11 +179,37 @@ function mainAgentId() {
     if (isStandalone) {
       showStandaloneTokenPrompt(TOKEN_KEY)
     } else {
-      alert(
-        'Dashboard authentication failed. Check the server log for the access URL ' +
-        '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
-      )
+      showAuthFailedNotice()
     }
+  }
+
+  // No password login and no PWA: the only way in is the startup URL with ?token=. A closable notice in the page's
+  // language instead of the hard-coded English alert().
+  function showAuthFailedNotice() {
+    if (document.getElementById('mv-auth-failed-overlay')) return
+    const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
+    const overlay = document.createElement('div')
+    overlay.id = 'mv-auth-failed-overlay'
+    overlay.setAttribute('role', 'alertdialog')
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#1a1917;color:#faf9f5;' +
+      'display:flex;align-items:center;justify-content:center;padding:24px;' +
+      'font-family:system-ui,-apple-system,sans-serif'
+    const box = document.createElement('div')
+    box.style.cssText = 'max-width:420px;width:100%;display:flex;flex-direction:column;gap:14px'
+    const title = document.createElement('h2')
+    title.style.cssText = 'margin:0;font-size:18px;text-align:center'
+    title.textContent = tr('auth.failed.title', 'The dashboard did not accept the access')
+    const desc = document.createElement('p')
+    desc.style.cssText = 'margin:0;font-size:14px;opacity:0.8;line-height:1.5;text-align:center'
+    desc.textContent = tr('auth.failed.desc', 'The access token stored in this browser is missing, wrong or revoked. Find the "Dashboard access URL" line in the server log and open its link, with the ?token= part, again.')
+    const close = document.createElement('button')
+    close.style.cssText = 'padding:12px;border:0;border-radius:8px;background:#3a3936;color:#faf9f5;font-size:15px;font-weight:600'
+    close.textContent = tr('auth.failed.close', 'Close')
+    close.addEventListener('click', () => overlay.remove())
+    box.append(title, desc, close)
+    overlay.appendChild(box)
+    document.body.appendChild(overlay)
+    setTimeout(() => close.focus(), 50)
   }
 
   // Full-screen username+password login overlay. Posts to /api/auth/login; on
@@ -16923,8 +16949,14 @@ async function bridgeEnrollFromUi() {
   msg.textContent = ''
   out.hidden = true
   if (!keyLine || !name) { msg.classList.add('err'); msg.textContent = t('auth.bridge.err_empty'); return }
-  // The confirm step: pairing grants the device SSH-tunnel + dashboard access.
-  if (!confirm(t('auth.bridge.confirm', { name }))) return
+  // The confirm step: pairing writes a restricted authorized_keys line (a tunnel to the dashboard port only) and mints
+  // a device key; a Bridge paired before (the same install id) loses its old key (mintBridgeDeviceKey).
+  const confirmed = await confirmDialog({
+    title: t('auth.bridge.confirm_title'),
+    message: t('auth.bridge.confirm', { name }),
+    okLabel: t('auth.bridge.confirm_ok'),
+  })
+  if (!confirmed) return
   msg.textContent = t('auth.bridge.working')
   try {
     const r = await fetch('/api/security/bridge-enroll', {
@@ -17003,7 +17035,17 @@ async function refreshDeviceKeyList() {
     }).join('')
     el.querySelectorAll('.auth-device-revoke').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        if (!confirm(t('auth.devices.revoke_confirm'))) return
+        // Name the device; a Bridge-paired one loses its SSH tunnel line too (the server removes both halves).
+        const key = keys.find((x) => String(x.id) === btn.dataset.keyId)
+        let message = t('auth.devices.revoke_confirm', { name: (key && key.name) || btn.dataset.keyId })
+        if (key && key.installId) message += ' ' + t('auth.devices.revoke_confirm_bridge')
+        const confirmed = await confirmDialog({
+          title: t('auth.devices.revoke_confirm_title'),
+          message,
+          okLabel: t('auth.devices.revoke_confirm_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         // A Bridge-paired revoke means BOTH halves (dashboard key + ssh line).
         // The key is dead either way, but ssh_removed:false means the
         // authorized_keys line survived (fs error) and the device can still
@@ -17118,9 +17160,17 @@ async function saveOperatorAccess(ev) {
   const msg = document.getElementById('opAccMsg')
   msg.className = 'auth-form-msg'
   // Turning on the pane view shows the operator the conversation itself: ask first.
-  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked && !confirm(t('auth.operator.pane_warning'))) {
-    ev.target.checked = false
-    return
+  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked) {
+    const box = ev.target
+    const confirmed = await confirmDialog({
+      title: t('auth.operator.pane_warning_title'),
+      message: t('auth.operator.pane_warning'),
+      okLabel: t('auth.operator.pane_warning_ok'),
+    })
+    if (!confirmed) {
+      box.checked = false
+      return
+    }
   }
   const next = {
     enabled: document.getElementById('opAccEnabled').checked,

@@ -797,6 +797,139 @@ describe('the pending retry cancel and the background task stop use it', () => {
   })
 })
 
+describe('the auth and device questions use it', () => {
+  const fn = (name: string) => {
+    const m = new RegExp(`(?:async )?function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf('{', m.index); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const BRIDGE = fn('bridgeEnrollFromUi')
+  const DEVICES = fn('refreshDeviceKeyList')
+  const OPERATOR = fn('saveOperatorAccess')
+  const FAILURE = fn('handleAuthFailure')
+  const NOTICE = fn('showAuthFailedNotice')
+  const tr = (key: string, vars?: Record<string, string>) => (vars ? `${key} ${JSON.stringify(vars)}` : key)
+
+  it('the handlers were found, with no native confirm() or alert() left', () => {
+    for (const part of [BRIDGE, DEVICES, OPERATOR, FAILURE, NOTICE]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    }
+  })
+
+  it('the Bridge pairing asks in its own dialog naming the device; a "no" sends nothing', async () => {
+    const dialogs: Array<Record<string, unknown>> = []
+    const calls: string[] = []
+    const fields: Record<string, { value: string; className?: string; textContent?: string; hidden?: boolean; classList?: { add: () => void } }> = {
+      authBridgeKeyLine: { value: 'ssh-ed25519 AAAA bridge-x' },
+      authBridgeName: { value: 'Laptop' },
+      authBridgeHost: { value: '' },
+      authBridgeMsg: { value: '', classList: { add: () => {} } },
+      authBridgeBundle: { value: '' },
+    }
+    const run = new Function('confirmDialog', 't', 'fetch', 'document', `${BRIDGE}\nreturn bridgeEnrollFromUi`)(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return false },
+      tr,
+      async (url: string) => { calls.push(url); return { ok: true, json: async () => ({}) } },
+      { getElementById: (id: string) => fields[id] },
+    ) as () => Promise<void>
+    await run()
+    expect(dialogs).toEqual([{
+      title: 'auth.bridge.confirm_title',
+      message: 'auth.bridge.confirm {"name":"Laptop"}',
+      okLabel: 'auth.bridge.confirm_ok',
+    }])
+    expect(calls).toEqual([])
+  })
+
+  it('the device key revoke names the device in a danger dialog, says a Bridge loses its tunnel too, and a "no" sends nothing', async () => {
+    async function revoke(key: Record<string, unknown>, answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const calls: Array<{ url: string; method: string }> = []
+      let onClick: (() => Promise<void>) | null = null
+      const btn = { dataset: { keyId: String(key.id) }, addEventListener: (_: string, f: () => Promise<void>) => { onClick = f } }
+      const list = { innerHTML: '', querySelectorAll: () => [btn] }
+      const run = new Function('confirmDialog', 't', 'fetch', 'document', 'escapeHtml', `${DEVICES}\nreturn refreshDeviceKeyList`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+        tr,
+        async (url: string, init: { method?: string } = {}) => {
+          calls.push({ url, method: init.method || 'GET' })
+          return { ok: true, json: async () => (url === '/api/auth/device-keys' ? { keys: [{ createdAt: 1, ...key }] } : {}) }
+        },
+        { getElementById: (id: string) => (id === 'authDeviceKeyList' ? list : null) },
+        (x: string) => x,
+      ) as () => Promise<void>
+      await run()
+      await onClick!()
+      return { dialogs, deletes: calls.filter(c => c.method === 'DELETE') }
+    }
+    const plain = await revoke({ id: 7, name: 'Telefon' }, false)
+    expect(plain.dialogs).toEqual([{
+      title: 'auth.devices.revoke_confirm_title',
+      message: 'auth.devices.revoke_confirm {"name":"Telefon"}',
+      okLabel: 'auth.devices.revoke_confirm_ok',
+      danger: true,
+    }])
+    expect(plain.deletes).toEqual([])
+    const bridge = await revoke({ id: 8, name: 'Laptop', installId: 'abc' }, false)
+    expect(bridge.dialogs[0].message).toBe('auth.devices.revoke_confirm {"name":"Laptop"} auth.devices.revoke_confirm_bridge')
+    const yes = await revoke({ id: 7, name: 'Telefon' }, true)
+    expect(yes.deletes).toEqual([{ url: '/api/auth/device-keys/7', method: 'DELETE' }])
+  })
+
+  it('turning on the pane view asks in its own dialog; a "no" unticks it and saves nothing', async () => {
+    const dialogs: Array<Record<string, unknown>> = []
+    const calls: string[] = []
+    const box = { dataset: { opCap: 'paneView' }, checked: true }
+    const run = new Function('confirmDialog', 't', 'fetch', 'document', 'OPERATOR_CAPS', 'OPERATOR_CMDS', 'CSS', 'applyOperatorAccess', `${OPERATOR}\nreturn saveOperatorAccess`)(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return false },
+      tr,
+      async (url: string) => { calls.push(url); return { ok: true, json: async () => ({}) } },
+      { getElementById: () => ({ className: '', checked: true, classList: { add: () => {} } }), querySelector: () => ({ checked: false }) },
+      [], [], { escape: (x: string) => x }, () => {},
+    ) as (ev: unknown) => Promise<void>
+    await run({ target: box })
+    expect(dialogs).toEqual([{
+      title: 'auth.operator.pane_warning_title',
+      message: 'auth.operator.pane_warning',
+      okLabel: 'auth.operator.pane_warning_ok',
+    }])
+    expect(box.checked).toBe(false)
+    expect(calls).toEqual([])
+  })
+
+  it('a failed token login without a password login shows a translated notice instead of the English alert', () => {
+    expect(FAILURE).toContain('showAuthFailedNotice()')
+    expect(APP).not.toContain('Dashboard authentication failed.')
+    for (const key of ['auth.failed.title', 'auth.failed.desc', 'auth.failed.close']) expect(NOTICE).toContain(`tr('${key}', `)
+    expect(NOTICE).toContain("close.addEventListener('click', () => overlay.remove())")
+    expect(NOTICE).not.toContain('innerHTML')
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+    for (const lang of [HU, EN]) {
+      for (const key of ['auth.bridge.confirm', 'auth.devices.revoke_confirm', 'auth.operator.pane_warning']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, key + suffix), key + suffix).not.toBe('')
+      }
+      for (const key of ['auth.devices.revoke_confirm_bridge', 'auth.failed.title', 'auth.failed.desc', 'auth.failed.close']) expect(line(lang, key), key).not.toBe('')
+      expect(line(lang, 'auth.bridge.confirm')).toContain('"{name}"')
+      expect(line(lang, 'auth.devices.revoke_confirm')).toContain('"{name}"')
+      expect(line(lang, 'auth.failed.desc')).toContain('?token=')
+    }
+    // The pairing's tunnel opens to the dashboard port only (permitopen), and a re-paired Bridge loses its old key.
+    expect(line(HU, 'auth.bridge.confirm')).toContain('csak a dashboardhoz')
+    expect(line(HU, 'auth.bridge.confirm')).toContain('a régi kulcsa megszűnik')
+    expect(line(HU, 'auth.devices.revoke_confirm_bridge')).toContain('SSH-alagútja is megszűnik')
+    expect(line(HU, 'auth.operator.pane_warning')).toContain('Írni nem tud bele')
+  })
+})
+
 describe('the custom provider delete uses it', () => {
   const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
   const handler = (() => {
