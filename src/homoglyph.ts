@@ -26,7 +26,7 @@ export interface HomoglyphFinding {
   char: string
   /** e.g. "U+0435" -- reports must cite this, never paste the raw char. */
   codepoint: string
-  /** "CYRILLIC" | "GREEK" */
+  /** "CYRILLIC" | "GREEK" | "INVISIBLE" */
   script: string
   /** Index in the scanned string. */
   index: number
@@ -54,24 +54,71 @@ export function triggerLikeClause(column: string): string {
   return TRIGGER_CHARS.map((c) => `${column} LIKE '%${c}%'`).join(' OR ')
 }
 
+// INVISIBLE: a character a reader cannot see and a search does not match --
+// the same false-zero a Cyrillic look-alike causes, without even a shape to
+// notice. The rule is the Unicode CATEGORY, not a code point list, and it is
+// the one scripts/lib/hidden_marks.py applies on the sending side (#1819), so
+// both ends flag the same set:
+//   Cf (zero-width space/joiners, BOM, soft hyphen, bidi controls, tags),
+//   Zs other than the ASCII space (no-break and typographic spaces),
+//   Zl / Zp (U+2028, U+2029),
+//   Cc other than tab, newline and carriage return (so C1 / U+0085 too).
+// A list is always one new character behind; the fleet's own sweeps missed
+// U+2028/U+2029 that way.
+const INVISIBLE = /^(?:[\p{Cf}\p{Zl}\p{Zp}]|(?! )\p{Zs}|(?![\t\n\r])\p{Cc})$/u
+const INVISIBLE_G = /[\p{Cf}\p{Zl}\p{Zp}]|(?! )\p{Zs}|(?![\t\n\r])\p{Cc}/gu
+const ZWJ = 0x200d
+const VARIATION_SELECTORS = new Set([0xfe0e, 0xfe0f])
+const PICTOGRAPHIC = /^\p{So}$/u
+
+/** Nearest code point before/after the UTF-16 index i, skipping variation
+ *  selectors (they sit between an emoji and its joiner). */
+function neighbour(text: string, i: number, step: -1 | 1): string | null {
+  let j = step < 0 ? i - 1 : i + 1
+  while (j >= 0 && j < text.length) {
+    // step back over a low surrogate to the start of its code point
+    if (step < 0 && j > 0 && /[\uDC00-\uDFFF]/.test(text[j]) && /[\uD800-\uDBFF]/.test(text[j - 1])) j--
+    const cp = text.codePointAt(j) ?? 0
+    if (!VARIATION_SELECTORS.has(cp)) return String.fromCodePoint(cp)
+    j += step < 0 ? -1 : String.fromCodePoint(cp).length
+  }
+  return null
+}
+
+function isInvisibleAt(text: string, i: number, ch: string): boolean {
+  if (!INVISIBLE.test(ch)) return false
+  // A ZWJ between two pictographs joins an emoji sequence: that is its job.
+  if (ch.codePointAt(0) === ZWJ) {
+    const a = neighbour(text, i, -1)
+    const b = neighbour(text, i, 1)
+    if (a && b && PICTOGRAPHIC.test(a) && PICTOGRAPHIC.test(b)) return false
+  }
+  return true
+}
+
 export function detectHomoglyphs(text: string, contextRadius = 20): HomoglyphFinding[] {
   const findings: HomoglyphFinding[] = []
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    const script = CYRILLIC.test(ch) ? 'CYRILLIC' : GREEK.test(ch) ? 'GREEK' : null
-    if (!script) continue
-    const cp = ch.codePointAt(0) ?? 0
-    // The context snippet masks every homoglyph (its own and neighbours):
-    // a report that carries the corrupted form becomes the next scan's hit,
-    // and whoever "fixes" the report deletes the evidence.
-    const raw = text.slice(Math.max(0, i - contextRadius), i + contextRadius).replace(/\n/g, ' ')
-    findings.push({
-      char: ch,
-      codepoint: `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`,
-      script,
-      index: i,
-      context: raw.replace(/[Ѐ-ӿͰ-Ͽ]/g, '?'),
-    })
+  for (let i = 0; i < text.length;) {
+    const cp = text.codePointAt(i) ?? 0
+    const ch = String.fromCodePoint(cp)
+    const script = CYRILLIC.test(ch) ? 'CYRILLIC'
+      : GREEK.test(ch) ? 'GREEK'
+        : isInvisibleAt(text, i, ch) ? 'INVISIBLE' : null
+    if (script) {
+      // The context snippet masks every homoglyph and every invisible mark
+      // (its own and neighbours): a report that carries the corrupted form
+      // becomes the next scan's hit, and whoever "fixes" the report deletes
+      // the evidence.
+      const raw = text.slice(Math.max(0, i - contextRadius), i + contextRadius).replace(/\n/g, ' ')
+      findings.push({
+        char: ch,
+        codepoint: `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`,
+        script,
+        index: i,
+        context: raw.replace(/[Ѐ-ӿͰ-Ͽ]/g, '?').replace(INVISIBLE_G, '?'),
+      })
+    }
+    i += ch.length
   }
   return findings
 }
@@ -90,6 +137,8 @@ export function formatHomoglyphWarning(findings: HomoglyphFinding[]): string {
     'Saved unchanged. If this is your own Hungarian text, re-type the marked ' +
     'word with the intended letter and read it back; if it is vendored code, ' +
     'documentation of this phenomenon, technical Greek notation, or a real ' +
-    'foreign-language record, leave it as is.'
+    'foreign-language record, leave it as is. An INVISIBLE mark cannot be seen ' +
+    'but breaks every later search for the word: if it was not intended, ' +
+    're-type the word without it.'
   )
 }

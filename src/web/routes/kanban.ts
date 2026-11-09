@@ -35,6 +35,7 @@ import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dis
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { MAX_LABEL_PALETTE_ENTRIES, resolveLabelColor } from '../../css-color.js'
 import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -1471,6 +1472,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const comment = automated === true
       ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
       : addKanbanComment(cardId, author, normalizedContent)
+    // Warn-only, same contract as memories / daily-log / messages. The sqlite
+    // trigger journals Cyrillic look-alikes on this table, but the caller of
+    // THIS route never heard about them, and the trigger does not see
+    // invisible marks at all.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ cardId, author }, `kanban comment saved with ${warning}`)
+      json(res, { ...comment, ...archivedNote(card), homoglyph_warning: warning })
+      return true
+    }
     json(res, { ...comment, ...archivedNote(card) })
     return true
   }
