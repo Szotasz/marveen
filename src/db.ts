@@ -5576,6 +5576,36 @@ export function closeMessageAsRecipient(id: number, recipient: string, status: '
   return db.prepare(sql).run(...args).changes > 0
 }
 
+// The close a PEER'S completion receipt performs on the row WE sent it (routes/federation.ts,
+// applyFederatedReceipt). The peer names our id, so the id alone is a claim: the write
+// itself requires that the row was addressed to THIS peer (`to_agent` = '<peer>/<agent>',
+// case-insensitive on the system: validateInboxPayload stores it lowercase now, but rows
+// written before that normalization may carry an uppercase prefix, see
+// failPendingFederatedMessages), that a LOCAL agent sent it (no '/' in from_agent: a peer's
+// own row relayed through us is not ours to close), and that it is still open. One
+// statement, like closeMessageAsRecipient, so nothing slips between a check and the update.
+//
+// The peer's text is NOT written into `result`. That field carries the bridge's
+// "fed:<peer>:<remote id>" trace (setMessageResult), and for local rows only local
+// recipients write it; peer-controlled text there would reach our sending agent without the
+// federation framing the inbound receipt message gets. The receipt body is already
+// delivered as that message, so the row only gains a pointer to it:
+// "<existing result> receipt:<receipt message id>". Returns false when 0 rows changed.
+export function closeOutboundByFederatedReceipt(id: number, peerId: string, status: 'done' | 'failed', receiptMessageId: number): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const prefix = `${peerId.toLowerCase()}/`
+  const pointer = `receipt:${receiptMessageId}`
+  const guard = "id = ? AND lower(substr(to_agent, 1, ?)) = ? AND instr(from_agent, '/') = 0 AND status NOT IN ('done', 'failed')"
+  const resultExpr = "CASE WHEN result IS NULL OR result = '' THEN ? ELSE result || ' ' || ? END"
+  const sql = status === 'done'
+    ? `UPDATE agent_messages SET status = 'done', result = ${resultExpr}, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE ${guard}`
+    : `UPDATE agent_messages SET status = 'failed', result = ${resultExpr}, completed_at = ? WHERE ${guard}`
+  const args = status === 'done'
+    ? [pointer, pointer, now, now, id, prefix.length, prefix]
+    : [pointer, pointer, now, id, prefix.length, prefix]
+  return db.prepare(sql).run(...args).changes > 0
+}
+
 // Status-guarded fail for the federation bridge's terminal branches: it must
 // only fire (and only bounce a failure notice) when THIS call actually closed
 // a still-pending row. The unguarded markMessageFailed above would also
