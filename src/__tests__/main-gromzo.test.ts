@@ -378,7 +378,11 @@ describe('the isolated main config provisioner (agent-process.ts)', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
     const fn = src.slice(src.indexOf('export function readExtraChannelPluginIds(): string[] {'))
     const body = fn.slice(0, fn.indexOf('\n}\n'))
-    expect(body).toContain("return filterMainGromzoIds(env['MAIN_AGENT_ID'] ?? '', ")
+    // GROMZOEXTRASREADY1109: the reader goes through mainIsolatedExtraPluginIds, which still applies the SAME gromzo
+    // filter first (and on a gromzo install also needs primary-ready: gromzo-extras-ready.test.ts)
+    expect(body).toContain('return mainIsolatedExtraPluginIds(')
+    const helper = src.slice(src.indexOf('export function mainIsolatedExtraPluginIds('))
+    expect(helper.slice(0, helper.indexOf('\n}\n'))).toContain('filterMainGromzoIds(mainAgentId, raw')
     expect(src).toMatch(/provisionIsolatedConfigDir\(\s*mainAgentSharedConfigDir\(\),[\s\S]{0,200}readExtraChannelPluginIds\(\),/)
   })
 })

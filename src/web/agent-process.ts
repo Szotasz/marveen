@@ -42,7 +42,7 @@ import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
-import { filterMainGromzoIds } from './main-gromzo-launch.js'
+import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
@@ -619,12 +619,31 @@ export function mainAgentConfigDirIfSeparate(): string | null {
 // enabled there, it would still start as an MCP server, without MXD_AGENT, and exit.
 export function readExtraChannelPluginIds(): string[] {
   try {
-    const env = readEnvFile(['CHANNEL_PLUGINS_EXTRA', 'MAIN_AGENT_ID'])
-    const raw = env['CHANNEL_PLUGINS_EXTRA'] ?? ''
-    return filterMainGromzoIds(env['MAIN_AGENT_ID'] ?? '', raw.split(/\s+/).map(s => s.trim()).filter(Boolean))
+    const env = readEnvFile(['CHANNEL_PLUGINS_EXTRA', 'MAIN_AGENT_ID', 'CHANNEL_PROVIDER'])
+    return mainIsolatedExtraPluginIds(env['CHANNEL_PROVIDER'] || CHANNEL_PROVIDER, env['MAIN_AGENT_ID'] ?? '', env['CHANNEL_PLUGINS_EXTRA'] ?? '')
   } catch {
     return []
   }
+}
+
+/** GROMZOEXTRASREADY1109 (Samu 73946): the ids the isolated MAIN config enables beside its primary, pure for the tests.
+ *  Every id passes filterMainGromzoIds (the gromzo id only with a usable agent.sock and a valid slug), as before. On a
+ *  CHANNEL_PROVIDER=gromzo install the gromzo id ALSO needs the main agent primary-ready (mainGromzoPrimaryReady, the
+ *  same rule as channels.sh and the respawn builder): measured on the QA VPS 11-09, while the install was gromzo
+ *  PENDING this config still enabled the plugin, the pending claude started it without MXD_AGENT (CONNECTION_CLOSED),
+ *  and the next, ready session came up without its Gromzo channel until the dashboard's soft /mcp reconnect ~9 min
+ *  later, racing channels.sh's 600 s never-started guard. On every other provider gromzo is an extra, as before. */
+export function mainIsolatedExtraPluginIds(
+  provider: string,
+  mainAgentId: string,
+  rawExtras: string,
+  opts: { sockPath?: string; primaryReady?: (id: string) => boolean } = {},
+): string[] {
+  const raw = rawExtras.split(/\s+/).map(s => s.trim()).filter(Boolean)
+  const ids = opts.sockPath === undefined ? filterMainGromzoIds(mainAgentId, raw) : filterMainGromzoIds(mainAgentId, raw, opts.sockPath)
+  if (provider !== 'gromzo') return ids
+  const ready = opts.primaryReady ?? ((id: string) => mainGromzoPrimaryReady(id))
+  return ids.filter((id) => id !== MAIN_GROMZO_PLUGIN_ID || ready(mainAgentId))
 }
 
 /**

@@ -150,7 +150,9 @@ describe('the signal is NOT damped -- only the churn is', () => {
     const branch = neverStartedBranch()
     expect(branch).toMatch(/RESTART_REQUESTED=1/)
     // and the tail still turns that flag into a non-zero status
-    expect(CHANNELS).toMatch(/if \[ "\$RESTART_REQUESTED" = "1" \]; then\n\s+exit 1/)
+    // GROMZORAPIDREADY1109: only the planned "gromzo ready" restart ends 0; a never-started exit stays non-zero (the
+    // behaviour itself: gromzo-ready-not-rapid.test.ts, plugin-never-started -> exit 1)
+    expect(CHANNELS).toMatch(/if \[ "\$RESTART_REQUESTED" = "1" \] && \[ "\$EXIT_REASON" != "gromzo-ready" \]; then\n\s+exit 1/)
   })
 
   it('leaves the died-after-up branch on its unchanged 180s grace (scope pin)', () => {
