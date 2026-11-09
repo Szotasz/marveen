@@ -608,6 +608,142 @@ describe('the Claude plan delete uses it', () => {
   })
 })
 
+describe('the update questions use it', () => {
+  const fn = (name: string) => {
+    const m = new RegExp(`async function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf('{', m.index); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const CLI = fn('applyCliUpdate')
+  const DIAG = fn('runDiagnose')
+  const RUN = fn('runUpdate')
+  const APPLY = (() => {
+    const i = APP.indexOf("document.getElementById('updatesApplyBtn').addEventListener('click'")
+    const j = i < 0 ? -1 : APP.indexOf('\n})\n', i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  })()
+
+  // A button stub that runUpdate and the others can disable, hide and query.
+  const button = () => {
+    const part = { hidden: false }
+    return { disabled: false, hidden: false, querySelector: () => part }
+  }
+  function load(body: string, name: string, answer: boolean, responses: Array<{ ok: boolean; body: unknown }>) {
+    const dialogs: Array<Record<string, unknown>> = []
+    const calls: Array<{ url: string; body?: string }> = []
+    const toasts: string[] = []
+    const queue = [...responses]
+    const run = new Function(
+      'confirmDialog', 't', 'fetch', 'showToast', 'document', 'renderCliUpdateOffer', 'pollUpdateOutcome',
+      `${body}\nreturn ${name}`,
+    )(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+      (key: string, vars?: Record<string, string>) => (vars ? `${key} ${JSON.stringify(vars)}` : key),
+      async (url: string, init: { body?: string } = {}) => {
+        calls.push({ url, body: init.body })
+        const r = queue.shift() ?? { ok: true, body: {} }
+        return { ok: r.ok, status: r.ok ? 200 : 409, json: async () => r.body }
+      },
+      (m: string) => { toasts.push(m) },
+      { getElementById: () => button() },
+      () => {}, async () => {},
+    ) as (arg?: unknown) => Promise<void>
+    return { run, dialogs, calls, toasts }
+  }
+
+  it('the handlers were found, with no native confirm() left', () => {
+    for (const part of [CLI, DIAG, RUN, APPLY]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    }
+  })
+
+  it('the CLI update asks in its own dialog naming the version; a "no" sends nothing, a "yes" the apply', async () => {
+    const no = load(CLI, 'applyCliUpdate', false, [])
+    await no.run('2.1.320')
+    expect(no.dialogs).toEqual([{
+      title: 'updates.cli.confirm_title',
+      message: 'updates.cli.confirm {"v":"2.1.320"}',
+      okLabel: 'updates.cli.confirm_ok',
+    }])
+    expect(no.calls).toEqual([])
+    const yes = load(CLI, 'applyCliUpdate', true, [{ ok: true, body: {} }])
+    await yes.run('2.1.320')
+    expect(yes.calls).toEqual([{ url: '/api/updates/cli/apply', body: '{"target":"2.1.320"}' }])
+  })
+
+  it('the diagnosis asks in its own dialog; a "no" starts nothing, a "yes" the diagnosis', async () => {
+    const no = load(DIAG, 'runDiagnose', false, [])
+    await no.run()
+    expect(no.dialogs).toEqual([{
+      title: 'updates.diagnose.consent_title',
+      message: 'updates.diagnose.consent',
+      okLabel: 'updates.diagnose.consent_ok',
+    }])
+    expect(no.calls).toEqual([])
+    const yes = load(DIAG, 'runDiagnose', true, [{ ok: true, body: {} }])
+    await yes.run()
+    expect(yes.calls.map(c => c.url)).toEqual(['/api/updates/diagnose'])
+  })
+
+  it('a dirty tree offers the stash in a danger dialog; a "no" stops, a "yes" retries with autoStash', async () => {
+    const dirty = { ok: false, body: { reason: 'dirty-tree', error: 'Working tree has uncommitted changes' } }
+    const no = load(RUN, 'runUpdate', false, [dirty])
+    await no.run(false)
+    expect(no.dialogs).toEqual([{
+      title: 'updates.confirm.stash_title',
+      message: 'updates.confirm.stash',
+      okLabel: 'updates.confirm.stash_ok',
+      danger: true,
+    }])
+    expect(no.calls.map(c => c.body)).toEqual(['{"autoStash":false}'])
+    const yes = load(RUN, 'runUpdate', true, [dirty, { ok: true, body: {} }])
+    await yes.run(false)
+    expect(yes.calls.map(c => c.body)).toEqual(['{"autoStash":false}', '{"autoStash":true}'])
+    // Already with autoStash: no second question.
+    const again = load(RUN, 'runUpdate', true, [dirty])
+    await again.run(true)
+    expect(again.dialogs).toEqual([])
+  })
+
+  it('the update button asks in its own dialog before runUpdate', () => {
+    expect(APPLY).toContain("title: t('updates.confirm.apply_title')")
+    expect(APPLY).toContain("message: t('updates.confirm.apply')")
+    expect(APPLY).toContain("okLabel: t('updates.confirm.apply_ok')")
+    const ask = APPLY.indexOf('await confirmDialog({')
+    const guard = APPLY.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(APPLY.indexOf('await runUpdate(false)')).toBeGreaterThan(guard)
+  })
+
+  it('the keys are in both languages; the texts say what the update does', () => {
+    const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+    for (const lang of [HU, EN]) {
+      for (const key of ['updates.confirm.apply', 'updates.confirm.stash', 'updates.cli.confirm', 'updates.diagnose.consent']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, key + suffix), key + suffix).not.toBe('')
+      }
+      expect(line(lang, 'updates.cli.confirm')).toContain('{v}')
+    }
+    // update.sh restarts the channels unit too (a fresh conversation) and rolls a dashboard that does not come up back.
+    expect(line(HU, 'updates.confirm.apply')).toContain('új beszélgetéssel')
+    expect(line(HU, 'updates.confirm.apply')).toContain('visszaáll az előző verzióra')
+    // A conflicting restore leaves the local change in the stash only.
+    expect(line(HU, 'updates.confirm.stash')).toContain('csak a stash-ben')
+    // The diagnosis is a task on the main agent, not a new agent; it never restarts the services.
+    expect(line(HU, 'updates.diagnose.consent')).toContain('A fő ügynök feladatot kap')
+    expect(line(HU, 'updates.diagnose.consent')).toContain('nem indítja újra')
+    for (const key of ['updates.cli.confirm', 'updates.diagnose.consent', 'updates.confirm.stash']) {
+      expect(line(HU, key)).not.toMatch(/session|agenst|working tree/)
+    }
+  })
+})
+
 describe('the Vault deletes use it', () => {
   const SITES = [
     ['delete a secret from the Connectors list', "<span class=\"github-repo-date\">${escapeHtml(s.id)} &middot; ${date}</span>", 'vault.confirm.delete', "{ method: 'DELETE' })"],

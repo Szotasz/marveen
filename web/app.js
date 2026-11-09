@@ -15299,7 +15299,12 @@ async function renderCliUpdateOffer(fresh) {
 
 async function applyCliUpdate(target) {
   if (!target) return
-  if (!confirm(t('updates.cli.confirm', { v: target }))) return
+  const confirmed = await confirmDialog({
+    title: t('updates.cli.confirm_title'),
+    message: t('updates.cli.confirm', { v: target }),
+    okLabel: t('updates.cli.confirm_ok'),
+  })
+  if (!confirmed) return
   const btn = document.getElementById('updatesCliBtn')
   if (btn) btn.disabled = true
   try {
@@ -15344,7 +15349,14 @@ async function renderDiagnoseOffer() {
 }
 
 async function runDiagnose() {
-  if (!confirm(t('updates.diagnose.consent'))) return
+  // The post-rollback-diagnose task runs on the main agent: it reads the update log, fixes what it safely can, never
+  // drops local changes and never restarts the services (seed-scheduled-tasks/post-rollback-diagnose/SKILL.md).
+  const confirmed = await confirmDialog({
+    title: t('updates.diagnose.consent_title'),
+    message: t('updates.diagnose.consent'),
+    okLabel: t('updates.diagnose.consent_ok'),
+  })
+  if (!confirmed) return
   const btn = document.getElementById('updatesDiagnoseBtn')
   if (btn) btn.disabled = true
   try {
@@ -15395,9 +15407,15 @@ async function runUpdate(autoStash) {
       resetBtn()
       // dirty-tree without autoStash: offer the auto-stash retry inline.
       if (data.reason === 'dirty-tree' && !autoStash) {
-        if (confirm(t('updates.confirm.stash'))) {
-          await runUpdate(true)
-        }
+        // update.sh stashes, updates and pops; a path whose pop conflicts stays on the updated version and the
+        // local change is left in the stash only (ANETTUPDATESTASH1102), hence the danger dialog.
+        const stash = await confirmDialog({
+          title: t('updates.confirm.stash_title'),
+          message: t('updates.confirm.stash'),
+          okLabel: t('updates.confirm.stash_ok'),
+          danger: true,
+        })
+        if (stash) await runUpdate(true)
         return
       }
       showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
@@ -15464,8 +15482,15 @@ async function pollUpdateOutcome(resetBtn) {
   showToast(t('updates.toast.status_timeout'))
 }
 
+// update.sh stops and starts the dashboard and the channels unit (scripts/stop.sh, start.sh), and channels.sh
+// always starts a fresh conversation; a dashboard that does not come up is rolled back to the previous version.
 document.getElementById('updatesApplyBtn').addEventListener('click', async () => {
-  if (!confirm(t('updates.confirm.apply'))) return
+  const confirmed = await confirmDialog({
+    title: t('updates.confirm.apply_title'),
+    message: t('updates.confirm.apply'),
+    okLabel: t('updates.confirm.apply_ok'),
+  })
+  if (!confirmed) return
   await runUpdate(false)
 })
 
