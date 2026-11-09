@@ -210,7 +210,7 @@ describe('the loops', () => {
     ['web/context-guard-runner.ts', /setInterval\(whileNotFrozen\('context-guard', sweep\), INTERVAL_MS\)/],
     ['web/context-restart-gate-runner.ts', /if \(frozenSkip\('context-restart-gate'\)\) \{\s*scheduleSweep\(name, DISABLED_RECHECK_MS\)\s*return\s*\}/],
     ['web/model-fallback-runner.ts', /setInterval\(whileNotFrozen\('model-fallback', sweep\), INTERVAL_MS\)/],
-    ['web/inbox-nudge-watcher.ts', /setInterval\(whileNotFrozen\('inbox-nudge', \(\) => \{ void tick\(\) \}\), INBOX_NUDGE_INTERVAL_MS\)/],
+    ['web/inbox-nudge-watcher.ts', /setInterval\(whileNotFrozen\('inbox-nudge', \(\) => \{ void runWatcherInterval\(\) \}\), VOICE_NUDGE_INTERVAL_MS\)/],
     ['web/stuck-input-watcher.ts', /setInterval\(whileNotFrozen\('stuck-input', \(\) => \{ void sweep\(\) \}\), INTERVAL_MS\)/],
     ['web/stuck-tool-call-watcher.ts', /setInterval\(whileNotFrozen\('stuck-tool-call', \(\) => \{ void sweep\(\) \}\), INTERVAL_MS\)/],
     ['web/channel-monitor.ts', /setInterval\(whileNotFrozen\('channel-monitor', \(\) => \{ void check\(\) \}\), 60000\)/],
