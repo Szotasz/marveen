@@ -2440,6 +2440,8 @@ window._i18n.en = {
   'fleet_freeze.toast.unfrozen':    'The fleet is running again.',
   'fleet_freeze.toast.owner_only':  'Only the owner can lift it, signed in with the dashboard password. If this browser is in token mode: Settings, the Dashboard login card, the Sign in with the dashboard password button.',
   'auth.banner.action':           'Set up login',
+  'onboarding.resume.text':       'The setup is not finished yet.',
+  'onboarding.resume.action':     'Open the setup wizard',
   'branch_drift.banner.text':     'This install follows the {branch} development branch, not the released main branch, so updates can bring unreleased code. Switch back to the product branch:',
   'branch_drift.notice.on_main':  'Tracked branch: the released product branch',
   'branch_drift.notice.off_main': 'Tracked branch: {branch}. This is not the released product branch (main), so updates deliver unreleased code.',
