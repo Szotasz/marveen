@@ -50,8 +50,20 @@ function lift(start: string, end: string): string {
   expect(b, end).toBeGreaterThan(a)
   return src.slice(a, b)
 }
+/** Like lift, but [anchor] may sit mid-line: the text starts at the beginning of
+ *  the anchor's line, so a term added in front of it (MAINAUTH1107 put one into
+ *  trigger 1's condition) does not break the lift. */
+function liftFromLine(anchor: string, end: string): string {
+  const a = src.indexOf(anchor)
+  expect(a, anchor).toBeGreaterThanOrEqual(0)
+  expect(src.indexOf(anchor, a + 1), `${anchor} twice`).toBe(-1)
+  const start = src.lastIndexOf('\n', a) + 1
+  const b = src.indexOf(end, a + anchor.length)
+  expect(b, end).toBeGreaterThan(a)
+  return src.slice(start, b)
+}
 const resolver = () => lift('_guard_sender() {', '\n}\n') + '\n}\n'
-const triggers = () => lift('  if [ -z "$CFG_ENV" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then',
+const triggers = () => liftFromLine('[ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then',
   '  # Custom provider env for the main agent')
 
 interface Seen { method: string; url: string; headers: IncomingMessage['headers']; body: string }
