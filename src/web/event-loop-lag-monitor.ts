@@ -13,7 +13,7 @@
 // only: it never restarts or mutates anything.
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { logger } from '../logger.js'
-import { readMachineState, type CpuSnapshot, type MachineStateReader } from './machine-state.js'
+import { readMachineState, readCpuSnapshot, type CpuSnapshot, type MachineStateReader } from './machine-state.js'
 
 // Read the window max/mean/p99 (WARN threshold is on the max: a single long block is the
 // wedge signal, not a raised average). Sampled every 30s; blocked past 1s is "wedged".
@@ -59,18 +59,28 @@ export function classifyLagSample(s: LagSample, thresholdMs: number): 'ok' | 'bl
 // startEventLoopLagMonitor() and uninstalled by stop() instead of being a plain default
 // parameter that always runs: a direct sampleLagOnce(h, t) call outside a running monitor
 // then logs the plain 4-field shape, while production blocked windows carry the machine
-// state. lastCpuSnapshot chains consecutive blocked windows so busyFrac spans them.
+// state.
+//
+// LAGBUSYFRAC1109 (Boni's 11-08 finding on #2622, Samu 73807): busyFrac is the CPU load of
+// the LAST window, not the average since the previous blocked one. The monitor takes a
+// baseline CPU snapshot when it starts, and every sample (healthy or blocked) moves
+// lastCpuSnapshot forward, so a blocked window's busyFrac covers exactly the time since the
+// previous sample (~SAMPLE_MS), and the first block after start has a baseline (never null
+// for want of one). cpuSampler is the per-sample snapshot source, installed with the reader.
 let lastCpuSnapshot: CpuSnapshot | null = null
 let machineStateReader: MachineStateReader | null = null
+let cpuSampler: (() => CpuSnapshot | null) | null = null
 
 // Read one window, log on a block, and reset. Extracted + injectable so a test can drive
 // it with a fake histogram; returns the classification for assertions. The third argument
 // defaults to the module-level reader (set only while a monitor runs) so the machine-state
-// fields appear exactly when a real monitor produced the window.
+// fields appear exactly when a real monitor produced the window. The fourth argument (the
+// per-sample CPU snapshot source) defaults the same way.
 export function sampleLagOnce(
   h: LagHistogram,
   thresholdMs: number = WARN_MS,
   readState: MachineStateReader | null = machineStateReader,
+  sampleCpu: (() => CpuSnapshot | null) | null = cpuSampler,
 ): 'ok' | 'blocked' {
   try {
     const sample = readLagSample(h)
@@ -95,6 +105,10 @@ export function sampleLagOnce(
         fields,
         'event-loop-lag: the event loop was BLOCKED past the threshold this window -- the dashboard was unresponsive (possible wedge; look for long synchronous work)',
       )
+    } else if (sampleCpu) {
+      // A healthy window still moves the CPU baseline forward, so the next blocked window's
+      // busyFrac covers only that window (LAGBUSYFRAC1109). Best-effort, like the reader.
+      try { lastCpuSnapshot = sampleCpu() } catch { /* keep the previous baseline */ }
     }
     return verdict
   } finally {
@@ -108,6 +122,10 @@ export interface LagMonitorHandle { sampleMs: number; warnMs: number; stop(): vo
 // Starts sampling; stop() clears both timers and disables the histogram.
 export function startEventLoopLagMonitor(): LagMonitorHandle {
   machineStateReader = readMachineState
+  cpuSampler = readCpuSnapshot
+  // The baseline for the first window (LAGBUSYFRAC1109): without it the first block's
+  // busyFrac would have nothing to subtract from and read null.
+  lastCpuSnapshot = readCpuSnapshot()
   const histogram = monitorEventLoopDelay({ resolution: RESOLUTION_MS })
   histogram.enable()
   const run = () => {
@@ -124,6 +142,7 @@ export function startEventLoopLagMonitor(): LagMonitorHandle {
       // monitor lifetimes (a busyFrac must never span two different monitors).
       lastCpuSnapshot = null
       machineStateReader = null
+      cpuSampler = null
     },
   }
 }

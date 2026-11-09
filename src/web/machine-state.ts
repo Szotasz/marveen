@@ -38,6 +38,47 @@ export function parseStatTotalLine(line: string): CpuSnapshot | null {
   return { total, idleAll }
 }
 
+// LAGBUSYFRAC1109: the portable CPU source where /proc/stat cannot be read (macOS, a large
+// share of installs): os.cpus() per-core times in milliseconds, summed. total = user + nice
+// + sys + idle + irq, idleAll = idle (os.cpus() has no iowait bucket). Its units (ms) differ
+// from /proc/stat's jiffies, but busyFrac is a ratio of two deltas from ONE source, and the
+// source does not change within a process (readCpuSnapshot picks it by what is readable).
+// Empty input or a non-finite time -> null.
+export function snapshotFromOsCpus(
+  cpus: ReadonlyArray<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }>,
+): CpuSnapshot | null {
+  if (cpus.length === 0) return null
+  let total = 0
+  let idleAll = 0
+  for (const c of cpus) {
+    const t = c.times
+    const parts = [t.user, t.nice, t.sys, t.idle, t.irq]
+    if (parts.some((v) => !Number.isFinite(v))) return null
+    total += parts.reduce((s, v) => s + v, 0)
+    idleAll += t.idle
+  }
+  return { total, idleAll }
+}
+
+// One CPU snapshot: the first line of /proc/stat where it can be read (Linux), else the
+// os.cpus() aggregate (macOS). Cheap enough to take on EVERY lag sample (one small read),
+// which is what lets busyFrac describe the last window instead of the time since the
+// previous blocked one. The two readers are injectable for the tests; never throws.
+export function readCpuSnapshot(
+  readStatLine: () => string = () => readFileSync('/proc/stat', 'utf8').split('\n', 1)[0] ?? '',
+  osCpus: () => ReadonlyArray<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }> = () => os.cpus(),
+): CpuSnapshot | null {
+  try {
+    const fromProc = parseStatTotalLine(readStatLine())
+    if (fromProc) return fromProc
+  } catch { /* no /proc/stat (macOS): fall back to os.cpus() */ }
+  try {
+    return snapshotFromOsCpus(osCpus())
+  } catch {
+    return null
+  }
+}
+
 // Busy fraction between two snapshots: 1 - dIdle/dTotal, rounded to 3 decimals. null when
 // the delta is unusable (no baseline, no movement, or an impossible idle delta -- the
 // counters are /proc and best-effort, never trusted enough to produce a bogus number).
@@ -126,12 +167,12 @@ export function readMachineState(prevCpu: CpuSnapshot | null): MachineState & { 
     topRssComm: null,
     cpu: null,
   }
-  // CPU: first line of /proc/stat; busyFrac needs the previous window's snapshot.
+  // CPU: the same snapshot source the monitor samples every window (readCpuSnapshot), so
+  // busyFrac covers exactly the window since the previous sample (LAGBUSYFRAC1109).
   try {
-    const firstLine = readFileSync('/proc/stat', 'utf8').split('\n', 1)[0] ?? ''
-    st.cpu = parseStatTotalLine(firstLine)
+    st.cpu = readCpuSnapshot()
     st.busyFrac = computeBusyFrac(prevCpu, st.cpu)
-  } catch { /* /proc unreadable: cpu/busyFrac stay null */ }
+  } catch { /* no CPU source: cpu/busyFrac stay null */ }
   // Memory: available headroom and swap in use.
   try {
     const { memAvailableMB, swapUsedMB } = parseMeminfo(readFileSync('/proc/meminfo', 'utf8'))
