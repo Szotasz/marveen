@@ -7614,13 +7614,25 @@ function renderPendingRetries(container, rows) {
       const row = e.currentTarget.closest('.pending-retry-row')
       const id = row?.dataset.id
       if (!id) return
-      if (!confirm(t('tasks.confirm.cancel_pending'))) return
+      const r = rows.find(x => String(x.id) === id)
+      const confirmed = await confirmDialog({
+        title: t('tasks.confirm.cancel_pending_title'),
+        // Without an agent name the text drops the parentheses instead of printing an empty pair.
+        message: (r && r.agentName)
+          ? t('tasks.confirm.cancel_pending', { name: r.taskName || id, agent: r.agentName })
+          : t('tasks.confirm.cancel_pending_no_agent', { name: (r && r.taskName) || id }),
+        okLabel: t('tasks.confirm.cancel_pending_ok'),
+        danger: true,
+      })
+      if (!confirmed) return
       try {
         const res = await fetch(`/api/schedules/pending/${encodeURIComponent(id)}`, { method: 'DELETE' })
-        if (!res.ok) throw new Error('cancel failed')
+        // The server's reasons are English API texts ("Pending retry not found"): a translated toast instead,
+        // and the list is reloaded, since a 404 means the retry is already gone.
+        if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))
         loadPendingRetries()
-      } catch (err) {
-        console.error('Pending retry cancel hiba:', err)
+      } catch {
+        showToast(t('tasks.toast.cancel_pending_error'))
       }
     })
   })
@@ -16078,7 +16090,7 @@ async function loadBgTasks() {
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <span style="font-size:12px;color:var(--text-muted)">${esc(task.started_label)}</span>
-            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
+            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)}, ${jsArg(task.agent_id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
         <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(task.prompt)}</div>
@@ -16110,14 +16122,21 @@ async function viewBgTask(id) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
     document.getElementById('bgModalClose').addEventListener('click', () => modal.remove())
   } catch {
-    showToast('Hiba')
+    showToast(t('bgTasks.load_error'))
   }
 }
 
-async function cancelBgTask(id) {
-  if (!confirm(t('bgTasks.cancel.confirm'))) return
+async function cancelBgTask(id, agent) {
+  // The server kills the task's tmux session; the output so far is kept on the task.
+  const confirmed = await confirmDialog({
+    title: t('bgTasks.cancel.title'),
+    message: agent ? t('bgTasks.cancel.confirm', { id, agent }) : t('bgTasks.cancel.confirm_no_agent', { id }),
+    okLabel: t('bgTasks.cancel.ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
-    const res = await fetch(`/api/background-tasks/${id}`, { method: 'DELETE' })
+    const res = await fetch(`/api/background-tasks/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (res.ok) {
       showToast(t('bgTasks.toast.stopped'))
       loadBgTasks()
@@ -16125,7 +16144,7 @@ async function cancelBgTask(id) {
       showToast(t('bgTasks.toast.stop_error'))
     }
   } catch {
-    showToast('Hiba')
+    showToast(t('bgTasks.toast.stop_error'))
   }
 }
 
