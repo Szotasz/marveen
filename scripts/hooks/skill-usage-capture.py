@@ -3,7 +3,8 @@
 
 Two event types are captured:
   tool_call  -- the Skill tool was invoked (tool_name == 'Skill')
-  skill_read -- a SKILL.md file under ~/.claude/skills/<name>/SKILL.md was Read
+  skill_read -- a SKILL.md file under <root>/skills/<name>/SKILL.md was Read,
+                or named by a Bash command that reads it (SKILLBASHREAD1109)
 
 Unlike tool_call_log (pruned every 24 h), skill_usage is never pruned so the
 dream-engine can make data-driven suggestions after two or more weeks of data.
@@ -81,11 +82,58 @@ _agent_id_from_cwd = ledger_lib.agent_id_from_cwd
 # Merve 2026-09-14: 71 telepitett skillhez OSSZESEN 4 usage-sor tartozott, es
 # mind a negy `tool_call` volt, egyetlen `skill_read` sem.
 #
-# MEGMARADO KORLAT, szandekosan kimondva: ez a hook csak a Read TOOL-t latja.
-# Ha egy SKILL.md-t Bash-bol olvasnak (cat/sed/grep/python), az NEM keletkeztet
-# sort. A statisztika ezert MINDIG ALULMER -- a "0 hasznalat" sosem bizonyitja,
-# hogy a skill halott. Ezt a dream-engine bucket-5 ertelmezesenel figyelembe kell venni.
-_SKILL_MD_RE = re.compile(r"(?:^|/)\.claude/skills/([^/]+)/SKILL\.md$")
+# MEGMARADO KORLAT, szandekosan kimondva: a hook a Skill es a Read TOOL-t, valamint
+# a Bash-parancsban LITERALISAN leirt SKILL.md utat latja. Valtozobol, globbol vagy
+# szkriptfajlbol olvasott SKILL.md tovabbra sem keletkeztet sort. A statisztika
+# ezert MEG MINDIG ALULMER -- a "0 hasznalat" sosem bizonyitja, hogy a skill halott.
+# Ezt a dream-engine bucket-5 ertelmezesenel figyelembe kell venni.
+#
+# SKILLBASHREAD1109: the "Bash-bol olvasott SKILL.md nem keletkeztet sort" korlat
+# a gyakorlatban a mérés nagy reszet elnyelte. Merve 2026-11-09: 11-07 20:21 es
+# 11-09 08:10 kozott egyetlen sor sem keletkezett, mikozben a fo agens tobb
+# skillt is megnyitott -- mind `cat`/`sed`-del, Bash-bol. A dream-engine ebbol
+# "30 oraja allo merest" jelentett. Ezert a Bash-parancsban szereplo SKILL.md
+# utat is szamoljuk (`skill_read`), lasd _classify_bash().
+#
+# A config-gyoker neve sem mindig `.claude`: a fo agens izolalt gyokere
+# `.channels-config`, a sub-agenseke `.claude-config`, es a Skill tool base
+# directory-ja ezekbe mutat. Mindharom alak skill-gyoker.
+_SKILL_ROOT = r"(?:^|/)\.(?:claude|channels-config|claude-config)/skills/"
+_SKILL_MD_RE = re.compile(_SKILL_ROOT + r"([^/]+)/SKILL\.md$")
+# In a command line the path ends at whitespace, a quote or a shell operator.
+# A glob segment (`*/SKILL.md`) is a listing, not a read of one skill: excluded.
+_SKILL_MD_IN_CMD_RE = re.compile(
+    r"(?:^|(?<=[\s'\"=/]))(?:[^\s'\"]*?/)?\.(?:claude|channels-config|claude-config)/skills/"
+    r"([^/\s'\"*?\[\]{}$`]+)/SKILL\.md(?=$|[\s'\";|&)<>])"
+)
+# A command that writes or removes a SKILL.md is not a use of the skill.
+_WRITE_HINT_RE = re.compile(
+    r"(?:>>?\s*[^\s]*SKILL\.md)|\bsed\s+(?:-[a-zA-Z]*\s+)*-i|\btee\b|\brm\b|\bmv\b|\bcp\b|"
+    r"\bgit\s+(?:add|commit|checkout|restore|rm|mv)\b|\bln\b"
+)
+_MAX_BASH_SKILLS = 5
+
+
+def _classify_bash(command: str) -> list[str]:
+    """Skill names whose SKILL.md a Bash command reads (SKILLBASHREAD1109).
+
+    Distinct, in first-seen order, capped at _MAX_BASH_SKILLS so a long
+    one-off sweep cannot flood the table. A command that looks like it
+    writes, copies, moves or removes a SKILL.md yields nothing: editing a
+    skill is not using it.
+    """
+    if not command or "SKILL.md" not in command:
+        return []
+    if _WRITE_HINT_RE.search(command):
+        return []
+    out: list[str] = []
+    for m in _SKILL_MD_IN_CMD_RE.finditer(command):
+        name = m.group(1)
+        if name not in out:
+            out.append(name)
+        if len(out) >= _MAX_BASH_SKILLS:
+            break
+    return out
 
 
 def _classify(tool_name: str, tool_input: dict) -> tuple[str, str] | None:
@@ -116,39 +164,42 @@ def main() -> None:
     session_id = payload.get("session_id") or None
     cwd = payload.get("cwd") or ""
 
-    result = _classify(tool_name, tool_input)
-    if result is None:
+    if tool_name == "Bash":
+        events = [(name, "skill_read") for name in _classify_bash(str(tool_input.get("command") or ""))]
+    else:
+        result = _classify(tool_name, tool_input)
+        events = [result] if result is not None else []
+    if not events:
         sys.exit(0)
 
-    skill_name, trigger_type = result
     agent_id = ledger_lib.agent_id_from_payload(payload)
 
     token = _dashboard_token()
     if not token:
         sys.exit(0)
 
-    body = json.dumps({
-        "agent_id": agent_id,
-        "skill_name": skill_name,
-        "trigger_type": trigger_type,
-        "session_id": session_id,
-    }).encode()
-
-    try:
-        urllib.request.urlopen(
-            urllib.request.Request(
-                f"http://localhost:{_web_port()}/api/skill-usage",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}",
-                },
-                method="POST",
-            ),
-            timeout=3,
-        )
-    except Exception:
-        pass  # never block the agent
+    for skill_name, trigger_type in events:
+        body = json.dumps({
+            "agent_id": agent_id,
+            "skill_name": skill_name,
+            "trigger_type": trigger_type,
+            "session_id": session_id,
+        }).encode()
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"http://localhost:{_web_port()}/api/skill-usage",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                    method="POST",
+                ),
+                timeout=3,
+            )
+        except Exception:
+            break  # never block the agent; a dead dashboard is not retried per skill
 
     sys.exit(0)
 

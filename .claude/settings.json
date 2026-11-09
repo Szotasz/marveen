@@ -44,7 +44,7 @@
       { "matcher": "telegram.*reply", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress_reply_clear.py\"", "timeout": 15 } ] },
       { "matcher": "WebSearch|WebFetch", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"", "timeout": 10 } ] },
       { "matcher": "slack.*reply", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/slack_progress_reply_clear.py\"", "timeout": 15 } ] },
-      { "matcher": "Skill|Read", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/skill-usage-capture.py\"", "timeout": 10 } ] },
+      { "matcher": "Skill|Read|Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/skill-usage-capture.py\"", "timeout": 10 } ] },
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-bash-gate.py\"", "timeout": 10 } ] }
     ],
     "PostToolUseFailure": [

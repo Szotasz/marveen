@@ -53,7 +53,7 @@ describe('tool-log-capture registration', () => {
     // ensureAgentHooks appends rather than replaces, and a regression that
     // collapsed the two entries would silently kill skill_usage capture.
     const entries = tpl.hooks?.PostToolUse ?? []
-    expect(entries.some((e) => e.matcher === 'Skill|Read')).toBe(true)
+    expect(entries.some((e) => e.matcher === 'Skill|Read|Bash')).toBe(true)
     expect(entries.filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('tool-log-capture.py')))).toHaveLength(1)
   })
 

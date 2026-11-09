@@ -37,11 +37,11 @@ describe('skill-usage-capture registration', () => {
     expect(cmd).toMatch(/; exit 0'$/)
   })
 
-  it('matches only the tools the hook classifies (Skill calls and SKILL.md Reads)', () => {
+  it('matches only the tools the hook classifies (Skill calls, SKILL.md Reads, Bash reads of a SKILL.md)', () => {
     const entry = (tpl.hooks?.PostToolUse ?? []).find((e) =>
       (e.hooks ?? []).some((h) => (h.command ?? '').includes('skill-usage-capture.py')),
     )!
-    expect(entry.matcher).toBe('Skill|Read')
+    expect(entry.matcher).toBe('Skill|Read|Bash')
   })
 
   it('is a known hook script, so the stale-entry pruner may clean it up', () => {
