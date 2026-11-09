@@ -89,6 +89,7 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
+import { clearGromzoNeedsAuth, describeNeedsAuthClear, launchLoadsGromzo, mainNeedsAuthConfigDir } from './gromzo-needs-auth.js'
 import { flushGromzoPendingOwnerAlerts, setGromzoMainLive } from '../notify.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
@@ -117,6 +118,31 @@ export const PANE_AUTH_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth')
 // MAINAUTH1107: sourced right AFTER the config branch (api: the token unset, subscription: the key unset), so neither
 // CFG_ENV nor the tmux global env can add the other credential back. Written by main-auth.ts for every launch.
 export const PANE_AUTH_POST_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth-post')
+
+/** GROMZONEEDSAUTH1109: the CLAUDE_CONFIG_DIR a built respawn command exports (buildMainSessionRespawnCmd writes it as
+ *  `export CLAUDE_CONFIG_DIR='<dir>'`), or null when it exports none (the shared root). */
+export function respawnCmdConfigDir(claudeCmd: string): string | null {
+  const m = /export CLAUDE_CONFIG_DIR='([^']*)'/.exec(claudeCmd)
+  return m ? m[1] : null
+}
+
+/** GROMZONEEDSAUTH1109 (Samu 74033): before a respawn whose command carries the Gromzo channel, Claude Code's cached
+ *  needs-auth entry for the Gromzo server goes out of the config dir THAT command launches with (read from the command
+ *  itself, so it is the pane's dir by construction; the same helper as channels.sh; why and what it never touches:
+ *  gromzo-needs-auth.ts). Never throws: the respawn goes ahead either way. */
+export function clearGromzoNeedsAuthBeforeRespawn(claudeCmd: string): void {
+  if (!launchLoadsGromzo(claudeCmd)) return
+  try {
+    const r = clearGromzoNeedsAuth(mainNeedsAuthConfigDir(respawnCmdConfigDir(claudeCmd)))
+    if (r.outcome === 'error' || r.outcome === 'not_json' || r.outcome === 'unknown_shape' || r.outcome === 'unknown_format') {
+      logger.warn({ outcome: r.outcome }, describeNeedsAuthClear(r))
+    } else {
+      logger.info({ outcome: r.outcome }, describeNeedsAuthClear(r))
+    }
+  } catch (err) {
+    logger.warn({ err }, 'gromzo-needs-auth: no-op: failed')
+  }
+}
 
 /** MAINAUTH1107: the config decision of a dashboard respawn, with the main agent's credential decided and written for
  *  it first (pane-auth file, post-file, key approval). A respawn-pane does not run channels.sh, so without this a
@@ -1339,6 +1365,7 @@ export function respawnMainSessionFresh(): void {
       continueSession: false,
       config: mainRespawnConfigWithAuth(),
     })
+    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
     // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
     // here. `respawn-pane -k` then throws "can't find pane", the caller only logs it, lastRestart
@@ -1449,6 +1476,7 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       // preserving the prior shared-root behaviour.
       config: mainRespawnConfigWithAuth(),
     })
+    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
@@ -1758,6 +1786,7 @@ function respawnMarveenSessionFresh(): boolean {
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       config: mainRespawnConfigWithAuth(),
     })
+    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
     scheduleGromzoOrphanReap('main-respawn', tmuxBin())

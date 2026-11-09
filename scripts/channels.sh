@@ -1884,6 +1884,24 @@ esac
 # shellcheck disable=SC2046,SC2086
 wait_for_channel_hosts $(channel_wait_hosts "$CHANNEL_PROVIDER" $CHANNEL_PLUGINS_EXTRA) || true
 $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
+# GROMZONEEDSAUTH1109 (Samu 74033): a launch that carries the Gromzo channel first takes the Gromzo server's cached
+# needs-auth entry out of the config dir it launches with. Measured on the QA VPS 11-09 (V30, V31): a gromzo-pending
+# session's failed plugin start left "plugin:gromzo-channel:gromzo" in <config dir>/mcp-needs-auth-cache.json, and the
+# next session skipped that server at start and stayed deaf until a /mcp reconnect. Only that key goes, the rest of the
+# file stays byte for byte; anything unexpected is a no-op with its reason (src/web/gromzo-needs-auth.ts). The line goes
+# to this script's stderr (channels.error.log), and a failure never blocks the start. The config dir is the one this
+# session launches with: its own CLAUDE_CONFIG_DIR when CFG_ENV set one, else the inherited one / ~/.claude.
+case " $CHANNELS_ARG " in
+  *" plugin:gromzo-channel@gromzo-local "*)
+    if [ -n "$CFG_ENV" ]; then _gz_na_dir="$_MAIN_CFG_DIR"; else _gz_na_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; fi
+    if command -v node >/dev/null 2>&1 && [ -f "$INSTALL_DIR/scripts/gromzo-needs-auth-clear.mjs" ]; then
+      node "$INSTALL_DIR/scripts/gromzo-needs-auth-clear.mjs" "$_gz_na_dir" || true
+    else
+      echo "gromzo-needs-auth: no-op: node or scripts/gromzo-needs-auth-clear.mjs missing: $_gz_na_dir" >&2
+    fi
+    unset _gz_na_dir
+    ;;
+esac
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's
 # claude/poller, and the command below re-exports it for the pane anyway. But
