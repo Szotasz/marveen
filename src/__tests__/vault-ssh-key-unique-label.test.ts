@@ -38,7 +38,8 @@ function mkRes() {
 async function call(handler: (ctx: RouteContext) => Promise<boolean>, path: string, body: unknown) {
   const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
   const res = mkRes()
-  await handler({ req, res: res as unknown as http.ServerResponse, path, method: 'POST', url: new URL(`http://127.0.0.1:3420${path}`) })
+  // VAULTSSHOWNER1109: SSH writes are owner actions; this suite tests the label rule, so the caller is the owner.
+  await handler({ req, res: res as unknown as http.ServerResponse, path, method: 'POST', url: new URL(`http://127.0.0.1:3420${path}`), auth: { kind: 'session', user: 'owner' } })
   return { status: res.statusCode, json: JSON.parse(res.body || '{}') }
 }
 

@@ -19,6 +19,16 @@ import {
 import { generateSshKeyPair, uniqueSshKeyLabel } from './vault-ssh-keys.js'
 import { setSecret } from '../vault.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
+
+// VAULTSSHOWNER1109: an SSH server entry decides where a connection goes, and an SSH key is a private credential;
+// creating, changing, generating, importing or deleting one is an owner action (mayActAsOwner: a session, or the
+// access token beside the owner's session cookie), checked before the request body is read. Reading stays as it was.
+function sshWriteRefused(ctx: RouteContext, what: string): boolean {
+  if (mayActAsOwner(ctx.auth, ctx.req)) return false
+  refuseOwner(ctx.res, `${what} needs the dashboard login (an owner session).`)
+  return true
+}
 
 function toApiShape(server: VaultSshServer, key?: VaultSshKey | null) {
   return {
@@ -70,6 +80,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/vault/ssh-servers
   if (path === '/api/vault/ssh-servers' && method === 'POST') {
+    if (sshWriteRefused(ctx, 'Adding an SSH server')) return true
     try {
       const body = await readBody(req)
       const data = JSON.parse(body.toString())
@@ -110,6 +121,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   const singleMatch = path.match(/^\/api\/vault\/ssh-servers\/([^/]+)$/)
 
   if (singleMatch && method === 'PUT') {
+    if (sshWriteRefused(ctx, 'Changing an SSH server')) return true
     const id = decodeURIComponent(singleMatch[1])
     try {
       const existing = getVaultSshServer(id)
@@ -147,6 +159,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
 
   // DELETE /api/vault/ssh-servers/:id
   if (singleMatch && method === 'DELETE') {
+    if (sshWriteRefused(ctx, 'Removing an SSH server')) return true
     const id = decodeURIComponent(singleMatch[1])
     if (!deleteVaultSshServer(id)) {
       json(res, { error: `Server "${id}" not found` }, 404)
@@ -161,6 +174,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   // Legacy convenience: generates a new pool key and immediately assigns it.
   const genKeyMatch = path.match(/^\/api\/vault\/ssh-servers\/([^/]+)\/generate-key$/)
   if (genKeyMatch && method === 'POST') {
+    if (sshWriteRefused(ctx, 'Generating a key for an SSH server')) return true
     const id = decodeURIComponent(genKeyMatch[1])
     const server = getVaultSshServer(id)
     if (!server) { json(res, { error: `Server "${id}" not found` }, 404); return true }

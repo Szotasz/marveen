@@ -15,6 +15,16 @@ import {
 } from '../../db.js'
 import { setSecret, getSecret, deleteSecret } from '../vault.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
+
+// VAULTSSHOWNER1109: an SSH server entry decides where a connection goes, and an SSH key is a private credential;
+// creating, changing, generating, importing or deleting one is an owner action (mayActAsOwner: a session, or the
+// access token beside the owner's session cookie), checked before the request body is read. Reading stays as it was.
+function sshWriteRefused(ctx: RouteContext, what: string): boolean {
+  if (mayActAsOwner(ctx.auth, ctx.req)) return false
+  refuseOwner(ctx.res, `${what} needs the dashboard login (an owner session).`)
+  return true
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -108,6 +118,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
 
   // POST /api/vault/ssh-keys
   if (path === '/api/vault/ssh-keys' && method === 'POST') {
+    if (sshWriteRefused(ctx, 'Creating an SSH key')) return true
     try {
       const body = await readBody(req)
       const data = JSON.parse(body.toString())
@@ -140,6 +151,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
 
   // POST /api/vault/ssh-keys/import
   if (path === '/api/vault/ssh-keys/import' && method === 'POST') {
+    if (sshWriteRefused(ctx, 'Importing an SSH key')) return true
     try {
       const body = await readBody(req)
       const data = JSON.parse(body.toString())
@@ -216,6 +228,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
   // DELETE /api/vault/ssh-keys/:id
   const delMatch = path.match(/^\/api\/vault\/ssh-keys\/([^/]+)$/)
   if (delMatch && method === 'DELETE') {
+    if (sshWriteRefused(ctx, 'Deleting an SSH key')) return true
     const id = decodeURIComponent(delMatch[1])
     const key = getVaultSshKey(id)
     if (!key) { json(res, { error: `Key "${id}" not found` }, 404); return true }
