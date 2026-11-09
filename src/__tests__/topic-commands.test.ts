@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { botCommandList, clearCommandsForTest, dispatchCommand, listCommands, renderHelp } from '../web/commands.js'
 import { registerBuiltinCommands } from '../web/builtin-commands.js'
-import { registerTopicCommands, type TopicCommandDeps } from '../web/topic-commands.js'
+import { registerTopicCommands, topicBotToken, type TopicCommandDeps } from '../web/topic-commands.js'
 import { readTelegramTopics, saveTelegramTopic } from '../web/telegram-topics.js'
 import { dispatchForChat } from '../web/routes/commands.js'
 
@@ -131,5 +131,37 @@ describe('/topic and /topic new', () => {
     expect((await run('/topic remove Nincs'))[0]).toBe('Nincs ilyen elnevezett téma: Nincs. Lásd /topic.')
     expect((await run('/topic remove'))[0]).toBe('Használat: /topic remove <név>')
     expect(readTelegramTopics(deps.topicsFile)?.topics).toEqual({ Hírek: 7 })
+  })
+})
+
+describe('/topic new finds the bot token in the plugin state .env', () => {
+  let stateDir: string
+  let prev: string | undefined
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), 'topic-token-'))
+    prev = process.env['TELEGRAM_STATE_DIR']
+    process.env['TELEGRAM_STATE_DIR'] = stateDir
+  })
+  afterEach(() => {
+    if (prev === undefined) delete process.env['TELEGRAM_STATE_DIR']
+    else process.env['TELEGRAM_STATE_DIR'] = prev
+    rmSync(stateDir, { recursive: true, force: true })
+  })
+
+  it('falls back to TELEGRAM_BOT_TOKEN in the state .env when the install .env has none', () => {
+    writeFileSync(join(stateDir, '.env'), '# OLD_TELEGRAM_BOT_TOKEN=dead\nTELEGRAM_BOT_TOKEN=123:state\n')
+    expect(topicBotToken('telegram', '')).toBe('123:state')
+  })
+
+  it('the install .env token still wins when it is set', () => {
+    writeFileSync(join(stateDir, '.env'), 'TELEGRAM_BOT_TOKEN=123:state\n')
+    expect(topicBotToken('telegram', '999:install')).toBe('999:install')
+  })
+
+  it('no token anywhere, or a non-Telegram provider, gives an empty token', () => {
+    expect(topicBotToken('telegram', '')).toBe('')
+    writeFileSync(join(stateDir, '.env'), 'TELEGRAM_BOT_TOKEN=123:state\n')
+    expect(topicBotToken('slack', '')).toBe('')
   })
 })
