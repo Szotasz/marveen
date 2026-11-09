@@ -242,9 +242,11 @@ export function contextLimitForModel(model: string | null | undefined): number {
   // CLI, does not know the id yet: `claude -p --model claude-fable-5-2` warns
   // [claude-code:unrecognized_model] and reports contextWindow 200000 /
   // maxOutputTokens 32000 in modelUsage, where claude-fable-5-1 on the same CLI
-  // reports 1000000 / 64000. The session is capped at 200k client-side, and
-  // reading it against 1M would blind the proactive tiers (the 2026-07-26
-  // failure mode above). Drop this line once the CLI reports 1M for the id.
+  // reports 1000000 / 64000. The CLI therefore reports a 200k window for the
+  // session (inferred from that metadata; a 200k+ session was not run to watch
+  // a cap), and reading it against 1M would blind the proactive tiers (the
+  // 2026-07-26 failure mode above) if the CLI acts on what it reports. Drop
+  // this line once the CLI reports 1M for the id.
   if (/fable-5-2\b/.test(m)) return 200_000
   if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
   // minimax-m3 is a special case, NOT a general "trust the vendor" precedent
