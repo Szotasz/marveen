@@ -2637,7 +2637,11 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
 done
 
 ELAPSED=$(( $(date +%s) - START_TS ))
-if [ "$ELAPSED" -lt 30 ]; then
+# GROMZORAPIDREADY1109 (Samu 73998): a "gromzo ready" exit is a PLANNED restart, not a failed start. START_TS is set
+# only after the launch and its dialogs, and the pending poll's first check runs at once (GROMZO_LAST_POLL=0), so
+# that exit always came "after 5s": measured on the QA VPS 11-09, every ready exit counted as a rapid failure, the
+# 3rd and 4th waited 60 s, the 5th 300 s and ended as exit 1 FAILURE. It is never counted here.
+if [ "$ELAPSED" -lt 30 ] && [ "$EXIT_REASON" != "gromzo-ready" ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
   rapid_exit_log_line "$ELAPSED" "$EXIT_REASON" "$PANE_EXIT_STATUS" >> "$INSTALL_DIR/store/channels-failures.log"
   # c5296a52: count the RAPID-EXIT lines, not every line in the file. The same log carries
@@ -2663,7 +2667,11 @@ rm -f "$INSTALL_DIR/store/channels-failures.log"
 # A watchdog exit asked for a restart, so it must NOT look like a clean finish.
 # Written as an if (not `[ ] && exit 1`) so a future `set -e` cannot turn the
 # false branch into an accidental non-zero exit of the whole script.
-if [ "$RESTART_REQUESTED" = "1" ]; then
+# GROMZORAPIDREADY1109: except the "gromzo ready" exit: a planned restart, so it ends 0 (no FAILURE, no OnFailure=).
+# The restart still comes: the Linux unit is Restart=always (update.sh migrate_channels_restart moves an old
+# on-failure unit to always in the same update that brings this script) and launchd's KeepAlive=true restarts on any
+# exit.
+if [ "$RESTART_REQUESTED" = "1" ] && [ "$EXIT_REASON" != "gromzo-ready" ]; then
   exit 1
 fi
 exit 0
