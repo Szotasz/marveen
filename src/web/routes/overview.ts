@@ -7,6 +7,7 @@ import {
   agentDir, listAgentNames, readAgentDisplayName,
 } from '../agent-config.js'
 import { readAgentTeam } from '../agent-team.js'
+import { agentDisplayLabel } from '../agent-display-label.js'
 import { isAgentRunning } from '../agent-process.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC, readModQuotaSnapshot, chooseQuotaSnapshot, type QuotaSnapshot } from '../quota.js'
@@ -82,7 +83,8 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       for (const r of memRows) {
         activity.push({
           icon: 'memory',
-          text: `${r.agent_id}: ${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
+          // DASHNAME1109: the display name, not the routing id (src/web/agent-display-label.ts).
+          text: `${agentDisplayLabel(r.agent_id)}: ${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
           at: r.created_at * 1000,
         })
       }
@@ -92,7 +94,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       for (const r of msgRows) {
         activity.push({
           icon: 'delegate',
-          text: `${r.from_agent} → ${r.to_agent}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
+          text: `${agentDisplayLabel(r.from_agent)} → ${agentDisplayLabel(r.to_agent)}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
           at: r.created_at * 1000,
         })
       }
