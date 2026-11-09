@@ -127,9 +127,13 @@ describe('the writers are gated too (POST/PUT model)', () => {
     }
     process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.319'
     expect(await refuseIfCliCannotLaunch('claude-fable-5-2')).toBeNull()
+    // Both forms offer every CLI-gated id the API lists (create + edit select): one select alone is a half-shipped model.
+    const gated = (body0: Record<string, unknown>) => (body0.claude as Array<{ id: string; minCli?: string }>).filter((m) => m.minCli)
     const { body } = await getModels()
     const entry = (body.claude as Array<{ id: string; minCli?: string }>).find((m) => m.id === 'claude-fable-5-2')
     expect(entry?.minCli).toBe('2.1.319')
+    expect(gated(body).map((m) => m.id)).toContain('claude-fable-5-2')
+    for (const m of gated(body)) expect(indexHtml.split(`<option value="${m.id}"`).length - 1, m.id).toBe(2)
   })
   it('UNMEASURED refuses nothing, including the models refused above', async () => {
     process.env[CLI_VERSION_OVERRIDE_ENV] = ''
