@@ -184,14 +184,57 @@ describe('PUT /api/schedules/<name>: what a task executes is the owner\'s', () =
     expect(cfg(TASK).preCheck).toBe('new.sh')
   })
 
-  it('unit: changedScheduleExecFields', () => {
-    const f = schedules.changedScheduleExecFields
+  it('unit: changedScheduleOwnerFields', () => {
+    const f = schedules.changedScheduleOwnerFields
     const stored = io.readScheduledTask(TASK)
     expect(f({ description: 'x' }, stored)).toEqual([])
     expect(f({ preCheck: 'old.sh', type: 'task' }, stored)).toEqual([])
     expect(f({ preCheck: 'other.sh' }, stored)).toEqual(['preCheck'])
     // No readable stored task: every exec field the body names counts (fail closed), an explicit null does not.
     expect(f({ type: 'task', preCheck: null }, null)).toEqual(['type'])
+  })
+})
+
+describe('PUT /api/schedules/<name>: where a prompt is typed and where output goes are the owner\'s', () => {
+  it.each([
+    ['targetSession', { targetSession: 'agent-other' }],
+    ['telegramChatId to a chat', { telegramChatId: '123456' }],
+    ['channelProvider', { channelProvider: 'slack' }],
+  ])('the shared token cannot set %s; nothing is written', async (_label, body) => {
+    const before = cfgText(TASK)
+    const r = await put(TASK, TOKEN, body)
+    expect(r.status).toBe(403)
+    expect(cfgText(TASK)).toBe(before)
+  })
+
+  it('telegramChatId "none" (no chat delivery) only narrows where output goes: allowed on the token', async () => {
+    expect((await put(TASK, TOKEN, { telegramChatId: 'none' })).status).toBe(200)
+    expect(cfg(TASK).telegramChatId).toBe('none')
+  })
+
+  it('forceSend and skipIfBusy stay on the token (the task\'s own session; the runner guards the target)', async () => {
+    expect((await put(TASK, TOKEN, { forceSend: true, skipIfBusy: true })).status).toBe(200)
+  })
+
+  it('the owner sets them', async () => {
+    expect((await put(TASK, SESSION, { targetSession: 'agent-other', telegramChatId: '123456', channelProvider: 'slack' })).status).toBe(200)
+    expect(cfg(TASK).targetSession).toBe('agent-other')
+  })
+})
+
+describe('POST /api/schedules: a task typed into another session needs the owner', () => {
+  it('the shared token with a targetSession gets 403 and no task directory', async () => {
+    const r = await create(TOKEN, { name: 'new-target', targetSession: 'agent-other' })
+    expect(r.status).toBe(403)
+    expect(existsSync(join(io.SCHEDULED_TASKS_DIR, 'new-target'))).toBe(false)
+  })
+
+  it('forceSend on create stays on the token', async () => {
+    expect((await create(TOKEN, { name: 'new-force', forceSend: true })).status).toBe(200)
+  })
+
+  it('the owner creates one', async () => {
+    expect((await create(SESSION, { name: 'new-target-owner', targetSession: 'agent-other' })).status).toBe(200)
   })
 })
 

@@ -1,3 +1,4 @@
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -304,3 +305,6 @@ describe('runPreCheckAsync ends the script\'s whole process group', () => {
     expect(existsSync(mark)).toBe(true)
   }, 10_000)
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['cron-test-session'])

@@ -1901,6 +1901,26 @@ function mcpMissingReason(taskName: string, agentName: string): string {
 // janitor targets the SAME pane the fire path would have written to -- a second
 // copy of this derivation would drift, and a janitor aimed at the wrong session
 // is worse than no janitor at all.
+// OWNEREXEC1109: a targetSession override may name only a fleet session: the main channels session or a known
+// agent's session. sendPromptToSession types into whatever pane it is given and presses Enter, and it does not check
+// that Claude is running there, so an override naming any other tmux session (a shell, a tool) would have the
+// scheduler type the prompt into it. A task whose override is not on this list is not sent (attemptFireTask books an
+// 'error' run and tells the main agent once); the janitor does not touch its pane either. This also covers a task
+// stored before the API gated the field.
+export function allowedTargetSessions(agents: string[] = listAgentNames()): Set<string> {
+  // A test-only list (src/__tests__/helpers/allow-target-sessions.ts) for suites whose fixtures use made-up session
+  // names; production never sets this symbol.
+  const testOnly = (globalThis as Record<symbol, unknown>)[Symbol.for('marveen.schedule.targetSessionAllowForTest')] as Set<string> | undefined
+  return new Set([MAIN_CHANNELS_SESSION, ...agents.map((a) => agentSessionName(a)), ...(testOnly ?? [])])
+}
+export function targetSessionRefused(task: Pick<ScheduledTask, 'targetSession'>, allowed: () => Set<string> = allowedTargetSessions): boolean {
+  return !!task.targetSession && !allowed().has(task.targetSession)
+}
+const refusedTargetNoticeSent = new Set<string>()
+export function refusedTargetSessionNotice(taskName: string, agentName: string, session: string): string {
+  return `[FELHÍVÁS] A(z) "${taskName}" ütemezett feladat (agent: ${agentName}) célsessionje ("${session}") nem flotta-session (sem a fő csatorna-session, sem ismert ágensé), ezért NEM küldtem el. Nézd meg a feladat task-config.json targetSession mezőjét: ha nem te állítottad be, kezeld biztonsági eseményként.`
+}
+
 export function resolveTaskTarget(
   task: Pick<ScheduledTask, 'targetSession'>,
   agentName: string,
@@ -2013,6 +2033,19 @@ async function attemptFireTask(
   lateCatchUpMs?: number,
   occurrence?: ScheduledOccurrence,
 ): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run' | 'respawning' | 'usage-limited'> {
+  // OWNEREXEC1109: an override that names no fleet session is never sent (see allowedTargetSessions).
+  if (targetSessionRefused(task)) {
+    logger.error({ task: task.name, agent: agentName, targetSession: task.targetSession }, 'schedule-runner: targetSession is not a fleet session; prompt NOT sent')
+    const noticeKey = `${task.name}\u0000${task.targetSession}`
+    if (!refusedTargetNoticeSent.has(noticeKey)) {
+      refusedTargetNoticeSent.add(noticeKey)
+      try { createAgentMessage('system', MAIN_AGENT_ID, refusedTargetSessionNotice(task.name, agentName, task.targetSession!)) } catch (err) {
+        logger.warn({ err, task: task.name }, 'schedule-runner: could not queue the refused-target notice')
+      }
+    }
+    appendTaskRun(task.name, agentName, 'error')
+    return 'error'
+  }
   const { session, host } = resolveTaskTarget(task, agentName)
   // resolveTaskTarget() computes this internally but does not expose it (it
   // only returns {session, host}) -- recompute the same cheap check here
@@ -3713,7 +3746,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // emptying the input box. clearStaleParkedInput does the identifying and
       // refuses anything that is genuinely mid-turn; if it clears, the next
       // tick's retry delivers on its own.
-      if (stillPresent && result === 'busy' && view.ageMs > SCHEDULE_JANITOR_PARKED_MIN_AGE_MS) {
+      if (stillPresent && result === 'busy' && view.ageMs > SCHEDULE_JANITOR_PARKED_MIN_AGE_MS && !targetSessionRefused(current)) {
         const { session, host } = resolveTaskTarget(current, row.agent_name)
         if (await clearStaleParkedInput(session, host)) {
           logger.warn(
