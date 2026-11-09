@@ -1225,7 +1225,7 @@ scrub_rc_secrets() {
 # as telegram with no bot token, and whose mxd is linked, becomes CHANNEL_PROVIDER=gromzo (PREV kept, reversible); any
 # other shape is untouched. The script says what it did in one line; it never fails the update.
 #
-# GROMZOUNITGUARD1109 (Samu 74409, Dani's #2646 remainder): on gromzo, channels.sh's planned "gromzo ready" exit ends 0
+# GROMZOUNITGUARD1109 (the #2646 review's remainder): on gromzo, channels.sh's planned "gromzo ready" exit ends 0
 # and relies on the supervisor restarting it. A Linux channels unit whose EFFECTIVE Restart= is not "always" would leave
 # the main session down after that exit. Every installer writes "always" (Linux since 2026-08-04, Bridge vendored copy,
 # Docker autorestart=true, macOS KeepAlive true), and migrate_channels_restart above rewrites an older on-failure unit in
@@ -1240,7 +1240,7 @@ gromzo_channels_unit_restart() {   # prints "<unit> <policy>" for the first Linu
     [ -f "$chan_unit" ] || continue
     # systemd's own answer first: it folds in every drop-in and a reload; the files only when it cannot answer
     _gz_pol="$(systemctl --user show -p Restart --value "$(basename "$chan_unit")" 2>/dev/null | tr -d '[:space:]' || true)"
-    # Fail-closed (Samu 74412): when neither can tell, the answer is "not always", with the reason named
+    # Fail-closed: when neither can tell, the answer is "not always", with the reason named
     if [ -z "$_gz_pol" ]; then
       if [ ! -r "$chan_unit" ]; then
         _gz_pol="unreadable"
