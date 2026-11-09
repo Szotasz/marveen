@@ -1224,9 +1224,50 @@ scrub_rc_secrets() {
 # GROMZONOPROVIDER1108: the ONE automatic provider migration: a Bridge (Gromzo) install that was written
 # as telegram with no bot token, and whose mxd is linked, becomes CHANNEL_PROVIDER=gromzo (PREV kept, reversible); any
 # other shape is untouched. The script says what it did in one line; it never fails the update.
+#
+# GROMZOUNITGUARD1109 (the #2646 review's remainder): on gromzo, channels.sh's planned "gromzo ready" exit ends 0
+# and relies on the supervisor restarting it. A Linux channels unit whose EFFECTIVE Restart= is not "always" would leave
+# the main session down after that exit. Every installer writes "always" (Linux since 2026-08-04, Bridge vendored copy,
+# Docker autorestart=true, macOS KeepAlive true), and migrate_channels_restart above rewrites an older on-failure unit in
+# this same run. What is left is the environment: a unit file that run could not write (it only warns), a hand-made
+# drop-in override. In those cases this install is NOT moved to gromzo, and one line says why; the next update moves it
+# once the unit says "always". Any other install (no Linux channels unit: macOS, Docker) is unchanged.
+gromzo_channels_unit_restart() {   # prints "<unit> <policy>" for the first Linux channels unit whose Restart= is not always
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 0
+  [ -d "$units_dir" ] || return 0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    # systemd's own answer first: it folds in every drop-in and a reload; the files only when it cannot answer
+    _gz_pol="$(systemctl --user show -p Restart --value "$(basename "$chan_unit")" 2>/dev/null | tr -d '[:space:]' || true)"
+    # Fail-closed: when neither can tell, the answer is "not always", with the reason named
+    if [ -z "$_gz_pol" ]; then
+      if [ ! -r "$chan_unit" ]; then
+        _gz_pol="unreadable"
+      else
+        _gz_pol="$(cat "$chan_unit" "$chan_unit.d/"*.conf 2>/dev/null | sed -n 's/^Restart=[[:space:]]*//p' | tail -1 | tr -d '[:space:]' || true)"
+        [ -n "$_gz_pol" ] || _gz_pol="no-default"   # no Restart= line: systemd's default is "no"
+      fi
+    fi
+    if [ "$_gz_pol" != "always" ]; then
+      echo "$(basename "$chan_unit") Restart=$_gz_pol"
+      return 0
+    fi
+  done
+  return 0
+}
+
 migrate_gromzo_provider() {
   [ -f "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
+  _gz_bad_unit="$(gromzo_channels_unit_restart "$@")"
+  if [ -n "$_gz_bad_unit" ]; then
+    # only said where the migration WOULD run: any other install has nothing to be told
+    if node "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" "$INSTALL_DIR" --dry-run 2>/dev/null | grep -q 'would-migrate'; then
+      echo -e "  Gromzo-migracio kihagyva: a csatorna-unit ujrainditasi szabalya nem always (${_gz_bad_unit}); a \"gromzo ready\" 0-s kilepese utan a csatorna leallva maradna. Ha a unit Restart=always, a kovetkezo frissites atallitja."
+    fi
+    return 0
+  fi
   node "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" "$INSTALL_DIR" 2>/dev/null || true
   return 0
 }
