@@ -76,6 +76,16 @@ Cases:
       state still down + alerted; the next run sends exactly one 'Recovered'
   T18 the alert about an outage never went out (sending failed), then the target recovers: no recovery message, and
       the log gets an 'outage-not-reported' line
+  T23 s4-k1 (1): the outage alert went out and the run then died (a variant log_event raises after the logged send):
+      the stamp was written right after the send, the next run sends no second alert; T23b the same for 'Recovered',
+      T23c for the in-streak blind notice, T23d for the post-streak "measuring again" notice
+  T24 write_state on a full disk (a variant json.dump raises ENOSPC): exit 1, no .uptime-state-* temp file is left
+  T25 two targets down on a full disk (a variant write_state always raises ENOSPC): the failed immediate stamp after the
+      first alert does not stop the run: both alerts go out, 'state-write-failed' is logged, exit 1; T25b a pending
+      "measuring again" notice plus a full disk: the notice AND the site alert go out, exit 1; T25c only the first
+      write fails: the alert goes out and is stamped at the end, exit 1 (the failed stamp is the monitor's own failure)
+      T25d the same on the NOT MEASURABLE branch (blind_notice_runs=1, nothing answers, only the immediate stamp after
+      the in-streak notice fails): exit 1, not the green 2
   T15 the send path is incomplete (UPTIME_SENDER=telegram, no .env): even with every target fine the run exits 4 (the
       broken delivery path shows before the first outage) and contacts nobody
   T22 the real send path in a throwaway install tree: the install .env has ALLOWED_CHAT_ID, the main channel dir has the
@@ -108,7 +118,11 @@ Controls (a mutant copy of the script; the named case must fail on it):
   without summing, the merged notice says the second streak's minutes only), M-state-type (T14c: without the field
   type check the run exits 1), M-gate-error (T15b: without the gate preflight the target-name check meets the broken
   gate and the run exits 1, not 4), M-answered (T17: if an unreadable answer counted as no answer, the run would be NOT
-  MEASURABLE).
+  MEASURABLE), M-stamp-now / M-stamp-recovery / M-stamp-blind-now / M-stamp-blind-over (T23 / T23b / T23c /
+  T23d: without the immediate stamp the next run repeats the notice), M-tmp-cleanup (T24: the temp file stays),
+  M-stamp-besteffort (T25: a failed immediate stamp stops the run, the second alert is lost), M-stamp-code (T25c:
+  the failed stamp exits 3, not 1), M-stamp-blind-code (T25d: on the NOT MEASURABLE branch the failed stamp exits a
+  green 2, not 1).
 A mutant whose anchor does not occur exactly once is NOT MEASURABLE (FAIL). The temporary directory is removed; a
 leftover is a FAIL.
 Run: python3 scripts/__tests__/uptime-monitor.test.py   (exit 0 = every case and control as expected, 1 = a mismatch)
@@ -776,12 +790,224 @@ def t22e(s, srv, m):
     return code == 3 and sent_to(calls, "555"), "code %s, calls %s, %s" % (code, calls, out[-300:])
 
 
+def crash_after(s, event, tag):
+    """A variant script whose log_event raises right after a SUCCESSFUL send was logged (the send itself went out):
+    stands in for any exception later in the run (a crash in log_event, a later target's send, ENOSPC elsewhere)."""
+    src = open(s, encoding="utf-8").read()
+    old = "def log_event(**data):\n"
+    if src.count(old) != 1:
+        return None
+    mut = os.path.join(os.path.dirname(s), ".uptime-%s-%d.py" % (tag, os.getpid()))
+    with open(mut, "w", encoding="utf-8") as fh:
+        fh.write(src.replace(old, old + "    if data.get(\"event\") == %r and data.get(\"sent\"):\n"
+                                       "        raise RuntimeError(\"test: an exception after the send\")\n" % event))
+    return mut
+
+
+def remove_variant(path):
+    if path and os.path.exists(path):
+        os.remove(path)
+
+
+def t23(s, srv, m):
+    """s4-k1 (1): the outage alert went out, then the run died: the stamp was written right after the send, so the next
+    run does not send the same alert again."""
+    srv.set([DOWN], [WOK], [REF])
+    k = config(srv, m)
+    mut = None
+    try:
+        mut = crash_after(s, "alert", "t23")
+        if not mut:
+            return False, "log_event does not occur exactly once"
+        code1, msgs1, out1 = run(mut, m, k)
+    finally:
+        remove_variant(mut)
+    code2, msgs2, _ = run(s, m, k)
+    a = state(m).get("site", {})
+    return (code1 == 1 and "test: an exception after the send" in out1 and len(msgs1) == 1 and code2 == 3
+            and len(msgs2) == 1 and a.get("alerted") is True), "codes %s/%s, %s / %s, state %s" % (code1, code2, msgs1,
+                                                                                                  msgs2, a)
+
+
+def t23b(s, srv, m):
+    """The same on the recovery branch: 'Recovered' went out, then the run died: the next run sends no second one."""
+    srv.set([DOWN], [WOK], [REF])
+    k = config(srv, m)
+    run(s, m, k)
+    srv.set([OK], [WOK], [REF])
+    mut = None
+    try:
+        mut = crash_after(s, "recovery", "t23b")
+        if not mut:
+            return False, "log_event does not occur exactly once"
+        code2, _, out2 = run(mut, m, k)
+    finally:
+        remove_variant(mut)
+    code3, msgs, _ = run(s, m, k)
+    rec = [u for u in msgs if u.startswith("Recovered: site ")]
+    return (code2 == 1 and "test: an exception after the send" in out2 and code3 == 0 and len(rec) == 1
+            and state(m).get("site") == {"down": False}), "codes %s/%s, %s, state %s" % (code2, code3, msgs, state(m))
+
+
+def t23c(s, srv, m):
+    """The same on the in-streak blind notice: it went out, then the run died: the next blind run does not repeat it."""
+    k = config(srv, m, blind=2, dead=("site", "widget", "ref"))
+    run(s, m, k)
+    mut = None
+    try:
+        mut = crash_after(s, "blind-now-notice", "t23c")
+        if not mut:
+            return False, "log_event does not occur exactly once"
+        code2, _, out2 = run(mut, m, k)
+    finally:
+        remove_variant(mut)
+    code3, msgs, _ = run(s, m, k)
+    now = [u for u in msgs if "has not been able to measure" in u]
+    return (code2 == 1 and "test: an exception after the send" in out2 and code3 == 2 and len(now) == 1), \
+        "codes %s/%s, %s" % (code2, code3, msgs)
+
+
+def t23d(s, srv, m):
+    """The same on the post-streak "measuring again" notice: it went out, then the run died at a LATER send (the site
+    is down and its alert raises; the blind-notice log line comes before the stamp, so a log_event crash would not be
+    "after" it): the next run sends no second notice, and the blind state stays closed."""
+    k = config(srv, m, blind=2, dead=("site", "widget", "ref"))
+    run(s, m, k)
+    run(s, m, k)
+    srv.set([DOWN], [WOK], [REF])
+    k2 = config(srv, m, blind=2)
+    src = open(s, encoding="utf-8").read()
+    old = "def send(text, fallback):\n"
+    if src.count(old) != 1:
+        return False, "send does not occur exactly once"
+    mut = os.path.join(os.path.dirname(s), ".uptime-t23d-%d.py" % os.getpid())
+    try:
+        with open(mut, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(old, old + "    if text.startswith(\"Uptime alert\"):\n"
+                                            "        raise RuntimeError(\"test: an exception after the send\")\n"))
+        code3, _, out3 = run(mut, m, k2)
+    finally:
+        os.remove(mut)
+    srv.set([OK], [WOK], [REF])
+    code4, msgs, _ = run(s, m, k2)
+    over = [u for u in msgs if "measuring again now" in u]
+    st = state(m)
+    return (code3 == 1 and "test: an exception after the send" in out3 and code4 == 0 and len(over) == 1
+            and "_blind_pending" not in st and "_blind" not in st), "codes %s/%s, %s, state %s" % (code3, code4, msgs, st)
+
+
+def write_fails(s, cond, tag):
+    """A variant script whose write_state raises ENOSPC when cond holds (_WF[0] counts the calls): 'True' = a full disk
+    for the whole run, '_WF[0] == 1' = only the first write (the first immediate stamp) fails."""
+    src = open(s, encoding="utf-8").read()
+    old = "def write_state(a):\n"
+    if src.count(old) != 1:
+        return None
+    mut = os.path.join(os.path.dirname(s), ".uptime-%s-%d.py" % (tag, os.getpid()))
+    with open(mut, "w", encoding="utf-8") as fh:
+        fh.write(src.replace(old, "_WF = [0]\n\n\n" + old + "    _WF[0] += 1\n    if %s:\n"
+                                  "        raise OSError(28, 'No space left on device')\n" % cond))
+    return mut
+
+
+def t25(s, srv, m):
+    """Review uptime-pecset k1: two targets down on a full disk: the immediate stamp after the first alert fails, but the
+    run goes on: BOTH alerts go out, the log names the failed write, exit 1 (here from the crash net: the end-of-run
+    write_state fails too on a full disk; T25c measures stamp_failed's own exit 1)."""
+    srv.set([DOWN], [DOWN], [REF])
+    mut = write_fails(s, "True", "t25")
+    if not mut:
+        return False, "write_state does not occur exactly once"
+    try:
+        code, msgs, out = run(mut, m, config(srv, m))
+    finally:
+        os.remove(mut)
+    failed = sum(1 for n in log(m) if n.get("event") == "state-write-failed")
+    alerts = [u for u in msgs if u.startswith("Uptime alert")]
+    return code == 1 and len(alerts) == 2 and failed >= 1, "code %s, %s, state-write-failed %s, %s" % (
+        code, msgs, failed, out[-200:])
+
+
+def t25b(s, srv, m):
+    """A pending "measuring again" notice plus a full disk: the stamp after the notice fails, the target loop still runs,
+    the site alert goes out too, exit 1 (from the crash net, as in T25)."""
+    k = config(srv, m, blind=2, dead=("site", "widget", "ref"))
+    run(s, m, k)
+    run(s, m, k)
+    srv.set([DOWN], [WOK], [REF])
+    mut = write_fails(s, "True", "t25b")
+    if not mut:
+        return False, "write_state does not occur exactly once"
+    try:
+        code, msgs, _ = run(mut, m, config(srv, m, blind=2))
+    finally:
+        os.remove(mut)
+    over = [u for u in msgs if "measuring again now" in u]
+    alerts = [u for u in msgs if u.startswith("Uptime alert: site ")]
+    return code == 1 and len(over) == 1 and len(alerts) == 1, "code %s, %s" % (code, msgs)
+
+
+def t25c(s, srv, m):
+    """Only the first write (the immediate stamp) fails, the end-of-run write succeeds: the alert went out and is stamped
+    at the end, but the failed stamp is the monitor's own failure: exit 1, not 3."""
+    srv.set([DOWN], [WOK], [REF])
+    mut = write_fails(s, "_WF[0] == 1", "t25c")
+    if not mut:
+        return False, "write_state does not occur exactly once"
+    try:
+        code, msgs, _ = run(mut, m, config(srv, m))
+    finally:
+        os.remove(mut)
+    failed = sum(1 for n in log(m) if n.get("event") == "state-write-failed")
+    a = state(m).get("site", {})
+    return code == 1 and len(msgs) == 1 and failed == 1 and a.get("alerted") is True, \
+        "code %s, %s, state-write-failed %s, state %s" % (code, msgs, failed, a)
+
+
+def t24(s, srv, m):
+    """write_state on a full disk (json.dump raises ENOSPC, a variant script): the run fails, and no .uptime-state-*
+    temp file is left behind in the state directory."""
+    srv.set([OK], [WOK], [REF])
+    src = open(s, encoding="utf-8").read()
+    old = "json.dump(a, fh, ensure_ascii=False, indent=1)"
+    if src.count(old) != 1:
+        return False, "the state dump does not occur exactly once"
+    mut = os.path.join(os.path.dirname(s), ".uptime-t24-%d.py" % os.getpid())
+    try:
+        with open(mut, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(old, "raise OSError(28, 'No space left on device')"))
+        code, _, out = run(mut, m, config(srv, m))
+    finally:
+        os.remove(mut)
+    maradt = [f for f in os.listdir(m) if f.startswith(".uptime-state-")]
+    return code == 1 and "No space left on device" in out and maradt == [] and not os.path.exists(
+        os.path.join(m, "state.json")), "code %s, leftover %s, %s" % (code, maradt, out[-200:])
+
+
+
+def t25d(s, srv, m):
+    """Review uptime-pecset k2 (B): the NOT MEASURABLE branch with a failed immediate stamp. blind_notice_runs=1 and
+    nothing answers: the in-streak notice goes out, its immediate stamp (the first write) fails, the branch's own write
+    succeeds: exit 1, not the green 2 (the unit treats 2 as success, so a failed stamp there would stay silent)."""
+    mut = write_fails(s, "_WF[0] == 1", "t25d")
+    if not mut:
+        return False, "write_state does not occur exactly once"
+    try:
+        code, msgs, _ = run(mut, m, config(srv, m, blind=1, dead=("site", "widget", "ref")))
+    finally:
+        os.remove(mut)
+    failed = sum(1 for n in log(m) if n.get("event") == "state-write-failed")
+    now = [u for u in msgs if "has not been able to measure" in u]
+    return code == 1 and len(now) == 1 and failed == 1 and state(m).get("_blind", {}).get("notified") is True, \
+        "code %s, %s, state-write-failed %s, state %s" % (code, msgs, failed, state(m))
+
 CASES = {"T1": t1, "T2": t2, "T3": t3, "T4": t4, "T5": t5, "T6": t6, "T7": t7, "T8": t8, "T9": t9, "T9b": t9b,
          "T9c": t9c, "T10": t10, "T11": t11, "T12": t12, "T13": t13, "T13b": t13b, "T13c": t13c, "T14": t14,
          "T15": t15, "T16": t16, "T7b": t7b, "T7c": t7c, "T11b": t11b, "T14b": t14b, "T16b": t16b, "T7d": t7d,
          "T13d": t13d, "T15b": t15b, "T17": t17, "T9d": t9d, "T18": t18, "T9e": t9e, "T14c": t14c, "T14d": t14d,
          "T15c": t15c, "T19": t19, "T20": t20, "T9f": t9f, "T21": t21, "T22": t22, "T22b": t22b, "T22c": t22c,
-         "T22d": t22d, "T22e": t22e}
+         "T22d": t22d, "T22e": t22e, "T23": t23, "T23b": t23b, "T23c": t23c, "T23d": t23d, "T24": t24,
+         "T25": t25, "T25b": t25b, "T25c": t25c, "T25d": t25d}
 
 MUTANTS = [
     ("M-confirm", "                final[c[\"name\"]] = e2\n", "                pass\n", "T3"),
@@ -807,7 +1033,8 @@ MUTANTS = [
      "        pass\n", "T9d"),
     ("M-first-strike", "            if first[c[\"name\"]]:\n                final[c[\"name\"]] = e2\n",
      "            final[c[\"name\"]] = e2\n", "T20"),
-    ("M-blind-code", "            return 4 if send_failed else 2\n", "            return 2\n", "T9f"),
+    ("M-blind-code", "            return 1 if stamp_failed else (4 if send_failed else 2)\n",
+     "            return 1 if stamp_failed else 2\n", "T9f"),
     ("M-budget", "    if budget > UNIT_BUDGET:\n", "    if False:\n", "T19"),
     ("M-budget-timeout", "    return (2 * n + 1) * TIMEOUT + wait", "    return (2 * n + 1) * 20 + wait", "T19"),
     ("M-budget-n", "    return (2 * n + 1) * TIMEOUT + wait", "    return 5 * TIMEOUT + wait", "T19"),
@@ -826,8 +1053,27 @@ MUTANTS = [
      "        return TEXTS[\"err_unreadable\"] % e, False\n", "T17"),
     ("M-blind-now", "            if v[\"runs\"] >= threshold and not v.get(\"notified\"):\n", "            if False:\n",
      "T9"),
-    ("M-send-code", "    return 4 if send_failed else code\n", "    return code\n", "T6"),
+    ("M-send-code", "    return 1 if stamp_failed else (4 if send_failed else code)\n", "    return 1 if stamp_failed else code\n",
+     "T6"),
     ("M-preflight", "    missing = preflight_error()\n", "    missing = None\n", "T15"),
+    # s4-k1 (1): the stamp right after a successful send, and the temp-file cleanup of write_state
+    ("M-stamp-now", "                    state[name] = a\n                    stamp_failed = not stamp(state) or stamp_failed\n",
+     "                    pass\n", "T23"),
+    ("M-stamp-recovery",
+     "                        state[name] = {\"down\": False}\n                        stamp_failed = not stamp(state) or stamp_failed\n",
+     "                        pass\n", "T23b"),
+    ("M-stamp-blind-now", "                    state[\"_blind\"] = v\n                    stamp_failed = not stamp(state) or stamp_failed\n",
+     "                    pass\n", "T23c"),
+    ("M-stamp-blind-over", "            state.pop(\"_blind_pending\", None)\n            stamp_failed = not stamp(state) or stamp_failed\n",
+     "            state.pop(\"_blind_pending\", None)\n", "T23d"),
+    # review uptime-pecset k1: the immediate stamp is best-effort, and its failure is a non-zero exit
+    ("M-stamp-besteffort", "    except Exception as e:  # noqa: BLE001 -- best-effort",
+     "    except ZeroDivisionError as e:  # noqa: BLE001 -- best-effort", "T25"),
+    ("M-stamp-code", "    return 1 if stamp_failed else (4 if send_failed else code)\n", "    return 4 if send_failed else code\n",
+     "T25c"),
+    ("M-stamp-blind-code", "            return 1 if stamp_failed else (4 if send_failed else 2)\n",
+     "            return 4 if send_failed else 2\n", "T25d"),
+    ("M-tmp-cleanup", "            os.remove(tmp)\n", "            pass\n", "T24"),
 ]
 
 
