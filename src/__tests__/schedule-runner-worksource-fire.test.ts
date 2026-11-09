@@ -189,6 +189,7 @@ vi.mock('../web/worksource-queue.js', () => ({
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,

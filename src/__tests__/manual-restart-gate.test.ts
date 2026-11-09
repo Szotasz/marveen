@@ -6,6 +6,7 @@ const capturePane = vi.fn<(session: string, host?: string | null) => string | nu
 const sessionExistsOnHost = vi.fn<(host: string | null, session: string) => boolean>()
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   capturePane: (session: string, host: string | null = null) => capturePane(session, host),
   sessionExistsOnHost: (host: string | null, session: string) => sessionExistsOnHost(host, session),
 }))

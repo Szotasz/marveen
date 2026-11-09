@@ -24,6 +24,7 @@ vi.mock('../web/channel-monitor.js', () => ({
 }))
 vi.mock('../web/stuck-tool-call-watcher.js', () => ({ shouldDeferForRecentRespawn: () => false }))
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: () => false,
   agentRunState: () => 'stopped',
   agentSessionName: (n: string) => `agent-${n}`,

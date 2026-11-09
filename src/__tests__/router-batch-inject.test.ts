@@ -56,6 +56,7 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentChannelProvider: () => null,
 }))
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: vi.fn(async () => true),

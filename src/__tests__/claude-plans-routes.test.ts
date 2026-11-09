@@ -50,6 +50,7 @@ let activeRotatedDir: string | null = null
 let activeRotatedTokenId: string | null = null
 let fleetTokenPresent = true
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   restartAgentProcess: (name: string, opts?: unknown) => restartAgentProcess(name, opts),
   resolveMainAgentConfigDir: () => explicitMainDir,
   resolveMainAgentRotatedConfigDir: () => activeRotatedDir,

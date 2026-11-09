@@ -26,6 +26,7 @@ import {
   stampFableOverageConsentSharedRoots,
   isAgentRunning,
   isSessionReadyForPrompt,
+  withTmuxBatch,
   sendPromptToSession,
   startAgentProcess,
   stopAgentProcess,
@@ -2813,16 +2814,22 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
 
     type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
     const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]
-    for (const a of listAgentNames()) {
-      if (isAgentRunning(a) && agentHasChannel(a)) {
-        targets.push({
-          session: agentSessionName(a),
-          isMarveen: false,
-          agentName: a,
-          provider: resolveAgentProvider(a),
-        })
+    // One list-sessions for the whole per-agent read: every isAgentRunning()
+    // below asks the identical read-only query, and withTmuxBatch answers all
+    // of them from one memoized spawn while this (synchronous) loop runs. No
+    // session state changes inside -- the loop only builds the target list.
+    withTmuxBatch(() => {
+      for (const a of listAgentNames()) {
+        if (isAgentRunning(a) && agentHasChannel(a)) {
+          targets.push({
+            session: agentSessionName(a),
+            isMarveen: false,
+            agentName: a,
+            provider: resolveAgentProvider(a),
+          })
+        }
       }
-    }
+    })
 
     // Pane-level thinking-block error detection. Independent of channel
     // plugin liveness: a session can keep a live plugin yet be wedged on
@@ -2873,10 +2880,14 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // the first-run answers (the same answerFirstRunGates) and NEVER the
     // generic Escape below -- on that dialog Escape quits the TUI.
     const menuTargets: Array<{ session: string; isMarveen: boolean; agentName?: string; gateOnly?: boolean }> = [...targets]
-    for (const a of listAgentNames()) {
-      if (agentHasChannel(a) || !readAgentWorksourceChannel(a) || readAgentRemoteHost(a) || !isAgentRunning(a)) continue
-      menuTargets.push({ session: agentSessionName(a), isMarveen: false, agentName: a, gateOnly: true })
-    }
+    // Same dedupe as the targets loop above: this second per-agent
+    // isAgentRunning() pass reads the identical query, answered once.
+    withTmuxBatch(() => {
+      for (const a of listAgentNames()) {
+        if (agentHasChannel(a) || !readAgentWorksourceChannel(a) || readAgentRemoteHost(a) || !isAgentRunning(a)) continue
+        menuTargets.push({ session: agentSessionName(a), isMarveen: false, agentName: a, gateOnly: true })
+      }
+    })
     for (const t of menuTargets) {
       const pane = capturePane(t.session)
       menuTargetsWalked++

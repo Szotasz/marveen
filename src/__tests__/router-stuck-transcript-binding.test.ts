@@ -87,6 +87,7 @@ vi.mock('../web/transcript-progress.js', async (importOriginal) => {
 })
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: vi.fn(async () => false),
   clearStaleParkedInput: vi.fn(async () => false),

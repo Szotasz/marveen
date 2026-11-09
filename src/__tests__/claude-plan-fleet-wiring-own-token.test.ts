@@ -19,6 +19,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 }))
 // The wiring's restart side is not exercised here; keep the process layer inert.
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   FLEET_OAUTH_TOKEN_PATH: join(tmpRoot, 'store', '.claude-oauth-token'),
   isAgentRunning: () => false,
   restartAgentProcess: async () => ({ ok: true }),

@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 // breaks the receiver rule loudly.)
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   sendPromptToSession: vi.fn(async () => 'sent' as const),
 }))
 

@@ -84,6 +84,7 @@ vi.mock('../web/agent-process.js', async () => {
     return h.startOk ? { ok: true } : { ok: false, error: 'lost the start race' }
   })
   return {
+    withTmuxBatch: (fn: () => unknown) => fn(),
     agentRunState: () => h.runState,
     agentSessionName: (n: string) => `agent-${n}`,
     restartAgentProcess: (...a: unknown[]) => h.restartAgentProcess(...a),
