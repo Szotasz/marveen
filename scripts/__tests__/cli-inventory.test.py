@@ -107,6 +107,16 @@ def inventory(*args, **kw):
     return json.loads(run('--stdout', *args, **kw))
 
 
+def child_env_keys(env):
+    """The environment keys a fake binary saw. On macOS the fake binary's own
+    Python (CoreFoundation) adds __CF_USER_TEXT_ENCODING to its environment at
+    start, after the generator handed it the scrubbed one, so those keys are not
+    the generator's."""
+    if sys.platform == 'darwin':
+        return {k for k in env if not k.startswith('__CF_')}
+    return set(env)
+
+
 class Fixture(unittest.TestCase):
     maxDiff = None
 
@@ -225,7 +235,7 @@ class HostileBinary(Fixture):
             calls = [json.loads(line) for line in f]
         self.assertEqual([c['args'] for c in calls], [['agent-context']])
         call = calls[0]
-        self.assertEqual(set(call['env']), {'PATH', 'HOME', 'LANG'})
+        self.assertEqual(child_env_keys(call['env']), {'PATH', 'HOME', 'LANG'})
         self.assertNotEqual(call['home'], os.environ.get('HOME'))
         self.assertEqual(call['cwd'], os.path.realpath(call['home']))
         self.assertEqual(call['home_files'], ['dropped.txt'])
