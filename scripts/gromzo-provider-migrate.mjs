@@ -112,6 +112,12 @@ async function main() {
   const sock = args.dashSock ?? ((env.MXD_DASH_SOCK ?? '') || DASH_SOCK_DEFAULT)
   const link = await mxdLinked(sock)
   if (link !== 'linked') return say(`skip mxd-${link}`)
+  // GROMZOPLUGREG1109 (Samu 73877): a linked mxd is not enough. Without the Gromzo plugin registered for Claude Code
+  // (the shared installed_plugins.json the dashboard writes) the migrated session would start --channels with no plugin
+  // server and the down cascade would restart it. The same plain key test as main_gromzo_plugin_registered.
+  let plugins = ''
+  try { plugins = readFileSync(join(args.home, '.claude', 'plugins', 'installed_plugins.json'), 'utf8') } catch { plugins = '' }
+  if (!plugins.includes('"gromzo-channel@gromzo-local"')) return say('skip plugin-not-registered')
   if (args.dryRun) return say('would-migrate')
   writeMigrated(envPath)
   const store = join(args.installDir, 'store')

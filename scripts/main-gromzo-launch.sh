@@ -74,16 +74,46 @@ main_gromzo_token_file() {
   printf '%s/%s.token' "$dir" "$1"
 }
 
-# GROMZONOPROVIDER1108: main_gromzo_primary_ready <main_agent_id>: the Gromzo plugin may be the main agent's
-# PRIMARY channel (CHANNEL_PROVIDER=gromzo) only when mxd's agent socket is usable AND the main agent is enrolled: its
-# token file exists, readable and not empty. mxd writes a token only for an agent it runs (after the owner's consent);
-# a held or not yet approved agent has none. NOT the .env CHANNEL_PLUGINS_EXTRA flag: that is no consent signal.
-main_gromzo_primary_ready() {
+# GROMZOPLUGREG1109 (Samu 73877): the plugin must also be REGISTERED for Claude Code, in the shared
+# ~/.claude/plugins/installed_plugins.json the dashboard writes (gromzo-marketplace.ts ensureGromzoMarketplace; an
+# isolated main config is seeded from it on every start). Measured on the QA VPS 11-09: with the plugin step left out,
+# the main agent enrolled, the session was started with --channels plugin:gromzo-channel@gromzo-local, no plugin
+# server ever ran, and the dashboard's down cascade restarted the session: the loop A1 removes, through another input.
+# A plain substring on the plugin key, the same test as the TS twin (Claude Code writes the key only as a plugin key).
+# MAIN_GROMZO_PLUGINS_FILE overrides the path for the tests only.
+main_gromzo_plugins_file() {
+  if [ -n "${MAIN_GROMZO_PLUGINS_FILE:-}" ]; then
+    printf '%s' "$MAIN_GROMZO_PLUGINS_FILE"
+  else
+    printf '%s' "$HOME/.claude/plugins/installed_plugins.json"
+  fi
+}
+main_gromzo_plugin_registered() {
+  local f
+  f="$(main_gromzo_plugins_file)"
+  [ -r "$f" ] && grep -qF "\"$MAIN_GROMZO_PLUGIN_ID\"" "$f"
+}
+
+# main_gromzo_pending_reason <main_agent_id>: why the Gromzo plugin may NOT be the main agent's primary channel yet, as
+# one word (bad_slug, mxd_socket, not_enrolled, plugin_not_registered), or nothing when it may. The TS twin is
+# main-gromzo-launch.ts mainGromzoPendingReason; a test runs both on the same inputs.
+main_gromzo_pending_reason() {
   local slug tf
-  main_gromzo_usable "$1" || return 1
-  slug="$(main_gromzo_slug "$1")" || return 1
+  slug="$(main_gromzo_slug "$1")" || { printf 'bad_slug'; return 0; }
+  main_gromzo_usable "$1" || { printf 'mxd_socket'; return 0; }
   tf="$(main_gromzo_token_file "$slug")"
-  [ -n "$tf" ] && [ -r "$tf" ] && [ -s "$tf" ]
+  { [ -n "$tf" ] && [ -r "$tf" ] && [ -s "$tf" ]; } || { printf 'not_enrolled'; return 0; }
+  main_gromzo_plugin_registered || { printf 'plugin_not_registered'; return 0; }
+  return 0
+}
+
+# GROMZONOPROVIDER1108: main_gromzo_primary_ready <main_agent_id>: the Gromzo plugin may be the main agent's
+# PRIMARY channel (CHANNEL_PROVIDER=gromzo) only when mxd's agent socket is usable, the main agent is enrolled (its
+# token file exists, readable and not empty: mxd writes a token only for an agent it runs, after the owner's consent;
+# a held or not yet approved agent has none; NOT the .env CHANNEL_PLUGINS_EXTRA flag, that is no consent signal) AND
+# the plugin is registered (GROMZOPLUGREG1109). Every reason in main_gromzo_pending_reason.
+main_gromzo_primary_ready() {
+  [ -z "$(main_gromzo_pending_reason "$1")" ]
 }
 
 # main_gromzo_env <main_agent_id> [id ...]: the launch-command prefix when the (filtered) ids carry the

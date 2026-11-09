@@ -26,10 +26,16 @@ async function fakeMxd(linked: boolean): Promise<string> {
   return path
 }
 
-function install(envText: string, opts: { stateToken?: string; legacyToken?: string } = {}) {
+function install(envText: string, opts: { stateToken?: string; legacyToken?: string; pluginRegistered?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'gpm-inst-'))
   const home = mkdtempSync(join(tmpdir(), 'gpm-home-'))
   writeFileSync(join(root, '.env'), envText, { mode: 0o600 })
+  // GROMZOPLUGREG1109: the Gromzo plugin registered for Claude Code (the dashboard's shared installed_plugins.json),
+  // as on a Bridge install whose plugin step ran; pluginRegistered:false is the install it must NOT move.
+  if (opts.pluginRegistered !== false) {
+    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'gromzo-channel@gromzo-local': [{ scope: 'project' }] } }))
+  }
   if (opts.stateToken !== undefined) {
     mkdirSync(join(root, '.claude', 'channels', 'telegram'), { recursive: true })
     writeFileSync(join(root, '.claude', 'channels', 'telegram', '.env'), `TELEGRAM_BOT_TOKEN=${opts.stateToken}\n`)
@@ -53,6 +59,22 @@ async function run(i: { root: string; home: string }, sock: string, extra: strin
 }
 
 const BRIDGE_ENV = 'MAIN_AGENT_ID=marveen\nCHANNEL_PROVIDER=telegram\nTELEGRAM_BOT_TOKEN=\nALLOWED_CHAT_ID=0\nCHANNEL_PLUGINS_EXTRA=gromzo-channel@gromzo-local\n'
+
+describe('gromzo-provider-migrate: not without the plugin registered (GROMZOPLUGREG1109, Samu 73877)', () => {
+  it('telegram + no token + linked mxd, but the Gromzo plugin NOT registered: skip, the .env byte for byte unchanged', async () => {
+    const i = install(BRIDGE_ENV, { pluginRegistered: false })
+    const before = readFileSync(join(i.root, '.env'), 'utf8')
+    expect(await run(i, await fakeMxd(true))).toBe('gromzo-provider-migrate: skip plugin-not-registered')
+    expect(readFileSync(join(i.root, '.env'), 'utf8')).toBe(before)
+    expect(existsSync(join(i.root, 'store', 'gromzo-provider-migrated.json'))).toBe(false)
+  })
+  it('a plugins file holding only another plugin: skip too', async () => {
+    const i = install(BRIDGE_ENV, { pluginRegistered: false })
+    mkdirSync(join(i.home, '.claude', 'plugins'), { recursive: true })
+    writeFileSync(join(i.home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'slack-channel@marveen-marketplace': [{}] } }))
+    expect(await run(i, await fakeMxd(true))).toBe('gromzo-provider-migrate: skip plugin-not-registered')
+  })
+})
 
 describe('gromzo-provider-migrate: only the exact Bridge shape moves (GROMZONOPROVIDER1108)', () => {
   it('telegram + no token + linked mxd: migrated, PREV written, every other line kept, the mode kept, a marker', async () => {

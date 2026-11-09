@@ -49,7 +49,8 @@ import { avatarProblem, readAgentAvatar } from '../gromzo-avatar.js'
 import { agentDir, listAgentNames, readAgentDisplayName, readAgentGromzo, writeAgentGromzo } from '../agent-config.js'
 import { capturePane, isAgentRunning, restartAgentProcess, withTmuxBatch } from '../agent-process.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, currentBotName } from '../../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, currentBotName } from '../../config.js'
+import { mainGromzoPendingReason } from '../main-gromzo-launch.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { gateManualRestart } from '../manual-restart-gate.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
@@ -566,6 +567,9 @@ export async function tryHandleGromzo(ctx: RouteContext): Promise<boolean> {
         const refusal = r.last_refusal as { kind?: unknown } | undefined
         if (refusal && typeof refusal.kind === 'string' && /^[a-z_]{1,40}$/.test(refusal.kind)) out.linkRefusal = refusal.kind
       }
+      // GROMZOPLUGREG1109 (Samu 73877): on a gromzo install the main agent's pending reason (one word), null once it may
+      // take its Gromzo channel, so the dashboard shows WHY the main agent is not reachable over Gromzo yet.
+      if (CHANNEL_PROVIDER === 'gromzo') out.mainPending = mainGromzoPendingReason(MAIN_AGENT_ID)
       // Only a bool passes (never an id); a failure only as a lower-case code.
       if (wantOwner && out.linked === true) {
         if (typeof r.owner_seat === 'boolean') out.ownerSeat = r.owner_seat

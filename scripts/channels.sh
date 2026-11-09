@@ -667,7 +667,10 @@ if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
     GROMZO_PENDING=1
     GROMZO_ENV=""
     PLUGIN_ID=""
-    echo "channels.sh: gromzo pending -- mxd's agent socket is not usable or the main agent is not enrolled yet; the session starts without the Gromzo channel and is restarted when it is ready" >&2
+    # GROMZOPLUGREG1109: the reason, one word (main_gromzo_pending_reason), so the owner's install says WHY it waits.
+    GROMZO_LAST_REASON=""
+    command -v main_gromzo_pending_reason >/dev/null 2>&1 && GROMZO_LAST_REASON="$(main_gromzo_pending_reason "$MAIN_AGENT_ID")"
+    echo "channels.sh: gromzo pending (${GROMZO_LAST_REASON:-unknown}) -- the session starts without the Gromzo channel and is restarted when it is ready (mxd_socket: mxd's agent socket is not usable; not_enrolled: the main agent is not approved yet; plugin_not_registered: the Gromzo plugin is not registered for Claude Code)" >&2
   fi
 fi
 EXTRA_CHANNELS=""
@@ -2468,6 +2471,15 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   if [ "$CHANNEL_PROVIDER" = "gromzo" ] && [ "$GROMZO_PENDING" = "1" ]; then
     if [ "$((NOW - GROMZO_LAST_POLL))" -ge 60 ]; then
       GROMZO_LAST_POLL=$NOW
+      # GROMZOPLUGREG1109: a changed reason is said once (e.g. not_enrolled -> plugin_not_registered), never per poll.
+      if command -v main_gromzo_pending_reason >/dev/null 2>&1; then
+        _gz_reason="$(main_gromzo_pending_reason "$MAIN_AGENT_ID")"
+        if [ -n "$_gz_reason" ] && [ "$_gz_reason" != "${GROMZO_LAST_REASON:-}" ]; then
+          echo "channels.sh: gromzo pending ($_gz_reason) -- still without the Gromzo channel" >&2
+          GROMZO_LAST_REASON="$_gz_reason"
+        fi
+        unset _gz_reason
+      fi
       if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$MAIN_AGENT_ID"; then
         echo "channels.sh: gromzo ready -- restarting the session with the Gromzo channel" >&2
         respawn_log "gromzo-ready: the main agent can take its Gromzo channel now -- restarting $SESSION with it"
