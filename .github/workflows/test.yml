@@ -162,6 +162,9 @@ jobs:
       # stubbed id/sudo/python3). The container pair (install-linux-admin-prereq.container.sh)
       # needs docker and the network, so it is run by hand, not here.
       - run: bash scripts/__tests__/install-linux-admin-prereq.test.sh
+      # #2637: the same suite under umask 002 (a common default), so a fixture whose modes follow the umask cannot
+      # pass here only because the runner's umask is 022.
+      - run: bash -c 'umask 002 && bash scripts/__tests__/install-linux-admin-prereq.test.sh'
       # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
       # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
       # PATH, every case answers "n" before anything is migrated.
