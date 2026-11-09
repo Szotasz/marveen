@@ -177,6 +177,18 @@ def describe(hits: list) -> str:
                      f"ujjlenyomat {h['fp'][:8]}" for h in hits)
 
 
+def pass_with_warning(msg: str) -> str:
+    """A non-blocking warning, for BOTH readers. `systemMessage` is shown on
+    the host's terminal only and never enters the model's request; the agent
+    that just made the call learns of it only through
+    `hookSpecificOutput.additionalContext` (measured 2026-11-08 on our own
+    transcripts: systemMessage 0/6, PreToolUse additionalContext 7/7)."""
+    return json.dumps({
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg},
+    })
+
+
 def deny(msg: str, log: dict = None):
     if log is not None:
         try:
@@ -299,9 +311,9 @@ def main():
         if not warn:
             deny(f"A kapu naploja nem irhato ({exc}): naplozatlan dontes nem mehet ki.")
     if warn:
-        print(json.dumps({"systemMessage": "JELSZO-KAPU (figyelo mod): a level hitelesito adatot "
-                          f"tartalmaz ({len(hits)} talalat), blokkolo modban tiltott lenne "
-                          f"({log['would_deny']})."}, ensure_ascii=False))
+        print(pass_with_warning("JELSZO-KAPU (figyelo mod): a level hitelesito adatot "
+                                f"tartalmaz ({len(hits)} talalat), blokkolo modban tiltott lenne "
+                                f"({log['would_deny']})."))
     sys.exit(0)
 
 

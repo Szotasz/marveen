@@ -2992,6 +2992,18 @@ _LOCAL_RULES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 _GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
 
 
+def pass_with_warning(msg: str) -> str:
+    """A non-blocking warning, for BOTH readers. `systemMessage` is shown on
+    the host's terminal only and never enters the model's request; the agent
+    that just made the call learns of it only through
+    `hookSpecificOutput.additionalContext` (measured 2026-11-08 on our own
+    transcripts: systemMessage 0/6, PreToolUse additionalContext 7/7)."""
+    return json.dumps({
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg},
+    })
+
+
 def _gate_log(message: str) -> None:
     """Append one TIMESTAMPED line to the gate log.
 
@@ -3628,10 +3640,10 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     # nincs mit jelezni, a Telegram-ag ott csendben marad. Minden mas nem-ok
     # allapot (missing/empty/invalid) figyelmeztetest kap.
     if RULES_STATE in RULES_LOUD:
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
             f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
-            "Potold a store/outgoing-copy-gate-rules.json-t."}))
+            "Potold a store/outgoing-copy-gate-rules.json-t."))
     sys.exit(0)
 
 
@@ -3923,7 +3935,7 @@ def inter_agent_homoglyph_gate(cmd: str) -> None:
                f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
                "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
         _gate_log(msg)
-        print(json.dumps({"systemMessage": msg}))
+        print(pass_with_warning(msg))
         sys.exit(0)
     try:
         mixed = mixed_script_words(text)
@@ -4105,12 +4117,12 @@ def main():
         # Fail-OPEN, but never silent: the send goes out WITHOUT the name
         # check, and the user must see that on the surface they are using --
         # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "outgoing-copy-gate: a NEV-SZABALY fajl "
             + ("HIANYZIK" if RULES_STATE == RULES_MISSING else "URES (nincs minta)")
             + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
             "Ha kell a vedelem, hozd letre a fajlt: "
-            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
+            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'))
     sys.exit(0)
 
 
