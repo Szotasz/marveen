@@ -155,6 +155,12 @@ export const DEFAULT_AGENT_MODEL =
 // configured value is the operator's choice and is never replaced.
 export const DEFAULT_AGENT_MODEL_IS_DISTRIBUTION = !cfg('DEFAULT_AGENT_MODEL')
 
+// WORKERMODELFAST1109: the FAST worker session's model. Empty means the same chain
+// as the slow worker, so nothing changes until it is set. A separate key because the
+// fast session only gets short conversational jobs (under 300 characters, no
+// analysis keyword -- classifyPriority), for which the strongest model is overkill.
+export const WORKER_MODEL_FAST = cfg('MARVEEN_WORKER_MODEL_FAST') || ''
+
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 

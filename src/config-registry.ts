@@ -195,6 +195,23 @@ function validFusionWeight(v: string): string | null {
   return Number.isFinite(n) && n >= 0 && n <= 10 ? null : '0 és 10 közötti szám szükséges (pl. 0.5).'
 }
 
+// The Claude models an agent / worker setting may pick. Shared by DEFAULT_AGENT_MODEL and
+// MARVEEN_WORKER_MODEL_FAST so the two pickers can never drift apart (WORKERMODELFAST1109).
+export const AGENT_MODEL_CHOICES: readonly string[] = [
+  // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
+  'claude-opus-5-5[1m]',
+  'claude-opus-5',
+  'claude-opus-5[1m]',
+  'claude-sonnet-5-5',
+  'claude-sonnet-5',
+  'claude-fable-5',
+  'claude-fable-5-1',
+  'claude-fable-5-2',
+  'claude-opus-4-8[1m]',
+  'claude-haiku-5-5',
+  'claude-haiku-4-5-20251001',
+]
+
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KANBAN_WIP_PLANNED',
@@ -1158,20 +1175,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'agents',
     secret: false,
     requiresRestart: true,
-    valueSet: [
-      // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
-      'claude-opus-5-5[1m]',
-      'claude-opus-5',
-      'claude-opus-5[1m]',
-      'claude-sonnet-5-5',
-      'claude-sonnet-5',
-      'claude-fable-5',
-      'claude-fable-5-1',
-      'claude-fable-5-2',
-      'claude-opus-4-8[1m]',
-      'claude-haiku-5-5',
-      'claude-haiku-4-5-20251001',
-    ],
+    valueSet: [...AGENT_MODEL_CHOICES],
+  },
+  {
+    key: 'MARVEEN_WORKER_MODEL_FAST',
+    type: 'string',
+    default: '',
+    description: 'A GYORS háttér-worker session modellje. Üresen ugyanaz a lánc dönt, mint a lassú workernél, tehát a beállítás nélkül semmi nem változik. A gyors session rövid, társalgási feladatokat kap, azokra elég egy kisebb modell. A CLI-indíthatósági őr erre is lefut. A módosítás a szolgáltatás újraindításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+    valueSet: ['', ...AGENT_MODEL_CHOICES],
   },
   // --- Claude plans module (PR2b/PR2c) ---
   // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
