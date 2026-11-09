@@ -26,6 +26,8 @@ binaries that the generator really runs:
      binary name is not a match
   8. deterministic output, atomic --out write, no temp file left, a missing
      folder is reported, and the script has no network-capable import
+  9. there is no default folder: without --dir the generator stops with a
+     usage error before it starts anything
 """
 import json
 import os
@@ -194,6 +196,17 @@ class Listing(Fixture):
         self.assertEqual(t['probe'], {'status': 'ok', 'command_source': 'help'})
         self.assertEqual([c['name'] for c in t['commands']], ['get', 'list'])
         self.assertIsNone(t['auth'])
+
+    def test_no_dir_is_an_error_and_starts_nothing(self):
+        trace = os.path.join(self.root, 'trace.txt')
+        self.acme('open(%r, "a").write("ran\\n")' % trace)
+        out = os.path.join(self.root, 'out.json')
+        res = subprocess.run([sys.executable, SCRIPT, '--agents-dir', self.agents, '--skills-dir', self.skills,
+                              '--out', out], capture_output=True, text=True, timeout=60)
+        self.assertEqual(res.returncode, 2)
+        self.assertIn('--dir', res.stderr)
+        self.assertFalse(os.path.exists(out))
+        self.assertFalse(os.path.exists(trace))
 
     def test_missing_dir_is_reported(self):
         gone = os.path.join(self.root, 'nope')

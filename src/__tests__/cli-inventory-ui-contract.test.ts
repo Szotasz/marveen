@@ -43,6 +43,16 @@ describe('CLI tools page wiring', () => {
     expect(APP).toContain("fetch('/api/cli-inventory' + (refresh ? '?refresh=1' : ''))")
   })
 
+  it('off, not yet made, stale and refused are states of the page, not load errors', () => {
+    const code = section(APP, '// --- CLI inventory page ---', 'async function openConnectorDetail(')
+    expect(code).toContain("if (res.ok && (data.enabled === false || data.pending === true)) {")
+    expect(code).toContain("t(data.enabled === false ? 'clitools.disabled' : 'clitools.pending')")
+    expect(code).toContain(": regenSkipped ? t('clitools.regen_skipped') : ''")
+    // A refused refresh says why in the house text (ownerSessionText) and keeps the inventory already shown.
+    expect(code).toContain('const refusal = ownerSessionText(data)')
+    expect(code).toContain('errEl.textContent = refusal')
+  })
+
   it('reuses the MCP page classes instead of new ones', () => {
     const page = section(HTML, 'id="clitoolsPage"', '<!-- === Migration Page === -->')
     for (const cls of ['page-header', 'connector-stats', 'connector-grid', 'info-box']) {

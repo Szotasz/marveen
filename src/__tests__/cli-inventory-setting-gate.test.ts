@@ -33,7 +33,8 @@ const { cliDirArgs } = await import('../web/routes/cli-inventory.js')
 const { initDatabase } = await import('../db.js')
 
 const KEY = 'CLI_INVENTORY_DIRS'
-const DEFAULT = '~/printing-press/library'
+// Empty: the inventory is off until the owner names a folder.
+const DEFAULT = ''
 
 type Auth = { kind: 'token' | 'device'; scope?: 'full' | 'operator' }
 async function call(method: 'POST' | 'DELETE', path: string, body: unknown, auth: Auth) {
@@ -59,7 +60,8 @@ describe('CLI_INVENTORY_DIRS: only the owner chooses what the dashboard runs', (
   it('registry: any change loosens, so the key is overrides-only and no .env value tightens it', () => {
     const def = registry.getSettingDefinition(KEY)!
     expect(def.loosens!(DEFAULT, '/home/agent/evil')).toBe(true)
-    expect(def.loosens!(DEFAULT, `${DEFAULT}, /opt/more`)).toBe(true)
+    expect(def.loosens!('/srv/trusted-clis', '/srv/trusted-clis, /opt/more')).toBe(true)
+    expect(def.loosens!('/srv/trusted-clis', DEFAULT)).toBe(true)
     expect(def.loosens!(DEFAULT, DEFAULT)).toBe(false)
     expect(registry.isOverridesOnly(def)).toBe(true)
     expect(registry.envValueTightens(def, '/home/agent/evil')).toBe(false)
@@ -75,11 +77,11 @@ describe('CLI_INVENTORY_DIRS: only the owner chooses what the dashboard runs', (
     expect(store.getEffectiveSettingSource(KEY)).toEqual({ value: '/srv/trusted-clis', source: 'override' })
   })
 
-  it('a .env line that differs from the default is ignored: the generator gets the default folder', () => {
+  it('a .env line that differs from the default is ignored: the inventory stays off', () => {
     envFile[KEY] = '/home/agent/evil'
     expect(store.getEffectiveSettingSource(KEY)).toEqual({ value: DEFAULT, source: 'default' })
     expect(store.isEnvValueIgnored(KEY)).toBe(true)
-    expect(cliDirArgs()).toEqual(['--dir', DEFAULT])
+    expect(() => cliDirArgs()).toThrow('the inventory is off')
   })
 
   it('the owner\'s override applies over a .env line', () => {

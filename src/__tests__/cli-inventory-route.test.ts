@@ -11,8 +11,13 @@
 //     with no file at all it is a 500, never an empty inventory.
 //  3. SETTING -- the CLI_INVENTORY_DIRS product setting (read through
 //     settings-store, like every Settings-page key) reaches the generator as
-//     --dir; an invalid stored value is reported, never ignored.
+//     --dir; an invalid stored value is reported, never ignored. EMPTY (the
+//     default) MEANS OFF: { enabled: false }, and the generator never runs.
 //  4. SKILLS -- the global skills folder reaches the generator as --skills-dir.
+//  5. OWNER -- only the owner gate (mayActAsOwner) starts the generator: for any
+//     other caller ?refresh=1 is a 403, a stale file is served as it is, and a
+//     missing one is { pending: true }; none of them runs it (counted by a stub
+//     generator that logs every run).
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, utimesSync, readFileSync, chmodSync } from 'node:fs'
@@ -78,9 +83,9 @@ describe('auth: the route is bearer-gated (401 without a token)', () => {
 })
 
 describe('CLI_INVENTORY_DIRS setting (registry)', () => {
-  it('is a registered string setting with the Printing Press default and a validator', () => {
+  it('is a registered string setting, empty (off) by default, with a validator', () => {
     const def = getSettingDefinition('CLI_INVENTORY_DIRS')!
-    expect(def).toMatchObject({ type: 'string', default: '~/printing-press/library', secret: false, requiresRestart: false })
+    expect(def).toMatchObject({ type: 'string', default: '', secret: false, requiresRestart: false })
     expect(validateSettingValue(def, '~/printing-press/library, /opt/clis').ok).toBe(true)
     expect(validateSettingValue(def, '').ok).toBe(true)
     for (const bad of ['relative/dir', '~/a/../b', '/a b', '/x;rm', '-x', '~user/x', `/${'x'.repeat(600)}`,
@@ -88,7 +93,8 @@ describe('CLI_INVENTORY_DIRS setting (registry)', () => {
       expect(validateSettingValue(def, bad).ok, bad).toBe(false)
     }
     expect(parseCliInventoryDirs(' /a , /a ,~/b')).toEqual(['/a', '~/b'])
-    expect(parseCliInventoryDirs('')).toEqual(['~/printing-press/library'])
+    expect(parseCliInventoryDirs('')).toEqual([])
+    expect(parseCliInventoryDirs(' , ')).toEqual([])
   })
 })
 
@@ -117,7 +123,27 @@ describe('GET /api/cli-inventory (handler, fixture tree)', () => {
     chmodSync(bin, 0o755)
   }
 
+  // A stub generator that logs every run, so a test can count them.
+  function stubGenerator(name: string): { script: string; out: string; runs: () => number } {
+    const script = join(tmp, `${name}.py`)
+    const log = join(tmp, `${name}-runs.txt`)
+    writeFileSync(script, [
+      'import sys, json',
+      'a = sys.argv',
+      'out = a[a.index("--out") + 1]',
+      `open(${JSON.stringify(log)}, "a").write("run\\n")`,
+      'json.dump({"summary": {"total": 0, "dirs": []}, "tools": []}, open(out, "w"))',
+    ].join('\n'))
+    mkdirSync(join(tmp, `${name}-store`), { recursive: true })
+    return {
+      script,
+      out: join(tmp, `${name}-store`, 'inv.json'),
+      runs: () => (existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').length : 0),
+    }
+  }
+
   beforeAll(() => {
+    initDatabase(':memory:')
     tool(lib, 'acme')
     tool(lib2, 'zeta')
     mkdirSync(join(skillsDir, 'acme-use'), { recursive: true })
@@ -134,7 +160,12 @@ describe('GET /api/cli-inventory (handler, fixture tree)', () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  async function get(query = '', method = 'GET'): Promise<{ handled: boolean; status: number; body: any }> {
+  const OWNER = { kind: 'session', user: 'owner' } as const
+  const SHARED_TOKEN = { kind: 'token' } as const
+  const AGENT_TOKEN = { kind: 'token', agent: 'helper', tokenAgent: 'helper' } as const
+  type Auth = typeof OWNER | typeof SHARED_TOKEN | typeof AGENT_TOKEN
+
+  async function get(query = '', method = 'GET', auth: Auth = OWNER): Promise<{ handled: boolean; status: number; body: any }> {
     let status = 200
     let body = ''
     const res = {
@@ -143,8 +174,8 @@ describe('GET /api/cli-inventory (handler, fixture tree)', () => {
       end(b?: string) { body = b ?? '' },
     } as unknown as http.ServerResponse
     const handled = await tryHandleCliInventory({
-      req: {} as http.IncomingMessage, res, path: PATH, method,
-      url: new URL(`http://localhost${PATH}${query}`),
+      req: { headers: {}, method } as unknown as http.IncomingMessage, res, path: PATH, method,
+      url: new URL(`http://localhost${PATH}${query}`), auth: auth as any,
     })
     return { handled, status, body: body ? JSON.parse(body) : null }
   }
@@ -202,9 +233,26 @@ describe('GET /api/cli-inventory (handler, fixture tree)', () => {
     ])
   })
 
-  it('an empty setting means the default folder', () => {
+  it('an empty setting is off: { enabled: false }, no run, not even on ?refresh=1 or with no file', async () => {
+    const stub = stubGenerator('stub-off')
+    _setCliInventoryPathsForTest({ script: stub.script, agentsDir, skillsDir, out: stub.out })
+    for (const value of ['', ' , ']) {
+      setting.dirs = value
+      expect(() => cliDirArgs()).toThrow('the inventory is off')
+      for (const q of ['', '?refresh=1']) {
+        const r = await get(q)
+        expect(r.status).toBe(200)
+        expect(r.body).toEqual({ enabled: false })
+      }
+    }
+    expect(stub.runs()).toBe(0)
+    expect(existsSync(stub.out)).toBe(false)
+  })
+
+  it('turning it off hides an earlier inventory file too', async () => {
+    expect(existsSync(out)).toBe(true)
     setting.dirs = ''
-    expect(cliDirArgs()).toEqual(['--dir', '~/printing-press/library'])
+    expect((await get()).body).toEqual({ enabled: false })
   })
 
   it('an invalid stored setting is a visible regen_error, not a silent default', async () => {
@@ -245,6 +293,61 @@ describe('GET /api/cli-inventory (handler, fixture tree)', () => {
     await get('?refresh=1')
     expect(readFileSync(runs, 'utf-8').trim().split('\n')).toHaveLength(2)
   })
+
+  it('KONTROLL: the owner\'s session runs the generator, on a missing file and on ?refresh=1', async () => {
+    const stub = stubGenerator('stub-owner')
+    _setCliInventoryPathsForTest({ script: stub.script, agentsDir, skillsDir, out: stub.out })
+    const first = await get()
+    expect(first.body).toMatchObject({ enabled: true, cache: { regenerated: true, regen_skipped: null } })
+    expect(stub.runs()).toBe(1)
+    expect((await get('?refresh=1')).body.cache.regenerated).toBe(true)
+    expect(stub.runs()).toBe(2)
+  })
+
+  for (const [label, auth] of [['the shared token without the owner\'s cookie', SHARED_TOKEN], ['a sub-agent token', AGENT_TOKEN]] as const) {
+    describe(`${label} never starts the generator`, () => {
+      it('?refresh=1 is a 403 (owner_session_required), and nothing runs', async () => {
+        const stub = stubGenerator(`stub-refresh-${auth === SHARED_TOKEN ? 'shared' : 'agent'}`)
+        _setCliInventoryPathsForTest({ script: stub.script, agentsDir, skillsDir, out: stub.out })
+        const r = await get('?refresh=1', 'GET', auth)
+        expect(r.status).toBe(403)
+        expect(r.body.code).toBe('owner_session_required')
+        expect(stub.runs()).toBe(0)
+      })
+
+      it('a missing file is { pending: true }, not a run and not a 500', async () => {
+        const stub = stubGenerator(`stub-missing-${auth === SHARED_TOKEN ? 'shared' : 'agent'}`)
+        _setCliInventoryPathsForTest({ script: stub.script, agentsDir, skillsDir, out: stub.out })
+        const r = await get('', 'GET', auth)
+        expect(r.status).toBe(200)
+        expect(r.body).toEqual({ enabled: true, pending: true, regen_skipped: 'owner_session_required' })
+        expect(stub.runs()).toBe(0)
+      })
+
+      it('a stale file is served as it is, marked, without a run; a fresh one as usual', async () => {
+        const stub = stubGenerator(`stub-stale-${auth === SHARED_TOKEN ? 'shared' : 'agent'}`)
+        _setCliInventoryPathsForTest({ script: stub.script, agentsDir, skillsDir, out: stub.out })
+        expect((await get()).body.cache.regenerated).toBe(true)
+        expect(stub.runs()).toBe(1)
+
+        const fresh = await get('', 'GET', auth)
+        expect(fresh.body.cache).toMatchObject({ regenerated: false, regen_skipped: null })
+
+        const old = new Date(Date.now() - INVENTORY_MAX_AGE_MS - 60_000)
+        utimesSync(stub.out, old, old)
+        const stale = await get('', 'GET', auth)
+        expect(stale.status).toBe(200)
+        expect(stale.body.tools).toEqual([])
+        expect(stale.body.cache).toMatchObject({ regenerated: false, regen_error: null, regen_skipped: 'owner_session_required' })
+        expect(stale.body.cache.age_seconds).toBeGreaterThan(INVENTORY_MAX_AGE_MS / 1000)
+        expect(stub.runs()).toBe(1)
+
+        // The owner's next visit regenerates it.
+        expect((await get()).body.cache.regenerated).toBe(true)
+        expect(stub.runs()).toBe(2)
+      })
+    })
+  }
 
   it('no file and a failing generator is a 500, not an empty inventory', async () => {
     _setCliInventoryPathsForTest({ script: join(tmp, 'nincs-ilyen.py'), agentsDir, skillsDir, out: join(tmp, 'store2', 'x.json') })

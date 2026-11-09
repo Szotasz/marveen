@@ -8,6 +8,7 @@ import { AGENTS_BASE_DIR } from '../agent-config.js'
 import { globalSkillsRoot } from '../skill-quarantine.js'
 import { json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // CLI inventory: the command-line tools the fleet can run (Printing Press
@@ -22,10 +23,16 @@ import type { RouteContext } from './types.js'
 // adopted open-source inventory route (opensource-inventory.ts) on purpose.
 //
 // The generator RUNS each *-pp-cli binary it finds in the configured folders
-// (agent-context, else --help), with a scrubbed environment and a timeout:
-// the CLI_INVENTORY_DIRS setting (store/config-overrides.json, .env, default
-// ~/printing-press/library) must name only folders whose binaries the owner
-// trusts. It is read on every regeneration and passed as --dir.
+// (agent-context, else --help), with a scrubbed environment and a timeout.
+// Two rules follow from that:
+//  - OFF BY DEFAULT: the CLI_INVENTORY_DIRS setting (owner-only, overrides-only)
+//    is empty until the owner names folders whose binaries they trust; empty
+//    means no inventory and no run ({ enabled: false }). It is read on every
+//    request and passed to the generator as --dir.
+//  - ONLY THE OWNER STARTS A RUN: a refresh, or the regeneration of a missing
+//    or stale file, needs the owner gate (mayActAsOwner). Any other caller gets
+//    the saved file (or { pending: true } when there is none yet) without a
+//    run, and ?refresh=1 from it is a 403, as for every other owner action.
 
 export const INVENTORY_MAX_AGE_MS = 60 * 60 * 1000
 const GENERATOR_TIMEOUT_MS = 120_000
@@ -57,13 +64,19 @@ export function _setCliInventoryPathsForTest(p: Partial<CliInventoryPaths> | nul
   inflight = null
 }
 
+/** The configured folders: [] when the setting is empty (the inventory is
+ *  off), null when the stored value is invalid. */
+function configuredDirs(): string[] | null {
+  return parseCliInventoryDirs(String(getEffectiveSettingValue('CLI_INVENTORY_DIRS') ?? ''))
+}
+
 /** The generator's --dir arguments from the CLI_INVENTORY_DIRS setting. An
- *  invalid stored value (hand-edited .env) is an error, not a silent
- *  fallback, so the page shows why the folders are not read. */
+ *  invalid stored value is an error, not a silent fallback, so the page shows
+ *  why the folders are not read; an empty one never starts a run. */
 export function cliDirArgs(): string[] {
-  const raw = String(getEffectiveSettingValue('CLI_INVENTORY_DIRS') ?? '')
-  const dirs = parseCliInventoryDirs(raw)
+  const dirs = configuredDirs()
   if (!dirs) throw new Error('invalid CLI_INVENTORY_DIRS value')
+  if (dirs.length === 0) throw new Error('CLI_INVENTORY_DIRS is empty: the inventory is off')
   return dirs.flatMap((d) => ['--dir', d])
 }
 
@@ -105,17 +118,35 @@ function fileAgeMs(file: string, now: number): number | null {
 }
 
 export async function tryHandleCliInventory(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method, url } = ctx
+  const { req, res, path, method, url } = ctx
   if (path !== '/api/cli-inventory' || method !== 'GET') return false
+
+  // Off until the owner names a folder: no run, and no earlier file either.
+  if (configuredDirs()?.length === 0) {
+    json(res, { enabled: false })
+    return true
+  }
 
   const refresh = url.searchParams.get('refresh') === '1'
   const now = Date.now()
   const age = fileAgeMs(paths.out, now)
   const stale = age === null || age > INVENTORY_MAX_AGE_MS
+  // Asked only when a run is due: the gate writes an audit line for a Bridge key.
+  const mayRun = (refresh || stale) && mayActAsOwner(ctx.auth, req)
+  if (refresh && !mayRun) {
+    refuseOwner(res)
+    return true
+  }
+  // A missing or stale file this caller may not regenerate is served as it is.
+  const regenSkipped = stale && !mayRun
+  if (regenSkipped && age === null) {
+    json(res, { enabled: true, pending: true, regen_skipped: 'owner_session_required' })
+    return true
+  }
   let regenerated = false
   let regenError: string | null = null
 
-  if (refresh || stale) {
+  if (mayRun) {
     try {
       await regenerate()
       regenerated = true
@@ -137,12 +168,15 @@ export async function tryHandleCliInventory(ctx: RouteContext): Promise<boolean>
   const finalAge = fileAgeMs(paths.out, Date.now())
   json(res, {
     ...data,
+    enabled: true,
     cache: {
       regenerated,
       age_seconds: finalAge === null ? null : Math.round(finalAge / 1000),
       max_age_seconds: INVENTORY_MAX_AGE_MS / 1000,
       // A failed regeneration serves the previous file, but visibly.
       regen_error: regenError,
+      // Stale, but only the owner's session starts the generator.
+      regen_skipped: regenSkipped ? 'owner_session_required' : null,
     },
   })
   return true

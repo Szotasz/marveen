@@ -22,8 +22,8 @@ A lista magától épül, kézi nyilvántartás nélkül.
 ## 🛠 Hogyan működik
 
 - **Generátor:** `scripts/cli-inventory.py` a `store/cli-inventory.json` fájlt írja (atomikusan, determinisztikusan, saját hálózati hívás nélkül).
-- **Route:** `GET /api/cli-inventory` (bearer-kapus, csak GET) a fájlt szolgálja ki, és újragenerálja, ha hiányzik, egy óránál régebbi, vagy `?refresh=1` érkezik (az oldal Frissítés gombja). Ha a generálás nem sikerül, az előző fájl látszik a hibával együtt; fájl nélkül 500 a válasz, nem üres lista. A szerkezet szándékosan az átvett nyílt forrású projektek leltárának (`/api/opensource-inventory`) mintája.
-- **Mappák:** a `CLI_INVENTORY_DIRS` beállítás (alapból `~/printing-press/library`, lásd [config-reference](config-reference.md)). Minden beállított mappa minden közvetlen almappája, amelyben `manifest.json` áll, egy eszköz.
+- **Route:** `GET /api/cli-inventory` (bearer-kapus, csak GET) a fájlt szolgálja ki, és újragenerálja, ha hiányzik, egy óránál régebbi, vagy `?refresh=1` érkezik (az oldal Frissítés gombja). Ha a generálás nem sikerül, az előző fájl látszik a hibával együtt; fájl nélkül 500 a válasz, nem üres lista. Az újragenerálást csak a gazda indíthatja (lásd lejjebb). A szerkezet szándékosan az átvett nyílt forrású projektek leltárának (`/api/opensource-inventory`) mintája.
+- **Mappák:** a `CLI_INVENTORY_DIRS` beállítás (lásd [config-reference](config-reference.md)). **Alapból üres, és üresen a nyilvántartás ki van kapcsolva:** semmi nem fut, a route `{ "enabled": false }` választ ad, a CLI oldal pedig azt mutatja, hogy a Beállításokban kapcsolható be. Bekapcsolni egy mappa megadásával lehet, például a Printing Press könyvtárral (`~/printing-press/library`). Minden beállított mappa minden közvetlen almappája, amelyben `manifest.json` áll, egy eszköz. A generátornak sincs alapértelmezett mappája: `--dir` nélkül hibával áll meg, mielőtt bármit elindítana.
 - **A manifestből** csak a `display_name`, `version`, `description` és `license` mező kerül át; az `author`, a `user_config` és a `server` nem.
 
 ### A generátor FUTTATJA a talált binárisokat
@@ -33,6 +33,15 @@ A parancslistához a generátor minden almappa `*-pp-cli` fájlját **elindítja
 - lezárt bemenettel, üres, ideiglenes `HOME`-mal és munkakönyvtárral (utána törlődik), és csak `PATH`, `HOME`, `LANG` környezettel indul: örökölt token nem jut el hozzá.
 
 Ez **nem homokozó**: a bináris közben írhat fájlt vagy nyithat hálózati kapcsolatot. **Ezért a `CLI_INVENTORY_DIRS`-be csak olyan mappát adj meg, amelynek a binárisaiban megbízol.** A kimenetéből csak a fent felsorolt mezők kerülnek a JSON-ba.
+
+### Futtatni csak a gazda tud
+
+A generátort (a `?refresh=1`, illetve a hiányzó vagy egy óránál régebbi fájl újragenerálása) **csak a gazda dashboard-munkamenete indítja** (ugyanaz a tulajdonosi kapu, mint a többi tulajdonosi műveletnél: jelszavas belépés, vagy a token mellett a gazda belépési sütije). Minden más hívó, a közös token és az ügynök-tokenek is, futtatás nélkül kapja a választ:
+- `?refresh=1` esetén 403-at (`owner_session_required`), mint minden tulajdonosi műveletnél;
+- elavult fájlnál a mentett leltárt, `cache.regen_skipped: "owner_session_required"` jelöléssel (az oldal kiírja, hogy csak a gazda frissítheti);
+- fájl nélkül `{ "enabled": true, "pending": true }` választ (az oldalon: még nincs leltár), nem 500-at.
+
+Így egy token birtokában sem lehet a dashboarddal binárist futtatni, csak a gazda látogatása vagy kattintása indít futást.
 
 Ugyanezért a `CLI_INVENTORY_DIRS`-t **csak a gazda állíthatja**: a Beállítások oldalon a változtatáshoz és a visszaállításhoz dashboard-belépés kell, a közös ügynök-token 403-at kap. A kulcs csak felülírásból él: a `.env`-ben álló, az alapértéktől eltérő sor nem érvényesül (a Beállítások oldal jelzi). Ha egy ügynök a saját mappájára állíthatná, oda tett binárist a dashboard a saját jogával, az ügynök-hookok kapuján kívül futtatna.
 

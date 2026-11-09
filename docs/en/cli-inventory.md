@@ -22,8 +22,8 @@ The list builds itself, with no hand-kept register.
 ## 🛠 How it works
 
 - **Generator:** `scripts/cli-inventory.py` writes `store/cli-inventory.json` (atomically, deterministically, with no network call of its own).
-- **Route:** `GET /api/cli-inventory` (bearer-gated, GET only) serves the file and regenerates it when it is missing, older than an hour, or on `?refresh=1` (the page's Refresh button). A failed regeneration serves the previous file together with the error; with no file the answer is a 500, never an empty list. The structure mirrors the adopted open-source inventory (`/api/opensource-inventory`) on purpose.
-- **Folders:** the `CLI_INVENTORY_DIRS` setting (default `~/printing-press/library`, see [config-reference](config-reference.md)). Every immediate subfolder holding a `manifest.json` in a configured folder is one tool.
+- **Route:** `GET /api/cli-inventory` (bearer-gated, GET only) serves the file and regenerates it when it is missing, older than an hour, or on `?refresh=1` (the page's Refresh button). A failed regeneration serves the previous file together with the error; with no file the answer is a 500, never an empty list. Only the owner can start a regeneration (see below). The structure mirrors the adopted open-source inventory (`/api/opensource-inventory`) on purpose.
+- **Folders:** the `CLI_INVENTORY_DIRS` setting (see [config-reference](config-reference.md)). **It is empty by default, and empty means the inventory is off:** nothing runs, the route answers `{ "enabled": false }`, and the CLI page says it can be turned on in Settings. Naming a folder turns it on, for example the Printing Press library (`~/printing-press/library`). Every immediate subfolder holding a `manifest.json` in a configured folder is one tool. The generator has no default folder either: without `--dir` it stops with an error before it starts anything.
 - **From the manifest** only `display_name`, `version`, `description` and `license` are taken; `author`, `user_config` and `server` are not.
 
 ### The generator RUNS the binaries it finds
@@ -33,6 +33,15 @@ For the command list the generator **starts each subfolder's `*-pp-cli` file wit
 - runs with stdin closed, an empty temporary `HOME` and working directory (removed afterwards), and an environment of `PATH`, `HOME` and `LANG` only: no inherited token reaches it.
 
 This is **not a sandbox**: the binary may write files or open network connections meanwhile. **So name in `CLI_INVENTORY_DIRS` only folders whose binaries you trust.** Of its output, only the fields listed above reach the JSON.
+
+### Only the owner starts a run
+
+The generator (a `?refresh=1`, or the regeneration of a missing file or one older than an hour) is **started only by the owner's dashboard session** (the same owner gate as every other owner action: the password login, or the owner's login cookie beside the token). Every other caller, the shared token and the agent tokens alike, gets its answer without a run:
+- on `?refresh=1` a 403 (`owner_session_required`), as for every owner action;
+- for a stale file the saved inventory, marked `cache.regen_skipped: "owner_session_required"` (the page says only the owner can refresh it);
+- with no file `{ "enabled": true, "pending": true }` (the page: no inventory yet), not a 500.
+
+So holding a token is not enough to make the dashboard run a binary; only the owner's visit or click starts a run.
 
 For the same reason **only the owner may set `CLI_INVENTORY_DIRS`**: on the Settings page a change or a reset needs the dashboard login, and the shared agent token gets a 403. The key lives in the overrides only: a `.env` line that differs from the default does not count (the Settings page marks it). If an agent could point it at its own folder, the dashboard would run a binary placed there with its own rights, outside the agent hooks' gates.
 

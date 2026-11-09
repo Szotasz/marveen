@@ -11811,13 +11811,35 @@ async function loadCliTools(refresh = false) {
   try {
     const res = await fetch('/api/cli-inventory' + (refresh ? '?refresh=1' : ''))
     const data = await res.json().catch(() => ({}))
+    // Off (no folder configured) or no inventory yet for a caller that may not
+    // start the generator: a plain empty state, not an error.
+    if (res.ok && (data.enabled === false || data.pending === true)) {
+      cliInventory = null
+      errEl.hidden = true
+      errEl.textContent = ''
+      const meta = document.getElementById('cliToolMeta')
+      if (meta) meta.textContent = ''
+      grid.innerHTML = `<div class="connector-loading">${escapeHtml(t(data.enabled === false ? 'clitools.disabled' : 'clitools.pending'))}</div>`
+      return
+    }
+    // A refresh only the owner may start: the refusal is said, and the inventory already shown stays.
+    const refusal = ownerSessionText(data)
+    if (refusal) {
+      if (cliInventory) renderCliTools()
+      else grid.innerHTML = ''
+      errEl.hidden = false
+      errEl.textContent = refusal
+      return
+    }
     if (!res.ok || !Array.isArray(data.tools)) {
       throw new Error(data.detail || data.error || ('HTTP ' + res.status))
     }
     cliInventory = data
     const regenError = data.cache && data.cache.regen_error
-    errEl.hidden = !regenError
-    errEl.textContent = regenError ? t('clitools.regen_error', { msg: regenError }) : ''
+    const regenSkipped = data.cache && data.cache.regen_skipped
+    errEl.hidden = !regenError && !regenSkipped
+    errEl.textContent = regenError ? t('clitools.regen_error', { msg: regenError })
+      : regenSkipped ? t('clitools.regen_skipped') : ''
     renderCliTools()
   } catch (err) {
     cliInventory = null

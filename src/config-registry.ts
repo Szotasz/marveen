@@ -151,14 +151,14 @@ function validKeepAlive(v: string): string | null {
 // CLI_INVENTORY_DIRS: comma-separated folders the CLI inventory reads, each
 // holding one tool per subfolder (the Printing Press library layout). Each item
 // is an absolute or ~/ path from the config-dir character set, without a '..'
-// segment; '' means the default. Returns the list, or null when an item is
-// invalid. Shared by the validator and the inventory route.
-export const CLI_INVENTORY_DEFAULT_DIRS = '~/printing-press/library'
+// segment. '' (the default) is the empty list: the inventory is off, because it
+// starts the binaries it finds, so the owner turns it on by naming a folder they
+// trust. Returns the list, or null when an item is invalid. Shared by the
+// validator and the inventory route.
 const CLI_INVENTORY_MAX_DIRS = 16
 const CLI_INVENTORY_MAX_DIR_LENGTH = 512
 export function parseCliInventoryDirs(raw: string): string[] | null {
   const dirs = raw.split(',').map((d) => d.trim()).filter((d) => d !== '')
-  if (dirs.length === 0) return [CLI_INVENTORY_DEFAULT_DIRS]
   if (dirs.length > CLI_INVENTORY_MAX_DIRS) return null
   for (const d of dirs) {
     const rooted = d.startsWith('/') || d.startsWith('~/')
@@ -490,8 +490,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'CLI_INVENTORY_DIRS',
     type: 'string',
-    default: CLI_INVENTORY_DEFAULT_DIRS,
-    description: 'A CLI-nyilvántartás (Kapcsolatok > CLI oldal) ezekben a mappákban keresi az eszközöket, almappánként egyet (a Printing Press könyvtár elrendezése): vesszővel elválasztott abszolút vagy ~/ kezdetű útvonalak, pl. ~/printing-press/library. Üres = ~/printing-press/library. A leltár az itt talált *-pp-cli fájlokat a dashboard jogával ELINDÍTJA (csak leíró hívás: agent-context vagy --help, időkorláttal, tisztított környezettel), ezért csak olyan mappát adj meg, amelynek a binárisaiban megbízol. Csak a gazda állíthatja (dashboard-belépéssel), a közös ügynök-token nem, és a .env-ben álló érték nem érvényesül: aki ezt átírja, az dönti el, mit futtat a dashboard. A következő leltár-frissítéskor érvényes.',
+    default: '',
+    description: 'A CLI-nyilvántartás (Kapcsolatok > CLI oldal) ezekben a mappákban keresi az eszközöket, almappánként egyet (a Printing Press könyvtár elrendezése): vesszővel elválasztott abszolút vagy ~/ kezdetű útvonalak, pl. ~/printing-press/library. Üres (alapállapot) = a nyilvántartás ki van kapcsolva, semmi nem fut. A leltár az itt talált *-pp-cli fájlokat a dashboard jogával ELINDÍTJA (csak leíró hívás: agent-context vagy --help, időkorláttal, tisztított környezettel), ezért csak olyan mappát adj meg, amelynek a binárisaiban megbízol. A futást (frissítés, elavult leltár újragenerálása) csak a gazda dashboard-munkamenete indítja, más hívó a mentett leltárt kapja. Csak a gazda állíthatja (dashboard-belépéssel), a közös ügynök-token nem, és a .env-ben álló érték nem érvényesül: aki ezt átírja, az dönti el, mit futtat a dashboard. A következő leltár-frissítéskor érvényes, a kikapcsolás azonnal.',
     module: 'system',
     secret: false,
     requiresRestart: false,

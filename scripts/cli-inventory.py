@@ -56,7 +56,6 @@ import sys
 import tempfile
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-DEFAULT_DIR = '~/printing-press/library'
 PROBE_TIMEOUT_S = 5.0
 MAX_JSON_BYTES = 1024 * 1024
 MAX_PROBE_BYTES = 4 * 1024 * 1024
@@ -420,8 +419,11 @@ def build(dirs, skills_dirs, agents_dir, timeout=PROBE_TIMEOUT_S):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--dir', action='append', default=None,
-                    help='folder holding one tool per subfolder (repeatable; default %s)' % DEFAULT_DIR)
+    # No default folder: every binary found is started, so the folders are
+    # always named (the dashboard passes the owner's setting, and runs nothing
+    # while it is empty).
+    ap.add_argument('--dir', action='append', required=True,
+                    help='folder holding one tool per subfolder, whose binaries you trust (repeatable, required)')
     ap.add_argument('--skills-dir', action='append', default=[],
                     help='global skills folder searched for skills naming a binary (repeatable)')
     ap.add_argument('--agents-dir', default=os.path.join(REPO_ROOT, 'agents'))
@@ -430,7 +432,7 @@ def main(argv=None):
     ap.add_argument('--out', default=os.path.join(REPO_ROOT, 'store', 'cli-inventory.json'))
     ap.add_argument('--stdout', action='store_true', help='print instead of writing --out')
     args = ap.parse_args(argv)
-    dirs = args.dir or [DEFAULT_DIR]
+    dirs = args.dir
     if not 0 < args.timeout <= 60:
         ap.error('--timeout must be between 0 and 60 seconds')
 
