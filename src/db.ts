@@ -6532,9 +6532,12 @@ export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' |
   return db.prepare(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
 }
 
+// The idea's attachments and comments go with it (no foreign keys hold them). Its idea_status_log rows stay: that
+// table is an audit log, read by the audit page and pruned by AUDIT_LOG_RETENTION_DAYS, so it outlives the idea.
 export function deleteIdea(id: string): boolean {
   const remove = db.transaction(() => {
     db.prepare('DELETE FROM idea_attachments WHERE idea_id = ?').run(id)
+    db.prepare('DELETE FROM idea_comments WHERE idea_id = ?').run(id)
     return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
   })
   return remove()
