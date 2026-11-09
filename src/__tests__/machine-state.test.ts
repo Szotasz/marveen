@@ -1,4 +1,5 @@
-// machine-state: pins the pure /proc parsers with literal fixtures (no fs anywhere), and
+// machine-state: pins the pure /proc parsers with literal fixtures (no fs anywhere), the CPU
+// snapshot source (proc, os.cpus() fallback), and
 // the event-loop-lag monitor's integration with an injected machine-state reader -- the
 // flat WARN fields, the healthy-window no-read, prevCpu chaining, the best-effort swallow,
 // and stop() leaving the module pristine.
@@ -8,6 +9,7 @@ const { warn } = vi.hoisted(() => ({ warn: vi.fn() }))
 vi.mock('../logger.js', () => ({ logger: { warn, info: vi.fn(), debug: vi.fn(), error: vi.fn() } }))
 import {
   parseStatTotalLine, computeBusyFrac, parseMeminfo, parsePressureSomeAvg10, findTopRss,
+  snapshotFromOsCpus, readCpuSnapshot,
   type CpuSnapshot, type MachineState,
 } from '../web/machine-state.js'
 import { sampleLagOnce, startEventLoopLagMonitor, type LagHistogram } from '../web/event-loop-lag-monitor.js'
@@ -225,5 +227,105 @@ describe('sampleLagOnce + machine-state reader (monitor integration)', () => {
     warn.mockClear()
     expect(sampleLagOnce(fakeHistogram({ max: 2500 * MS, mean: 0, percentile: () => 0 }), 1000)).toBe('blocked')
     expect(warn.mock.calls[0][0]).toEqual({ maxMs: 2500, meanMs: 0, p99Ms: 0, thresholdMs: 1000 })
+  })
+})
+
+// LAGBUSYFRAC1109 (Boni's 11-08 finding on #2622, Samu 73807): busyFrac describes the LAST
+// window, and the first block after start is not null for want of a baseline.
+describe('snapshotFromOsCpus (the portable source, macOS)', () => {
+  const core = (user: number, nice: number, sys: number, idle: number, irq: number) => ({ times: { user, nice, sys, idle, irq } })
+  it('sums every core: total = user+nice+sys+idle+irq, idleAll = idle (numbers by hand)', () => {
+    // core0: 100+0+50+800+10 = 960, core1: 200+5+40+700+5 = 950 -> total 1910, idle 1500
+    expect(snapshotFromOsCpus([core(100, 0, 50, 800, 10), core(200, 5, 40, 700, 5)])).toEqual({ total: 1910, idleAll: 1500 })
+  })
+  it('no cores, or a non-finite time -> null', () => {
+    expect(snapshotFromOsCpus([])).toBeNull()
+    expect(snapshotFromOsCpus([core(1, 0, 1, Number.NaN, 0)])).toBeNull()
+  })
+})
+
+describe('readCpuSnapshot (which source)', () => {
+  const cpus = () => [{ times: { user: 10, nice: 0, sys: 10, idle: 80, irq: 0 } }]
+  it('takes /proc/stat when its first line parses', () => {
+    expect(readCpuSnapshot(() => 'cpu  1 0 1 8 0 0 0 0', cpus)).toEqual({ total: 10, idleAll: 8 })
+  })
+  it('falls back to os.cpus() when /proc/stat cannot be read (macOS)', () => {
+    expect(readCpuSnapshot(() => { throw new Error('ENOENT /proc/stat') }, cpus)).toEqual({ total: 100, idleAll: 80 })
+  })
+  it('falls back to os.cpus() when the /proc/stat line does not parse', () => {
+    expect(readCpuSnapshot(() => 'garbage', cpus)).toEqual({ total: 100, idleAll: 80 })
+  })
+  it('both sources failing -> null, never a throw', () => {
+    expect(readCpuSnapshot(() => { throw new Error('no proc') }, () => { throw new Error('no cpus') })).toBeNull()
+  })
+})
+
+describe('busyFrac covers the last window (LAGBUSYFRAC1109)', () => {
+  beforeEach(() => {
+    warn.mockClear()
+    resetMonitorModule()
+  })
+
+  it('a healthy window moves the CPU baseline: the next blocked window is measured from it', () => {
+    const atHealthy: CpuSnapshot = { total: 5000, idleAll: 4000 }
+    const sampler = vi.fn(() => atHealthy)
+    const { reader, prevCpus } = fakeReader({ cpu: { total: 6000, idleAll: 4500 } })
+    expect(sampleLagOnce(fakeHistogram({ max: 10 * MS }), 1000, reader, sampler)).toBe('ok')
+    expect(sampler).toHaveBeenCalledTimes(1)
+    expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS }), 1000, reader, sampler)).toBe('blocked')
+    // the blocked window's reader got the HEALTHY window's snapshot, not an older blocked one
+    expect(prevCpus).toEqual([atHealthy])
+    // a blocked window does not call the sampler: its snapshot comes from the reader
+    expect(sampler).toHaveBeenCalledTimes(1)
+  })
+
+  it('a throwing sampler keeps the previous baseline and never breaks a sample', () => {
+    const { reader, prevCpus } = fakeReader({ cpu: { total: 1, idleAll: 1 } })
+    expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS }), 1000, reader, () => null)).toBe('blocked')
+    expect(sampleLagOnce(fakeHistogram({ max: 10 * MS }), 1000, reader, () => { throw new Error('boom') })).toBe('ok')
+    expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS }), 1000, reader, () => null)).toBe('blocked')
+    expect(prevCpus[1]).toEqual({ total: 1, idleAll: 1 })
+  })
+
+  it('with a real monitor running, the FIRST blocked window already carries a numeric busyFrac', () => {
+    const handle = startEventLoopLagMonitor()
+    try {
+      // let the CPU counters move past the start baseline (ms on os.cpus(), 10 ms jiffies on /proc)
+      const until = Date.now() + 120
+      while (Date.now() < until) { /* spin */ }
+      expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS, mean: 20 * MS, percentile: () => 1500 * MS }), 1000)).toBe('blocked')
+      const fields = warn.mock.calls[0][0] as Record<string, unknown>
+      expect(typeof fields.busyFrac).toBe('number')
+      expect(fields.busyFrac as number).toBeGreaterThanOrEqual(0)
+      expect(fields.busyFrac as number).toBeLessThanOrEqual(1)
+    } finally {
+      handle.stop()
+    }
+  })
+
+  it('with a real monitor running, a healthy window takes a REAL snapshot that the next block is measured from', () => {
+    const handle = startEventLoopLagMonitor()
+    try {
+      // A blocked window whose reader leaves a tiny fake snapshot as the baseline...
+      const first = fakeReader({ cpu: { total: 1, idleAll: 1 } })
+      expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS }), 1000, first.reader)).toBe('blocked')
+      // ...a healthy window with the monitor's own installed sampler replaces it with a real one...
+      expect(sampleLagOnce(fakeHistogram({ max: 10 * MS }), 1000)).toBe('ok')
+      // ...so the next block is measured from the real counters, not from {total: 1}.
+      const second = fakeReader()
+      expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS }), 1000, second.reader)).toBe('blocked')
+      expect(second.prevCpus[0]).not.toBeNull()
+      expect((second.prevCpus[0] as CpuSnapshot).total).toBeGreaterThan(1)
+    } finally {
+      handle.stop()
+    }
+  })
+
+  it('stop() uninstalls the sampler too: a healthy window after stop leaves no baseline behind', () => {
+    startEventLoopLagMonitor().stop()
+    expect(sampleLagOnce(fakeHistogram({ max: 10 * MS }), 1000)).toBe('ok')
+    const { reader, prevCpus } = fakeReader()
+    expect(sampleLagOnce(fakeHistogram({ max: 2000 * MS }), 1000, reader)).toBe('blocked')
+    expect(prevCpus[0]).toBeNull()
   })
 })
