@@ -17161,16 +17161,17 @@ async function saveOperatorAccess(ev) {
   msg.className = 'auth-form-msg'
   // Turning on the pane view shows the operator the conversation itself: ask first.
   if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked) {
+    // The box stays unticked while the dialog is open: a save from another switch
+    // behind the dialog reads the boxes, and must not carry paneView=true unconfirmed.
     const box = ev.target
+    box.checked = false
     const confirmed = await confirmDialog({
       title: t('auth.operator.pane_warning_title'),
-      message: t('auth.operator.pane_warning'),
+      message: t('auth.operator.pane_warning', { cmds: OPERATOR_CMDS.map((c) => '/' + c).join(', ') }),
       okLabel: t('auth.operator.pane_warning_ok'),
     })
-    if (!confirmed) {
-      box.checked = false
-      return
-    }
+    if (!confirmed) return
+    box.checked = true
   }
   const next = {
     enabled: document.getElementById('opAccEnabled').checked,

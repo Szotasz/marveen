@@ -882,25 +882,52 @@ describe('the auth and device questions use it', () => {
     expect(yes.deletes).toEqual([{ url: '/api/auth/device-keys/7', method: 'DELETE' }])
   })
 
-  it('turning on the pane view asks in its own dialog; a "no" unticks it and saves nothing', async () => {
-    const dialogs: Array<Record<string, unknown>> = []
-    const calls: string[] = []
-    const box = { dataset: { opCap: 'paneView' }, checked: true }
-    const run = new Function('confirmDialog', 't', 'fetch', 'document', 'OPERATOR_CAPS', 'OPERATOR_CMDS', 'CSS', 'applyOperatorAccess', `${OPERATOR}\nreturn saveOperatorAccess`)(
-      async (o: Record<string, unknown>) => { dialogs.push(o); return false },
-      tr,
-      async (url: string) => { calls.push(url); return { ok: true, json: async () => ({}) } },
-      { getElementById: () => ({ className: '', checked: true, classList: { add: () => {} } }), querySelector: () => ({ checked: false }) },
-      [], [], { escape: (x: string) => x }, () => {},
-    ) as (ev: unknown) => Promise<void>
-    await run({ target: box })
-    expect(dialogs).toEqual([{
+  it('turning on the pane view asks in its own dialog, naming the allowed commands; a "no" leaves it unticked and saves nothing', async () => {
+    async function turnOn(answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const puts: Array<Record<string, any>> = []
+      const boxes: Record<string, { dataset: Record<string, string>; checked: boolean }> = {
+        paneView: { dataset: { opCap: 'paneView' }, checked: true },
+        update: { dataset: { opCap: 'update' }, checked: false },
+      }
+      let duringDialog: boolean | null = null
+      let save: (ev: unknown) => Promise<void> = async () => {}
+      save = new Function('confirmDialog', 't', 'fetch', 'document', 'OPERATOR_CAPS', 'OPERATOR_CMDS', 'CSS', 'applyOperatorAccess', `${OPERATOR}\nreturn saveOperatorAccess`)(
+        async (o: Record<string, unknown>) => {
+          dialogs.push(o)
+          duringDialog = boxes.paneView.checked
+          // Behind the open dialog, another switch is toggled from the keyboard and saves.
+          boxes.update.checked = true
+          await save({ target: boxes.update })
+          return answer
+        },
+        tr,
+        async (_url: string, init: { body?: string } = {}) => { if (init.body) puts.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) } },
+        {
+          getElementById: () => ({ className: '', checked: true, classList: { add: () => {} } }),
+          querySelector: (sel: string) => {
+            const m = /data-op-cap="([^"]+)"/.exec(sel)
+            return (m && boxes[m[1]]) || { checked: false }
+          },
+        },
+        ['paneView', 'update'], ['login', 'mcp'], { escape: (x: string) => x }, () => {},
+      ) as (ev: unknown) => Promise<void>
+      await save({ target: boxes.paneView })
+      return { dialogs, puts, duringDialog, box: boxes.paneView }
+    }
+    const no = await turnOn(false)
+    expect(no.dialogs).toEqual([{
       title: 'auth.operator.pane_warning_title',
-      message: 'auth.operator.pane_warning',
+      message: 'auth.operator.pane_warning {"cmds":"/login, /mcp"}',
       okLabel: 'auth.operator.pane_warning_ok',
     }])
-    expect(box.checked).toBe(false)
-    expect(calls).toEqual([])
+    // While the dialog is open the box is unticked, so the save behind it does not carry paneView=true.
+    expect(no.duringDialog).toBe(false)
+    expect(no.puts.map(b => b.capabilities.paneView)).toEqual([false])
+    expect(no.box.checked).toBe(false)
+    const yes = await turnOn(true)
+    expect(yes.box.checked).toBe(true)
+    expect(yes.puts.map(b => b.capabilities.paneView)).toEqual([false, true])
   })
 
   it('a failed token login without a password login shows a translated notice instead of the English alert', () => {
@@ -922,11 +949,22 @@ describe('the auth and device questions use it', () => {
       expect(line(lang, 'auth.devices.revoke_confirm')).toContain('"{name}"')
       expect(line(lang, 'auth.failed.desc')).toContain('?token=')
     }
-    // The pairing's tunnel opens to the dashboard port only (permitopen), and a re-paired Bridge loses its old key.
-    expect(line(HU, 'auth.bridge.confirm')).toContain('csak a dashboardhoz')
+    // At pairing the tunnel opens to the dashboard port only (permitopen); later the Bridge may ask for further
+    // local ports with its own key, with a notification (bridge-service-ports.ts). A re-paired Bridge loses its old key.
+    expect(line(HU, 'auth.bridge.confirm')).toContain('párosításkor csak a dashboardhoz')
+    expect(line(HU, 'auth.bridge.confirm')).toContain('további helyi portokat kérhet, ezekről értesítést kapsz')
+    expect(line(EN, 'auth.bridge.confirm')).toContain('at pairing opens to the dashboard only')
+    expect(line(EN, 'auth.bridge.confirm')).toContain('further local ports')
     expect(line(HU, 'auth.bridge.confirm')).toContain('a régi kulcsa megszűnik')
     expect(line(HU, 'auth.devices.revoke_confirm_bridge')).toContain('SSH-alagútja is megszűnik')
     expect(line(HU, 'auth.operator.pane_warning')).toContain('Írni nem tud bele')
+    // Even the commands right sends only the fixed commands (OPERATOR_COMMANDS); the list comes from the code.
+    expect(line(HU, 'auth.operator.pane_warning')).toContain('a parancsküldés jogával is csak az általad engedélyezett fix parancsokat')
+    expect(line(EN, 'auth.operator.pane_warning')).toContain('even with the commands permission they can only send the fixed commands')
+    for (const lang of [HU, EN]) {
+      expect(line(lang, 'auth.operator.pane_warning')).toContain('({cmds})')
+      expect(line(lang, 'auth.operator.pane_warning')).not.toContain('/login')
+    }
   })
 })
 
