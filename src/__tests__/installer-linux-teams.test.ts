@@ -19,7 +19,8 @@ const between = (text: string, from: string, to: string): string => {
 }
 // A slice may only name these commands (plus shell syntax); anything else is refused before it runs.
 // a command word, not part of a name or path (claude-plugins-official, /etc/claude-code)
-const FORBIDDEN = /(?<![-\w/.@])(dscl|launchctl|systemctl|useradd|chown|curl|wget|rm|mv|cp|ln|npm|claude|apt-get|brew|eval|exec|source)(?![-\w/.@])/
+// eval is not listed: the Teams block evals only the `trap -p` output it saved itself
+const FORBIDDEN = /(?<![-\w/.@])(dscl|launchctl|systemctl|useradd|chown|curl|wget|rm|mv|cp|ln|npm|claude|apt-get|brew|exec|source)(?![-\w/.@])/
 const refuse = (slice: string) => {
   const code = slice.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')
   const m = code.match(FORBIDDEN)
@@ -65,7 +66,7 @@ describe('install-linux.sh: the menu', () => {
 })
 
 describe('install-linux.sh: the three Teams credentials', () => {
-  const HELPERS = between(SCRIPT, "_teams_clean() {", "{12}$'; }")
+  const HELPERS = between(SCRIPT, "_teams_clean() {", "_teams_tty() { [ -t 0 ]; }")
   const BRANCH = between(SCRIPT, 'elif [ "$CHANNEL_PROVIDER" = "teams" ]; then\n  # EE2392D3: the three keys', '\n  fi\n')
   // `read` and `stty` are stubbed: answers come from ANS_1..3 in order, every stty call is logged.
   const run = (answers: string[]) => {
@@ -77,6 +78,7 @@ describe('install-linux.sh: the three Teams credentials', () => {
       '_n=0; read() { local v="${@: -1}"; _n=$((_n+1)); local a="ANS_$_n"; printf -v "$v" "%s" "${!a}"; echo "asked: $v"; }',
       'stty() { echo "stty $*"; }',
       HELPERS,
+      '_teams_tty() { return 0; }',
       'CHANNEL_PROVIDER=teams; TEAMS_BOT_APP_ID=""; TEAMS_BOT_TENANT_ID=""; TEAMS_BOT_APP_PASSWORD=""',
       'if [ "$CHANNEL_PROVIDER" = "none" ]; then :',
       BRANCH,
@@ -102,6 +104,8 @@ describe('install-linux.sh: the three Teams credentials', () => {
       'read() { local v="${@: -1}"; if [ "$v" = TEAMS_BOT_APP_PASSWORD ]; then kill -INT $$; sleep 1; fi; printf -v "$v" "%s" "11111111-2222-3333-4444-555555555555"; }',
       'stty() { echo "stty $*"; }',
       HELPERS,
+      '_teams_tty() { return 0; }',
+      "trap 'echo PREVIOUS-EXIT-TRAP' EXIT",
       'CHANNEL_PROVIDER=teams',
       'if false; then :', BRANCH, 'fi',
       'echo AFTER-THE-BRANCH',
@@ -109,12 +113,28 @@ describe('install-linux.sh: the three Teams credentials', () => {
     expect(r.status).toBe(130)
     expect(r.stdout.split('\n').filter((l) => l.startsWith('stty'))).toEqual(['stty -echo', 'stty echo'])
     expect(r.stdout).not.toContain('AFTER-THE-BRANCH')
+    expect(r.stdout).toContain('PREVIOUS-EXIT-TRAP') // the trap set before the block runs on that exit too
   })
-  it('after the read the traps are gone (a later Ctrl+C is not swallowed into an echo reset)', () => {
+  const trapsAfter = (tty: boolean, before: string[]) => {
     refuse(HELPERS + BRANCH)
-    const r = bash([PRELUDE, 'read() { local v="${@: -1}"; printf -v "$v" "%s" x; }', 'stty() { :; }', HELPERS,
-      'CHANNEL_PROVIDER=teams', 'if false; then :', BRANCH, 'fi', 'trap -p'].join('\n'))
-    expect(r.stdout).not.toMatch(/trap -- .* (INT|TERM|EXIT)/)
+    return bash([PRELUDE, 'read() { local v="${@: -1}"; printf -v "$v" "%s" 11111111-2222-3333-4444-555555555555; }',
+      'stty() { echo "stty $*"; }', HELPERS, `_teams_tty() { return ${tty ? 0 : 1}; }`, ...before,
+      'CHANNEL_PROVIDER=teams', 'if false; then :', BRANCH, 'fi', 'echo TRAPS:', 'trap -p'].join('\n'))
+  }
+  it('on a terminal the traps set before the block are put back after the read; with none, none is left', () => {
+    const r = trapsAfter(true, ["trap 'echo bridge-result' EXIT", "trap 'echo int-before' INT"])
+    const after = r.stdout.split('TRAPS:')[1]
+    expect(after).toContain("trap -- 'echo bridge-result' EXIT")
+    expect(after).toContain("trap -- 'echo int-before' SIGINT")
+    expect(after).not.toMatch(/stty echo/)
+    const none = trapsAfter(true, []).stdout.split('TRAPS:')[1]
+    expect(none).not.toMatch(/trap -- .* (SIGINT|SIGTERM|EXIT)/)
+  })
+  it('without a terminal (the Bridge headless run) no trap is touched and stty is never called', () => {
+    const r = trapsAfter(false, ["trap 'echo bridge-result' EXIT"])
+    expect(r.stdout).not.toMatch(/^stty/m)
+    expect(r.stdout.split('TRAPS:')[1]).toContain("trap -- 'echo bridge-result' EXIT")
+    expect(r.stdout).toContain('bridge-result') // and it fires on the shell's exit
   })
   it('the secret never reaches stdout or stderr', () => {
     const r = run([APP, TEN, SECRET])

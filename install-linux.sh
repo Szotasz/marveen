@@ -1433,6 +1433,7 @@ TEAMS_BOT_APP_PASSWORD=""
 # EE2392D3: one .env value per key: whitespace (a pasted newline, a trailing space) is cut, never written.
 _teams_clean() { printf '%s' "$1" | tr -d '[:space:]'; }
 _teams_uuid() { printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; }
+_teams_tty() { [ -t 0 ]; } # a terminal on stdin: only there is echo switched off
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
@@ -1476,15 +1477,23 @@ elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
   if [ -n "$TEAMS_BOT_APP_ID" ]; then
     read -rp "$(_t prompt_teams_tenant_id)" TEAMS_BOT_TENANT_ID
     TEAMS_BOT_TENANT_ID="$(_teams_clean "$TEAMS_BOT_TENANT_ID")"
-    # echo comes back on every way out of the read: Ctrl+C and TERM restore it and stop (130), a stdin EOF under
-    # the ERR trap restores it on EXIT; the traps are cleared right after. No terminal (the Bridge's headless run):
-    # stty fails quietly, nothing to restore.
-    trap 'trap - EXIT; stty echo 2>/dev/null || true; exit 130' INT TERM
-    trap 'stty echo 2>/dev/null || true' EXIT
-    stty -echo 2>/dev/null || true
+    # Echo off only on a terminal, and back on every way out of the read: Ctrl+C and TERM restore it and stop
+    # (130), a stdin EOF under the ERR trap restores it on EXIT. The traps that were set before (the Bridge's
+    # headless run has its own EXIT trap, headless-helpers.sh on_exit_emit_result) are saved and put back, also on
+    # the Ctrl+C path; without a terminal no trap is touched at all (Ábel 75250, measured).
+    _teams_prev_traps="$(trap -p INT TERM EXIT)"
+    if _teams_tty; then
+      trap 'stty echo 2>/dev/null || true; trap - INT TERM EXIT; eval "$_teams_prev_traps"; exit 130' INT TERM
+      trap 'stty echo 2>/dev/null || true' EXIT
+      stty -echo 2>/dev/null || true
+    fi
     read -rp "$(_t prompt_teams_app_password)" TEAMS_BOT_APP_PASSWORD
-    stty echo 2>/dev/null || true
-    trap - INT TERM EXIT
+    if _teams_tty; then
+      stty echo 2>/dev/null || true
+      trap - INT TERM EXIT
+      eval "$_teams_prev_traps"
+    fi
+    unset _teams_prev_traps
     echo ""
     TEAMS_BOT_APP_PASSWORD="$(_teams_clean "$TEAMS_BOT_APP_PASSWORD")"
     _teams_uuid "$TEAMS_BOT_APP_ID" || warn "Az App ID nem GUID alaku (pl. 11111111-2222-3333-4444-555555555555). Ellenorizd az Entra-alkalmazasnal."
