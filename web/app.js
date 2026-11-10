@@ -22407,7 +22407,16 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   }
 
   async function switchOn(row) {
-    if (row.main && !confirm(t('gromzo.agents.main.confirm_on'))) return
+    // The main agent's switch restarts the main conversation fresh (hardRestartMarveenChannels) after the approval,
+    // through the manual-restart pane gate: a busy pane is not cut off, the row offers "Restart now" instead.
+    if (row.main) {
+      const confirmed = await confirmDialog({
+        title: t('gromzo.agents.main.confirm_on_title'),
+        message: t('gromzo.agents.main.confirm_on'),
+        okLabel: t('gromzo.agents.main.confirm_on_ok'),
+      })
+      if (!confirmed) return
+    }
     const withName = nameFieldShown(row, false)
     const name = withName ? nameFor(row).trim() : ''
     local.set(row.slug, { kind: 'busy' }); render()
@@ -22430,7 +22439,21 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   }
 
   async function switchOff(row) {
-    if (!confirm(t(row.main ? 'gromzo.agents.main.confirm_off' : 'gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
+    // A sub-agent's switch-off removes it from mxd (agent_remove), so switching it on again asks for a new approval;
+    // the main agent stays listed in mxd, only its launch side goes, with the same fresh restart as the switch-on.
+    const confirmed = await confirmDialog(row.main
+      ? {
+        title: t('gromzo.agents.main.confirm_off_title'),
+        message: t('gromzo.agents.main.confirm_off'),
+        okLabel: t('gromzo.agents.main.confirm_off_ok'),
+      }
+      : {
+        title: t('gromzo.agents.confirm_off_title'),
+        message: t('gromzo.agents.confirm_off', { name: row.name || row.slug }),
+        okLabel: t('gromzo.agents.confirm_off_ok'),
+        danger: true,
+      })
+    if (!confirmed) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'disable')
@@ -22446,7 +22469,12 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   // GROMZOMAINAGENT1106: the main conversation's restart, when the pane was busy at the switch. The server
   // asks the pane gate again; a busy pane keeps the row on "waiting", never forced.
   async function restartMain(row) {
-    if (!confirm(t('gromzo.agents.main.confirm_restart'))) return
+    const confirmed = await confirmDialog({
+      title: t('gromzo.agents.main.confirm_restart_title'),
+      message: t('gromzo.agents.main.confirm_restart'),
+      okLabel: t('gromzo.agents.main.confirm_restart_ok'),
+    })
+    if (!confirmed) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'restart')

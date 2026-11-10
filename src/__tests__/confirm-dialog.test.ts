@@ -914,3 +914,122 @@ describe('the idea and idea attachment deletes use it', () => {
     }
   })
 })
+
+describe('the Gromzo agent switches use it', () => {
+  // The bodies sit inside the Gromzo page's closure: cut each by its braces and run it with that closure's names handed in.
+  const fn = (name: string) => {
+    const m = new RegExp(`async function ${name}\\(row\\) \\{`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf('{', m.index); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const ON = fn('switchOn')
+  const OFF = fn('switchOff')
+  const RESTART = fn('restartMain')
+
+  function load(body: string, name: string, answer: boolean) {
+    const dialogs: Array<Record<string, unknown>> = []
+    const posts: string[] = []
+    const run = new Function(
+      'confirmDialog', 't', 'post', 'local', 'render', 'loadAgents', 'codeOf', 'agentErr', 'nameFieldShown', 'nameFor', 'nameAsk', 'NAME_CODES', 'nameRefused', 'setTimeout',
+      `${body}\nreturn ${name}`,
+    )(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+      (key: string, vars?: Record<string, string>) => (vars ? `${key} ${JSON.stringify(vars)}` : key),
+      async (slug: string, action: string) => { posts.push(`${slug}/${action}`); return { ok: true, json: async () => ({ state: 'removed' }) } },
+      new Map(), () => {}, async () => {}, async () => 'x', (c: string) => c,
+      () => false, () => '', new Set(), [], () => {}, () => 0,
+    ) as (row: Record<string, unknown>) => Promise<void>
+    return { run, dialogs, posts }
+  }
+
+  it('the handlers were found, with no native confirm() left', () => {
+    for (const part of [ON, OFF, RESTART]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    }
+  })
+
+  it('the main agent switch-on asks in its own dialog; a "no" sends nothing, a "yes" the enable', async () => {
+    const no = load(ON, 'switchOn', false)
+    await no.run({ slug: 'main', main: true })
+    expect(no.dialogs).toEqual([{
+      title: 'gromzo.agents.main.confirm_on_title',
+      message: 'gromzo.agents.main.confirm_on',
+      okLabel: 'gromzo.agents.main.confirm_on_ok',
+    }])
+    expect(no.posts).toEqual([])
+    const yes = load(ON, 'switchOn', true)
+    await yes.run({ slug: 'main', main: true })
+    expect(yes.posts).toEqual(['main/enable'])
+  })
+
+  it('a sub-agent switch-on asks nothing (the approval on Gromzo is the question)', async () => {
+    const h = load(ON, 'switchOn', false)
+    await h.run({ slug: 'kutato', name: 'Kutató' })
+    expect(h.dialogs).toEqual([])
+    expect(h.posts).toEqual(['kutato/enable'])
+  })
+
+  it('the switch-off: the main agent in its own dialog, a sub-agent in a danger one naming it; a "no" sends nothing', async () => {
+    const main = load(OFF, 'switchOff', false)
+    await main.run({ slug: 'main', main: true, name: 'Fő' })
+    expect(main.dialogs).toEqual([{
+      title: 'gromzo.agents.main.confirm_off_title',
+      message: 'gromzo.agents.main.confirm_off',
+      okLabel: 'gromzo.agents.main.confirm_off_ok',
+    }])
+    const sub = load(OFF, 'switchOff', false)
+    await sub.run({ slug: 'kutato', name: 'Kutató' })
+    expect(sub.dialogs).toEqual([{
+      title: 'gromzo.agents.confirm_off_title',
+      message: 'gromzo.agents.confirm_off {"name":"Kutató"}',
+      okLabel: 'gromzo.agents.confirm_off_ok',
+      danger: true,
+    }])
+    const unnamed = load(OFF, 'switchOff', false)
+    await unnamed.run({ slug: 'kutato' })
+    expect(unnamed.dialogs[0].message).toBe('gromzo.agents.confirm_off {"name":"kutato"}')
+    expect([...main.posts, ...sub.posts, ...unnamed.posts]).toEqual([])
+    const yes = load(OFF, 'switchOff', true)
+    await yes.run({ slug: 'kutato', name: 'Kutató' })
+    expect(yes.posts).toEqual(['kutato/disable'])
+  })
+
+  it('the main restart asks in its own dialog; a "no" sends nothing, a "yes" the restart', async () => {
+    const no = load(RESTART, 'restartMain', false)
+    await no.run({ slug: 'main', main: true })
+    expect(no.dialogs).toEqual([{
+      title: 'gromzo.agents.main.confirm_restart_title',
+      message: 'gromzo.agents.main.confirm_restart',
+      okLabel: 'gromzo.agents.main.confirm_restart_ok',
+    }])
+    expect(no.posts).toEqual([])
+    const yes = load(RESTART, 'restartMain', true)
+    await yes.run({ slug: 'main', main: true })
+    expect(yes.posts).toEqual(['main/restart'])
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+    for (const lang of [HU, EN]) {
+      for (const key of ['main.confirm_on', 'main.confirm_off', 'main.confirm_restart', 'confirm_off']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, `gromzo.agents.${key}${suffix}`), key + suffix).not.toBe('')
+      }
+      expect(line(lang, 'gromzo.agents.confirm_off')).toContain('"{name}"')
+    }
+    // The main agent's restart is a fresh one (hardRestartMarveenChannels), and a busy pane is not cut off.
+    for (const key of ['main.confirm_on', 'main.confirm_off', 'main.confirm_restart']) {
+      expect(line(HU, `gromzo.agents.${key}`)).toMatch(/új beszélgetés/iu)
+      expect(line(HU, `gromzo.agents.${key}`)).toMatch(/[ns]em szakítjuk meg/u)
+    }
+    // A sub-agent's switch-off removes it from mxd: on again only with a new approval. The old text said "chat service".
+    expect(line(HU, 'gromzo.agents.confirm_off')).toContain('új jóváhagyással')
+    expect(line(HU, 'gromzo.agents.confirm_off')).not.toContain('chat-szolgáltatás')
+    expect(line(HU, 'gromzo.agents.main.confirm_off')).toContain('új jóváhagyás nélkül')
+  })
+})
