@@ -15,16 +15,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 SLUG="${SLUG:-marveen}"
-# The installer names the service units (systemd <id>-dashboard/-channels,
-# launchd com.<id>.*) after SERVICE_ID, which equals MAIN_AGENT_ID unless .env
-# sets it apart (e.g. a renamed agent keeping its old units). The tmux session
-# name stays on SLUG. Resolved like backup.sh: last definition wins, quotes stripped.
-UNIT_ID=""
-if [ -f "$INSTALL_DIR/.env" ]; then
-  UNIT_ID="$(grep -E '^[[:space:]]*SERVICE_ID[[:space:]]*=' "$INSTALL_DIR/.env" | tail -1 \
-    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')"
+# Unit name: SERVICE_ID, else MAIN_AGENT_ID, with a fallback to existing units (see the helper).
+# The tmux session name stays on SLUG.
+# shellcheck source=resolve-unit-id.sh
+if [ -f "$INSTALL_DIR/scripts/resolve-unit-id.sh" ]; then
+  source "$INSTALL_DIR/scripts/resolve-unit-id.sh"
+else
+  UNIT_ID="$SLUG"  # helper missing (partial copy): the pre-SERVICE_ID behaviour
 fi
-UNIT_ID="${UNIT_ID:-$SLUG}"
 
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 # shellcheck source=../install-lang.sh
