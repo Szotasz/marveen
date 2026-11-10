@@ -7,7 +7,7 @@ import {
   retractMemory, saveAgentMemorySuperseding,
   type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
+import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS, MEMORY_SEARCH_DEFAULT_MODE } from '../../config.js'
 import { createHash } from 'crypto'
 import { readAutonomyLevel } from '../autonomy-level.js'
 import { approvalWindowSeconds, fileServerApproval } from './approvals.js'
@@ -481,7 +481,13 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const agentId = url.searchParams.get('agent') || agentIdAlias || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
-    const mode = url.searchParams.get('mode') || 'fts'
+    // The default mode stays 'fts' unless MEMORY_SEARCH_DEFAULT_MODE=hybrid is set
+    // (opt-in): with a working embedding backend, hybrid (keyword + vector, RRF)
+    // finds a memory by meaning, not only by shared words. An explicit ?mode=
+    // always wins, and strict=1 always keeps the FTS-only path, because only that
+    // path honours the "answer only on a real match" contract. If the embedding
+    // backend is down, hybridSearch degrades to its FTS leg on its own.
+    const mode = url.searchParams.get('mode') || (url.searchParams.get('strict') === '1' ? 'fts' : MEMORY_SEARCH_DEFAULT_MODE)
     // strict=1 is the opt-in for "answer only on a real match". The default
     // stays forgiving, because that is what makes a naturally phrased question
     // find its memory; what the default owes the caller is the LABEL below,
