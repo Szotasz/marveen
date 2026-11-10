@@ -290,7 +290,7 @@ describe('install-linux.sh: the machine-wide allowlist on a teams install', () =
 })
 
 describe('install-linux.sh: root from sudo -i stops at once (Samu 75472, Marveen 75473)', () => {
-  const GUARD = between(SCRIPT, 'if [ "$ADMIN_PREREQ" != 1 ] && [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then', '\nfi')
+  const GUARD = between(SCRIPT, '# --admin-prereq is run with sudo on purpose (admin_prereq_cmd) and is exempt.\n', '\nfi')
   const run = (uid: number, sudoUser: string, adminPrereq: string) => {
     refuse(GUARD)
     return bash([`id() { echo ${uid}; }`, `ADMIN_PREREQ=${adminPrereq}`, sudoUser ? `SUDO_USER=${sudoUser}` : 'unset SUDO_USER', GUARD, 'echo WENT-ON'].join('\n'))
@@ -308,7 +308,7 @@ describe('install-linux.sh: root from sudo -i stops at once (Samu 75472, Marveen
     expect(run(0, 'zoli', '1').stdout).toContain('WENT-ON')
   })
   it('the stop comes before anything is installed (before the package step)', () => {
-    expect(SCRIPT.indexOf('if [ "$ADMIN_PREREQ" != 1 ] && [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then'))
+    expect(SCRIPT.indexOf('# --admin-prereq is run with sudo on purpose (admin_prereq_cmd) and is exempt.\n'))
       .toBeLessThan(SCRIPT.indexOf('pkg_install_noninteractive() {'))
   })
   it('the channels unit names the install\'s own channel, not Telegram', () => {
