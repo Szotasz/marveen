@@ -1002,7 +1002,8 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'],
   ['POST', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
   ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
-  ['POST', '/api/skills/propose'], ['GET', '/api/updates'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
+  ['POST', '/api/skills/propose'], ['GET', '/api/updates'],
+  ['GET', '/api/updates/rebase-plan'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
 ]
 
 // MEASURED on one production fleet: every dashboard call five sub-agents issued

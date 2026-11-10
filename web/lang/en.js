@@ -2182,6 +2182,20 @@ window._i18n.en = {
   'connectors.builtin.computer_use_html': '<p>Computer Use is a native Claude capability managed by the Claude Code CLI / Claude app itself, not by {brand}. It does not appear in <code>claude mcp list</code> output, so the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> the exact steps depend on your Claude version and may change between releases. Follow the official Anthropic documentation and Claude Code changelog. Find your main session tmux name on the Agents page and attach with <code>tmux attach</code>.</p><p style="color:var(--text-muted)">This capability grants the agent control over your screen and keyboard, so only use it in a trusted environment.</p>',
   'connectors.builtin.chrome_html': '<p>Claude in Chrome is a launch-time flag for the Claude Code CLI, not a toggleable MCP server. It therefore does not appear in <code>claude mcp list</code> output and the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> start Claude with the <code>--chrome</code> flag:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">Chrome integration enables browser automation. {brand} sub-agent launches do not currently pass this flag, so only the manually started main session can use it.</p>',
 
+  // --- Updates: a diverged install, the owner-approved rebase (AUTOUPDATEDIVERG1110) ---
+  'updates.rebase.title':          'Update with local changes',
+  'updates.rebase.message':        'This install has {n} local change(s), and the new version brings changes too. The update replays the local changes onto the new version. If one of them conflicts, nothing changes, and you are told which one.',
+  'updates.rebase.ok':             'Update with approval',
+  'updates.rebase.target_now':     'The new version: {target} (checked just now).',
+  'updates.rebase.target_fetch':   'The new version: {target} (as of the last download, {age} min ago).',
+  'updates.rebase.window':         'The approval is valid for 30 minutes and for this update only. If a new change arrives meanwhile, ask again.',
+  'updates.rebase.agent_path':     'Not now? Ask your agent to request approval for this, and approve it on the Approvals page.',
+  'updates.rebase.more':           '... and {n} more',
+  'updates.rebase.will_fail_lock': 'This update would fail for sure: a local change edits package.json without package-lock.json. Fix that first (npm install, then commit both files).',
+  'updates.rebase.will_fail':      'This update would fail for sure ({reason}).',
+  'updates.rebase.plan_error':     'The update plan could not be loaded: {msg}',
+  'updates.rebase.approve_failed': 'The approval was not created: {msg}',
+
   // --- Updates toasts ---
   'updates.toast.not_started':   'Update not started: {msg}',
   'updates.toast.started':       'Update started, dashboard reloading...',

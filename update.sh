@@ -38,7 +38,7 @@ FINALIZE_LAUNCHED=0
 
 _json_escape() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
-# Samu 74881 point 7: the rebase in the result file -- the approval, the three SHAs, the recovery ref, the
+# AUTOUPDATEDIVERG1110 plan, point 7: the rebase in the result file -- the approval, the three SHAs, the recovery ref, the
 # outcome, and whether a later rollback undid it (the finalizer gets the same object as its 11th argument).
 # Empty when no rebase was attempted. Every value is JSON-escaped.
 rebase_json() {
@@ -704,7 +704,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
   # expired, unapproved or differently bound one, no dashboard -- is the same
   # refusal as without the switch: exit 5, HEAD unchanged. The why and the flow:
   # scripts/lib/update-rebase-go.sh; what to ask for: scripts/update-rebase-request.sh.
-  # AUTOUPDATEDIVERG1110 2nd PR (Samu 74881 point 3): the switch is the approval id alone. UPDATE_AUTO_REBASE
+  # AUTOUPDATEDIVERG1110 2nd PR (AUTOUPDATEDIVERG1110 plan, point 3): the switch is the approval id alone. UPDATE_AUTO_REBASE
   # is gone (#2676 had already made it insufficient); a run that only sets it takes the refusal below.
   if [ -n "${UPDATE_REBASE_APPROVAL:-}" ]; then
     echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; auto-rebase kerve, a tulaj jovahagyasat ellenorzom..."
@@ -725,7 +725,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
     # approval for exactly that pair, and only then rebases onto that exact commit. The verdict comes
     # back as an exit code, branched on with `case` (a keyword, which no function can replace).
     REBASE_RC=0
-    # GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL (Dani, #2676 GO note): the fixed HOME sits under store/, which
+    # GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL (#2676 review note): the fixed HOME sits under store/, which
     # the caller can write; git must not read a .gitconfig placed there (or the system one), only the repo's.
     REBASE_OUT="$(/usr/bin/env -i PATH='/usr/bin:/bin:/usr/sbin:/sbin' HOME="$INSTALL_DIR/store/.update-rebase-home-unused" LANG=C \
       GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
@@ -752,7 +752,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
         fi
         ;;
       3)
-        # Samu 74881 point 6: which local commit and which files, what to do, in the install's language. The
+        # AUTOUPDATEDIVERG1110 plan, point 6: which local commit and which files, what to do, in the install's language. The
         # subject and the file names come from the local commit (free text): they only ever travel as data
         # (the result file is JSON-escaped, the dashboard shows it with textContent, notify.sh sends text).
         if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
@@ -762,7 +762,8 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
           RESULT_MSG="A frissítés nem futott le, semmi nem változott. A(z) ${REBASE_COMMIT} \"${REBASE_SUBJECT}\" helyi módosítás ütközik az új verzióval ezekben a fájlokban: ${REBASE_FILES}. Teendő: a helyi módosítást kézzel kell az új verzióhoz igazítani (fejlesztő vagy a support), utána a frissítést újra lehet kérni. Mentés: ${REBASE_BACKUP}."
           echo -e "${RED}HIBA:${NC} rebase-utkozes: ${REBASE_FILES} (helyi modositas ${REBASE_COMMIT}); semmi nem valtozott."
         fi
-        bash "$INSTALL_DIR/scripts/notify.sh" "🔴 $RESULT_MSG" >/dev/null 2>&1 || true
+        REBASE_ALERT="$RESULT_MSG"
+        bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Frissítés: helyi módosítás ütközik. ${REBASE_ALERT}" >/dev/null 2>&1 || true
         restore_stash_before_exit
         exit 5
         ;;
@@ -2059,7 +2060,7 @@ cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
 INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
 RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"; WARN="${10:-}"
 # $11 REBASE: the rebase object update.sh wrote (JSON, already escaped), or empty. A rollback below flips its
-# "rollback" field, so the result says the replayed commits were undone with the update (Samu 74881 point 7).
+# "rollback" field, so the result says the replayed commits were undone with the update (AUTOUPDATEDIVERG1110 plan, point 7).
 REBASE="${11:-}"
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
@@ -2193,7 +2194,9 @@ FINALIZE_LAUNCHED=1
 # MARVEEN_UPDATE_NOTIFY=1 (set by the unattended auto-update task) makes the
 # finalizer send a channel report after the restart+health outcome. A manual
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
-FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}" "$UPDATE_WARN" "$(rebase_json)")
+FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}" "$UPDATE_WARN")
+# AUTOUPDATEDIVERG1110: the rebase object rides as the 11th argument (empty when no rebase ran).
+FINALIZE_ARGS+=("$(rebase_json)")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
 # ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
 # trace at all, so a run that died mid-restart looked identical to one that
