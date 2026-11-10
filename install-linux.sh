@@ -3190,11 +3190,19 @@ echo ""
 echo -e "  ${DIM}VPS/szerver eleres tavolrol:${NC}"
 echo -e "  ${DIM}  A .env fajlba ird: WEB_HOST=0.0.0.0${NC}"
 echo -e "  ${DIM}  Majd: systemctl --user restart ${DASH_UNIT}${NC}"
-echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"
+# EE2392D3 (Abel 75479, Samu 75482): the closing lines name the install's own channel, not always Telegram.
+case "$CHANNEL_PROVIDER" in
+  teams) _CHAN_APP="Teams"; _CHAN_IN="Teamsben" ;;
+  slack) _CHAN_APP="Slack"; _CHAN_IN="Slacken" ;;
+  discord) _CHAN_APP="Discord"; _CHAN_IN="Discordon" ;;
+  gromzo) _CHAN_APP="Gromzo"; _CHAN_IN="a Gromzo appban" ;;
+  *) _CHAN_APP="Telegram"; _CHAN_IN="Telegramon" ;;
+esac
+echo -e "  ${BOLD}${_CHAN_APP}:${NC} Irj a botodnak!"
 echo ""
 echo -e "  ${DIM}Kovetkezo lepesek:${NC}"
 echo -e "  ${DIM}1. Nyisd meg a dashboardot a fenti URL-lel${NC}"
-echo -e "  ${DIM}2. Irj a botodnak Telegramon -- mar valaszolnia kell${NC}"
+echo -e "  ${DIM}2. Irj a botodnak ${_CHAN_IN} -- mar valaszolnia kell${NC}"
 echo -e "  ${DIM}3. A Csapat oldalon hozhatsz letre tobb agenst${NC}"
 echo ""
 echo -e "  ${DIM}Hasznos parancsok:${NC}"

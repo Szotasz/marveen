@@ -316,3 +316,24 @@ describe('install-linux.sh: root from sudo -i stops at once (Samu 75472, Marveen
     expect(SCRIPT).not.toContain('Channels (Telegram bridge)\nAfter=')
   })
 })
+
+describe('install-linux.sh: the closing lines name the install\'s channel (Abel 75479, Samu 75482)', () => {
+  const CLOSING = between(SCRIPT, "# EE2392D3 (Abel 75479, Samu 75482): the closing lines name the install's own channel", 'mar valaszolnia kell${NC}"')
+  const close = (provider: string) => { refuse(CLOSING); return bash([PRELUDE, `CHANNEL_PROVIDER='${provider}'`, CLOSING].join('\n')).stdout }
+  it.each([
+    ['teams', 'Teams: Irj a botodnak!', '2. Irj a botodnak Teamsben -- mar valaszolnia kell'],
+    ['slack', 'Slack: Irj a botodnak!', '2. Irj a botodnak Slacken -- mar valaszolnia kell'],
+    ['discord', 'Discord: Irj a botodnak!', '2. Irj a botodnak Discordon -- mar valaszolnia kell'],
+    ['gromzo', 'Gromzo: Irj a botodnak!', '2. Irj a botodnak a Gromzo appban -- mar valaszolnia kell'],
+    ['telegram', 'Telegram: Irj a botodnak!', '2. Irj a botodnak Telegramon -- mar valaszolnia kell'],
+  ])('%s', (provider, head, step) => {
+    const out = close(provider)
+    expect(out).toContain(head)
+    expect(out).toContain(step)
+    if (provider !== 'telegram') expect(out).not.toContain('Telegram')
+  })
+  it('the old fixed Telegram lines are gone from the closing block', () => {
+    expect(SCRIPT).not.toContain('echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"')
+    expect(SCRIPT).not.toContain('2. Irj a botodnak Telegramon -- mar valaszolnia kell')
+  })
+})
