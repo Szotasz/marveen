@@ -136,6 +136,21 @@ describe('install-linux.sh: the three Teams credentials', () => {
     expect(r.stdout.split('TRAPS:')[1]).toContain("trap -- 'echo bridge-result' EXIT")
     expect(r.stdout).toContain('bridge-result') // and it fires on the shell's exit
   })
+  it('a stdin EOF at the secret prompt on a terminal turns echo back on AND runs the caller\'s EXIT trap (Dani 75350 (1))', () => {
+    refuse(HELPERS + BRANCH)
+    const r = bash([
+      PRELUDE, 'set -e', "trap 'echo ERR-TRAP' ERR",
+      'read() { local v="${@: -1}"; if [ "$v" = TEAMS_BOT_APP_PASSWORD ]; then return 1; fi; printf -v "$v" "%s" 11111111-2222-3333-4444-555555555555; }',
+      'stty() { echo "stty $*"; }', HELPERS, '_teams_tty() { return 0; }', "trap 'echo CALLER-EXIT' EXIT",
+      'CHANNEL_PROVIDER=teams', 'if false; then :', BRANCH, 'fi', 'echo AFTER-THE-BRANCH',
+    ].join('\n'))
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).not.toContain('AFTER-THE-BRANCH')
+    const out = r.stdout.split('\n')
+    expect(out).toContain('stty echo')
+    expect(out).toContain('CALLER-EXIT')
+    expect(out.indexOf('stty echo')).toBeLessThan(out.indexOf('CALLER-EXIT'))
+  })
   it('the secret never reaches stdout or stderr', () => {
     const r = run([APP, TEN, SECRET])
     expect(r.stdout.replace('PW-MATCH', '')).not.toContain(SECRET)
@@ -203,6 +218,13 @@ describe('install-linux.sh: the channel .env and access.json', () => {
     expect(JSON.parse(readFileSync(join(dir, 'access.json'), 'utf8'))).toEqual({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} })
     expect(r.stdout + r.stderr).not.toContain(SECRET)
   })
+  it('the channel env file is 0600 from the moment it is written: the umask, not only the later chmod (Dani 75350 (2))', () => {
+    const dir = tempDir()
+    refuse(BLOCK.replace(/chmod 600 "\$CHANNEL_DIR\/\.env"/, ''))
+    bash([PRELUDE, 'chmod() { :; }', `CHANNEL_DIR='${dir}'`, `TEAMS_BOT_APP_ID='${APP}' TEAMS_BOT_TENANT_ID='${TEN}' TEAMS_BOT_APP_PASSWORD='${SECRET}'`,
+      'CHANNEL_PROVIDER=teams', 'if false; then :', BLOCK, 'fi'].join('\n'))
+    expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o600)
+  })
   it('a re-run keeps an existing pairing (access.json is not overwritten)', () => {
     const dir = tempDir()
     writeFileSync(join(dir, 'access.json'), '{"dmPolicy":"allowlist","allowFrom":["x"],"groups":{},"pending":{}}')
@@ -264,5 +286,54 @@ describe('install-linux.sh: the machine-wide allowlist on a teams install', () =
     refuse(slice)
     bash([PRELUDE, 'sudo() { "$@"; }', `INSTALL_DIR='${ROOT}'`, 'CHANNEL_PROVIDER=slack', slice].join('\n'))
     expect(existsSync(f)).toBe(false)
+  })
+})
+
+describe('install-linux.sh: root from sudo -i stops at once (Samu 75472, Marveen 75473)', () => {
+  const GUARD = between(SCRIPT, '# --admin-prereq is run with sudo on purpose (admin_prereq_cmd) and is exempt.\n', '\nfi')
+  const run = (uid: number, sudoUser: string, adminPrereq: string) => {
+    refuse(GUARD)
+    return bash([`id() { echo ${uid}; }`, `ADMIN_PREREQ=${adminPrereq}`, sudoUser ? `SUDO_USER=${sudoUser}` : 'unset SUDO_USER', GUARD, 'echo WENT-ON'].join('\n'))
+  }
+  it('root with SUDO_USER (sudo -i, sudo bash) stops with the two ways that work, in both languages', () => {
+    const r = run(0, 'zoli', '0')
+    expect(r.status).toBe(1)
+    expect(r.stdout).not.toContain('WENT-ON')
+    expect(r.stderr).toContain('ne sudo -i vagy sudo bash alól futtasd')
+    expect(r.stderr).toContain('do not run the installer from sudo -i or sudo bash')
+  })
+  it('a direct root login, a non-root user and --admin-prereq go on', () => {
+    expect(run(0, '', '0').stdout).toContain('WENT-ON')
+    expect(run(1001, 'zoli', '0').stdout).toContain('WENT-ON')
+    expect(run(0, 'zoli', '1').stdout).toContain('WENT-ON')
+  })
+  it('the stop comes before anything is installed (before the package step)', () => {
+    expect(SCRIPT.indexOf('# --admin-prereq is run with sudo on purpose (admin_prereq_cmd) and is exempt.\n'))
+      .toBeLessThan(SCRIPT.indexOf('pkg_install_noninteractive() {'))
+  })
+  it('the channels unit names the install\'s own channel, not Telegram', () => {
+    expect(SCRIPT).toContain('Description=${BOT_NAME} Channels (${CHANNEL_PROVIDER})\n')
+    expect(SCRIPT).not.toContain('Channels (Telegram bridge)\nAfter=')
+  })
+})
+
+describe('install-linux.sh: the closing lines name the install\'s channel (Abel 75479, Samu 75482)', () => {
+  const CLOSING = between(SCRIPT, "# EE2392D3 (Abel 75479, Samu 75482): the closing lines name the install's own channel", 'mar valaszolnia kell${NC}"')
+  const close = (provider: string) => { refuse(CLOSING); return bash([PRELUDE, `CHANNEL_PROVIDER='${provider}'`, CLOSING].join('\n')).stdout }
+  it.each([
+    ['teams', 'Teams: Irj a botodnak!', '2. Irj a botodnak Teamsben -- mar valaszolnia kell'],
+    ['slack', 'Slack: Irj a botodnak!', '2. Irj a botodnak Slacken -- mar valaszolnia kell'],
+    ['discord', 'Discord: Irj a botodnak!', '2. Irj a botodnak Discordon -- mar valaszolnia kell'],
+    ['gromzo', 'Gromzo: Irj a botodnak!', '2. Irj a botodnak a Gromzo appban -- mar valaszolnia kell'],
+    ['telegram', 'Telegram: Irj a botodnak!', '2. Irj a botodnak Telegramon -- mar valaszolnia kell'],
+  ])('%s', (provider, head, step) => {
+    const out = close(provider)
+    expect(out).toContain(head)
+    expect(out).toContain(step)
+    if (provider !== 'telegram') expect(out).not.toContain('Telegram')
+  })
+  it('the old fixed Telegram lines are gone from the closing block', () => {
+    expect(SCRIPT).not.toContain('echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"')
+    expect(SCRIPT).not.toContain('2. Irj a botodnak Telegramon -- mar valaszolnia kell')
   })
 })

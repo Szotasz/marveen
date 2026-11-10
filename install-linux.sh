@@ -306,6 +306,17 @@ WEB_PORT="${WEB_PORT:-3420}"
 # LINUXINSTPREREQ1104: --admin-prereq is the root half of a non-admin install. Without root
 # it stops here, before any step, with the exact command.
 ADMIN_PREREQ="${ADMIN_PREREQ:-0}"
+
+# EE2392D3 (measured 2026-11-10 on a throwaway Ubuntu 24.04): run as root from `sudo -i` or `sudo bash`, Claude Code's
+# official installer refuses ("do not run this installer with sudo", it reads SUDO_USER) and this install stopped at
+# [2/7] after three tries. Its refusal is not worked around (Samu 75472, Marveen 75473): the install stops here, at
+# once, and names the two ways that work. A direct root login (the Bridge's SSH) has no SUDO_USER and goes on;
+# --admin-prereq is run with sudo on purpose (admin_prereq_cmd) and is exempt.
+if [ "$ADMIN_PREREQ" != 1 ] && [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  echo "Hiba: ne sudo -i vagy sudo bash alól futtasd a telepítőt. Lépj be közvetlenül rootként (root-SSH), vagy futtasd a saját felhasználóddal (sudo-joggal)." >&2
+  echo "Error: do not run the installer from sudo -i or sudo bash. Log in as root directly (root SSH), or run it as your own user (with sudo rights)." >&2
+  exit 1
+fi
 ADMIN_USER="${ADMIN_USER:-}"
 if [ -n "$ADMIN_USER" ] && [ "$ADMIN_PREREQ" != 1 ]; then
   echo -e "${RED}$(_t linux.adminprereq_user_needs_flag)${NC}" >&2; exit 1
@@ -1482,9 +1493,13 @@ elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
     # headless run has its own EXIT trap, headless-helpers.sh on_exit_emit_result) are saved and put back, also on
     # the Ctrl+C path; without a terminal no trap is touched at all (Ábel 75250, measured).
     _teams_prev_traps="$(trap -p INT TERM EXIT)"
+    # The caller's EXIT command itself (trap -p prints it shell-quoted: eval turns it back into the string), so an
+    # exit while echo is off (a stdin EOF under set -e, Dani 75350 (1)) runs it after the echo comes back.
+    _teams_prev_exit=""
+    eval "_teams_prev_exit=$(trap -p EXIT | sed -e 's/^trap -- //' -e 's/ EXIT$//')"
     if _teams_tty; then
       trap 'stty echo 2>/dev/null || true; trap - INT TERM EXIT; eval "$_teams_prev_traps"; exit 130' INT TERM
-      trap 'stty echo 2>/dev/null || true' EXIT
+      trap 'stty echo 2>/dev/null || true; eval "$_teams_prev_exit"' EXIT
       stty -echo 2>/dev/null || true
     fi
     read -rp "$(_t prompt_teams_app_password)" TEAMS_BOT_APP_PASSWORD
@@ -1493,7 +1508,7 @@ elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
       trap - INT TERM EXIT
       eval "$_teams_prev_traps"
     fi
-    unset _teams_prev_traps
+    unset _teams_prev_traps _teams_prev_exit
     echo ""
     TEAMS_BOT_APP_PASSWORD="$(_teams_clean "$TEAMS_BOT_APP_PASSWORD")"
     _teams_uuid "$TEAMS_BOT_APP_ID" || warn "Az App ID nem GUID alaku (pl. 11111111-2222-3333-4444-555555555555). Ellenorizd az Entra-alkalmazasnal."
@@ -2533,7 +2548,7 @@ EOF
 # ${CHAN_UNIT}.service
 cat >"$SYSTEMD_DIR/${CHAN_UNIT}.service" <<EOF
 [Unit]
-Description=${BOT_NAME} Channels (Telegram bridge)
+Description=${BOT_NAME} Channels (${CHANNEL_PROVIDER})
 After=network.target
 # StartLimit* belong in [Unit], not [Service] (systemd logs "Unknown key
 # StartLimitIntervalSec in section [Service]" and ignores them there), so the
@@ -3175,11 +3190,19 @@ echo ""
 echo -e "  ${DIM}VPS/szerver eleres tavolrol:${NC}"
 echo -e "  ${DIM}  A .env fajlba ird: WEB_HOST=0.0.0.0${NC}"
 echo -e "  ${DIM}  Majd: systemctl --user restart ${DASH_UNIT}${NC}"
-echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"
+# EE2392D3 (Abel 75479, Samu 75482): the closing lines name the install's own channel, not always Telegram.
+case "$CHANNEL_PROVIDER" in
+  teams) _CHAN_APP="Teams"; _CHAN_IN="Teamsben" ;;
+  slack) _CHAN_APP="Slack"; _CHAN_IN="Slacken" ;;
+  discord) _CHAN_APP="Discord"; _CHAN_IN="Discordon" ;;
+  gromzo) _CHAN_APP="Gromzo"; _CHAN_IN="a Gromzo appban" ;;
+  *) _CHAN_APP="Telegram"; _CHAN_IN="Telegramon" ;;
+esac
+echo -e "  ${BOLD}${_CHAN_APP}:${NC} Irj a botodnak!"
 echo ""
 echo -e "  ${DIM}Kovetkezo lepesek:${NC}"
 echo -e "  ${DIM}1. Nyisd meg a dashboardot a fenti URL-lel${NC}"
-echo -e "  ${DIM}2. Irj a botodnak Telegramon -- mar valaszolnia kell${NC}"
+echo -e "  ${DIM}2. Irj a botodnak ${_CHAN_IN} -- mar valaszolnia kell${NC}"
 echo -e "  ${DIM}3. A Csapat oldalon hozhatsz letre tobb agenst${NC}"
 echo ""
 echo -e "  ${DIM}Hasznos parancsok:${NC}"
