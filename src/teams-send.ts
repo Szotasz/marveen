@@ -79,8 +79,75 @@ export function isTeamsServiceUrl(url: string): boolean {
 export function readTeamsServiceUrl(
   stateDir: string,
   conversationId: string,
-  deps?: { lstat?: typeof lstatSync; readFile?: (p: string) => string; uid?: number | null },
+  deps?: RefsFileDeps,
 ): { url: string } | { reason: string } {
+  const file = readTeamsRefsFile(stateDir, deps)
+  if ('reason' in file) return file
+  const entry = file.refs.find(
+    (e): e is { ref?: { serviceUrl?: unknown; conversation?: { id?: unknown } } } => {
+      if (e === null || typeof e !== 'object') return false
+      const r = e as { conversationId?: unknown; ref?: { conversation?: { id?: unknown } } }
+      return r.conversationId === conversationId && r.ref?.conversation?.id === conversationId
+    },
+  )
+  if (!entry) {
+    return { reason: 'no conversation reference for the target conversation' }
+  }
+  const serviceUrl = entry.ref?.serviceUrl
+  if (typeof serviceUrl !== 'string' || !isTeamsServiceUrl(serviceUrl)) {
+    return { reason: 'the stored serviceUrl is not a Teams service host' }
+  }
+  return { url: serviceUrl }
+}
+
+// An Entra (AAD) object id: what the Teams plugin's access.json allowFrom holds, so what the owner-chat resolvers
+// (owner-chat.ts soleDmOwner, the scheduler's bound-chat lookup) hand over as the "chat" on a Teams install. A Bot
+// Framework conversation id never has this shape (a personal chat's id starts with "a:", a channel's carries
+// "@thread.").
+const AAD_OBJECT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The conversation a Teams send goes to. A conversation id passes through unchanged. An Entra object id (a paired
+ * person, see AAD_OBJECT_ID_RE) becomes that person's own 1:1 chat with the bot, taken from the plugin's
+ * conversation-refs.json: an entry whose aadObjectId is that person, whose conversationType is "personal" (a group
+ * chat or a channel never stands in for a person), that the person wrote in (botOpened: a chat the bot opened is
+ * never a target, the plugin's own rule), and whose two conversation ids agree. Of several such entries the most
+ * recently seen wins, as in the plugin's permission relay; they are all the same person's. No such entry, or a refs
+ * file that cannot be used, is `{ reason }`: nothing is sent. TEAMSALERTENV1110: before this, a main agent on Teams
+ * sent its owner alerts to the object id as if it were a conversation id, and every one ended as "no conversation
+ * reference for the target conversation" (measured on a fake install).
+ */
+export function resolveTeamsTarget(
+  stateDir: string,
+  target: string,
+  deps?: RefsFileDeps,
+): { conversationId: string } | { reason: string } {
+  if (!AAD_OBJECT_ID_RE.test(target)) return { conversationId: target }
+  const file = readTeamsRefsFile(stateDir, deps)
+  if ('reason' in file) return { reason: `the paired Teams user's chat cannot be looked up: ${file.reason}` }
+  const person = target.toLowerCase()
+  let best: { conversationId: string; lastSeen: number } | null = null
+  for (const e of file.refs) {
+    if (e === null || typeof e !== 'object') continue
+    const r = e as {
+      conversationId?: unknown; aadObjectId?: unknown; lastSeen?: unknown; botOpened?: unknown
+      ref?: { conversation?: { id?: unknown; conversationType?: unknown } }
+    }
+    if (typeof r.aadObjectId !== 'string' || r.aadObjectId.toLowerCase() !== person) continue
+    if (r.botOpened === true) continue
+    if (r.ref?.conversation?.conversationType !== 'personal') continue
+    if (typeof r.conversationId !== 'string' || r.conversationId === '' || r.ref.conversation.id !== r.conversationId) continue
+    const lastSeen = typeof r.lastSeen === 'number' && Number.isFinite(r.lastSeen) ? r.lastSeen : 0
+    if (!best || lastSeen > best.lastSeen) best = { conversationId: r.conversationId, lastSeen }
+  }
+  if (!best) return { reason: 'no personal chat with the bot is recorded for the paired Teams user' }
+  return { conversationId: best.conversationId }
+}
+
+type RefsFileDeps = { lstat?: typeof lstatSync; readFile?: (p: string) => string; uid?: number | null }
+
+/** conversation-refs.json, read with the checks every reader shares: a regular file of ours, size-capped, version 1. */
+function readTeamsRefsFile(stateDir: string, deps?: RefsFileDeps): { refs: unknown[] } | { reason: string } {
   const lstat = deps?.lstat ?? lstatSync
   const readFile = deps?.readFile ?? ((p: string) => readFileSync(p, 'utf-8'))
   const path = join(stateDir, TEAMS_REFS_FILE)
@@ -117,21 +184,7 @@ export function readTeamsServiceUrl(
   if (root === null || typeof root !== 'object' || Array.isArray(root) || root.version !== 1 || !Array.isArray(root.refs)) {
     return { reason: `${TEAMS_REFS_FILE} has an unexpected format` }
   }
-  const entry = (root.refs as unknown[]).find(
-    (e): e is { ref?: { serviceUrl?: unknown; conversation?: { id?: unknown } } } => {
-      if (e === null || typeof e !== 'object') return false
-      const r = e as { conversationId?: unknown; ref?: { conversation?: { id?: unknown } } }
-      return r.conversationId === conversationId && r.ref?.conversation?.id === conversationId
-    },
-  )
-  if (!entry) {
-    return { reason: 'no conversation reference for the target conversation' }
-  }
-  const serviceUrl = entry.ref?.serviceUrl
-  if (typeof serviceUrl !== 'string' || !isTeamsServiceUrl(serviceUrl)) {
-    return { reason: 'the stored serviceUrl is not a Teams service host' }
-  }
-  return { url: serviceUrl }
+  return { refs: root.refs as unknown[] }
 }
 
 /** The Bot Framework app registration the Teams plugin authenticates with. */
@@ -245,7 +298,9 @@ export async function getTeamsBotToken(
 
 /**
  * Send one plain-text message to a Teams conversation over the Bot Framework
- * REST API. The destination is the conversation's recorded serviceUrl, or else
+ * REST API. The target is a conversation id, or a paired person's Entra object
+ * id, which resolveTeamsTarget turns into that person's 1:1 chat with the bot
+ * (or refuses). The destination is the conversation's recorded serviceUrl, or else
  * TEAMS_SERVICE_URL as an operator override -- taken from the environment
  * first, or else from the same .env file as the bot credentials -- and it must
  * pass isTeamsServiceUrl BEFORE any token is requested: a missing or foreign
@@ -258,7 +313,7 @@ export async function getTeamsBotToken(
 export async function sendTeamsMessage(
   creds: TeamsCreds,
   stateDir: string,
-  conversationId: string,
+  target: string,
   text: string,
   deps?: {
     fetch?: typeof fetch
@@ -266,14 +321,20 @@ export async function sendTeamsMessage(
     env?: Record<string, string | undefined>
     timeoutMs?: number
     readRefs?: typeof readTeamsServiceUrl
+    resolveTarget?: typeof resolveTeamsTarget
   },
 ): Promise<{ status: number; messageId?: string }> {
   if (!creds.appId || !creds.secret || !creds.tenant) {
     throw teamsConfigFail('Teams credentials incomplete (TEAMS_BOT_APP_ID, TEAMS_BOT_APP_PASSWORD and TEAMS_BOT_TENANT_ID are all needed)')
   }
-  if (!conversationId) {
+  if (!target) {
     throw teamsConfigFail('no target conversation (TEAMS_ALLOWED_CONVERSATION_ID)')
   }
+  const resolved = (deps?.resolveTarget ?? resolveTeamsTarget)(stateDir, target)
+  if ('reason' in resolved) {
+    throw teamsConfigFail(resolved.reason)
+  }
+  const conversationId = resolved.conversationId
 
   const ref = (deps?.readRefs ?? readTeamsServiceUrl)(stateDir, conversationId)
   let serviceUrl: string

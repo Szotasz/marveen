@@ -754,6 +754,24 @@ export function getChannelToken(provider: ChannelProviderType, env: Record<strin
   return env['TELEGRAM_BOT_TOKEN'] ?? ''
 }
 
+/**
+ * The main agent's channel token (config.ts CHANNEL_TOKEN): the install .env first, as for every provider.
+ * Teams only: when the install .env has no TEAMS_BOT_APP_ID, the main agent's Teams channel .env is read too.
+ * setup-azure-bot.sh --env-file writes the bot keys there and nowhere else, so without this fallback a main
+ * agent on Teams had no token at all and every owner alert ended as "no-token" (TEAMSALERTENV1110, measured on
+ * a fake install). The app id is not a secret: it only stands in for "configured" here, and readTeamsCreds
+ * still takes all three keys from one file.
+ */
+export function getMainChannelToken(
+  provider: ChannelProviderType,
+  env: Record<string, string>,
+  teamsEnvPath: () => string = () => join(channelStateDir('teams'), '.env'),
+): string {
+  const fromInstall = getChannelToken(provider, env)
+  if (fromInstall || provider !== 'teams') return fromInstall
+  return readChannelToken('teams', teamsEnvPath()) ?? ''
+}
+
 export function getChannelChatId(provider: ChannelProviderType, env: Record<string, string>): string {
   if (provider === 'gromzo') return ''
   if (provider === 'slack') return env['SLACK_CHANNEL_ID'] ?? ''
