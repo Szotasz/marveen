@@ -1476,9 +1476,15 @@ elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
   if [ -n "$TEAMS_BOT_APP_ID" ]; then
     read -rp "$(_t prompt_teams_tenant_id)" TEAMS_BOT_TENANT_ID
     TEAMS_BOT_TENANT_ID="$(_teams_clean "$TEAMS_BOT_TENANT_ID")"
+    # echo comes back on every way out of the read: Ctrl+C and TERM restore it and stop (130), a stdin EOF under
+    # the ERR trap restores it on EXIT; the traps are cleared right after. No terminal (the Bridge's headless run):
+    # stty fails quietly, nothing to restore.
+    trap 'trap - EXIT; stty echo 2>/dev/null || true; exit 130' INT TERM
+    trap 'stty echo 2>/dev/null || true' EXIT
     stty -echo 2>/dev/null || true
     read -rp "$(_t prompt_teams_app_password)" TEAMS_BOT_APP_PASSWORD
     stty echo 2>/dev/null || true
+    trap - INT TERM EXIT
     echo ""
     TEAMS_BOT_APP_PASSWORD="$(_teams_clean "$TEAMS_BOT_APP_PASSWORD")"
     _teams_uuid "$TEAMS_BOT_APP_ID" || warn "Az App ID nem GUID alaku (pl. 11111111-2222-3333-4444-555555555555). Ellenorizd az Entra-alkalmazasnal."

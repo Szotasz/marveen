@@ -95,6 +95,27 @@ describe('install-linux.sh: the three Teams credentials', () => {
     ])
     expect(r.stdout).not.toContain('warn:')
   })
+  it('Ctrl+C during the secret read turns echo back on and stops the install (130)', () => {
+    refuse(HELPERS + BRANCH)
+    const r = bash([
+      PRELUDE,
+      'read() { local v="${@: -1}"; if [ "$v" = TEAMS_BOT_APP_PASSWORD ]; then kill -INT $$; sleep 1; fi; printf -v "$v" "%s" "11111111-2222-3333-4444-555555555555"; }',
+      'stty() { echo "stty $*"; }',
+      HELPERS,
+      'CHANNEL_PROVIDER=teams',
+      'if false; then :', BRANCH, 'fi',
+      'echo AFTER-THE-BRANCH',
+    ].join('\n'))
+    expect(r.status).toBe(130)
+    expect(r.stdout.split('\n').filter((l) => l.startsWith('stty'))).toEqual(['stty -echo', 'stty echo'])
+    expect(r.stdout).not.toContain('AFTER-THE-BRANCH')
+  })
+  it('after the read the traps are gone (a later Ctrl+C is not swallowed into an echo reset)', () => {
+    refuse(HELPERS + BRANCH)
+    const r = bash([PRELUDE, 'read() { local v="${@: -1}"; printf -v "$v" "%s" x; }', 'stty() { :; }', HELPERS,
+      'CHANNEL_PROVIDER=teams', 'if false; then :', BRANCH, 'fi', 'trap -p'].join('\n'))
+    expect(r.stdout).not.toMatch(/trap -- .* (INT|TERM|EXIT)/)
+  })
   it('the secret never reaches stdout or stderr', () => {
     const r = run([APP, TEN, SECRET])
     expect(r.stdout.replace('PW-MATCH', '')).not.toContain(SECRET)
