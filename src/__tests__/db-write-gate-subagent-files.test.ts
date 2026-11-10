@@ -59,7 +59,9 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
         'delivered-dms.json', 'delivered-dms.json.tmp.*',
         'progress', 'approved'].map((f) => `${b}/*/${f}`)),
       // TGINREPLAYGATE1104: the Telegram state directories above the evidence log, as targets only
-      'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels'])
+      'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels',
+      // GATEFILES1110: any agent's agent-config.json
+      'agents/*/agent-config.json'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
