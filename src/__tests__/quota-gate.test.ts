@@ -75,6 +75,12 @@ describe('decideQuotaAction -- fail open', () => {
     expect(d.action).toBe('defer')
   })
 
+  it('accepts the statusLine side-file source as evidence', () => {
+    const d = background(snap({ five_hour: { used: 95 } }, { source: 'statusline' }))
+    expect(d.action).toBe('defer')
+    expect(d.reason).toBe('pressure:95%')
+  })
+
   it('runs when the snapshot is too old to describe now', () => {
     const d = background(
       snap({ five_hour: { used: 99 } }, { ageMs: QUOTA_GATE.staleAfterMs + 60_000 }),
