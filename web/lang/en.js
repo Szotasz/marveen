@@ -1750,7 +1750,7 @@ window._i18n.en = {
   'messages.send_btn':			'Send',
   'messages.sent':			'Message sent',
   'messages.queued':             '{agent} is not running: the message is queued and delivered once it starts.',
-  'messages.status.delivered':			'delivered',
+  'messages.status.delivered':			'written to pane',
   'messages.status.done':			'done',
   'messages.status.failed':			'failed',
   'messages.status.pending':			'pending',
