@@ -353,3 +353,15 @@ describe('ensureRotationHeartbeatTask upgrades an unedited V1 prompt, nothing el
     expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)!.prompt.trim()).toBe(edited.trim())
   })
 })
+
+describe('the SUBAGENT_ROTATE order is spelled out in the prompt (Dani 75608 (2), mutant q7)', () => {
+  const v2 = buildRotationHeartbeatPrompt({ projectRoot: '/srv/m', webPort: 3420, chatId: '42' })
+  const sub = v2.slice(v2.indexOf('- `SUBAGENT_ROTATE'), v2.indexOf('- `SUBAGENT_NO_ALTERNATIVE'))
+  it('step 1 says to start the switch FIRST, step 2 to signal AFTER, in that order', () => {
+    const first = sub.indexOf('1. ELŐSZÖR indítsd a váltást.')
+    const after = sub.indexOf('2. UTÁNA küldd el a jelzést')
+    expect(first).toBeGreaterThan(-1)
+    expect(after).toBeGreaterThan(first)
+    expect(sub).toContain('A fő session NEM indul újra, ezért itt a sorrend fordított')
+  })
+})

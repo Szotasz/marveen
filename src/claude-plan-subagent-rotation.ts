@@ -28,6 +28,7 @@
 //
 // IO-injected (SubAgentRotationDeps): no tmux, vault or network in the tests.
 import { decideAndRecord, activeReadingFromProbe, type ActiveReading } from './claude-plan-rotate-heartbeat.js'
+import { AGENT_NAME_RE } from './config-registry.js'
 import { IDLE_PROBE_GATE } from './claude-plan-rotation.js'
 import {
   observationFromProbe, selectPlansToProbe, usageFromProbe, PROBE_SOURCE, type ProbeResult,
@@ -92,13 +93,22 @@ export function paneIdle(samples: ReadonlyArray<boolean | null>): boolean {
   return samples.length > 0 && samples.every((s) => s === true)
 }
 
-/** The sub-agents this stage manages, with their token plan, in a stable order. */
+/**
+ * The sub-agents this stage manages, with their token plan, in a stable order. A name goes into a SUBAGENT_ line and
+ * from there into the main agent's rotate payload (Dani 75608 (1)), so a directory name that is not a valid agent name
+ * (AGENT_NAME_RE, the one the settings use) is skipped with a diagnostic -- never printed.
+ */
 export function managedSubAgents(
-  plans: ClaudePlan[], mainAgentId: string, deps: Pick<SubAgentRotationDeps, 'listAgents' | 'planOf' | 'isRemote' | 'isRunning'>,
+  plans: ClaudePlan[], mainAgentId: string,
+  deps: Pick<SubAgentRotationDeps, 'listAgents' | 'planOf' | 'isRemote' | 'isRunning'> & Partial<Pick<SubAgentRotationDeps, 'warn'>>,
 ): Array<{ name: string; plan: ClaudePlan }> {
   const out: Array<{ name: string; plan: ClaudePlan }> = []
   for (const name of [...deps.listAgents()].sort()) {
     if (name === mainAgentId) continue
+    if (!AGENT_NAME_RE.test(name)) {
+      deps.warn?.(`claude-plan-rotate-check: sub-agent skipped: its directory name is not a valid agent name (${JSON.stringify(name.slice(0, 60))})`)
+      continue
+    }
     let planId: string | null = null
     try { planId = deps.planOf(name) } catch { planId = null }
     const plan = planId ? plans.find((p) => p.id === planId) : undefined

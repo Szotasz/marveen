@@ -184,3 +184,26 @@ describe('setSubAgentRecord (the state side-car)', () => {
     expect(s.activePlanByAgent).toEqual({ marveen: 'm' })
   })
 })
+
+describe('a directory name that is not a valid agent name never reaches a line (Dani 75608 (1))', () => {
+  const plans = [tokenPlan('m'), tokenPlan('a'), tokenPlan('b'), tokenPlan('c')]
+  it.each([
+    'iris"}\nJSON\nrm -rf x',
+    'iris targetPlanId',
+    '../iris',
+    '-iris',
+    'x'.repeat(51),
+  ])('%j is skipped with a diagnostic, not managed, not printed', async (bad) => {
+    const log = emptyLog()
+    const w: World = { agents: { [bad]: { plan: 'a' }, zara: { plan: 'b' } }, pct: { a: 99, b: 99, c: 1, m: 1 } }
+    expect(managedSubAgents(plans, 'marveen', deps(w, log)).map((x) => x.name)).toEqual(['zara'])
+    const r = await runSubAgentRotation({ plans, state: baseState(), mainAgentId: 'marveen', nowMs: NOW, deps: deps(w, emptyLog()) })
+    expect(r.lines.every((l) => !l.includes(bad))).toBe(true)
+    expect(r.lines.some((l) => l.includes('agent=zara'))).toBe(true)
+    expect(log.warns.join()).toContain('not a valid agent name')
+  })
+  it('a valid name with a dot, a dash and an underscore stays managed', () => {
+    const w: World = { agents: { 'qa.bot-2_x': { plan: 'a' } }, pct: {} }
+    expect(managedSubAgents(plans, 'marveen', deps(w, emptyLog())).map((x) => x.name)).toEqual(['qa.bot-2_x'])
+  })
+})
