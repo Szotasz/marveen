@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, VOICE_TRANSCRIBE_INBOUND } from '../config.js'
+import { MAIN_AGENT_ID, VOICE_TRANSCRIBE_INBOUND, APP_TZ } from '../config.js'
+import { formatBacklogTimestamp } from './backlog-timestamp.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
@@ -751,7 +752,7 @@ function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: n
   for (const m of old) {
     const sender = m.from_agent || 'unknown'
     senders.set(sender, (senders.get(sender) ?? 0) + 1)
-    const dt = new Date(m.created_at * 1000).toISOString().replace('T', ' ').slice(0, 19)
+    const dt = formatBacklogTimestamp(m.created_at, APP_TZ)
     const preview = m.content.length > 120 ? m.content.slice(0, 120) + '…' : m.content
     lines.push(`[${dt}] ${sender}: ${preview}`)
   }
