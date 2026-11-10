@@ -65,6 +65,17 @@ CONFIG = {
     "claude_authoritative_cache_max_age_min": 90,  # reuse last authoritative Claude snapshot
                                                     # on a transient failure (429/5xx/timeout)
                                                     # if it's younger than this
+    # The statusLine side file (store/.claude-rate-limits.json, written by
+    # scripts/statusline-ratelimit.sh on every main-agent render) is only used
+    # when it is younger than this. It is token-free and carries the same
+    # rate_limits block the official endpoint does, but it is only rewritten
+    # while the main agent renders, so it goes stale when that session idles.
+    # 10 min: the collector runs every 15 min and the gate (quota-gate.ts)
+    # counts a snapshot older than 20 min as unknown, so a reading that was
+    # already 10 min old when collected is at most ~25 min old when the gate
+    # last sees it; anything older would let the gate act on a number that
+    # has had a long time to move. Older -> not used, fall through (fail open).
+    "claude_statusline_max_age_min": 10,
 }
 
 # Window length in seconds, keyed by the Claude window's dict key. Codex
@@ -93,6 +104,7 @@ STORE_DIR = os.path.join(REPO_ROOT, "store")
 HISTORY_PATH = os.path.join(STORE_DIR, "usage-history.jsonl")
 LATEST_PATH = os.path.join(STORE_DIR, "usage-latest.json")
 STATE_PATH = os.path.join(STORE_DIR, "usage-alert-state.json")
+STATUSLINE_PATH = os.path.join(STORE_DIR, ".claude-rate-limits.json")
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
 
 # Display timezone for reset stamps: MARVEEN_TZ when set, else the install zone
@@ -586,7 +598,77 @@ def _read_cached_claude_authoritative(max_age_minutes, now_utc=None):
     return windows, age_minutes
 
 
-def _collect_claude_estimate():
+def _read_claude_statusline(max_age_minutes, now_utc=None, path=None):
+    """Return (windows_dict, age_minutes) from the statusLine side file
+    (store/.claude-rate-limits.json, see scripts/statusline-ratelimit.sh), or
+    (None, None) when there is nothing trustworthy in it.
+
+    Used only when the official endpoint gave nothing (the setup-token is
+    rejected with 403). The file holds the rate_limits block Claude Code hands
+    the statusLine command: {"five_hour": {"used_percentage", "resets_at"},
+    "seven_day": {...}}, resets_at in epoch seconds. Rejected when:
+      - the file is missing/unparseable or written_at is missing/in the future
+      - written_at is older than max_age_minutes (see CONFIG)
+      - a window has no numeric percentage, or its resets_at is already past:
+        that percentage belongs to the window that just ended, not the current
+        one (such a window is dropped, the others are kept)."""
+    try:
+        with open(path or STATUSLINE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+
+    written_at = data.get("written_at")
+    if not isinstance(written_at, (int, float)) or isinstance(written_at, bool):
+        return None, None
+    now_utc = now_utc or datetime.now(timezone.utc)
+    now_ts = now_utc.timestamp()
+    age_minutes = (now_ts - written_at) / 60.0
+    if age_minutes < 0 or age_minutes > max_age_minutes:
+        return None, None
+
+    rl = data.get("rate_limits")
+    if not isinstance(rl, dict):
+        return None, None
+    windows = {}
+    for key in CLAUDE_WINDOW_SECONDS:
+        w = rl.get(key)
+        if not isinstance(w, dict):
+            continue
+        used = w.get("used_percentage")
+        if not isinstance(used, (int, float)) or isinstance(used, bool):
+            continue
+        resets_raw = w.get("resets_at")
+        resets_epoch = resets_raw if isinstance(resets_raw, (int, float)) else _parse_iso_to_epoch(resets_raw)
+        if not isinstance(resets_epoch, (int, float)) or resets_epoch <= now_ts:
+            continue
+        windows[key] = {"used_percent": used, "resets_at": resets_epoch}
+    if not windows:
+        return None, None
+    return windows, age_minutes
+
+
+def _claude_transcript_globs():
+    """Every place Claude Code transcripts live on this install. A glob over
+    ~/.claude/projects alone finds nothing when the main agent and the
+    sub-agents run with their own config roots:
+      - $CLAUDE_CONFIG_DIR/projects (the root this process runs under)
+      - ~/.claude/projects (shared default)
+      - <repo>/.channels-config/projects (isolated main agent)
+      - <repo>/agents/*/.claude-config/projects (sub-agents)"""
+    roots = []
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg_dir:
+        roots.append(os.path.join(os.path.expanduser(cfg_dir), "projects"))
+    roots.append(os.path.expanduser("~/.claude/projects"))
+    roots.append(os.path.join(REPO_ROOT, ".channels-config", "projects"))
+    roots.append(os.path.join(REPO_ROOT, "agents", "*", ".claude-config", "projects"))
+    return [os.path.join(r, "*", "*.jsonl") for r in roots]
+
+
+def _collect_claude_estimate(patterns=None):
     now = datetime.now(timezone.utc)
     five_h_cutoff = now - timedelta(hours=5)
     seven_d_cutoff = now - timedelta(days=7)
@@ -596,7 +678,16 @@ def _collect_claude_estimate():
     seven_day_opus_tokens = 0
     files_scanned = 0
 
-    files = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+    # De-duplicate by real path: a projects dir that is a symlink to another
+    # root would otherwise be counted twice.
+    files = []
+    seen = set()
+    for pattern in (patterns or _claude_transcript_globs()):
+        for path in glob.glob(pattern):
+            real = os.path.realpath(path)
+            if real not in seen:
+                seen.add(real)
+                files.append(path)
     for path in files:
         files_scanned += 1
         try:
@@ -626,8 +717,12 @@ def _collect_claude_estimate():
                     if total == 0:
                         continue
 
-                    seven_day_tokens += total
+                    # Claude subscription quota only: sub-agents can run on
+                    # other providers' models (deepseek-*, "<synthetic>").
                     model = (msg.get("model") or "").lower()
+                    if not model.startswith("claude-"):
+                        continue
+                    seven_day_tokens += total
                     if "opus" in model:
                         seven_day_opus_tokens += total
                     if ts >= five_h_cutoff:
@@ -652,6 +747,16 @@ def collect_claude():
         return result
 
     result["auth_error"] = err
+
+    # The official endpoint gave nothing (no token, 401/403, outage). The
+    # statusLine side file is the same rate_limits block, token-free, and
+    # fresher than the 90-min cache below, so it goes first.
+    sl_windows, sl_age = _read_claude_statusline(CONFIG["claude_statusline_max_age_min"])
+    if sl_windows is not None:
+        result["source"] = "statusline"
+        result["windows"] = sl_windows
+        result["statusline_age_minutes"] = round(sl_age, 1)
+        return result
 
     # A transient failure (429/5xx/timeout/unparseable) must not throw away
     # real numbers -- reuse the last authoritative snapshot if it's fresh
@@ -752,7 +857,11 @@ def render_summary(snapshot):
     lines.append(f"Claude (source: {claude.get('source')}):")
     if not claude.get("ok"):
         lines.append(f"  error: {claude.get('error')}")
-    elif claude.get("source") in ("authoritative", "authoritative_cached"):
+    elif claude.get("source") in ("authoritative", "authoritative_cached", "statusline"):
+        if claude.get("source") == "statusline":
+            age = claude.get("statusline_age_minutes")
+            age_str = f"{age:.0f}" if isinstance(age, (int, float)) else "?"
+            lines.append(f"  (from the statusLine side file, {age_str} min ago -- live endpoint error: {claude.get('auth_error')})")
         if claude.get("source") == "authoritative_cached":
             age = claude.get("cache_age_minutes")
             age_str = f"{age:.0f}" if isinstance(age, (int, float)) else "?"

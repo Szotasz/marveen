@@ -65,8 +65,13 @@ export const QUOTA_GATE = {
   nearResetPercent: 70,
   /** "About to reset": waiting this long is cheaper than spending the tail. */
   nearResetMs: 30 * 60_000,
-  /** Sources whose numbers are real. Anything else is a guess -- fail open. */
-  trustedSources: ['authoritative', 'authoritative_cached'],
+  /**
+   * Sources whose numbers are real. Anything else is a guess -- fail open.
+   * 'statusline' is the rate_limits block Claude Code hands the statusLine
+   * command (scripts/statusline-ratelimit.sh): the same numbers the official
+   * endpoint reports, which usage-collect.py only uses when it is fresh.
+   */
+  trustedSources: ['authoritative', 'authoritative_cached', 'statusline'],
 } as const
 
 /** Highest utilization across all windows, or null when none reports one. */
