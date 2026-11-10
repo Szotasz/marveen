@@ -696,34 +696,37 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
       restore_stash_before_exit
       exit 5
     fi
-    # The GO is checked against what will really be rebased: HEAD now, and the
-    # commit the fetch above just brought (FETCH_HEAD), which is also the exact
-    # rebase target below -- not a name that could move in between.
-    REBASE_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
-    REBASE_TARGET="$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' 2>/dev/null || true)"
-    UPDATE_REBASE_GO_REASON='no-sha'
-    if [ -n "$REBASE_HEAD" ] && [ -n "$REBASE_TARGET" ]; then UPDATE_REBASE_GO_REASON='no-go-lib'; fi
-    if ! { [ -n "$REBASE_HEAD" ] && [ -n "$REBASE_TARGET" ] \
-           && . "$INSTALL_DIR/scripts/lib/update-rebase-go.sh" \
-           && update_rebase_go_consume "$INSTALL_DIR" "${UPDATE_REBASE_APPROVAL:-}" "$CURRENT_BRANCH" "$REBASE_HEAD" "$REBASE_TARGET"; }; then
-      echo "update_rebase GO refused: reason=${UPDATE_REBASE_GO_REASON:-unknown} approval=${UPDATE_REBASE_APPROVAL:-none} branch=${CURRENT_BRANCH} head=${REBASE_HEAD:-?} target=${REBASE_TARGET:-?}" >>"$INSTALL_DIR/store/update.log"
-      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; az auto-rebase a tulaj jovahagyasa nelkul nem indul (${UPDATE_REBASE_GO_REASON:-unknown}). Jovahagyas kerese: bash scripts/update-rebase-request.sh, utana UPDATE_REBASE_APPROVAL=<id> bash update.sh"
-      echo -e "${RED}HIBA:${NC} az auto-rebase tulaj-jovahagyas nelkul nem indul (${UPDATE_REBASE_GO_REASON:-unknown}); a checkout valtozatlan. Jovahagyas kerese: bash scripts/update-rebase-request.sh"
-      restore_stash_before_exit
-      exit 5
-    fi
-    echo "update_rebase GO consumed: approval=${UPDATE_REBASE_APPROVAL} branch=${CURRENT_BRANCH} head=${REBASE_HEAD} target=${REBASE_TARGET}" >>"$INSTALL_DIR/store/update.log"
-    if git -c core.editor=true rebase "$REBASE_TARGET" >>"$INSTALL_DIR/store/update.log" 2>&1; then
-      echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre)."
-      RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re."
-    else
-      git rebase --abort 2>/dev/null || true
-      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott -- kezi (szemantikus) rebase kell. Nezd: git log @{u}..HEAD"
-      echo -e "${RED}HIBA:${NC} auto-rebase konfliktus, kezi feloldas kell (git log @{u}..HEAD)."
-      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit ütközik az upstreammel, az auto-rebase konfliktusba futott. Kézi szemantikus rebase kell. Részletek: store/update.log" >/dev/null 2>&1 || true
-      restore_stash_before_exit
-      exit 5
-    fi
+    # The GO check AND the rebase run in a CLEAN process (scripts/lib/update-rebase-go.sh says why: the
+    # caller controls this script's environment, PATH and exported functions, which measurably decided an
+    # in-process check). env -i drops every inherited variable and function; the PATH is fixed system
+    # directories. The program reads HEAD and FETCH_HEAD (the fetch above) itself, consumes the owner's
+    # approval for exactly that pair, and only then rebases onto that exact commit. The verdict comes
+    # back as an exit code, branched on with `case` (a keyword, which no function can replace).
+    REBASE_RC=0
+    REBASE_OUT="$(/usr/bin/env -i PATH='/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin' HOME="${HOME:-/}" LANG=C \
+      /bin/bash --noprofile --norc "$INSTALL_DIR/scripts/lib/update-rebase-go.sh" rebase \
+      "$INSTALL_DIR" "${UPDATE_REBASE_APPROVAL:-}" "$CURRENT_BRANCH" 2>>"$INSTALL_DIR/store/update.log")" || REBASE_RC=$?
+    echo "update_rebase: rc=${REBASE_RC} ${REBASE_OUT} branch=${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log"
+    case "$REBASE_RC" in
+      0)
+        echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre, tulaj-jovahagyassal)."
+        RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re (tulaj-jovahagyas: ${UPDATE_REBASE_APPROVAL:-?})."
+        ;;
+      3)
+        RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott (${REBASE_OUT#conflict }) -- kezi (szemantikus) rebase kell, a checkout valtozatlan. Nezd: git log @{u}..HEAD"
+        echo -e "${RED}HIBA:${NC} auto-rebase konfliktus (${REBASE_OUT#conflict }), kezi feloldas kell; a checkout valtozatlan."
+        bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit ütközik az upstreammel, az auto-rebase konfliktusba futott, a checkout változatlan. Kézi szemantikus rebase kell. Részletek: store/update.log" >/dev/null 2>&1 || true
+        restore_stash_before_exit
+        exit 5
+        ;;
+      *)
+        REBASE_WHY="${REBASE_OUT#refused }"; REBASE_WHY="${REBASE_WHY%% *}"
+        RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; az auto-rebase a tulaj jovahagyasa nelkul nem indul (${REBASE_WHY:-unknown}). Jovahagyas kerese: bash scripts/update-rebase-request.sh, utana UPDATE_REBASE_APPROVAL=<id> bash update.sh"
+        echo -e "${RED}HIBA:${NC} az auto-rebase tulaj-jovahagyas nelkul nem indul (${REBASE_WHY:-unknown}); a checkout valtozatlan. Jovahagyas kerese: bash scripts/update-rebase-request.sh"
+        restore_stash_before_exit
+        exit 5
+        ;;
+    esac
   else
     RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (az automatikus ujrajatszashoz tulaj-jovahagyas kell: bash scripts/update-rebase-request.sh)"
     echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"

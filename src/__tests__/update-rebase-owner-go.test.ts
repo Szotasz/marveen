@@ -164,7 +164,7 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     expect(r.out).not.toContain('REACHED_END')
     expect(r.out).toContain('tulaj-jovahagyas nelkul nem indul (no-approval-id)')
     expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
-    expect(r.log).toContain('update_rebase GO refused: reason=no-approval-id')
+    expect(r.log).toContain('update_rebase: rc=1 refused no-approval-id')
   })
 
   it('a valid owner GO bound to this HEAD and target: consumed once, the rebase runs, the install is no longer behind', async () => {
@@ -179,7 +179,7 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     const row = getApproval(id)!
     expect(row.consumed_by).toBe('update.sh auto-rebase')
     expect(row.consumed_ref).toBe(`main ${head}..${target}`)
-    expect(r.log).toContain(`update_rebase GO consumed: approval=${id} branch=main head=${head} target=${target}`)
+    expect(r.log).toContain(`update_rebase: rc=0 consumed ${id} head=${head} target=${target} rebased=${g(inst, 'rev-parse', 'HEAD')} branch=main`)
   })
 
   it('the same GO a second time (after resetting the install back) is refused: already_consumed', async () => {
@@ -266,6 +266,55 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
   })
 
+  // Dani's review of #2676 (c), measured there: the caller's PATH and EXPORTED shell functions decided the
+  // in-process check (a fake node/sed gave a consumed GO with no approval). The check and the rebase now run
+  // in a clean process; these pin that no PATH tool and no exported function reaches them.
+  it('fake node, sed, grep and curl first on the PATH: refused by the real dashboard, the fake server never asked', async () => {
+    const { inst, head } = divergedInstall(port)
+    const bin = join(inst, '..', 'evilbin')
+    mkdirSync(bin)
+    for (const t of ['node', 'sed', 'grep', 'curl', 'tr', 'head']) {
+      writeFileSync(join(bin, t), `#!/bin/bash\necho ${fakePort}\nexit 0\n`, { mode: 0o755 })
+    }
+    const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: '00000000-0000-4000-8000-000000000000', PATH: `${bin}:${process.env.PATH}` })
+    expect(fakeHits).toBe(0)
+    expect(r.code).toBe(5)
+    expect(r.out).toContain('(not_found)')
+    expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('exported sed, grep, node, curl and helper functions: refused by the real dashboard, the fake server never asked', async () => {
+    const { inst, head } = divergedInstall(port)
+    const fn = (body: string) => `() {  ${body}\n}`
+    const r = await runBlock(inst, {
+      UPDATE_REBASE_APPROVAL: '00000000-0000-4000-8000-000000000000',
+      'BASH_FUNC_sed%%': fn(`echo ${fakePort}`),
+      'BASH_FUNC_node%%': fn(`echo ${fakePort}`),
+      'BASH_FUNC_grep%%': fn('return 0'),
+      'BASH_FUNC_curl%%': fn('echo \'{"ok":true}\'; echo 200'),
+      'BASH_FUNC_update_rebase_consume%%': fn('return 0'),
+      'BASH_FUNC_update_rebase_main%%': fn('echo consumed; return 0'),
+    })
+    expect(fakeHits).toBe(0)
+    expect(r.code).toBe(5)
+    expect(r.out).toContain('(not_found)')
+    expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('even with `exit` and `[` replaced by exported functions, nothing is rebased without the GO', async () => {
+    const { inst, head } = divergedInstall(port)
+    const r = await runBlock(inst, {
+      UPDATE_REBASE_APPROVAL: '00000000-0000-4000-8000-000000000000',
+      'BASH_FUNC_exit%%': '() {  return 0\n}',
+      'BASH_FUNC_[%%': '() {  return 0\n}',
+      'BASH_FUNC_sed%%': `() {  echo ${fakePort}\n}`,
+    })
+    expect(fakeHits).toBe(0)
+    expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
+    expect(behind(inst)).not.toBe('0')
+    expect(r.log).toContain('update_rebase: rc=1 refused not_found')
+  })
+
   it('a non-diverged install (ahead only) is untouched by all this: no approval asked, the update continues', async () => {
     const { inst } = divergedInstall(port)
     g(inst, 'fetch', '-q', 'origin'); g(inst, 'reset', '-q', '--hard', 'origin/main')
@@ -273,6 +322,6 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     const r = await runBlock(inst, {})
     expect(r.code).toBe(0)
     expect(r.out).toContain('REACHED_END')
-    expect(r.log).not.toContain('update_rebase GO')
+    expect(r.log).not.toContain('update_rebase:')
   })
 })
