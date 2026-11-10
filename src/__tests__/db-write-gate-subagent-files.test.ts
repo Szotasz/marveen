@@ -288,3 +288,23 @@ describe('store/plan-token-launch, as a sub-agent: a write is denied, a read and
     expect(sub('echo x > @WT@/store/plan-token-launch/iris.json').deny).toBe(false)
   })
 })
+
+// SUBPLANTOKEN1110 (Dani 75621): the bare directory name from its parent, with no path-like word in the command.
+describe('store/plan-token-launch by its bare name, from store/ (TARGET_SEGMENT_NAMES)', () => {
+  beforeEach(() => {
+    mkdirSync(join(root, 'store', 'plan-token-launch'), { recursive: true })
+    writeFileSync(join(root, 'store', 'plan-token-launch', 'iris.json'), '{"state":"failed","secretId":"s","at":1}')
+  })
+  it.each([
+    'cd @ROOT@/store && rm -rf plan-token-launch',
+    'rm -rf plan-token-launch',
+    'mv plan-token-launch x',
+  ])('%s, as a sub-agent in store/: denied', (command) => {
+    expect(sub(command, join(root, 'store'))).toEqual(SUB)
+  })
+  it('the same from a worktree\'s own store is free, and a read passes', () => {
+    mkdirSync(join(wt, 'store', 'plan-token-launch'), { recursive: true })
+    expect(sub('rm -rf plan-token-launch', join(wt, 'store')).deny).toBe(false)
+    expect(sub('ls plan-token-launch', join(root, 'store')).deny).toBe(false)
+  })
+})

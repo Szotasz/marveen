@@ -450,7 +450,9 @@ export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.js
   // skills` named no path-like word and passed)
   'rules', 'skills', 'agents', 'commands', 'output-styles',
   // CHANSTATEWRITE1104: the channel state dirs' trust directories, from their parent
-  'progress', 'approved'])
+  'progress', 'approved',
+  // SUBPLANTOKEN1110 (Dani 75621): the token-plan launch status dir, from its parent (`cd store && rm -rf plan-token-launch`)
+  'plan-token-launch'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
