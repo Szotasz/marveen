@@ -15,7 +15,9 @@
  * "mehet" / "nem" decides too (the rules: src/approval-slack.ts). That switch also lets a request whose content is only
  * the requesting agent's description take the Slack path: the owner accepted that risk (the PR's residual-risk list).
  * Never on the reply path: the standing categories (a decision there is permanent and its hash names an address the DM
- * does not show), data_delete, and an email_send without a verifiable envelope.
+ * does not show), data_delete, update_rebase (AUTOUPDATEDIVERG1110, Dani 74994: the owner approves it on the dashboard,
+ * against the server's own plan, never on the requesting agent's description), and an email_send without a verifiable
+ * envelope.
  */
 import { recordApprovalSlackPost, pendingApprovalSlackPosts, markApprovalSlackPostChecked, decideApprovalFromSlack, setApprovalSlackNotice,
   STANDING_DECISION_CATEGORIES, type Approval } from '../db.js'
@@ -23,9 +25,10 @@ import { logger } from '../logger.js'
 import { verifiedEnvelope, envelopeText } from '../approval-envelope.js'
 import { postApprovalPrompt, sweepOnce, slackCaller, type SlackCall, type ApprovalSlackPost, type Verdict, type ApprovalLang } from '../approval-slack.js'
 import { OWNER_TEXT, formatDecisionTime } from './approval-texts.js'
+import { UPDATE_REBASE_CATEGORY } from '../update-rebase-plan.js'
 
 /** Categories the typed reply never decides (see the header). */
-export const REPLY_EXCLUDED_CATEGORIES: ReadonlySet<string> = new Set([...STANDING_DECISION_CATEGORIES, 'data_delete'])
+export const REPLY_EXCLUDED_CATEGORIES: ReadonlySet<string> = new Set([...STANDING_DECISION_CATEGORIES, 'data_delete', UPDATE_REBASE_CATEGORY])
 
 const USER_ID_RX = /^[UW][A-Z0-9]{6,}$/
 

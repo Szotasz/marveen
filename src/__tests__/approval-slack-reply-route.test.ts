@@ -52,12 +52,21 @@ describe('reactionRoute with the reply switch', () => {
   })
 
   it('every excluded category stays on the dashboard, server-filed or not', async () => {
-    expect([...REPLY_EXCLUDED_CATEGORIES].sort()).toEqual(['credential_alias', 'data_delete', 'email_standing_recipient'])
+    expect([...REPLY_EXCLUDED_CATEGORIES].sort()).toEqual(['credential_alias', 'data_delete', 'email_standing_recipient', 'update_rebase'])
     for (const category of REPLY_EXCLUDED_CATEGORIES) {
       for (const serverFiled of [false, true]) {
         const r = await reactionRoute(request({ category, content_hash: 'h' }), serverFiled, deps(), 'x', 'u')
         expect(r, `${category} serverFiled=${serverFiled}`).toEqual({ ok: false, reason: 'category_not_for_slack_reply' })
       }
+    }
+  })
+
+  it('an agent-filed update_rebase never takes Slack, whichever switch is on: category_not_for_slack_reply (AUTOUPDATEDIVERG1110, Dani 74994)', async () => {
+    // The agent files it with its own action_description and a content_hash; a typed "mehet" would approve that text,
+    // not the server's plan. The owner decides it on the dashboard dialog only.
+    for (const reactions of ['off', 'on']) {
+      const r = await reactionRoute(request({ category: 'update_rebase', content_hash: 'a'.repeat(64) }), false, deps({ APPROVAL_SLACK_REACTIONS: reactions }), 'x', 'u')
+      expect(r, `reactions=${reactions}`).toEqual({ ok: false, reason: 'category_not_for_slack_reply' })
     }
   })
 

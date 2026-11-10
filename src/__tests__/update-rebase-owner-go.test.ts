@@ -356,7 +356,7 @@ function install(opts: { local: [string, string]; upstream: [string, string]; en
   g(seed, 'add', '-A'); g(seed, 'commit', '-qm', 'c1'); g(seed, 'push', '-q', 'origin', 'main')
   g(dir, 'clone', '-q', join(dir, 'origin.git'), 'inst')
   const inst = join(dir, 'inst')
-  writeFileSync(join(inst, opts.local[0]), opts.local[1]); g(inst, 'add', '-A'); g(inst, 'commit', '-qm', 'local: "quoted" <b>subject</b>')
+  writeFileSync(join(inst, opts.local[0]), opts.local[1]); g(inst, 'add', '-A'); g(inst, 'commit', '-qm', 'local: "quoted" <b>subject</b> & <https://x.example|link>')
   writeFileSync(join(seed, opts.upstream[0]), opts.upstream[1]); g(seed, 'add', '-A'); g(seed, 'commit', '-qm', 'c2'); g(seed, 'push', '-q', 'origin', 'main')
   mkdirSync(join(inst, 'store')); mkdirSync(join(inst, 'scripts', 'lib'), { recursive: true })
   copyFileSync(LIB, join(inst, 'scripts', 'lib', 'update-rebase-go.sh'))
@@ -444,7 +444,10 @@ describe('2nd PR: the F4 order, the recovery ref, the git-config lock, the confl
       const notify = readFileSync(join(inst, 'store', 'notify.log'), 'utf-8')
       expect(notify).toContain('shared.txt')
       expect(notify).toContain(g(inst, 'rev-parse', '--short', head))
-      expect(notify).toContain('local: "quoted" <b>subject</b>') // carried as text; escaping is the reader's (JSON, textContent)
+      // notify.sh feeds Telegram HTML and Slack mrkdwn: & < > escaped once, nothing raw left (Dani 74994 N5).
+      expect(notify).toContain('local: "quoted" &lt;b&gt;subject&lt;/b&gt; &amp; &lt;https://x.example|link&gt;')
+      expect(notify).not.toMatch(/[<>]/)
+      expect(notify).not.toContain('&amp;lt;')
       expect(notify).toContain(lang === 'en' ? 'The update did not run, nothing changed.' : 'A frissítés nem futott le, semmi nem változott.')
     }
   })

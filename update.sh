@@ -754,7 +754,9 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
       3)
         # AUTOUPDATEDIVERG1110 plan, point 6: which local commit and which files, what to do, in the install's language. The
         # subject and the file names come from the local commit (free text): they only ever travel as data
-        # (the result file is JSON-escaped, the dashboard shows it with textContent, notify.sh sends text).
+        # (the result file is JSON-escaped, the dashboard shows it with textContent). notify.sh is not plain text: Telegram
+        # parses HTML (a '<' in the subject fails the send, lost behind || true) and Slack mrkdwn turns <url|text> into a
+        # link, so the alert gets & < > escaped once (Dani 74994 N5); the result file keeps the raw text.
         if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
           RESULT_MSG="The update did not run, nothing changed. Your local change ${REBASE_COMMIT} \"${REBASE_SUBJECT}\" conflicts with the new version in: ${REBASE_FILES}. To do: adapt that local change to the new version by hand (a developer or support), then ask for the update again. Recovery ref: ${REBASE_BACKUP}."
           echo -e "${RED}ERROR:${NC} rebase conflict in ${REBASE_FILES} (local change ${REBASE_COMMIT}); nothing changed."
@@ -762,7 +764,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
           RESULT_MSG="A frissítés nem futott le, semmi nem változott. A(z) ${REBASE_COMMIT} \"${REBASE_SUBJECT}\" helyi módosítás ütközik az új verzióval ezekben a fájlokban: ${REBASE_FILES}. Teendő: a helyi módosítást kézzel kell az új verzióhoz igazítani (fejlesztő vagy a support), utána a frissítést újra lehet kérni. Mentés: ${REBASE_BACKUP}."
           echo -e "${RED}HIBA:${NC} rebase-utkozes: ${REBASE_FILES} (helyi modositas ${REBASE_COMMIT}); semmi nem valtozott."
         fi
-        REBASE_ALERT="$RESULT_MSG"
+        REBASE_ALERT="$(printf '%s' "$RESULT_MSG" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
         bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Frissítés: helyi módosítás ütközik. ${REBASE_ALERT}" >/dev/null 2>&1 || true
         restore_stash_before_exit
         exit 5
