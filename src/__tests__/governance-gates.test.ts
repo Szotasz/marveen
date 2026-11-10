@@ -381,6 +381,15 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: 'SP=/tmp/x /usr/bin/at now' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: '/usr/bin/batch' }).deny).toBe(true)
   })
+  it('DENIES a scheduler reached through a directory whose name contains = (SELFPACEASSIGN1109)', () => {
+    // only a LEADING NAME= marks an assignment; `=` elsewhere in a path is an
+    // ordinary directory name, and the binary at its end is a real call
+    expect(selfPaceDecision('Bash', { command: '/tmp/d=1/at now' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: '/tmp/k=v/batch' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: './a=b/crontab -' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'sudo /opt/x=y/at now' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'X=/tmp/q; /tmp/d=1/batch' }).deny).toBe(true)
+  })
   it('ALLOWS a wrapped scheduler READ, and a crontab-prefixed script name', () => {
     expect(selfPaceDecision('Bash', { command: 'sudo crontab -l' }).deny).toBe(false)
     expect(selfPaceDecision('Bash', { command: './scripts/crontab-helper.sh status' }).deny).toBe(false)
