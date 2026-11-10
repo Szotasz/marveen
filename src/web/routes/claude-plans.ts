@@ -26,9 +26,10 @@ import { readClaudePlansState, writeClaudePlansState, applyRotation, recordPlanO
 import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../claude-plan-usage-probe.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import {
-  restartAgentProcess, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId,
+  restartAgentProcess, planTokenPreflight, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId,
   hasFleetOauthToken, mainAgentSharedConfigDir,
 } from '../agent-process.js'
+import { waitPlanTokenOutcome } from '../plan-token-launch.js'
 import { hardRestartMarveenChannels, restartMainForRotationContinue } from '../channel-monitor.js'
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
 import { mainRotationContinueVerdict, type ContinueRestartResult } from '../main-rotation-continue.js'
@@ -373,17 +374,42 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: `Agent not found: ${agentId}` }, 404)
       return true
     }
+    // SUBPLANTOKEN1110: a token plan is checked BEFORE anything is written --
+    // the agent can take a plan token at all, and the secret is in the vault.
+    // A refusal is a 4xx and the agent's claudePlan field stays as it was.
+    if (target.tokenSecretId) {
+      const pre = planTokenPreflight(agentId, target.tokenSecretId)
+      if (pre.kind === 'refuse') {
+        json(res, { error: `Plan ${targetPlanId} cannot be used by ${agentId}: ${pre.reason}` }, 409)
+        return true
+      }
+    }
     // Agent config first: if it refuses (corrupt file, JSONCLOBBER926) the
     // rotation side-car must not already claim the switch happened.
     writeAgentClaudePlan(agentId, targetPlanId)
     writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
     // RESTARTWAKE927: the plan switch restarts a pane that may be mid-turn.
+    const restartAt = Date.now()
     const result = await restartAgentProcess(agentId, { wake: { reason: 'plan-switch' } })
     if (!result.ok) {
       json(res, { error: result.error || `Restart failed for agent ${agentId}` }, 500)
       return true
     }
     logger.info({ agentId, targetPlanId }, 'Claude plan rotation: agent restarted')
+    if (target.tokenSecretId) {
+      // The answer is what the restarted launch actually did, read back from the
+      // helper's status file -- not the field just written. Only 'plan-token'
+      // means the plan's own token reached the launch env.
+      const launch = await waitPlanTokenOutcome(agentId, restartAt)
+      const launchAuth = launch && launch.at >= restartAt ? launch.state : 'unknown'
+      if (launchAuth !== 'plan-token') {
+        logger.error({ agentId, targetPlanId, launchAuth, reason: launch?.reason }, 'Claude plan rotation: the restarted agent is NOT on the plan token')
+        json(res, { error: `Agent ${agentId} restarted, but not on the plan token (${launchAuth})`, agentId, activePlanId: targetPlanId, launchAuth, ...(launch?.reason ? { reason: launch.reason } : {}) }, 502)
+        return true
+      }
+      json(res, { ok: true, agentId, activePlanId: targetPlanId, launchAuth })
+      return true
+    }
     json(res, { ok: true, agentId, activePlanId: targetPlanId })
     return true
   }

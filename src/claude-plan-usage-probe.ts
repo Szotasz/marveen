@@ -281,14 +281,19 @@ export function selectPlansToProbe(input: {
   activeAgentId: string
   nowMs: number
   minIntervalMs?: number
+  /** SUBPLANTOKEN1110: plans a sub-agent runs on are not idle: a probe would spend that agent's quota for a
+   *  rotation decision that may not pick them anyway (decideAndRecord's reservedPlanIds). */
+  reservedPlanIds?: ReadonlySet<string>
 }): ClaudePlan[] {
   const { plans, state, activeAgentId, nowMs } = input
+  const reserved = input.reservedPlanIds ?? new Set<string>()
   const minIntervalMs = input.minIntervalMs ?? PROBE_MIN_INTERVAL_MS
   if (plans.length < 2) return []
   const activePlanId = state.activePlanByAgent[activeAgentId]
   return plans.filter((p) => {
     if (!p.tokenSecretId) return false
     if (p.id === activePlanId) return false
+    if (reserved.has(p.id)) return false
     return nowMs - lastCheckedAt(state.plans[p.id]) >= minIntervalMs
   })
 }

@@ -9,7 +9,7 @@ import {
   decideAndRecord, pendingFleetReport, activeReadingNearLimit, activeReadingFromUsageCollect, activeReadingFromProbe,
   type ActiveReading,
 } from './claude-plan-rotate-heartbeat.js'
-import { readClaudePlans, type ClaudePlan } from './web/claude-plans.js'
+import { readClaudePlans, subAgentTokenPlanIds, type ClaudePlan } from './web/claude-plans.js'
 import { readClaudePlansState, writeClaudePlansState, recordPlanObservation } from './web/claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, selectPlansToProbe, usageFromProbe, PROBE_SOURCE } from './claude-plan-usage-probe.js'
 import { getSecret } from './web/vault.js'
@@ -33,11 +33,14 @@ function settingIsOn(key: string): boolean {
 // Only runs when CLAUDE_PLAN_USAGE_REFRESH=1 AND the active plan is near a
 // limit (activePlanNearLimit, see runRotateCheck).
 export async function refreshIdlePlans(): Promise<void> {
+  const plans = readClaudePlans()
   const due = selectPlansToProbe({
-    plans: readClaudePlans(),
+    plans,
     state: readClaudePlansState(),
     activeAgentId: MAIN_AGENT_ID,
     nowMs: Date.now(),
+    // SUBPLANTOKEN1110: a plan a sub-agent runs on is not idle.
+    reservedPlanIds: subAgentTokenPlanIds(plans),
   })
   for (const plan of due) {
     let token: string | null = null
@@ -170,9 +173,12 @@ export async function runRotateCheck(): Promise<void> {
     return
   }
 
+  const plansNow = readClaudePlans()
   const result = decideAndRecord({
     agentId: MAIN_AGENT_ID,
-    plans: readClaudePlans(),
+    plans: plansNow,
+    // SUBPLANTOKEN1110: never rotate the main agent onto a sub-agent's token plan.
+    reservedPlanIds: subAgentTokenPlanIds(plansNow),
     // Read AFTER the probes, so their fresh observations are what the
     // candidates are ranked on.
     state: readClaudePlansState(),
