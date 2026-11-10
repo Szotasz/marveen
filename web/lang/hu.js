@@ -1469,6 +1469,7 @@ window._i18n.hu = {
   'settings.col.description':    'Leírás',
   'settings.col.restart':        'Újraindítás',
   'settings.desc.MAIN_AGENT_ISOLATED_CONFIG':  'Bármely platformon (macOS és Linux): a fő channels-agent saját, izolált CLAUDE_CONFIG_DIR-t kap (mint a sub-agentek), így a stabil fleet setup-tokenből hitelesít, nem a megosztott, önmagát frissítő bejelentkezésből (macOS-en a Keychain, Linuxon a ~/.claude/.credentials.json), ami periodikusan lejár és 401-et ad ("Please run /login"). Az automata kulcs-rotáció előfeltétele. Fleet token nélkül nincs hatása; a channels session újraindításakor lép életbe.',
+  'settings.desc.VAULT_ACL_AGENT_MODE':        'Az al-ügynök SAJÁT tokenjének (AGENT_TOKENS) vault-olvasási szabálya. enforce (alapértelmezés) = csak a store/vault-acl.json-ban neki engedett titkot kapja meg; audit = megfigyelési hét: minden olvasás átmegy és naplózódik azzal, hogy enforce mellett tiltva lenne-e, ebből javasolható a titkonkénti lista (scripts/vault-acl-suggest.mjs). Az SSH-anyag és a vault al-erőforrásai mindkét állásban tiltottak. Az audit lazítás: csak dashboard-belépéssel állítható. Nyom és hozzáférés-szabály, nem elzárás.',
   'settings.desc.KANBAN_WIP_PLANNED':          'A "planned" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',
   'settings.desc.KANBAN_WIP_IN_PROGRESS':      'Az "in_progress" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',
   'settings.desc.KANBAN_WIP_WAITING':          'A "waiting" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',

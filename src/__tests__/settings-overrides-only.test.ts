@@ -432,6 +432,8 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     // ISSUE2556X: a comment and a log line; both read through owner-chat.sh / owner_chat.py (the mirrors above)
     'scripts/main-inbox-observer.sh': 2,
     'scripts/hooks/persona-change-notify.py': 1,
+    // VAULTSZELES826 PR-A: the header comment names VAULT_ACL_AGENT_MODE; the script reads the LOG, never the setting
+    'scripts/vault-acl-suggest.mjs': 1,
   }
   function walk(dir: string, out: string[] = []): string[] {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
