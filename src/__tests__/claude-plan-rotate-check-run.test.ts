@@ -23,7 +23,13 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: (k: string) => settings.get(k) ?? (k === 'MAIN_AGENT_CONFIG_DIR' ? '' : '0'),
 }))
 vi.mock('../web/vault.js', () => ({ getSecret: (id: string) => `token-for-${id}` }))
-vi.mock('../web/claude-plans.js', () => ({ readClaudePlans: () => plans }))
+// SUBPLANTOKEN1110: the token plans a sub-agent runs on (claude-plans.ts subAgentTokenPlanIds), set per test.
+let reserved = new Set<string>()
+const reservedCalls: ClaudePlan[][] = []
+vi.mock('../web/claude-plans.js', () => ({
+  readClaudePlans: () => plans,
+  subAgentTokenPlanIds: (p: ClaudePlan[]) => { reservedCalls.push(p); return reserved },
+}))
 vi.mock('../web/claude-plans-state.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/claude-plans-state.js')>()
   return {
@@ -73,6 +79,8 @@ function tokenPlan(id: string): ClaudePlan {
 }
 
 beforeEach(() => {
+  reserved = new Set<string>()
+  reservedCalls.length = 0
   probeMock.mockReset()
   probeMock.mockImplementation(async () => ({ ok: false as const, error: 'network' as const, message: 'mocked' }))
   usageCollectCalls = 0
@@ -320,5 +328,45 @@ describe('runRotateCheck -> rotation off is quiet', () => {
     await runRotateCheck()
     expect(probeMock).not.toHaveBeenCalled()
     expect(logs).toEqual([])
+  })
+})
+
+
+describe('SUBPLANTOKEN1110: a token plan a sub-agent runs on is neither probed as idle nor a rotation target', () => {
+  it('without the reservation the emptiest plan b wins (the baseline)', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b'), tokenPlan('c')]
+    state = { activePlanByAgent: { marveen: 'a' }, plans: {} } as ClaudePlansState
+    probeReturns({ a: ROTATION_GATE.switchAtPercent + 5, b: 2, c: 40 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs.some((l) => l.startsWith('ROTATE ') && l.includes('target=b '))).toBe(true)
+  })
+
+  it('b reserved by a sub-agent: b is not probed, and the main agent rotates to c, not b', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b'), tokenPlan('c')]
+    state = { activePlanByAgent: { marveen: 'a' }, plans: {} } as ClaudePlansState
+    reserved = new Set(['b'])
+    probeReturns({ a: ROTATION_GATE.switchAtPercent + 5, b: 2, c: 40 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(probeMock).not.toHaveBeenCalledWith('token-for-claude-plan-token-b')
+    expect(logs.some((l) => l.startsWith('ROTATE ') && l.includes('target=c '))).toBe(true)
+    expect(logs.some((l) => l.includes('target=b '))).toBe(false)
+    // Both the probe pass and the decision asked for the set, with the current plan list.
+    expect(reservedCalls.length).toBeGreaterThanOrEqual(2)
+    expect(reservedCalls.every((p) => p.map((x) => x.id).join() === 'a,b,c')).toBe(true)
+  })
+
+  it('every other plan reserved: no ROTATE onto a sub-agent plan (NO_ALTERNATIVE)', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    state = { activePlanByAgent: { marveen: 'a' }, plans: { b: fiveHourObs(1) } } as ClaudePlansState
+    reserved = new Set(['b'])
+    probeReturns({ a: ROTATION_GATE.switchAtPercent + 5, b: 1 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs.some((l) => l.startsWith('ROTATE '))).toBe(false)
   })
 })

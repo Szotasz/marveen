@@ -296,7 +296,7 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   })
   it('every isolation provisioner call passes the extras', () => {
     const calls = FN.match(/ensureIsolatedChannelConfigDir\([^)]*\)/g) ?? []
-    expect(calls.length).toBe(4) // APIKEYSCOPE1107: the authMode=api isolation is the 4th
+    expect(calls.length).toBe(5) // APIKEYSCOPE1107: the authMode=api isolation is the 4th; SUBPLANTOKEN1110: the token-plan one the 5th
     for (const c of calls) expect(c).toContain('extraLaunch.pluginIds')
   })
   it('a resumed launch with extras is verified, primary AND extras, with the fresh fallback', () => {

@@ -46,12 +46,16 @@ import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } fr
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
-import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
+import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { copyProjectsOnce, currentAuthKeyMode, hostApiKey, isolatedDirReady, stampAllowed } from './auth-key-mode.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
+import {
+  planTokenLaunchDecision, planTokenExport, planTokenStatusPath, writePlanTokenStatus, clearPlanTokenStatus,
+  shouldAlertPlanToken, RESOLVE_PLAN_TOKEN_SCRIPT, type PlanTokenLaunchDecision,
+} from './plan-token-launch.js'
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -414,6 +418,47 @@ let sharedConfigCollisionAlerted = false
 
 export function resetSharedConfigCollisionAlert(): void {
   sharedConfigCollisionAlerted = false
+}
+
+// SUBPLANTOKEN1110: a token-plan sub-agent that cannot run on its plan's token
+// is NOT started. Loud on every path: the error log, the status file the
+// dashboard's agent state shows, and an owner alert (throttled per agent and
+// reason, so an auto-restart loop does not flood the channel). The returned
+// error goes back to the caller (dashboard start/restart, rotate endpoint).
+function refusePlanTokenLaunch(name: string, secretId: string, planId: string | undefined, reason: string): { ok: false; error: string } {
+  logger.error({ name, plan: planId, secretId, reason }, 'claude-plan: token plan cannot be used -- agent NOT started (no fallback to the fleet token)')
+  try {
+    writePlanTokenStatus(name, { state: 'refused', secretId, at: Date.now(), reason, ...(planId ? { planId } : {}) })
+  } catch (err) {
+    logger.error({ name, err: err instanceof Error ? err.name : 'error' }, 'claude-plan: could not write the plan-token launch status')
+  }
+  if (shouldAlertPlanToken(name, reason, Date.now())) {
+    void notifyChannel(
+      `⚠️ ${name} nem indult el: a Claude-csomagja (${planId ?? '?'}) tokenes, de nem használható (${reason}). A flotta-tokenre NEM esett vissza. Javítás: a csomag tokenje a vaultban (${secretId}), vagy másik csomag az ügynöknek.`,
+    ).catch(() => { /* notifyChannel logs internally */ })
+  }
+  return { ok: false, error: `claude-plan: ${reason}` }
+}
+
+/**
+ * SUBPLANTOKEN1110: the rotate endpoint's check BEFORE it writes a token plan
+ * into a sub-agent's config: the same decision the launcher makes, from the
+ * same reads (the launcher decides again at start). The secret's value is read
+ * only to test that it is non-empty and is dropped at once.
+ */
+export function planTokenPreflight(name: string, tokenSecretId: string): PlanTokenLaunchDecision {
+  let secretPresent = false
+  try { secretPresent = !!(getSecret(tokenSecretId) ?? '').trim() } catch { secretPresent = false }
+  const isCustom = readAgentCustomProvider(name) !== null
+  return planTokenLaunchDecision({
+    tokenSecretId,
+    isMainAgent: name === MAIN_AGENT_ID,
+    isClaudeModel: !isCustom && resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),
+    isCustomProvider: isCustom,
+    authMode: readAgentAuthMode(name),
+    hasOwnTokenFile: resolveOauthTokenFileSetting(readFileOr(join(agentDir(name), 'agent-config.json'), '{}')).state !== 'unset',
+    secretPresent,
+  })
 }
 
 // Loud, owner-facing alert routed via notifyChannel (direct Bot API POST from
@@ -1129,7 +1174,10 @@ export function sharedEnvAuthKeysCopiedTo(name: string): string[] {
     if (resolveMainAgentConfigDir()) return []
     cfg = mainAgentConfigDirIfSeparate()
   } else {
-    if (resolveAgentConfigDir(name).configDir) return []
+    // A token-plan agent (SUBPLANTOKEN1110) runs in its own isolated dir, provisioned from the shared file like
+    // the fleet-token agents, so it keeps the warning; a configured dir or a configDir plan does not.
+    const resolved = resolveAgentConfigDir(name)
+    if (resolved.configDir && !resolved.tokenSecretId) return []
     cfg = join(agentDir(name), '.claude-config')
   }
   if (!cfg) return []
@@ -2792,6 +2840,48 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // Operator-configured, before any auto-isolation below (BYOSUBUNSET1018).
     const configuredConfigDir = claudeConfigDir !== null
     let oauthTokenEnv = ''
+    // SUBPLANTOKEN1110: a token-mode plan. Decided and checked BEFORE the
+    // launch: the agent either runs on the plan's own token in its isolated
+    // dir, or is not started at all -- never on the fleet token in silence.
+    let planToken: { secretId: string; statusPath: string } | null = null
+    if (planResolution.tokenSecretId) {
+      let secretPresent = false
+      try { secretPresent = !!(getSecret(planResolution.tokenSecretId) ?? '').trim() } catch { secretPresent = false }
+      const decision = planTokenLaunchDecision({
+        tokenSecretId: planResolution.tokenSecretId,
+        isMainAgent: name === MAIN_AGENT_ID,
+        isClaudeModel: isClaude,
+        isCustomProvider: isCustom,
+        authMode,
+        hasOwnTokenFile: ownTokenFile !== null,
+        secretPresent,
+      })
+      const planId = readAgentClaudePlan(name) ?? undefined
+      if (decision.kind === 'refuse') {
+        return refusePlanTokenLaunch(name, planResolution.tokenSecretId, planId, decision.reason)
+      }
+      if (decision.kind === 'plan-token') {
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
+        if (!isolated) {
+          return refusePlanTokenLaunch(name, decision.secretId, planId, 'plan-token-isolated-config-dir-not-provisioned')
+        }
+        claudeConfigDir = isolated
+        const statusPath = planTokenStatusPath(name)
+        writePlanTokenStatus(name, { state: 'pending', secretId: decision.secretId, at: Date.now(), ...(planId ? { planId } : {}) })
+        oauthTokenEnv = planTokenExport({
+          secretId: decision.secretId,
+          nodeBin: process.execPath,
+          scriptPath: RESOLVE_PLAN_TOKEN_SCRIPT,
+          fleetTokenPath: FLEET_OAUTH_TOKEN_PATH,
+          failuresLogPath: join(STORE_DIR, 'channels-failures.log'),
+          statusPath,
+        })
+        planToken = { secretId: decision.secretId, statusPath }
+        logger.info({ name, plan: planId, secretId: decision.secretId }, 'claude-plan: sub-agent launches on its plan token (isolated config dir, no fleet fallback)')
+      }
+    } else if (name !== MAIN_AGENT_ID) {
+      clearPlanTokenStatus(name)
+    }
     // authMode 'own_team' (OWNTEAMVAK914): the operator explicitly opted this
     // agent OUT of the fleet credential -- it authenticates from its OWN
     // /login credential (dashboard auth-flow -> /login in the agent's tmux).
@@ -2929,6 +3019,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         'oauthTokenFile: own token decided but NOT in the launch env -- agent NOT started (no fallback to the fleet token)',
       )
       return { ok: false, error: 'oauthTokenFile: own token did not reach the launch env' }
+    }
+    // SUBPLANTOKEN1110: the claim is checked against the launch env itself, like the own-token one above.
+    if (planToken && !oauthTokenEnv.includes(`--strict --status ${shSingleQuote(planToken.statusPath)}`)) {
+      return refusePlanTokenLaunch(name, planToken.secretId, readAgentClaudePlan(name) ?? undefined, 'plan-token-not-in-launch-env')
     }
     if (ownLaunch.kind === 'own') {
       logger.info(

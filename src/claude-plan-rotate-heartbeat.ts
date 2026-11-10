@@ -118,8 +118,13 @@ export function decideAndRecord(input: {
    *  is present -- even as null -- usageCollectRaw is not looked at at all. */
   activeReading?: ActiveReading | null
   nowMs: number
+  /** SUBPLANTOKEN1110: plan ids a SUB-agent is running on (a token plan in its claudePlan field). Never a
+   *  rotation target for `agentId`: rotating onto one would share that sub-agent's quota, and the fleet leg
+   *  would make its token the fleet token. Absent = none reserved. */
+  reservedPlanIds?: ReadonlySet<string>
 }): RotateCheckResult {
   const { agentId, plans, state, usageCollectRaw, nowMs } = input
+  const reserved = input.reservedPlanIds ?? new Set<string>()
 
   // Design 6.2 precondition: rotation only means anything with 2+ registered
   // plans. Below that, strict no-op -- existing single-plan installs must see
@@ -168,7 +173,7 @@ export function decideAndRecord(input: {
   // week is spent, or whose token was last rejected as invalid, is not a
   // landing spot however fresh its 5h window looks.
   const candidates: RotationCandidate[] = plans
-    .filter((p) => p.id !== activePlanId && p.channelsAllowed)
+    .filter((p) => p.id !== activePlanId && p.channelsAllowed && !reserved.has(p.id))
     .map((p) => candidateFromObservation(p.id, stateWithObservation.plans[p.id], nowMs))
     .filter((c): c is RotationCandidate => c !== null)
 

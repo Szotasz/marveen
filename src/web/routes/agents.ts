@@ -1,3 +1,4 @@
+import { readPlanTokenStatus, type PlanTokenLaunchStatus } from '../plan-token-launch.js'
 import { isSingleLineEnvValue } from '../../env.js'
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
@@ -616,6 +617,10 @@ export interface AgentSummary {
   /** Named Claude subscription plan id (see claude-plans.ts), or null when the
    *  agent uses the raw claudeConfigDir / default resolution. */
   claudePlan: string | null
+  /** SUBPLANTOKEN1110: the last launch outcome of a token-mode plan (store/plan-token-launch/<name>.json:
+   *  plan-token | failed | refused | pending | fleet-fallback, with the vault reference id and a reason --
+   *  never the token), or null when the agent is not on a token plan. */
+  planTokenLaunch: PlanTokenLaunchStatus | null
   team: TeamConfig
   hasTelegram: boolean
   telegramBotUsername?: string
@@ -780,6 +785,7 @@ function getAgentSummary(name: string): AgentSummary {
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
     claudePlan: readAgentClaudePlan(name),
+    planTokenLaunch: name === MAIN_AGENT_ID ? null : readPlanTokenStatus(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
