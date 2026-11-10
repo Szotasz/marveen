@@ -1131,6 +1131,7 @@ describe('allowlist coverage and the measured replay', () => {
       ['GET', '/api/settings'], ['GET', '/api/agents/samu/channels/slack/invites'], ['GET', '/api/gromzo/agents'],
       ['POST', '/api/claude-plans'], ['POST', '/api/claude-plans/rotate'], ['GET', '/api/claude-plans/plan-a'],
       ['POST', '/api/agents/marveen/restart'], ['POST', '/api/skills'], ['POST', '/api/skills/propose/x'], ['POST', '/api/updates'],
+      ['GET', '/api/updates/status'], ['GET', '/api/claude-plans/state/x'],
     ]
     for (const [m, p] of outside) {
       const r = await gateStatus(m, p, agentTok, resolver, undefined, {})
