@@ -224,3 +224,37 @@ describe('subAgentTokenPlanIds + selectPlansToProbe: a sub-agent\'s token plan i
     expect(selectPlansToProbe({ plans, state, activeAgentId: 'marveen', nowMs: 1e13, reservedPlanIds: new Set(['b']) })).toEqual([])
   })
 })
+
+// SUBPLANTOKEN1110 follow-up (Dani 75495 (1)): a plan-token launch never carries an ANTHROPIC_API_KEY. The host key
+// outranks the OAuth token, so it riding along would silently bill the key instead of the plan. Pinned on its own, not
+// only through the configured dir (a resolveAgentConfigDir that one day answered null for a token plan must not
+// reopen it).
+describe('a plan-token launch unsets ANTHROPIC_API_KEY and never exports one', () => {
+  const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+  const start = SRC.indexOf('export async function startAgentProcess(')
+  const FN = SRC.slice(start, SRC.indexOf('\nexport async function', start + 1))
+
+  it('the inherited-auth unset treats the plan token as an own token: both variables are unset, even with no configured dir', async () => {
+    const { inheritedAuthUnset } = await import('../web/inherited-auth-unset.js')
+    for (const keyMode of ['keyonly', 'subscription', 'none'] as const) {
+      expect(inheritedAuthUnset({ needsFleetOauth: true, isOwnTeam: false, configuredConfigDir: false, ownTokenFile: true, keyMode }))
+        .toBe('unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY && ')
+    }
+    expect(FN).toContain('ownTokenFile: ownTokenFile !== null || planToken !== null, keyMode })')
+  })
+  it('the key-only host-key export excludes a plan-token launch by name', () => {
+    const at = FN.indexOf("if (!stampKey && keyMode === 'keyonly' && needsFleetOauth")
+    expect(at).toBeGreaterThan(0)
+    expect(FN.slice(at, FN.indexOf('{', at))).toContain('&& !planToken)')
+  })
+  it('the per-agent API key export exists only on the authMode=api path, which a plan token refuses', () => {
+    const exports = FN.split('apiKeyEnv = `export ANTHROPIC_API_KEY=').length - 1
+    expect(exports).toBe(2) // the authMode=api key, and the key-only host key guarded above
+    expect(planTokenLaunchDecision({ ...ok, authMode: 'api' }).kind).toBe('refuse')
+  })
+  it('in the launch command the unset comes before the plan token\'s export', () => {
+    const cmd = FN.slice(FN.indexOf('const buildLaunchCmd'))
+    expect(cmd.indexOf('${byoUnsetEnv}')).toBeGreaterThan(-1)
+    expect(cmd.indexOf('${byoUnsetEnv}')).toBeLessThan(cmd.indexOf('${oauthTokenEnv}'))
+  })
+})

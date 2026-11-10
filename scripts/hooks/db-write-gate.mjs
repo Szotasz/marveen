@@ -275,6 +275,12 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // own directory, so a bare glob there matches it: noBareGlob keeps the #2514 rule (a QUOTED `count(*)` stays free in
   // the caller's own dir), while an unquoted `cp x *` there still matches, as the shell would expand it.
   { rel: 'agents/*/agent-config.json', pattern: true, noBareGlob: true },
+  // The token-plan launch outcomes (SUBPLANTOKEN1110 follow-up, Dani 75495 (2)): store/plan-token-launch/<name>.json is
+  // what POST /api/claude-plans/rotate reads back after a sub-agent's restart, and what the agent summary shows. A
+  // sub-agent writing a fresh state:"plan-token" for another agent inside the 20 s read-back window would make the rotate
+  // answer 200 for a launch that failed. Written by the dashboard and by the launched shell's resolve-plan-token-env.mjs
+  // (neither is a tool call), never by a sub-agent: the whole directory, as a directory.
+  { rel: 'store/plan-token-launch', dir: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in

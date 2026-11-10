@@ -146,7 +146,8 @@ describe('channels.sh: a new-session that creates the server gets no key off key
 describe('a key-only fleet agent runs on the very key it is stamped for', () => {
   it('the host key is exported by reference and stamped, only for agents that keep the key', () => {
     const src = readFileSync(join(REPO, 'src', 'web', 'agent-process.ts'), 'utf-8')
-    expect(src).toContain("if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile) {")
+    // SUBPLANTOKEN1110 follow-up: never for a plan-token launch either.
+    expect(src).toContain("if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken) {")
     expect(src).toMatch(/apiKeyEnv = `export ANTHROPIC_API_KEY=\$\{launchSecretRef\(`agent-\$\{name\}-api-key`, hostKey\)\} && `\n\s+stampKey = hostKey/)
   })
 })

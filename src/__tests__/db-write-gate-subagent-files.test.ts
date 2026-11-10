@@ -61,7 +61,9 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
       // TGINREPLAYGATE1104: the Telegram state directories above the evidence log, as targets only
       'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels',
       // GATEFILES1110: any agent's agent-config.json
-      'agents/*/agent-config.json'])
+      'agents/*/agent-config.json',
+      // SUBPLANTOKEN1110 follow-up: the token-plan launch outcomes the rotate endpoint reads back
+      'store/plan-token-launch'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
@@ -258,5 +260,31 @@ describe('the hook end to end (the caller from CLAUDE_PROJECT_DIR)', () => {
     const r = run(join(INSTALL_ROOT, 'agents', 'samu'), { tool_name: 'Bash', tool_input: { command: "sed -n 's/^WEB_PORT=//p' .env" }, cwd: INSTALL_ROOT })
     expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
+  })
+})
+
+// SUBPLANTOKEN1110 follow-up (Dani 75495 (2)): the token-plan launch outcomes the rotate endpoint reads back.
+describe('store/plan-token-launch, as a sub-agent: a write is denied, a read and the main agent pass', () => {
+  beforeEach(() => {
+    for (const d of [root, wt]) {
+      mkdirSync(join(d, 'store', 'plan-token-launch'), { recursive: true })
+      writeFileSync(join(d, 'store', 'plan-token-launch', 'iris.json'), '{"state":"failed","secretId":"s","at":1}')
+    }
+  })
+  it.each(['Write', 'Edit'])('%s of another agent\'s status, and of a new one', (tool) => {
+    expect(subFile(tool, join(root, 'store', 'plan-token-launch', 'iris.json'))).toEqual(SUB)
+    expect(subFile(tool, join(root, 'store', 'plan-token-launch', 'zara.json'))).toEqual(SUB)
+  })
+  it.each([
+    'echo \'{"state":"plan-token","secretId":"s","at":9999999999999}\' > @ROOT@/store/plan-token-launch/iris.json',
+    'cp /tmp/fake.json @ROOT@/store/plan-token-launch/iris.json',
+    'rm @ROOT@/store/plan-token-launch/iris.json',
+  ])('Bash: %s', (command) => {
+    expect(sub(command)).toEqual(SUB)
+  })
+  it('a read passes, the main agent passes, and a worktree\'s own copy is free', () => {
+    expect(sub('cat @ROOT@/store/plan-token-launch/iris.json').deny).toBe(false)
+    expect(mainFile('Write', join(root, 'store', 'plan-token-launch', 'iris.json')).deny).toBe(false)
+    expect(sub('echo x > @WT@/store/plan-token-launch/iris.json').deny).toBe(false)
   })
 })
