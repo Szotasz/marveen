@@ -89,7 +89,6 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
-import { clearGromzoNeedsAuth, describeNeedsAuthClear, launchLoadsGromzo, mainNeedsAuthConfigDir } from './gromzo-needs-auth.js'
 import { flushGromzoPendingOwnerAlerts, setGromzoMainLive } from '../notify.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
@@ -119,29 +118,17 @@ export const PANE_AUTH_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth')
 // CFG_ENV nor the tmux global env can add the other credential back. Written by main-auth.ts for every launch.
 export const PANE_AUTH_POST_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth-post')
 
-/** GROMZONEEDSAUTH1109: the CLAUDE_CONFIG_DIR a built respawn command exports (buildMainSessionRespawnCmd writes it as
- *  `export CLAUDE_CONFIG_DIR='<dir>'`), or null when it exports none (the shared root). */
-export function respawnCmdConfigDir(claudeCmd: string): string | null {
-  const m = /export CLAUDE_CONFIG_DIR='([^']*)'/.exec(claudeCmd)
-  return m ? m[1] : null
-}
-
-/** GROMZONEEDSAUTH1109 (Samu 74033): before a respawn whose command carries the Gromzo channel, Claude Code's cached
- *  needs-auth entry for the Gromzo server goes out of the config dir THAT command launches with (read from the command
- *  itself, so it is the pane's dir by construction; the same helper as channels.sh; why and what it never touches:
- *  gromzo-needs-auth.ts). Never throws: the respawn goes ahead either way. */
-export function clearGromzoNeedsAuthBeforeRespawn(claudeCmd: string): void {
-  if (!launchLoadsGromzo(claudeCmd)) return
-  try {
-    const r = clearGromzoNeedsAuth(mainNeedsAuthConfigDir(respawnCmdConfigDir(claudeCmd)))
-    if (r.outcome === 'error' || r.outcome === 'not_json' || r.outcome === 'unknown_shape' || r.outcome === 'unknown_format') {
-      logger.warn({ outcome: r.outcome }, describeNeedsAuthClear(r))
-    } else {
-      logger.info({ outcome: r.outcome }, describeNeedsAuthClear(r))
-    }
-  } catch (err) {
-    logger.warn({ err }, 'gromzo-needs-auth: no-op: failed')
-  }
+/** GROMZONEEDSAUTH1109 (Samu 74033, 74110; Dani 74108): the step of a respawn command that takes Claude Code's cached
+ *  needs-auth entry for the Gromzo server out of the config dir the respawned claude will read, with the same helper as
+ *  channels.sh (why, and what it never touches: gromzo-needs-auth.ts). It runs IN the pane, right before claude: after
+ *  respawn-pane -k killed the old claude (so that one cannot write the entry back) and after the command's own exports,
+ *  so "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" is exactly the dir this claude reads. The line goes to channels-failures.log;
+ *  a missing helper or a failure never stops the respawn. The same group as gromzo_needs_auth_pane_step in
+ *  scripts/gromzo-needs-auth-pane.sh (a test keeps the two equal). */
+export function gromzoNeedsAuthPaneStep(projectRoot: string = PROJECT_ROOT): string {
+  const helper = shSingleQuote(join(projectRoot, 'scripts', 'gromzo-needs-auth-clear.mjs'))
+  const log = shSingleQuote(join(projectRoot, 'store', 'channels-failures.log'))
+  return `{ [ ! -f ${helper} ] || node ${helper} "\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}" 2>>${log} || true; }`
 }
 
 /** MAINAUTH1107: the config decision of a dashboard respawn, with the main agent's credential decided and written for
@@ -1259,10 +1246,10 @@ export function buildMainSessionRespawnCmd(opts: {
           // (and, on a key-only install, the tmux global env) carries ANTHROPIC_API_KEY, and that
           // outranks a /login credential as well (Claude Code docs, "Authentication
           // precedence"): this dir authenticates with its own login only.
-          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]
+          ? [`&& export CLAUDE_CONFIG_DIR=${shSingleQuote(opts.config.isolatedConfigDir)} && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]
           : opts.config.tokenSecretId
-            ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
-            : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
+            ? [`&& export CLAUDE_CONFIG_DIR=${shSingleQuote(opts.config.isolatedConfigDir)} && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
+            : [`&& export CLAUDE_CONFIG_DIR=${shSingleQuote(opts.config.isolatedConfigDir)} && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
       : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
@@ -1272,6 +1259,8 @@ export function buildMainSessionRespawnCmd(opts: {
     // MXDAGENTSOCKID1106: and its token file, so a protected main agent's hello is not refused.
     ...(gromzoSlug ? [`&& export MXD_AGENT="${gromzoSlug}" MXD_SCOPE="both"`] : []),
     ...(gromzoToken ? [`&& ${gromzoToken.replace(/ && $/, '')}`] : []),
+    // GROMZONEEDSAUTH1109: in the pane, after the kill and the exports, right before claude (gromzoNeedsAuthPaneStep).
+    ...(channelsList.includes(`plugin:${MAIN_GROMZO_PLUGIN_ID}`) ? [`&& ${gromzoNeedsAuthPaneStep()}`] : []),
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
@@ -1365,7 +1354,6 @@ export function respawnMainSessionFresh(): void {
       continueSession: false,
       config: mainRespawnConfigWithAuth(),
     })
-    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
     // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
     // here. `respawn-pane -k` then throws "can't find pane", the caller only logs it, lastRestart
@@ -1476,7 +1464,6 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       // preserving the prior shared-root behaviour.
       config: mainRespawnConfigWithAuth(),
     })
-    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
@@ -1786,7 +1773,6 @@ function respawnMarveenSessionFresh(): boolean {
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       config: mainRespawnConfigWithAuth(),
     })
-    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
     scheduleGromzoOrphanReap('main-respawn', tmuxBin())
