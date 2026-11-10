@@ -58,6 +58,14 @@ describe('classifyPriority', () => {
 // 2. makeWorkerCtx -- correct path derivation
 // ---------------------------------------------------------------------------
 describe('makeWorkerCtx', () => {
+  it('takes the model override from the third argument, and every session may differ', () => {
+    // WORKERMODELFAST1109: the fast and the slow worker may run different models.
+    // Without the third argument there is no override (null): the session walks the
+    // shared resolveWorkerModel chain, so every earlier call behaves as before.
+    expect(makeWorkerCtx('s', '/tmp/h', 'claude-test-model').modelOverride).toBe('claude-test-model')
+    expect(makeWorkerCtx('s', '/tmp/h').modelOverride).toBeNull()
+  })
+
   it('derives configDir and scratchDir from homeDir', () => {
     const ctx = makeWorkerCtx('test-session', '/tmp/test-home')
     expect(ctx.session).toBe('test-session')

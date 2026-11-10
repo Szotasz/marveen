@@ -9,7 +9,7 @@ import { logger } from '../logger.js'
 import { launchableInstallDefaultSync, launchableDistributionDefaultSync } from './default-model-guard.js'
 import { measureClaudeCliVersionSync } from './claude-cli-version.js'
 import { CLAUDE_MODEL_MIN_CLI, baseModelId, isModelUnsupportedByCli } from '../claude-cli-support.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION, WORKER_AUTOUPDATE } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION, WORKER_AUTOUPDATE, WORKER_MODEL_FAST } from '../config.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -76,7 +76,7 @@ const WORKER_MODEL_OVERRIDE = process.env.MARVEEN_WORKER_MODEL ?? null
 // The decision now carries `unlaunchable` for an explicit value the measured
 // CLI cannot run (fail-open: an unmeasured CLI flags nothing; a custom-provider
 // model is not a Claude model and is not checked).
-export type WorkerModelSourceLabel = 'env:MARVEEN_WORKER_MODEL' | 'custom-provider' | 'env:DEFAULT_AGENT_MODEL' | 'default'
+export type WorkerModelSourceLabel = 'env:MARVEEN_WORKER_MODEL' | 'env:MARVEEN_WORKER_MODEL_FAST' | 'custom-provider' | 'env:DEFAULT_AGENT_MODEL' | 'default'
 export interface WorkerModelDecision {
   model: string
   source: WorkerModelSourceLabel
@@ -92,6 +92,8 @@ export interface WorkerModelDecision {
 export interface WorkerModelInputs {
   /** MARVEEN_WORKER_MODEL, or null. */
   override: string | null
+  /** Source label for `override` (the fast session's own model reports its own key). */
+  overrideSource?: WorkerModelSourceLabel
   /** The main agent's custom-provider model, or null when none is configured. */
   customProviderModel: string | null
   /** DEFAULT_AGENT_MODEL as resolved by config. */
@@ -123,11 +125,22 @@ export function resolveWorkerModel(i: WorkerModelInputs): WorkerModelDecision {
     const fallback = isModelUnsupportedByCli(candidate, installed) ? null : candidate
     return { model: fallback ?? model, source, unlaunchable: { requested: model, minCli: req.minCli, installedCli: installed, fallback } }
   }
-  if (i.override) return explicit(i.override, 'env:MARVEEN_WORKER_MODEL')
+  if (i.override) return explicit(i.override, i.overrideSource ?? 'env:MARVEEN_WORKER_MODEL')
   if (i.customProviderModel) return { model: i.customProviderModel, source: 'custom-provider', unlaunchable: null }
   if (!i.defaultIsDistribution) return explicit(i.configuredDefault, 'env:DEFAULT_AGENT_MODEL')
   return { model: i.launchableDefault(), source: 'default', unlaunchable: null }
 }
+
+// WORKERMODELFAST1109: the fast session's own model. Order: the process env (a
+// systemd `Environment=`), then the config value (.env / dashboard settings). With
+// neither, null: the fast session walks the same chain as the slow one
+// (resolveWorkerModel), so an install that does not set it behaves exactly as before.
+// The config step is deliberate: as noted above, a MARVEEN_WORKER_MODEL line in .env
+// is silently ignored, and that trap is not worth building a second time. The value
+// becomes resolveWorkerModel's override, so the CLI launchability guard
+// (WORKERMODEL1773) runs on the fast model too.
+const WORKER_MODEL_FAST_OVERRIDE: string | null =
+  process.env.MARVEEN_WORKER_MODEL_FAST || WORKER_MODEL_FAST || null
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
 const WORKER_BOOT_TIMEOUT_MS = 90_000
@@ -161,16 +174,20 @@ const WORKER_CONFIG_SKIP = new Set(['settings.json', 'CLAUDE.md', '.claude.json'
 export interface WorkerCtx {
   readonly session: string
   readonly home: string
+  /** An explicit model for this session (fast vs slow), or null: then the shared
+   *  chain decides (MARVEEN_WORKER_MODEL > custom provider > default). */
+  readonly modelOverride: string | null
   readonly configDir: string
   readonly scratchDir: string
   chain: Promise<unknown>
   lastStuckAlert: number
 }
 
-export function makeWorkerCtx(session: string, homeDir: string): WorkerCtx {
+export function makeWorkerCtx(session: string, homeDir: string, modelOverride: string | null = null): WorkerCtx {
   return {
     session,
     home: homeDir,
+    modelOverride,
     configDir: join(homeDir, '.claude-config'),
     scratchDir: join(homeDir, 'scratch'),
     chain: Promise.resolve() as Promise<unknown>,
@@ -271,6 +288,7 @@ const ctxSlow = makeWorkerCtx(
 const ctxFast = makeWorkerCtx(
   process.env.MARVEEN_WORKER_SESSION_FAST || `${MAIN_AGENT_ID}-worker-fast`,
   process.env.MARVEEN_WORKER_DIR_FAST || workerHomeFor(MAIN_AGENT_ID, 'fast'),
+  WORKER_MODEL_FAST_OVERRIDE,
 )
 
 // --- Message priority routing -------------------------------------------------
@@ -882,10 +900,16 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
       logger.warn({ err }, 'agent-worker: could not resolve main-agent custom provider; falling back to default model')
     }
   }
+  // WORKERMODELFAST1109: the fast session may carry its own model (MARVEEN_WORKER_MODEL_FAST).
+  // It is an explicit Claude model like MARVEEN_WORKER_MODEL, so the main agent's
+  // custom provider (model AND endpoint env) must not ride along with it.
+  const override = ctx.modelOverride ?? WORKER_MODEL_OVERRIDE
+  if (ctx.modelOverride) { customEnvPrefix = ''; customProviderModel = null }
   // DEFAULTCLIGUARD927 keeps guarding the shipped default inside; WORKERMODEL1773
   // flags an explicit value the measured CLI cannot run.
   const decision = resolveWorkerModel({
-    override: WORKER_MODEL_OVERRIDE,
+    override,
+    overrideSource: ctx.modelOverride ? 'env:MARVEEN_WORKER_MODEL_FAST' : 'env:MARVEEN_WORKER_MODEL',
     customProviderModel,
     configuredDefault: DEFAULT_AGENT_MODEL,
     defaultIsDistribution: DEFAULT_AGENT_MODEL_IS_DISTRIBUTION,
