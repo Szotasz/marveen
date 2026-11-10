@@ -3306,6 +3306,18 @@ def strip_technical(text: str) -> str:
     return TECHNICAL.sub(" ", text)
 
 
+# STRIPDASH1109 (2026-11-09, kanban 1e9b49f5): the ' -- ' count ran on strip_technical() output, and that cut puts a
+# SPACE where a technical region was, so the cut itself could build the pattern: '--accept_routes=true' (snake_case
+# branch) became ' -- =true' and was BLOCKED as a prose dash, although the raw text has no ' -- ' anywhere. The count
+# now runs on a copy where each region is a placeholder with no space and no hyphen in it, so a cut can only remove a
+# dash, never create one. A real ' -- ' next to a region ('ez -- `kod`') still has its own spaces and is still counted.
+TECH_PLACEHOLDER = "_"
+
+
+def strip_technical_closed(text: str) -> str:
+    return TECHNICAL.sub(TECH_PLACEHOLDER, text)
+
+
 def strip_for_accent(prose: str) -> str:
     """The accent check's own ADDITIONAL mask, applied to the strip_technical output (EKEZETMASZK1018)."""
     return ACCENT_MASK.sub(" ", prose)
@@ -3686,7 +3698,9 @@ def audit(text: str):
     # (strip_technical utan), igy a kodreszletek/parancsok --flag alakjai nem
     # erintettek -- azok amugy sem " -- " alakuak (nincs szokoz a kotojelek
     # utan), de a technikai regiok kivagasa a biztos hatar.
-    dh = prose.count(" -- ")
+    # STRIPDASH1109: a szamlalas a szokoz nelkuli helyorzos kivagason fut, mert a
+    # szokozos kivagas maga is letre tudta hozni a " -- " mintat.
+    dh = strip_technical_closed(plain).count(" -- ")
     if dh:
         problems.append(
             f"DUPLA KOTOJEL gondolatjel-potlokent {dh} helyen (' -- ') -- Szabi jelzese: "

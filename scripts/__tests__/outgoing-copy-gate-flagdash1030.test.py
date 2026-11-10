@@ -13,6 +13,8 @@ strip_technical() left the '--' between two spaces and the double-hyphen rule ('
   H1  a Cyrillic homoglyph inside '--f.glalas-mod' is still blocked by the homoglyph rule
   S1  strip_technical() removes the whole flag, the '--' included
 KONTROLL: N1 and N2 against a copy with the old branch (no '--' prefix): each must be BLOCKED for the double hyphen.
+The copy also gets the old, space-filled double-hyphen count back: since STRIPDASH1109 the placeholder cut alone
+keeps '--select-release-current' from forming ' -- ', so without that the control could not fail.
 Run: python3 scripts/__tests__/outgoing-copy-gate-flagdash1030.test.py   (exit 0 = the listed checks passed, 1 = a failure)
 """
 import importlib.util
@@ -27,6 +29,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
 UJ_AG = r"(?:(?<![\w-])--)?\b[a-z]+(?:-[a-z]+){1,4}\b"
 REGI_AG = r"\b[a-z]+(?:-[a-z]+){1,4}\b"
+UJ_SZAMLALAS = 'dh = strip_technical_closed(plain).count(" -- ")'   # STRIPDASH1109
+REGI_SZAMLALAS = 'dh = prose.count(" -- ")'
 
 CIR_O = "о"   # Cyrillic o, a homoglyph
 ELEJE = "Szia! Holnap reggel átnézem, "
@@ -74,6 +78,7 @@ def modul():
 def main():
     src = open(HOOK, encoding="utf-8").read()
     check("S0 the new branch occurs exactly once", src.count(UJ_AG) == 1)
+    check("S0b the STRIPDASH1109 count occurs exactly once (the control reverts it)", src.count(UJ_SZAMLALAS) == 1)
     g = modul()
     minta = "plesk installer --select-release-current --upgrade-installed-components"
     kivagva = g.strip_technical(minta)
@@ -104,7 +109,7 @@ def main():
         os.symlink(os.path.join(os.path.dirname(HOOK), "email_extract.py"), os.path.join(hooks, "email_extract.py"))
         mutans = os.path.join(hooks, "outgoing-copy-gate.py")
         with open(mutans, "w", encoding="utf-8") as fh:
-            fh.write(src.replace(UJ_AG, REGI_AG, 1))
+            fh.write(src.replace(UJ_AG, REGI_AG, 1).replace(UJ_SZAMLALAS, REGI_SZAMLALAS, 1))
         for nev, szoveg in ESETEK.items():
             kod, ki = run(mutans, szoveg)
             if merhetetlen(kod, ki):
