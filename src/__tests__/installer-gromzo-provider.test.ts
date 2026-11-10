@@ -65,9 +65,10 @@ for (const file of ['install-linux.sh', 'install-macos.sh']) {
       expect(choose('3')).toBe('discord')
       expect(choose('9')).toBe('telegram') // interactive default kept (the headless STOP is the Bridge derive's, A3)
     })
-    it('the menu shows option 4 and asks with the NEW 4-option prompt key', () => {
+    it('the menu shows option 4 and asks with the NEW 4-option prompt key (5-option on Linux since EE2392D3)', () => {
       expect(text).toContain('echo -e "  ${BOLD}4.${NC} $(_t channel_option_gromzo)"')
-      expect(text).toContain('read -rp "$(_t prompt_channel_select4)" PROVIDER_CHOICE')
+      const key = file === 'install-linux.sh' ? 'prompt_channel_select5' : 'prompt_channel_select4'
+      expect(text).toContain(`read -rp "$(_t ${key})" PROVIDER_CHOICE`)
     })
   })
 
