@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { execFile, execFileSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -162,9 +162,10 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     const r = await runBlock(inst, { UPDATE_AUTO_REBASE: '1' })
     expect(r.code).toBe(5)
     expect(r.out).not.toContain('REACHED_END')
-    expect(r.out).toContain('tulaj-jovahagyas nelkul nem indul (no-approval-id)')
+    // 2nd PR: UPDATE_AUTO_REBASE is no longer read; alone it is the plain diverged refusal, no helper run
+    expect(r.out).toContain('fast-forward nem lehetseges')
     expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
-    expect(r.log).toContain('update_rebase: rc=1 refused no-approval-id')
+    expect(r.log).not.toContain('update_rebase:')
   })
 
   it('a valid owner GO bound to this HEAD and target: consumed once, the rebase runs, the install is no longer behind', async () => {
@@ -172,7 +173,7 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     const id = await ownerGo(hashFor('main', head, target))
     const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: id })
     expect(r.code, r.out).toBe(0)
-    expect(r.out).toContain('Auto-rebase sikeres')
+    expect(r.out).toContain('Rebase kesz: 1 helyi modositas atrakva')
     expect(r.out).toContain('REACHED_END')
     expect(behind(inst)).toBe('0')
     expect(g(inst, 'log', '-1', '--format=%s')).toBe('local-fix')
@@ -181,7 +182,7 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     const row = getApproval(id)!
     expect(row.consumed_by).toBe('update.sh auto-rebase')
     expect(row.consumed_ref).toBe(`main ${head}..${target}`)
-    expect(r.log).toContain(`update_rebase: rc=0 consumed ${id} head=${head} target=${target} rebased=${g(inst, 'rev-parse', 'HEAD')} branch=main`)
+    expect(r.log).toContain(`update_rebase: rc=0 consumed id=${id} head=${head} target=${target} rebased=${g(inst, 'rev-parse', 'HEAD')} backup=refs/marveen/pre-update/`)
   })
 
   it('the same GO a second time (after resetting the install back) is refused: already_consumed', async () => {
@@ -314,7 +315,7 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     expect(fakeHits).toBe(0)
     expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
     expect(behind(inst)).not.toBe('0')
-    expect(r.log).toContain('update_rebase: rc=1 refused not_found')
+    expect(r.log).toContain('update_rebase: rc=1 refused reason=not_found')
   })
 
   it("a .curlrc in the caller's HOME (connect-to the caller's own server) does not reach the consume", async () => {
@@ -339,5 +340,127 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     expect(r.code).toBe(0)
     expect(r.out).toContain('REACHED_END')
     expect(r.log).not.toContain('update_rebase:')
+  })
+})
+
+// ---- AUTOUPDATEDIVERG1110 2nd PR: the F4 order, the recovery ref, the git-config lock, the conflict report ----
+/** A diverged install whose local and upstream commits are chosen per case. */
+function install(opts: { local: [string, string]; upstream: [string, string]; envPort: number }): { inst: string; head: string; target: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'update-rebase-pr2-'))
+  g(dir, 'init', '-q', '--bare', 'origin.git')
+  g(dir, 'clone', '-q', join(dir, 'origin.git'), 'seed')
+  const seed = join(dir, 'seed')
+  writeFileSync(join(seed, 'shared.txt'), 'line 1\nline 2\n')
+  writeFileSync(join(seed, 'package.json'), '{"name":"t","version":"1.0.0"}\n')
+  writeFileSync(join(seed, 'package-lock.json'), '{"lockfileVersion":3}\n')
+  g(seed, 'add', '-A'); g(seed, 'commit', '-qm', 'c1'); g(seed, 'push', '-q', 'origin', 'main')
+  g(dir, 'clone', '-q', join(dir, 'origin.git'), 'inst')
+  const inst = join(dir, 'inst')
+  writeFileSync(join(inst, opts.local[0]), opts.local[1]); g(inst, 'add', '-A'); g(inst, 'commit', '-qm', 'local: "quoted" <b>subject</b>')
+  writeFileSync(join(seed, opts.upstream[0]), opts.upstream[1]); g(seed, 'add', '-A'); g(seed, 'commit', '-qm', 'c2'); g(seed, 'push', '-q', 'origin', 'main')
+  mkdirSync(join(inst, 'store')); mkdirSync(join(inst, 'scripts', 'lib'), { recursive: true })
+  copyFileSync(LIB, join(inst, 'scripts', 'lib', 'update-rebase-go.sh'))
+  writeFileSync(join(inst, 'scripts', 'notify.sh'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$(dirname "$0")/../store/notify.log"\n', { mode: 0o755 })
+  writeFileSync(join(inst, 'store', '.dashboard-token'), TOKEN + '\n')
+  writeFileSync(join(inst, '.env'), `WEB_PORT=${opts.envPort}\n`)
+  writeFileSync(join(inst, '.git', 'info', 'exclude'), 'store/\nscripts/\n.env\n')
+  return { inst, head: g(inst, 'rev-parse', 'HEAD'), target: g(seed, 'rev-parse', 'HEAD') }
+}
+const backups = (inst: string) => g(inst, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/marveen/pre-update/').split('\n').filter(Boolean)
+
+describe('2nd PR: the F4 order, the recovery ref, the git-config lock, the conflict report', () => {
+  it('a local package.json change without the lock is refused BEFORE the consume: the GO stays unspent, no recovery ref', async () => {
+    const { inst, head, target } = install({ local: ['package.json', '{"name":"t","version":"1.0.0","dependencies":{"x":"1"}}\n'], upstream: ['other.txt', 'u\n'], envPort: port })
+    const id = await ownerGo(hashFor('main', head, target))
+    const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: id })
+    expect(r.code).toBe(5)
+    expect(r.log).toContain('refused reason=local-dependency-without-lock')
+    expect(getApproval(id)!.consumed_at).toBeNull()
+    expect(backups(inst)).toEqual([])
+    expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('a recovery ref that cannot be written stops the run BEFORE the consume: the GO stays unspent', async () => {
+    const { inst, head, target } = install({ local: ['local.txt', 'l\n'], upstream: ['other.txt', 'u\n'], envPort: port })
+    g(inst, 'update-ref', 'refs/marveen/pre-update', head) // a ref at the namespace itself: no ref can be created under it
+    const id = await ownerGo(hashFor('main', head, target))
+    const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: id })
+    expect(r.code).toBe(5)
+    expect(r.log).toContain('refused reason=backup-failed')
+    expect(getApproval(id)!.consumed_at).toBeNull()
+    expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('a successful run leaves a recovery ref on the pre-rebase HEAD (UTC name), and a rollback reset does not move it (N1)', async () => {
+    const { inst, head, target } = install({ local: ['local.txt', 'l\n'], upstream: ['other.txt', 'u\n'], envPort: port })
+    const id = await ownerGo(hashFor('main', head, target))
+    const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: id })
+    expect(r.code).toBe(0)
+    const refs = backups(inst)
+    expect(refs.length).toBe(1)
+    const [ref, sha] = refs[0].split(' ')
+    expect(ref).toMatch(/^refs\/marveen\/pre-update\/\d{8}T\d{6}Z$/)
+    expect(sha).toBe(head)
+    expect(r.log).toContain(`backup=${ref}`)
+    g(inst, 'reset', '-q', '--hard', head) // what update.sh's rollback does (OLD_VERSION_FULL)
+    expect(backups(inst)).toEqual(refs)
+  })
+
+  it('retention: the newest 5 recovery refs stay, older ones are deleted one by one', async () => {
+    const { inst, head, target } = install({ local: ['local.txt', 'l\n'], upstream: ['other.txt', 'u\n'], envPort: port })
+    for (let d = 1; d <= 7; d++) g(inst, 'update-ref', `refs/marveen/pre-update/2026010${d}T000000Z`, head)
+    const id = await ownerGo(hashFor('main', head, target))
+    expect((await runBlock(inst, { UPDATE_REBASE_APPROVAL: id })).code).toBe(0)
+    const names = backups(inst).map((l) => l.split(' ')[0].replace('refs/marveen/pre-update/', ''))
+    expect(names.length).toBe(5)
+    expect(names).toContain('20260107T000000Z')
+    expect(names).toContain('20260104T000000Z')
+    expect(names).not.toContain('20260103T000000Z')
+    expect(names.some((n) => n.startsWith('2026111') || n.startsWith('2026') && !n.startsWith('202601'))).toBe(true)
+  })
+
+  it('a .gitconfig in the fixed HOME (store/, caller-writable) is not read: its hook does not run', async () => {
+    const { inst, head, target } = install({ local: ['local.txt', 'l\n'], upstream: ['other.txt', 'u\n'], envPort: port })
+    const home = join(inst, 'store', '.update-rebase-home-unused')
+    const hooks = join(inst, 'store', 'evilhooks')
+    mkdirSync(home, { recursive: true }); mkdirSync(hooks)
+    const marker = join(inst, 'store', 'HOOK_RAN')
+    writeFileSync(join(hooks, 'post-rewrite'), `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 })
+    writeFileSync(join(home, '.gitconfig'), `[core]\n\thooksPath = ${hooks}\n`)
+    const id = await ownerGo(hashFor('main', head, target))
+    expect((await runBlock(inst, { UPDATE_REBASE_APPROVAL: id })).code).toBe(0)
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('a conflict: GO spent once, rebase aborted, HEAD unchanged; the report names the commit and the file, in the install language', async () => {
+    for (const lang of ['hu', 'en']) {
+      const { inst, head, target } = install({ local: ['shared.txt', 'line 1 LOCAL\nline 2\n'], upstream: ['shared.txt', 'line 1 UPSTREAM\nline 2\n'], envPort: port })
+      const id = await ownerGo(hashFor('main', head, target))
+      const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: id, MARVEEN_LANG: lang })
+      expect(r.code, lang).toBe(5)
+      expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
+      expect(existsSync(join(inst, '.git', 'rebase-merge')) || existsSync(join(inst, '.git', 'rebase-apply'))).toBe(false)
+      expect(getApproval(id)!.consumed_at).not.toBeNull()
+      const notify = readFileSync(join(inst, 'store', 'notify.log'), 'utf-8')
+      expect(notify).toContain('shared.txt')
+      expect(notify).toContain(g(inst, 'rev-parse', '--short', head))
+      expect(notify).toContain('local: "quoted" <b>subject</b>') // carried as text; escaping is the reader's (JSON, textContent)
+      expect(notify).toContain(lang === 'en' ? 'The update did not run, nothing changed.' : 'A frissítés nem futott le, semmi nem változott.')
+    }
+  })
+
+  it('the result file gets the rebase object, JSON-escaped, with rollback true only on a rolled-back run', () => {
+    const fn = (name: string) => { const m = new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}\\n`, 'm').exec(UPDATE_SH); expect(m, name).not.toBeNull(); return m![0] }
+    const script = `_json_escape() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
+${fn('rebase_json')}
+UPDATE_REBASE_APPROVAL=id-1 REBASE_HEAD=h REBASE_TARGET=t REBASE_NEW=n REBASE_BACKUP=refs/marveen/pre-update/x REBASE_OUTCOME=conflict REBASE_WHY='a "q" <x>'
+RESULT_STATUS=failed; rebase_json; echo
+RESULT_STATUS=rolled-back; rebase_json; echo
+REBASE_OUTCOME=''; printf '[%s]' "$(rebase_json)"`
+    const out = execFileSync('/bin/bash', ['-c', script], { encoding: 'utf-8' }).split('\n')
+    const a = JSON.parse(out[0]); const b = JSON.parse(out[1])
+    expect(a).toEqual({ approval: 'id-1', head: 'h', target: 't', rebased_head: 'n', backup_ref: 'refs/marveen/pre-update/x', outcome: 'conflict', reason: 'a "q" <x>', rollback: false })
+    expect(b.rollback).toBe(true)
+    expect(out[2]).toBe('[]')
   })
 })

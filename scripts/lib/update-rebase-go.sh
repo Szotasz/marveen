@@ -101,30 +101,71 @@ update_rebase_consume() {
   return 1
 }
 
+# A local commit that changes package.json without package-lock.json cannot pass `npm ci` on ANY version
+# (measured on a toy install 2026-11-10: the same failure before and after the update), so the update can
+# never succeed. update_rebase_will_fail <base> prints the reason when the local commits (base..HEAD) do
+# that, and nothing otherwise. The GO is not spent on such a run (Dani F4).
+update_rebase_will_fail() {
+  local base="$1" files
+  files="$(git diff --name-only "$base" HEAD 2>/dev/null)" || { echo 'diff-failed'; return 0; }
+  if printf '%s\n' "$files" | grep -qx 'package.json' && ! printf '%s\n' "$files" | grep -qx 'package-lock.json'; then
+    echo 'local-dependency-without-lock'
+  fi
+}
+
+# The recovery ref before the rewrite (Dani F4, N1): refs/marveen/pre-update/<UTC YYYYMMDDTHHMMSSZ>, not a
+# branch and not under refs/remotes. Keeps the newest 5, deleting older ones one by one with their exact old
+# sha (update-ref -d <ref> <sha>, no glob). Prints the ref name; rc 1 when it could not be written.
+UPDATE_REBASE_BACKUP_NS='refs/marveen/pre-update'
+UPDATE_REBASE_BACKUP_KEEP=5
+update_rebase_backup() {
+  local head="$1" name ref n=1 line old_ref old_sha kept=0
+  name="$(/bin/date -u +%Y%m%dT%H%M%SZ)"
+  ref="$UPDATE_REBASE_BACKUP_NS/$name"
+  while git show-ref --verify -q "$ref"; do n=$((n + 1)); ref="$UPDATE_REBASE_BACKUP_NS/$name-$n"; done
+  git update-ref "$ref" "$head" "" 2>/dev/null || return 1
+  [ "$(git rev-parse --verify -q "$ref" 2>/dev/null)" = "$head" ] || return 1
+  while IFS=' ' read -r old_ref old_sha; do
+    [ -n "$old_ref" ] || continue
+    kept=$((kept + 1))
+    [ "$kept" -le "$UPDATE_REBASE_BACKUP_KEEP" ] && continue
+    git update-ref -d "$old_ref" "$old_sha" 2>/dev/null || true
+  done < <(git for-each-ref --sort=-refname --format='%(refname) %(objectname)' "$UPDATE_REBASE_BACKUP_NS/")
+  printf '%s' "$ref"
+}
+
 # The program: `rebase <install-dir> <approval-id> <branch>`, run by update.sh in a clean process, in the
-# install, AFTER update.sh fetched origin/<branch> (FETCH_HEAD). Prints one line per outcome, exit code:
-#   0  "consumed <id> head=<sha> target=<sha> rebased=<sha>"  the GO was consumed and the rebase is done
-#   1  "refused <reason> head=<sha> target=<sha>"              no GO; nothing changed
-#   3  "conflict <commit> <subject> files=<a,b>"               GO consumed, the rebase conflicted and was aborted
+# install, AFTER update.sh fetched origin/<branch> (FETCH_HEAD). The order is fixed (Dani F4): the will-fail
+# pre-filter, the recovery ref, the consume, the rebase -- a run that cannot succeed and a failed backup never
+# spend the GO. One line per outcome, key=value, the free-text subject LAST; exit code:
+#   0  "consumed id=<id> head=<sha> target=<sha> rebased=<sha> backup=<ref>"
+#   1  "refused reason=<reason> head=<sha> target=<sha>"                       nothing changed, GO not spent
+#   3  "conflict backup=<ref> commit=<short> files=<a,b> subject=<text>"       GO spent, rebase aborted, HEAD unchanged
 update_rebase_main() {
-  local cmd="$1" dir="$2" id="$3" branch="$4" head target reason new cur files
+  local cmd="$1" dir="$2" id="$3" branch="$4" head target base reason backup new short subject files
   [ "$cmd" = "rebase" ] || { echo "usage: rebase <install-dir> <approval-id> <branch>"; return 2; }
-  cd "$dir" || { echo "refused no-install-dir"; return 1; }
+  cd "$dir" || { echo "refused reason=no-install-dir"; return 1; }
   head="$(git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)"
   target="$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' 2>/dev/null)"
-  if [ -z "$head" ] || [ -z "$target" ]; then echo "refused no-sha head=${head:-?} target=${target:-?}"; return 1; fi
+  if [ -z "$head" ] || [ -z "$target" ]; then echo "refused reason=no-sha head=${head:-?} target=${target:-?}"; return 1; fi
+  base="$(git merge-base "$head" "$target" 2>/dev/null)"
+  [ -n "$base" ] || { echo "refused reason=no-merge-base head=$head target=$target"; return 1; }
+  reason="$(update_rebase_will_fail "$base")"
+  if [ -n "$reason" ]; then echo "refused reason=$reason head=$head target=$target"; return 1; fi
+  if ! backup="$(update_rebase_backup "$head")"; then echo "refused reason=backup-failed head=$head target=$target"; return 1; fi
   if ! reason="$(update_rebase_consume "$dir" "$id" "$branch" "$head" "$target")"; then
-    echo "refused ${reason:-unknown} head=$head target=$target"; return 1
+    echo "refused reason=${reason:-unknown} head=$head target=$target"; return 1
   fi
   if git -c core.editor=true -c user.name="$UPDATE_REBASE_COMMITTER_NAME" -c user.email="$UPDATE_REBASE_COMMITTER_EMAIL" \
        rebase "$target" >/dev/null 2>&1; then
     new="$(git rev-parse HEAD 2>/dev/null)"
-    echo "consumed $id head=$head target=$target rebased=$new"; return 0
+    echo "consumed id=$id head=$head target=$target rebased=$new backup=$backup"; return 0
   fi
-  cur="$(git rev-parse --short REBASE_HEAD 2>/dev/null || echo '?') $(git log -1 --format=%s REBASE_HEAD 2>/dev/null || true)"
+  short="$(git rev-parse --short REBASE_HEAD 2>/dev/null || echo '?')"
+  subject="$(git log -1 --format=%s REBASE_HEAD 2>/dev/null | tr -d '\r\n' || true)"
   files="$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
   git rebase --abort >/dev/null 2>&1 || true
-  echo "conflict ${cur} files=${files}"
+  echo "conflict backup=$backup commit=$short files=$files subject=$subject"
   return 3
 }
 
