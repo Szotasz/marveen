@@ -33,16 +33,25 @@
 # an OS boundary. This closes the documented switch and its environment-level bypasses.
 
 UPDATE_REBASE_CATEGORY='update_rebase'
-# The PATH the clean process gets: fixed system directories (the system tools come first).
-UPDATE_REBASE_CLEAN_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin'
+# Dani's second delta review (47f33c43), measured: the caller's HOME reached the clean process, and curl
+# without -q read $HOME/.curlrc, whose connect-to line steered the consume call to a server of the
+# caller's own -- a real rebase with no approval. So: update.sh gives this process a FIXED HOME inside the
+# install (an empty, never-created path: no .curlrc, no .gitconfig is read from it), curl runs with -q as
+# its first argument (no curlrc at all), the hash tool is called by absolute path, the PATH holds only
+# root-owned system directories (no /usr/local/bin, no /opt/homebrew/bin: those are user-writable), and
+# the rebase gets an explicit committer identity instead of one from a config file.
+UPDATE_REBASE_COMMITTER_NAME='Marveen update'
+UPDATE_REBASE_COMMITTER_EMAIL='update@marveen.invalid'
 
 # stdin -> 64 lowercase hex, or rc 1 (never an empty or truncated fingerprint).
 update_rebase_sha256() {
   local h=''
-  if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum | awk '{print $1}')"
-  elif command -v shasum >/dev/null 2>&1; then h="$(shasum -a 256 | awk '{print $1}')"
-  elif command -v openssl >/dev/null 2>&1; then h="$(openssl dgst -sha256 -r | awk '{print $1}')"
-  else cat >/dev/null; return 1
+  # Absolute paths only: a hash tool found on a user-writable PATH directory could print the hash of
+  # ANOTHER, already approved request (Dani, non-blocking note on 47f33c43).
+  if [ -x /usr/bin/sha256sum ]; then h="$(/usr/bin/sha256sum | /usr/bin/awk '{print $1}')"
+  elif [ -x /usr/bin/shasum ]; then h="$(/usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+  elif [ -x /usr/bin/openssl ]; then h="$(/usr/bin/openssl dgst -sha256 -r | /usr/bin/awk '{print $1}')"
+  else /bin/cat >/dev/null; return 1
   fi
   case "$h" in *[!0-9a-f]*|'') return 1 ;; esac
   [ "${#h}" -eq 64 ] || return 1
@@ -81,7 +90,8 @@ update_rebase_consume() {
   body="$(printf '{"category":"%s","content_hash":"%s","consumer":"update.sh auto-rebase","ref":"%s %s..%s"}' \
     "$UPDATE_REBASE_CATEGORY" "$hash" "$branch" "$head" "$target")"
   # The token travels in a curl config on stdin (never in an argv), as scripts/lib/curl-tok.sh does.
-  out="$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | /usr/bin/curl -K - -sS -m 10 \
+  # -q FIRST: curl reads no curlrc at all (a caller's .curlrc could redirect the call).
+  out="$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | /usr/bin/curl -q -K - -sS -m 10 \
     -o - -w '\n%{http_code}' -H 'Content-Type: application/json' -X POST --data-binary "$body" \
     "http://127.0.0.1:${port}/api/approvals/${id}/consume" 2>/dev/null)" || { echo 'dashboard-unreachable'; return 1; }
   code="${out##*$'\n'}"
@@ -106,7 +116,8 @@ update_rebase_main() {
   if ! reason="$(update_rebase_consume "$dir" "$id" "$branch" "$head" "$target")"; then
     echo "refused ${reason:-unknown} head=$head target=$target"; return 1
   fi
-  if git -c core.editor=true rebase "$target" >/dev/null 2>&1; then
+  if git -c core.editor=true -c user.name="$UPDATE_REBASE_COMMITTER_NAME" -c user.email="$UPDATE_REBASE_COMMITTER_EMAIL" \
+       rebase "$target" >/dev/null 2>&1; then
     new="$(git rev-parse HEAD 2>/dev/null)"
     echo "consumed $id head=$head target=$target rebased=$new"; return 0
   fi

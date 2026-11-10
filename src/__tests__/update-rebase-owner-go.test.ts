@@ -176,6 +176,8 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     expect(r.out).toContain('REACHED_END')
     expect(behind(inst)).toBe('0')
     expect(g(inst, 'log', '-1', '--format=%s')).toBe('local-fix')
+    // the committer is the explicit one, not read from any config file (Dani, second delta review)
+    expect(g(inst, 'log', '-1', '--format=%cn <%ce>')).toBe('Marveen update <update@marveen.invalid>')
     const row = getApproval(id)!
     expect(row.consumed_by).toBe('update.sh auto-rebase')
     expect(row.consumed_ref).toBe(`main ${head}..${target}`)
@@ -313,6 +315,19 @@ describe('update.sh auto-rebase needs the owner GO (AUTOUPDATEDIVERG1110)', () =
     expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
     expect(behind(inst)).not.toBe('0')
     expect(r.log).toContain('update_rebase: rc=1 refused not_found')
+  })
+
+  it("a .curlrc in the caller's HOME (connect-to the caller's own server) does not reach the consume", async () => {
+    const { inst, head } = divergedInstall(port)
+    const home = join(inst, '..', 'evilhome')
+    mkdirSync(home)
+    writeFileSync(join(home, '.curlrc'), `connect-to = ::127.0.0.1:${fakePort}\n`)
+    writeFileSync(join(home, '.gitconfig'), '[user]\n  name = evil\n  email = evil@example.invalid\n')
+    const r = await runBlock(inst, { UPDATE_REBASE_APPROVAL: '00000000-0000-4000-8000-000000000000', HOME: home })
+    expect(fakeHits).toBe(0)
+    expect(r.code).toBe(5)
+    expect(r.out).toContain('(not_found)')
+    expect(g(inst, 'rev-parse', 'HEAD')).toBe(head)
   })
 
   it('a non-diverged install (ahead only) is untouched by all this: no approval asked, the update continues', async () => {
