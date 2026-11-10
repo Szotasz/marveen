@@ -2120,12 +2120,14 @@ _restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
 # -- it only asks the port. This check asks systemd instead, and it reports
 # rather than fails: a unit drift is not fixed by a rollback, so turning it into
 # a failed update would swap a silent problem for a destructive one.
-# The SLUG is derived the same way start.sh/stop.sh derive it.
+# The unit id is derived the same way start.sh/stop.sh derive it (SERVICE_ID, else MAIN_AGENT_ID).
 _unit_drift() {
   command -v systemctl >/dev/null 2>&1 || return 0
   pidof systemd >/dev/null 2>&1 || return 0
   local slug drift="" u scope=""
-  slug="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  slug="$(grep -E '^[[:space:]]*SERVICE_ID[[:space:]]*=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')"
+  [ -n "$slug" ] || slug="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
   slug="${slug:-marveen}"
   if systemctl cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope=""
   elif systemctl --user cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope="--user"
