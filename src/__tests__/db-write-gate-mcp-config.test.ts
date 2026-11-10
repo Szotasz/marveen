@@ -202,19 +202,34 @@ describe('a bare glob in the sub-agent\'s own directory follows the shell dotfil
     // GATEQUOTEDSQL1104: a "(...d...)" elsewhere in the command is not a zsh dot qualifier (the old test was
     // case-insensitive and needed no glob before the parenthesis, so these read-only queries were denied).
     'supabase db query "select left(t.id::text,8) szal from t join lateral (select * from dm_messages d where d.thread_id=t.id) m on true" > dm.out',
-    'python3 -c "open(sys.argv[1],encoding=\'utf-8\').read()" x.md; sqlite3 -readonly x.db "SELECT count(*) FROM t"',
     'psql "$DB" -c "select f(XD), * from t"',
-    // a lower-case d qualifier (order by depth) is not the dot qualifier: zsh qualifiers are case-sensitive
-    'cp /tmp/x.txt *(od[1])',
     // Bence 69262: a quoted "(...D...)" is never a qualifier, wherever the command's glob stands
     "grep 'x(D)' *.md",
     'sqlite3 x.db "SELECT * FROM t" | wc -l',
     'sqlite3 x.db "SELECT max(ID) FROM t"; sqlite3 x.db "SELECT count(*) FROM t"',
     "psql -c $'select f(XD), * from t'",
-    'echo "f(XD)"; cp /tmp/evil.json *',
     // python re-runs text as code, so its whole text is read: no glob here, so the strict reading changes nothing
     'python3 -c "print(len(D))"',
   ])('passes: %s', (command) => {
+    expect(bash(command, own())).toEqual({ deny: false })
+  })
+  // GATEFILES1110: agents/<name>/agent-config.json is a protected name WITHOUT a leading dot in this very directory, so
+  // the dotfile rule no longer frees an unquoted bare glob here: the shell would expand it to agent-config.json. These
+  // three passed before it; their split or quoted forms still pass.
+  it.each([
+    // a lower-case d qualifier (order by depth) is not the dot qualifier, but *(od[1]) still expands to a plain name
+    'cp /tmp/x.txt *(od[1])',
+    'echo "f(XD)"; cp /tmp/evil.json *',
+    // a python -c in the same command keeps the strict reading for the whole command (#2514: re-runs text as code)
+    'python3 -c "open(sys.argv[1],encoding=\'utf-8\').read()" x.md; sqlite3 -readonly x.db "SELECT count(*) FROM t"',
+  ])('denied since GATEFILES1110 (an unquoted or not-proven-quoted bare glob reaches agent-config.json): %s', (command) => {
+    expect(bash(command, own())).toEqual(SUB)
+  })
+  it.each([
+    'python3 -c "open(sys.argv[1],encoding=\'utf-8\').read()" x.md',
+    'sqlite3 -readonly x.db "SELECT count(*) FROM t"',
+    'cp /tmp/x.txt notes.txt',
+  ])('the split forms still pass: %s', (command) => {
     expect(bash(command, own())).toEqual({ deny: false })
   })
   it.each([

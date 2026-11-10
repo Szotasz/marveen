@@ -139,6 +139,12 @@ export const PROTECTED_INSTALL_PATHS = [
   // The network-target origins recorded at the last boot (NETTARGETENV1104, Dani 68849): the drift check compares
   // against it, so a pre-written or deleted record would hide a target change.
   { rel: 'store/.net-target-hosts.json' },
+  // The owner-gated agent settings the dashboard keeps in store/ (GATEFILES1110): custom-providers.json holds each
+  // provider's baseUrl, where an agent's whole prompt goes (owner-only on the API, APIAGENTWRITE1104), and
+  // context-guard.json the context-guard values (raising one is an owner session on the API, OWNERGATE3-1104). Only the
+  // dashboard writes them, through those routes; no skill, script or hook writes them with a tool call.
+  { rel: 'store/custom-providers.json' },
+  { rel: 'store/context-guard.json' },
   // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
   // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
   { rel: '.git/config' },
@@ -261,6 +267,14 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // or a directory's content copied, into the agent directory itself.
   { rel: 'agents/*/.claude/channels/telegram', pattern: true },
   { rel: 'agents/*/.claude/channels', pattern: true },
+  // Every agent's agent-config.json (GATEFILES1110): its customProvider (owner-only on the API, APIAGENTWRITE1104),
+  // model, oauthTokenFile and the rest, read on every spawn. The main agent's skills write it directly (model switch,
+  // displayName, oauthTokenFile, a hand-made agent), so this is the sub-agent list: any agent's file, not only the
+  // caller's own. Stated limit, as for agents/*/.claude/settings.json: a pattern has no ancestor, so renaming a whole
+  // agents/<name> directory is not judged here. It is the first protected name without a leading dot in a sub-agent's
+  // own directory, so a bare glob there matches it: noBareGlob keeps the #2514 rule (a QUOTED `count(*)` stays free in
+  // the caller's own dir), while an unquoted `cp x *` there still matches, as the shell would expand it.
+  { rel: 'agents/*/agent-config.json', pattern: true, noBareGlob: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -420,8 +434,10 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', '.claude', 'scripts', 'store', '.', '..', '~',
+  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', 'custom-providers.json', 'context-guard.json', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
+  // GATEFILES1110: an agent's agent-config.json, from its parent (`cd agents/samu && sed -i ... agent-config.json`)
+  'agent-config.json',
   // PLUGINCODEWRITE1104 (E3): a bare plugin-tree name from its parent (`cd ~/.claude && rm -rf plugins`)
   'plugins', 'marveen-local-plugins', 'gromzo',
   // CPDESTDIR1104 (Dani B2, Samu 69132): the same for the start-loaded trees a session reads (`cd ~/.claude && rm -rf
@@ -1774,7 +1790,7 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target es store/.net-target-hosts.json fajljat, ' +
+  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target, store/.net-target-hosts.json, store/custom-providers.json es store/context-guard.json fajljat (GATEFILES1110: ezeket az owner-kapus API-ut irja), ' +
   'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
@@ -1798,6 +1814,7 @@ export const SUBAGENT_FILE_GATE_MSG =
   'sem a Claude Code plugin-fajat (~/.claude/plugins, a telepites plugins/ mappaja, ~/marveen-local-plugins, a config-direk plugins/ mappaja es registry-jei) es a kozos ~/.claude/agents, skills, hooks fat, ' +
   'a `claude plugin` paranccsal sem (csak list, validate, marketplace list, --help), es `--plugin-dir`-rel sem (PLUGINCODEWRITE1104; plugin-deploy a fo agensen at); ' +
   'sem barmely agens Telegram inbound-evidence naplojat (agents/<nev>/.claude/channels/telegram/inbound-evidence.jsonl es .1, es a folotte allo telegram/ es channels/ konyvtarat celzo parancsot; TGINREPLAYGATE1104: a pluginja irja, nem eszkozhivas); ' +
+  'sem barmely agens agents/<nev>/agent-config.json fajljat (GATEFILES1110: customProvider, model, oauthTokenFile; az API-n owner-kapus, valtoztatas a fo agensen at); ' +
   'ha a cwd egy ilyen fan belul van, minden nem-olvaso parancs tilt: elobb lepj ki onnan. ' +
   'amit ez a kapu NEM lat (limit): egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
