@@ -59,6 +59,7 @@ vi.mock('../web/agent-process.js', async () => {
   const { vi } = await import('vitest')
   h.restartAgentProcess = vi.fn(async () => ({ ok: true }))
   return {
+    withTmuxBatch: (fn: () => unknown) => fn(),
     agentRunState: () => 'running',
     agentSessionName: (n: string) => `agent-${n}`,
     restartAgentProcess: (...a: unknown[]) => h.restartAgentProcess(...a),

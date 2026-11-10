@@ -16,6 +16,16 @@ export function agentTextLangSetting(read: (keys: string[]) => Record<string, st
 }
 
 /**
+ * APPROVALTAGEN1108 (Samu 73344, EGM review B1): the language of the owner's approval messages AND of the words that
+ * decide an approval. The EXPLICIT key only: en when AGENT_TEXT_LANG=en, hu otherwise. Not agentTextLang()'s fallback
+ * (an English heading in the main CLAUDE.md), because that file is the main agent's own, and an edit to it must not
+ * widen the words that decide the owner's consent.
+ */
+export function approvalTextLang(read: (keys: string[]) => Record<string, string> = readEnvFile): AgentTextLang {
+  return agentTextLangSetting(read) === 'en' ? 'en' : 'hu'
+}
+
+/**
  * An install rendered English BEFORE the key existed (from develop, after #2596): its main CLAUDE.md carries the English
  * template's heading (Samu 72862). The same rule as scripts/lib/persona-template.sh _atl_rendered_en, so the persona and
  * the managed sections agree on such an install too. A Hungarian file, or one without the heading, is not English.

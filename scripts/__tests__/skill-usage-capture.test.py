@@ -186,6 +186,58 @@ class TestProjectScopedSkills(unittest.TestCase):
         self.assertIsNone(self._classify("/srv/marveen/.claude/skills/my-skill/references/x.md"))
 
 
+# SKILLBASHREAD1109: 2026-11-09-en merve 11-07 20:21 es 11-09 08:10 kozott nulla
+# skill_usage sor keletkezett, mert minden SKILL.md-t Bash-bol (cat/sed) nyitottunk meg.
+class TestBashSkillRead(unittest.TestCase):
+    def _b(self, cmd):
+        return hook._classify_bash(cmd)
+
+    def test_cat_of_a_project_skill_counts(self):
+        self.assertEqual(self._b("cat /srv/m/.claude/skills/fleet-helper/SKILL.md"), ["fleet-helper"])
+
+    def test_home_and_isolated_roots_count(self):
+        self.assertEqual(self._b("sed -n 1,40p ~/.claude/skills/a/SKILL.md"), ["a"])
+        self.assertEqual(self._b("head -80 /srv/m/.channels-config/skills/b/SKILL.md"), ["b"])
+        self.assertEqual(self._b("cat /srv/m/agents/x/.claude-config/skills/c/SKILL.md | head"), ["c"])
+
+    def test_quoted_path_and_several_skills_are_distinct(self):
+        cmd = 'cat "/s/.claude/skills/a/SKILL.md" && grep x "/s/.claude/skills/b/SKILL.md"; cat /s/.claude/skills/a/SKILL.md'
+        self.assertEqual(self._b(cmd), ["a", "b"])
+
+    def test_cap(self):
+        cmd = " ".join(f"/s/.claude/skills/k{i}/SKILL.md" for i in range(9))
+        self.assertEqual(len(self._b("cat " + cmd)), hook._MAX_BASH_SKILLS)
+
+    def test_glob_or_variable_is_not_a_read_of_one_skill(self):
+        self.assertEqual(self._b("grep -l foo ~/.claude/skills/*/SKILL.md"), [])
+        self.assertEqual(self._b('cat ~/.claude/skills/$NAME/SKILL.md'), [])
+
+    def test_writes_do_not_count(self):
+        for cmd in [
+            "cat > ~/.claude/skills/a/SKILL.md << 'EOF'",
+            "echo x >> /s/.claude/skills/a/SKILL.md",
+            "sed -i 's/a/b/' /s/.claude/skills/a/SKILL.md",
+            "cp /tmp/x /s/.claude/skills/a/SKILL.md",
+            "rm /s/.claude/skills/a/SKILL.md",
+            "git add .claude/skills/a/SKILL.md",
+        ]:
+            self.assertEqual(self._b(cmd), [], cmd)
+
+    def test_scheduled_task_and_references_do_not_count(self):
+        self.assertEqual(self._b("cat ~/.claude/scheduled-tasks/foo/SKILL.md"), [])
+        self.assertEqual(self._b("cat /s/.claude/skills/a/references/SKILL.md.bak"), [])
+
+    def test_unrelated_command(self):
+        self.assertEqual(self._b("echo hi"), [])
+        self.assertEqual(self._b(""), [])
+
+    def test_read_tool_sees_isolated_root(self):
+        self.assertEqual(
+            hook._classify("Read", {"file_path": "/srv/m/.channels-config/skills/b/SKILL.md"}),
+            ("b", "skill_read"),
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

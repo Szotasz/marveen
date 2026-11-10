@@ -42,6 +42,7 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentWorksourceChannel: () => false,
 }))
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   // dex is mid-turn (busy); every other session is at an idle prompt.

@@ -2992,6 +2992,18 @@ _LOCAL_RULES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 _GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
 
 
+def pass_with_warning(msg: str) -> str:
+    """A non-blocking warning, for BOTH readers. `systemMessage` is shown on
+    the host's terminal only and never enters the model's request; the agent
+    that just made the call learns of it only through
+    `hookSpecificOutput.additionalContext` (measured 2026-11-08 on our own
+    transcripts: systemMessage 0/6, PreToolUse additionalContext 7/7)."""
+    return json.dumps({
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg},
+    })
+
+
 def _gate_log(message: str) -> None:
     """Append one TIMESTAMPED line to the gate log.
 
@@ -3520,9 +3532,15 @@ def http_channel_gate(cmd: str) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
-        warn = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
-        sys.stderr.write(warn + "\n")
-        _gate_log(warn)
+        head = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
+        # stderr on exit 0 and the gate log never reach the sending agent;
+        # only additionalContext does, so it learns the send went out unchecked.
+        # The model gets the exception TYPE only: a repr can carry the text
+        # being processed (e.g. a UnicodeEncodeError quotes it).
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -3607,9 +3625,11 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
-        sys.stderr.write(warn + "\n")
-        _gate_log(warn)
+        head = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))  # type only, see above
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -3628,10 +3648,10 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
     # nincs mit jelezni, a Telegram-ag ott csendben marad. Minden mas nem-ok
     # allapot (missing/empty/invalid) figyelmeztetest kap.
     if RULES_STATE in RULES_LOUD:
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
             f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
-            "Potold a store/outgoing-copy-gate-rules.json-t."}))
+            "Potold a store/outgoing-copy-gate-rules.json-t."))
     sys.exit(0)
 
 
@@ -3923,7 +3943,7 @@ def inter_agent_homoglyph_gate(cmd: str) -> None:
                f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
                "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
         _gate_log(msg)
-        print(json.dumps({"systemMessage": msg}))
+        print(pass_with_warning(msg))
         sys.exit(0)
     try:
         mixed = mixed_script_words(text)
@@ -3974,7 +3994,11 @@ def main():
         _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
                   f"-- a vizsgalat nem futtathato (tool={tool!r}).")
         if re.search(r"telegram.*__reply$", tool, re.I):
-            sys.exit(0)  # Telegram stays fail-open by design
+            # Telegram stays fail-open by design, but not silently.
+            print(pass_with_warning(
+                f"outgoing-copy-gate: a Telegram-hivas tool_input mezoje nem szotar, hanem {shape} "
+                "-- FAIL-OPEN atengedes, ez az uzenet a szoveg-ellenorzes NELKUL ment ki."))
+            sys.exit(0)
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, a hivas tool_input mezoje nem szotar, hanem "
             f"{shape} -- a kimeno szoveg igy nem olvashato ki, tehat nem vizsgalhato.\n"
@@ -4105,12 +4129,12 @@ def main():
         # Fail-OPEN, but never silent: the send goes out WITHOUT the name
         # check, and the user must see that on the surface they are using --
         # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
-        print(json.dumps({"systemMessage":
+        print(pass_with_warning(
             "outgoing-copy-gate: a NEV-SZABALY fajl "
             + ("HIANYZIK" if RULES_STATE == RULES_MISSING else "URES (nincs minta)")
             + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
             "Ha kell a vedelem, hozd letre a fajlt: "
-            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
+            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'))
     sys.exit(0)
 
 

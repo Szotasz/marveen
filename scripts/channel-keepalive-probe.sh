@@ -123,6 +123,12 @@ SESSION="${MAIN_AGENT_ID}-channels"
 CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER//[^a-zA-Z0-9_-]/}"
+# The plugin cache dir segment the poller runs from: the provider name, except Gromzo, whose plugin dir is
+# gromzo-channel (GROMZONOPROVIDER1108; /gromzo/ would never match it).
+case "$CHANNEL_PROVIDER" in
+  gromzo) PROBE_PLUGIN_SEG="gromzo-channel" ;;
+  *) PROBE_PLUGIN_SEG="$CHANNEL_PROVIDER" ;;
+esac
 
 TMUX_BIN="$(command -v tmux)"
 if [ -z "$TMUX_BIN" ]; then
@@ -185,7 +191,7 @@ while read -r cand; do
     alive=1
     break
   fi
-done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -F "/${CHANNEL_PROVIDER}/" | grep -v grep | awk '{print $1}')
+done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -F "/${PROBE_PLUGIN_SEG}/" | grep -v grep | awk '{print $1}')
 
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real

@@ -70,7 +70,7 @@ import { resolveFromPath } from '../platform.js'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR, BOT_NAME, MAIN_AGENT_ID } from '../config.js'
-import { capturePane, isAgentRunning, agentSessionName, agentHasChannel } from './agent-process.js'
+import { capturePane, isAgentRunning, agentSessionName, agentHasChannel, withTmuxBatch } from './agent-process.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { readTranscriptMtimeAcrossConfigDirs } from './active-model.js'
 import { STATE_OBSERVER_STATE_DIR } from './state-observer.js'
@@ -959,39 +959,47 @@ export function sweepSubAgents(deps: SubAgentSweepDeps): void {
     return
   }
   const seen = new Set<string>()
-  for (const agent of agents) {
-    try {
-      if (!deps.isRunning(agent)) continue
-      seen.add(agent)
-      const session = agentSessionName(agent)
-      const pane = deps.capture(agent, session)
-      const now = deps.now()
+  // One list-sessions for the whole sweep: with the live deps every
+  // deps.isRunning(agent) asks the identical read-only query, and withTmuxBatch
+  // answers all of them from one memoized spawn while this (synchronous) loop
+  // runs. deps.capture is capture-pane under the live deps, which is never
+  // memoized, so each agent still gets its own fresh pane read. Injected test
+  // deps are unaffected: a batch only memoizes tmux reads they never make.
+  withTmuxBatch(() => {
+    for (const agent of agents) {
+      try {
+        if (!deps.isRunning(agent)) continue
+        seen.add(agent)
+        const session = agentSessionName(agent)
+        const pane = deps.capture(agent, session)
+        const now = deps.now()
 
-      // Waiting on a person (permission prompt / held peer message). A
-      // permission prompt on a channel-owning agent is the channel-monitor's
-      // (one owner per state, #1596 review point 1).
-      let kind = classifyAgentWait(pane)
-      // The state file only adds a wait the pane did not show (STATEOBS1012).
-      const reading = kind == null && deps.readState ? deps.readState(agent) : null
-      if (kind == null && stateFileSaysWaiting(reading, pane, now)) kind = 'permission'
-      if (kind === 'permission' && deps.hasChannel(agent)) kind = null
-      const prevWait = agentWaitState.get(agent) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
-      const wait = decidePaneErrorAlert(kind != null, prevWait, now, waitThresholds)
-      if (wait.next.firstSeenAt === null) agentWaitState.delete(agent)
-      else agentWaitState.set(agent, wait.next)
-      if (wait.alert && kind != null) {
-        // What it asks: the card on the pane, else the tool the state file names.
-        const ask = kind !== 'permission'
-          ? null
-          : (pane != null ? permissionPromptSummary(pane) : null)
-            ?? (reading ? { title: reading.tool ?? 'ismeretlen eszköz', reason: 'az állapotfigyelő szerint jóváhagyásra vár' } : null)
-        logger.warn({ agent, session, kind, waitingMs: now - (wait.next.firstSeenAt ?? now) }, 'stuck-tool-call-watcher: sub-agent is waiting on a person (no keystrokes sent) -- alerting')
-        deps.alertWait(agent, session, kind, now - (wait.next.firstSeenAt ?? now), ask)
+        // Waiting on a person (permission prompt / held peer message). A
+        // permission prompt on a channel-owning agent is the channel-monitor's
+        // (one owner per state, #1596 review point 1).
+        let kind = classifyAgentWait(pane)
+        // The state file only adds a wait the pane did not show (STATEOBS1012).
+        const reading = kind == null && deps.readState ? deps.readState(agent) : null
+        if (kind == null && stateFileSaysWaiting(reading, pane, now)) kind = 'permission'
+        if (kind === 'permission' && deps.hasChannel(agent)) kind = null
+        const prevWait = agentWaitState.get(agent) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+        const wait = decidePaneErrorAlert(kind != null, prevWait, now, waitThresholds)
+        if (wait.next.firstSeenAt === null) agentWaitState.delete(agent)
+        else agentWaitState.set(agent, wait.next)
+        if (wait.alert && kind != null) {
+          // What it asks: the card on the pane, else the tool the state file names.
+          const ask = kind !== 'permission'
+            ? null
+            : (pane != null ? permissionPromptSummary(pane) : null)
+              ?? (reading ? { title: reading.tool ?? 'ismeretlen eszköz', reason: 'az állapotfigyelő szerint jóváhagyásra vár' } : null)
+          logger.warn({ agent, session, kind, waitingMs: now - (wait.next.firstSeenAt ?? now) }, 'stuck-tool-call-watcher: sub-agent is waiting on a person (no keystrokes sent) -- alerting')
+          deps.alertWait(agent, session, kind, now - (wait.next.firstSeenAt ?? now), ask)
+        }
+      } catch (err) {
+        logger.debug({ err, agent }, 'stuck-tool-call-watcher: sub-agent check error')
       }
-    } catch (err) {
-      logger.debug({ err, agent }, 'stuck-tool-call-watcher: sub-agent check error')
     }
-  }
+  })
   // Forget agents that stopped, so a restart begins with a clean spell.
   for (const key of [...agentWaitState.keys()]) {
     if (!seen.has(key)) agentWaitState.delete(key)

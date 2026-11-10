@@ -227,9 +227,48 @@ describe('imported archives are queued, scanned and shown before approval', () =
       writeFileSync(join(d, 'zz-link', 'SKILL.md'), '# x\n')
       symlinkSync('/etc/passwd', join(d, 'zz-link', 'p'))
     })
-    expect((await importZip('/api/skills/import', withLink)).status).toBe(400)
+    const linkOut = await importZip('/api/skills/import', withLink)
+    expect(linkOut.status).toBe(400)
+    expect(linkOut.body.error).toBe('Invalid skill file: symlink entries rejected')
+    // A link to a relative target is refused the same way (unzip would create it).
+    const withRelLink = zipOf((d) => {
+      mkdirSync(join(d, 'zz-rel'))
+      writeFileSync(join(d, 'zz-rel', 'SKILL.md'), '# x\n')
+      symlinkSync('SKILL.md', join(d, 'zz-rel', 'p'))
+    })
+    const relOut = await importZip('/api/skills/import', withRelLink)
+    expect(relOut.status).toBe(400)
+    expect(relOut.body.error).toBe('Invalid skill file: symlink entries rejected')
     const noSkill = zipOf((d) => { mkdirSync(join(d, 'zz-none')); writeFileSync(join(d, 'zz-none', 'README.md'), '# x\n') })
     expect((await importZip('/api/skills/import', noSkill)).status).toBe(400)
+    expect(await pendingList()).toEqual([])
+    expect(readdirSync(PENDING).filter((f) => f.startsWith('_extract_'))).toEqual([])
+    expect(readdirSync(GLOBAL)).toEqual([])
+  })
+
+  it('a symlink entry followed by an entry under it is refused from the listing, before any extraction', async () => {
+    // unzip fails on this archive whatever its build: it creates links last, so the link is
+    // still a placeholder file when the entry under it comes ("exists but is not directory").
+    // Only the pre-extraction listing check can answer 400; without it the import is a 500.
+    const target = mkdtempSync(join(tmpRoot, 'thru-target-'))
+    const zip = join(mkdtempSync(join(tmpRoot, 'thru-')), 't.zip')
+    const withLink = mkdtempSync(join(tmpRoot, 'thru-a-'))
+    mkdirSync(join(withLink, 'zz-thru'))
+    writeFileSync(join(withLink, 'zz-thru', 'SKILL.md'), '# x\n')
+    symlinkSync(target, join(withLink, 'zz-thru', 'link'))
+    execFileSync('zip', ['-q', '-r', '-y', zip, 'zz-thru'], { cwd: withLink })
+    const through = mkdtempSync(join(tmpRoot, 'thru-b-'))
+    mkdirSync(join(through, 'zz-thru', 'link'), { recursive: true })
+    writeFileSync(join(through, 'zz-thru', 'link', 'pwn.txt'), 'pwn\n')
+    execFileSync('zip', ['-q', '-D', zip, 'zz-thru/link/pwn.txt'], { cwd: through })
+    const names = execFileSync('unzip', ['-Z1', zip], { encoding: 'utf-8' }).split('\n').filter(Boolean)
+    expect(names.indexOf('zz-thru/link')).toBeGreaterThanOrEqual(0)
+    expect(names.indexOf('zz-thru/link/pwn.txt')).toBeGreaterThan(names.indexOf('zz-thru/link'))
+
+    const r = await importZip('/api/skills/import', readFileSync(zip))
+    expect(r.status).toBe(400)
+    expect(r.body.error).toBe('Invalid skill file: symlink entries rejected')
+    expect(readdirSync(target)).toEqual([])
     expect(await pendingList()).toEqual([])
     expect(readdirSync(PENDING).filter((f) => f.startsWith('_extract_'))).toEqual([])
     expect(readdirSync(GLOBAL)).toEqual([])
@@ -550,14 +589,17 @@ describe('proposed skills (D4)', async () => {
     expect(readFileSync(join(liveDir('multi'), 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi\n')
   })
 
-  it('P5c: if the install fails, the old version is put back', () => {
+  // #2601: the install failure is forced with a 0o555 pending dir, and root ignores mode bits: as root the approval
+  // succeeds, the pending dir is gone, and the premise of the test cannot hold. Skipped as root, as the repo's other
+  // permission-based tests (channel-coordinator-pidlock T8, hook-failure-scan); the guard used to sit inside the try,
+  // so the finally's chmod ran on a dir that no longer existed and threw ENOENT.
+  it.skipIf(process.getuid?.() === 0)('P5c: if the install fails, the old version is put back', () => {
     mkLive('restore')
     const m = propose('restore')
     const hash = q.getPending(m.id)!.hash
     chmodSync(join(PENDING, m.id), 0o555)
     try {
       const r = q.approvePending(m.id, hash)
-      if (process.getuid?.() === 0) return
       expect(r).toMatchObject({ ok: false, status: 500 })
       expect((r as any).error).toMatch(/restored/)
       expect(readFileSync(join(liveDir('restore'), 'SKILL.md'), 'utf-8')).toBe('old')

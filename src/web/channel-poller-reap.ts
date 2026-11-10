@@ -69,6 +69,8 @@ const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   discord: 'DISCORD_STATE_DIR',
   googlechat: 'GOOGLECHAT_STATE_DIR',
   teams: 'TEAMS_STATE_DIR',
+  // gromzo has no state dir; no process ever carries this variable, so no gromzo poller is a candidate here.
+  gromzo: 'GROMZO_STATE_DIR',
 }
 
 // Parse `ps axeww` output and return every PID whose process environment
@@ -1259,6 +1261,7 @@ const PLUGIN_ROOT_NEEDLE: Record<ChannelProviderType, string> = {
   discord: '/discord',
   googlechat: '/googlechat',
   teams: '/teams',
+  gromzo: '/gromzo-channel',
 }
 
 // Candidate = a poller bound to the MAIN default state dir: its env carries

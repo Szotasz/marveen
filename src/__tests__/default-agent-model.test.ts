@@ -7,6 +7,7 @@ import {
 } from '../config-registry.js'
 import { DEFAULT_AGENT_MODEL } from '../config.js'
 import { DEFAULT_MODEL, MODEL_ALIASES, resolveModelId } from '../web/agent-config.js'
+import { CLAUDE_MODEL_MIN_CLI } from '../claude-cli-support.js'
 import { defaultChainForInstall } from '../web/model-fallback-store.js'
 import { DEFAULT_MODEL_CHAIN } from '../model-fallback.js'
 
@@ -39,6 +40,14 @@ describe('DEFAULT_AGENT_MODEL', () => {
     expect(def.valueSet).toContain('claude-opus-5')
     // The worker drives the `claude` CLI, so only Claude ids are admissible.
     expect(def.valueSet!.every((m) => m.startsWith('claude-'))).toBe(true)
+  })
+
+  it('offers every CLI-gated (newest) model as a default, base id or its [1m] variant (FABLE52SELECTOR1109)', () => {
+    const def = getSettingDefinition('DEFAULT_AGENT_MODEL')!
+    expect(Object.keys(CLAUDE_MODEL_MIN_CLI)).toContain('claude-fable-5-2')
+    for (const id of Object.keys(CLAUDE_MODEL_MIN_CLI)) {
+      expect(def.valueSet!.includes(id) || def.valueSet!.includes(`${id}[1m]`), id).toBe(true)
+    }
   })
 
   it('validates against the value set', () => {

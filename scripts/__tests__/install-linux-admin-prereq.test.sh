@@ -153,6 +153,9 @@ printf '#!/bin/bash\n[ "$1" = -u ] && echo "${FAKE_ID:-0}" || /usr/bin/id "$@"\n
 chmod +x "$TMP/gbin/stat" "$TMP/gbin/id"
 mk_guard() { # $1 dir; the guard + a marker, as <dir>/install-linux.sh
   mkdir -p "$1"; { echo '#!/bin/bash'; cat "$TMP/guard.sh"; echo 'echo GUARD-PASSED'; } > "$1/install-linux.sh"; chmod 644 "$1/install-linux.sh"
+  # #2637 (HRNGRG): the dir itself 755 whatever the umask. Under umask 002 it was 775 (group-writable, not sticky), and
+  # the guard rightly refused it, so the sticky-parent case failed before it ever reached the 1777 parent.
+  chmod 755 "$1"
 }
 g() { # env... ; runs the guard copy in $GD as "root" with --admin-prereq
   OUT="$(env PATH="$TMP/gbin:$PATH" "$@" /bin/bash "$GD/install-linux.sh" --admin-prereq --user x 2>&1)"; RC=$?

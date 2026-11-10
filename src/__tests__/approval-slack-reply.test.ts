@@ -109,10 +109,21 @@ describe('the owner\'s last word, after the settle time', () => {
 
 describe('the words', () => {
   it('exactly mehet / jóváhagyom approve, nem / elutasítom reject, after NFC and folding; anything else is nothing', () => {
-    for (const t of ['mehet', 'Mehet', 'MEHET!', '  mehet. ', 'jóváhagyom', 'jóváhagyom'.normalize('NFD'), 'Jóváhagyom.']) expect(replyWord(t), t).toBe('approved')
-    for (const t of ['nem', 'Nem.', 'elutasítom']) expect(replyWord(t), t).toBe('rejected')
-    for (const t of ['mehet?', 'igen', 'ok', '*mehet*', 'mehet, de', 'nem, várj', 'mehet mehet', '', 'mehet?!']) expect(replyWord(t), t).toBeNull()
-    expect(replyWord(undefined)).toBeNull()
+    for (const t of ['mehet', 'Mehet', 'MEHET!', '  mehet. ', 'jóváhagyom', 'jóváhagyom'.normalize('NFD'), 'Jóváhagyom.']) expect(replyWord(t, 'hu'), t).toBe('approved')
+    for (const t of ['nem', 'Nem.', 'elutasítom']) expect(replyWord(t, 'hu'), t).toBe('rejected')
+    for (const t of ['mehet?', 'igen', 'ok', '*mehet*', 'mehet, de', 'nem, várj', 'mehet mehet', '', 'mehet?!']) expect(replyWord(t, 'hu'), t).toBeNull()
+    expect(replyWord(undefined, 'hu')).toBeNull()
+  })
+
+  // APPROVALTAGEN1108 (Samu 73344): a Hungarian post's set is UNCHANGED; an English post adds approve/go, reject/no.
+  it('a Hungarian post: the English words decide NOTHING (the set did not grow)', () => {
+    for (const t of ['approve', 'go', 'Go!', 'reject', 'no', 'No.']) expect(replyWord(t, 'hu'), t).toBeNull()
+  })
+
+  it('an English post: approve/go and reject/no decide, the Hungarian words still do; yes/ok and near misses never', () => {
+    for (const t of ['approve', 'Approve.', 'go', 'GO!', '  go ', 'mehet', 'jóváhagyom']) expect(replyWord(t, 'en'), t).toBe('approved')
+    for (const t of ['reject', 'Reject!', 'no', 'No.', 'nem', 'elutasítom']) expect(replyWord(t, 'en'), t).toBe('rejected')
+    for (const t of ['yes', 'ok', 'okay', 'approve?', 'go ahead', 'nope', 'no way', 'approved', 'rejected', 'igen', '*go*', '']) expect(replyWord(t, 'en'), t).toBeNull()
   })
 
   it('Slack ts order is numeric', () => {

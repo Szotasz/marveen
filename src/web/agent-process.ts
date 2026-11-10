@@ -42,7 +42,7 @@ import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
-import { filterMainGromzoIds } from './main-gromzo-launch.js'
+import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
@@ -74,7 +74,7 @@ import {
   type TmuxInvocation,
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
-import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, getProviderType, channelStateDir, providerCapabilities, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CONTINUE_OPT_OUT_REASON, decideContinueFlag, readContinueOptOut, verifyContinueLaunch } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
@@ -130,6 +130,7 @@ import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
+import { isOpenRouterOneMillionModel } from '../context-guard.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -618,12 +619,31 @@ export function mainAgentConfigDirIfSeparate(): string | null {
 // enabled there, it would still start as an MCP server, without MXD_AGENT, and exit.
 export function readExtraChannelPluginIds(): string[] {
   try {
-    const env = readEnvFile(['CHANNEL_PLUGINS_EXTRA', 'MAIN_AGENT_ID'])
-    const raw = env['CHANNEL_PLUGINS_EXTRA'] ?? ''
-    return filterMainGromzoIds(env['MAIN_AGENT_ID'] ?? '', raw.split(/\s+/).map(s => s.trim()).filter(Boolean))
+    const env = readEnvFile(['CHANNEL_PLUGINS_EXTRA', 'MAIN_AGENT_ID', 'CHANNEL_PROVIDER'])
+    return mainIsolatedExtraPluginIds(env['CHANNEL_PROVIDER'] || CHANNEL_PROVIDER, env['MAIN_AGENT_ID'] ?? '', env['CHANNEL_PLUGINS_EXTRA'] ?? '')
   } catch {
     return []
   }
+}
+
+/** GROMZOEXTRASREADY1109 (Samu 73946): the ids the isolated MAIN config enables beside its primary, pure for the tests.
+ *  Every id passes filterMainGromzoIds (the gromzo id only with a usable agent.sock and a valid slug), as before. On a
+ *  CHANNEL_PROVIDER=gromzo install the gromzo id ALSO needs the main agent primary-ready (mainGromzoPrimaryReady, the
+ *  same rule as channels.sh and the respawn builder): measured on the QA VPS 11-09, while the install was gromzo
+ *  PENDING this config still enabled the plugin, the pending claude started it without MXD_AGENT (CONNECTION_CLOSED),
+ *  and the next, ready session came up without its Gromzo channel until the dashboard's soft /mcp reconnect ~9 min
+ *  later, racing channels.sh's 600 s never-started guard. On every other provider gromzo is an extra, as before. */
+export function mainIsolatedExtraPluginIds(
+  provider: string,
+  mainAgentId: string,
+  rawExtras: string,
+  opts: { sockPath?: string; primaryReady?: (id: string) => boolean } = {},
+): string[] {
+  const raw = rawExtras.split(/\s+/).map(s => s.trim()).filter(Boolean)
+  const ids = opts.sockPath === undefined ? filterMainGromzoIds(mainAgentId, raw) : filterMainGromzoIds(mainAgentId, raw, opts.sockPath)
+  if (provider !== 'gromzo') return ids
+  const ready = opts.primaryReady ?? ((id: string) => mainGromzoPrimaryReady(id))
+  return ids.filter((id) => id !== MAIN_GROMZO_PLUGIN_ID || ready(mainAgentId))
 }
 
 /**
@@ -1152,8 +1172,11 @@ function provisionIsolatedConfigDir(
       if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
         // Defensively drop a real .credentials.json that an older build may have
         // symlinked/copied here, so the env-var token is the only auth source.
+        // An own_team agent is the exception: its .credentials.json IS its own
+        // /login credential, written here by `claude auth login`, and deleting it
+        // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
         const stale = join(cfg, entry)
-        if (entry === '.credentials.json') {
+        if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
           try { rmSync(stale, { force: true }) } catch { /* absent */ }
         }
         continue
@@ -1721,10 +1744,15 @@ export function stampFableOverageConsentSharedRoots(): void {
   }
 }
 
-export function resolveAgentProvider(name: string): ChannelProviderType {
-  const perAgent = readAgentChannelProvider(name)
+/** The provider a sub-agent's own agent-config value resolves to: one of the five sub-agent providers, else the
+ *  install's provider (an unknown or unaccepted value, 'gromzo' included, falls back). Pure, so it is unit-tested. */
+export function pickAgentProvider(perAgent: string | null, installProvider: ChannelProviderType): ChannelProviderType {
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
-  return CHANNEL_PROVIDER
+  return installProvider
+}
+
+export function resolveAgentProvider(name: string): ChannelProviderType {
+  return pickAgentProvider(readAgentChannelProvider(name), CHANNEL_PROVIDER)
 }
 
 export function agentSessionName(name: string): string {
@@ -1835,7 +1863,9 @@ export function resolveProviderEnv(
     const keyRef = secretShellRef('openrouter-fleet-key') ?? '""'
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      // A 1M OpenRouter model needs the CLI told the real window (it caps unknown
+      // ids at 200k); context-guard.ts reads the same predicate, the two are a pair.
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ${isOpenRouterOneMillionModel(model) ? 'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && ' : ''}`,
     }
   }
   if (isOllama) {
@@ -2072,8 +2102,18 @@ export function getAgentRunningSince(name: string, session: string = agentSessio
 }
 
 
+/** GROMZONOPROVIDER1108 (Dani 73584, 73593): decided on the RESOLVED provider, never on what the agent wrote. A
+ *  sub-agent never takes a provider whose capabilities say sub-agents get none (subAgentDefault === 'none': gromzo,
+ *  the MAIN agent's Gromzo channel, which a sub-agent must never carry or speak through). An own value the resolver
+ *  does not accept ('gromzo', 'whatsapp', any string the agent wrote into its own config) falls back to the install's
+ *  provider and lands here as that provider, so it cannot open the door. Pure, so it is unit-tested. */
+export function subAgentMayUseProvider(resolved: ChannelProviderType): boolean {
+  return providerCapabilities(resolved).subAgentDefault !== 'none'
+}
+
 export function agentHasChannel(name: string): boolean {
   const agentProvider = resolveAgentProvider(name)
+  if (!subAgentMayUseProvider(agentProvider)) return false
   const dir = agentDir(name)
   const agentChannelDir = channelStateDir(agentProvider, dir)
   const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
@@ -2275,7 +2315,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
   const agentChannelDir = channelStateDir(agentProvider, dir)
-  const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
+  // GROMZONOPROVIDER1108 (Dani 73593): the launch path has its own guard, the same one agentHasChannel asks first, so a
+  // sub-agent never launches with a provider sub-agents may not use (gromzo), whatever a token reader would return.
+  const providerAllowed = subAgentMayUseProvider(agentProvider)
+  const token = providerAllowed ? readChannelToken(agentProvider, join(agentChannelDir, '.env')) : null
   // Backward compat: try legacy Telegram token if provider-aware lookup misses
   let hasChannel = !!token
   if (!token && agentProvider === 'telegram') {

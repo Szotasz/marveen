@@ -131,6 +131,17 @@ describe('one watcher round, with no panel open', () => {
     expect(line).toContain('pending_after_expiry')
     expect(pendingGromzoConsentSlug()).toBeNull()
   })
+  // Dani 72997 m2: mxd's own "expired" answer is logged with its own reason.
+  it('mxd answers expired: the expiry line says mxd_expired', async () => {
+    const clock = { t: 1_000_000 }
+    const { d } = deps({ agent_add: [{ ok: true, consent_id: ID, expires_in: 600 }] }, clock)
+    await enableGromzoAgent('zara', d)
+    ;(d as { call: Deps['call'] }).call = async () => ({ ok: true, state: 'expired' })
+    expect(await consentWatchTick(d)).toEqual({ ok: true, state: 'expired' })
+    const line = logged.find((l) => l.includes('the approval request expired'))
+    expect(line).toContain('mxd_expired')
+    expect(pendingGromzoConsentSlug()).toBeNull()
+  })
   it('a failed check keeps the consent and says so (no throw)', async () => {
     const clock = { t: 1_000_000 }
     const { d } = deps({ agent_add: [{ ok: true, consent_id: ID, expires_in: 600 }] }, clock)

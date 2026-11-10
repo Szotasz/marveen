@@ -237,6 +237,17 @@ export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000
   const m = model.toLowerCase()
   if (m.includes('[1m]')) return 1_000_000
+  // Fable 5.2 (FABLE52SELECTOR1109, measured 2026-11-09): the model has a 1M
+  // window (official models overview), but Claude Code 2.1.319, the fleet's
+  // CLI, does not know the id yet: `claude -p --model claude-fable-5-2` warns
+  // [claude-code:unrecognized_model] and reports contextWindow 200000 /
+  // maxOutputTokens 32000 in modelUsage, where claude-fable-5-1 on the same CLI
+  // reports 1000000 / 64000. The CLI therefore reports a 200k window for the
+  // session (inferred from that metadata; a 200k+ session was not run to watch
+  // a cap), and reading it against 1M would blind the proactive tiers (the
+  // 2026-07-26 failure mode above) if the CLI acts on what it reports. Drop
+  // this line once the CLI reports 1M for the id.
+  if (/fable-5-2\b/.test(m)) return 200_000
   if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
   // minimax-m3 is a special case, NOT a general "trust the vendor" precedent
   // (see deepseek-v4-pro below, which stays 200_000 on live measurement).
@@ -249,7 +260,21 @@ export function contextLimitForModel(model: string | null | undefined): number {
   // override without reverting this would under-restart against a window the
   // CLI no longer has.
   if (m.startsWith('minimax-')) return 1_000_000
+  // Same pairing for OpenRouter's DeepSeek V4 family: OpenRouter lists a
+  // 1,048,576-token context for deepseek/deepseek-v4* (models API, 2026-10-12),
+  // but Claude Code does not know these ids and caps the session at 200k
+  // (dipike on deepseek/deepseek-v4.1-flash: status bar 165k/200k).
+  // agent-process.ts exports CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for exactly
+  // the ids this predicate accepts. The direct-API deepseek-v4-pro (no
+  // "deepseek/" prefix) is untouched and stays 200k.
+  if (isOpenRouterOneMillionModel(m)) return 1_000_000
   return 200_000
+}
+
+/** OpenRouter model ids that run a 1M window once Claude Code is told so via
+ *  CLAUDE_CODE_MAX_CONTEXT_TOKENS (set in agent-process.ts resolveProviderEnv). */
+export function isOpenRouterOneMillionModel(model: string): boolean {
+  return /^deepseek\/deepseek-v4/.test(model.toLowerCase())
 }
 
 /**

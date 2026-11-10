@@ -68,7 +68,20 @@ MAX_ESCAPES=4                                  # ensure_modal_closed bound
 # makes claude exit immediately while the alert would falsely say "respawned".
 # %q-quoted at interpolation (like the model id), so a hostile value can't break
 # out of the respawn shell-string.
-RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-plugin:telegram@claude-plugins-official}"
+# GROMZONOPROVIDER1108 (EGM review): the default follows the install's CHANNEL_PROVIDER, mapped EXACTLY as
+# channels.sh's resolve_plugin_ids() does. It used to be telegram for every install, so a respawn on a Slack, Teams,
+# Discord or Gromzo install came back on the Telegram plugin.
+_smg_provider="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'\r ')"
+case "$_smg_provider" in
+  slack)    _smg_default="plugin:slack-channel@marveen-marketplace" ;;
+  whatsapp) _smg_default="plugin:whatsapp@marveen-marketplace" ;;
+  teams)    _smg_default="plugin:teams@marveen-marketplace" ;;
+  discord)  _smg_default="plugin:discord@claude-plugins-official" ;;
+  gromzo)   _smg_default="plugin:gromzo-channel@gromzo-local" ;;
+  *)        _smg_default="plugin:telegram@claude-plugins-official" ;;
+esac
+RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-$_smg_default}"
+unset _smg_provider _smg_default
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
 
@@ -370,7 +383,24 @@ run_guard() {
   local _extra _gz_main GROMZO_ENV="" EXTRA_Q="" _p
   _extra="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
   _gz_main="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-  if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
+  local CHAN_ARG=""
+  if [ "$RESPAWN_PLUGIN" = "plugin:gromzo-channel@gromzo-local" ]; then
+    # GROMZONOPROVIDER1108: the Gromzo plugin is the PRIMARY; as in channels.sh it is never also an extra, and it
+    # comes back only when the main agent can take it (main_gromzo_primary_ready); otherwise the respawn is a
+    # gromzo-pending session (no Gromzo channel), and channels.sh's poll restarts it once it is ready.
+    _extra="$(printf '%s\n' $_extra | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+    for _p in $_extra; do
+      [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
+    done
+    if . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null && main_gromzo_primary_ready "$_gz_main"; then
+      GROMZO_ENV="$(main_gromzo_env "$_gz_main" gromzo-channel@gromzo-local)"
+      CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"
+    elif [ -n "$EXTRA_Q" ]; then
+      CHAN_ARG="--channels${EXTRA_Q}"
+    fi
+    EXTRA_Q=""
+    _extra_done=1
+  elif . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" 2>/dev/null; then
     # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
     _extra="$(main_gromzo_filter_ids "$_gz_main" $_extra)"
     # shellcheck disable=SC2086
@@ -379,9 +409,13 @@ run_guard() {
     # No helper (a half-updated tree): never pass the gromzo id without its exports.
     _extra="$(printf '%s\n' $_extra | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
   fi
-  for _p in $_extra; do
-    [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
-  done
+  if [ "${_extra_done:-0}" != 1 ]; then
+    for _p in $_extra; do
+      [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
+    done
+    CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"
+  fi
+  unset _extra_done
   local SETTINGS_FLAG=""
   if . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh" 2>/dev/null; then
     # shellcheck disable=SC2086
@@ -458,7 +492,7 @@ run_guard() {
   local PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth"); } && "
   # MAINAUTH1107: the post-file right AFTER CFG_ENV (see channel-watchdog.sh).
   local PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}--channels $PLUGIN_Q${EXTRA_Q}"
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

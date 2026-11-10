@@ -44,6 +44,12 @@ _t() {
     hu:prompt_channel_select_macos) echo "  Válassz (1/2/3) [1]: " ;;
     en:prompt_channel_select_linux) echo "  Choose (1/2/3) [1]: " ;;
     hu:prompt_channel_select_linux) echo "  Válassz (1/2/3) [1]: " ;;
+    # GROMZONOPROVIDER1108: the 4-option prompts are NEW keys; the 3-option ones above stay as they are, since an
+    # already released Bridge's vendored installer fetches this file from main and still asks with them.
+    en:prompt_channel_select4) echo "  Choose (1/2/3/4) [1]: " ;;
+    hu:prompt_channel_select4) echo "  Válassz (1/2/3/4) [1]: " ;;
+    en:channel_option_gromzo) echo "Gromzo (the Marveen app on your phone; no bot, no Bun)" ;;
+    hu:channel_option_gromzo) echo "Gromzo (a Marveen alkalmazás a telefonodon; bot és Bun nélkül)" ;;
     en:prompt_telegram_token) echo "  Telegram bot token (or leave empty, set later): " ;;
     hu:prompt_telegram_token) echo "  Telegram bot token (vagy hagyd üresen, később is beállíthatod): " ;;
     en:prompt_slack_bot_token) echo "  Bot Token (xoxb-...): " ;;
@@ -466,6 +472,8 @@ _t() {
     en:npm.aborted) echo "Stopped: the global npm directory is not writable and no remedy was chosen." ;;
     hu:npm.aborted) echo "Megálltam: a globális npm könyvtár nem írható, és nem választottál megoldást." ;;
     en:macos.root_npm_refused) echo "Not running npm as root: npm or node is not a root-owned file in a root-owned folder, so a non-admin process could have replaced it. Install Claude Code yourself, after checking where npm comes from:" ;;
+    en:macos.root_npm_bun_failed) echo "Bun was not installed as root: either npm or node is not a root-owned file in a root-owned folder (then npm is not run as root at all), or npm's install failed (its last lines are below). Install Bun yourself, after checking where npm comes from:" ;;
+    hu:macos.root_npm_bun_failed) echo "A Bun nem települt rootként: vagy az npm vagy a node nem root-tulajdonú fájl root-tulajdonú mappában (ilyenkor az npm-et rootként el sem indítom), vagy az npm telepítése hibázott (az utolsó sorai lent). Telepítsd a Bunt magad, miután megnézted, honnan jön az npm:" ;;
     hu:macos.root_npm_refused) echo "Az npm-et nem futtatom rootként: az npm vagy a node nem root-tulajdonú fájl root-tulajdonú mappában, így egy nem admin folyamat is kicserélhette. Telepítsd a Claude Code-ot magad, miután megnézted, honnan jön az npm:" ;;
     # Error-translation layer (NPMPERM1/APTLOCK1/MACOSOLD1 -- the first three patterns)
     en:errxl.dpkg_lock) echo "TRANSLATED: the package manager (apt/dpkg) is locked by another process -- on a fresh system this is the automatic update. Wait a few minutes and re-run the installer." ;;

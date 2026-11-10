@@ -96,6 +96,14 @@ describe('contextLimitForModel / calibrateLimit', () => {
     // 985k-999k, opus-5 979k live) -- the blanket-200k guess restarted
     // working agents at ~21% real usage.
     expect(contextLimitForModel('claude-fable-5')).toBe(1_000_000)
+    // Fable 5.2 (FABLE52SELECTOR1109): Claude Code 2.1.319 does not know the id and reports a
+    // 200000 window for it (5.1 on the same CLI: 1000000), so the guard reads it at 200k;
+    // the explicit [1m] opt-in still wins, and 5.1 / a 5-20 lookalike keep the 1M family rule.
+    expect(contextLimitForModel('claude-fable-5-2')).toBe(200_000)
+    expect(contextLimitForModel('anthropic.claude-fable-5-2')).toBe(200_000)
+    expect(contextLimitForModel('claude-fable-5-2[1m]')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-fable-5-1')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-fable-5-20')).toBe(1_000_000)
     expect(contextLimitForModel('fable-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-mythos-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-opus-4-8')).toBe(1_000_000)
@@ -116,6 +124,10 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
     expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
     expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
+    // OpenRouter DeepSeek V4: 1M, paired with the CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    // export in agent-process.ts (status bar was 165k/200k without it).
+    expect(contextLimitForModel('deepseek/deepseek-v4.1-flash')).toBe(1_000_000)
+    expect(contextLimitForModel('qwen/qwen3-coder')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
   })
 

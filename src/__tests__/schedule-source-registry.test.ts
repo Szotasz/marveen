@@ -17,6 +17,7 @@
 //     and if the unregister fails, nothing is deleted (500, retryable);
 //   * PUT/toggle refuse to launder foreign files (409);
 //   * the one-time upgrade backfill registers what is on disk exactly once.
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, unlinkSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -86,6 +87,7 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
 })
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: vi.fn(async () => false),
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,
@@ -128,7 +130,8 @@ function call(method: string, path: string, body?: unknown): Promise<{ status: n
     },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  return tryHandleSchedules({ req, res, path: url.pathname, method, url } as RouteContext).then(handled => {
+  // OWNEREXEC1109: the owner drives these API calls (a targetSession on create is an owner action).
+  return tryHandleSchedules({ req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext).then(handled => {
     expect(handled).toBe(true)
     return out
   })
@@ -695,3 +698,6 @@ describe('GET /api/schedules names the registry verdict per task', () => {
     expect(by.get('list-planted')).toBe('unregistered')
   })
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['schedsrc-test-session'])

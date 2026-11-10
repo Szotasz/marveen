@@ -22,6 +22,7 @@ import {
   getDbFileSizeMb,
   getTokenPruneLag,
   getStuckKanbanCards,
+  getBoardSummary,
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -34,6 +35,7 @@ import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dis
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { MAX_LABEL_PALETTE_ENTRIES, resolveLabelColor } from '../../css-color.js'
 import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -781,6 +783,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // Card ed3c8caf (#569): per-agent board summary for the morning look.
+  // hours (default 24, max 168) sets how far back "closed" reaches.
+  if (path === '/api/kanban/summary' && method === 'GET') {
+    const hours = Number(url.searchParams.get('hours') ?? '24')
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 168) {
+      json(res, { error: 'invalid hours: must be a number in (0, 168]' }, 400)
+      return true
+    }
+    const since = Math.floor(Date.now() / 1000) - Math.round(hours * 3600)
+    json(res, getBoardSummary({ since, ownerName: OWNER_NAME, botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID }))
+    return true
+  }
+
   // KANBANSTUCKURES916: replaces the kanban-audit skill's inline "status ==
   // in_progress" detector (structurally near-always empty on this board) with
   // a real "started, then went idle" measurement across all non-done statuses.
@@ -1457,6 +1472,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const comment = automated === true
       ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
       : addKanbanComment(cardId, author, normalizedContent)
+    // Warn-only, same contract as memories / daily-log / messages. The sqlite
+    // trigger journals Cyrillic look-alikes on this table, but the caller of
+    // THIS route never heard about them, and the trigger does not see
+    // invisible marks at all.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ cardId, author }, `kanban comment saved with ${warning}`)
+      json(res, { ...comment, ...archivedNote(card), homoglyph_warning: warning })
+      return true
+    }
     json(res, { ...comment, ...archivedNote(card) })
     return true
   }

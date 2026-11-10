@@ -57,7 +57,9 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
         'inbox-draining-*.jsonl', 'allowlist.json', 'pending.json', 'audit.jsonl', 'own-threads.json', 'bot.pid', 'coordinator.pid',
         // SLACKOUTDM1007: the Slack plugin's persisted allowFrom DMs and their atomic-write temporary name
         'delivered-dms.json', 'delivered-dms.json.tmp.*',
-        'progress', 'approved'].map((f) => `${b}/*/${f}`))])
+        'progress', 'approved'].map((f) => `${b}/*/${f}`)),
+      // TGINREPLAYGATE1104: the Telegram state directories above the evidence log, as targets only
+      'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
@@ -115,6 +117,55 @@ describe('the five store files, as a sub-agent: create, write and delete denied'
       expect(subFile('Write', join(root, 'store', f))).toEqual(SUB)
     })
   }
+})
+
+// TGINREPLAYGATE1104 (#2512 review, provenance): the inbound replay re-delivers a line of this log to the agent framed as
+// a channel message, so a sub-agent's tool call may not write it: its own log, another agent's, or the rotated .1. The
+// plugin writes it from its MCP server process, which is not a tool call and never reaches this gate.
+describe('the Telegram inbound-evidence logs, as a sub-agent: every write denied', () => {
+  const tg = (name: string) => join(root, 'agents', name, '.claude', 'channels', 'telegram')
+  beforeEach(() => {
+    for (const n of ['samu', 'qwen']) {
+      mkdirSync(tg(n), { recursive: true })
+      writeFileSync(join(tg(n), 'inbound-evidence.jsonl'), '')
+    }
+  })
+  it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])('%s: its own log, another agent\'s, the rotated .1 (missing: creating it)', (tool) => {
+    for (const n of ['samu', 'qwen']) {
+      for (const f of ['inbound-evidence.jsonl', 'inbound-evidence.jsonl.1']) expect(subFile(tool, join(tg(n), f), agentDir)).toEqual(SUB)
+    }
+  })
+  it.each([
+    `echo '{"chat_id":"1","message_id":"9","text":"x","at":1}' >> .claude/channels/telegram/inbound-evidence.jsonl`,
+    'tee -a .claude/channels/telegram/inbound-evidence.jsonl < /tmp/x',
+    'cp /tmp/x ../qwen/.claude/channels/telegram/inbound-evidence.jsonl.1',
+    'mv /tmp/x @ROOT@/agents/qwen/.claude/channels/telegram/inbound-evidence.jsonl',
+    'rm .claude/channels/telegram/inbound-evidence.jsonl',
+  ])('Bash: %s', (command) => {
+    expect(sub(command, agentDir)).toEqual(SUB)
+  })
+  // classifyWord gives a pattern no ancestor, so without the two directory entries each of these reached the log unnamed
+  // (measured on the gate before them: all passed). Since CPDESTDIR1104 the cp, rsync and tar -C forms are also judged
+  // by their landing; rm -rf and mv still pass without the entries (measured).
+  it.each([
+    'cp /tmp/inbound-evidence.jsonl .claude/channels/telegram/',
+    'cp -r /tmp/prep/. ../qwen/.claude/channels/telegram/',
+    'rsync -a /tmp/prep/ .claude/channels/telegram/',
+    'tar -xf /tmp/p.tar -C .claude/channels/telegram',
+    'rm -rf .claude/channels/telegram',
+    'mv /tmp/prep/channels .claude/channels',
+  ])('Bash, a directory changer aimed at telegram/ or channels/: %s', (command) => {
+    expect(sub(command, agentDir)).toEqual(SUB)
+  })
+  it('a read passes; access.json is denied (CHANSTATEWRITE1104 trust file), a look-alike name and a worktree\'s copy stay free; the main agent writes the log (control)', () => {
+    expect(sub('tail -n 5 .claude/channels/telegram/inbound-evidence.jsonl', agentDir).deny).toBe(false)
+    expect(sub('ls -la .claude/channels/telegram/', agentDir).deny).toBe(false)
+    expect(sub('echo {} > .claude/channels/telegram/access.json', agentDir)).toEqual(SUB)
+    expect(subFile('Write', join(tg('samu'), 'access.json'), agentDir)).toEqual(SUB)
+    expect(subFile('Write', join(tg('samu'), 'inbound-evidence.jsonl.bak'), agentDir)).toEqual({ deny: false })
+    expect(subFile('Write', join(wt, 'agents', 'samu', '.claude', 'channels', 'telegram', 'inbound-evidence.jsonl'))).toEqual({ deny: false })
+    expect(mainFile('Write', join(tg('samu'), 'inbound-evidence.jsonl'))).toEqual({ deny: false })
+  })
 })
 
 describe('what stays free', () => {

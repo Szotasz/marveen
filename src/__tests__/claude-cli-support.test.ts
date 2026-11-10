@@ -46,9 +46,11 @@ describe('the table and the gate', () => {
     expect(isModelUnsupportedByCli('claude-fable-5-1', '2.1.278')).toBe(false)
     expect(isModelUnsupportedByCli('claude-opus-5-5', '2.1.278')).toBe(true)
     // on 2.1.280 only Sonnet 5.5 (measured good from 2.1.283) and Haiku 5.5 (from 2.1.284) are still unsupported
-    expect(claudeSupportForCli('2.1.280').unsupported.map((u) => u.id)).toEqual(['claude-sonnet-5-5', 'claude-haiku-5-5'])
-    expect(claudeSupportForCli('2.1.283').unsupported.map((u) => u.id)).toEqual(['claude-haiku-5-5'])
-    expect(claudeSupportForCli('2.1.284').unsupported).toEqual([])
+    // ... and Fable 5.2 (measured good from 2.1.319) is unsupported on all three
+    expect(claudeSupportForCli('2.1.280').unsupported.map((u) => u.id)).toEqual(['claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
+    expect(claudeSupportForCli('2.1.283').unsupported.map((u) => u.id)).toEqual(['claude-fable-5-2', 'claude-haiku-5-5'])
+    expect(claudeSupportForCli('2.1.284').unsupported.map((u) => u.id)).toEqual(['claude-fable-5-2'])
+    expect(claudeSupportForCli('2.1.319').unsupported).toEqual([])
   })
   it('Sonnet 5.5 needs 2.1.283, the lowest version measured to launch it (SONNET55SELECTOR928)', () => {
     expect(isModelUnsupportedByCli('claude-sonnet-5-5', '2.1.282')).toBe(true)
@@ -63,16 +65,26 @@ describe('the table and the gate', () => {
     expect(isModelUnsupportedByCli('claude-haiku-4-5-20251001', '2.1.110')).toBe(false)
     expect(CLAUDE_MODEL_MIN_CLI['claude-haiku-5-5'].minCli).toBe('2.1.284')
   })
+  it('Fable 5.2 needs 2.1.319, the lowest version measured to launch it; the customer pin 2.1.112 is refused (FABLE52SELECTOR1109)', () => {
+    // 2.1.169 measured 400 ("version 2.1.290 or newer is required"); 2.1.290-2.1.318 unmeasured, so unsupported
+    expect(isModelUnsupportedByCli('claude-fable-5-2', '2.1.112')).toBe(true)
+    expect(isModelUnsupportedByCli('claude-fable-5-2', '2.1.169')).toBe(true)
+    expect(isModelUnsupportedByCli('claude-fable-5-2', '2.1.318')).toBe(true)
+    expect(isModelUnsupportedByCli('claude-fable-5-2', '2.1.319')).toBe(false)
+    expect(CLAUDE_MODEL_MIN_CLI['claude-fable-5-2'].minCli).toBe('2.1.319')
+    // Fable 5.1 keeps its own, lower minimum
+    expect(isModelUnsupportedByCli('claude-fable-5-1', '2.1.278')).toBe(false)
+  })
   it('UNMEASURED version filters NOTHING (fail-open), and says it is unmeasured', () => {
     const s = claudeSupportForCli(null)
     expect(s.measured).toBe(false)
     expect(s.unsupported).toEqual([])
     expect(isModelUnsupportedByCli('claude-opus-5-5', null)).toBe(false)
   })
-  it('measured 2.1.110 lists exactly the four table entries with their minimums', () => {
+  it('measured 2.1.110 lists exactly the five table entries with their minimums', () => {
     const s = claudeSupportForCli('2.1.110')
     expect(s.measured).toBe(true)
-    expect(s.unsupported.map((u) => u.id).sort()).toEqual(['claude-fable-5-1', 'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])
+    expect(s.unsupported.map((u) => u.id).sort()).toEqual(['claude-fable-5-1', 'claude-fable-5-2', 'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])
   })
   it('every table entry names its measurement, so the next reader can re-measure', () => {
     for (const [id, req] of Object.entries(CLAUDE_MODEL_MIN_CLI)) {

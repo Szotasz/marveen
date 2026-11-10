@@ -9,7 +9,7 @@ import { markIfTestRun } from './test-run-marker.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { sendTeamsMessage, type TeamsCreds } from './teams-send.js'
 
-export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
+export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams' | 'gromzo'
 
 /**
  * What a successful send can tell about itself: the HTTP status of the answer
@@ -613,6 +613,58 @@ const teamsProvider: ChannelProvider = {
   splitMessage: (text) => splitMessage(text, TEAMS_MAX_MESSAGE_LENGTH),
 }
 
+// -- Gromzo (GROMZONOPROVIDER1108) --
+// The MAIN agent's channel is the Gromzo channel plugin (Node), talking to the local marveen-mxd: no bot token, no
+// chat id, no state dir, no Bun. This reverses agent-extra-channels.ts's "Gromzo is NOT a ChannelProviderType" for the
+// MAIN agent only: gromzo is never a sub-agent's or an extra channel's provider (it is not in CHANNEL_PLUGIN_IDS), and
+// a sub-agent with no channel of its own gets none on a gromzo install (providerCapabilities().subAgentDefault).
+// There is no direct dashboard send: an owner message goes to the main agent, which relays it over Gromzo (notify.ts).
+const gromzoProvider: ChannelProvider = {
+  type: 'gromzo',
+  pluginId: 'gromzo-channel@gromzo-local',
+  pluginPaneId: 'plugin:gromzo-channel:gromzo',
+  mcpServerName: 'plugin:gromzo-channel:gromzo',
+  envKeys: [],
+  stateDir: 'gromzo',
+  chatIdFormat: 'none (Gromzo: the owner is reached through the main agent and mxd)',
+
+  async sendMessage() {
+    throw new Error('gromzo: no direct dashboard send (an owner message goes to the main agent, which relays it over Gromzo)')
+  },
+
+  async sendPhoto() {
+    throw new Error('gromzo: no direct dashboard send (an owner message goes to the main agent, which relays it over Gromzo)')
+  },
+
+  async validateToken() {
+    return { ok: false, error: 'gromzo has no bot token (the main agent connects through marveen-mxd)' }
+  },
+
+  formatMessage: (text) => text,
+  splitMessage: (text) => [text],
+}
+
+/** What a provider needs and does, read by the sites that used to branch on the provider name (GROMZONOPROVIDER1108,
+ *  EGM design review): `needsBun` -- its plugin runs on Bun; `subAgentDefault` -- what a sub-agent with no channel of
+ *  its own falls back to on an install whose MAIN provider is this one; `directSend` -- the dashboard can send to the
+ *  owner itself (else an owner message goes to the main agent). */
+export interface ProviderCapabilities {
+  needsBun: boolean
+  subAgentDefault: 'main-provider' | 'none'
+  directSend: boolean
+}
+
+export function providerCapabilities(type: ChannelProviderType): ProviderCapabilities {
+  switch (type) {
+    case 'telegram': return { needsBun: true, subAgentDefault: 'main-provider', directSend: true }
+    case 'discord': return { needsBun: true, subAgentDefault: 'main-provider', directSend: true }
+    case 'teams': return { needsBun: true, subAgentDefault: 'main-provider', directSend: true }
+    case 'slack': return { needsBun: false, subAgentDefault: 'main-provider', directSend: true }
+    case 'googlechat': return { needsBun: false, subAgentDefault: 'main-provider', directSend: true }
+    case 'gromzo': return { needsBun: false, subAgentDefault: 'none', directSend: false }
+  }
+}
+
 // -- Slack App manifest --
 
 const SLACK_BOT_SCOPES = [
@@ -694,6 +746,7 @@ export function getSlackAppSetupInstructions(): string[] {
 // -- Token resolution --
 
 export function getChannelToken(provider: ChannelProviderType, env: Record<string, string>): string {
+  if (provider === 'gromzo') return ''
   if (provider === 'slack') return env['SLACK_BOT_TOKEN'] ?? ''
   if (provider === 'discord') return env['DISCORD_BOT_TOKEN'] ?? ''
   if (provider === 'googlechat') return env['GOOGLECHAT_PROJECT_ID'] ?? ''
@@ -702,6 +755,7 @@ export function getChannelToken(provider: ChannelProviderType, env: Record<strin
 }
 
 export function getChannelChatId(provider: ChannelProviderType, env: Record<string, string>): string {
+  if (provider === 'gromzo') return ''
   if (provider === 'slack') return env['SLACK_CHANNEL_ID'] ?? ''
   if (provider === 'discord') return env['DISCORD_CHANNEL_ID'] ?? ''
   if (provider === 'googlechat') return env['GOOGLECHAT_SPACE_ID'] ?? ''
@@ -717,6 +771,7 @@ const providers: Record<ChannelProviderType, ChannelProvider> = {
   discord: discordProvider,
   googlechat: googlechatProvider,
   teams: teamsProvider,
+  gromzo: gromzoProvider,
 }
 
 // Every provider send is routed through the test-run marker: getProvider has
@@ -741,13 +796,14 @@ const markedProviders: Record<ChannelProviderType, ChannelProvider> = {
   discord: withTestRunMarking(discordProvider),
   googlechat: withTestRunMarking(googlechatProvider),
   teams: withTestRunMarking(teamsProvider),
+  gromzo: withTestRunMarking(gromzoProvider),
 }
 
 export function getProvider(type: ChannelProviderType): ChannelProvider {
   return markedProviders[type]
 }
 
-const KNOWN_PROVIDER_TYPES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+const KNOWN_PROVIDER_TYPES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams', 'gromzo']
 
 export interface ProviderTypeResolution {
   /** The provider that will actually be used. */
@@ -851,6 +907,7 @@ export function channelStateDir(provider: ChannelProviderType, agentDir?: string
     : provider === 'discord' ? 'discord'
     : provider === 'googlechat' ? 'googlechat'
     : provider === 'teams' ? 'teams'
+    : provider === 'gromzo' ? 'gromzo'
     : 'telegram'
   if (agentDir) return join(agentDir, '.claude', 'channels', subdir)
   return resolveMainChannelStateDir({
@@ -862,6 +919,8 @@ export function channelStateDir(provider: ChannelProviderType, agentDir?: string
 }
 
 export function readChannelToken(provider: ChannelProviderType, envFilePath: string): string | null {
+  // gromzo has no token: its "configured" is the main agent's mxd enrolment (main-gromzo-launch).
+  if (provider === 'gromzo') return null
   if (!existsSync(envFilePath)) return null
   let content: string
   try {

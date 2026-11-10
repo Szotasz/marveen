@@ -1,3 +1,4 @@
+import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 import type { PendingTaskRetryRow } from '../db.js'
@@ -189,6 +190,7 @@ vi.mock('../web/worksource-queue.js', () => ({
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,
@@ -967,3 +969,6 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     expect(runsFor(CAUGHT_UP.name)).toEqual([[CAUGHT_UP.name, AGENT, 'fired_late']])
   })
 })
+
+// OWNEREXEC1109: these fixtures route by made-up session names; the runner types only into fleet sessions, so exactly these are listed (helpers/allow-target-sessions.ts).
+allowTargetSessionsForTest(['ws-session'])

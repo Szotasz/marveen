@@ -32,6 +32,15 @@ A stamp later than now + FUTURE_TOLERANCE_S is an error state (a clock jump, a
 restored snapshot, a stamp written in milliseconds): the activity window
 [last, now] would be empty by construction and MAX_SILENCE_S could never fire,
 so the round runs and the log says 'future-stamp'.
+A window in which no candidate transcript gained a single row after the stamp
+was not seen (in a live transcript the round that wrote the stamp keeps writing
+after it): the round runs and the log says 'no-fresh-transcript'. A row counts
+as fresh when its timestamp, cut to whole seconds, is later than the stamp; a
+row in the stamp's own second does not. A stamp ahead of the clock that wrote
+the rows (within FUTURE_TOLERANCE_S) therefore usually runs the round too: an
+extra round, never a missed one.
+A SKIP is printed only after its decision line was appended to LOG_PATH; if the
+append raises, the round runs.
 
 Paths are overridable by environment variables for the tests only.
 """
@@ -123,7 +132,7 @@ def user_text(content):
 def count_activity(since):
     """Main-session work after `since`: tool calls (the stamp itself excluded),
     [Inbox] nudges, and direct (non-scheduled, non-meta) user prompts."""
-    counts = {'tool_uses': 0, 'inbox': 0, 'prompts': 0, 'files': 0}
+    counts = {'tool_uses': 0, 'inbox': 0, 'prompts': 0, 'files': 0, 'fresh_rows': 0}
     paths = [p for d in transcript_dirs() for p in glob.glob(os.path.join(d, '*.jsonl'))]
     if not paths:
         raise FileNotFoundError('no main-agent transcript folder found')
@@ -141,6 +150,7 @@ def count_activity(since):
                 ts = row.get('timestamp')
                 if not ts or parse_ts(ts) <= since:
                     continue
+                counts['fresh_rows'] += 1
                 kind = row.get('type')
                 content = (row.get('message') or {}).get('content')
                 if kind == 'assistant':
@@ -182,6 +192,12 @@ def decide(now):
         return False, entry
     counts = count_activity(last)
     entry.update(counts)
+    if counts['fresh_rows'] == 0:
+        # Nothing was written after the stamp in any candidate folder, not even
+        # the round that wrote it: this folder is not the live session's, so
+        # the window was not seen. (Covers files == 0 and a touched old file.)
+        entry['reason'] = 'no-fresh-transcript'
+        return False, entry
     empty = counts['tool_uses'] == 0 and counts['inbox'] == 0 and counts['prompts'] == 0
     entry['reason'] = 'empty-window' if empty else 'activity'
     return empty, entry
@@ -203,8 +219,11 @@ def main():
     entry.update({'mode': mode, 'would_skip': would_skip, 'skipped': skipped})
     try:
         log(entry)
-    except Exception:
-        pass
+    except Exception as err:
+        # An unlogged SKIP would be a missed round nobody can account for. Say
+        # why on stderr (stdout stays empty: that is the run-the-round answer).
+        print(f'precheck: log append failed: {type(err).__name__}: {err}', file=sys.stderr)
+        return 0
     if skipped:
         print('SKIP')
     return 0

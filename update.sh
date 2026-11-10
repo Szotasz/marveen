@@ -270,6 +270,14 @@ else
 fi
 echo ""
 
+# DOCKERSEEDREFRESH1108: the seed-refresh rules live in scripts/lib/seed-refresh.sh (shared with the Docker image). Loaded
+# here, BEFORE the pull, so the run that pulls keeps executing the old update.sh with the old rules; the next run gets
+# the new pair. Without it (a torn checkout) only the seed refresh is skipped (run_seed_refresh says so).
+if [ -f "$INSTALL_DIR/scripts/lib/seed-refresh.sh" ]; then
+  # shellcheck source=scripts/lib/seed-refresh.sh
+  . "$INSTALL_DIR/scripts/lib/seed-refresh.sh" || true
+fi
+
 # Guard 1: derive the release branch from the current checkout and refuse
 # only a detached HEAD. The pull below targets origin/<CURRENT_BRANCH>, so
 # an install tracking any release branch (main, develop, ...) self-updates
@@ -1213,6 +1221,57 @@ scrub_rc_secrets() {
   return 0
 }
 
+# GROMZONOPROVIDER1108: the ONE automatic provider migration: a Bridge (Gromzo) install that was written
+# as telegram with no bot token, and whose mxd is linked, becomes CHANNEL_PROVIDER=gromzo (PREV kept, reversible); any
+# other shape is untouched. The script says what it did in one line; it never fails the update.
+#
+# GROMZOUNITGUARD1109 (the #2646 review's remainder): on gromzo, channels.sh's planned "gromzo ready" exit ends 0
+# and relies on the supervisor restarting it. A Linux channels unit whose EFFECTIVE Restart= is not "always" would leave
+# the main session down after that exit. Every installer writes "always" (Linux since 2026-08-04, Bridge vendored copy,
+# Docker autorestart=true, macOS KeepAlive true), and migrate_channels_restart above rewrites an older on-failure unit in
+# this same run. What is left is the environment: a unit file that run could not write (it only warns), a hand-made
+# drop-in override. In those cases this install is NOT moved to gromzo, and one line says why; the next update moves it
+# once the unit says "always". Any other install (no Linux channels unit: macOS, Docker) is unchanged.
+gromzo_channels_unit_restart() {   # prints "<unit> <policy>" for the first Linux channels unit whose Restart= is not always
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 0
+  [ -d "$units_dir" ] || return 0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    # systemd's own answer first: it folds in every drop-in and a reload; the files only when it cannot answer
+    _gz_pol="$(systemctl --user show -p Restart --value "$(basename "$chan_unit")" 2>/dev/null | tr -d '[:space:]' || true)"
+    # Fail-closed: when neither can tell, the answer is "not always", with the reason named
+    if [ -z "$_gz_pol" ]; then
+      if [ ! -r "$chan_unit" ]; then
+        _gz_pol="unreadable"
+      else
+        _gz_pol="$(cat "$chan_unit" "$chan_unit.d/"*.conf 2>/dev/null | sed -n 's/^Restart=[[:space:]]*//p' | tail -1 | tr -d '[:space:]' || true)"
+        [ -n "$_gz_pol" ] || _gz_pol="no-default"   # no Restart= line: systemd's default is "no"
+      fi
+    fi
+    if [ "$_gz_pol" != "always" ]; then
+      echo "$(basename "$chan_unit") Restart=$_gz_pol"
+      return 0
+    fi
+  done
+  return 0
+}
+
+migrate_gromzo_provider() {
+  [ -f "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  _gz_bad_unit="$(gromzo_channels_unit_restart "$@")"
+  if [ -n "$_gz_bad_unit" ]; then
+    # only said where the migration WOULD run: any other install has nothing to be told
+    if node "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" "$INSTALL_DIR" --dry-run 2>/dev/null | grep -q 'would-migrate'; then
+      echo -e "  Gromzo-migracio kihagyva: a csatorna-unit ujrainditasi szabalya nem always (${_gz_bad_unit}); a \"gromzo ready\" 0-s kilepese utan a csatorna leallva maradna. Ha a unit Restart=always, a kovetkezo frissites atallitja."
+    fi
+    return 0
+  fi
+  node "$INSTALL_DIR/scripts/gromzo-provider-migrate.mjs" "$INSTALL_DIR" 2>/dev/null || true
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
@@ -1223,6 +1282,7 @@ run_unit_maintenance() {
   strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
   scrub_rc_secrets
+  migrate_gromzo_provider
   return 0
 }
 run_unit_maintenance
@@ -1259,60 +1319,6 @@ run_unit_maintenance
 SEED_REFRESH_UPDATED=0
 SEED_REFRESH_KEPT=0
 
-# Render a template stream the same way the seeder does. Keep in sync with the
-# sed blocks in the seeding loops below and in install-linux.sh.
-render_seed_template() {
-  # {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
-  # (substituteTemplatePlaceholders) -- without it here, any shipped task using
-  # that form (ledger-live-drain does) hash-mismatches every rendered historical
-  # version and is permanently classified "touched", so it never refreshes.
-  sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
-      -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
-      -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
-      -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
-      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
-      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
-}
-
-# A top-level task-config.json on stdin, as the dashboard seeder writes it
-# (agent-scaffold.ts copyTaskConfigWithAgentRewrite): parsed, a string "agent"
-# set to MAIN_AGENT_ID, re-serialised as 2-space JSON plus a newline, and NO
-# placeholder substitution. Unparseable input comes out as is (the seeder's
-# byte-copy fallback). #2285: comparing against the placeholder render instead
-# kept the shipped literal "agent": "marveen", so on any other MAIN_AGENT_ID the
-# untouched copy never matched and a config fix never arrived.
-render_seeded_task_config() {
-  MAIN_AGENT_ID="${MAIN_AGENT_ID:-}" node -e '
-    let raw = ""
-    process.stdin.setEncoding("utf8")
-    process.stdin.on("data", (d) => { raw += d })
-    process.stdin.on("end", () => {
-      let cfg
-      try { cfg = JSON.parse(raw) } catch { process.stdout.write(raw); return }
-      if (cfg && typeof cfg === "object" && typeof cfg.agent === "string") cfg.agent = process.env.MAIN_AGENT_ID
-      process.stdout.write(JSON.stringify(cfg, null, 2) + "\n")
-    })'
-}
-
-# The bytes a seeder writes for the shipped file on stdin. $1 = mode, $2 = its
-# path (repo-relative or the source file; only the file name is read).
-#   verbatim  as is (seed-skills)
-#   template  the identity placeholders (the shell seeders: seed-scheduled-tasks)
-#   seeded    what ensureDefaultScheduledTasks writes for the top-level
-#             scheduled-tasks: task-config.json via render_seeded_task_config,
-#             any other file with the placeholders
-render_seed_stream() {
-  case "$1" in
-    template) render_seed_template ;;
-    seeded)
-      case "$2" in
-        */task-config.json|task-config.json) render_seeded_task_config ;;
-        *) render_seed_template ;;
-      esac ;;
-    *) cat ;;
-  esac
-}
-
 # True (0) iff $1 (an installed file) is byte-identical to ANY historical version
 # of $2 (a repo-relative path), rendered by mode $3 (render_seed_stream).
 seed_copy_is_untouched() {
@@ -1329,129 +1335,17 @@ seed_copy_is_untouched() {
   return 1
 }
 
-# Render one shipped file the way the seeder would write it ($1 = source, $2 = mode).
-render_seed_file() {
-  render_seed_stream "$2" "$1" <"$1"
-}
-
-# Scheduled-task registry: take the registry verdict of the task dir being
-# refreshed, ONCE per dir, right before its first file is rewritten or added
-# (sched_pre_ok: "" = not asked yet, 1 = trusted, 0 = not trusted, u = unknown /
-# no CLI). A no-op outside a scheduled-task dir. Reads/sets the per-dir state
-# refresh_untouched_seeds keeps (sched_task, sched_pre_ok, name).
-sched_pre_verify_once() {
-  if [ "${sched_task:-0}" = "1" ] && [ -z "${sched_pre_ok:-}" ]; then
-    sched_pre_rc=0
-    sched_task_verified_ok "$name" || sched_pre_rc=$?
-    case "$sched_pre_rc" in 0) sched_pre_ok=1 ;; 1) sched_pre_ok=0 ;; *) sched_pre_ok=u ;; esac
-  fi
-}
-
-# Refresh ONE installed copy of a shipped file if it is provably untouched.
-# $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
-refresh_one_seed_file() {
-  f="$1"; installed="$2"; rel="$3"; mode="$4"
-  # Already identical to what we would write -> not an update. Without this
-  # the run is not idempotent: it would rewrite the same bytes and report a
-  # refresh on every single update, which is exactly the kind of constant
-  # signal that stops being read.
-  want="$(render_seed_file "$f" "$mode" | shasum -a 256 | awk '{print $1}')"
-  have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
-  [ "$want" = "$have" ] && return 0
-  if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
-    sched_pre_verify_once
-    if [ "$mode" = "verbatim" ]; then
-      cp "$f" "$installed"
-    else
-      render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-    fi
-    SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
-    sched_dir_refreshed=1
-  else
-    SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
-  fi
-  return 0
-}
-
-# Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
-# root, $3 = verbatim|template, $4 = which subdirs ship: "references" (a task's
-# references/ only, the default) or "all" (every subdir: a skill's scripts/,
-# references/, ...; SEEDSKILLSUB1018).
-refresh_untouched_seeds() {
-  src_rel="$1"; target_root="$2"; mode="${3:-verbatim}"; subdirs="${4:-references}"
-  [ -d "$INSTALL_DIR/$src_rel" ] || return 0
-  [ -d "$target_root" ] || return 0
-  for d in "$INSTALL_DIR/$src_rel"/*/; do
-    [ -d "$d" ] || continue
-    name="$(basename "$d")"
-    [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
-    # Scheduled-task registry: the registry hash covers the WHOLE task dir,
-    # references/ included, so every write below (a top-level file, a
-    # references/ file refreshed, a missing references/ file added) sits inside
-    # the same bracket: verify once before the first write
-    # (sched_pre_verify_once), re-register once after the last one.
-    sched_task=0
-    case "$target_root" in */scheduled-tasks) sched_task=1 ;; esac
-    sched_pre_ok=""
-    sched_dir_refreshed=0
-    for f in "$d"*; do
-      [ -f "$f" ] || continue
-      base="$(basename "$f")"
-      installed="$target_root/$name/$base"
-      [ -f "$installed" ] || continue           # never add files to an existing dir
-      refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$base" "$mode"
-    done
-    # SEEDREFDIR1018: the references/ subdir a SKILL.md points at. An existing
-    # copy follows the same untouched-only rule. A MISSING one is the single
-    # exception to "never add files": it is added only when the installed
-    # SKILL.md is now byte-identical to the shipped one -- that copy runs our
-    # text, and our text points at the file. A locally edited SKILL.md is the
-    # operator's, so its directory gets nothing added.
-    skill_current=0
-    if [ -f "${d}SKILL.md" ] && [ -f "$target_root/$name/SKILL.md" ]; then
-      want="$(render_seed_file "${d}SKILL.md" "$mode" | shasum -a 256 | awk '{print $1}')"
-      have="$(shasum -a 256 <"$target_root/$name/SKILL.md" | awk '{print $1}')"
-      [ "$want" = "$have" ] && skill_current=1
-    fi
-    # Subdir files: the TRACKED ones only, the same set the seed loops copy
-    # (an untracked or ignored file can be a secret; SEEDSKILLSUB1018). Read
-    # into a variable first: the loop body must update the counters in THIS
-    # shell, not in a pipeline subshell.
-    tracked="$(git -C "$d" ls-files 2>/dev/null)"
-    while IFS= read -r rel; do
-      case "$rel" in */*) ;; *) continue ;; esac
-      [ "$subdirs" = "all" ] || case "$rel" in references/*) ;; *) continue ;; esac
-      f="$d$rel"
-      [ -f "$f" ] || continue
-      installed="$target_root/$name/$rel"
-      if [ -f "$installed" ]; then
-        refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$rel" "$mode"
-      elif [ "$skill_current" = "1" ]; then
-        sched_pre_verify_once
-        mkdir -p "$(dirname "$installed")"
-        if [ "$mode" = "verbatim" ]; then
-          cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
-        else
-          render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-        fi
-        SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
-        sched_dir_refreshed=1
-      fi
-    done <<EOF_TRACKED
-$tracked
-EOF_TRACKED
-    # Scheduled-task registry: a refreshed scheduled task changed on disk, so its registry
-    # hash must be renewed or the runner refuses it -- but ONLY when the task is
-    # provably trusted, and right now (not at the end of the whole run), so the
-    # runner's ticks in between do not flag it as "NOT firing".
-    if [ "$sched_task" = "1" ] && [ "$sched_dir_refreshed" = "1" ]; then
-      register_refreshed_schedule "$name" "$sched_pre_ok" "$target_root/$name" "$d" "$mode"
-    fi
-  done
-  return 0
+# The shipped files under a seed dir $1, relative to it: what git tracks (an untracked or ignored file can be a secret;
+# SEEDSKILLSUB1018). A seam of scripts/lib/seed-refresh.sh; the Docker image defines its own.
+seed_tracked_files() {
+  git -C "$1" ls-files 2>/dev/null
 }
 
 run_seed_refresh() {
+  if ! command -v refresh_untouched_seeds >/dev/null 2>&1; then
+    echo "  seed refresh skipped: $INSTALL_DIR/scripts/lib/seed-refresh.sh is missing"
+    return 0
+  fi
   # Self-initialising counters: the function must not depend on a caller having
   # set them, or it dies under `set -u` the moment it is called from anywhere
   # else (a test harness found exactly that).
@@ -1465,18 +1359,7 @@ run_seed_refresh() {
     OWNER_NAME="${OWNER_NAME:-$(sed -n 's/^OWNER_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
     WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
   fi
-  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim" "all"
-  if [ -n "${MAIN_AGENT_ID:-}" ]; then
-    refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
-    # SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir (dream-engine,
-    # memoria-heartbeat, reggeli-napindito, ledger-live-drain) was seeded by
-    # ensureDefaultScheduledTasks but never refreshed -- a one-shot seed, so
-    # every shipped fix reached new installs only. Measured on the reference
-    # host: 5/5 live seeded copies had drifted. Same untouched-only rule.
-    # "seeded", not "template": that seeder rewrites the config's agent field and
-    # substitutes nothing in it (#2285, render_seeded_task_config).
-    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "seeded"
-  fi
+  seed_refresh_groups
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
   fi
@@ -1528,67 +1411,14 @@ register_seeded_schedules() {
 # operator review.
 SCHED_REVIEW_NAMES=""
 
-# True (0) iff every entry of the installed task dir $1 is shipped content:
-#   - a regular top-level file (no symlink) byte-identical to the current
-#     shipped version of the same file in the seed source dir $2 (rendered when
-#     $3 = "template"), or
-#   - the references/ subdir (SEEDREFDIR1018) or a file under it: the subdir
-#     a real directory (no symlink) that the seed has too, and each file in it
-#     byte-identical to a file git TRACKS at the same path in the seed (the same
-#     set the seed loops copy).
-# Any other entry fails: an extra file with no shipped counterpart (e.g. a
-# planted preCheck script), a symlink, any other subdir.
-sched_task_all_shipped() {
-  _sa_dir="${1%/}"; _sa_src="${2%/}"; _sa_mode="${3:-verbatim}"
-  [ -d "$_sa_dir" ] || return 1
-  _sa_list="$(find "$_sa_dir" -mindepth 1 2>/dev/null)" || return 1
-  [ -n "$_sa_list" ] || return 1
-  _sa_tracked="$(git -C "$_sa_src" ls-files 2>/dev/null)"
-  while IFS= read -r _sa_entry; do
-    [ -n "$_sa_entry" ] || continue
-    _sa_rel="${_sa_entry#"$_sa_dir"/}"
-    [ ! -L "$_sa_entry" ] || return 1
-    _sa_seed="$_sa_src/$_sa_rel"
-    case "$_sa_rel" in
-      references)
-        [ -d "$_sa_entry" ] && [ ! -L "$_sa_seed" ] && [ -d "$_sa_seed" ] || return 1
-        continue ;;
-      references/*)
-        [ -f "$_sa_entry" ] || return 1
-        printf '%s\n' "$_sa_tracked" | grep -qxF -- "$_sa_rel" || return 1 ;;
-      */*) return 1 ;;
-      *) [ -f "$_sa_entry" ] || return 1 ;;
-    esac
-    [ ! -L "$_sa_seed" ] && [ -f "$_sa_seed" ] || return 1
-    _sa_want="$(render_seed_file "$_sa_seed" "$_sa_mode" | shasum -a 256 | awk '{print $1}')"
-    _sa_have="$(shasum -a 256 <"$_sa_entry" 2>/dev/null | awk '{print $1}')"
-    [ -n "$_sa_have" ] && [ "$_sa_want" = "$_sa_have" ] || return 1
-  done <<EOF_SA
-$_sa_list
-EOF_SA
-  return 0
-}
-
-# $1 task name, $2 pre-refresh verdict (1 = trusted, 0 = not trusted,
-# u = unknown), $3 installed dir, $4 seed source dir, $5 verbatim|template.
-register_refreshed_schedule() {
-  _rr_name="$1"; _rr_pre="$2"; _rr_dir="$3"; _rr_src="$4"; _rr_mode="${5:-verbatim}"
-  if [ "$_rr_pre" = "1" ] || sched_task_all_shipped "$_rr_dir" "$_rr_src" "$_rr_mode"; then
-    SCHED_REGISTER_NAMES="$_rr_name"
-    register_seeded_schedules
-    return 0
-  fi
-  SCHED_REVIEW_NAMES="${SCHED_REVIEW_NAMES:-} $_rr_name"
-  if [ "$_rr_pre" = "0" ]; then
-    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a frissites elott sem volt megbizhato, es a konyvtaraban nem csak szallitott tartalom van. A runner addig kihagyja. Atnezes utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
-  else
-    # No usable CLI: on the first update to a guard build (old dist) the
-    # dashboard's one-time backfill will register AND fire this task as it is
-    # on disk, so "the runner skips it" would be false here.
-    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a registry-ellenorzes nem futott (nincs vagy nem mukodik: $INSTALL_DIR/dist/web/schedule-registry-cli.js verify), a frissites elotti allapota ISMERETLEN, es a konyvtaraban nem csak szallitott tartalom van. Ha ez az elso frissites a registry-t tartalmazo buildre, a dashboard egyszeri backfillje az elso indulaskor regisztralja es a runner futtatni fogja: nezd at MOST ($_rr_dir). Kulonben build utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
-  fi
-  return 0
-}
+# PERSONAESC1107 seed A: the seeds' language, read only (scripts/lib/seed-lang.sh -> persona-template.sh agent_text_lang;
+# update.sh never decides it). Every seeding and refresh below reads i18n/en/<rel> for <rel> on en when it exists.
+# Without the helper (a tree from before seed A): Hungarian, as before.
+SEED_LANG=hu
+if [ -f "$INSTALL_DIR/scripts/lib/seed-lang.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/seed-lang.sh"
+  SEED_LANG="$(seed_lang "$INSTALL_DIR")"
+fi
 
 run_seed_refresh
 
@@ -1830,7 +1660,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     mkdir -p "$target"
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
+      seed_src="$f"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$(basename "$f")" "${SEED_LANG:-hu}")"
+      cp "$seed_src" "$target/$(basename "$f")"
     done
     # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
     # verbatim and with their mode bits; its SKILL.md points into them.
@@ -1841,7 +1673,9 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
       case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
       mkdir -p "$target/$(dirname "$rel")"
-      cp -p "$skill_dir$rel" "$target/$rel"
+      seed_src="$skill_dir$rel"
+      command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-skills/$skill_name/$rel" "${SEED_LANG:-hu}")"
+      cp -p "$seed_src" "$target/$rel"
     done
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
@@ -1865,7 +1699,12 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     # in the task dir), so it is preserved across a force-reseed. Tasks the user
     # authored themselves have no seed-scheduled-tasks/ source -> never visited.
     SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
+    # SEEDRENDERLITERAL1108: the loop renders through the lib update.sh sourced at the top; a torn checkout without it
+    # skips the new-task seeding with one line (the next update seeds them).
+    _seed_render_ok=1
+    command -v render_seed_template >/dev/null 2>&1 || { _seed_render_ok=0; echo "  new seed tasks skipped: $INSTALL_DIR/scripts/lib/seed-refresh.sh is missing"; }
     for tpl in "$SEED_SCHED_DIR"/*/; do
+      [ "${_seed_render_ok:-1}" = 1 ] || break
       [ -d "$tpl" ] || continue
       task_name=$(basename "$tpl")
       target="$SCHED_TARGET_DIR/$task_name"
@@ -1898,12 +1737,10 @@ if [ -d "$SEED_SCHED_DIR" ]; then
           # literal placeholder in its URLs. Same placeholder set on both paths,
           # or a template silently means different things depending on which
           # script created the copy.
-          sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-              -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-              -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-              -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-              -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-              "$f" > "$target/$sub$(basename "$f")"
+          seed_src="$f"
+          command -v seed_src_for >/dev/null 2>&1 && seed_src="$(seed_src_for "$INSTALL_DIR" "seed-scheduled-tasks/$task_name/$sub$(basename "$f")" "${SEED_LANG:-hu}")"
+          # SEEDRENDERLITERAL1108: the shared render (literal values; the bytes the seed refresh compares against)
+          render_seed_template < "$seed_src" > "$target/$sub$(basename "$f")"
         done
       done
       SCHED_REGISTER_NAMES="${SCHED_REGISTER_NAMES:-} $task_name"
@@ -1947,15 +1784,13 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
     [ -f "$CLAUDE_MD" ] && cp "$CLAUDE_MD" "$CLAUDE_MD.backup-$(date +%Y%m%d-%H%M%S)"
     REGEN_CHAT_ID=""
     [ -f "$INSTALL_DIR/.env" ] && REGEN_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-    sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-        -e "s/{{CHAT_ID}}/$REGEN_CHAT_ID/g" \
-        -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-        -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-        -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-        -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-        "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template)" > "$CLAUDE_MD"
-    echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
+    # PERSONARENDERLITERAL1108: the shared literal render, through a temp file: a failed render keeps CLAUDE.md as it was.
+    if RENDER_CHAT_ID="$REGEN_CHAT_ID" RENDER_TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")" \
+      render_persona_file "$(. "$INSTALL_DIR/scripts/lib/persona-template.sh"; persona_template "$INSTALL_DIR" CLAUDE.md.template)" "$CLAUDE_MD"; then
+      echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
+    else
+      echo -e "  ${RED}HIBA:${NC} a CLAUDE.md nem renderelhető a sablonból; a régi fájl változatlan maradt."
+    fi
   elif [ -f "$CLAUDE_MD" ]; then
     KNOWN_IDS=" ${MAIN_AGENT_ID} ${BOT_NAME} "
     if [ -d "$INSTALL_DIR/agents" ]; then

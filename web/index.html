@@ -271,6 +271,15 @@
       </span>
     </div>
 
+    <div id="setupResumeBanner" class="auth-setup-banner" hidden>
+      <span data-i18n="onboarding.resume.text">The setup is not finished yet.</span>
+      <span id="setupResumeMsg" role="status" hidden></span>
+      <span class="auth-setup-banner-actions">
+        <button class="btn-secondary btn-compact" id="setupResumeGoBtn" data-i18n="onboarding.resume.action">Open the setup wizard</button>
+        <button class="auth-setup-banner-close" id="setupResumeDismiss" aria-label="Dismiss">&times;</button>
+      </span>
+    </div>
+
     <div id="authSetupBanner" class="auth-setup-banner" hidden>
       <span data-i18n="auth.banner.text">Add a username+password login for browser access.</span>
       <span class="auth-setup-banner-actions">
@@ -383,6 +392,17 @@
           <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
         </label>
       </div>
+
+      <!-- Card ed3c8caf (#569): per-agent summary: closed in the last 24 hours,
+           stuck now, and what waits on the owner. Collapsed by default; the open
+           state is remembered per browser. Hidden while there is nothing. -->
+      <details class="kanban-summary" id="kanbanSummary" hidden>
+        <summary class="kanban-summary-head">
+          <span class="kanban-ongoing-title" data-i18n="kanban.summary.title">Összefoglaló</span>
+          <span class="kanban-summary-totals" id="kanbanSummaryTotals"></span>
+        </summary>
+        <div class="kanban-summary-body" id="kanbanSummaryBody"></div>
+      </details>
 
       <!-- Ongoing tasks ("Folyamatos" label): a slim strip above the board,
            not a column. Hidden when there are none. -->
@@ -757,6 +777,7 @@
       <!-- Memory list (for hot/warm/cold/shared) -->
       <div class="mem-tier-view" id="memTierView">
         <div class="mem-search-label" id="memSearchLabel" hidden></div>
+        <div class="mem-stale-banner" id="memStaleBanner" hidden></div>
         <div class="mem-list" id="memList"></div>
         <div class="mem-empty" id="memEmpty" hidden>
           <p data-i18n="memories.empty">Nincs emlék ebben a kategóriában</p>
@@ -2475,7 +2496,8 @@
             <select id="agentModel">
               <option value="inherit" data-i18n="agents.model.inherit">Öröklött (alapértelmezett)</option>
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1 (legújabb Fable)</option>
+                <option value="claude-fable-5-2" data-i18n="agents.model.fable52">Fable 5.2 (legújabb Fable)</option>
+                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1</option>
                 <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5</option>
                 <option value="claude-opus-5-5[1m]" data-i18n="agents.model.opus55_1m">Opus 5.5 (1M kontextus, legújabb Opus)</option>
                 <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5</option>
@@ -2659,7 +2681,8 @@
             <label for="editAgentModel" data-i18n="agents.detail.model_label">Modell</label>
             <select id="editAgentModel">
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1 (legújabb Fable)</option>
+                <option value="claude-fable-5-2" data-i18n="agents.model.fable52">Fable 5.2 (legújabb Fable)</option>
+                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1</option>
                 <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5</option>
                 <option value="claude-opus-5-5[1m]" data-i18n="agents.model.opus55_1m">Opus 5.5 (1M kontextus, legújabb Opus)</option>
                 <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5</option>

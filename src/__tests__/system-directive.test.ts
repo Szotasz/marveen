@@ -26,7 +26,7 @@ const sendPromptToSession = vi.fn(
 )
 
 vi.mock('../db.js', () => ({ createAgentMessage, markMessageDelivered, markMessageFailed }))
-vi.mock('../web/agent-process.js', () => ({ sendPromptToSession }))
+vi.mock('../web/agent-process.js', () => ({ withTmuxBatch: (fn: () => unknown) => fn(),  sendPromptToSession }))
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))

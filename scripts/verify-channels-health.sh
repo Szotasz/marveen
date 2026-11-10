@@ -67,6 +67,23 @@ fi
 
 echo "verify-channels-health: session=$SESSION"
 
+# GROMZONOPROVIDER1108: a gromzo install has no Bun bridge, no bot.pid and no .bun/bin need: its primary channel is
+# the Gromzo plugin (Node) under the pane. Checked that way, then the usual verdict line and exit.
+_vch_provider="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'\r ')"
+if [ "$_vch_provider" = "gromzo" ]; then
+  if [ -n "$PANE_PID" ] && pgrep -P "$PANE_PID" -f '/gromzo-channel/' >/dev/null 2>&1; then
+    note "(gromzo) OK: the Gromzo plugin runs under pane pid=$PANE_PID"
+  elif [ -f "$INSTALL_DIR/scripts/main-gromzo-launch.sh" ] && . "$INSTALL_DIR/scripts/main-gromzo-launch.sh" \
+       && ! main_gromzo_primary_ready "$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"; then
+    note "(gromzo) PENDING: mxd's agent socket is not usable or the main agent is not enrolled yet (the session runs without its Gromzo channel)"
+  else
+    note "(gromzo) FAIL: no Gromzo plugin under pane pid=${PANE_PID:-?}"; fail=1
+  fi
+  if [ "$fail" -eq 0 ]; then echo "verify-channels-health: HEALTHY"; else echo "verify-channels-health: UNHEALTHY"; fi
+  exit "$fail"
+fi
+unset _vch_provider
+
 # (a) bun bridge descendant under the ${MAIN_AGENT_ID}-channels tmux pane
 # Walk the pane shell's own process-tree (up to 4 levels deep) for a
 # "bun server.ts" process.  Every PID checked is a descendant of the

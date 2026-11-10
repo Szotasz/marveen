@@ -41,6 +41,7 @@ vi.mock('../web/context-guard-store.js', async () => {
   return { readContextGuardConfig: () => normalizeContextGuardConfig({ idleFlushEnabled: true, idleMinutes: 20 }) }
 })
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   agentRunState: () => 'running',
   agentSessionName: (n: string) => `agent-${n}`,
   restartAgentProcess: async () => ({ ok: true }),

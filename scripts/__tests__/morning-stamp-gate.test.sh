@@ -93,7 +93,7 @@ run_case() {
   local dir="$TMP/inst.$RANDOM"
   mkdir -p "$dir/scripts/lib" "$dir/store" "$dir/bin"
   cp "$REPO/scripts/morning-briefing.sh" "$dir/scripts/"
-  cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$dir/scripts/lib/"
+  cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$REPO/scripts/lib/load-env.sh" "$dir/scripts/lib/"
   printf 'ALLOWED_CHAT_ID=%s\n' "$chat_id" > "$dir/.env"
   # MORNTIMER2197: the script runs on an API key only.
   printf 'ANTHROPIC_API_KEY=sk-ant-test\n' >> "$dir/.env"
@@ -182,7 +182,7 @@ run_case_argv() {
   local dir="$TMP/inst.$RANDOM"
   mkdir -p "$dir/scripts/lib" "$dir/store" "$dir/bin"
   cp "$REPO/scripts/morning-briefing.sh" "$dir/scripts/"
-  cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$dir/scripts/lib/"
+  cp "$REPO/scripts/lib/owner-chat.sh" "$REPO/scripts/lib/send-telegram.sh" "$REPO/scripts/lib/load-env.sh" "$dir/scripts/lib/"
   printf 'ALLOWED_CHAT_ID=%s\nANTHROPIC_API_KEY=sk-ant-test\n' "$chat_id" > "$dir/.env"
   if [ "$with_access" = "1" ]; then
     mkdir -p "$dir/.claude/channels/telegram"

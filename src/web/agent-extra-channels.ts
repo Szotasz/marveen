@@ -136,12 +136,13 @@ export function buildExtraChannelLaunch(
   const providers: ChannelProviderType[] = []
   const skipped: ChannelProviderType[] = []
   for (const p of extras) {
-    if (p === primary || providers.includes(p)) continue
+    // gromzo is never an extra channel's provider: the Gromzo plugin is added below on its own (GROMZONOPROVIDER1108).
+    if (p === 'gromzo' || p === primary || providers.includes(p)) continue
     const dir = channelStateDir(p, agentDirPath)
     if (hasToken(p, join(dir, '.env'))) providers.push(p)
     else skipped.push(p)
   }
-  const pluginIds: string[] = providers.map(p => CHANNEL_PLUGIN_IDS[p])
+  const pluginIds: string[] = providers.map(p => CHANNEL_PLUGIN_IDS[p as Exclude<ChannelProviderType, 'gromzo'>])
   let envExports = providers.map(p => {
     const dir = channelStateDir(p, agentDirPath)
     const audit = p === 'slack' ? ` && export SLACK_AUDIT_LOG="${dir}/audit.jsonl"` : ''

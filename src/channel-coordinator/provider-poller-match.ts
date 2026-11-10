@@ -52,6 +52,8 @@ const SLUG_RX: Record<ChannelProviderType, RegExp> = {
   discord: /\/discord(?:\/|\s|$)/,
   googlechat: /\/googlechat(?:\/|\s|$)/,
   teams: /\/teams(?:\/|\s|$)/,
+  // GROMZONOPROVIDER1108: the Gromzo channel plugin's root is .../gromzo-channel/<ver> (channel-poller-reap GROMZO_ROOT_RE).
+  gromzo: /\/gromzo-channel(?:\/|\s|$)/,
 }
 
 // Slack-specific behavior-preserving fallback. The pre-fix cross-tree scan

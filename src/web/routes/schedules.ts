@@ -24,6 +24,41 @@ import {
 } from '../schedule-registry.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
+import { mayActAsOwner, refuseOwner } from './auth.js'
+
+// OWNEREXEC1109: the fields that decide WHAT a scheduled task executes, WHERE its prompt is typed, and WHERE its output
+// goes, rather than what it says or when it runs. A 'command' task is a shell command the runner starts with
+// `bash -lc`, and a preCheck is a script it runs before every occurrence; both run inside the dashboard process,
+// outside every tool hook. targetSession names the tmux pane the prompt is typed into (the runner also refuses one
+// that is not a fleet session), and telegramChatId / channelProvider decide which chat receives the task's output.
+// Setting or changing any of them is an owner action (mayActAsOwner: a session, or the shared token beside the
+// owner's session cookie). The prompt, the agent, the cron, enabled, forceSend and skipIfBusy stay on today's path:
+// the fleet edits those legitimately (a prompt to an agent is what the message queue already allows).
+export const SCHEDULE_OWNER_FIELDS = [
+  'type', 'command', 'timeoutMs', 'preCheck', 'preCheckTimeoutSeconds', 'targetSession', 'telegramChatId', 'channelProvider',
+] as const
+
+/** The owner fields this body sets to a value different from the stored task's. A field the body leaves out, or sends
+ *  with the value it already has, is not a change, so re-saving a task unchanged needs no owner. null, '' and an
+ *  absent value are the same. A type change counts only when 'command' is on either side (task and heartbeat both
+ *  run the prompt). telegramChatId 'none' (no chat delivery) only narrows where output goes, so it is not counted.
+ *  With no readable stored task every owner field the body names counts as a change (fail closed). */
+export function changedScheduleOwnerFields(data: Record<string, unknown>, current: ScheduledTask | null): string[] {
+  const norm = (v: unknown) => (v === null || v === '' ? undefined : v)
+  const stored = (current ?? {}) as unknown as Record<string, unknown>
+  return SCHEDULE_OWNER_FIELDS.filter((k) => {
+    if (!Object.prototype.hasOwnProperty.call(data, k)) return false
+    const next = norm(data[k])
+    if (k === 'telegramChatId' && next === 'none') return false
+    if (!current) return next !== undefined
+    if (k === 'type') {
+      const a = (next ?? 'task') as unknown
+      const b = (norm(stored.type) ?? 'task') as unknown
+      return a !== b && (a === 'command' || b === 'command')
+    }
+    return next !== norm(stored[k])
+  })
+}
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
 // traversal. sanitizeScheduleName strips everything outside [a-z0-9-] (so no
@@ -224,6 +259,15 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!data.schedule?.trim()) { json(res, { error: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
     if (data.once !== undefined && typeof data.once !== 'boolean') { json(res, { error: 'once must be true or false' }, 400); return true }
+    // OWNEREXEC1109: a 'command' task is a shell command, created only by the owner (see SCHEDULE_OWNER_FIELDS).
+    if (data.type === 'command' && !mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, 'Creating a command task needs the dashboard login (an owner session).')
+      return true
+    }
+    if (data.targetSession && !mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, "A task typed into another session than its agent's needs the dashboard login (an owner session).")
+      return true
+    }
 
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
@@ -265,6 +309,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     const data = JSON.parse(body.toString()) as {
       description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean; preCheck?: string
+    }
+    // OWNEREXEC1109: before any validation or write. Only a real change of an owner field needs the owner.
+    const execChanges = changedScheduleOwnerFields(data as Record<string, unknown>, readScheduledTask(name))
+    if (execChanges.length > 0 && !mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, `Changing ${execChanges.join(', ')} of a scheduled task needs the dashboard login (an owner session).`, { fields: execChanges })
+      return true
     }
     if (data.once !== undefined && typeof data.once !== 'boolean') {
       json(res, { error: 'once must be true or false' }, 400)

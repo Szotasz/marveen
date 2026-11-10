@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -21,6 +21,7 @@ import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
 import { mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
+import { mainGromzoPrimaryReady } from '../main-gromzo-launch.js'
 import type { RouteContext } from './types.js'
 
 const execFileAsync = promisify(execFile)
@@ -168,7 +169,15 @@ async function claudeAuthPresent(): Promise<boolean> {
 // must NOT read as "configured" -- otherwise step 3 skips straight to Pairing, the wizard never re-surfaces the 
 // sudo-command prompt (it only fires from the step-3 save handler), and the operator is left staring at
 // an empty pairing list with no explanation for why Slack never connects.
+// GROMZONOPROVIDER1108: a gromzo install has no token and no access.json. Its channel is "configured" and "paired" once
+// the main agent is enrolled in mxd (mainGromzoPrimaryReady: socket usable and its token file present): mxd issues that
+// token only for an agent it runs, which needs the owner's consent in the Gromzo app, so the owner is the paired one.
+function gromzoEnrolled(): boolean {
+  return mainGromzoPrimaryReady(MAIN_AGENT_ID)
+}
+
 function channelConfigured(): boolean {
+  if (CHANNEL_PROVIDER === 'gromzo') return gromzoEnrolled()
   const hasToken = readChannelToken(CHANNEL_PROVIDER, join(channelStateDir(CHANNEL_PROVIDER), '.env')) != null
   if (!hasToken) return false
   if (CHANNEL_PROVIDER === 'slack') return isManagedSettingsReady()
@@ -200,6 +209,7 @@ function existingChannelTokens(): { botToken: string | null; appToken: string | 
 }
 
 function paired(): boolean {
+  if (CHANNEL_PROVIDER === 'gromzo') return gromzoEnrolled()
   try {
     const a = JSON.parse(readFileSync(join(channelStateDir(CHANNEL_PROVIDER), 'access.json'), 'utf-8')) as {
       allowFrom?: unknown[]; groups?: Record<string, unknown>
@@ -235,6 +245,16 @@ function renameInPersonaFile(file: string, from: string, to: string): void {
   try { content = readFileSync(file, 'utf-8') } catch { return }
   if (!content.includes(from)) return
   atomicWriteFileSync(file, content.split(from).join(to))
+}
+
+// ONBOARDNOTG1108 (b): the wizard's close ("x") is remembered on the machine, not in the browser. The dashboard used to
+// keep it in localStorage, which is bound to the origin, and the Bridge opens the dashboard on a fresh local tunnel port
+// on every connect (a new origin each time), so the wizard came back on every Bridge open. One flag file in the store:
+// present = the owner closed the wizard. Only the owner sets or clears it (the routes below); the status reports it.
+const ONBOARDING_DISMISSED_FILE = join(STORE_DIR, '.onboarding-dismissed')
+
+export function onboardingDismissedOnServer(): boolean {
+  try { return existsSync(ONBOARDING_DISMISSED_FILE) } catch { return false }
 }
 
 function identityConfirmed(): boolean {
@@ -318,7 +338,34 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       // The identity step never re-opens the wizard on an already-configured
       // install: it only participates while first-run setup is incomplete.
       needsOnboarding: !claude || !running || !ch || !pr,
+      // ONBOARDNOTG1108 (b): the owner closed the wizard (the machine's flag, whatever origin the dashboard is on).
+      dismissed: onboardingDismissedOnServer(),
     })
+    return true
+  }
+
+  // ONBOARDNOTG1108 (b): the wizard's close, remembered on the machine. POST sets the flag, DELETE clears it (the auth
+  // banner's "finish the setup" reopens the wizard). Owner-only: it hides the owner's setup wizard on every origin, so
+  // a bare device key, an operator key or a sub-agent token may not set it. A refused caller keeps the browser-local
+  // close (the dashboard still writes localStorage), which is the behaviour before this flag.
+  if (path === '/api/onboarding/dismiss' && (method === 'POST' || method === 'DELETE')) {
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Remembering the closed setup wizard on this machine needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
+    try {
+      if (method === 'POST') {
+        mkdirSync(STORE_DIR, { recursive: true })
+        atomicWriteFileSync(ONBOARDING_DISMISSED_FILE, JSON.stringify({ dismissedAt: new Date().toISOString() }) + '\n', { mode: 0o600 })
+      } else {
+        rmSync(ONBOARDING_DISMISSED_FILE, { force: true })
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, method }, 'onboarding: the wizard close flag could not be written')
+      json(res, { error: 'The setup wizard state could not be saved.', reason: 'write-failed' }, 500)
+      return true
+    }
+    json(res, { ok: true, dismissed: onboardingDismissedOnServer() })
     return true
   }
 

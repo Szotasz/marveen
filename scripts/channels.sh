@@ -133,6 +133,7 @@ resolve_plugin_ids() {
     whatsapp) PLUGIN_ID="whatsapp@marveen-marketplace";      PLUGIN_PANE_ID="plugin:whatsapp:marveen-marketplace" ;;
     teams)    PLUGIN_ID="teams@marveen-marketplace";         PLUGIN_PANE_ID="plugin:teams:marveen-marketplace" ;;
     discord)  PLUGIN_ID="discord@claude-plugins-official";   PLUGIN_PANE_ID="plugin:discord:discord" ;;
+    gromzo)   PLUGIN_ID="gromzo-channel@gromzo-local";       PLUGIN_PANE_ID="plugin:gromzo-channel:gromzo" ;;
     *)        PLUGIN_ID="telegram@claude-plugins-official";  PLUGIN_PANE_ID="plugin:telegram:telegram" ;;
   esac
 }
@@ -649,11 +650,42 @@ else
   CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
   CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
 fi
+# GROMZONOPROVIDER1108: CHANNEL_PROVIDER=gromzo makes the Gromzo plugin the PRIMARY channel (never also an extra).
+# It starts only when mxd's socket is usable AND the main agent is enrolled (main_gromzo_primary_ready); otherwise the
+# session is "gromzo pending": it starts WITHOUT the Gromzo channel (the dashboard still has its session, scheduled tasks
+# still run), the watchdog below does not count it against the never-started budget, and a 60 s poll restarts it once
+# the condition holds. One launch path: the same main_gromzo_env helper as the extras.
+GROMZO_PENDING=0
+GROMZO_LAST_POLL=0
+if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  # shellcheck disable=SC2086
+  CHANNEL_PLUGINS_EXTRA="$(printf '%s\n' $CHANNEL_PLUGINS_EXTRA | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
+  CHANNEL_PLUGINS_EXTRA="${CHANNEL_PLUGINS_EXTRA% }"
+  if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$MAIN_AGENT_ID"; then
+    GROMZO_ENV="$(main_gromzo_env "$MAIN_AGENT_ID" "$PLUGIN_ID")"
+  else
+    GROMZO_PENDING=1
+    GROMZO_ENV=""
+    PLUGIN_ID=""
+    # GROMZOPLUGREG1109: the reason, one word (main_gromzo_pending_reason), so the owner's install says WHY it waits.
+    GROMZO_LAST_REASON=""
+    command -v main_gromzo_pending_reason >/dev/null 2>&1 && GROMZO_LAST_REASON="$(main_gromzo_pending_reason "$MAIN_AGENT_ID")"
+    echo "channels.sh: gromzo pending (${GROMZO_LAST_REASON:-unknown}) -- the session starts without the Gromzo channel and is restarted when it is ready (mxd_socket: mxd's agent socket is not usable; not_enrolled: the main agent is not approved yet; plugin_not_registered: the Gromzo plugin is not registered for Claude Code)" >&2
+  fi
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+# The --channels argument: the primary and the extras; a gromzo-pending session with no extra gets none at all.
+if [ -n "$PLUGIN_ID" ]; then
+  CHANNELS_ARG="--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+elif [ -n "$EXTRA_CHANNELS" ]; then
+  CHANNELS_ARG="--channels${EXTRA_CHANNELS}"
+else
+  CHANNELS_ARG=""
+fi
 # SLACKDMVESZT1006: enable the primary and the extras for THIS session only,
 # via a --settings file (see the helper's header for why not a settings layer).
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
@@ -1363,11 +1395,13 @@ EOF_MA
   # MAINAUTH1107: neither trigger fires for a main agent on an API key: it does not ride the shared login at all.
   if [ -z "$CFG_ENV" ] && [ "${MAIN_AUTH_EFFECTIVE:-}" != api ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
+    # VOICETOKENLEAK1101 round 3: both guard alerts hand curl the token from a process substitution (printf is a
+    # builtin: nothing on any argv, which ps shows to the same user; nothing on disk), never as -H "...Bearer <token>".
     if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
       _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
       curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
         -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
+        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$INSTALL_DIR/store/.dashboard-token")") \
         -d "{\"from\":\"$(_guard_sender)\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
         -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
       # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
@@ -1393,7 +1427,7 @@ EOF_MA
       _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
       curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
         -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
+        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$INSTALL_DIR/store/.dashboard-token")") \
         -d "{\"from\":\"$(_guard_sender)\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
         -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
       # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
@@ -1488,6 +1522,7 @@ case "$CHANNEL_PROVIDER" in
   whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
   teams)    STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  gromzo)   STATE_ENV_VAR="GROMZO_STATE_DIR" ;;
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
@@ -1527,6 +1562,8 @@ fi
 # strings. The slack plugin's cache dir is `slack-channel`.
 case "$CHANNEL_PROVIDER" in
   slack) PLUGIN_SEG="/slack-channel" ;;
+  # GROMZONOPROVIDER1108: the plugin cache dir is gromzo-channel; a left-over main Gromzo plugin goes like any other.
+  gromzo) PLUGIN_SEG="/gromzo-channel" ;;
   *)     PLUGIN_SEG="/${CHANNEL_PROVIDER}" ;;
 esac
 ORPHAN_PIDS2="$(/bin/ps axeww 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="$PLUGIN_SEG" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ (needle "[^ ]*" prov "([/@ ]|$)") && index($0, subdir) == 0 { print $1 }')"
@@ -1582,6 +1619,8 @@ fi
 # otherwise described the unexported state.
 export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"
 STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
+# gromzo has no channel state dir (no token, no access.json): nothing to export (GROMZONOPROVIDER1108).
+[ "$CHANNEL_PROVIDER" = "gromzo" ] && STATE_DIR_ENV=""
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not
@@ -1845,6 +1884,24 @@ esac
 # shellcheck disable=SC2046,SC2086
 wait_for_channel_hosts $(channel_wait_hosts "$CHANNEL_PROVIDER" $CHANNEL_PLUGINS_EXTRA) || true
 $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
+# GROMZONEEDSAUTH1109 (Samu 74033): a launch that carries the Gromzo channel first takes the Gromzo server's cached
+# needs-auth entry out of the config dir it launches with. Measured on the QA VPS 11-09 (V30, V31): a gromzo-pending
+# session's failed plugin start left "plugin:gromzo-channel:gromzo" in <config dir>/mcp-needs-auth-cache.json, and the
+# next session skipped that server at start and stayed deaf until a /mcp reconnect. Only that key goes, the rest of the
+# file stays byte for byte; anything unexpected is a no-op with its reason (src/web/gromzo-needs-auth.ts). The line goes
+# to this script's stderr (channels.error.log), and a failure never blocks the start. The config dir is the one this
+# session launches with: its own CLAUDE_CONFIG_DIR when CFG_ENV set one, else the inherited one / ~/.claude.
+case " $CHANNELS_ARG " in
+  *" plugin:gromzo-channel@gromzo-local "*)
+    if [ -n "$CFG_ENV" ]; then _gz_na_dir="$_MAIN_CFG_DIR"; else _gz_na_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; fi
+    if command -v node >/dev/null 2>&1 && [ -f "$INSTALL_DIR/scripts/gromzo-needs-auth-clear.mjs" ]; then
+      node "$INSTALL_DIR/scripts/gromzo-needs-auth-clear.mjs" "$_gz_na_dir" || true
+    else
+      echo "gromzo-needs-auth: no-op: node or scripts/gromzo-needs-auth-clear.mjs missing: $_gz_na_dir" >&2
+    fi
+    unset _gz_na_dir
+    ;;
+esac
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's
 # claude/poller, and the command below re-exports it for the pane anyway. But
@@ -1858,7 +1915,7 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
 env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1960,7 +2017,7 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         env -u "$STATE_ENV_VAR" $_AKM_ENV_UNSET $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${AUTH_POST_ENV}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.
@@ -2071,6 +2128,8 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 #     records whether the plugin actually came up -- a green "firing unlock"
 #     line alone said nothing about whether the fix landed.
 (
+  # GROMZONOPROVIDER1108: the Gromzo plugin runs on Node and is never in a "failed" /mcp row this unlock handles.
+  [ "$CHANNEL_PROVIDER" = "gromzo" ] && exit 0
   sleep 15
   CLAUDE_PID="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   # Check 1: bun grandchild of the marveen-channels claude
@@ -2283,8 +2342,66 @@ PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + PLUGIN_NEVER_STARTED_BUDGET))
 # Died-after-up budget: once we have seen the plugin alive, a continuous
 # disappearance this long means it crashed and is not self-recovering.
 PLUGIN_DEAD_GRACE=180
+# RELOADDEADGRACE1040: how long to wait inside the dead-grace window before
+# trying one in-place /reload-plugins. Half the grace leaves the other half
+# for the reload to actually take effect (bun poller respawn + reconnect)
+# before we give up and sacrifice the whole session.
+PLUGIN_RELOAD_AFTER=90
+# RESTARTCOALESCE1103: how long after store/.channel-last-respawn (epoch
+# seconds) a plugin disappearance is still the doing of the restart that wrote
+# the stamp, not a genuine unexplained crash. Compared against the FIXED stamp
+# (NOW - stamp), never against PLUGIN_DEAD_SINCE: the suppression branch below
+# leaves PLUGIN_DEAD_SINCE alone so it keeps the real death time, and a window
+# measured from it would slide.
+#
+# The value mirrors RESUME_GRACE_MS in src/web/channel-monitor.ts, which reads
+# this exact stamp file for the same question ("how long can a full resume
+# legitimately take", tuned 90s -> 150s -> 240s there). Two readers of one fact
+# should agree on it.
+#
+# Two writers, both covered ON PURPOSE:
+# - channel-monitor.ts writeRespawnStamp() on an in-process hard restart
+#   (e.g. a context-guard handoff restart). That restart tears the MCP server
+#   down just like a crash would, already has a fresh claude process and its
+#   own plugin-unlock probe scheduled, so exiting here as well would only
+#   sacrifice the conversation a second time.
+# - this script itself, on every start (the `date +%s >` line near the top).
+#   So the suppression also holds for the first $RESPAWN_SETTLE_BUDGET seconds
+#   after the watchdog's own start. That is intended: a plugin that came up
+#   and dropped again inside the cold-start window is still settling (the
+#   plugin-unlock probe and the /mcp handshake run in that window), and a
+#   restart there would cut the very startup it is waiting for. The delay is
+#   bounded: PLUGIN_DEAD_SINCE is not reset while suppressed, so once the
+#   budget runs out a plugin dead for $PLUGIN_DEAD_GRACE or longer exits on
+#   the next tick. Worst case: exit at start + RESPAWN_SETTLE_BUDGET instead of
+#   death + PLUGIN_DEAD_GRACE.
+RESPAWN_SETTLE_BUDGET=240
+
+# Pure verdict for one died-after-up watchdog tick, so the branch order is
+# testable without tmux (src/__tests__/channels-dead-after-up-verdict.test.ts).
+# Args: NOW DEAD_SINCE RESPAWN_STAMP RELOAD_ATTEMPTED(true|false)
+# stdout, exactly one word:
+#   suppress -- the respawn stamp is within $RESPAWN_SETTLE_BUDGET: keep watching
+#   exit     -- dead for $PLUGIN_DEAD_GRACE or longer: exit for a restart
+#   reload   -- dead for $PLUGIN_RELOAD_AFTER or longer, no reload tried yet
+#   wait     -- none of the above yet
+# A non-numeric or missing stamp counts as 0 (no stamp: nothing explains it).
+dead_after_up_verdict() {
+  _dv_now="$1"; _dv_since="$2"; _dv_stamp="$3"; _dv_tried="$4"
+  case "$_dv_stamp" in (*[!0-9]*|'') _dv_stamp=0 ;; esac
+  if [ "$_dv_stamp" -gt 0 ] && [ "$((_dv_now - _dv_stamp))" -le "$RESPAWN_SETTLE_BUDGET" ]; then
+    echo suppress
+  elif [ "$((_dv_now - _dv_since))" -ge "$PLUGIN_DEAD_GRACE" ]; then
+    echo exit
+  elif [ "$_dv_tried" != "true" ] && [ "$((_dv_now - _dv_since))" -ge "$PLUGIN_RELOAD_AFTER" ]; then
+    echo reload
+  else
+    echo wait
+  fi
+}
 PLUGIN_SEEN_ONCE=false
 PLUGIN_DEAD_SINCE=0
+PLUGIN_RELOAD_ATTEMPTED=false
 # Set to 1 when the watchdog below breaks out ON PURPOSE to be restarted. The
 # exit status has to carry that intent: a watchdog exit is not a normal one, and
 # a unit still carrying the old Restart=on-failure would read exit 0 as "this
@@ -2367,6 +2484,30 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   _pane_pid_now="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [ -n "$_pane_pid_now" ] && _watchdog_claude_pid="$_pane_pid_now"
   unset _pane_pid_now
+  # GROMZONOPROVIDER1108: a gromzo-pending session is not a plugin that failed to start: no never-started budget,
+  # a readiness poll every 60 s, and one restart when the main agent can take its Gromzo channel.
+  if [ "$CHANNEL_PROVIDER" = "gromzo" ] && [ "$GROMZO_PENDING" = "1" ]; then
+    if [ "$((NOW - GROMZO_LAST_POLL))" -ge 60 ]; then
+      GROMZO_LAST_POLL=$NOW
+      # GROMZOPLUGREG1109: a changed reason is said once (e.g. not_enrolled -> plugin_not_registered), never per poll.
+      if command -v main_gromzo_pending_reason >/dev/null 2>&1; then
+        _gz_reason="$(main_gromzo_pending_reason "$MAIN_AGENT_ID")"
+        if [ -n "$_gz_reason" ] && [ "$_gz_reason" != "${GROMZO_LAST_REASON:-}" ]; then
+          echo "channels.sh: gromzo pending ($_gz_reason) -- still without the Gromzo channel" >&2
+          GROMZO_LAST_REASON="$_gz_reason"
+        fi
+        unset _gz_reason
+      fi
+      if command -v main_gromzo_primary_ready >/dev/null 2>&1 && main_gromzo_primary_ready "$MAIN_AGENT_ID"; then
+        echo "channels.sh: gromzo ready -- restarting the session with the Gromzo channel" >&2
+        respawn_log "gromzo-ready: the main agent can take its Gromzo channel now -- restarting $SESSION with it"
+        RESTART_REQUESTED=1
+        EXIT_REASON="gromzo-ready"
+        break
+      fi
+    fi
+    continue
+  fi
   _plugin_alive=false
   _bot_hijacked=false
   if [ -f "$MAIN_BOT_PID_FILE" ]; then
@@ -2416,7 +2557,13 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   # failure the watchdog exists to catch, silently defeated. Single-agent
   # installs never saw this because there was only ever one plugin process to
   # find, and it happened to be the right one.
-  if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
+  if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+    # The Gromzo plugin: a Node child of THIS session's claude whose command names the gromzo-channel plugin root
+    # (no bot.pid, no Bun; GROMZO_ROOT_RE / SLUG_RX gromzo in the TS probes).
+    if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" -f '/gromzo-channel/' >/dev/null 2>&1; then
+      _plugin_alive=true
+    fi
+  elif [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
     if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" bun >/dev/null 2>&1; then
       _plugin_alive=true
     fi
@@ -2425,6 +2572,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   if [ "$_plugin_alive" = "true" ]; then
     PLUGIN_SEEN_ONCE=true
     PLUGIN_DEAD_SINCE=0
+    PLUGIN_RELOAD_ATTEMPTED=false
     # The plugin came up, so this host is not in the never-starting state:
     # drop the streak so the next cold start gets the fast 10-minute watchdog
     # again instead of inheriting a 40-minute budget from an old outage.
@@ -2438,13 +2586,56 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
     if [ "$PLUGIN_DEAD_SINCE" -eq 0 ]; then
       PLUGIN_DEAD_SINCE=$NOW
       echo "WARN: $CHANNEL_PROVIDER plugin (bot.pid) disappeared -- ${PLUGIN_DEAD_GRACE}s grace before restart" >&2
-    elif [ "$((NOW - PLUGIN_DEAD_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
+    fi
+    # RESTARTCOALESCE1103: before counting this disappearance towards a
+    # systemd-level restart, check whether it is already explained. A
+    # channel-monitor.ts hard restart (e.g. a context-guard handoff restart,
+    # which tears down the MCP server with SIGINT/SIGTERM just like a crash
+    # would -- confirmed 2026-11-03 against
+    # ~/.cache/claude-cli-nodejs/.../mcp-logs-plugin-telegram-telegram/*.jsonl
+    # and store/dashboard.log "context-guard: acting" entries) writes
+    # store/.channel-last-respawn at the moment it respawns the pane. While
+    # we are still within $RESPAWN_SETTLE_BUDGET of THAT FIXED stamp (never
+    # compared against the sliding PLUGIN_DEAD_SINCE -- see the budget's own
+    # comment above for why), the disappearance is that restart's own doing:
+    # it already has a fresh claude process and its own plugin-unlock probe
+    # scheduled, so exiting here too would only sacrifice the conversation a
+    # second time for nothing. Keep watching instead of counting towards
+    # exit; PLUGIN_DEAD_SINCE is left untouched so it keeps tracking the real
+    # death time for whoever reads it once the settle budget runs out.
+    _respawn_stamp="$(cat "$INSTALL_DIR/store/.channel-last-respawn" 2>/dev/null | tr -d '[:space:]')"
+    case "$_respawn_stamp" in (*[!0-9]*|'') _respawn_stamp=0 ;; esac
+    _dead_verdict="$(dead_after_up_verdict "$NOW" "$PLUGIN_DEAD_SINCE" "$_respawn_stamp" "$PLUGIN_RELOAD_ATTEMPTED")"
+    if [ "$_dead_verdict" = "suppress" ]; then
+      respawn_log "died-after-up-suppressed: $CHANNEL_PROVIDER plugin gone, but store/.channel-last-respawn ($_respawn_stamp) explains it (within ${RESPAWN_SETTLE_BUDGET}s settle budget, $((NOW - _respawn_stamp))s elapsed) -- the restart that wrote the stamp (an in-process hard restart, or this watchdog's own start) is still settling, not restarting again"
+    elif [ "$_dead_verdict" = "exit" ]; then
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
-      respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
+      respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s (RESTARTCOALESCE1103 saw respawn_stamp=$_respawn_stamp, settle_budget=${RESPAWN_SETTLE_BUDGET}s -- did not explain the gap) -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
       RESTART_REQUESTED=1
       EXIT_REASON="plugin-died"
       break
+    elif [ "$_dead_verdict" = "reload" ]; then
+      # RELOADDEADGRACE1040: the only thing measured to reliably revive a
+      # dead/absent plugin (RELOADPLUGINSABSENT1032, measured 2026-10-31 on
+      # the never-started path) is /reload-plugins. Until now this
+      # died-after-up path never tried it -- it went straight from "plugin
+      # gone" to "kill the whole session and lose the conversation", even
+      # though $PLUGIN_DEAD_GRACE leaves time for an in-place revival first.
+      # One shot, only into a provably idle pane (MCPDUP806 discipline -- never
+      # type over a live turn or someone else's parked draft; an unverifiable
+      # or busy pane just retries next tick), with the rest of the grace
+      # window left afterwards for the plugin to actually come back before we
+      # give up and restart.
+      _reload_probe="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state)"
+      if [ "$_reload_probe" = "idle" ]; then
+        $TMUX send-keys -t "=$SESSION:" '/reload-plugins' Enter
+        PLUGIN_RELOAD_ATTEMPTED=true
+        echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- sent /reload-plugins, waiting out the rest of the ${PLUGIN_DEAD_GRACE}s grace before restart" >&2
+        respawn_log "died-after-up-reload-attempt: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- sent /reload-plugins"
+      fi
+      unset _reload_probe
     fi
+    unset _respawn_stamp _dead_verdict
   else
     # Never came up at all (e.g. a Claude Code build that silently disables
     # --channels). Give it the full cold-start budget, then restart.
@@ -2464,7 +2655,11 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
 done
 
 ELAPSED=$(( $(date +%s) - START_TS ))
-if [ "$ELAPSED" -lt 30 ]; then
+# GROMZORAPIDREADY1109 (Samu 73998): a "gromzo ready" exit is a PLANNED restart, not a failed start. START_TS is set
+# only after the launch and its dialogs, and the pending poll's first check runs at once (GROMZO_LAST_POLL=0), so
+# that exit always came "after 5s": measured on the QA VPS 11-09, every ready exit counted as a rapid failure, the
+# 3rd and 4th waited 60 s, the 5th 300 s and ended as exit 1 FAILURE. It is never counted here.
+if [ "$ELAPSED" -lt 30 ] && [ "$EXIT_REASON" != "gromzo-ready" ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
   rapid_exit_log_line "$ELAPSED" "$EXIT_REASON" "$PANE_EXIT_STATUS" >> "$INSTALL_DIR/store/channels-failures.log"
   # c5296a52: count the RAPID-EXIT lines, not every line in the file. The same log carries
@@ -2490,7 +2685,11 @@ rm -f "$INSTALL_DIR/store/channels-failures.log"
 # A watchdog exit asked for a restart, so it must NOT look like a clean finish.
 # Written as an if (not `[ ] && exit 1`) so a future `set -e` cannot turn the
 # false branch into an accidental non-zero exit of the whole script.
-if [ "$RESTART_REQUESTED" = "1" ]; then
+# GROMZORAPIDREADY1109: except the "gromzo ready" exit: a planned restart, so it ends 0 (no FAILURE, no OnFailure=).
+# The restart still comes: the Linux unit is Restart=always (update.sh migrate_channels_restart moves an old
+# on-failure unit to always in the same update that brings this script) and launchd's KeepAlive=true restarts on any
+# exit.
+if [ "$RESTART_REQUESTED" = "1" ] && [ "$EXIT_REASON" != "gromzo-ready" ]; then
   exit 1
 fi
 exit 0

@@ -148,9 +148,12 @@ describe('install-macos.sh: the native module must be built for the SERVICE node
   it('installs dependencies under the same node the services will run', () => {
     const { nodes } = runNpmInstallStep()
 
-    const install = nodes.find((l) => l.startsWith('install'))
+    // INSTALLDIRTYTREE1103: the step is `npm ci` first (it never rewrites the tracked
+    // lock), `npm install` only as the fallback. Whichever installs the dependencies
+    // must run under the service node.
+    const install = nodes.find((l) => l.startsWith('ci ') || l.startsWith('install'))
 
-    expect(install, `npm install never ran; saw: ${JSON.stringify(nodes)}`).toBeDefined()
+    expect(install, `no dependency install ran; saw: ${JSON.stringify(nodes)}`).toBeDefined()
     expect(install).toContain('node22')
   })
 

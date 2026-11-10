@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { STORE_DIR, WEB_PORT } from '../config.js'
@@ -50,6 +51,54 @@ function shellSingleQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`
 }
 
+export const TTS_TEXT_PLACEHOLDER = 'A_VÁLASZOD_SZÖVEGE'
+export const TTS_HEREDOC_END_PREFIX = 'MARVEEN_TTS_END_'
+
+// The heredoc's end marker, NEW for every directive. A fixed marker is known in advance:
+// a reply line equal to it would end the body there, and the reply's further lines would
+// run as shell commands in the agent's session (Dani's review of #2605). The reply can be
+// steered by an inbound message, so the marker must not be guessable.
+export function newTtsHeredocEnd(): string {
+  return TTS_HEREDOC_END_PREFIX + randomBytes(8).toString('hex')
+}
+
+export interface TtsRequest {
+  text: string
+  voiceModel: string
+  chatId: string
+  stateDir: string
+}
+
+// The fields of POST /api/voice/tts, from either request shape:
+//   - text/plain (the directive's, #2600): the body is the reply text as is, the other
+//     fields come from the query string;
+//   - JSON (the older directive and any other caller): { text, voice_model, chat_id, state_dir }.
+// Returns null when a JSON body does not parse. Validation (empty text, chat id, state dir)
+// stays with the route.
+export function parseTtsRequest(
+  contentType: string | undefined,
+  body: Buffer,
+  query: URLSearchParams,
+  defaultVoiceModel: string,
+): TtsRequest | null {
+  if (String(contentType ?? '').trim().toLowerCase().startsWith('text/plain')) {
+    return {
+      text: body.toString('utf-8').trim(),
+      voiceModel: query.get('voice_model')?.trim() || defaultVoiceModel,
+      chatId: (query.get('chat_id') ?? '').trim(),
+      stateDir: (query.get('state_dir') ?? '').trim(),
+    }
+  }
+  let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string }
+  try { data = JSON.parse(body.toString()) as typeof data } catch { return null }
+  return {
+    text: data.text?.trim() ?? '',
+    voiceModel: data.voice_model?.trim() ?? defaultVoiceModel,
+    chatId: String(data.chat_id ?? '').trim(),
+    stateDir: data.state_dir?.trim() ?? '',
+  }
+}
+
 // Build a ready-to-run TTS directive block injected after the STT transcript.
 // Returns null if the dashboard token file is missing, unreadable or empty.
 //
@@ -68,14 +117,24 @@ export function buildTtsDirective(opts: {
     if (!readFileSync(tokenPath, 'utf-8').trim()) return null
     const tokenRef = `$(cat ${shellSingleQuote(tokenPath)})`
     const { chatId, stateDir, voiceModel } = opts
-    // Escape stateDir for embedding in a jq string argument
-    const escapedStateDir = stateDir.replace(/'/g, "'\\''")
+    // #2600: the command used to build the JSON body with `jq -n --arg t "..."`. jq is not
+    // installed by install-linux.sh and a stock Ubuntu has none, so the pipe sent an empty
+    // body, the route answered 400 and the owner got no reply at all (the directive forbids a
+    // text answer). The reply text also sat in a double-quoted shell word, so the shell expanded
+    // it on the way. Now the text goes as the raw body through a QUOTED heredoc (no shell
+    // expansion, no escaping for the agent to get wrong), the fixed fields go in the query
+    // string, and the route builds the request itself (parseTtsRequest).
+    const query = new URLSearchParams({ chat_id: chatId, state_dir: stateDir, voice_model: voiceModel })
+    const url = `http://localhost:${WEB_PORT}/api/voice/tts?${query.toString()}`
+    const end = newTtsHeredocEnd()
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
-      `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
+      `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot: a ${TTS_TEXT_PLACEHOLDER} sort cseréld a válaszod szövegére, ` +
+      `szó szerint, escape nélkül (több sor is lehet); a ${end} sor maradjon utolsónak, egyedül:\n` +
       `\`\`\`bash\n` +
-      `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${tokenRef}" -d @-\n` +
+      `curl -s -X POST ${shellSingleQuote(url)} -H "Content-Type: text/plain; charset=utf-8" -H "Authorization: Bearer ${tokenRef}" --data-binary @- <<'${end}'\n` +
+      `${TTS_TEXT_PLACEHOLDER}\n` +
+      `${end}\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )

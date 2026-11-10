@@ -47,3 +47,10 @@ evidence
 test-results
 .DS_Store
 __pycache__
+# DOCKERSEEDREFRESH1108: the seed snapshot of a running volume is state, never build context
+.seed-prev
+.seed-prev.tmp
+# DOCKERSEEDREFRESH1108: the seed skills' gitignored secrets never enter the build context (the build stage also removes
+# every gitignored file of the seed dirs right after COPY . .)
+**/mail_rules.json
+**/.dashboard-token

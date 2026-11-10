@@ -31,6 +31,7 @@ vi.mock('../logger.js', () => ({
 // No tmux in a test run: a pane that cannot be captured is `null`, which the
 // gate already treats as "unknown", so it does not decide anything here.
 vi.mock('../web/agent-process.js', () => ({
+  withTmuxBatch: (fn: () => unknown) => fn(),
   agentSessionName: (n: string) => `agent-${n}`,
   capturePane: () => { throw new Error('no tmux in tests') },
 }))
