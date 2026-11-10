@@ -102,6 +102,36 @@ export function vaultAclMode(env: NodeJS.ProcessEnv = process.env): VaultAclMode
   return String(getEffectiveSettingValue('VAULT_ACL_MODE')).trim() === 'enforce' ? 'enforce' : 'audit'
 }
 
+// VAULTSZELES826 PR-A: how a sub-agent's OWN token (auth.tokenAgent) is held to the allowlist. 'enforce' (the code
+// default, today's behaviour): only the ids store/vault-acl.json lists for it. 'audit': the observation week before the
+// list exists -- every read passes and is logged with its verdict, so the list can be proposed from measured rows. The
+// floor (isAgentReadableDecodedVaultId) holds in both. Only the exact value 'audit' loosens, and the key is
+// overrides-only with a `loosens` rule: the owner sets it in Settings, a .env line or the shared token cannot.
+// 'enforce' in the dashboard's process environment always wins, so a strict environment cannot be undone from Settings.
+export type AgentVaultMode = 'audit' | 'enforce'
+export function agentVaultMode(env: NodeJS.ProcessEnv = process.env): AgentVaultMode {
+  if ((env.VAULT_ACL_AGENT_MODE ?? '').trim() === 'enforce') return 'enforce'
+  return String(getEffectiveSettingValue('VAULT_ACL_AGENT_MODE')).trim() === 'audit' ? 'audit' : 'enforce'
+}
+
+// Vault ids a sub-agent token may never read, whatever the allowlist or the agent mode says: the vault's own
+// sub-resources (bindings, scan, sync, import, resolve) and every SSH id -- ssh-servers, ssh-keys and the ssh-key-<id>
+// PRIVATE keys. Judged on the DECODED, lower-cased id, the string the route hands to getSecret(). A floor under the ACL.
+export function isAgentReadableDecodedVaultId(id: string): boolean {
+  const lc = id.trim().toLowerCase()
+  if (!lc || lc.includes('/')) return false
+  if (['bindings', 'scan', 'sync', 'import', 'resolve'].includes(lc)) return false
+  if (lc.startsWith('ssh')) return false
+  return true
+}
+
+// The same floor on a RAW path segment (the auth gate sees the undecoded url). Undecodable = not readable.
+export function isAgentReadableVaultId(rawId: string): boolean {
+  let id: string
+  try { id = decodeURIComponent(rawId) } catch { return false }
+  return isAgentReadableDecodedVaultId(id)
+}
+
 // The agent name a shared-token caller CLAIMS (X-Agent-Id). Self-asserted: it can attribute a read and
 // let an honest caller be held to its allowlist, it cannot authenticate anyone. This is a trail and an
 // access rule, NOT isolation: every agent runs as the same OS user and can read the master-key file.
@@ -114,10 +144,20 @@ export function claimedAgentOf(auth: RouteContext['auth']): string | null {
 // Whether this read is refused. Only in 'enforce', only for a caller that claims an agent, and only when
 // the allowlist does not list that agent for the secret (no entry, an empty list, or another agent).
 //
-// A sub-agent's own token (auth.tokenAgent) is held to the allowlist in EVERY mode: the mode decides how
-// far a self-asserted claim is trusted, and an authenticated agent principal has nothing to switch off.
-export function vaultReadRefused(id: string, auth: RouteContext['auth'], acl: VaultAcl, mode: VaultAclMode = vaultAclMode()): boolean {
+// A sub-agent's own token (auth.tokenAgent) is NOT governed by VAULT_ACL_MODE: that switch decides how far a
+// self-asserted claim is trusted. The own token has its own switch, VAULT_ACL_AGENT_MODE (agentVaultMode above),
+// enforce by default; the SSH/sub-resource floor binds it in both positions.
+export function vaultReadRefused(
+  id: string,
+  auth: RouteContext['auth'],
+  acl: VaultAcl,
+  mode: VaultAclMode = vaultAclMode(),
+  agentMode: AgentVaultMode = agentVaultMode(),
+): boolean {
   if (auth?.kind === 'token' && auth.tokenAgent) {
+    // The floor holds in both agent modes: SSH material and the vault's own sub-resources are never an agent's.
+    if (!isAgentReadableDecodedVaultId(id)) return true
+    if (agentMode === 'audit') return false
     const listed = listedFor(acl, id)
     return !listed || !listed.includes(auth.tokenAgent)
   }
@@ -155,6 +195,9 @@ export function logVaultRead(
     principal,
     acl: claimed ? claimedVerdict(id, claimed, acl) : evaluateVaultRead(id, auth, acl),
     mode: vaultAclMode(),
+    // How a sub-agent's own token was judged (PR-A). In 'audit' an agent row with acl 'no-acl' / 'not-listed' and
+    // refused:false is a read that 'enforce' would refuse: the week's list is proposed from exactly these rows.
+    agent_mode: agentVaultMode(),
     claimed,
     channel: extra.channel ?? 'value',
     refused: extra.refused === true,

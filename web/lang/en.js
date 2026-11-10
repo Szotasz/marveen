@@ -1066,6 +1066,7 @@ window._i18n.en = {
   'settings.col.description':    'Description',
   'settings.col.restart':        'Restart',
   'settings.desc.MAIN_AGENT_ISOLATED_CONFIG':  'Any platform (macOS and Linux): give the main channels agent its own isolated CLAUDE_CONFIG_DIR (like the sub-agents), so it authenticates from the stable fleet setup-token instead of the shared, self-refreshing login (the Keychain on macOS, ~/.claude/.credentials.json on Linux), which periodically expires and 401s ("Please run /login"). Required for automatic key rotation. No effect without a fleet token; takes effect on the next channels restart.',
+  'settings.desc.VAULT_ACL_AGENT_MODE':        'How a sub-agent\'s OWN token (AGENT_TOKENS) reads the vault. enforce (default) = only the secrets store/vault-acl.json allows for it; audit = observation week: every read passes and is logged with whether enforce would refuse it, so the per-secret list can be proposed from it (scripts/vault-acl-suggest.mjs). SSH material and the vault\'s sub-resources are refused in both. audit loosens: only the dashboard login can set it. A trail and an access rule, not isolation.',
   'settings.desc.KANBAN_WIP_PLANNED':          'WIP limit for the "planned" column (max. card count). 0 = unlimited.',
   'settings.desc.KANBAN_WIP_IN_PROGRESS':      'WIP limit for the "in_progress" column (max. card count). 0 = unlimited.',
   'settings.desc.KANBAN_WIP_WAITING':          'WIP limit for the "waiting" column (max. card count). 0 = unlimited.',

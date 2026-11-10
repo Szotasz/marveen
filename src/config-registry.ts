@@ -774,6 +774,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'enforce' && newValue.trim() !== 'enforce',
   },
   {
+    // VAULTSZELES826 PR-A: the observation week for sub-agent OWN tokens (AGENT_TOKENS). enforce is the code default and
+    // today's behaviour; audit is set by the owner for the week before the per-secret list exists (Samu 74555).
+    key: 'VAULT_ACL_AGENT_MODE',
+    type: 'string',
+    default: 'enforce',
+    valueSet: ['enforce', 'audit'],
+    description: 'Az al-ügynök SAJÁT tokenjének (AGENT_TOKENS) vault-olvasási szabálya. enforce (alapértelmezés) = csak a store/vault-acl.json-ban neki engedett titkot kapja meg; audit = megfigyelési hét: minden olvasás átmegy és naplózódik azzal, hogy enforce mellett tiltva lenne-e, ebből javasolható a titkonkénti lista (scripts/vault-acl-suggest.mjs). Az SSH-anyag és a vault al-erőforrásai mindkét állásban tiltottak. Az audit lazítás: csak dashboard-belépéssel állítható. Nyom és hozzáférés-szabály, nem elzárás.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== 'audit' && newValue.trim() === 'audit',
+  },
+  {
     // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
     // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
     key: 'SKILL_QUARANTINE',

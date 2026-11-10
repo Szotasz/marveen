@@ -823,6 +823,19 @@ next read, without a restart:
   dashboard is down does not start. This fail-closed is deliberate; know it
   before you switch `enforce` on.
 
+A sub-agent's OWN token (`AGENT_TOKENS`, `docs/agens-azonositas-api.md`) is not governed by `VAULT_ACL_MODE`: the
+claim it decides about is self-asserted, the own token is authenticated. It has its own switch,
+`VAULT_ACL_AGENT_MODE` (VAULTSZELES826):
+
+- `enforce` (the default): the token reads only the secrets the allowlist lists for that agent. An empty or missing
+  file means no secret value at all.
+- `audit`: the observation week before the list exists. Every read passes and leaves the same log row, with the
+  allowlist's verdict (`acl`) and `agent_mode: "audit"`; `scripts/vault-acl-suggest.mjs` turns the week's rows into a
+  proposed `store/vault-acl.json` (printed, never written: the owner approves the list). Setting `audit` loosens, so
+  it is overrides-only and needs the owner login, like `VAULT_ACL_MODE`.
+
+In both positions SSH material and the vault's own sub-resources are refused to a sub-agent token.
+
 What it is not: isolation. Every agent runs as the same OS user and can read
 the master-key file, the agent name is claimed, not authenticated, a caller
 that claims no name is treated as the owner, and in `audit` mode the local
