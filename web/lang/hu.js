@@ -1217,7 +1217,7 @@ window._i18n.hu = {
   'messages.page_subtitle':      'Inter-agent kommunikáció',
   'messages.status.pending':     'függőben',
   'messages.pending_main_hint':  'a fő-ügynök automatikusan átveszi, amint szabad',
-  'messages.status.delivered':   'pane-be írva',
+  'messages.status.delivered':   'panelbe írva',
   'messages.status.done':        'kész',
   'messages.status.failed':      'hibás',
   'messages.empty':              'Nincs üzenet',
