@@ -154,11 +154,11 @@ describe('install-linux.sh wires the vendor installers through the helper (BUNTI
   it('Bun: the step calls _install_bun (GitHub, then npm, then a stop); Claude: a missing claude stops the install', () => {
     const step = LINUX.slice(LINUX.indexOf('INSTALL_STEP="claude-bun-install"'), LINUX.indexOf('INSTALL_STEP="claude-auth"'))
     // GROMZONOPROVIDER1108: Bun left the Claude step; it is installed in its own step after the channel choice, and only
-    // for a Bun channel (telegram, discord).
+    // for a Bun channel (telegram, discord; teams since EE2392D3).
     expect(step).not.toMatch(/^\s+_install_bun$/m)
     const bunStep = LINUX.slice(LINUX.indexOf('INSTALL_STEP="bun-install"'), LINUX.indexOf('INSTALL_STEP="npm-install"'))
     expect(bunStep.length).toBeGreaterThan(200)
-    expect(bunStep).toMatch(/case "\$CHANNEL_PROVIDER" in\n  telegram\|discord\)\n[\s\S]*?\n\s+_install_bun\n[\s\S]*?\n  \*\)\n\s+ok "Bun nem kell/)
+    expect(bunStep).toMatch(/case "\$CHANNEL_PROVIDER" in\n(?:\s*#[^\n]*\n)*  telegram\|discord\|teams\)\n[\s\S]*?\n\s+_install_bun\n[\s\S]*?\n  \*\)\n\s+ok "Bun nem kell/)
     expect(LINUX.indexOf('INSTALL_STEP="bun-install"')).toBeGreaterThan(LINUX.indexOf('CHANNEL_PROVIDER="gromzo"'))
     expect(sliceShellFn(LINUX, '_install_bun')).toMatch(/\n\s+fail "A Bun telepitese nem sikerult: a GitHub-letoltes/)
     expect(LINUX).toMatch(/if ! _claude_present; then\n\s+fail "A Claude Code telepitese nem sikerult/)

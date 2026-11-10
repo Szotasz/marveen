@@ -1364,8 +1364,9 @@ echo -e "  ${BOLD}1.${NC} Telegram (alapertelmezett)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo -e "  ${BOLD}3.${NC} Discord"
 echo -e "  ${BOLD}4.${NC} $(_t channel_option_gromzo)"
+echo -e "  ${BOLD}5.${NC} $(_t channel_option_teams)"
 echo ""
-read -rp "$(_t prompt_channel_select4)" PROVIDER_CHOICE
+read -rp "$(_t prompt_channel_select5)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
@@ -1374,6 +1375,9 @@ elif [ "$PROVIDER_CHOICE" = "3" ]; then
 elif [ "$PROVIDER_CHOICE" = "4" ] || [ "$PROVIDER_CHOICE" = "gromzo" ]; then
   # GROMZONOPROVIDER1108: the main agent talks only through Gromzo (no bot token, no Bun); accepted as 4 or by name.
   CHANNEL_PROVIDER="gromzo"
+elif [ "$PROVIDER_CHOICE" = "5" ] || [ "$PROVIDER_CHOICE" = "teams" ]; then
+  # EE2392D3: Microsoft Teams (claude-channel-teams, an Azure Bot); accepted as 5 or by name.
+  CHANNEL_PROVIDER="teams"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -1422,6 +1426,14 @@ SLACK_APP_TOKEN=""
 DISCORD_BOT_TOKEN=""
 DISCORD_CHANNEL_ID=""
 OPERATOR_DISCORD_USER_ID=""
+TEAMS_BOT_APP_ID=""
+TEAMS_BOT_TENANT_ID=""
+TEAMS_BOT_APP_PASSWORD=""
+
+# EE2392D3: one .env value per key: whitespace (a pasted newline, a trailing space) is cut, never written.
+_teams_clean() { printf '%s' "$1" | tr -d '[:space:]'; }
+_teams_uuid() { printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; }
+_teams_tty() { [ -t 0 ]; } # a terminal on stdin: only there is echo switched off
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
@@ -1449,6 +1461,45 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
   echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
   read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
+elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
+  # EE2392D3: the three keys of the Azure Bot's Entra app (the names the Teams plugin and the dashboard read:
+  # TEAMS_BOT_APP_ID, TEAMS_BOT_TENANT_ID, TEAMS_BOT_APP_PASSWORD). Each read stays a plain `read -rp` line, so the
+  # Bridge's headless derive can turn it into its env preset; the secret is not echoed (stty, a no-op without a
+  # terminal) and is never printed. Empty = set up later with the plugin's setup-azure-bot.sh --env-file.
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed Microsoft Teamsen kommunikal veled, egy Azure Boton at.${NC}"
+  echo -e "${DIM}  Ha mar van Azure Botod: add meg az alkalmazas (App ID), a tenant es a titkos kulcs ertekeit.${NC}"
+  echo -e "${DIM}  Ha meg nincs: hagyd uresen, a bot a telepites utan a Teams-bovitmeny${NC}"
+  echo -e "${DIM}  setup-azure-bot.sh szkriptjevel hozhato letre (Teams-bekotesi sugo).${NC}"
+  echo ""
+  read -rp "$(_t prompt_teams_app_id)" TEAMS_BOT_APP_ID
+  TEAMS_BOT_APP_ID="$(_teams_clean "$TEAMS_BOT_APP_ID")"
+  if [ -n "$TEAMS_BOT_APP_ID" ]; then
+    read -rp "$(_t prompt_teams_tenant_id)" TEAMS_BOT_TENANT_ID
+    TEAMS_BOT_TENANT_ID="$(_teams_clean "$TEAMS_BOT_TENANT_ID")"
+    # Echo off only on a terminal, and back on every way out of the read: Ctrl+C and TERM restore it and stop
+    # (130), a stdin EOF under the ERR trap restores it on EXIT. The traps that were set before (the Bridge's
+    # headless run has its own EXIT trap, headless-helpers.sh on_exit_emit_result) are saved and put back, also on
+    # the Ctrl+C path; without a terminal no trap is touched at all (Ábel 75250, measured).
+    _teams_prev_traps="$(trap -p INT TERM EXIT)"
+    if _teams_tty; then
+      trap 'stty echo 2>/dev/null || true; trap - INT TERM EXIT; eval "$_teams_prev_traps"; exit 130' INT TERM
+      trap 'stty echo 2>/dev/null || true' EXIT
+      stty -echo 2>/dev/null || true
+    fi
+    read -rp "$(_t prompt_teams_app_password)" TEAMS_BOT_APP_PASSWORD
+    if _teams_tty; then
+      stty echo 2>/dev/null || true
+      trap - INT TERM EXIT
+      eval "$_teams_prev_traps"
+    fi
+    unset _teams_prev_traps
+    echo ""
+    TEAMS_BOT_APP_PASSWORD="$(_teams_clean "$TEAMS_BOT_APP_PASSWORD")"
+    _teams_uuid "$TEAMS_BOT_APP_ID" || warn "Az App ID nem GUID alaku (pl. 11111111-2222-3333-4444-555555555555). Ellenorizd az Entra-alkalmazasnal."
+    _teams_uuid "$TEAMS_BOT_TENANT_ID" || warn "A Tenant ID nem GUID alaku. Ellenorizd: az login utan az account show --query tenantId."
+    [ -n "$TEAMS_BOT_APP_PASSWORD" ] || warn "A titkos kulcs ures: a bot igy nem tud valaszolni. Kesobb a setup-azure-bot.sh --env-file potolja."
+  fi
 elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
   # GROMZONOPROVIDER1108: no bot, no token: the Gromzo channel is connected later from the Marveen Bridge (Gromzo
   # wizard), through the local marveen-mxd.
@@ -1504,7 +1555,8 @@ INSTALL_STEP="bun-install"
 # on Node through marveen-mxd: those installs never download Bun, so they cannot fail on it (the owner's 11-08 Gromzo
 # install failed exactly on the Bun download). A Bun channel added later installs it then (release B).
 case "$CHANNEL_PROVIDER" in
-  telegram|discord)
+  # EE2392D3: teams too: the Teams plugin's .mcp.json starts its server with `bun run ... start`.
+  telegram|discord|teams)
     if command -v bun &>/dev/null; then
       ok "bun mar telepitve: $(bun --version)"
     else
@@ -1672,6 +1724,12 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   fi
 elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
   : # GROMZONOPROVIDER1108: no token keys (CHANNEL_PROVIDER=gromzo is written above)
+elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
+  # EE2392D3: the Teams keys go ONLY to the channel .env (below), the file the plugin reads and the plugin's
+  # setup-azure-bot.sh --env-file rewrites on a secret rotation. A second copy here would win in readTeamsCreds
+  # (the install .env is read first) and go stale at the first rotation. CHANNEL_TOKEN finds the app id in the
+  # channel .env (getMainChannelToken, TEAMSALERTENV1110).
+  :
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
   env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
@@ -2010,6 +2068,73 @@ DISCORDENVEOF
 }
 ACCESSEOF
   ok "$(_t linux.discord_channel_configured)"
+elif [ "$CHANNEL_PROVIDER" = "teams" ] && [ -n "$TEAMS_BOT_APP_ID" ]; then
+  # EE2392D3: the plugin's own keys (setup-azure-bot.sh writes the same three plus the type).
+  (umask 077 && cat >"$CHANNEL_DIR/.env" <<TEAMSENVEOF
+TEAMS_BOT_APP_ID=$TEAMS_BOT_APP_ID
+TEAMS_BOT_APP_PASSWORD=$TEAMS_BOT_APP_PASSWORD
+TEAMS_BOT_TENANT_ID=$TEAMS_BOT_TENANT_ID
+TEAMS_BOT_APP_TYPE=SingleTenant
+TEAMSENVEOF
+  )
+  chmod 600 "$CHANNEL_DIR/.env"
+  [ -f "$CHANNEL_DIR/access.json" ] || cat >"$CHANNEL_DIR/access.json" <<ACCESSEOF
+{
+  "dmPolicy": "pairing",
+  "allowFrom": [],
+  "groups": {},
+  "pending": {}
+}
+ACCESSEOF
+  ok "$(_t linux.teams_channel_configured)"
+fi
+
+# EE2392D3: the Teams plugin is not on Claude Code's built-in channel-plugin list, so a teams install needs it in
+# the machine-wide managed-settings allowlist, or the bot looks online and never answers (inbound dropped). The
+# same shared writer as macOS (MANAGEDSETTINGSWRITE1103, scripts/lib/managed-settings-write.py --add-plugin): it
+# merges, keeps every other key and the file mode, and refuses a file it cannot parse. All four channel plugins,
+# as on macOS: once the list exists it REPLACES the built-in one, so a teams-only entry would mute a Telegram or
+# Discord agent on this host. Root as for the channelsEnabled write above; asked first as the user, so a file
+# that already allows all four needs no privilege.
+TEAMS_ALLOWLIST_PLUGINS="slack-channel@marveen-marketplace telegram@claude-plugins-official teams@marveen-marketplace discord@claude-plugins-official"
+managed_allows_all() { # $1 = the managed file, then NAME@MARKET...; 0 only when every one is listed
+  python3 -I -S - "$@" 2>/dev/null <<'MAA_PY'
+import json, sys
+path, want = sys.argv[1], sys.argv[2:]
+try:
+    d = json.load(open(path))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+have = set()
+for p in d.get("allowedChannelPlugins") or []:
+    if isinstance(p, dict):
+        have.add("%s@%s" % (p.get("plugin"), p.get("marketplace")))
+sys.exit(0 if all(w in have for w in want) else 1)
+MAA_PY
+}
+if [ "$CHANNEL_PROVIDER" = "teams" ]; then
+  TEAMS_MANAGED_FILE="/etc/claude-code/managed-settings.json" # fixed: a root write never takes its target from the environment
+  # shellcheck disable=SC2086
+  if managed_allows_all "$TEAMS_MANAGED_FILE" $TEAMS_ALLOWLIST_PLUGINS; then
+    ok "Teams engedelyezve a managed-settings allowlistben ($TEAMS_MANAGED_FILE)"
+  else
+    managed_settings_notice
+    _ms_priv=""
+    [ "$(id -u)" -eq 0 ] || _ms_priv="sudo"
+    _ms_args=()
+    for _p in $TEAMS_ALLOWLIST_PLUGINS; do _ms_args+=(--add-plugin "$_p"); done
+    if $_ms_priv mkdir -p "$(dirname "$TEAMS_MANAGED_FILE")" 2>/dev/null \
+      && $_ms_priv python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$TEAMS_MANAGED_FILE" --create "${_ms_args[@]}"; then
+      ok "Teams engedelyezve a managed-settings allowlistben ($TEAMS_MANAGED_FILE)"
+    else
+      warn "A managed-settings allowlist nem volt frissitheto, a fajl ERINTETLEN maradt. Teams nelkule a bot nem valaszol."
+      echo -e "  ${DIM}Kezi potlas (root):${NC}"
+      echo -e "  ${DIM}  sudo python3 -I $INSTALL_DIR/scripts/lib/managed-settings-write.py $TEAMS_MANAGED_FILE --create ${_ms_args[*]}${NC}"
+    fi
+    unset _ms_priv _ms_args _p
+  fi
 fi
 
 # Channel plugin install
@@ -2026,6 +2151,10 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="discord@claude-plugins-official"
   PLUGIN_SHORT="discord"
+elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
+  PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
+  PLUGIN_ID="teams@marveen-marketplace"
+  PLUGIN_SHORT="teams"
 else
   PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
   PLUGIN_ID="slack-channel@marveen-marketplace"
@@ -2834,8 +2963,8 @@ fi
 sleep 3
 echo ""
 echo -e "${BOLD}$(_t section_checks)${NC}"
-if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
-  echo -e "  ${RED}✗${NC} Bun nem talalhato. A Telegram plugin nem fog mukodni."
+if { [ "$CHANNEL_PROVIDER" = "telegram" ] || [ "$CHANNEL_PROVIDER" = "teams" ]; } && ! command -v bun &>/dev/null; then
+  echo -e "  ${RED}✗${NC} Bun nem talalhato. A ${CHANNEL_PROVIDER} plugin nem fog mukodni."
   echo -e "  ${BOLD}Javitas:${NC} curl -fsSL https://bun.sh/install | bash"
   echo -e "  ${DIM}Utana: source ~/.bashrc && ./scripts/start.sh${NC}"
 fi
