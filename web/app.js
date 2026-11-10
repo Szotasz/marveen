@@ -437,11 +437,12 @@ function switchPage(pageId) {
   // Kanban needs full-width layout (overrides main's max-width: 1200px)
   document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
   // Agents page tints each Terminal button green while that agent is working;
-  // same 3s poll + source as Activity. Stop it when we leave the page.
-  if (pageId !== 'agents') stopAgentsBusyPoll()
+  // same 3s poll + source as Activity. The overview's team graph uses the same
+  // poll for its green "working" border. Stop it when we leave both pages.
+  if (pageId !== 'agents' && pageId !== 'overview') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
-  if (pageId === 'overview') loadOverview()
+  if (pageId === 'overview') { loadOverview(); startAgentsBusyPoll() }
   if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
@@ -4644,6 +4645,21 @@ function startAgentsBusyPoll() {
 function stopAgentsBusyPoll() {
   if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
 }
+// The poll only serves the Overview and Agents pages, and a hidden tab needs
+// neither: stop it while the tab is hidden, and when the tab is shown again on
+// one of those pages, restart it (startAgentsBusyPoll refreshes at once).
+// Same rule as the kanban auto-refresh.
+function agentsBusyPollPageOpen() {
+  return ['overviewPage', 'agentsPage'].some((id) => {
+    const page = document.getElementById(id)
+    return !!page && !page.hidden
+  })
+}
+function onAgentsBusyPollVisibility() {
+  if (document.hidden) stopAgentsBusyPoll()
+  else if (agentsBusyPollPageOpen()) startAgentsBusyPoll()
+}
+document.addEventListener('visibilitychange', onAgentsBusyPollVisibility)
 async function refreshAgentTerminalBusy() {
   let entries
   try {
@@ -4677,11 +4693,12 @@ async function refreshAgentTerminalBusy() {
   }
   // Org-chart view: same signal, painted as the node's border. Toggled in place
   // rather than re-rendering, so an in-progress drag survives the tick.
-  // Scoped to #teamGraph on purpose -- the overview's mini graph is a snapshot
-  // and has no poll keeping it honest.
-  const treeGraph = document.getElementById('teamGraph')
-  if (treeGraph) {
-    treeGraph.querySelectorAll('.team-node[data-agent-id]').forEach((el) => {
+  // The overview's mini graph is kept live by the same poll while the overview
+  // page is open (switchPage starts it there too).
+  for (const graphId of ['teamGraph', 'overviewTeamGrid']) {
+    const graph = document.getElementById(graphId)
+    if (!graph) continue
+    graph.querySelectorAll('.team-node[data-agent-id]').forEach((el) => {
       el.classList.toggle('team-node-active', _workingAgentIds.has(el.dataset.agentId))
     })
   }
@@ -15083,6 +15100,75 @@ function renderQuotaStrip(q, fable) {
   }
 }
 
+// === Overview: token usage card (last 24h, per agent) ===
+// Reads the same /api/token-usage/summary the Token Monitor page uses. The
+// server only auto-collects hourly, so the overview triggers the incremental
+// collect itself (cursor-based, cheap), at most every 5 minutes, before reading.
+let _overviewTokensCollectedAt = 0
+async function loadOverviewTokens() {
+  const box = document.getElementById('overviewTokens')
+  if (!box) return
+  try {
+    if (Date.now() - _overviewTokensCollectedAt > 5 * 60_000) {
+      _overviewTokensCollectedAt = Date.now()
+      await fetch('/api/token-usage/collect', { method: 'POST' }).catch(() => {})
+    }
+    const now = Math.floor(Date.now() / 1000)
+    const [res, agentsRes] = await Promise.all([
+      fetch(`/api/token-usage/summary?from=${now - 86400}&to=${now}`),
+      fetch('/api/agents').catch(() => null),
+    ])
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const rows = await res.json()
+    // Rows are keyed by agent id; show the display name instead (the id stays
+    // in the tooltip). The main agent is not in /api/agents, so it goes through
+    // mainAgentDisplayName() like the Messages view. A failed /api/agents only
+    // costs the names, not the card.
+    const names = new Map()
+    try {
+      const agents = agentsRes && agentsRes.ok ? await agentsRes.json() : []
+      for (const a of Array.isArray(agents) ? agents : []) {
+        if (a && a.name) names.set(a.name, a.displayName || a.name)
+      }
+    } catch {}
+    const label = (id) => (id === mainAgentId() ? mainAgentDisplayName() : names.get(id) || id)
+    const list = (Array.isArray(rows) ? rows : []).map((r) => {
+      const read = r.totalCacheRead || 0
+      const ctxIn = (r.totalInput || 0) + read + (r.totalCacheCreation || 0)
+      return { agent: r.agent, name: label(r.agent), calls: r.totalCalls || 0, read, out: r.totalOutput || 0, ctxIn, total: ctxIn + (r.totalOutput || 0) }
+    }).filter((r) => r.total > 0).sort((a, b) => b.total - a.total)
+    if (list.length === 0) {
+      box.innerHTML = `<div class="overview-token-total">${escapeHtml(t('overview.tokens.empty'))}</div>`
+      return
+    }
+    const max = list[0].total
+    let sum = 0, sumRead = 0
+    box.innerHTML = list.map((r) => {
+      sum += r.total; sumRead += r.read
+      const pct = Math.max(2, Math.round((r.total / max) * 100))
+      const sub = t('overview.tokens.row_sub', {
+        calls: r.calls,
+        ctx: tuFormatTokens(r.calls ? Math.round(r.ctxIn / r.calls) : 0),
+        out: tuFormatTokens(r.out),
+      })
+      return `<div class="overview-token-row">
+        <div class="overview-token-name" title="${escapeHtml(r.agent)}">${escapeHtml(r.name)}</div>
+        <div class="overview-token-bar"><div class="overview-token-bar-fill" style="width:${pct}%"></div></div>
+        <div class="overview-token-value">${escapeHtml(tuFormatTokens(r.total))}</div>
+        <div class="overview-token-sub">${escapeHtml(sub)}</div>
+      </div>`
+    }).join('') + `<div class="overview-token-total">${escapeHtml(t('overview.tokens.total', {
+      total: tuFormatTokens(sum), pct: sum ? Math.round((sumRead / sum) * 100) : 0,
+    }))}</div>`
+  } catch {
+    box.innerHTML = `<div class="overview-token-total">${escapeHtml(t('overview.tokens.error'))}</div>`
+  }
+}
+{
+  const more = document.getElementById('overviewTokensMore')
+  if (more) more.addEventListener('click', (e) => { e.preventDefault(); switchPage('tokenUsage') })
+}
+
 async function loadOverview() {
   try {
     const res = await fetch('/api/overview')
@@ -15099,13 +15185,16 @@ async function loadOverview() {
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     renderQuotaStrip(d.quota, d.quotaFable)
+    loadOverviewTokens()
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
       const tg = await fetch('/api/team/graph')
       if (tg.ok) {
         const graph = await tg.json()
-        renderTeamGraph(document.getElementById('overviewTeamGrid'), graph)
+        // Seed the working border from the last poll; the 3s poll keeps it current.
+        renderTeamGraph(document.getElementById('overviewTeamGrid'), graph, { activeIds: _workingAgentIds })
+        if (agentsBusyTimer) refreshAgentTerminalBusy()
       }
     } catch {}
     // Activity
@@ -16305,6 +16394,10 @@ function wireOnboarding(step) {
 populateAvatarGrid()
 loadMemAgents()
 loadOverview()
+// The overview is the landing page without going through switchPage(), so its
+// live team-graph border needs the busy poll started here too. A tab opened in
+// the background starts it on its first visibilitychange instead.
+if (!document.hidden && !document.getElementById('overviewPage').hidden) startAgentsBusyPoll()
 loadAvailableModels()
 loadOllamaModels()
 {
