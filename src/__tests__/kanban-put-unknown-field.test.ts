@@ -11,7 +11,7 @@
 // succeeds.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
-import { initDatabase, createKanbanCard, getKanbanCard } from '../db.js'
+import { initDatabase, createKanbanCard, getKanbanCard, moveKanbanCard, listKanbanCards } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -83,5 +83,17 @@ describe('PUT /api/kanban/:id -- unknown fields are rejected, no-ops do not refr
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('c4')!.assignee).toBe('zara')
+  })
+
+  it('accepts the whole-card PUT of a card that carries active_seconds', async () => {
+    createKanbanCard({ id: 'c5', title: 'Card five', status: 'planned', assignee: 'samu' })
+    moveKanbanCard('c5', 'in_progress', 0)
+    // GET /api/kanban (listKanbanCards) is what the dashboard sends back: it adds active_seconds to a card with event rows.
+    const card = listKanbanCards({ ids: ['c5'] })[0]
+    expect(typeof card.active_seconds).toBe('number')
+    const { ctx, out } = putCtx('c5', { ...card, assignee: 'zara' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard('c5')!.assignee).toBe('zara')
   })
 })

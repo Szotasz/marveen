@@ -69,6 +69,9 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // done_evidence is written only by a move to done (see the /move route);
   // a whole-card PUT carries it back and must not 400 on it.
   'done_evidence',
+  // active_seconds is computed by listKanbanCards from kanban_card_events (never a column),
+  // and GET /api/kanban returns it on any card with event rows, so the whole-card PUT carries it back.
+  'active_seconds',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
