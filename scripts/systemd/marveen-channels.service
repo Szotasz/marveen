@@ -1,6 +1,6 @@
 # NOTE: replace /path/to/marveen (install dir), /home/USER (home), and USER=youruser with your values.
 [Unit]
-Description=Marveen Channels (Telegram bridge)
+Description=Marveen Channels (the main agent's chat channel)
 After=network.target
 # P1 FIX: StartLimit* belong in [Unit], not [Service] (systemd logged
 # "Unknown key StartLimitIntervalSec" and ignored them in [Service]).
