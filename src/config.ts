@@ -8,7 +8,7 @@ import { parseLabelPalette } from './css-color.js'
 import { resolveFleetVenvDir } from './fleet-venv.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL, getSettingDefinition, isOverridesOnly } from './config-registry.js'
 import { FIXED_RESERVED_AGENT_IDS } from './web/sanitize.js'
-import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
+import { getProviderType, getMainChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -552,7 +552,7 @@ export const KANBAN_LABEL_COLORS_REJECTED = kanbanLabelPalette.rejected
 export const KANBAN_LABEL_COLORS_OVERFLOW = kanbanLabelPalette.overflow
 
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
-export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
+export const CHANNEL_TOKEN = getMainChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
 // Where OPERATIONAL alerts go (watchdog respawns, stuck sessions, restart
 // notices). Empty = the owner chat; set it when the person who runs the
