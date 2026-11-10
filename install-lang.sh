@@ -50,6 +50,17 @@ _t() {
     hu:prompt_channel_select4) echo "  Válassz (1/2/3/4) [1]: " ;;
     en:channel_option_gromzo) echo "Gromzo (the Marveen app on your phone; no bot, no Bun)" ;;
     hu:channel_option_gromzo) echo "Gromzo (a Marveen alkalmazás a telefonodon; bot és Bun nélkül)" ;;
+    # EE2392D3: the 5-option prompt is a NEW key, like the 4-option one above (released Bridges keep asking with theirs).
+    en:prompt_channel_select5) echo "  Choose (1/2/3/4/5) [1]: " ;;
+    hu:prompt_channel_select5) echo "  Válassz (1/2/3/4/5) [1]: " ;;
+    en:channel_option_teams) echo "Microsoft Teams (an Azure Bot; needs Bun)" ;;
+    hu:channel_option_teams) echo "Microsoft Teams (Azure Bot; Bun kell hozzá)" ;;
+    en:prompt_teams_app_id) echo "  Azure Bot App ID (TEAMS_BOT_APP_ID, or leave empty, set later): " ;;
+    hu:prompt_teams_app_id) echo "  Azure Bot App ID (TEAMS_BOT_APP_ID, vagy hagyd üresen, később is beállíthatod): " ;;
+    en:prompt_teams_tenant_id) echo "  Tenant ID (TEAMS_BOT_TENANT_ID): " ;;
+    hu:prompt_teams_tenant_id) echo "  Tenant ID (TEAMS_BOT_TENANT_ID): " ;;
+    en:prompt_teams_app_password) echo "  Client secret (TEAMS_BOT_APP_PASSWORD, not shown while typing): " ;;
+    hu:prompt_teams_app_password) echo "  Client secret (TEAMS_BOT_APP_PASSWORD, gépelés közben nem látszik): " ;;
     en:prompt_telegram_token) echo "  Telegram bot token (or leave empty, set later): " ;;
     hu:prompt_telegram_token) echo "  Telegram bot token (vagy hagyd üresen, később is beállíthatod): " ;;
     en:prompt_slack_bot_token) echo "  Bot Token (xoxb-...): " ;;
@@ -378,6 +389,8 @@ _t() {
     hu:linux.tg_channel_configured) echo "Telegram csatorna konfigurálva" ;;
     en:linux.slack_channel_configured) echo "Slack channel configured" ;;
     hu:linux.slack_channel_configured) echo "Slack csatorna konfigurálva" ;;
+    en:linux.teams_channel_configured) echo "Teams channel configured" ;;
+    hu:linux.teams_channel_configured) echo "Teams csatorna konfigurálva" ;;
     en:linux.discord_channel_configured) echo "Discord channel configured" ;;
     hu:linux.discord_channel_configured) echo "Discord csatorna konfigurálva" ;;
     en:linux.ollama_starting) echo "  Starting Ollama service..." ;;
