@@ -335,6 +335,8 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   // The proposer is the authenticated token (routes/skills.ts proposedBy = auth.agent); approval stays the owner's.
   { methods: ['POST'], pattern: /^\/api\/skills\/propose$/, why: 'skill proposal (marveen-api.sh skill-propose, every agent CLAUDE.md)' },
   { methods: ['GET'], pattern: /^\/api\/updates$/, why: 'update status (read): version, conflict guard, deployment kind' },
+  // AUTOUPDATEDIVERG1110 (Dani F3): read-only, no fetch; an agent reads the hash it files its update_rebase request with.
+  { methods: ['GET'], pattern: /^\/api\/updates\/rebase-plan$/, why: 'update rebase plan (read): local commits, upstream, the hash an approval binds' },
   { methods: ['GET'], pattern: /^\/api\/claude-plans\/(?:state|readiness)$/, why: 'plan rotation telemetry and readiness (read); rotation and plan writes stay the main agent\'s' },
 ]
 

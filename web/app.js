@@ -15554,7 +15554,80 @@ document.getElementById('updatesCheckBtn').addEventListener('click', async () =>
   btn.disabled = false
 })
 
-async function runUpdate(autoStash) {
+// AUTOUPDATEDIVERG1110: a diverged install (local commits AND a newer upstream) used to end in a "not started"
+// toast. Now the dialog shows the plan (GET /api/updates/rebase-plan, read-only): the local commits that would be
+// replayed and the upstream commit. The owner approves exactly that plan: its hash goes back, and the server
+// refuses when the plan changed meanwhile. Then the update runs with that approval. Every text goes in through
+// textContent (commit subjects are free text from the install).
+async function offerRebaseUpdate() {
+  let plan
+  try {
+    const r = await fetch('/api/updates/rebase-plan')
+    plan = await r.json().catch(() => ({}))
+    if (!r.ok || !plan || typeof plan.hash !== 'string') {
+      showToast(t('updates.rebase.plan_error', { msg: (plan && plan.error) || ('HTTP ' + r.status) }), 12000)
+      return
+    }
+  } catch (err) {
+    showToast(t('updates.rebase.plan_error', { msg: err.message || String(err) }), 12000)
+    return
+  }
+  if (plan.willFail) {
+    showToast(plan.willFail === 'local-dependency-without-lock'
+      ? t('updates.rebase.will_fail_lock')
+      : t('updates.rebase.will_fail', { reason: plan.willFail }), 20000)
+    return
+  }
+  const content = document.createElement('div')
+  const list = document.createElement('ul')
+  list.className = 'settings-reset-confirm-keys update-rebase-commits'
+  list.dataset.testid = 'update-rebase-commits'
+  for (const c of plan.commits || []) {
+    const li = document.createElement('li')
+    const sha = document.createElement('span')
+    sha.className = 'settings-reset-confirm-key'
+    sha.textContent = String(c.sha || '').slice(0, 7)
+    const subject = document.createElement('span')
+    subject.textContent = String(c.subject || '')
+    li.append(sha, subject)
+    list.appendChild(li)
+  }
+  if ((plan.commits || []).length < plan.ahead) {
+    const li = document.createElement('li')
+    li.textContent = t('updates.rebase.more', { n: plan.ahead - plan.commits.length })
+    list.appendChild(li)
+  }
+  const target = document.createElement('p')
+  target.textContent = plan.targetSource === 'ls-remote'
+    ? t('updates.rebase.target_now', { target: String(plan.target).slice(0, 12) })
+    : t('updates.rebase.target_fetch', { target: String(plan.target).slice(0, 12), age: Math.round((plan.localRefAgeS || 0) / 60) })
+  const windowNote = document.createElement('p')
+  windowNote.textContent = t('updates.rebase.window')
+  const agentNote = document.createElement('p')
+  agentNote.textContent = t('updates.rebase.agent_path')
+  content.append(list, target, windowNote, agentNote)
+  const ok = await confirmDialog({
+    title: t('updates.rebase.title'),
+    message: t('updates.rebase.message', { n: plan.ahead }),
+    okLabel: t('updates.rebase.ok'),
+    content,
+    wide: true,
+  })
+  if (!ok) return
+  const a = await fetch('/api/updates/rebase-approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hash: plan.hash }),
+  })
+  const approval = await a.json().catch(() => ({}))
+  if (!a.ok || typeof approval.id !== 'string') {
+    showToast(t('updates.rebase.approve_failed', { msg: approval.error || ('HTTP ' + a.status) }), 12000)
+    return
+  }
+  await runUpdate(false, approval.id)
+}
+
+async function runUpdate(autoStash, rebaseApproval) {
   const btn = document.getElementById('updatesApplyBtn')
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
@@ -15568,7 +15641,9 @@ async function runUpdate(autoStash) {
     const res = await fetch('/api/updates/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ autoStash: autoStash === true }),
+      body: JSON.stringify(typeof rebaseApproval === 'string'
+        ? { autoStash: autoStash === true, rebaseApproval }
+        : { autoStash: autoStash === true }),
     })
     // Parse the body regardless of status so preflight reasons
     // (not-on-main / dirty-tree / detached-head returned as 409 by
@@ -15581,6 +15656,11 @@ async function runUpdate(autoStash) {
         if (confirm(t('updates.confirm.stash'))) {
           await runUpdate(true)
         }
+        return
+      }
+      // A diverged install: not a dead end, the approval dialog opens (AUTOUPDATEDIVERG1110).
+      if (data.reason === 'local-commits' && typeof rebaseApproval !== 'string') {
+        await offerRebaseUpdate()
         return
       }
       showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))

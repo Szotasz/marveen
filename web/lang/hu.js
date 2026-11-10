@@ -2185,6 +2185,20 @@ window._i18n.hu = {
   'connectors.builtin.computer_use_html': '<p>A Computer Use egy natív Claude képesség, amit nem a {brand} kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod, oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>',
   'connectors.builtin.chrome_html': '<p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A {brand} sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
 
+  // --- Updates: a diverged install, the owner-approved rebase (AUTOUPDATEDIVERG1110) ---
+  'updates.rebase.title':          'Frissítés helyi módosításokkal',
+  'updates.rebase.message':        'Ezen a telepítésen {n} helyi módosítás van, és az új verzió is hozott változást. A frissítés a helyi módosításokat az új verzióra rakja át. Ha valamelyik ütközik, semmi nem változik, és megmondjuk, melyik.',
+  'updates.rebase.ok':             'Frissítés jóváhagyással',
+  'updates.rebase.target_now':     'Az új verzió: {target} (most lekérdezve).',
+  'updates.rebase.target_fetch':   'Az új verzió: {target} (az utolsó letöltés szerint, {age} perce).',
+  'updates.rebase.window':         'A jóváhagyás 30 percig érvényes, és csak erre a frissítésre szól. Ha közben új módosítás jön, újra kell kérni.',
+  'updates.rebase.agent_path':     'Ha nem most indítod: kérd meg az ügynöködet, hogy kérjen erre jóváhagyást, és a Jóváhagyások oldalon jóváhagyod.',
+  'updates.rebase.more':           '... és még {n}',
+  'updates.rebase.will_fail_lock': 'Ez a frissítés biztosan elbukna: egy helyi módosítás a package.json-t a package-lock.json nélkül írja át. Előbb ezt kell rendbe tenni (npm install, majd mindkét fájl commit).',
+  'updates.rebase.will_fail':      'Ez a frissítés biztosan elbukna ({reason}).',
+  'updates.rebase.plan_error':     'A frissítési terv nem kérhető le: {msg}',
+  'updates.rebase.approve_failed': 'A jóváhagyás nem jött létre: {msg}',
+
   // --- Updates toasts ---
   'updates.toast.not_started':   'Frissítés nem indult: {msg}',
   'updates.toast.started':       'Frissítés elindult, a dashboard újratöltődik...',

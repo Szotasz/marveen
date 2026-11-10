@@ -20,7 +20,11 @@ import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
 import type { RouteContext } from './types.js'
-import { mayActAsOwner, refuseOwner } from './auth.js'
+import { mayActAsOwner, ownerCookieSession, refuseOwner } from './auth.js'
+import { computeTimeoutAt } from './approvals.js'
+import { createApproval, getApproval, resolveApproval } from '../../db.js'
+import { computeRebasePlan, UPDATE_REBASE_CATEGORY, UPDATE_REBASE_WINDOW_S, type PlanGitRunner } from '../../update-rebase-plan.js'
+import { randomUUID } from 'node:crypto'
 import { deployment, MANAGED_BY_IMAGE } from '../deployment.js'
 
 const execFileAsync = promisify(execFile)
@@ -43,6 +47,36 @@ async function trackedBranchAsync(): Promise<string> {
   } catch {
     return 'main'
   }
+}
+
+// AUTOUPDATEDIVERG1110 2nd PR: the read-only plan of an owner-approved rebase (src/update-rebase-plan.ts).
+const planGit: PlanGitRunner = {
+  out: (args, timeoutMs) => gitOut(args, timeoutMs),
+  fetchAgeS: () => {
+    try { return Math.max(0, Math.round((Date.now() - statSync(join(PROJECT_ROOT, '.git', 'FETCH_HEAD')).mtimeMs) / 1000)) } catch { return null }
+  },
+}
+const APPROVAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+// The apply-time check of a rebase approval. NOT a consume (update.sh's clean process consumes it, once, right
+// before the rebase, against the commit its own fetch brought): this only makes a stale or wrong approval fail
+// here, at once and readably, instead of after the run has started.
+async function checkRebaseApproval(id: string): Promise<{ ok: true } | { ok: false; reason: string; message: string }> {
+  const a = getApproval(id)
+  if (!a || a.category !== UPDATE_REBASE_CATEGORY) return { ok: false, reason: 'rebase-approval-not-found', message: 'No update_rebase approval with this id.' }
+  if (a.status !== 'approved') return { ok: false, reason: 'rebase-approval-not-approved', message: 'The owner has not approved this update yet.' }
+  if (a.consumed_at != null) return { ok: false, reason: 'rebase-approval-used', message: 'This approval was already used; ask for a new one.' }
+  const nowS = Math.floor(Date.now() / 1000)
+  if (!a.resolved_at || nowS - a.resolved_at > UPDATE_REBASE_WINDOW_S) {
+    return { ok: false, reason: 'rebase-approval-expired', message: 'The approval is older than 30 minutes; ask for a new one.' }
+  }
+  const r = await computeRebasePlan(planGit)
+  if (!r.ok) return { ok: false, reason: 'rebase-plan-unavailable', message: `The update plan cannot be computed (${r.reason}).` }
+  if (r.plan.willFail) return { ok: false, reason: 'rebase-will-fail', message: `This update would fail for sure (${r.plan.willFail}).` }
+  if (r.plan.hash !== a.content_hash) {
+    return { ok: false, reason: 'rebase-plan-changed', message: 'The plan changed since the approval (a new local or upstream commit); look at it again and approve the new one.' }
+  }
+  return { ok: true }
 }
 
 // Pidfile path owned by update.sh for the lifetime of an update run.
@@ -179,18 +213,70 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // AUTOUPDATEDIVERG1110 2nd PR, Dani F3: READ-ONLY. No fetch, no ref write (ls-remote reads the remote).
+  // The agent reads it to file its update_rebase request with this hash; the dialog shows it to the owner.
+  if (path === '/api/updates/rebase-plan' && method === 'GET') {
+    const r = await computeRebasePlan(planGit)
+    json(res, r.ok ? r.plan : { error: r.reason }, r.ok ? 200 : 409)
+    return true
+  }
+
+  // Dani F2: the owner approves what the dialog SHOWED. The dialog sends back the plan's hash; the server
+  // recomputes the plan now and refuses (409 plan_changed) when it differs. Owner only; the row is created AND
+  // approved by the owner's session in one step, and says so (agent_id and resolved_by both "owner:<user>").
+  if (path === '/api/updates/rebase-approve' && method === 'POST') {
+    if (!mayActAsOwner(ctx.auth, req)) {
+      refuseOwner(res, 'Approving an update that replays local changes needs the dashboard login (an owner session).')
+      return true
+    }
+    const buf = await readBodyOrRefuse(ctx.req, res)
+    if (!buf) return true
+    let hash: unknown
+    try { hash = (JSON.parse(buf.toString()) as { hash?: unknown }).hash } catch { /* checked below */ }
+    if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) {
+      json(res, { error: 'hash must be the 64-char hex hash of the plan the dialog showed', reason: 'bad-hash' }, 400)
+      return true
+    }
+    const r = await computeRebasePlan(planGit)
+    if (!r.ok) { json(res, { error: `The update plan cannot be computed (${r.reason}).`, reason: 'rebase-plan-unavailable' }, 409); return true }
+    if (!r.plan.diverged) { json(res, { error: 'There is nothing to replay: the install is not diverged.', reason: 'not-diverged' }, 409); return true }
+    if (r.plan.willFail) { json(res, { error: `This update would fail for sure (${r.plan.willFail}).`, reason: 'rebase-will-fail' }, 409); return true }
+    if (r.plan.hash !== hash) {
+      json(res, { error: 'The plan changed since the dialog opened; look at it again.', reason: 'plan_changed', plan: r.plan }, 409)
+      return true
+    }
+    const owner = (ctx.auth?.kind === 'session' ? ctx.auth.user : null) ?? ownerCookieSession(req) ?? 'owner'
+    const id = randomUUID()
+    createApproval({
+      id,
+      agent_id: `owner:${owner}`,
+      category: UPDATE_REBASE_CATEGORY,
+      action_description: `Update with ${r.plan.ahead} local commit(s) replayed onto ${r.plan.target.slice(0, 12)} (approved by the owner in the dashboard update dialog, one step)`,
+      action_payload: JSON.stringify({ branch: r.plan.branch, head: r.plan.head, target: r.plan.target, commits: r.plan.commits.map((c) => c.sha) }),
+      timeout_at: computeTimeoutAt(UPDATE_REBASE_CATEGORY, UPDATE_REBASE_WINDOW_S),
+      content_hash: r.plan.hash,
+    })
+    resolveApproval(id, 'approved', `owner:${owner}`)
+    logger.info({ id, owner, head: r.plan.head, target: r.plan.target, ahead: r.plan.ahead }, 'update_rebase approved by the owner in one step')
+    json(res, { id, hash: r.plan.hash, windowS: UPDATE_REBASE_WINDOW_S }, 201)
+    return true
+  }
+
   if (path === '/api/updates/apply' && method === 'POST') {
     // Optional body { autoStash: true } turns the dirty-tree precheck
     // failure into a managed stash + pop pattern inside update.sh.
     // Without it, a dirty working tree returns 409 'dirty-tree' as before.
     let autoStash = false
+    // AUTOUPDATEDIVERG1110 2nd PR: the owner's update_rebase approval for a diverged install (its id).
+    let rebaseApproval: unknown
     // A body cut off mid-way is refused, not read as "no autoStash".
     const buf = await readBodyOrRefuse(ctx.req, res)
     if (!buf) return true
     try {
       if (buf.length > 0) {
-        const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown }
+        const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown; rebaseApproval?: unknown }
         autoStash = parsed.autoStash === true
+        if (parsed.rebaseApproval !== undefined) rebaseApproval = parsed.rebaseApproval
       }
     } catch {
       // Empty/invalid body: treat as autoStash=false. Real validation lives
@@ -198,6 +284,14 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     }
     // OWNEREXEC1109: autoStash lets the update stash local changes to the install and, when the pop conflicts, leave
     // them behind; that is the owner's call. A plain apply (no body, as the operator surface forwards it) is unchanged.
+    if (rebaseApproval !== undefined) {
+      if (typeof rebaseApproval !== 'string' || !APPROVAL_ID_RE.test(rebaseApproval)) {
+        json(res, { error: 'rebaseApproval must be an approval id', reason: 'bad-approval-id' }, 400)
+        return true
+      }
+      const ok = await checkRebaseApproval(rebaseApproval)
+      if (!ok.ok) { json(res, { error: ok.message, reason: ok.reason }, 409); return true }
+    }
     if (autoStash && !mayActAsOwner(ctx.auth, req)) {
       refuseOwner(res, 'An update that stashes local changes needs the dashboard login (an owner session).')
       return true
@@ -332,12 +426,17 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       // HEAD) still hard-blocks since stash cannot rescue it.
       // dirty-tree can be auto-stashed; local-commits and detached-head cannot.
       const skipForAutoStash = preflight.reason === 'dirty-tree' && autoStash
-      if (!skipForAutoStash) {
+      // A diverged install with a valid owner approval (checked above): update.sh replays the local commits.
+      const skipForRebase = preflight.reason === 'local-commits' && typeof rebaseApproval === 'string'
+      if (!skipForAutoStash && !skipForRebase) {
         releaseLock()
         const body: Record<string, unknown> = {
           error: preflight.message,
           reason: preflight.reason,
         }
+        // Samu 74881 point 8: the local-commits refusal is not a dead end -- the dashboard opens the
+        // approval dialog from this, and an agent learns where to read the plan.
+        if (preflight.reason === 'local-commits') body.rebasePlan = '/api/updates/rebase-plan'
         json(res, body, 409)
         return true
       }
@@ -365,6 +464,11 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       // this spawn starts.
       const updateEnv: NodeJS.ProcessEnv = { ...process.env, AUTO_STASH: autoStash ? '1' : '0' }
       delete updateEnv['NODE_ENV']
+      // Dani F1: nothing from the dashboard's own environment steers the rebase. The approval id is the only
+      // input, and only from this request; the consume itself runs in update.sh's env -i process.
+      delete updateEnv['UPDATE_AUTO_REBASE']
+      delete updateEnv['UPDATE_REBASE_APPROVAL']
+      if (typeof rebaseApproval === 'string') updateEnv['UPDATE_REBASE_APPROVAL'] = rebaseApproval
       const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
         cwd: PROJECT_ROOT,
         detached: true,
