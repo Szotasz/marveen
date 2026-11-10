@@ -120,6 +120,23 @@ export async function runRotateCheck(): Promise<void> {
   // happened before the switch was turned off.
   if (!settingIsOn('CLAUDE_ROTATION_ENABLED')) return
 
+  // SUBPLANTOKEN1110 2nd PR: the sub-agents on token plans, FIRST -- their
+  // lines must come before a main-agent ROTATE, whose POST restarts the very
+  // session that processes them. Independent of the main agent's preconditions
+  // below (isolation, API key, usage-collect): a sub-agent's plan is its own.
+  // The launcher wiring is loaded only when some sub-agent names a token plan.
+  try {
+    const plans = readClaudePlans()
+    if (subAgentTokenPlanIds(plans).size > 0) {
+      const { runSubAgentStage } = await import('./web/claude-plan-subagent-wiring.js')
+      const sub = await runSubAgentStage(plans, readClaudePlansState(), Date.now())
+      writeClaudePlansState(sub.state)
+      for (const line of sub.lines) console.log(line)
+    }
+  } catch (err) {
+    console.error('claude-plan-rotate-check: sub-agent stage failed:', err instanceof Error ? err.name : 'error')
+  }
+
   // The active plan's usage, from exactly ONE source (see ActiveReading):
   // its own probe when it is a token-mode plan in effect, otherwise
   // usage-collect.py (the host login, which is then the right account).
