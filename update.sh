@@ -673,8 +673,19 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
   # button does nothing" is the dominant report). Rewriting someone else's
   # history without their say-so is not a default we are willing to ship, so the
   # switch is off unless UPDATE_AUTO_REBASE=1 is set.
-  if [ "${UPDATE_AUTO_REBASE:-0}" = "1" ]; then
-    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; UPDATE_AUTO_REBASE=1, auto-rebase origin/${CURRENT_BRANCH}-re..."
+  #
+  # AUTOUPDATEDIVERG1110: the switch alone is no longer enough. Rewriting the
+  # install's history is the OWNER's call, and an environment variable is
+  # something any caller sets (an agent could, and the db-write-gate, which
+  # denies `git rebase` in the install, does not see a script that rebases).
+  # The replay now runs only after the owner's approval for exactly this rebase
+  # (category update_rebase, bound to branch + HEAD + upstream target) has been
+  # consumed, once, right before it. Everything else -- no approval id, a used,
+  # expired, unapproved or differently bound one, no dashboard -- is the same
+  # refusal as without the switch: exit 5, HEAD unchanged. The why and the flow:
+  # scripts/lib/update-rebase-go.sh; what to ask for: scripts/update-rebase-request.sh.
+  if [ "${UPDATE_AUTO_REBASE:-0}" = "1" ] || [ -n "${UPDATE_REBASE_APPROVAL:-}" ]; then
+    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; auto-rebase kerve, a tulaj jovahagyasat ellenorzom..."
     # A FAILED fetch must NOT fall through to the rebase: rebasing onto a stale
     # origin ref does not error, it just quietly does something other than what
     # the operator asked for. Bail out to the same loud refusal as a conflict.
@@ -685,7 +696,24 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
       restore_stash_before_exit
       exit 5
     fi
-    if git -c core.editor=true rebase "origin/${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log" 2>&1; then
+    # The GO is checked against what will really be rebased: HEAD now, and the
+    # commit the fetch above just brought (FETCH_HEAD), which is also the exact
+    # rebase target below -- not a name that could move in between.
+    REBASE_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
+    REBASE_TARGET="$(git rev-parse --verify -q 'FETCH_HEAD^{commit}' 2>/dev/null || true)"
+    UPDATE_REBASE_GO_REASON='no-sha'
+    if [ -n "$REBASE_HEAD" ] && [ -n "$REBASE_TARGET" ]; then UPDATE_REBASE_GO_REASON='no-go-lib'; fi
+    if ! { [ -n "$REBASE_HEAD" ] && [ -n "$REBASE_TARGET" ] \
+           && . "$INSTALL_DIR/scripts/lib/update-rebase-go.sh" \
+           && update_rebase_go_consume "$INSTALL_DIR" "${UPDATE_REBASE_APPROVAL:-}" "$CURRENT_BRANCH" "$REBASE_HEAD" "$REBASE_TARGET"; }; then
+      echo "update_rebase GO refused: reason=${UPDATE_REBASE_GO_REASON:-unknown} approval=${UPDATE_REBASE_APPROVAL:-none} branch=${CURRENT_BRANCH} head=${REBASE_HEAD:-?} target=${REBASE_TARGET:-?}" >>"$INSTALL_DIR/store/update.log"
+      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; az auto-rebase a tulaj jovahagyasa nelkul nem indul (${UPDATE_REBASE_GO_REASON:-unknown}). Jovahagyas kerese: bash scripts/update-rebase-request.sh, utana UPDATE_REBASE_APPROVAL=<id> bash update.sh"
+      echo -e "${RED}HIBA:${NC} az auto-rebase tulaj-jovahagyas nelkul nem indul (${UPDATE_REBASE_GO_REASON:-unknown}); a checkout valtozatlan. Jovahagyas kerese: bash scripts/update-rebase-request.sh"
+      restore_stash_before_exit
+      exit 5
+    fi
+    echo "update_rebase GO consumed: approval=${UPDATE_REBASE_APPROVAL} branch=${CURRENT_BRANCH} head=${REBASE_HEAD} target=${REBASE_TARGET}" >>"$INSTALL_DIR/store/update.log"
+    if git -c core.editor=true rebase "$REBASE_TARGET" >>"$INSTALL_DIR/store/update.log" 2>&1; then
       echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre)."
       RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re."
     else
@@ -697,7 +725,7 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
       exit 5
     fi
   else
-    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (vagy UPDATE_AUTO_REBASE=1 az automatikus ujrajatszashoz)"
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (az automatikus ujrajatszashoz tulaj-jovahagyas kell: bash scripts/update-rebase-request.sh)"
     echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
     restore_stash_before_exit
     exit 5

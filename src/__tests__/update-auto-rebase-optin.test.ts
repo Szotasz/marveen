@@ -106,11 +106,15 @@ if [ "$1" = "rebase" ] || [ "$3" = "rebase" ]; then echo "REBASE_RAN"; fi`),
     expect(r.out).toContain('a fetch elbukott')
   })
 
-  it('with the opt-in on and a clean fetch, the rebase runs and the update continues', () => {
-    const r = run({ autoRebase: '1', gitScript: gitStub('') })
-    expect(r.code).toBe(0)
-    expect(r.out).toContain('Auto-rebase sikeres')
-    expect(r.out).toContain('REACHED_END')
+  // AUTOUPDATEDIVERG1110: the opt-in alone no longer rebases. With a clean fetch and no owner GO the run stops
+  // with exit 5 before the rebase; the GO paths (consumed once, bound to HEAD + target) are measured with real git
+  // and the real approvals route in update-rebase-owner-go.test.ts.
+  it('with the opt-in on and a clean fetch but no owner GO, nothing is rebased and the run stops with exit 5', () => {
+    const r = run({ autoRebase: '1', gitScript: gitStub('if [ "$1" = "rebase" ] || [ "$3" = "rebase" ]; then echo "REBASE_RAN"; fi') })
+    expect(r.code).toBe(5)
+    expect(r.out).not.toContain('REBASE_RAN')
+    expect(r.out).not.toContain('REACHED_END')
+    expect(r.out).toContain('tulaj-jovahagyas nelkul nem indul')
   })
 })
 
