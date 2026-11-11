@@ -19392,7 +19392,7 @@ function formatSettingValue(value) {
 // nothing. `danger` styles the confirm button for an action that cannot be
 // undone or cuts running work. Every text goes in through textContent; extra
 // markup (`content`) is built by the caller from elements, never from HTML.
-function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '' }) {
+function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '', cancelLabel = '' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay active'
@@ -19423,7 +19423,7 @@ function confirmDialog({ title, message, okLabel, danger = false, content = null
     const cancelBtn = document.createElement('button')
     cancelBtn.type = 'button'
     cancelBtn.className = 'btn-secondary'
-    cancelBtn.textContent = t('common.cancel')
+    cancelBtn.textContent = cancelLabel || t('common.cancel')
     const okBtn = document.createElement('button')
     okBtn.type = 'button'
     okBtn.className = danger ? 'btn-danger' : 'btn-primary'
@@ -21809,7 +21809,14 @@ function renderFederationPage() {
     </div>`
   document.getElementById('fedEnabledToggle').addEventListener('change', async (e) => {
     const enabled = e.target.checked
-    if (!enabled && !confirm(t('federation.confirm.disable'))) { e.target.checked = true; return }
+    if (!enabled) {
+      const confirmed = await confirmDialog({
+        title: t('federation.confirm.disable_title'),
+        message: t('federation.confirm.disable'),
+        okLabel: t('federation.confirm.disable_ok'),
+      })
+      if (!confirmed) { e.target.checked = true; return }
+    }
     try {
       const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
       const data = await res.json().catch(() => ({}))
@@ -21890,14 +21897,45 @@ async function fedRevealToken(peerId, card) {
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
 
+// A peer's inbound token in the app's own dialog (the pairing showed it in a native prompt()): selectable,
+// and "Copy" puts it on the clipboard. The Inbound token button shows it again later.
+async function fedShowInboundTokenDialog(peerId, token, messageKey) {
+  const box = document.createElement('input')
+  box.type = 'text'
+  box.readOnly = true
+  box.className = 'confirm-dialog-token'
+  box.value = token
+  box.addEventListener('focus', () => box.select())
+  const copy = await confirmDialog({
+    title: t('federation.token_dialog.title', { peer: peerId }),
+    message: t(messageKey),
+    okLabel: t('federation.token_dialog.copy'),
+    cancelLabel: t('federation.token_dialog.close'),
+    content: box,
+  })
+  if (!copy) return
+  try {
+    await navigator.clipboard.writeText(token)
+    showToast(t('federation.toast.token_copied'))
+  } catch { showToast(t('federation.token_dialog.copy_failed')) }
+}
+
 async function fedRotateToken(peerId) {
-  if (!confirm(t('federation.confirm.rotate', { peer: peerId }))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.rotate_title'),
+    message: t('federation.confirm.rotate', { peer: peerId }),
+    okLabel: t('federation.confirm.rotate_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     showToast(t('federation.toast.rotated'))
     loadFederationPage()
+    // The answer carries the new token: shown right away, like at pairing.
+    if (data.inboundToken) await fedShowInboundTokenDialog(peerId, data.inboundToken, 'federation.token_dialog.rotated_hint')
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
 
@@ -21914,7 +21952,13 @@ async function fedToggleShareCap(peerId, share) {
 }
 
 async function fedDeletePeer(peerId) {
-  if (!confirm(t('federation.confirm.delete_peer', { peer: peerId }))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.delete_peer_title'),
+    message: t('federation.confirm.delete_peer', { peer: peerId }),
+    okLabel: t('federation.confirm.delete_peer_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' })
     const data = await res.json().catch(() => ({}))
@@ -21935,7 +21979,12 @@ async function fedDeletePeer(peerId) {
 // directive). Reuses the existing main-agent restart endpoint -- no new
 // backend, no terminal command for the operator.
 async function fedApplyToMainAgent() {
-  if (!confirm(t('federation.confirm.apply'))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.apply_title'),
+    message: t('federation.confirm.apply'),
+    okLabel: t('federation.confirm.apply_ok'),
+  })
+  if (!confirmed) return
   try {
     // Server-side apply: restarts the main channels agent by MAIN_AGENT_ID,
     // so the client does not depend on window._marveen being loaded (the
@@ -21950,7 +21999,14 @@ async function fedApplyToMainAgent() {
     let data = await res.json().catch(() => ({}))
     if (res.status === 409 && data.error === 'restart-blocked') {
       const key = data.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-      if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+      // The same question as the main restart button (restartMainAgentGated).
+      const forced = await confirmDialog({
+        title: t('agents.confirm.hard_restart_title'),
+        message: t(key),
+        okLabel: t('agents.confirm.force_restart_ok'),
+        danger: true,
+      })
+      if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
       res = await apply(true)
       data = await res.json().catch(() => ({}))
     }
@@ -22008,7 +22064,7 @@ async function fedSavePeerModal() {
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
       // The minted inbound token is shown ONCE right away: the owner hands it
       // to the peer's operator during pairing.
-      prompt(t('federation.modal.minted_token_hint'), data.inboundToken)
+      await fedShowInboundTokenDialog(id, data.inboundToken, 'federation.modal.minted_token_hint')
       showToast(t('federation.toast.peer_added'))
     }
     closeModal(document.getElementById('fedPeerModalOverlay'))
@@ -22017,7 +22073,13 @@ async function fedSavePeerModal() {
 }
 
 async function fedRemoveAll() {
-  if (!confirm(t('federation.confirm.remove'))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.remove_title'),
+    message: t('federation.confirm.remove'),
+    okLabel: t('federation.confirm.remove_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch('/api/federation/remove', { method: 'POST' })
     const data = await res.json().catch(() => ({}))

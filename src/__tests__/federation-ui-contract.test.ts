@@ -86,7 +86,8 @@ describe('federation UI wiring', () => {
     expect(HTML).toContain('data-i18n="federation.btn.apply"')
     expect(APP).toMatch(/async function fedApplyToMainAgent/)
     const fn = APP.slice(APP.indexOf('function fedApplyToMainAgent'), APP.indexOf('async function fedRefreshAndReload'))
-    expect(fn).toContain("confirm(t('federation.confirm.apply'))")
+    expect(fn).toContain("message: t('federation.confirm.apply'),")
+    expect(fn).not.toMatch(/(^|[^.\w])confirm\(/)
     // Server-side apply endpoint -- NOT the client-agent-id-dependent restart
     // (which 404'd when window._marveen was not loaded on the federation page).
     expect(fn).toMatch(/fetch\('\/api\/federation\/apply'/)

@@ -5,7 +5,8 @@
  * - the route: a refused gate answers 409 with the reason and does not restart; an allowed gate restarts; an
  *   explicit {"force": true} skips the gate and is logged; the page's plain '{}' body is gated;
  * - the Federation page (the shipped fedApplyToMainAgent from web/app.js, fake DOM): a refusal asks a second time
- *   and only then forces; a declined second confirm starts nothing.
+ *   and only then forces; a declined second confirm starts nothing. Both questions go through the app's own
+ *   confirmDialog (the force one in a danger dialog, as on the main restart button); a native confirm() throws.
  * The gate and the hard restart are stubbed: no tmux, no launchctl.
  */
 import { readFileSync } from 'node:fs'
@@ -101,12 +102,18 @@ async function click(replies: Reply[], confirms: boolean[]) {
     if (!r) throw new Error('unexpected request')
     return { status: r.status, ok: r.status >= 200 && r.status < 300, json: async () => r.body }
   }
-  const confirm = (m: string) => { asked.push(m); return confirms.shift() ?? false }
+  const dialogs: Array<{ title: string; okLabel: string; danger?: boolean }> = []
+  const confirmDialog = async (o: { title: string; message: string; okLabel: string; danger?: boolean }) => {
+    asked.push(o.message)
+    dialogs.push({ title: o.title, okLabel: o.okLabel, ...(o.danger ? { danger: true } : {}) })
+    return confirms.shift() ?? false
+  }
+  const confirm = () => { throw new Error('native confirm() called') }
   const t = (k: string, p?: { msg?: string }) => (p?.msg ? `${k}:${p.msg}` : k)
   const showToast = (m: string) => { toasts.push(m) }
-  const fn = new Function('fetch', 'confirm', 't', 'showToast', `${HELPERS}\n${SNIPPET}\nreturn fedApplyToMainAgent`)(fetch, confirm, t, showToast) as () => Promise<void>
+  const fn = new Function('fetch', 'confirm', 'confirmDialog', 't', 'showToast', `${HELPERS}\n${SNIPPET}\nreturn fedApplyToMainAgent`)(fetch, confirm, confirmDialog, t, showToast) as () => Promise<void>
   await fn()
-  return { calls, toasts, asked }
+  return { calls, toasts, asked, dialogs }
 }
 
 describe('Federation page apply button', () => {
@@ -125,6 +132,10 @@ describe('Federation page apply button', () => {
     'refused (%s): a second confirm, then a forced request', async (reason, key) => {
       const r = await click([{ status: 409, body: { error: 'restart-blocked', reason } }, { status: 200, body: { ok: true } }], [true, true])
       expect(r.asked).toEqual(['federation.confirm.apply', key])
+      expect(r.dialogs).toEqual([
+        { title: 'federation.confirm.apply_title', okLabel: 'federation.confirm.apply_ok' },
+        { title: 'agents.confirm.hard_restart_title', okLabel: 'agents.confirm.force_restart_ok', danger: true },
+      ])
       expect(r.calls.map((c) => c.body)).toEqual(['{}', JSON.stringify({ force: true })])
       expect(r.toasts).toEqual(['federation.toast.applied'])
     })
@@ -140,6 +151,12 @@ describe('Federation page apply button', () => {
     expect(r.calls).toHaveLength(1)
     expect(r.asked).toEqual(['federation.confirm.apply'])
     expect(r.toasts).toEqual(['federation.toast.error:something else'])
+  })
+
+  it('the first question declined: no request at all', async () => {
+    const r = await click([], [false])
+    expect(r.calls).toEqual([])
+    expect(r.toasts).toEqual([])
   })
 
   it('another error is an error toast, never a force', async () => {

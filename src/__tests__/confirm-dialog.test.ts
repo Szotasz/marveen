@@ -1586,3 +1586,186 @@ describe('the agent and fleet questions use it', () => {
     expect(css).toMatch(/\.confirm-dialog-check \{[^}]*display: flex/)
   })
 })
+
+describe('the federation questions use it, and the pairing token is no prompt() any more', () => {
+  const fnBlock = (name: string) => {
+    const m = new RegExp(`(?:async )?function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf(') {', m.index) + 2; j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const TOGGLE = (() => {
+    const i = APP.indexOf("document.getElementById('fedEnabledToggle').addEventListener('change', ")
+    if (i < 0) return ''
+    const start = APP.indexOf('async (e) => {', i)
+    let depth = 0
+    for (let j = APP.indexOf('{', start); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(start, j + 1)
+    }
+    return ''
+  })()
+  const TOKEN = fnBlock('fedShowInboundTokenDialog')
+  const ROTATE = fnBlock('fedRotateToken')
+  const DELETE = fnBlock('fedDeletePeer')
+  const REMOVE = fnBlock('fedRemoveAll')
+  const SAVE = fnBlock('fedSavePeerModal')
+  const APPLY = fnBlock('fedApplyToMainAgent')
+  const tr = (key: string, vars?: Record<string, unknown>) => (vars ? `${key} ${JSON.stringify(vars)}` : key)
+  const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+  const NATIVE = /(^|[^.\w])(confirm|alert|prompt)\(/
+
+  it('the handlers were found, with no native confirm() or prompt() left', () => {
+    for (const part of [TOGGLE, TOKEN, ROTATE, DELETE, REMOVE, SAVE, APPLY]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(NATIVE)
+    }
+    const code = APP.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(code).not.toMatch(/(^|[^.\w])prompt\(/)
+  })
+
+  it('confirmDialog takes an optional cancel label; without one it stays "Cancel"', () => {
+    expect(APP).toMatch(/function confirmDialog\(\{[^)]*cancelLabel = ''[^)]*\}\)/)
+    expect(APP).toContain("cancelBtn.textContent = cancelLabel || t('common.cancel')")
+  })
+
+  it('switching federation off asks first; a "no" ticks the box back and sends nothing; switching on asks nothing', async () => {
+    async function run(enabled: boolean, answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const bodies: string[] = []
+      const handler = new Function('confirmDialog', 't', 'fetch', 'showToast', 'refusalReason', 'fedRefreshAndReload', `return ${TOGGLE}`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer }, tr,
+        async (_url: string, init: { body: string }) => { bodies.push(init.body); return { ok: true, json: async () => ({}) } },
+        () => {}, () => '', () => {},
+      ) as (e: unknown) => Promise<void>
+      const target = { checked: enabled }
+      await handler({ target })
+      return { dialogs, bodies, target }
+    }
+    const no = await run(false, false)
+    expect(no.dialogs).toEqual([{ title: 'federation.confirm.disable_title', message: 'federation.confirm.disable', okLabel: 'federation.confirm.disable_ok' }])
+    expect(no.bodies).toEqual([])
+    expect(no.target.checked).toBe(true)
+    expect((await run(false, true)).bodies).toEqual([JSON.stringify({ enabled: false })])
+    const on = await run(true, false)
+    expect(on.dialogs).toEqual([])
+    expect(on.bodies).toEqual([JSON.stringify({ enabled: true })])
+  })
+
+  it('rotating, deleting a peer and removing it all ask in danger dialogs; a "no" sends nothing', async () => {
+    async function run(src: string, name: string, answer: boolean, reply: Record<string, unknown> = {}) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const calls: Array<{ url: string; method: string }> = []
+      const shown: unknown[][] = []
+      const store = { length: 0, key: () => null, removeItem: () => {} }
+      const fn = new Function('confirmDialog', 't', 'fetch', 'showToast', 'refusalReason', 'loadFederationPage', 'fedShowInboundTokenDialog', 'localStorage', 'chatSelectedAgent', 'federatedPeerStatus', 'fedRefreshAndReload', `${src}\nreturn ${name}`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer }, tr,
+        async (url: string, init: { method?: string } = {}) => { calls.push({ url, method: init.method || 'GET' }); return { ok: true, json: async () => reply } },
+        () => {}, () => '', () => {}, async (...a: unknown[]) => { shown.push(a) }, store, null, [], () => {},
+      ) as (id?: string) => Promise<void>
+      await fn('peer-a')
+      return { dialogs, calls, shown }
+    }
+    const rotate = await run(ROTATE, 'fedRotateToken', false)
+    expect(rotate.dialogs).toEqual([{ title: 'federation.confirm.rotate_title', message: 'federation.confirm.rotate {"peer":"peer-a"}', okLabel: 'federation.confirm.rotate_ok', danger: true }])
+    expect(rotate.calls).toEqual([])
+    // The answer carries the new token: it is shown right away.
+    const rotated = await run(ROTATE, 'fedRotateToken', true, { inboundToken: 'tok-new' })
+    expect(rotated.calls).toEqual([{ url: '/api/federation/peers/peer-a/rotate-inbound-token', method: 'POST' }])
+    expect(rotated.shown).toEqual([['peer-a', 'tok-new', 'federation.token_dialog.rotated_hint']])
+
+    const del = await run(DELETE, 'fedDeletePeer', false)
+    expect(del.dialogs).toEqual([{ title: 'federation.confirm.delete_peer_title', message: 'federation.confirm.delete_peer {"peer":"peer-a"}', okLabel: 'federation.confirm.delete_peer_ok', danger: true }])
+    expect(del.calls).toEqual([])
+    expect((await run(DELETE, 'fedDeletePeer', true)).calls).toEqual([{ url: '/api/federation/peers/peer-a', method: 'DELETE' }])
+
+    const rem = await run(REMOVE, 'fedRemoveAll', false)
+    expect(rem.dialogs).toEqual([{ title: 'federation.confirm.remove_title', message: 'federation.confirm.remove', okLabel: 'federation.confirm.remove_ok', danger: true }])
+    expect(rem.calls).toEqual([])
+    expect((await run(REMOVE, 'fedRemoveAll', true)).calls).toEqual([{ url: '/api/federation/remove', method: 'POST' }])
+  })
+
+  it('the token dialog shows the token read-only, "Copy" copies it, "Close" does nothing, a failed copy says so', async () => {
+    async function run(answer: boolean, clipboardFails = false) {
+      const dialogs: Array<Record<string, any>> = []
+      const copied: string[] = []
+      const toasts: string[] = []
+      const fn = new Function('confirmDialog', 't', 'document', 'navigator', 'showToast', `${TOKEN}\nreturn fedShowInboundTokenDialog`)(
+        async (o: Record<string, any>) => { dialogs.push(o); return answer }, tr,
+        { createElement: () => ({ type: '', readOnly: false, className: '', value: '', addEventListener: () => {} }) },
+        { clipboard: { writeText: async (x: string) => { if (clipboardFails) throw new Error('denied'); copied.push(x) } } },
+        (m: string) => { toasts.push(m) },
+      ) as (peer: string, token: string, key: string) => Promise<void>
+      await fn('peer-a', 'tok-1', 'federation.modal.minted_token_hint')
+      return { dialog: dialogs[0], copied, toasts }
+    }
+    const close = await run(false)
+    expect(close.dialog).toMatchObject({
+      title: 'federation.token_dialog.title {"peer":"peer-a"}',
+      message: 'federation.modal.minted_token_hint',
+      okLabel: 'federation.token_dialog.copy',
+      cancelLabel: 'federation.token_dialog.close',
+    })
+    expect(close.dialog.danger).toBeUndefined()
+    expect(close.dialog.content).toMatchObject({ type: 'text', readOnly: true, value: 'tok-1', className: 'confirm-dialog-token' })
+    expect(close.copied).toEqual([])
+    expect(close.toasts).toEqual([])
+    const copy = await run(true)
+    expect(copy.copied).toEqual(['tok-1'])
+    expect(copy.toasts).toEqual(['federation.toast.token_copied'])
+    expect((await run(true, true)).toasts).toEqual(['federation.token_dialog.copy_failed'])
+  })
+
+  it('pairing a new peer shows its minted token in that dialog', () => {
+    expect(SAVE).toContain("await fedShowInboundTokenDialog(id, data.inboundToken, 'federation.modal.minted_token_hint')")
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    for (const lang of [HU, EN]) {
+      for (const key of ['disable', 'rotate', 'delete_peer', 'apply', 'remove']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, `federation.confirm.${key}${suffix}`), key + suffix).not.toBe('')
+      }
+      for (const key of ['title', 'copy', 'close', 'copy_failed', 'rotated_hint']) expect(line(lang, `federation.token_dialog.${key}`), key).not.toBe('')
+      expect(line(lang, 'federation.confirm.rotate')).toContain('"{peer}"')
+      expect(line(lang, 'federation.confirm.delete_peer')).toContain('"{peer}"')
+      expect(line(lang, 'federation.token_dialog.title')).toContain('"{peer}"')
+      // The hint is a dialog text now, not a prompt() label ending in a colon.
+      expect(line(lang, 'federation.modal.minted_token_hint')).not.toMatch(/:',$/)
+    }
+    // The apply is a gated hard restart (hardRestartMarveenChannels behind gateManualRestart).
+    expect(line(HU, 'federation.confirm.apply')).toContain('Új beszélgetéssel indul')
+    expect(line(HU, 'federation.confirm.apply')).toContain('nem szakítjuk meg')
+    // A rotation answers with the new token; a deleted peer takes its token along; removal deletes the store.
+    expect(line(HU, 'federation.confirm.rotate')).toContain('rögtön megmutatjuk')
+    expect(line(HU, 'federation.confirm.delete_peer')).toContain('A tokenje is törlődik')
+    expect(line(HU, 'federation.confirm.remove')).toContain('nem vonható vissza')
+    expect(line(HU, 'federation.confirm.remove')).not.toContain('TELJES')
+  })
+
+  it('the apply button, its dialog and the notes that point at it use one name', () => {
+    const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    const value = (lang: string, key: string) => /:\s*'((?:[^'\\]|\\.)*)'/.exec(line(lang, key))?.[1] ?? ''
+    for (const lang of [HU, EN]) {
+      expect(value(lang, 'federation.btn.apply')).toBe(value(lang, 'federation.confirm.apply_title'))
+      expect(value(lang, 'federation.routing.apply_note')).toContain(value(lang, 'federation.btn.apply'))
+    }
+    expect(value(HU, 'federation.routing.toast_set')).toContain(value(HU, 'federation.btn.apply'))
+    expect(html).toContain(`${value(HU, 'federation.btn.apply')}</button>`)
+    expect(HU).not.toContain('életbe léptet')
+  })
+
+  it('the hint under the switch reads as a condition, not as the current state', () => {
+    // It sits under a ticked box too: "Kikapcsolva ..." read as "it is off now".
+    expect(line(HU, 'federation.master_hint')).toMatch(/:\s*'Ha kikapcsolod,/)
+    expect(line(EN, 'federation.master_hint')).toMatch(/:\s*'While off,/)
+  })
+
+  it('the token box has its own style in the dialog', () => {
+    const css = readFileSync(new URL('../../web/style.css', import.meta.url), 'utf-8')
+    expect(css).toMatch(/\.confirm-dialog-token \{[^}]*font-family: var\(--font-mono/)
+  })
+})
