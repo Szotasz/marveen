@@ -1737,6 +1737,7 @@ window._i18n.hu = {
   'tokenUsage.search_placeholder': 'Keresés (ágens, tool, tartalom)...',
   'tokenUsage.no_period_data':   'Nincs adat a kiválasztott időszakra',
   'tokenUsage.no_calls':         'Nincs ilyen hívás a szűrt időszakban',
+  'tokenUsage.cards_overlap':    'Ebben az időpontban {n} kártya volt egyszerre folyamatban; a hívásból nem derül ki, melyikhez tartozott.',
   'tokenUsage.collect_btn.collecting':'Gyűjtés...',
   'tokenUsage.collect_btn.collect':   'Gyűjtés',
   'tokenUsage.btn.refresh':      'Frissítés',

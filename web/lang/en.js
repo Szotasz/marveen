@@ -1316,6 +1316,7 @@ window._i18n.en = {
   'tokenUsage.search_placeholder': 'Search (agent, tool, content)...',
   'tokenUsage.no_period_data':   'No data for selected period',
   'tokenUsage.no_calls':         'No calls in filtered period',
+  'tokenUsage.cards_overlap':    '{n} cards were in progress at this time; the call does not say which one it was for.',
   'tokenUsage.collect_btn.collecting':'Collecting...',
   'tokenUsage.collect_btn.collect':   'Collect',
   'tokenUsage.btn.refresh':      'Refresh',

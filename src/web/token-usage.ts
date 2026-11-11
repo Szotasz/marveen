@@ -6,7 +6,7 @@ import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { getDb } from '../db.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { mainConfigRoots } from './inbound-probe.js'
@@ -560,19 +560,28 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
 // tell WHICH task or agent drove them (D001, ELSOKOR922 Phase 0: all 227 rows
 // were agent='marveen', task_title empty, spread across 21 sessions -- a CLI
 // fallback-model pattern, not one configured source). This breaks a single
-// model's rows down by agent / session_id / task_title so that question is
-// answerable from the API, not by hand-editing a SQL query against the DB.
+// model's rows down by agent / session_id so that question is answerable from
+// the API, not by hand-editing a SQL query against the DB. Since DBSIZE1111 the
+// cards come from the in_progress windows at read time (`cards`), not from the
+// stored task_title.
 export interface ModelSourceBreakdownEntry {
   agent: string
   sessionId: string
-  taskTitle: string | null
+  /** DBSIZE1111: the cards that were in_progress for this agent at some point between firstSeen and lastSeen,
+   *  worked out at read time from kanban_card_events (no stored title). Several when the session spanned them. */
+  cards: CardRef[]
   count: number
   totalTokens: number
   firstSeen: number
   lastSeen: number
 }
 
-export function getModelSourceBreakdown(model: string, from?: number, to?: number): ModelSourceBreakdownEntry[] {
+export function getModelSourceBreakdown(
+  model: string,
+  from?: number,
+  to?: number,
+  opts: { botName?: string; mainAgentId?: string; now?: number } = {},
+): ModelSourceBreakdownEntry[] {
   const db = getDb()
   const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
   if (!hasModelCol.n || !model) return []
@@ -582,20 +591,25 @@ export function getModelSourceBreakdown(model: string, from?: number, to?: numbe
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
 
+  // DBSIZE1111: grouped by agent and session; the stored task_title is not read any more.
   const sql = `
     SELECT agent,
       session_id as sessionId,
-      task_title as taskTitle,
       COUNT(*) as count,
       SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) as totalTokens,
       MIN(timestamp) as firstSeen,
       MAX(timestamp) as lastSeen
     FROM token_usage
     WHERE ${conditions.join(' AND ')}
-    GROUP BY agent, session_id, task_title
+    GROUP BY agent, session_id
     ORDER BY count DESC
   `
-  return db.prepare(sql).all(...params) as ModelSourceBreakdownEntry[]
+  const rows = db.prepare(sql).all(...params) as Omit<ModelSourceBreakdownEntry, 'cards'>[]
+  const windows = agentCardWindows(new Set(rows.map((r) => r.agent)), opts)
+  return rows.map((r) => ({
+    ...r,
+    cards: cardsIn(windows.get(r.agent) ?? [], (w) => w.from <= r.lastSeen && r.firstSeen < w.to),
+  }))
 }
 
 export interface ToolStatEntry {
@@ -673,25 +687,40 @@ export function getTokenTimeline(
 export interface TokenDetail {
   id: number
   agent: string
-  sessionId: string
+  session_id: string
   timestamp: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheCreationTokens: number
-  thinkingTokens: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  thinking_tokens: number | null
   model: string | null
-  contentPreview: string | null
-  toolName: string | null
+  content_preview: string | null
+  tool_name: string | null
+  /** DBSIZE1111: every card that was in_progress for this agent at this row's timestamp (read time, from
+   *  kanban_card_events). Two or more when the agent had overlapping cards: the transcript does not say which
+   *  one a call was for, so none is picked. */
+  taskCards: CardRef[]
+  /** The card when exactly one was in_progress, else null (none, or ambiguous: see taskCards). */
+  taskCardId: string | null
   taskTitle: string | null
-  project: string | null
 }
 
+/** DBSIZE1111: the newest card windows a title search may expand to. A broad term ("a") can match most cards;
+ *  past this many windows the oldest are left out of the card-title part of the search (the other columns are
+ *  still searched). */
+export const TOKEN_DETAILS_Q_MAX_WINDOWS = 200
+
 export function getTokenDetails(
-  opts: { agent?: string; from?: number; to?: number; limit?: number; offset?: number; minTokens?: number; q?: string },
+  opts: {
+    agent?: string; from?: number; to?: number; limit?: number; offset?: number; minTokens?: number; q?: string
+    botName?: string; mainAgentId?: string; now?: number
+  },
 ): TokenDetail[] {
   const db = getDb()
-  let sql = `SELECT * FROM token_usage`
+  // DBSIZE1111: the stored task_title / project columns are not read; the card comes from the in_progress windows.
+  let sql = `SELECT id, agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens,
+    cache_creation_tokens, thinking_tokens, model, content_preview, tool_name FROM token_usage`
   const conditions: string[] = []
   const params: any[] = []
   if (opts.agent) { conditions.push('agent = ?'); params.push(opts.agent) }
@@ -703,60 +732,104 @@ export function getTokenDetails(
   }
   if (opts.q) {
     const like = `%${opts.q}%`
-    conditions.push('(agent LIKE ? OR tool_name LIKE ? OR content_preview LIKE ? OR task_title LIKE ?)')
-    params.push(like, like, like, like)
+    const terms = ['agent LIKE ?', 'tool_name LIKE ?', 'content_preview LIKE ?']
+    params.push(like, like, like)
+    // The card title: matching cards -> their in_progress windows -> the agent's rows inside them.
+    for (const w of cardTitleWindows(opts.q, opts)) {
+      terms.push('(agent = ? AND timestamp >= ? AND timestamp < ?)')
+      params.push(w.agent, w.from, w.to)
+    }
+    conditions.push(`(${terms.join(' OR ')})`)
   }
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' ORDER BY timestamp DESC'
   sql += ' LIMIT ? OFFSET ?'
   params.push(opts.limit || 100, opts.offset || 0)
 
-  return db.prepare(sql).all(...params) as TokenDetail[]
+  const rows = db.prepare(sql).all(...params) as Omit<TokenDetail, 'taskCards' | 'taskCardId' | 'taskTitle'>[]
+  const windows = agentCardWindows(new Set(rows.map((r) => r.agent)), opts)
+  return rows.map((r) => {
+    const taskCards = cardsIn(windows.get(r.agent) ?? [], (w) => w.from <= r.timestamp && r.timestamp < w.to)
+    const one = taskCards.length === 1 ? taskCards[0] : null
+    return { ...r, taskCards, taskCardId: one?.id ?? null, taskTitle: one?.title ?? null }
+  })
 }
 
-/**
- * @deprecated DBSIZE1111 (2026-11-11): no production caller. POST /api/token-usage/collect used to run this after
- * every collect; the overview page calls that route every 5 minutes, and one run grew the DB from 704 to 1364 MB
- * and blocked the event loop for 6.8 s. The card attribution moves to read time (DBSIZE1111 step 2, from the
- * kanban_card_events in_progress windows, as #568 does); this function stays only until that lands.
- */
-export function correlateWithKanban(): void {
+// === Card attribution at read time (DBSIZE1111) ===
+//
+// A token row belongs to the cards its agent had in_progress at the row's timestamp: the same windows as the
+// tokens-per-card view below (#568, inProgressWindows / tokenAgentForAssignee), computed when read, never
+// stored. The card's CURRENT assignee decides whose rows a window covers (a reassigned card moves its past
+// windows to the new assignee), the same limit as #568. An archived card still counts: it was worked on.
+
+export interface CardRef { id: string; title: string }
+
+interface AgentCardWindow { cardId: string; title: string; from: number; to: number }
+
+/** Every in_progress window of every card, grouped by the token_usage agent its assignee maps to, limited to
+ *  `agents` (all agents when null). One pass over the cards that ever were in_progress and their events. */
+function agentCardWindows(
+  agents: Set<string> | null,
+  opts: { botName?: string; mainAgentId?: string; now?: number },
+): Map<string, AgentCardWindow[]> {
+  const out = new Map<string, AgentCardWindow[]>()
+  if (agents !== null && agents.size === 0) return out
   const db = getDb()
-  const uncorrelated = db.prepare(`
-    SELECT DISTINCT agent, MIN(timestamp) as minTs, MAX(timestamp) as maxTs
-    FROM token_usage
-    WHERE task_title IS NULL
-    GROUP BY agent
-  `).all() as { agent: string; minTs: number; maxTs: number }[]
-
-  for (const row of uncorrelated) {
-    // PARENT CARDS ARE NOT WORK ITEMS HERE. This correlation reads updated_at as "the agent was
-    // working on this card at that moment" and uses consecutive timestamps as window boundaries.
-    // Since a subcard write now also stamps its ancestors (db.ts, touchAncestorChain), a parent
-    // carries the SAME timestamp as the child that caused it -- and with a tie, which title won
-    // the token rows came down to row order, not to what was worked on. Parents are skipped so the
-    // leaf card keeps the attribution; a parent's own timestamp can no longer tell us whether it
-    // was written or merely bubbled, and separating those would take a column we are not adding.
-    const cards = db.prepare(`
-      SELECT id, title, project, assignee, updated_at
-      FROM kanban_cards
-      WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
-        AND updated_at BETWEEN ? AND ?
-        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
-      ORDER BY updated_at ASC
-    `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
-
-    for (const card of cards) {
-      const nextCard = cards.find((c: any) => c.updated_at > card.updated_at)
-      const endTs = nextCard ? nextCard.updated_at : row.maxTs
-
-      db.prepare(`
-        UPDATE token_usage
-        SET task_title = ?, project = ?
-        WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
-      `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
-    }
+  const map = { botName: opts.botName ?? BOT_NAME, mainAgentId: opts.mainAgentId ?? MAIN_AGENT_ID }
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const cards = db.prepare(`
+    SELECT id, title, assignee FROM kanban_cards
+    WHERE id IN (SELECT DISTINCT card_id FROM kanban_card_events WHERE to_status = 'in_progress')
+  `).all() as { id: string; title: string; assignee: string | null }[]
+  const wanted = new Map<string, { title: string; agent: string }>()
+  for (const c of cards) {
+    const agent = tokenAgentForAssignee(c.assignee, map)
+    if (agent && (agents === null || agents.has(agent))) wanted.set(c.id, { title: c.title, agent })
   }
+  if (wanted.size === 0) return out
+  const events = db.prepare(`
+    SELECT card_id, from_status, to_status, created_at FROM kanban_card_events
+    WHERE card_id IN (SELECT DISTINCT card_id FROM kanban_card_events WHERE to_status = 'in_progress')
+    ORDER BY card_id, created_at ASC, id ASC
+  `).all() as (CardStatusEvent & { card_id: string })[]
+  const byCard = new Map<string, CardStatusEvent[]>()
+  for (const e of events) {
+    if (!wanted.has(e.card_id)) continue
+    const list = byCard.get(e.card_id)
+    if (list) list.push(e)
+    else byCard.set(e.card_id, [e])
+  }
+  for (const [cardId, evs] of byCard) {
+    const card = wanted.get(cardId)!
+    const list = out.get(card.agent) ?? []
+    for (const w of inProgressWindows(evs, now)) list.push({ cardId, title: card.title, from: w.from, to: w.to })
+    out.set(card.agent, list)
+  }
+  return out
+}
+
+/** The distinct cards of the windows that pass `hit`, in first-window order. */
+function cardsIn(windows: AgentCardWindow[], hit: (w: AgentCardWindow) => boolean): CardRef[] {
+  const seen = new Map<string, CardRef>()
+  for (const w of windows) if (hit(w) && !seen.has(w.cardId)) seen.set(w.cardId, { id: w.cardId, title: w.title })
+  return [...seen.values()]
+}
+
+/** The in_progress windows of the cards whose title contains `q` (LIKE, so ASCII case-insensitive), newest first,
+ *  at most TOKEN_DETAILS_Q_MAX_WINDOWS. With opts.agent only that agent's windows. */
+function cardTitleWindows(
+  q: string,
+  opts: { agent?: string; botName?: string; mainAgentId?: string; now?: number },
+): { agent: string; from: number; to: number }[] {
+  const db = getDb()
+  const ids = new Set((db.prepare('SELECT id FROM kanban_cards WHERE title LIKE ?').all(`%${q}%`) as { id: string }[]).map((r) => r.id))
+  if (ids.size === 0) return []
+  const all: { agent: string; from: number; to: number }[] = []
+  for (const [agent, list] of agentCardWindows(opts.agent ? new Set([opts.agent]) : null, opts)) {
+    for (const w of list) if (ids.has(w.cardId)) all.push({ agent, from: w.from, to: w.to })
+  }
+  all.sort((x, y) => y.to - x.to)
+  return all.slice(0, TOKEN_DETAILS_Q_MAX_WINDOWS)
 }
 
 // === Tokens per card (card 0f21864e, #568) ===
