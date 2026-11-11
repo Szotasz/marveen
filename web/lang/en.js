@@ -1079,6 +1079,7 @@ window._i18n.en = {
   'settings.claude_plans.login.error_busy': 'A login is already running. Cancel it first.',
   'settings.claude_plans.login.error_id_taken': 'A plan with this id already exists. Pick another one.',
   'settings.claude_plans.login.error_invalid': 'The id may contain only letters, digits and _ . -, and the label is required.',
+  'settings.claude_plans.login.error_invalid_label': 'The label must be a single line, without line breaks or control characters.',
   'settings.claude_plans.login.error_claude_missing': 'The claude command was not found on this machine.',
   'settings.claude_plans.login.error_no_link': 'claude setup-token gave no login link. Try again.',
   'settings.claude_plans.login.error_expired': 'The login expired or has already ended. Get a new link.',

@@ -18448,6 +18448,7 @@ const CLAUDE_PLAN_LOGIN_ERROR_KEYS = {
   'busy': 'settings.claude_plans.login.error_busy',
   'id-taken': 'settings.claude_plans.login.error_id_taken',
   'invalid-plan': 'settings.claude_plans.login.error_invalid',
+  'invalid-label': 'settings.claude_plans.login.error_invalid_label',
   'claude-not-found': 'settings.claude_plans.login.error_claude_missing',
   'url-timeout': 'settings.claude_plans.login.error_no_link',
   'code-timeout': 'settings.claude_plans.login.error_expired',

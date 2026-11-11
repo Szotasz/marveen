@@ -295,6 +295,22 @@ describe('the login flow', () => {
     expect(launches).toBe(0)
   })
 
+  it('a label with a line break or a control character is refused at start, before claude is launched (K1)', async () => {
+    const NL = String.fromCharCode(10)
+    // The raw value is checked, as POST /api/claude-plans does: a trailing break is refused too, not trimmed away.
+    for (const label of [`x${NL}MSG${NL}touch PWNED`, `a${String.fromCharCode(13)}b`, `a${String.fromCharCode(0x1b)}b`, `a${String.fromCharCode(0x2028)}b`, `Second Max${NL}`]) {
+      responses.length = 0
+      const r = await call('POST', '/api/claude-plans/login/start', SESSION_AUTH, { ...START, label })
+      expect(r.status).toBe(400)
+      expect(r.json.code).toBe('invalid-label')
+      expect(responses.join('')).not.toContain('PWNED')
+    }
+    expect(launches).toBe(0)
+    // An ordinary label with accents, a dash and an emoji still starts the login.
+    expect((await call('POST', '/api/claude-plans/login/start', SESSION_AUTH, { ...START, label: 'Céges terv 2 - csapat 🚀' })).status).toBe(200)
+    expect(launches).toBe(1)
+  })
+
   it('one login at a time; cancel frees the slot and a late code is refused', async () => {
     expect((await call('POST', '/api/claude-plans/login/start', SESSION_AUTH, START)).status).toBe(200)
     const busy = await call('POST', '/api/claude-plans/login/start', SESSION_AUTH, { ...START, id: 'other' })
