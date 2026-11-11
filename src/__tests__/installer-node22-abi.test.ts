@@ -157,6 +157,19 @@ describe('install-macos.sh: the native module must be built for the SERVICE node
     expect(install).toContain('node22')
   })
 
+  it('builds TypeScript under node@22 too, not the generic node on PATH', () => {
+    // 2026-11-10: the generic Homebrew `node` (25.9.0_1) aborted in dyld on a
+    // missing libsimdjson.33.dylib after a brew upgrade. node@22 was installed
+    // and npm ci/rebuild ran fine under it, but the bare `npm run build` picked
+    // the broken generic node and the install died at "typescript-build".
+    const { nodes } = runNpmInstallStep()
+
+    const build = nodes.find((l) => l.startsWith('run build'))
+
+    expect(build, `npm run build never ran; saw: ${JSON.stringify(nodes)}`).toBeDefined()
+    expect(build).toContain('node22')
+  })
+
   it('completes the step without tripping the ERR trap', () => {
     const { code, out } = runNpmInstallStep()
 
