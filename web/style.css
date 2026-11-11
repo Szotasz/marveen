@@ -6743,6 +6743,16 @@ a.oss-inv-name:hover { text-decoration: underline; }
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
+.confirm-dialog-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.confirm-dialog-check input { margin-top: 2px; flex: none; }
 .confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;

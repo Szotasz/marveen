@@ -1344,3 +1344,245 @@ describe('the Gromzo agent switches use it', () => {
     expect(line(EN, 'gromzo.agents.main.confirm_on')).not.toMatch(/approv/iu)
   })
 })
+
+describe('the agent and fleet questions use it', () => {
+  // The handler (an async arrow) that follows `anchor`, up to its matching closing brace.
+  const arrowAfter = (anchor: string) => {
+    const i = APP.indexOf(anchor)
+    if (i < 0) return ''
+    const start = APP.indexOf('async () => {', i)
+    let depth = 0
+    for (let j = APP.indexOf('{', start); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(start, j + 1)
+    }
+    return ''
+  }
+  const fnBlock = (name: string) => {
+    const m = new RegExp(`(?:async )?function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    // The body starts after the parameter list, which may hold a destructuring brace of its own.
+    for (let j = APP.indexOf(') {', m.index) + 2; j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const ASK = fnBlock('askAgentExport')
+  const EXPORT_ONE = arrowAfter("document.getElementById('exportAgentBtn').onclick = ")
+  const EXPORT_ALL = arrowAfter("exportAllAgentsBtn.addEventListener('click', ")
+  const CARDS = arrowAfter("createBtn.addEventListener('click', ")
+  const IMPORT = arrowAfter("importAgentFile.addEventListener('change', ")
+  const APPLY = arrowAfter("document.getElementById('fleetApplyBtn').addEventListener('click', ")
+  const tr = (key: string, vars?: Record<string, unknown>) => (vars ? `${key} ${JSON.stringify(vars)}` : key)
+  const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+
+  it('the handlers were found, with no native confirm() left', () => {
+    for (const part of [ASK, EXPORT_ONE, EXPORT_ALL, CARDS, IMPORT, APPLY]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])confirm\(/)
+    }
+  })
+
+  it('the export question has an unticked secrets box; Cancel exports nothing, the box decides the secrets', async () => {
+    async function ask(answer: boolean, tick: boolean) {
+      const dialogs: Array<Record<string, any>> = []
+      const make = (tag: string) => ({ tag, type: '', checked: false, className: '', textContent: '', children: [] as unknown[], append(...c: unknown[]) { this.children.push(...c) } })
+      const run = new Function('confirmDialog', 'document', `${ASK}\nreturn askAgentExport`)(
+        async (o: Record<string, any>) => {
+          dialogs.push(o)
+          expect(o.content.children[0].checked).toBe(false)
+          if (tick) o.content.children[0].checked = true
+          return answer
+        },
+        { createElement: make },
+      ) as (o: Record<string, string>) => Promise<{ withSecrets: boolean } | null>
+      const out = await run({ title: 'T', message: 'M', okLabel: 'O', secretsLabel: 'S' })
+      return { out, dialog: dialogs[0] }
+    }
+    const no = await ask(false, true)
+    expect(no.out).toBeNull()
+    expect(no.dialog).toMatchObject({ title: 'T', message: 'M', okLabel: 'O' })
+    expect(no.dialog.danger).toBeUndefined()
+    expect(no.dialog.content.tag).toBe('label')
+    expect(no.dialog.content.children[0]).toMatchObject({ tag: 'input', type: 'checkbox' })
+    expect(no.dialog.content.children[1]).toMatchObject({ tag: 'span', textContent: 'S' })
+    expect((await ask(true, false)).out).toEqual({ withSecrets: false })
+    expect((await ask(true, true)).out).toEqual({ withSecrets: true })
+  })
+
+  it('both exports ask first: Cancel sends nothing, the answer picks the URL', async () => {
+    async function run(src: string, answer: { withSecrets: boolean } | null) {
+      const asked: Array<Record<string, string>> = []
+      const urls: string[] = []
+      const fake = { href: '', download: '', click() {}, remove() {} }
+      const handler = new Function('askAgentExport', 't', 'currentAgent', 'fetch', 'showToast', 'URL', 'document', `return ${src}`)(
+        async (o: Record<string, string>) => { asked.push(o); return answer },
+        tr, { name: 'anna' },
+        async (url: string) => { urls.push(url); return { ok: true, blob: async () => ({}) } },
+        () => {}, { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} },
+        { createElement: () => fake, body: { appendChild: () => {} } },
+      ) as () => Promise<void>
+      await handler()
+      return { asked, urls }
+    }
+    const one = await run(EXPORT_ONE, null)
+    expect(one.asked).toEqual([{
+      title: 'agents.export.confirm_title',
+      message: 'agents.export.confirm {"name":"anna"}',
+      okLabel: 'agents.export.confirm_ok',
+      secretsLabel: 'agents.export.with_secrets',
+    }])
+    expect(one.urls).toEqual([])
+    expect((await run(EXPORT_ONE, { withSecrets: false })).urls).toEqual(['/api/agents/anna/export'])
+    expect((await run(EXPORT_ONE, { withSecrets: true })).urls).toEqual(['/api/agents/anna/export?secrets=1'])
+    const all = await run(EXPORT_ALL, null)
+    expect(all.asked).toEqual([{
+      title: 'agents.export_all.confirm_title',
+      message: 'agents.export_all.confirm',
+      okLabel: 'agents.export.confirm_ok',
+      secretsLabel: 'agents.export_all.with_secrets',
+    }])
+    expect(all.urls).toEqual([])
+    expect((await run(EXPORT_ALL, { withSecrets: false })).urls).toEqual(['/api/agents/export-all'])
+    expect((await run(EXPORT_ALL, { withSecrets: true })).urls).toEqual(['/api/agents/export-all?secrets=1'])
+  })
+
+  it('the model-change cards ask in their own dialog; a "no" creates none', async () => {
+    async function run(answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const posts: string[] = []
+      const btn = { disabled: false, textContent: '' }
+      const handler = new Function('confirmDialog', 't', 'fetch', 'showToast', 'createBtn', 'changes', `return ${CARDS}`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+        tr, async (url: string) => { posts.push(url); return { ok: true } }, () => {}, btn,
+        [{ agent: 'a', currentModel: 'x', suggestedModel: 'y', reason: 'r' }, { agent: 'b', currentModel: 'x', suggestedModel: 'y', reason: 'r' }],
+      ) as () => Promise<void>
+      await handler()
+      return { dialogs, posts }
+    }
+    const no = await run(false)
+    expect(no.dialogs).toEqual([{
+      title: 'agents.model.cards_confirm_title',
+      message: 'agents.model.cards_confirm {"n":2}',
+      okLabel: 'agents.model.cards_confirm_ok',
+    }])
+    expect(no.posts).toEqual([])
+    expect((await run(true)).posts).toEqual(['/api/kanban', '/api/kanban'])
+  })
+
+  describe('an import that hits an existing agent asks in a danger dialog', () => {
+    async function run(first: { status: number; data: Record<string, unknown> }, answer: boolean) {
+      const dialogs: Array<Record<string, any>> = []
+      const uploads: Array<string | null> = []
+      const toasts: string[] = []
+      let reloads = 0
+      class FakeForm { fields: Record<string, string> = {}; append(k: string, v: unknown) { if (typeof v === 'string') this.fields[k] = v } }
+      const file = { files: [{ name: 'b.tar.gz' }], value: 'b.tar.gz' }
+      const handler = new Function('importAgentFile', 'FormData', 'fetch', 'confirmDialog', 't', 'showToast', 'loadAgents', `return ${IMPORT}`)(
+        file, FakeForm,
+        async (_url: string, init: { body: FakeForm }) => {
+          uploads.push(init.body.fields.overwrite ?? null)
+          const r = uploads.length === 1 ? first : { status: 200, data: { ok: true, kind: first.data.kind || 'agent', name: 'anna', imported: [] } }
+          return { status: r.status, ok: r.status < 300, json: async () => r.data }
+        },
+        async (o: Record<string, any>) => { dialogs.push(o); return answer },
+        tr, (m: string) => { toasts.push(m) }, () => { reloads++ },
+      ) as () => Promise<void>
+      await handler()
+      return { dialogs, uploads, toasts, reloads }
+    }
+    const single = { status: 409, data: { error: 'Agent "anna" already exists on this machine' } }
+    const fleet = { status: 409, data: { ok: true, kind: 'fleet', imported: [{ name: 'new1', overwritten: false }], skipped: [{ name: 'anna', reason: 'already exists' }, { name: 'bob', reason: 'already exists' }, { name: 'x!', reason: 'invalid name' }] } }
+
+    it('a single agent: named from the error, the folder deletion said; "no" uploads once, "yes" again with overwrite', async () => {
+      const no = await run(single, false)
+      expect(no.dialogs).toEqual([{
+        title: 'agents.import.overwrite_confirm_title',
+        message: 'agents.import.overwrite_confirm {"name":"anna"}\n\nagents.import.overwrite_effect',
+        okLabel: 'agents.import.overwrite_confirm_ok',
+        danger: true,
+      }])
+      expect(no.uploads).toEqual([null])
+      expect((await run(single, true)).uploads).toEqual([null, '1'])
+      const unnamed = await run({ status: 409, data: { error: 'something else' } }, false)
+      expect(unnamed.dialogs[0].message).toBe('agents.import.overwrite_confirm_no_name\n\nagents.import.overwrite_effect')
+    })
+
+    it('a fleet: names only the existing agents and says the new ones are already in; "no" shows them and keeps the rest', async () => {
+      const no = await run(fleet, false)
+      expect(no.dialogs[0].message).toBe(
+        'agents.import.fleet_overwrite_confirm {"list":"anna, bob"}\n\nagents.import.fleet_overwrite_effect\n\nagents.import.fleet_already_imported {"n":1}')
+      expect(no.dialogs[0].danger).toBe(true)
+      expect(no.uploads).toEqual([null])
+      expect(no.toasts).toEqual(['agents.import.fleet_kept {"n":1}'])
+      expect(no.reloads).toBe(1)
+      expect((await run(fleet, true)).uploads).toEqual([null, '1'])
+    })
+
+    it('the server words its single-agent collision the way the dialog reads the name', () => {
+      const bundle = readFileSync(new URL('../../src/web/agent-bundle.ts', import.meta.url), 'utf-8')
+      expect(bundle).toContain('throw new Error(`Agent "${name}" already exists on this machine`)')
+    })
+  })
+
+  it('applying a fleet import asks in a danger dialog; a "no" sends nothing', async () => {
+    async function run(answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const urls: string[] = []
+      const el = { disabled: false, hidden: false, className: '', innerHTML: '', value: '', querySelector: () => ({ hidden: false }) }
+      const handler = new Function('fleetLastBody', 'confirmDialog', 't', 'fetch', 'document', 'showToast', 'escapeHtml', `return ${APPLY}`)(
+        '{}', async (o: Record<string, unknown>) => { dialogs.push(o); return answer }, tr,
+        async (url: string) => { urls.push(url); return { ok: true, json: async () => ({ imported: {} }) } },
+        { getElementById: () => el }, () => {}, (x: string) => x,
+      ) as () => Promise<void>
+      await handler()
+      return { dialogs, urls }
+    }
+    const no = await run(false)
+    expect(no.dialogs).toEqual([{
+      title: 'fleet.import.apply_confirm_title',
+      message: 'fleet.import.apply_confirm',
+      okLabel: 'fleet.import.apply_confirm_ok',
+      danger: true,
+    }])
+    expect(no.urls).toEqual([])
+    expect((await run(true)).urls).toEqual(['/api/fleet/import?apply=true'])
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    const keys = [
+      'agents.model.cards_confirm', 'agents.export.confirm', 'agents.export_all.confirm', 'fleet.import.apply_confirm',
+    ]
+    for (const lang of [HU, EN]) {
+      for (const key of keys) for (const suffix of ['', '_title', '_ok']) {
+        if (key === 'agents.export_all.confirm' && suffix === '_ok') continue // shares agents.export.confirm_ok
+        expect(line(lang, key + suffix), key + suffix).not.toBe('')
+      }
+      for (const key of ['agents.export.with_secrets', 'agents.export_all.with_secrets', 'agents.import.overwrite_confirm_title',
+        'agents.import.overwrite_confirm_ok', 'agents.import.overwrite_confirm', 'agents.import.overwrite_confirm_no_name',
+        'agents.import.overwrite_effect', 'agents.import.fleet_overwrite_confirm', 'agents.import.fleet_overwrite_effect',
+        'agents.import.fleet_already_imported', 'agents.import.fleet_kept']) expect(line(lang, key), key).not.toBe('')
+      expect(line(lang, 'agents.export.confirm')).toContain('"{name}"')
+      expect(line(lang, 'agents.import.overwrite_confirm')).toContain('"{name}"')
+      expect(line(lang, 'agents.import.fleet_overwrite_confirm')).toContain('{list}')
+    }
+    // The fleet bundle holds the sub-agents only (agent-bundle.ts); an overwrite removes the folder first (rmSync).
+    expect(line(HU, 'agents.export_all.confirm')).toContain('A fő ügynök nincs benne')
+    expect(line(HU, 'agents.import.overwrite_effect')).toContain('A mappája törlődik')
+    expect(line(HU, 'agents.import.fleet_overwrite_effect')).toContain('A mappájuk törlődik')
+    // The cards only plan the change; the fleet apply pauses the tasks and takes over the source identity.
+    expect(line(HU, 'agents.model.cards_confirm')).toContain('nem állítja át')
+    expect(line(HU, 'fleet.import.apply_confirm')).toContain('szüneteltetve')
+    expect(line(HU, 'fleet.import.apply_confirm')).toContain('átveszi a forrás identitását')
+    // The old hard-coded Hungarian prompts are gone from app.js.
+    expect(APP).not.toContain('OK = igen, csak saját gépek közötti átvitelhez.')
+    expect(APP).not.toContain('Felülírjuk az ütközőket?')
+  })
+
+  it('the secrets box has its own style in the dialog', () => {
+    const css = readFileSync(new URL('../../web/style.css', import.meta.url), 'utf-8')
+    expect(css).toMatch(/\.confirm-dialog-check \{[^}]*display: flex/)
+  })
+})
