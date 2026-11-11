@@ -386,14 +386,24 @@ describe('the owner route in the rotation prompt (ROTSLACK1111)', () => {
   })
   it('a Slack target: a delivery rule leads, and NO signal names the channel reply or the chat id', () => {
     expect(slack.startsWith('KÉZBESÍTÉS (gazda-szabály, SLACKATALLAS1006)')).toBe(true)
-    expect(slack).toContain('`/srv/m/scripts/notify.sh "<a jelzés szövege>"`')
+    expect(slack).toContain(`"/srv/m/scripts/notify.sh" "$(cat <<'MSG'\n<a jelzés szövege>\nMSG\n)"`)
     expect(slack).toContain('TELEGRAMRA NE')
     expect(slack).not.toContain('chat_id: 42')
     expect(slack).not.toContain('a csatorna reply tooljával (')
     // Every place V2 signals the owner now names notify.sh: ROTATE, NO_ALTERNATIVE, FLEET_*, SUBAGENT_ROTATE, SUBAGENT_NO_ALTERNATIVE.
     const v2Signals = buildRotationHeartbeatPromptV2(o).split('a gazdának a csatorna reply tooljával (chat_id: 42)').length - 1
     expect(v2Signals).toBe(5)
-    expect(slack.split('a gazdának Slacken (`/srv/m/scripts/notify.sh "<szöveg>"`)').length - 1).toBe(v2Signals)
+    expect(slack.split('a gazdának Slacken (a fenti KÉZBESÍTÉS paranccsal, idézett heredoc-kal)').length - 1).toBe(v2Signals)
+  })
+  // Dani 75709 F1: plan labels are free text a sub-agent can write; in a double-quoted argument `$(...)` would run.
+  it('the signal text is never a double-quoted shell argument: only the quoted heredoc form, and the path quoted', () => {
+    expect(slack).not.toMatch(/notify\.sh "</)
+    expect(slack).not.toMatch(/notify\.sh\s+"[^$]/)
+    expect(slack).toContain("<<'MSG'")
+    expect(slack).toContain('SOHA ne dupla idézőjelben')
+    expect(slack).toContain('"/srv/m/scripts/notify.sh"')
+    const spaced = buildRotationHeartbeatPrompt({ ...o, projectRoot: '/opt/My Install', slackTarget: 'D0EXAMPLE' })
+    expect(spaced).toContain('"/opt/My Install/scripts/notify.sh" "$(cat <<\'MSG\'')
   })
   it('the Slack target value itself is not baked in (notify.sh reads the current setting)', () => {
     expect(slack).not.toContain('D0EXAMPLE')

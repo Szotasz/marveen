@@ -151,11 +151,24 @@ export function buildRotationHeartbeatPrompt(opts: {
 }): string {
   const v2 = buildRotationHeartbeatPromptV2(opts)
   if (!opts.slackTarget?.trim()) return v2
+  // Dani 75709 F1: the signal text carries plan labels (targetLabel=, currentLabel=), which are free text and can be
+  // written by a sub-agent. As a double-quoted shell argument a `$(...)` in a label would run in the main agent's
+  // shell, so the text goes in a QUOTED heredoc (no expansion), the way this prompt already writes the curl payload;
+  // the script's path is quoted too (an install path with a space).
   const notify = `${opts.projectRoot}/scripts/notify.sh`
-  const delivery = `KÉZBESÍTÉS (gazda-szabály, SLACKATALLAS1006): a gazdának szóló minden jelzés SLACKRE megy, ezzel a paranccsal: \`${notify} "<a jelzés szövege>"\` (sikernél a kimenete "(Slack)"-ot ír). TELEGRAMRA NE küldj, a csatorna reply tooljával se. Ha a notify.sh nem "(Slack)"-ot ír, a hibát és a szöveget a napi naplóba írd, más csatornát ne próbálj.
+  const delivery = `KÉZBESÍTÉS (gazda-szabály, SLACKATALLAS1006): a gazdának szóló minden jelzés SLACKRE megy, ezzel a paranccsal, a szöveget IDÉZETT heredoc-ba írva (SOHA ne dupla idézőjelben: a szövegben álló plan-címkében egy \`$(...)\` vagy backtick lefutna):
+
+\`\`\`bash
+"${notify}" "$(cat <<'MSG'
+<a jelzés szövege>
+MSG
+)"
+\`\`\`
+
+Sikernél a kimenete "(Slack)"-ot ír. TELEGRAMRA NE küldj, a csatorna reply tooljával se. Ha a notify.sh nem "(Slack)"-ot ír, a hibát és a szöveget a napi naplóba írd, más csatornát ne próbálj.
 
 `
-  return delivery + v2.split(channelTargetPhrase(opts.chatId)).join(`a gazdának Slacken (\`${notify} "<szöveg>"\`)`)
+  return delivery + v2.split(channelTargetPhrase(opts.chatId)).join('a gazdának Slacken (a fenti KÉZBESÍTÉS paranccsal, idézett heredoc-kal)')
 }
 
 /** The seeded task's description (the SKILL.md frontmatter), part of what "unedited" compares. */
