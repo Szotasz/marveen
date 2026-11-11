@@ -78,6 +78,19 @@ rejection revokes the right without anyone editing the file. Whoever can write
 the list still cannot grant themselves the right; that separation is the whole
 point, and it only holds where the approvals path is out of the agent's reach.
 
+DRAFT-ONLY SCRIPTS (DRAFTONLYSCRIPT1111): a Bash call that runs a local script the owner registered in
+store/email-draft-only-scripts.json is a DRAFT, like the MCP draft tools: no approval, no level (the outgoing copy
+gate still audits its copy). Shape:
+  {"scripts": [{"path": "/abs/path/draft.py", "sha256": "<hex of the file>", "note": "..."}]}
+The call must be exactly `python3 <abs path> <literal args>` (or `cd <abs dir> && python3 <rel path> <args>`), with no
+other command, redirect, pipe, interpreter option or env prefix; the path must be a regular file, not a symlink (nor
+under one), registered, and its CURRENT sha256 must equal the registered one. Anything else falls back to the normal
+classification (a send), so a missing/corrupt file, an edited script, an unregistered path all change nothing.
+Only the owner may write the file (db-write-gate.mjs and self-pace-gate.mjs protect it): an agent registering its own
+sender as draft-only would be the whole gate undone. LIMITS, said plainly: the hash covers the script file, not its
+imports or the interpreter; a sibling module the script imports is trusted as much as the script. The hash is read
+shortly before the run (no atomic check-and-run).
+
 Anchor semantics (Marveen msg 17900, 5+1 conditions):
   1. the hash is computed from the SAME extraction the copy gate audits
      (email_extract.collect_email_envelope -- single implementation);
@@ -127,6 +140,8 @@ CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 # what raising the level to 3 would do, because the level knows nothing about
 # who the letter goes to.
 STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
+# DRAFTONLYSCRIPT1111: local scripts the OWNER registered as draft-only (they only create a mail draft, never send).
+DRAFT_ONLY_PATH = os.path.join(STORE_DIR, "email-draft-only-scripts.json")
 
 
 # The window from approval (resolved_at) to send: a fixed 1800 s, the SAME
@@ -1200,6 +1215,72 @@ def names_own_sender(cmd: str, cwd) -> bool:
     return False
 
 
+def read_draft_only() -> dict:
+    """{realpath: sha256} of the owner-registered draft-only scripts. A missing, unreadable or wrongly shaped file
+    grants nothing (fail-closed, no note: a missing file is the normal state)."""
+    try:
+        with open(DRAFT_ONLY_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        raw = data.get("scripts") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return {}
+        out = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            path, sha = item.get("path"), item.get("sha256")
+            if not (isinstance(path, str) and os.path.isabs(path) and isinstance(sha, str)
+                    and re.fullmatch(r"[0-9a-fA-F]{64}", sha)):
+                continue
+            if os.path.realpath(path) != os.path.normpath(path):
+                continue  # registered through a symlink: never matches
+            out[os.path.normpath(path)] = sha.lower()
+        return out
+    except Exception:  # noqa: BLE001 -- unreadable registry grants nothing
+        return {}
+
+
+def draft_only_script_call(cmd: str, cwd) -> bool:
+    """True ONLY when the whole command is one literal `python3 <script> <literal args>` (optionally behind one
+    `cd <abs dir> &&`) of a script the owner registered as draft-only AND whose current sha256 equals the registered
+    one. Any doubt -> False (the caller then treats the call as a send)."""
+    try:
+        registry = read_draft_only()
+        if not registry:
+            return False
+        sc = _ShapeScanner(cmd.strip(" \t\n"))
+        words = sc.words_until_operator()
+        base = None
+        if words[:1] == ["cd"]:
+            if len(words) != 2 or not os.path.isabs(words[1]) or os.path.realpath(words[1]) != os.path.normpath(words[1]):
+                return False
+            base = os.path.normpath(words[1])
+            sc.skip_ws()
+            if not sc.s.startswith("&&", sc.i):
+                return False
+            sc.i += 2
+            words = sc.words_until_operator()
+        if len(words) < 2 or words[0] != "python3" or words[1].startswith("-"):
+            return False
+        script = words[1]
+        if not os.path.isabs(script):
+            if base is None:
+                return False
+            script = os.path.join(base, script)
+        script = os.path.normpath(script)
+        sc.skip_ws()
+        if sc.i < sc.n:
+            return False  # a pipe, redirect, second command, heredoc...
+        want = registry.get(script)
+        if not want or os.path.realpath(script) != script or not os.path.isfile(script):
+            return False
+        with open(script, "rb") as fh:
+            got = hashlib.sha256(fh.read()).hexdigest()
+        return got == want
+    except Exception:  # noqa: BLE001 -- "cannot decide" is never "draft"
+        return False
+
+
 def canonical_forms_text() -> str:
     """The Bash send forms whose level-2 approval the SENDER consumes."""
     return ("`python3 scripts/support-mail/send.py --flag 'ertek' ...` vagy "
@@ -1316,6 +1397,8 @@ def main():
             sys.exit(0)
         if ledger_enabled():
             ledger_gate("bash", tool_input, cmd)
+        if draft_only_script_call(cmd, payload.get("cwd")):
+            sys.exit(0)  # DRAFTONLYSCRIPT1111: an owner-registered draft-only script puts nothing on the wire
     else:
         if not _MAYBE_MAIL_TOOL.search(tool):
             sys.exit(0)  # no mail kind is possible: the extractor is not needed
