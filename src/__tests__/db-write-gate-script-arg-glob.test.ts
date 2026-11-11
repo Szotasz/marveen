@@ -62,6 +62,8 @@ describe('what stays strict', () => {
     ['python -m', 'python3 -m somemod "*"'],
     ['an option python does not get here', 'python3 -X dev /x/s.py "*"'],
     ['a $ word (the shell splits and globs it)', 'python3 /x/s.py $Q "*"'],
+    ['a heredoc body a script reads (it may run it as shell code)', "python3 /x/s.py <<'EOF'\ncp /tmp/evil.json *\nEOF"],
+    ['a python-only flag before a node script', 'node -s /x/s.mjs "*"'],
     ['GATEFILES1110: cp into the own dir with a bare glob', 'cp /tmp/evil.json *'],
     ['GATEFILES1110: the zsh qualifier form', 'cp x *(od[1])'],
   ])('%s', (_label, command) => {
