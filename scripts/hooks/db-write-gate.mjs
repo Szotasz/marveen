@@ -176,6 +176,9 @@ export const PROTECTED_INSTALL_PATHS = [
 //   store/credential-gate.json          -- mode: warn turns the credential gate into a warning (missing today)
 //   store/egress-measure-hosts.json     -- a host there lets curl -q GET/HEAD through (bash-egress-parser.mjs)
 //   store/.fleet-memgate-observe        -- its presence puts the fleet memory gate into observe-only (fleet-memory-gate.sh)
+//   store/.channel-unconfigured         -- channels.sh's "the main session runs without its channel" marker
+//                                          (CHANNELUNCONF1110, Dani #2691 K1): only channels.sh writes it, never a tool
+//                                          call; a written one would ask the monitor to leave the main agent alone
 export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: '.env' },
   { rel: 'store/provenance-gate-rules.json' },
@@ -183,6 +186,7 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/credential-gate.json' },
   { rel: 'store/egress-measure-hosts.json' },
   { rel: 'store/.fleet-memgate-observe' },
+  { rel: 'store/.channel-unconfigured' },
   // The user's shared Claude settings (Dani 67840/67841): every agents/*/.claude-config/settings.local.json is a
   // SYMLINK to ~/.claude/settings.local.json, a real file the main agent loads too, so a sub-agent writing it (through
   // its symlink or straight) changes every session's settings. The main agent writes them legitimately: sub-agent only.

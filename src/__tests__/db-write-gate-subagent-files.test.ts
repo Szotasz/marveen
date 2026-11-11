@@ -11,8 +11,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
-const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe']
-const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe']
+// CHANNELUNCONF1110 (Dani #2691 K1): channels.sh's .channel-unconfigured marker joins them (only channels.sh writes it).
+const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured']
+const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured']
 
 let base: string
 let root: string

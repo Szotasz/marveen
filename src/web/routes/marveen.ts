@@ -8,6 +8,7 @@ import {
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, readMarveenTeamsConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { mainChannelUnconfigured } from '../main-channel-configured.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { readFileOr } from '../agent-config.js'
 import { nicknameFor } from '../team-nicknames.js'
@@ -123,6 +124,9 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // CHANNEL_PROVIDER env-jébe pinneljük, hogy a UI ne hardcode-olt
       // 'telegram'-mal induljon.
       channelProvider: CHANNEL_PROVIDER,
+      // CHANNELUNCONF1110: the provider whose token is missing (the session then runs without its channel), or null.
+      // The launch rule itself (main-channel-configured.ts), so the banner goes the moment a token is saved.
+      mainChannelUnconfigured: mainChannelUnconfigured(CHANNEL_PROVIDER) ? CHANNEL_PROVIDER : null,
       // Resolved through the settings overrides layer so the UI hot-reloads.
       kanbanAging: {
         warnH: getEffectiveSettingValue('KANBAN_AGING_WARN_H'),

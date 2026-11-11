@@ -89,6 +89,7 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
+import { mainChannelUnconfigured, mainSessionRunsUnconfigured } from './main-channel-configured.js'
 import { flushGromzoPendingOwnerAlerts, setGromzoMainLive } from '../notify.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
@@ -217,6 +218,8 @@ export function isWithinRestartGrace(name: string, nowMs: number = Date.now()): 
 // and drowned the log). First detection warns; repeats drop to debug. Cleared
 // when a token appears so a later un-bind is announced again.
 const agentNoTokenWarned: Set<string> = new Set()
+// CHANNELUNCONF1110: the main session's "no channel configured" spell was logged (reset when it ends).
+let mainUnconfiguredNoted = false
 // Sessions whose busy-deferral cap has already been reported to the operator, so
 // the alert fires once per down-spell instead of every sweep. Cleared when the
 // plugin recovers (or when the agent is restarted after it goes idle).
@@ -1122,6 +1125,16 @@ export function readMainAgentIdRaw(projectRoot: string = PROJECT_ROOT): string {
 // NOTE: inbound from `--channels` also goes through the allowlist at
 // /etc/claude-code/managed-settings.json (allowedChannelPlugins); a plugin not
 // listed there has its MCP notifications silently dropped. See channels.sh.
+/** CHANNELUNCONF1110: the respawns launch the primary channel only when it is configured
+ *  (main-channel-configured.ts, the twin of the launchers' shell rule). */
+function mainPrimaryConfigured(providerType: string): boolean {
+  return !mainChannelUnconfigured(providerType)
+}
+/** The ids the respawn's --settings file enables: the primary only when configured, then the extras. */
+function mainLaunchPluginIds(provider: { type: string; pluginId: string }): string[] {
+  return [...(mainPrimaryConfigured(provider.type) ? [provider.pluginId] : []), ...readExtraChannelPluginIds()]
+}
+
 export function buildMainSessionRespawnCmd(opts: {
   claudePath: string
   pluginId: string
@@ -1182,6 +1195,12 @@ export function buildMainSessionRespawnCmd(opts: {
   gromzoTokenFile?: string | null
   /** GROMZONOPROVIDER1108: test seam for mainGromzoPrimaryReady when the primary is the Gromzo plugin. */
   gromzoPrimaryReady?: boolean
+  /**
+   * CHANNELUNCONF1110: false when the primary is a token provider with no token (mainPrimaryConfigured): the respawn
+   * then comes back WITHOUT the primary channel, exactly as channels.sh, channel-watchdog.sh and stuck-modal-guard.sh
+   * launch it. Absent: configured (the launch as before).
+   */
+  channelConfigured?: boolean
 }): string {
   // GROMZONOPROVIDER1108: on a gromzo install the Gromzo plugin is the PRIMARY (never also an extra). It comes back only
   // when the main agent can take it (mainGromzoPrimaryReady); otherwise this respawn is a gromzo-pending session with
@@ -1190,7 +1209,7 @@ export function buildMainSessionRespawnCmd(opts: {
   const extras = (opts.extraPluginIds ?? []).filter((p) => !(primaryIsGromzo && p === MAIN_GROMZO_PLUGIN_ID))
   const primaryReady = primaryIsGromzo
     ? (opts.gromzoPrimaryReady ?? mainGromzoPrimaryReady(opts.mainAgentId ?? MAIN_AGENT_ID))
-    : true
+    : (opts.channelConfigured ?? true)
   const primary = primaryReady ? opts.pluginId : null
   const gromzoSlug = (primaryIsGromzo && primaryReady) || extras.includes(MAIN_GROMZO_PLUGIN_ID)
     ? mainGromzoSlug(opts.mainAgentId ?? MAIN_AGENT_ID)
@@ -1346,7 +1365,8 @@ export function respawnMainSessionFresh(): void {
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       mainAgentId: readMainAgentIdRaw(),
-      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
+      channelConfigured: mainPrimaryConfigured(provider.type),
+      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       // The main session always starts a new conversation -- this is the whole
@@ -1454,7 +1474,8 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       mainAgentId: readMainAgentIdRaw(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
+    channelConfigured: mainPrimaryConfigured(provider.type),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: true,
@@ -1764,7 +1785,8 @@ function respawnMarveenSessionFresh(): boolean {
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       mainAgentId: readMainAgentIdRaw(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
+    channelConfigured: mainPrimaryConfigured(provider.type),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: false,
@@ -3113,6 +3135,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         setGromzoMainLive(false)
         continue
       }
+      // CHANNELUNCONF1110: channels.sh launched the main session WITHOUT its primary channel (a token provider with no
+      // token: store/.channel-unconfigured), and the rule still says so (a false marker alone does nothing, Dani K1).
+      // An absent plugin is the expected state, not a dead one: no liveness action, no down ladder, nothing typed into
+      // the session; channels.sh restarts it once the token is set. Said once per unconfigured spell.
+      if (t.isMarveen && mainSessionRunsUnconfigured(t.provider)) {
+        if (!mainUnconfiguredNoted) {
+          mainUnconfiguredNoted = true
+          logger.info({ session: t.session, provider: t.provider }, 'Main session runs without its channel: no token configured -- no liveness action until one is set')
+        }
+        continue
+      }
+      if (t.isMarveen) mainUnconfiguredNoted = false
       const liveness = await probeChannelPluginLivenessAsync(claudePid, t.provider, t.agentName, { confirmAlive: openDownSpell }, sweepSnapshot ?? undefined)
       if (liveness === 'unknown') {
         // The PROBE failed (ps timed out, state dir unreadable) -- that is not

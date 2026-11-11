@@ -217,9 +217,12 @@ describe('every main-session launcher carries the flag', () => {
   it('all three channel-monitor respawn sites pass the file next to the extras, with the PRIMARY first (INSTALLDIRTYTREE1103)', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
     const extras = src.split('extraPluginIds: readExtraChannelPluginIds(),').length - 1
-    const flags = src.split('extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),').length - 1
+    // CHANNELUNCONF1110: the list comes from mainLaunchPluginIds, still the primary first (dropped only when its token is
+    // missing, as channels.sh drops it).
+    const flags = src.split('extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),').length - 1
     expect(extras).toBe(3)
     expect(flags).toBe(extras)
+    expect(src).toContain('return [...(mainPrimaryConfigured(provider.type) ? [provider.pluginId] : []), ...readExtraChannelPluginIds()]')
   })
 
   it('channels.sh: both launch lines carry the flag, computed by the shared helper', () => {
@@ -239,7 +242,9 @@ describe('every main-session launcher carries the flag', () => {
   it('stuck-modal-guard.sh: the respawn line carries the flag with the respawned primary', () => {
     const sh = readFileSync(join(ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')
     // GROMZOMAINAGENT1106: with the co-listen extras too, as channels.sh and the watchdog pass them.
-    expect(sh).toContain('SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"')
+    // CHANNELUNCONF1110: the respawned primary, emptied only when its token is missing (as the --channels list).
+    expect(sh).toContain('local _primary_id="${RESPAWN_PLUGIN#plugin:}"')
+    expect(sh).toContain('SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$_primary_id" $_extra)"')
     // GROMZONOPROVIDER1108: the channels argument is built once (a gromzo-pending respawn has no primary); for every
     // other provider it is still the respawned primary plus the extras.
     expect(sh).toContain('--dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"')
