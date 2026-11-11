@@ -279,6 +279,12 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // own directory, so a bare glob there matches it: noBareGlob keeps the #2514 rule (a QUOTED `count(*)` stays free in
   // the caller's own dir), while an unquoted `cp x *` there still matches, as the shell would expand it.
   { rel: 'agents/*/agent-config.json', pattern: true, noBareGlob: true },
+  // The token-plan launch outcomes (SUBPLANTOKEN1110 follow-up, Dani 75495 (2)): store/plan-token-launch/<name>.json is
+  // what POST /api/claude-plans/rotate reads back after a sub-agent's restart, and what the agent summary shows. A
+  // sub-agent writing a fresh state:"plan-token" for another agent inside the 20 s read-back window would make the rotate
+  // answer 200 for a launch that failed. Written by the dashboard and by the launched shell's resolve-plan-token-env.mjs
+  // (neither is a tool call), never by a sub-agent: the whole directory, as a directory.
+  { rel: 'store/plan-token-launch', dir: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -448,7 +454,9 @@ export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.js
   // skills` named no path-like word and passed)
   'rules', 'skills', 'agents', 'commands', 'output-styles',
   // CHANSTATEWRITE1104: the channel state dirs' trust directories, from their parent
-  'progress', 'approved'])
+  'progress', 'approved',
+  // SUBPLANTOKEN1110 (Dani 75621): the token-plan launch status dir, from its parent (`cd store && rm -rf plan-token-launch`)
+  'plan-token-launch'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json

@@ -3061,7 +3061,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // the very value stamped, not whatever the tmux global env carried since channels.sh last started (a rotated key
     // would otherwise meet a stamp for the new one and stop at the prompt). By reference, never in argv.
     let stampKey = apiKeyForApproval
-    if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile) {
+    // SUBPLANTOKEN1110 follow-up (Dani 75495 (1)): a token-plan launch is excluded by name, not only through its
+    // configured dir -- the host key outranks the OAuth token, so it must never ride along with the plan's token.
+    if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken) {
       const hostKey = hostApiKey(join(PROJECT_ROOT, '.env')).trim()
       if (hostKey) {
         apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, hostKey)} && `
@@ -3150,7 +3152,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // credential (own_team, a configured config dir, its own token file) also
     // drops an inherited ANTHROPIC_API_KEY, which outranks every OAuth path
     // (BYOSUBUNSET1018, inherited-auth-unset.ts).
-    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null, keyMode })
+    // A plan token is an own token like oauthTokenFile: the inherited OAuth token AND API key are unset before its export.
+    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null || planToken !== null, keyMode })
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''

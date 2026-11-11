@@ -56,7 +56,8 @@ describe('the binding in startAgentProcess', () => {
   const SRC = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 
   it('byoUnsetEnv comes from inheritedAuthUnset with the real inputs', () => {
-    expect(SRC).toMatch(/const byoUnsetEnv = inheritedAuthUnset\(\{ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null, keyMode \}\)/)
+    // SUBPLANTOKEN1110 follow-up: a plan token is an own token too.
+    expect(SRC).toMatch(/const byoUnsetEnv = inheritedAuthUnset\(\{ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null \|\| planToken !== null, keyMode \}\)/)
   })
 
   it('configuredConfigDir is taken BEFORE the auto-isolation can set claudeConfigDir', () => {
