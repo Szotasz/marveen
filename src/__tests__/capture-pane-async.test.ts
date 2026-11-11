@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   fail: false,
   killed: false,
   hang: false,
+  lateCb: null as ((err: Error | null, stdout: string, stderr: string) => void) | null,
   killSignals: [] as (string | undefined)[],
   syncPane: null as string | null,
 }))
@@ -24,6 +25,7 @@ vi.mock('node:child_process', async (orig) => ({
   execFile: vi.fn((file: string, args: string[], opts: { timeout?: number; killSignal?: string }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
     h.calls.push({ async: true, file, args, opts })
     if (h.hang) {
+      h.lateCb = cb
       return { stdin: { end() {} }, killed: false, kill: (sig?: string) => { h.killSignals.push(sig); return true } }
     }
     setTimeout(() => {
@@ -51,6 +53,7 @@ beforeEach(() => {
   h.fail = false
   h.killed = false
   h.hang = false
+  h.lateCb = null
   h.killSignals.length = 0
   h.syncPane = null
 })
@@ -162,6 +165,40 @@ describe('async capture never hangs on a child that does not exit', () => {
       }
     } finally {
       h.hang = false
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a late callback after the fallback has settled the call', async () => {
+    vi.useFakeTimers()
+    try {
+      h.hang = true
+      let value: string | null | undefined = 'unset'
+      const p = agentProcess.capturePaneAsync('agent-x', null).then(v => { value = v })
+      await vi.advanceTimersByTimeAsync(3000 + 1001)
+      await p
+      expect(value).toBeNull()
+      expect(h.lateCb).not.toBeNull()
+      expect(() => h.lateCb!(null, 'late output', '')).not.toThrow()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(value).toBeNull()
+      expect(h.killSignals).toEqual(['SIGKILL'])
+    } finally {
+      h.hang = false
+      vi.useRealTimers()
+    }
+  })
+
+  it('a normal capture clears its fallback timer and never kills the child', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = agentProcess.capturePaneAsync('agent-x', null)
+      await vi.advanceTimersByTimeAsync(200)
+      expect(await p).toBeTypeOf('string')
+      expect(vi.getTimerCount(), 'no timer left pending after a normal capture').toBe(0)
+      await vi.advanceTimersByTimeAsync(3000 + 1001)
+      expect(h.killSignals).toEqual([])
+    } finally {
       vi.useRealTimers()
     }
   })

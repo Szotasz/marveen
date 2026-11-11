@@ -2106,7 +2106,7 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
       if (settled) return
       settled = true
       if (fallback) clearTimeout(fallback)
-      // A timed-out tmux client can exit 0 with empty output on SIGTERM; the sync twin throws ETIMEDOUT there.
+      // A child we killed counts as a timeout even if it exited 0 before the signal landed; the sync twin throws ETIMEDOUT there.
       if (err || child?.killed) {
         reject(Object.assign(err ?? Object.assign(new Error('tmux timed out'), { code: 'ETIMEDOUT' }), { stdout, stderr }))
         return
