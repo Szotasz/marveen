@@ -3785,7 +3785,25 @@ def audit(text: str):
 # multiplexer (EMAILMESSAGESMUX1108, measured 2026-11-08 on a letter that went out
 # with no audit). The dispatch already reads `action` next to `operation`, so the
 # only thing missing was the word itself.
-MANAGE_EMAIL_OUTBOUND_OPS = {"send", "new", "reply", "replyall", "forward"}
+MANAGE_EMAIL_OUTBOUND_OPS = {"send", "new", "reply", "replyall", "reply_all", "forward"}
+# EMAILMUXFOLLOWUP1111 (Dani's #2635 review, Samu 75811), the same rules as the
+# approval gate's manage_email_is_send:
+# F1 every op key is read (a decoy `operation` hid `action: "new"`), and an op is
+#    normalised (lower case, '-' -> '_'), so `reply-all` / `Reply_All` are audited;
+# F3 the `email` server's `messages` tool is judged by an ALLOW list of the reads
+#    measured on the live install; any other operation is outbound text and audited.
+MANAGE_EMAIL_OP_KEYS = ("operation", "action")
+EMAIL_MUX_READ_OPS = frozenset({
+    "search", "read", "mark_read", "mark_unread", "flag", "unflag", "move", "archive", "trash"})
+
+
+def multiplexer_ops(tool_input) -> list:
+    ops = []
+    for key in MANAGE_EMAIL_OP_KEYS:
+        value = tool_input.get(key) if isinstance(tool_input, dict) else None
+        if isinstance(value, str) and value.strip():
+            ops.append(value.strip().lower().replace("-", "_"))
+    return ops
 
 # Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
 # connector's three separate send-shaped tools. Kept in step with the matcher
@@ -4048,9 +4066,17 @@ def main():
     # its name, only by the operation it was asked to perform.
     mail_kind = classify_mail_tool(tool)
     if mail_kind == "manage_email":
-        op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower()
-        if op not in MANAGE_EMAIL_OUTBOUND_OPS:
-            sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
+        ops = multiplexer_ops(tool_input)
+        if str(tool or "").lower().replace("-", "_").endswith("email__messages"):
+            outbound = [o for o in ops if o not in EMAIL_MUX_READ_OPS]
+            if ops and not outbound:
+                sys.exit(0)  # every named operation is a measured read: no outgoing text of ours
+            op = outbound[0] if outbound else ""
+        else:
+            outbound = [o for o in ops if o in MANAGE_EMAIL_OUTBOUND_OPS]
+            if not outbound:
+                sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
+            op = outbound[0]
         # A bare forward carries someone else's text and an EMPTY note: there is
         # nothing of ours to audit, and the fail-closed "unreadable" branch below
         # would block it for no reason.

@@ -274,6 +274,27 @@ def main():
         check("email__messages action=search is not audited (exit 0)", code, 0)
         code, out, err = run_hook(messages_payload("read", uid=1), rules_file=active)
         check("email__messages action=read is not audited (exit 0)", code, 0)
+        # EMAILMUXFOLLOWUP1111 (Dani's #2635 review, Samu 75811): on the #2635 head
+        # each of these exited 0 with an em dash in the body.
+        bad = CLEAN_HU_OK + " — mégis."
+        code, out, err = run_hook({"tool_name": "mcp__email__messages", "tool_input": {
+            "operation": "search", "action": "new", "to": "a@b.hu", "subject": "T", "body": bad}},
+            rules_file=active)
+        check("email__messages decoy operation=search + action=new is audited (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__email__messages", "tool_input": {
+            "action": "read", "operation": "reply", "uid": 1, "body": bad}}, rules_file=active)
+        check("email__messages action=read + operation=reply is audited (exit 2)", code, 2)
+        for action in ("reply_all", "reply-all", "compose", "send_draft"):
+            code, out, err = run_hook(messages_payload(action, to="a@b.hu", subject="T", body=bad),
+                                      rules_file=active)
+            check(f"email__messages action={action} is audited (allow list, exit 2)", code, 2)
+        code, out, err = run_hook(manage_payload("reply_all", body=bad), rules_file=active)
+        check("manage_email reply_all is audited (exit 2)", code, 2)
+        code, out, err = run_hook(manage_payload("Reply-All", body=bad), rules_file=active)
+        check("manage_email Reply-All is audited after normalisation (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email", "tool_input": {
+            "operation": "search", "action": "send", "body": bad}}, rules_file=active)
+        check("manage_email decoy operation=search + action=send is audited (exit 2)", code, 2)
         # Control: a CHAT server's messages tool is not a mail tool here either.
         code, out, err = run_hook({"tool_name": "mcp__slack__messages",
                                    "tool_input": {"action": "new", "text": "— rossz —"}},

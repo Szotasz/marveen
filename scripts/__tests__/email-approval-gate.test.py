@@ -1570,6 +1570,35 @@ with tempfile.TemporaryDirectory() as td:
         check("an approval for one recipient does NOT release the same text to another",
               code == 2, f"exit={code}")
 
+    # EMAILMUXFOLLOWUP1111 (Dani's #2635 review, Samu 75811), measured on the
+    # #2635 head before this fix: each row below passed at level 1.
+    # F1: a decoy `operation` must not hide the `action` the server reads, in
+    # either order, on both multiplexers.
+    for ti_extra, label in (
+        ({"operation": "search"}, "operation=search + action=new"),
+        ({"operation": "read"}, "operation=read + action=new"),
+    ):
+        code, _, _ = run_gate(store1, mux("new", **ti_extra))
+        check(f"email__messages {label} is DENIED (any op key names a send)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__email__messages", "tool_input": {
+        "action": "search", "operation": "reply", "to": "a@b.hu", "subject": "T", "body": "B."}})
+    check("email__messages action=search + operation=reply is DENIED (the other order)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__google-workspace__manage_email", "tool_input": {
+        "operation": "read", "action": "send", "to": ["a@b.hu"], "subject": "T", "body": "B."}})
+    check("manage_email operation=read + action=send is DENIED (any op key)", code == 2, f"exit={code}")
+    # F2: draft:true is no exemption on this tool (measured for manage_email only).
+    code, _, _ = run_gate(store1, mux("new", draft=True))
+    check("email__messages action=new + draft:true is DENIED (no draft exemption here)", code == 2, f"exit={code}")
+    # F3: an allow list of the measured reads -- any other operation is a send.
+    for action in ("send_draft", "compose", "send", "reply_all", "reply-all", "Forward"):
+        code, _, _ = run_gate(store1, mux(action))
+        check(f"email__messages unknown/send action={action} is DENIED (allow list)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, mux("read", operation="search"))
+    check("email__messages two read ops still pass", code == 0, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__email__messages", "tool_input": {
+        "operation": "search", "action": ["new"], "to": "a@b.hu", "subject": "T", "body": "B."}})
+    check("email__messages a non-string action next to a read operation is DENIED (closed)", code == 2, f"exit={code}")
+
     # Control, so the narrow name test is proven narrow: a CHAT server's
     # `messages` tool is not a mail tool and must stay untouched, even at level 1.
     code, _, _ = run_gate(store1, {"tool_name": "mcp__slack__messages",
