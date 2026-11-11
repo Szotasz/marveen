@@ -714,6 +714,12 @@ export function getTokenDetails(
   return db.prepare(sql).all(...params) as TokenDetail[]
 }
 
+/**
+ * @deprecated DBSIZE1111 (2026-11-11): no production caller. POST /api/token-usage/collect used to run this after
+ * every collect; the overview page calls that route every 5 minutes, and one run grew the DB from 704 to 1364 MB
+ * and blocked the event loop for 6.8 s. The card attribution moves to read time (DBSIZE1111 step 2, from the
+ * kanban_card_events in_progress windows, as #568 does); this function stays only until that lands.
+ */
 export function correlateWithKanban(): void {
   const db = getDb()
   const uncorrelated = db.prepare(`
