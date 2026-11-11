@@ -1004,13 +1004,14 @@ client.on('messageCreate', msg => {
 
 // recovered: delivered by the start-up recovery (F4), not live. Such a message never pairs, never decides a // MARVEEN-EXT
 // permission, shows no typing, and is marked recovered="true". // MARVEEN-EXT
-async function handleInbound(msg: Message, recovered = false): Promise<void> { // MARVEEN-EXT
+// Returns whether the message reached the session (the recovery counts only those). // MARVEEN-EXT
+async function handleInbound(msg: Message, recovered = false): Promise<boolean> { // MARVEEN-EXT
   const result = await gate(msg)
 
-  if (result.action === 'drop') return
+  if (result.action === 'drop') return false // MARVEEN-EXT
 
   if (result.action === 'pair') {
-    if (recovered) return // MARVEEN-EXT
+    if (recovered) return false // MARVEEN-EXT
     const lead = result.isResend ? 'Still pending' : 'Pairing required'
     try {
       await msg.reply(
@@ -1019,7 +1020,7 @@ async function handleInbound(msg: Message, recovered = false): Promise<void> { /
     } catch (err) {
       process.stderr.write(`discord channel: failed to send pairing code: ${err}\n`)
     }
-    return
+    return false // MARVEEN-EXT
   }
 
   const chat_id = msg.channelId
@@ -1051,7 +1052,7 @@ async function handleInbound(msg: Message, recovered = false): Promise<void> { /
       if (prompt) void prompt.edit({ content: `${prompt.content}\n\n${allow ? '✅ Allowed' : '❌ Denied'}`, components: [] }).catch(() => {}) // MARVEEN-EXT
     } // MARVEEN-EXT
     void msg.react(allow ? '✅' : '❌').catch(() => {}) // MARVEEN-EXT
-    return
+    return false // MARVEEN-EXT
   }
 
   // Typing indicator — signals "processing" until we reply (or ~10s elapses).
@@ -1096,6 +1097,7 @@ async function handleInbound(msg: Message, recovered = false): Promise<void> { /
   }).catch(err => {
     process.stderr.write(`discord channel: failed to deliver inbound to Claude: ${err}\n`)
   })
+  return true // MARVEEN-EXT
 }
 
 // DCEXT1111 F4: deliver, once, what came to the paired DMs and the allowed channels while the plugin was down. // MARVEEN-EXT
@@ -1113,6 +1115,7 @@ async function recoverMissed(readyAt: number): Promise<void> { // MARVEEN-EXT
   for (const [channelId, userId] of dmChannelUsers) if (access.allowFrom.includes(userId)) targets.push({ channelId, onlyAuthor: userId }) // MARVEEN-EXT
   for (const channelId of Object.keys(access.groups)) targets.push({ channelId }) // MARVEEN-EXT
   let delivered = 0 // MARVEEN-EXT
+  let considered = 0 // MARVEEN-EXT
   for (const t of targets) { // MARVEEN-EXT
     const cursorId = backfillCursor.state.channels[t.channelId] // MARVEEN-EXT
     if (!cursorId) continue // never delivered here before: nothing to compare against // MARVEEN-EXT
@@ -1125,14 +1128,14 @@ async function recoverMissed(readyAt: number): Promise<void> { // MARVEEN-EXT
       ) // MARVEEN-EXT
       if (skipped > 0) process.stderr.write(`discord channel: recovery in ${t.channelId}: ${skipped} older message(s) left out (max ${BACKFILL.maxPerChannel})\n`) // MARVEEN-EXT
       for (const c of take) { // MARVEEN-EXT
-        await handleInbound(msgs.get(c.id)!, true) // MARVEEN-EXT
-        delivered++ // MARVEEN-EXT
+        considered++ // MARVEEN-EXT
+        if (await handleInbound(msgs.get(c.id)!, true)) delivered++ // the gate may drop it, as a live one // MARVEEN-EXT
       } // MARVEEN-EXT
     } catch (err) { // MARVEEN-EXT
       process.stderr.write(`discord channel: recovery in ${t.channelId} failed: ${err}\n`) // MARVEEN-EXT
     } // MARVEEN-EXT
   } // MARVEEN-EXT
-  process.stderr.write(`discord channel: recovered ${delivered} message(s) from ${targets.length} channel(s)\n`) // MARVEEN-EXT
+  process.stderr.write(`discord channel: recovered ${delivered} message(s) (${considered} missed, the rest dropped by the access check as live ones would be) from ${targets.length} channel(s)\n`) // MARVEEN-EXT
 } // MARVEEN-EXT
 
 client.once('ready', c => {

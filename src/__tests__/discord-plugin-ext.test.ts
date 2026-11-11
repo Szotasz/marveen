@@ -1,7 +1,7 @@
 // DCEXT1111: Marveen's additions to the Discord plugin (vendor/discord-plugin/<ver>/overlay). The logic in
 // marveen-ext.ts runs here directly; the wiring in the overlay's server.ts is checked on its text, against the
 // verbatim upstream file next to it.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -330,7 +330,7 @@ describe('F4: a recovered message (the overlay\'s handleInbound, run)', () => {
 })
 
 describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through handleInbound', () => {
-  function recoverHarness(read: { state: { lastBackfillAt: number; channels: Record<string, string> } | null; bad: boolean }) {
+  function recoverHarness(read: { state: { lastBackfillAt: number; channels: Record<string, string> } | null; bad: boolean }, gatePasses = true) {
     const fetches: Array<{ channel: string; opts: unknown }> = []
     const delivered: Array<{ id: string; recovered: boolean }> = []
     const marks: number[] = []
@@ -347,7 +347,7 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
       () => ({ allowFrom: [OWNER], groups: { [GROUP]: {} } }), new Map([[DM, OWNER]]), ext.BACKFILL,
       async (channel: string) => ({ messages: { fetch: async (opts: unknown) => { fetches.push({ channel, opts }); return messages } } }),
       ext.selectRecovered, { user: { id: 'bot' } }, new Set(),
-      async (m: { id: string }, recovered: boolean) => { delivered.push({ id: m.id, recovered }) },
+      async (m: { id: string }, recovered: boolean) => { delivered.push({ id: m.id, recovered }); return gatePasses },
     ) as (readyAt: number) => Promise<void>
     return { recoverMissed, fetches, delivered, marks, DM, GROUP }
   }
@@ -366,6 +366,16 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
     expect(h.marks).toEqual([])
   })
 
+  it('a missed message the access check drops is counted as missed, not as recovered', async () => {
+    const lines: string[] = []
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((s: string | Uint8Array) => { lines.push(String(s)); return true })
+    try {
+      const h = recoverHarness({ state: { lastBackfillAt: 0, channels: { ['1438000000000000500']: id(20) } }, bad: false }, false)
+      await h.recoverMissed(Date.now())
+    } finally { spy.mockRestore() }
+    expect(lines.join('')).toContain('recovered 0 message(s) (1 missed, the rest dropped by the access check as live ones would be)')
+  })
+
   it('due: one fetch per channel that has a cursor, after it; each message through handleInbound as recovered', async () => {
     const h = recoverHarness({ state: { lastBackfillAt: 0, channels: { ['1438000000000000500']: id(20) } }, bad: false })
     await h.recoverMissed(Date.now())
@@ -373,4 +383,21 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
     expect(h.delivered).toEqual([{ id: id(21), recovered: true }])
     expect(h.marks).toHaveLength(1)
   })
+})
+
+describe('F4: what the recovery reports is what reached the session (live probe 2026-11-11: "recovered 5", 0 arrived)', () => {
+  it('handleInbound tells whether the message reached the session', async () => {
+    for (const [gate, text, recovered, want] of [
+      [{ action: 'drop' }, 'hi', false, false],
+      [{ action: 'pair', code: 'abc123', isResend: false }, 'hi', false, false],
+      [{ action: 'pair', code: 'abc123', isResend: false }, 'hi', true, false],
+      [{ action: 'deliver', access: {} }, 'yes abcde', false, false],
+      [{ action: 'deliver', access: {} }, 'yes abcde', true, true],
+      [{ action: 'deliver', access: {} }, 'hi', false, true],
+    ] as Array<[Record<string, unknown>, string, boolean, boolean]>) {
+      const h = inboundHarness(gate)
+      expect(await h.handleInbound(h.msg(text), recovered), JSON.stringify([gate.action, text, recovered])).toBe(want)
+    }
+  })
+
 })
