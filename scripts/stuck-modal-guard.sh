@@ -81,6 +81,9 @@ case "$_smg_provider" in
   *)        _smg_default="plugin:telegram@claude-plugins-official" ;;
 esac
 RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-$_smg_default}"
+# CHANNELUNCONF1110: kept for the respawn below (the unconfigured rule is asked per provider, only for the default).
+SMG_PROVIDER="${_smg_provider:-telegram}"
+SMG_DEFAULT_PLUGIN="$_smg_default"
 unset _smg_provider _smg_default
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
@@ -409,17 +412,29 @@ run_guard() {
     # No helper (a half-updated tree): never pass the gromzo id without its exports.
     _extra="$(printf '%s\n' $_extra | grep -vxF 'gromzo-channel@gromzo-local' | tr '\n' ' ')"
   fi
+  # CHANNELUNCONF1110: a token provider with no token comes back WITHOUT its primary, exactly as channels.sh launched
+  # it (scripts/main-channel-configured.sh); the extras stay. Only for the provider's own default plugin: an explicit
+  # STUCK_MODAL_PLUGIN override keeps the old launch.
+  local _primary_id="${RESPAWN_PLUGIN#plugin:}"
   if [ "${_extra_done:-0}" != 1 ]; then
     for _p in $_extra; do
       [ -n "$_p" ] && EXTRA_Q="$EXTRA_Q $(printf '%q' "plugin:$_p")"
     done
-    CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"
+    if [ "$RESPAWN_PLUGIN" = "$SMG_DEFAULT_PLUGIN" ] \
+       && . "$INSTALL_DIR/scripts/main-channel-configured.sh" 2>/dev/null \
+       && main_channel_unconfigured "$SMG_PROVIDER" "$INSTALL_DIR" "${HOME:-}"; then
+      _primary_id=""
+      CHAN_ARG=""
+      [ -n "$EXTRA_Q" ] && CHAN_ARG="--channels${EXTRA_Q}"
+    else
+      CHAN_ARG="--channels $PLUGIN_Q${EXTRA_Q}"
+    fi
   fi
   unset _extra_done
   local SETTINGS_FLAG=""
   if . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh" 2>/dev/null; then
     # shellcheck disable=SC2086
-    SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "${RESPAWN_PLUGIN#plugin:}" $_extra)"
+    SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$_primary_id" $_extra)"
   fi
 
   # CFGDIR686: the main-agent isolated-config decision belongs on EVERY respawn

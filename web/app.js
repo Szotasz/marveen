@@ -3982,6 +3982,7 @@ async function loadAgents() {
     }
     if (marveenRes.ok) {
       window._marveen = await marveenRes.json()
+      updateMainChannelUnconfBanner(window._marveen)
       // A backend CHANNEL_PROVIDER-éhez igazitsuk a kliens-default-ot,
       // hogy ne 'telegram' jelenjen meg amikor a backend discord-on van.
       if (window._marveen?.channelProvider) {
@@ -4291,7 +4292,10 @@ async function openMarveenDetail() {
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
   document.getElementById('agentDetailModel').textContent = m.model || '-'
-  document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot connected"></span>${t('agents.channel.connected')}</span>`
+  // CHANNELUNCONF1110: it said "connected" unconditionally, also on an install whose channel has no token.
+  document.getElementById('agentDetailChStatus').innerHTML = m.mainChannelUnconfigured
+    ? `<span class="tg-status"><span class="tg-dot"></span>${t('agents.channel.not_configured')}</span>`
+    : `<span class="tg-status"><span class="tg-dot connected"></span>${t('agents.channel.connected')}</span>`
   // Populate the Skills tab for the main agent too: the endpoint returns the
   // global ~/.claude/skills under its real id (agentId), which every agent
   // inherits. Previously this was hard-set to '-' and loadSkills was never
@@ -5384,6 +5388,8 @@ let currentChannelProvider = 'telegram'
     const res = await fetch('/api/marveen')
     if (!res.ok) return
     const data = await res.json()
+    // CHANNELUNCONF1110: the "no channel configured" banner, from the same payload, on every page load.
+    updateMainChannelUnconfBanner(data)
     if (!data.channelProvider || data.channelProvider === currentChannelProvider) return
     currentChannelProvider = data.channelProvider
     const sel = document.getElementById('chProviderSelect')
@@ -6714,6 +6720,8 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
     else showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
     // Refresh detail
+    // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
+    if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch (err) {
@@ -7183,6 +7191,8 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
     const reply = await readActionReply(res)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
     showToast(t('channel.toast.disconnected', { provider: provLabel }))
+    // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
+    if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch {
@@ -15351,6 +15361,43 @@ function wireBranchDriftBanner() {
   })
 }
 
+// === Main channel not configured (CHANNELUNCONF1110) ===
+// /api/marveen carries `mainChannelUnconfigured`: the provider whose token is missing, or null. The main session then
+// runs WITHOUT its channel (channels.sh), so nobody can message the main agent; the dashboard, the scheduled tasks and
+// the other agents keep working. One sentence plus the way to the main agent's Channel tab. Not dismissible.
+const MAIN_CHANNEL_PROVIDER_LABELS = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', teams: 'Microsoft Teams' }
+function updateMainChannelUnconfBanner(m) {
+  const banner = document.getElementById('mainChannelUnconfBanner')
+  if (!banner) return
+  const provider = m && typeof m.mainChannelUnconfigured === 'string' ? m.mainChannelUnconfigured : null
+  if (!provider) { banner.hidden = true; return }
+  const textEl = document.getElementById('mainChannelUnconfBannerText')
+  if (textEl) textEl.textContent = t('main_channel.unconfigured.banner', { provider: MAIN_CHANNEL_PROVIDER_LABELS[provider] || provider })
+  banner.hidden = false
+}
+async function refreshMainChannelUnconfBanner() {
+  try {
+    const r = await fetch('/api/marveen')
+    if (!r.ok) return
+    const m = await r.json()
+    window._marveen = { ...(window._marveen || {}), ...m }
+    updateMainChannelUnconfBanner(m)
+  } catch { /* the banner keeps its last state */ }
+}
+function wireMainChannelUnconfBanner() {
+  const btn = document.getElementById('mainChannelUnconfSetup')
+  if (!btn) return
+  btn.addEventListener('click', async () => {
+    // openMarveenDetail draws from window._marveen and returns silently while it is empty, and only the Agents page
+    // fills it: on a fresh install the owner lands on the overview, so the click opened nothing (live acceptance,
+    // measured in a browser). Fetch it first.
+    await refreshMainChannelUnconfBanner()
+    if (!window._marveen) return
+    await openAgentDetail(mainAgentId())
+    switchAgentTab('channel')
+  })
+}
+
 // === Update-conflict guard (UPDATECONFLICT1105) ===
 // scripts/update-conflict-guard.sh (run by start.sh) repairs, or refuses to repair, what a conflicted auto-stash pop
 // left in a tracked file, and writes a report; /api/updates carries it as `conflictGuard`. One sentence: what
@@ -17717,6 +17764,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initAuthBanner()
   wireBranchDriftBanner()
   wireUpdateConflictBanner()
+  wireMainChannelUnconfBanner()
   wireFleetFreeze()
 })
 

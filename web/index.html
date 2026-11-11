@@ -275,6 +275,16 @@
       </span>
     </div>
 
+    <!-- CHANNELUNCONF1110: the main agent's channel provider has no token, so the session runs without its channel.
+         Not dismissible: it is the install's real state until a token is set. Populated by
+         updateMainChannelUnconfBanner() from /api/marveen. -->
+    <div id="mainChannelUnconfBanner" class="auth-setup-banner branch-drift-banner" role="status" hidden>
+      <span id="mainChannelUnconfBannerText"></span>
+      <span class="auth-setup-banner-actions">
+        <button class="btn-primary btn-compact" id="mainChannelUnconfSetup" data-i18n="main_channel.unconfigured.action">Csatorna beállítása</button>
+      </span>
+    </div>
+
     <div id="setupResumeBanner" class="auth-setup-banner" hidden>
       <span data-i18n="onboarding.resume.text">The setup is not finished yet.</span>
       <span id="setupResumeMsg" role="status" hidden></span>

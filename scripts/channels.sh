@@ -673,6 +673,25 @@ if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
     echo "channels.sh: gromzo pending (${GROMZO_LAST_REASON:-unknown}) -- the session starts without the Gromzo channel and is restarted when it is ready (mxd_socket: mxd's agent socket is not usable; not_enrolled: the main agent is not approved yet; plugin_not_registered: the Gromzo plugin is not registered for Claude Code)" >&2
   fi
 fi
+# CHANNELUNCONF1110 (Samu 75584): a token provider (telegram, discord, slack, teams) with no token is "unconfigured":
+# the session starts WITHOUT its primary channel (the plugin would exit at once and the never-started guard would
+# restart the session forever), the marker tells the dashboard and the other launchers, the watchdog below spends no
+# never-started budget and polls for the token every 60 s, and one restart follows when it appears. A configured
+# channel and every other provider keep the launch they had. See scripts/main-channel-configured.sh.
+CHANNEL_UNCONFIGURED=0
+CHANNEL_UNCONF_LAST_POLL=0
+# shellcheck source=scripts/main-channel-configured.sh
+if . "$INSTALL_DIR/scripts/main-channel-configured.sh" 2>/dev/null; then
+  CHANNEL_UNCONF_MARKER="$(main_channel_unconfigured_marker "$INSTALL_DIR")"
+  if main_channel_unconfigured "$CHANNEL_PROVIDER" "$INSTALL_DIR" "$HOME"; then
+    CHANNEL_UNCONFIGURED=1
+    PLUGIN_ID=""
+    printf '%s\n' "$CHANNEL_PROVIDER" > "$CHANNEL_UNCONF_MARKER" 2>/dev/null || true
+    echo "channels.sh: no $CHANNEL_PROVIDER channel configured (no $(main_channel_token_key "$CHANNEL_PROVIDER") in its .env) -- the session starts without it and is restarted once the token is set" >&2
+  else
+    rm -f "$CHANNEL_UNCONF_MARKER" 2>/dev/null || true
+  fi
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
@@ -2130,6 +2149,8 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 (
   # GROMZONOPROVIDER1108: the Gromzo plugin runs on Node and is never in a "failed" /mcp row this unlock handles.
   [ "$CHANNEL_PROVIDER" = "gromzo" ] && exit 0
+  # CHANNELUNCONF1110: no primary channel was launched, so there is no plugin row to unlock and nothing to type.
+  [ "$CHANNEL_UNCONFIGURED" = "1" ] && exit 0
   sleep 15
   CLAUDE_PID="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   # Check 1: bun grandchild of the marveen-channels claude
@@ -2508,6 +2529,21 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
     fi
     continue
   fi
+  # CHANNELUNCONF1110: an unconfigured session has no primary plugin on purpose: no never-started budget, a token poll
+  # every 60 s, and one restart when the token is set (the same rule as at the launch, main-channel-configured.sh).
+  if [ "$CHANNEL_UNCONFIGURED" = "1" ]; then
+    if [ "$((NOW - CHANNEL_UNCONF_LAST_POLL))" -ge 60 ]; then
+      CHANNEL_UNCONF_LAST_POLL=$NOW
+      if ! main_channel_unconfigured "$CHANNEL_PROVIDER" "$INSTALL_DIR" "$HOME"; then
+        echo "channels.sh: $CHANNEL_PROVIDER channel configured -- restarting the session with it" >&2
+        respawn_log "channel-configured: the $CHANNEL_PROVIDER token is set now -- restarting $SESSION with its channel"
+        RESTART_REQUESTED=1
+        EXIT_REASON="channel-configured"
+        break
+      fi
+    fi
+    continue
+  fi
   _plugin_alive=false
   _bot_hijacked=false
   if [ -f "$MAIN_BOT_PID_FILE" ]; then
@@ -2659,7 +2695,8 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 # only after the launch and its dialogs, and the pending poll's first check runs at once (GROMZO_LAST_POLL=0), so
 # that exit always came "after 5s": measured on the QA VPS 11-09, every ready exit counted as a rapid failure, the
 # 3rd and 4th waited 60 s, the 5th 300 s and ended as exit 1 FAILURE. It is never counted here.
-if [ "$ELAPSED" -lt 30 ] && [ "$EXIT_REASON" != "gromzo-ready" ]; then
+# CHANNELUNCONF1110: "channel-configured" is the same kind of planned restart (the token poll also runs at once).
+if [ "$ELAPSED" -lt 30 ] && [ "$EXIT_REASON" != "gromzo-ready" ] && [ "$EXIT_REASON" != "channel-configured" ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
   rapid_exit_log_line "$ELAPSED" "$EXIT_REASON" "$PANE_EXIT_STATUS" >> "$INSTALL_DIR/store/channels-failures.log"
   # c5296a52: count the RAPID-EXIT lines, not every line in the file. The same log carries
@@ -2689,7 +2726,8 @@ rm -f "$INSTALL_DIR/store/channels-failures.log"
 # The restart still comes: the Linux unit is Restart=always (update.sh migrate_channels_restart moves an old
 # on-failure unit to always in the same update that brings this script) and launchd's KeepAlive=true restarts on any
 # exit.
-if [ "$RESTART_REQUESTED" = "1" ] && [ "$EXIT_REASON" != "gromzo-ready" ]; then
+# CHANNELUNCONF1110: the "channel configured" exit too.
+if [ "$RESTART_REQUESTED" = "1" ] && [ "$EXIT_REASON" != "gromzo-ready" ] && [ "$EXIT_REASON" != "channel-configured" ]; then
   exit 1
 fi
 exit 0
