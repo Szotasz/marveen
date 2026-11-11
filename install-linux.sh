@@ -563,7 +563,7 @@ if command -v free &>/dev/null; then
 fi
 
 MISSING_PKGS=""
-for pkg in ffmpeg git tmux lsof curl python3 pipx unzip zstd; do
+for pkg in ffmpeg git tmux lsof curl python3 pipx unzip zip zstd; do
   if ! command -v "$pkg" &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
@@ -756,6 +756,7 @@ ok "pipx" $(pipx --version)
 ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
+ok "zip $(zip -v | awk 'NR==2 {print $4}')"
 ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 
 # LINUXINSTPREREQ1104: --admin-prereq stops here. Only the channel gate is left of the root

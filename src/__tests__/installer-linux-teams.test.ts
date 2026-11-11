@@ -241,7 +241,9 @@ describe('install-linux.sh: the machine-wide allowlist on a teams install', () =
     expect(BLOCK).toContain(`TEAMS_MANAGED_FILE=${fixed}`)
     const slice = BLOCK.replace(`TEAMS_MANAGED_FILE=${fixed}`, `TEAMS_MANAGED_FILE='${file}'`)
     refuse(slice)
-    return bash([PRELUDE, 'managed_settings_notice() { echo NOTICE; }', 'sudo() { echo "SUDO $1" >&2; "$@"; }',
+    // The real step runs as root via sudo with root's umask; 0002 makes mkdir -p
+    // create a group-writable directory, which the writer rightly refuses.
+    return bash(['umask 022', PRELUDE, 'managed_settings_notice() { echo NOTICE; }', 'sudo() { echo "SUDO $1" >&2; "$@"; }',
       `INSTALL_DIR='${ROOT}'`, 'CHANNEL_PROVIDER=teams', slice].join('\n'))
   }
   const listed = (file: string) => (JSON.parse(readFileSync(file, 'utf8')).allowedChannelPlugins as { plugin: string; marketplace: string }[])
