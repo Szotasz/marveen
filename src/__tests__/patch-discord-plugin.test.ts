@@ -61,9 +61,10 @@ function syntaxErrors(text: string): string[] {
 const overlayFiles = () => readdirSync(OVERLAY).sort()
 const ext = () => JSON.parse(readFileSync(join(dir, 'marveen-ext.json'), 'utf-8'))
 
-// What the live cache holds today: upstream + the DCBTN1023 anchor patch.
+// What the live cache held before DCEXT1111: upstream + the DCBTN1023 anchor patch (the old script's output,
+// sha256 9a3fe104..., byte-identical to the live cache measured 2026-11-11).
 function dcbtnPatched(): string {
-  return readFileSync(join(OVERLAY, 'server.ts'), 'utf-8')
+  return readFileSync(join(__dirname, 'fixtures', 'discord-plugin-0.0.4', 'server.dcbtn.ts.txt'), 'utf-8')
 }
 
 describe('the vendored plugin', () => {

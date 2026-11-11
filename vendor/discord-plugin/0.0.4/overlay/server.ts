@@ -33,6 +33,8 @@ import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { join, sep } from 'path'
+import { fileURLToPath } from 'url' // MARVEEN-EXT
+import { loadExtConfig, resolveOwner, mayDecidePermission, DmResolver } from './marveen-ext.ts' // MARVEEN-EXT
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -223,6 +225,14 @@ const recentSentIds = new Set<string>()
 const RECENT_SENT_CAP = 200
 
 const dmChannelUsers = new Map<string, string>()
+const EXT = loadExtConfig(fileURLToPath(new URL('.', import.meta.url))) // MARVEEN-EXT
+const dmResolver = new DmResolver( // MARVEEN-EXT
+  async userId => (await (await client.users.fetch(userId)).createDM()).id, // MARVEEN-EXT
+  dmChannelUsers, // MARVEEN-EXT
+  msg => process.stderr.write(`${msg}\n`), // MARVEEN-EXT
+) // MARVEEN-EXT
+// The owner is resolved per decision: a pairing made while the plugin runs counts at once. // MARVEEN-EXT
+const currentOwner = () => resolveOwner(EXT, loadAccess().allowFrom) // MARVEEN-EXT
 
 function noteSent(id: string): void {
   recentSentIds.add(id)
@@ -406,7 +416,7 @@ async function fetchAllowedChannel(id: string) {
   const ch = await fetchTextChannel(id)
   const access = loadAccess()
   if (ch.type === ChannelType.DM) {
-    const userId = ch.recipientId ?? dmChannelUsers.get(id)
+    const userId = ch.recipientId ?? dmChannelUsers.get(id) ?? (await dmResolver.resolve(id, access.allowFrom)) // MARVEEN-EXT
     if (userId && access.allowFrom.includes(userId)) return ch
   } else {
     const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
@@ -470,8 +480,11 @@ const mcp = new Server(
 
 // Stores full permission details for "See more" expansion keyed by request_id.
 const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
+// The prompt message per request, so a decision typed as text also takes its buttons away. // MARVEEN-EXT
+const permissionMessages = new Map<string, Message>() // MARVEEN-EXT
+const decidedPermissions = new Set<string>() // MARVEEN-EXT
 
-// Receive permission_request from CC → format → send to all allowlisted DMs.
+// Receive permission_request from CC → format → send to the owner's DM (DCEXT1111 F1, was: every allowlisted DM). // MARVEEN-EXT
 // Groups are intentionally excluded — the security thread resolution was
 // "single-user mode for official plugins." Anyone in access.allowFrom
 // already passed explicit pairing; group members haven't.
@@ -488,7 +501,7 @@ mcp.setNotificationHandler(
   async ({ params }) => {
     const { request_id, tool_name, description, input_preview } = params
     pendingPermissions.set(request_id, { tool_name, description, input_preview })
-    const access = loadAccess()
+    const owner = currentOwner() // MARVEEN-EXT
     const text = `🔐 Permission: ${tool_name}`
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -506,16 +519,20 @@ mcp.setNotificationHandler(
         .setEmoji('❌')
         .setStyle(ButtonStyle.Danger),
     )
-    for (const userId of access.allowFrom) {
-      void (async () => {
-        try {
-          const user = await client.users.fetch(userId)
-          await user.send({ content: text, components: [row] })
-        } catch (e) {
-          process.stderr.write(`permission_request send to ${userId} failed: ${e}\n`)
-        }
-      })()
-    }
+    // Only the owner is asked (DCEXT1111 F1): every paired DM used to get the prompt, and any of them could allow. // MARVEEN-EXT
+    if (owner.id === null) { // MARVEEN-EXT
+      process.stderr.write(`discord channel: permission ${request_id} not relayed to Discord: ${owner.reason} -- it stays in the terminal\n`) // MARVEEN-EXT
+      return // MARVEEN-EXT
+    } // MARVEEN-EXT
+    const userId = owner.id // MARVEEN-EXT
+    void (async () => { // MARVEEN-EXT
+      try { // MARVEEN-EXT
+        const user = await client.users.fetch(userId) // MARVEEN-EXT
+        permissionMessages.set(request_id, await user.send({ content: text, components: [row] })) // MARVEEN-EXT
+      } catch (e) { // MARVEEN-EXT
+        process.stderr.write(`permission_request send to ${userId} failed: ${e}\n`) // MARVEEN-EXT
+      } // MARVEEN-EXT
+    })() // MARVEEN-EXT
   },
 )
 
@@ -759,17 +776,20 @@ client.on('error', err => {
 
 // Button-click handler for permission requests. customId is
 // `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
-// Security mirrors the text-reply path: allowFrom must contain the sender.
+// Security mirrors the text-reply path: only the owner, in a DM (DCEXT1111 F1). // MARVEEN-EXT
 client.on('interactionCreate', async (interaction: Interaction) => {
   if (!interaction.isButton()) return
   const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(interaction.customId)
   if (!m) return
-  const access = loadAccess()
-  if (!access.allowFrom.includes(interaction.user.id)) {
+  if (!mayDecidePermission(currentOwner(), interaction.user.id, interaction.guildId === null)) { // MARVEEN-EXT
     await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})
     return
   }
   const [, behavior, request_id] = m
+  if (behavior !== 'more' && decidedPermissions.has(request_id!)) { // MARVEEN-EXT
+    await interaction.reply({ content: 'Already answered.', ephemeral: true }).catch(() => {}) // MARVEEN-EXT
+    return // MARVEEN-EXT
+  } // MARVEEN-EXT
 
   if (behavior === 'more') {
     const details = pendingPermissions.get(request_id)
@@ -810,6 +830,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     params: { request_id, behavior },
   })
   pendingPermissions.delete(request_id)
+  decidedPermissions.add(request_id!) // MARVEEN-EXT
+  permissionMessages.delete(request_id!) // MARVEEN-EXT
   const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
   // Replace buttons with the outcome so the same request can't be answered
   // twice and the chat history shows what was chosen.
@@ -957,17 +979,23 @@ async function handleInbound(msg: Message): Promise<void> {
   // pending permission request, emit the structured event instead of
   // relaying as chat. The sender is already gate()-approved at this point
   // (non-allowlisted senders were dropped above), so we trust the reply.
+  // DCEXT1111 F1: only the owner, only in a DM. Anyone else's "yes abcde" is an ordinary message. // MARVEEN-EXT
   const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
-  if (permMatch) {
-    void mcp.notification({
-      method: 'notifications/claude/channel/permission',
-      params: {
-        request_id: permMatch[2]!.toLowerCase(),
-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-      },
-    })
-    const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
-    void msg.react(emoji).catch(() => {})
+  if (permMatch && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) { // MARVEEN-EXT
+    const request_id = permMatch[2]!.toLowerCase() // MARVEEN-EXT
+    const allow = permMatch[1]!.toLowerCase().startsWith('y') // MARVEEN-EXT
+    if (!decidedPermissions.has(request_id)) { // MARVEEN-EXT
+      void mcp.notification({ // MARVEEN-EXT
+        method: 'notifications/claude/channel/permission', // MARVEEN-EXT
+        params: { request_id, behavior: allow ? 'allow' : 'deny' }, // MARVEEN-EXT
+      }) // MARVEEN-EXT
+      decidedPermissions.add(request_id) // MARVEEN-EXT
+      pendingPermissions.delete(request_id) // MARVEEN-EXT
+      const prompt = permissionMessages.get(request_id) // MARVEEN-EXT
+      permissionMessages.delete(request_id) // MARVEEN-EXT
+      if (prompt) void prompt.edit({ content: `${prompt.content}\n\n${allow ? '✅ Allowed' : '❌ Denied'}`, components: [] }).catch(() => {}) // MARVEEN-EXT
+    } // MARVEEN-EXT
+    void msg.react(allow ? '✅' : '❌').catch(() => {}) // MARVEEN-EXT
     return
   }
 
@@ -1015,6 +1043,10 @@ async function handleInbound(msg: Message): Promise<void> {
 
 client.once('ready', c => {
   process.stderr.write(`discord channel: gateway connected as ${c.user.tag}\n`)
+  // DCEXT1111 F2: the paired DMs are known again after a restart, before anyone writes. // MARVEEN-EXT
+  void dmResolver.warm(loadAccess().allowFrom) // MARVEEN-EXT
+  const owner = currentOwner() // MARVEEN-EXT
+  if (owner.id === null) process.stderr.write(`discord channel: no Discord owner (${owner.reason}) -- permission prompts stay in the terminal\n`) // MARVEEN-EXT
 })
 
 client.login(TOKEN).catch(err => {
