@@ -1,37 +1,55 @@
-// scripts/patch-discord-plugin.py (DCBTN1023): answer buttons on the Discord
-// channel plugin's reply tool. Run for real on a copy of the complete 0.0.4
-// plugin (fixtures/discord-plugin-0.0.4/server.ts.txt) in a scratch plugins
-// cache; the inserted functions are then run with fake discord.js builders.
+// scripts/patch-discord-plugin.py (DCEXT1111): Marveen's version of the Discord
+// channel plugin (vendor/discord-plugin/<ver>/overlay) put over the cached
+// official one, only when that is the vendored upstream file. Run for real on a
+// copy of the verbatim upstream 0.0.4 server.ts in a scratch plugins cache; the
+// overlay's button code is then run with fake discord.js builders.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, chmodSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import ts from 'typescript'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'patch-discord-plugin.py')
-const FIXTURE = join(__dirname, 'fixtures', 'discord-plugin-0.0.4', 'server.ts.txt')
+const VENDOR = join(ROOT, 'vendor', 'discord-plugin', '0.0.4')
+const UPSTREAM = join(VENDOR, 'upstream', 'server.ts')
+const OVERLAY = join(VENDOR, 'overlay')
 const TAG = 'MARVEEN-PATCH(dcbtn1023)'
+const UPSTREAM_SHA = '6edc17d9e9d04930967361ba51c8e03b8f8508647a1dfc11d79ee6a0eb1010b7'
 
 let cache = ''
+let dir = ''
 let server = ''
+let install = ''
 
 beforeEach(() => {
   cache = mkdtempSync(join(tmpdir(), 'dc-plugin-cache-'))
-  const dir = join(cache, 'claude-plugins-official', 'discord', '0.0.4')
+  dir = join(cache, 'claude-plugins-official', 'discord', '0.0.4')
   mkdirSync(dir, { recursive: true })
   server = join(dir, 'server.ts')
-  copyFileSync(FIXTURE, server)
+  copyFileSync(UPSTREAM, server)
+  install = mkdtempSync(join(tmpdir(), 'dc-install-'))
+  mkdirSync(join(install, 'store'))
 })
-afterEach(() => rmSync(cache, { recursive: true, force: true }))
+afterEach(() => {
+  rmSync(cache, { recursive: true, force: true })
+  rmSync(install, { recursive: true, force: true })
+})
+
+const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex')
 
 function run(extra: string[] = [], root = cache): { status: number | null; stderr: string } {
-  const r = spawnSync('python3', [SCRIPT, ...extra, root], { encoding: 'utf-8', timeout: 30_000 })
+  const r = spawnSync('python3', [SCRIPT, '--install', install, ...extra, root], { encoding: 'utf-8', timeout: 30_000 })
   return { status: r.status, stderr: r.stderr }
 }
 
-function readState(file: string): { root: string; files: Array<{ version: string; path: string; status: string }> } {
+// The owner's overrides (the dashboard settings store) and the install's .env.
+function setOverrides(o: Record<string, string>) { writeFileSync(join(install, 'store', 'config-overrides.json'), JSON.stringify(o)) }
+function setEnvFile(lines: string) { writeFileSync(join(install, '.env'), lines) }
+
+function readState(file: string): { root: string; mode: string; owner_set: boolean; backfill: boolean; files: Array<{ version: string; path: string; status: string }> } {
   return JSON.parse(readFileSync(file, 'utf-8'))
 }
 
@@ -40,78 +58,169 @@ function syntaxErrors(text: string): string[] {
   return (out.diagnostics ?? []).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
 }
 
+const overlayFiles = () => readdirSync(OVERLAY).sort()
+const ext = () => JSON.parse(readFileSync(join(dir, 'marveen-ext.json'), 'utf-8'))
+
+// What the live cache holds today: upstream + the DCBTN1023 anchor patch.
+function dcbtnPatched(): string {
+  return readFileSync(join(OVERLAY, 'server.ts'), 'utf-8')
+}
+
+describe('the vendored plugin', () => {
+  it('upstream/server.ts is the verbatim 0.0.4 file (pinned sha256)', () => {
+    expect(sha(readFileSync(UPSTREAM))).toBe(UPSTREAM_SHA)
+  })
+
+  it('the overlay parses, and every line it adds or changes is marked', () => {
+    const up = readFileSync(UPSTREAM, 'utf-8').split('\n')
+    const ov = readFileSync(join(OVERLAY, 'server.ts'), 'utf-8')
+    expect(syntaxErrors(ov)).toEqual([])
+    const upSet = new Set(up)
+    const unmarked = ov.split('\n').filter(l => !upSet.has(l) && !/MARVEEN-(PATCH|EXT)/.test(l))
+    expect(unmarked).toEqual([])
+  })
+})
+
 describe('patch-discord-plugin.py', () => {
-  it('1st run patches: every added line tagged, buttons inside the reply schema, still parses', () => {
-    const r = run()
+  it('the upstream file gets the overlay: byte-identical files, settings file, manifest, state', () => {
+    const state = join(cache, 'state.json')
+    const r = run(['--state', state])
     expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/patched .*server\.ts \(buttons\)/)
-    const text = readFileSync(server, 'utf-8')
-    const fixture = readFileSync(FIXTURE, 'utf-8')
-    expect(text.split('\n').length - fixture.split('\n').length).toBe(text.split('\n').filter(l => l.endsWith(TAG)).length)
-    const reply = text.indexOf("name: 'reply'")
-    const field = text.indexOf('buttons: {', reply)
-    expect(field).toBeGreaterThan(reply)
-    expect(field).toBeLessThan(text.indexOf("required: ['chat_id', 'text'],", reply))
-    expect(text.indexOf("name: 'react'")).toBeGreaterThan(field)
-    expect(text).toMatch(/const files = \(args\.files as string\[\] \| undefined\) \?\? \[\]\n +const rows = buildButtonRows\(args\.buttons\) \/\/ MARVEEN-PATCH/)
-    expect(text).toMatch(/\.\.\.\(i === 0 && files\.length > 0 \? \{ files \} : \{\}\),\n +\.\.\.\(i === chunks\.length - 1 && rows\.length > 0 \? \{ components: rows \} : \{\}\), \/\/ MARVEEN-PATCH/)
-    expect(text.indexOf('function clickAllowed(')).toBeLessThan(text.indexOf("client.on('messageCreate'"))
-    expect(syntaxErrors(text)).toEqual([])
+    expect(r.stderr).toMatch(/overlaid .*server\.ts \(Marveen's Discord plugin 0\.0\.4, from upstream\)/)
+    for (const n of overlayFiles()) expect(readFileSync(join(dir, n), 'utf-8')).toBe(readFileSync(join(OVERLAY, n), 'utf-8'))
+    expect(ext()).toEqual({ backfill: true, ownerUserId: '' })
+    const manifest = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
+    expect(manifest.upstream).toBe(UPSTREAM_SHA)
+    expect(manifest.files['server.ts']).toBe(sha(readFileSync(server)))
+    expect(readState(state)).toMatchObject({ mode: 'on', owner_set: false, backfill: true, files: [{ version: '0.0.4', path: server, status: 'overlaid' }] })
   })
 
   it('2nd run is a no-op: `already`, byte-identical, silent', () => {
-    const state = join(cache, 'state.json')
-    run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.4', path: server, status: 'patched' }])
+    run()
     const once = readFileSync(server, 'utf-8')
+    const state = join(cache, 'state.json')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.4', path: server, status: 'already' }])
+    expect(readState(state).files[0].status).toBe('already')
   })
 
-  it('a file patched by an older version of the script gets the current code ("upgraded"), once', () => {
-    run()
-    const current = readFileSync(server, 'utf-8')
-    // the 2026-10-23 first version had no dmPolicy line in clickAllowed
-    const older = current.split('\n').filter(l => !(l.includes("access.dmPolicy === 'disabled'") && l.endsWith(TAG))).join('\n')
-    expect(older).not.toBe(current)
-    writeFileSync(server, older)
+  it('the live DCBTN1023-patched file is taken over like the upstream one', () => {
+    writeFileSync(server, dcbtnPatched())
+    expect(dcbtnPatched()).toContain(TAG)
     const state = join(cache, 'state.json')
     const r = run(['--state', state])
-    expect(r.stderr).toMatch(/upgraded .*server\.ts \(buttons\)/)
-    expect(readFileSync(server, 'utf-8')).toBe(current)
-    expect(readState(state).files[0].status).toBe('upgraded')
+    expect(r.stderr).toMatch(/overlaid .*from dcbtn/)
+    expect(readState(state).files[0].status).toBe('overlaid')
+    expect(existsSync(join(dir, '.marveen-overlay.json'))).toBe(true)
+    // an older DCBTN version (lines missing) is recognised too: the tagged lines are stripped before the match
+    writeFileSync(server, dcbtnPatched().split('\n').filter(l => !(l.includes("access.dmPolicy === 'disabled'") && l.endsWith(TAG))).join('\n'))
+    rmSync(join(dir, '.marveen-overlay.json'))
+    expect(run().stderr).toMatch(/overlaid .*from dcbtn/)
+  })
+
+  it('our own earlier output gets the current overlay ("upgraded"), once', () => {
+    run()
+    const older = readFileSync(server, 'utf-8').replace('Not authorized.', 'Nope.')
+    writeFileSync(server, older)
+    const m = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
+    m.files['server.ts'] = sha(older)
+    writeFileSync(join(dir, '.marveen-overlay.json'), JSON.stringify(m))
+    const r = run()
+    expect(r.stderr).toMatch(/upgraded .*from ours/)
+    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(join(OVERLAY, 'server.ts'), 'utf-8'))
     expect(run().stderr).toBe('')
   })
 
-  it('taking it back = deleting the tagged lines: byte-identical to the plugin', () => {
+  it('a settings change rewrites marveen-ext.json ("upgraded")', () => {
     run()
-    const back = readFileSync(server, 'utf-8').split('\n').filter(l => !l.endsWith(TAG)).join('\n')
-    expect(back).toBe(readFileSync(FIXTURE, 'utf-8'))
+    setOverrides({ DISCORD_OWNER_USER_ID: '290903699524550656', DISCORD_BACKFILL: '0' })
+    const state = join(cache, 'state.json')
+    expect(run(['--state', state]).stderr).toMatch(/upgraded/)
+    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656' })
+    expect(readState(state)).toMatchObject({ owner_set: true, backfill: false })
   })
 
-  it('all or nothing: one moved anchor (plugin update) leaves the file untouched, loudly, exit 0', () => {
-    const changed = readFileSync(FIXTURE, 'utf-8').replace('...(i === 0 && files.length > 0 ? { files } : {}),', '...(i === 0 && files.length ? { files } : {}),')
-    writeFileSync(server, changed)
-    const state = join(cache, 'state.json')
-    const r = run(['--state', state])
-    expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/LOUD: reply send files option not found exactly once.*the buttons patch left out, the reply tool has no buttons/)
-    expect(readFileSync(server, 'utf-8')).toBe(changed)
-    expect(readState(state).files[0].status).toBe('anchor-missing:reply send files option')
+  it('the owner and the switch are overrides-only: a .env line never names an owner or turns the overlay off', () => {
+    setEnvFile('DISCORD_OWNER_USER_ID=111111111111111111\nDISCORD_PLUGIN_EXT=0\nDISCORD_BACKFILL=0\n')
+    const r = run()
+    expect(r.stderr).toMatch(/overlaid/)
+    expect(ext().ownerUserId).toBe('')
+    // DISCORD_BACKFILL is a plain flag: its .env line counts, and an override beats it
+    expect(ext().backfill).toBe(false)
+    setOverrides({ DISCORD_BACKFILL: '1' })
+    run()
+    expect(ext().backfill).toBe(true)
   })
 
-  it('a plugin whose reply tool already has buttons (upstream took it) is left alone', () => {
-    const native = readFileSync(FIXTURE, 'utf-8').replace("        required: ['chat_id', 'text'],", "          buttons: {\n            type: 'array',\n          },\n        required: ['chat_id', 'text'],")
-    writeFileSync(server, native)
+  it('an owner id that is not a Discord user id is not used, loudly', () => {
+    for (const bad of ['0', '-290903699524550656', 'zoli', '1234', '2909036995245505561234']) {
+      setOverrides({ DISCORD_OWNER_USER_ID: bad })
+      const r = run()
+      expect(r.status).toBe(0)
+      expect(r.stderr).toContain('DISCORD_OWNER_USER_ID is set but is not a Discord user id -- NOT used')
+      expect(ext().ownerUserId).toBe('')
+    }
+  })
+
+  it('DISCORD_PLUGIN_EXT=off: the verbatim upstream file back, everything we wrote removed', () => {
+    run()
+    setOverrides({ DISCORD_PLUGIN_EXT: '0' })
     const state = join(cache, 'state.json')
     const r = run(['--state', state])
-    expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/already has buttons -- left alone/)
-    expect(readFileSync(server, 'utf-8')).toBe(native)
-    expect(readState(state).files[0].status).toBe('native')
+    expect(r.stderr).toMatch(/restored .*server\.ts to the official plugin 0\.0\.4/)
+    expect(sha(readFileSync(server))).toBe(UPSTREAM_SHA)
+    expect(readdirSync(dir)).toEqual(['server.ts'])
+    expect(readState(state)).toMatchObject({ mode: 'off', files: [{ status: 'restored' }] })
+    // off again: nothing to do, silent
+    const again = run(['--state', state])
+    expect(again.stderr).toBe('')
+    expect(readState(state).files[0].status).toBe('upstream')
+    // on again: back to ours
+    setOverrides({ DISCORD_PLUGIN_EXT: '1' })
+    expect(run().stderr).toMatch(/overlaid .*from upstream/)
+  })
+
+  it('DISCORD_PLUGIN_EXT=off on the live DCBTN-patched file: the upstream file, without the buttons', () => {
+    writeFileSync(server, dcbtnPatched())
+    setOverrides({ DISCORD_PLUGIN_EXT: '0' })
+    expect(run().stderr).toMatch(/restored/)
+    expect(sha(readFileSync(server))).toBe(UPSTREAM_SHA)
+  })
+
+  it('a file this install does not know (plugin update) is left as shipped, loudly, in both modes', () => {
+    const changed = readFileSync(UPSTREAM, 'utf-8').replace('const MAX_CHUNK_LIMIT = 2000', 'const MAX_CHUNK_LIMIT = 1900')
+    for (const mode of ['1', '0']) {
+      writeFileSync(server, changed)
+      setOverrides({ DISCORD_PLUGIN_EXT: mode })
+      const state = join(cache, 'state.json')
+      const r = run(['--state', state])
+      expect(r.status).toBe(0)
+      expect(r.stderr).toMatch(/LOUD: .*server\.ts is not a plugin version this install knows/)
+      expect(readFileSync(server, 'utf-8')).toBe(changed)
+      expect(readdirSync(dir)).toEqual(['server.ts'])
+      expect(readState(state).files[0].status).toBe('unknown')
+    }
+  })
+
+  it('a manifest does not make a file ours unless its hash matches', () => {
+    run()
+    const tampered = readFileSync(server, 'utf-8') + '\n// edited by hand\n'
+    writeFileSync(server, tampered)
+    const r = run()
+    expect(r.stderr).toMatch(/LOUD: .*not a plugin version this install knows/)
+    expect(readFileSync(server, 'utf-8')).toBe(tampered)
+  })
+
+  it('the switch reads as the settings store reads a flag (true/1/yes/on), absent = on', () => {
+    for (const [v, on] of [['true', true], ['on', true], ['1', true], ['false', false], ['0', false], ['', false]] as Array<[string, boolean]>) {
+      copyFileSync(UPSTREAM, server)
+      for (const f of readdirSync(dir)) if (f !== 'server.ts') rmSync(join(dir, f))
+      setOverrides({ DISCORD_PLUGIN_EXT: v })
+      run()
+      expect(existsSync(join(dir, '.marveen-overlay.json')), v).toBe(on)
+    }
   })
 
   it('no plugin cache at all: exit 0, nothing to do', () => {
@@ -123,54 +232,30 @@ describe('patch-discord-plugin.py', () => {
     } finally { rmSync(empty, { recursive: true, force: true }) }
   })
 
-  it('an unwritable file: named in the log, exit 0 (the channel still starts)', () => {
+  it('an unwritable plugin folder: named in the log, exit 0, the file untouched', () => {
     if (process.getuid?.() === 0) return // root writes anyway
-    const dir = join(cache, 'claude-plugins-official', 'discord', '0.0.4')
     chmodSync(dir, 0o555)
     try {
       const r = run()
       expect(r.status).toBe(0)
-      expect(r.stderr).toMatch(/cannot write .*server\.ts: PermissionError -- left unpatched/)
-      expect(readFileSync(server, 'utf-8')).toBe(readFileSync(FIXTURE, 'utf-8'))
+      expect(r.stderr).toMatch(/cannot write in .*0\.0\.4: PermissionError -- left as it was/)
+      expect(sha(readFileSync(server))).toBe(UPSTREAM_SHA)
     } finally { chmodSync(dir, 0o755) }
   })
 
-  // #2212 review: the anchors prove the code next to the insertion is there,
-  // not the names the inserted code uses. A plugin without the ButtonStyle
-  // import would be patched into one that throws ReferenceError on load.
-  it('a name the inserted code uses is gone (plugin update): left out loudly, the file untouched', () => {
-    const fixture = readFileSync(FIXTURE, 'utf-8')
-    const cases: Array<[string, string]> = [
-      [fixture.replace('  ButtonStyle,\n', ''), 'discord.js imports ButtonBuilder, ButtonStyle, ActionRowBuilder, Interaction'],
-      [fixture.replace('  type Interaction,\n', ''), 'discord.js imports ButtonBuilder, ButtonStyle, ActionRowBuilder, Interaction'],
-      [fixture.replace('function loadAccess(', 'function readAccess('), 'function loadAccess'],
-      [fixture.replace('const dmChannelUsers = ', 'const dmUsers = '), 'const dmChannelUsers'],
-      [fixture.replace('const MAX_CHUNK_LIMIT = ', 'const MAX_CHUNK = '), 'const MAX_CHUNK_LIMIT'],
-    ]
-    const state = join(cache, 'state.json')
-    for (const [changed, name] of cases) {
-      expect(changed).not.toBe(fixture)
-      writeFileSync(server, changed)
-      const r = run(['--state', state])
-      expect(r.status).toBe(0)
-      expect(r.stderr).toContain(`LOUD: ${name} not found exactly once`)
-      expect(readFileSync(server, 'utf-8')).toBe(changed)
-      expect(readState(state).files[0].status).toBe(`anchor-missing:${name}`)
-    }
-  })
-
-  it('an unexpected error (unreadable plugin directory): logged, exit 0, nothing patched', () => {
+  it('an unexpected error (unreadable plugin directory): logged, exit 0, nothing changed', () => {
     if (process.getuid?.() === 0) return // root reads anyway
     const base = join(cache, 'claude-plugins-official', 'discord')
     chmodSync(base, 0o000)
     try {
       const r = run()
       expect(r.status).toBe(0)
-      expect(r.stderr).toMatch(/unexpected PermissionError, nothing patched/)
+      expect(r.stderr).toMatch(/unexpected PermissionError, nothing changed/)
     } finally { chmodSync(base, 0o755) }
-    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(FIXTURE, 'utf-8'))
+    expect(sha(readFileSync(server))).toBe(UPSTREAM_SHA)
   })
 })
+
 
 // The inserted rows builder and click check, run with fake discord.js builders.
 type Access = { dmPolicy?: string; allowFrom: string[]; groups: Record<string, { requireMention?: boolean; allowFrom?: string[] }> }
