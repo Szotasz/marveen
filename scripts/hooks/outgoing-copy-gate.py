@@ -3781,7 +3781,11 @@ def audit(text: str):
 # else it does (search, read, labels, trash, getAttachment...) produces no text
 # of ours, so the gate must not touch it -- classifying those as sends is how
 # the sibling email gate once denied plain mailbox READS (MANAGEOP904).
-MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
+# "new" is the `email` MCP server's word for a fresh letter on its `messages`
+# multiplexer (EMAILMESSAGESMUX1108, measured 2026-11-08 on a letter that went out
+# with no audit). The dispatch already reads `action` next to `operation`, so the
+# only thing missing was the word itself.
+MANAGE_EMAIL_OUTBOUND_OPS = {"send", "new", "reply", "replyall", "forward"}
 
 # Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
 # connector's three separate send-shaped tools. Kept in step with the matcher

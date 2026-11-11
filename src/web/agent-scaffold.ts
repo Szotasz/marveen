@@ -1536,8 +1536,15 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // them before, so a send went out with no approval.
 // Binding: email-gate-matcher-drift.test.ts asserts this matcher fires for
 // every name either classifier gates, and never for the Telegram tools.
+// EMAILMESSAGESMUX1108: `mcp__email__messages` is a second multiplexer, like
+// manage_email, but its operation key is `action` and its send operation is
+// `new`. It was in NEITHER gate's matcher list, so a letter sent with it
+// reached the wire with no approval and no copy audit (measured 2026-11-08 on
+// the live install: a real letter went out, message-id 99f5960a-...). The
+// drift test could not catch it: it checks settings.json AGAINST this
+// constant, so a gap in the constant itself passes green.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
+  'Bash|.*send_email.*|.*manage_email.*|.*email__messages.*|.*[Gg]mail.*__.*|.*draft_email.*'
   + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
   + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
   + '|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*'

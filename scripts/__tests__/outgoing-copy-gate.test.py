@@ -252,6 +252,34 @@ def main():
         code, out, err = run_hook(manage_payload("forward", message_id="x"), rules_file=active)
         check("manage_email bare forward passes (exit 0)", code, 0)
 
+        # --- 6b. EMAILMESSAGESMUX1108: the `email` server's `messages` tool ---
+        # A second multiplexer, whose operation key is `action` and whose send
+        # op is `new`. Measured on the live install 2026-11-08: a real letter
+        # went out through it with NO copy audit, because the tool was in no
+        # matcher list and the classifier did not know the name.
+        def messages_payload(action, **kw):
+            return {"tool_name": "mcp__email__messages",
+                    "tool_input": {"action": action, "account": "x@y.hu", **kw}}
+
+        code, out, err = run_hook(messages_payload("new", to="a@b.hu", subject="Targy",
+                                                   body=CLEAN_HU_OK + " — mégis."), rules_file=active)
+        check("email__messages action=new with em dash blocks (exit 2)", code, 2)
+        code, out, err = run_hook(messages_payload("new", to="a@b.hu", subject="Targy",
+                                                   body=CLEAN_HU_OK), rules_file=active)
+        check("email__messages action=new clean passes (exit 0)", code, 0)
+        code, out, err = run_hook(messages_payload("reply", uid=1, body=CLEAN_HU_OK + " — mégis."),
+                                  rules_file=active)
+        check("email__messages action=reply with em dash blocks (exit 2)", code, 2)
+        code, out, err = run_hook(messages_payload("search", query="— rossz — szoveg"), rules_file=active)
+        check("email__messages action=search is not audited (exit 0)", code, 0)
+        code, out, err = run_hook(messages_payload("read", uid=1), rules_file=active)
+        check("email__messages action=read is not audited (exit 0)", code, 0)
+        # Control: a CHAT server's messages tool is not a mail tool here either.
+        code, out, err = run_hook({"tool_name": "mcp__slack__messages",
+                                   "tool_input": {"action": "new", "text": "— rossz —"}},
+                                  rules_file=active)
+        check("a chat server's messages tool is not audited as mail (exit 0)", code, 0)
+
         # GATECOPY827: a code block without format=markdownv2 has no copy
         # button on the phone -- machine gate, not memory.
         fenced = "Íme:\n```\nls -la\n```\nfuttasd le kérlek."

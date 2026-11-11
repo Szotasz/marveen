@@ -344,6 +344,18 @@ _MS365_DRAFT_SUFFIXES = ("create_draft_email", "create_shared_mailbox_draft", "c
 MAIL_TOOL_KINDS = ("send_email", "connector_send", "send_draft", "manage_email", "draft")
 
 
+def is_email_messages_mux(tool_name):
+    """Is this the `email` MCP server's `messages` multiplexer? (EMAILMESSAGESMUX1108)
+
+    Deliberately narrow: the name must END in `email__messages`, i.e. the tool is
+    `messages` on a server whose name ends in `email`. A bare `messages` suffix
+    would also claim a chat server's tool (mcp__slack__messages) and fail-close
+    it, and this gate's job is letters.
+    """
+    n = str(tool_name or "").lower().replace("-", "_")
+    return n.endswith("email__messages")
+
+
 def classify_mail_tool(tool_name):
     """Classify a (possibly prefixed, qualified) tool name. Strictest kind
     first, so a name that fits two kinds lands in the one that gates harder."""
@@ -365,6 +377,14 @@ def classify_mail_tool(tool_name):
     if n.endswith("send_draft"):
         return "send_draft"
     if n.endswith("manage_email"):
+        return "manage_email"
+    # EMAILMESSAGESMUX1108: the `email` MCP server's `messages` tool is a second
+    # multiplexer (search/read/mark/move/new/reply/forward), so it is gated like
+    # manage_email and its OPERATION decides. The test is deliberately narrow --
+    # the name must end in `email__messages`, i.e. the tool is `messages` on a
+    # server whose name ends in `email` -- because a bare `messages` suffix would
+    # also claim a chat server's tool (mcp__slack__messages) and fail-close it.
+    if is_email_messages_mux(n):
         return "manage_email"
     if n.endswith(_MS365_DRAFT_SUFFIXES):
         return "draft"
@@ -880,7 +900,12 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
     html_sha256, attachments, harder = None, [], {}
     # A prefixed name (mcp__gmail__v2_reply_all) is extracted like the bare one.
-    if classify_mail_tool(tool_name) in ("send_email", "connector_send"):
+    # The `email__messages` multiplexer carries the envelope FLAT (to, cc, bcc,
+    # subject, body), exactly like a send_email tool, so it is read on the flat
+    # path. Without this it would land in the `else` branch below and every send
+    # on it would be denied as "not a mail tool" -- safe, but unusable: no
+    # approval could ever let the letter through (EMAILMESSAGESMUX1108).
+    if classify_mail_tool(tool_name) in ("send_email", "connector_send") or is_email_messages_mux(tool_name):
         ti = tool_input if isinstance(tool_input, dict) else {}
         if ms365_tool_kind(tool_name) == "send":
             # A Graph send, decided by NAME alone (MS365MAIL1024 round 2): a non-Graph
