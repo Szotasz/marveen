@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
 // CHANNELUNCONF1110 (Dani #2691 K1): channels.sh's .channel-unconfigured marker joins them (only channels.sh writes it).
-const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured']
+// PLANSFILEGATE1111 (Samu 75712): claude-plans.json too (only the owner-gated /api/claude-plans writes it).
+const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json']
 const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured']
 
 let base: string
@@ -122,6 +123,33 @@ describe('the five store files, as a sub-agent: create, write and delete denied'
       expect(subFile('Write', join(root, 'store', f))).toEqual(SUB)
     })
   }
+})
+
+// PLANSFILEGATE1111 (Samu 75712): store/claude-plans.json decides which Claude subscription each agent runs on, and the
+// owner-gated POST /api/claude-plans (OWNERGATE2-1104) writes it. A sub-agent writing it directly went around that gate
+// (measured on develop 6a268b71: Write and `echo >` both passed). The main agent and every read stay free.
+describe('store/claude-plans.json: a sub-agent cannot write it, the main agent and a read can', () => {
+  const plans = () => join(root, 'store', 'claude-plans.json')
+  beforeEach(() => { writeFileSync(plans(), '[]\n') })
+  it('a sub-agent: Write, Edit, sed -i, a redirect from the store dir, cp over it, rm from its parent', () => {
+    expect(subFile('Write', plans(), agentDir)).toEqual(SUB)
+    expect(subFile('Edit', plans(), agentDir)).toEqual(SUB)
+    expect(sub(`sed -i '' 's/a/b/' @ROOT@/store/claude-plans.json`, agentDir)).toEqual(SUB)
+    expect(sub(`cd @ROOT@/store && echo '[{"id":"x","label":"$(id)"}]' > claude-plans.json`, agentDir)).toEqual(SUB)
+    expect(sub(`cp /tmp/p.json @ROOT@/store/claude-plans.json`, agentDir)).toEqual(SUB)
+    expect(sub('rm -f claude-plans.json', join(root, 'store'))).toEqual(SUB)
+  })
+  it('a sub-agent may read it (the measuring probes do)', () => {
+    expect(sub('cat @ROOT@/store/claude-plans.json', agentDir).deny).toBe(false)
+    expect(sub(`jq '.[].id' @ROOT@/store/claude-plans.json`, agentDir).deny).toBe(false)
+  })
+  it('the main agent stays free (nothing of it writes the file with a tool call today, but it may)', () => {
+    expect(mainFile('Write', plans()).deny).toBe(false)
+    expect(main(`echo '[]' > @ROOT@/store/claude-plans.json`).deny).toBe(false)
+  })
+  it("a worktree's own copy is another root: free", () => {
+    expect(subFile('Write', join(wt, 'store', 'claude-plans.json'), agentDir).deny).toBe(false)
+  })
 })
 
 // TGINREPLAYGATE1104 (#2512 review, provenance): the inbound replay re-delivers a line of this log to the agent framed as

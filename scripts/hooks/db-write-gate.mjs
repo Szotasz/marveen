@@ -179,6 +179,13 @@ export const PROTECTED_INSTALL_PATHS = [
 //   store/.channel-unconfigured         -- channels.sh's "the main session runs without its channel" marker
 //                                          (CHANNELUNCONF1110, Dani #2691 K1): only channels.sh writes it, never a tool
 //                                          call; a written one would ask the monitor to leave the main agent alone
+//   store/claude-plans.json             -- which Claude subscription each agent runs on: a plan's configDir, its vault
+//                                          secret id and its label (PLANSFILEGATE1111, Samu 75712). The owner-gated
+//                                          POST /api/claude-plans writes it (OWNERGATE2-1104); a direct write went around
+//                                          that gate, and a label reaches the main agent's rotation prompt. Only the
+//                                          dashboard writes it (claude-plans.ts, atomicWriteFileSync); no skill, script or
+//                                          scheduled task does with a tool call (measured 2026-11-11), so the main agent
+//                                          stays free, as with the .env
 export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: '.env' },
   { rel: 'store/provenance-gate-rules.json' },
@@ -187,6 +194,7 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/egress-measure-hosts.json' },
   { rel: 'store/.fleet-memgate-observe' },
   { rel: 'store/.channel-unconfigured' },
+  { rel: 'store/claude-plans.json' },
   // The user's shared Claude settings (Dani 67840/67841): every agents/*/.claude-config/settings.local.json is a
   // SYMLINK to ~/.claude/settings.local.json, a real file the main agent loads too, so a sub-agent writing it (through
   // its symlink or straight) changes every session's settings. The main agent writes them legitimately: sub-agent only.
@@ -1818,7 +1826,7 @@ export const SUBAGENT_FILE_GATE_MSG =
   'Telepites .env / kapu-szabalyfajl irasa TILTOTT (ENVRELAXGATE1104, sub-agensre). NEM irhatod a futo telepites ' +
   '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
   'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
-  'store/.fleet-memgate-observe fajlt, sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
+  'store/.fleet-memgate-observe es store/claude-plans.json fajlt (ez utobbit az owner-kapus /api/claude-plans irja), sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
   '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, .claude.json, plugins/*.json), ' +
   'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
   'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
