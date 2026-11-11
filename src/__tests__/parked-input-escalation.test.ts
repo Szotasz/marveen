@@ -27,18 +27,22 @@ const h = vi.hoisted(() => {
   return { PARKED, PARKED_DIM, calls: [] as string[][], eView: null as string | null }
 })
 
-vi.mock('node:child_process', async (orig) => ({
-  ...(await orig() as object),
-  execFileSync: vi.fn((_file: string, args?: string[]) => {
-    if (Array.isArray(args)) {
-      h.calls.push(args)
-      if (args.includes('capture-pane')) {
-        return args.includes('-e') ? (h.eView ?? h.PARKED) : h.PARKED
+vi.mock('node:child_process', async (orig) => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
+  const mocked = {
+    ...(await orig() as object),
+    execFileSync: vi.fn((_file: string, args?: string[]) => {
+      if (Array.isArray(args)) {
+        h.calls.push(args)
+        if (args.includes('capture-pane')) {
+          return args.includes('-e') ? (h.eView ?? h.PARKED) : h.PARKED
+        }
       }
-    }
-    return ''
-  }),
-}))
+      return ''
+    }),
+  }
+  return { ...mocked, execFile: execFileFromSync(mocked.execFileSync) }
+})
 vi.mock('../notify.js', () => ({ alertIsRedirected: () => false, notifyChannel: vi.fn(async () => {}), notifyTelegram: vi.fn(async () => {}) }))
 
 import { clearStaleParkedInput } from '../web/agent-process.js'

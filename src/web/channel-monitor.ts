@@ -19,7 +19,7 @@ import {
   agentHasChannel,
   agentSessionName,
   capturePane, capturePaneWithHistory,
-  captureParkedInputView,
+  captureParkedInputView, captureParkedInputViewAsync,
   clearInputBuffer,
   dismissResumeSummaryModalIfPresent,
   dismissModelConsentDialogIfPresent,
@@ -665,7 +665,7 @@ export async function recoverStuckInputForSession(
   // Ghost-stripped capture: a dim autocomplete hint in an empty box must NOT
   // read as parked input, or the recovery below would re-type + submit it
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
-  const pane = captureParkedInputView(session)
+  const pane = await captureParkedInputViewAsync(session)
   const sig = pane != null ? stuckInputSignature(pane) : null
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {

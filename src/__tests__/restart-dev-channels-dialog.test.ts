@@ -59,29 +59,33 @@ const h = vi.hoisted(() => {
   }
 })
 
-vi.mock('node:child_process', async (orig) => ({
-  ...(await orig() as object),
-  execFileSync: vi.fn((_file: string, args?: string[]) => {
-    if (!Array.isArray(args)) return ''
-    if (args.includes('capture-pane')) {
-      if (h.state === 'dialog') return h.cursorOnDev ? h.DIALOG_DEV : h.DIALOG_EXIT
-      if (h.state === 'prompt') return h.PROMPT
-      return ''
-    }
-    if (args.includes('send-keys')) {
-      h.keys.push({ onScreen: h.state, args: [...args] })
-      // Claude Code's DevChannelsDialog: Enter confirms the highlighted row.
-      // "I am using this for local development" -> the REPL comes up;
-      // "Exit" -> process exits. Escape exits too (exit(0) in 2.1.280).
-      if (h.state === 'dialog') {
-        const last = args[args.length - 1]
-        if (last === 'Enter') h.state = h.cursorOnDev ? 'prompt' : 'exited'
-        if (last === 'Escape') h.state = 'exited'
+vi.mock('node:child_process', async (orig) => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
+  const mocked = {
+    ...(await orig() as object),
+    execFileSync: vi.fn((_file: string, args?: string[]) => {
+      if (!Array.isArray(args)) return ''
+      if (args.includes('capture-pane')) {
+        if (h.state === 'dialog') return h.cursorOnDev ? h.DIALOG_DEV : h.DIALOG_EXIT
+        if (h.state === 'prompt') return h.PROMPT
+        return ''
       }
-    }
-    return ''
-  }),
-}))
+      if (args.includes('send-keys')) {
+        h.keys.push({ onScreen: h.state, args: [...args] })
+        // Claude Code's DevChannelsDialog: Enter confirms the highlighted row.
+        // "I am using this for local development" -> the REPL comes up;
+        // "Exit" -> process exits. Escape exits too (exit(0) in 2.1.280).
+        if (h.state === 'dialog') {
+          const last = args[args.length - 1]
+          if (last === 'Enter') h.state = h.cursorOnDev ? 'prompt' : 'exited'
+          if (last === 'Escape') h.state = 'exited'
+        }
+      }
+      return ''
+    }),
+  }
+  return { ...mocked, execFile: execFileFromSync(mocked.execFileSync) }
+})
 vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(async () => {}), notifyTelegram: vi.fn(async () => {}) }))
 
 import { scheduleIdentitySetup, isSessionReadyForPrompt } from '../web/agent-process.js'

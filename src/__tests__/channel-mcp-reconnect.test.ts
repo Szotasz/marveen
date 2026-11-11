@@ -2,10 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 const mockExecFileSync = vi.fn()
-vi.mock('node:child_process', () => ({
-  execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
-  execSync: vi.fn(),
-}))
+vi.mock('node:child_process', async (orig) => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
+  const mocked = {
+    execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+    execSync: vi.fn(),
+  }
+  return { ...mocked, execFile: execFileFromSync(mocked.execFileSync) }
+})
 
 vi.mock('../platform.js', () => ({
   resolveFromPath: (name: string) => `/usr/local/bin/${name}`,
@@ -44,7 +48,9 @@ vi.mock('../web/agent-process.js', () => ({
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   capturePane: (session: string) => mockCapturePane(session),
+  capturePaneAsync: async (session: string) => mockCapturePane(session),
   captureParkedInputView: (session: string) => mockCaptureParkedInputView(session),
+  captureParkedInputViewAsync: async (session: string) => mockCaptureParkedInputView(session),
 }))
 
 vi.mock('../web/main-agent.js', () => ({
