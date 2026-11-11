@@ -8,6 +8,16 @@
 - **Ours**: `0.0.4/overlay/` -- the plugin as Marveen runs it. Changed lines in `server.ts` carry
   a `MARVEEN-PATCH(...)` / `MARVEEN-EXT` marker; the new logic lives in `marveen-ext.ts`.
   Review it as a diff: `diff 0.0.4/upstream/server.ts 0.0.4/overlay/server.ts`.
+- **What the overlay changes** (DCEXT1111):
+  - answer buttons on `reply` (the former DCBTN1023 patch, its lines still tagged `MARVEEN-PATCH(dcbtn1023)`);
+  - F1: a tool-permission prompt goes to the owner only (`DISCORD_OWNER_USER_ID`, else the sole paired DM, else
+    nobody), and only the owner, in a DM, decides it (upstream: every paired DM, and a typed `yes <code>` from
+    any guild channel too);
+  - F2: paired DM channels are opened at start, so a restart does not make them "not allowlisted";
+  - F3: a voice message carries `voice="true"`;
+  - F4: messages that came while the plugin was down are delivered once at start (`recovered="true"`), at most
+    every 10 minutes, REST only (`DISCORD_BACKFILL`, cursor in `$DISCORD_STATE_DIR/backfill-cursor.json`);
+  - F5: `fetch_messages` pages with `before`/`after`; a `create_thread` tool.
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.

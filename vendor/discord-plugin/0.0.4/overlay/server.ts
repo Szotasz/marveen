@@ -35,6 +35,7 @@ import { homedir } from 'os'
 import { join, sep } from 'path'
 import { fileURLToPath } from 'url' // MARVEEN-EXT
 import { loadExtConfig, resolveOwner, mayDecidePermission, DmResolver, voiceMeta, pagingOptions, threadName } from './marveen-ext.ts' // MARVEEN-EXT
+import { BACKFILL, readCursor, backfillDue, BackfillCursor, selectRecovered } from './marveen-ext.ts' // MARVEEN-EXT
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -233,6 +234,24 @@ const dmResolver = new DmResolver( // MARVEEN-EXT
 ) // MARVEEN-EXT
 // The owner is resolved per decision: a pairing made while the plugin runs counts at once. // MARVEEN-EXT
 const currentOwner = () => resolveOwner(EXT, loadAccess().allowFrom) // MARVEEN-EXT
+// F4: the newest delivered message per channel, kept so a restart can recover what came while it was down. // MARVEEN-EXT
+const CURSOR_FILE = join(STATE_DIR, 'backfill-cursor.json') // MARVEEN-EXT
+const cursorRead = EXT.backfill ? readCursor(CURSOR_FILE) : null // MARVEEN-EXT
+const backfillCursor = cursorRead === null ? null : new BackfillCursor( // MARVEEN-EXT
+  cursorRead.state ?? { lastBackfillAt: 0, channels: {} }, // MARVEEN-EXT
+  state => { // MARVEEN-EXT
+    try { // MARVEEN-EXT
+      const tmp = `${CURSOR_FILE}.tmp` // MARVEEN-EXT
+      writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: 0o600 }) // MARVEEN-EXT
+      renameSync(tmp, CURSOR_FILE) // MARVEEN-EXT
+    } catch (err) { // MARVEEN-EXT
+      process.stderr.write(`discord channel: cannot write ${CURSOR_FILE}: ${err}\n`) // MARVEEN-EXT
+    } // MARVEEN-EXT
+  }, // MARVEEN-EXT
+) // MARVEEN-EXT
+// Live deliveries while the recovery runs, so it never delivers the same message twice; emptied when it ends. // MARVEEN-EXT
+const liveDelivered = new Set<string>() // MARVEEN-EXT
+let recoveryOpen = backfillCursor !== null // MARVEEN-EXT
 
 function noteSent(id: string): void {
   recentSentIds.add(id)
@@ -792,6 +811,7 @@ function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
   process.stderr.write('discord channel: shutting down\n')
+  backfillCursor?.flush() // MARVEEN-EXT
   setTimeout(() => process.exit(0), 2000)
   void Promise.resolve(client.destroy()).finally(() => process.exit(0))
 }
@@ -982,12 +1002,15 @@ client.on('messageCreate', msg => {
   handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))
 })
 
-async function handleInbound(msg: Message): Promise<void> {
+// recovered: delivered by the start-up recovery (F4), not live. Such a message never pairs, never decides a // MARVEEN-EXT
+// permission, shows no typing, and is marked recovered="true". // MARVEEN-EXT
+async function handleInbound(msg: Message, recovered = false): Promise<void> { // MARVEEN-EXT
   const result = await gate(msg)
 
   if (result.action === 'drop') return
 
   if (result.action === 'pair') {
+    if (recovered) return // MARVEEN-EXT
     const lead = result.isResend ? 'Still pending' : 'Pairing required'
     try {
       await msg.reply(
@@ -1000,6 +1023,8 @@ async function handleInbound(msg: Message): Promise<void> {
   }
 
   const chat_id = msg.channelId
+  if (!recovered && recoveryOpen) liveDelivered.add(msg.id) // MARVEEN-EXT
+  if (backfillCursor && !msg.channel.isThread()) backfillCursor.note(chat_id, msg.id) // MARVEEN-EXT
 
   if (msg.channel.type === ChannelType.DM) {
     dmChannelUsers.set(chat_id, msg.author.id)
@@ -1011,7 +1036,7 @@ async function handleInbound(msg: Message): Promise<void> {
   // (non-allowlisted senders were dropped above), so we trust the reply.
   // DCEXT1111 F1: only the owner, only in a DM. Anyone else's "yes abcde" is an ordinary message. // MARVEEN-EXT
   const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
-  if (permMatch && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) { // MARVEEN-EXT
+  if (permMatch && !recovered && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) { // MARVEEN-EXT
     const request_id = permMatch[2]!.toLowerCase() // MARVEEN-EXT
     const allow = permMatch[1]!.toLowerCase().startsWith('y') // MARVEEN-EXT
     if (!decidedPermissions.has(request_id)) { // MARVEEN-EXT
@@ -1030,7 +1055,7 @@ async function handleInbound(msg: Message): Promise<void> {
   }
 
   // Typing indicator — signals "processing" until we reply (or ~10s elapses).
-  if ('sendTyping' in msg.channel) {
+  if (!recovered && 'sendTyping' in msg.channel) { // MARVEEN-EXT
     void msg.channel.sendTyping().catch(() => {})
   }
 
@@ -1065,6 +1090,7 @@ async function handleInbound(msg: Message): Promise<void> {
         ts: msg.createdAt.toISOString(),
         ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
         ...voiceMeta(msg.flags.bitfield), // MARVEEN-EXT
+        ...(recovered ? { recovered: 'true' } : {}), // MARVEEN-EXT
       },
     },
   }).catch(err => {
@@ -1072,10 +1098,53 @@ async function handleInbound(msg: Message): Promise<void> {
   })
 }
 
+// DCEXT1111 F4: deliver, once, what came to the paired DMs and the allowed channels while the plugin was down. // MARVEEN-EXT
+// Each message goes through the same gate() as a live one; threads are not recovered. // MARVEEN-EXT
+async function recoverMissed(readyAt: number): Promise<void> { // MARVEEN-EXT
+  if (backfillCursor === null || cursorRead === null) return // MARVEEN-EXT
+  const due = backfillDue(cursorRead, Date.now()) // MARVEEN-EXT
+  if (cursorRead.state === null || due.due) backfillCursor.markRun(Date.now()) // MARVEEN-EXT
+  if (!due.due) { // MARVEEN-EXT
+    process.stderr.write(`discord channel: no recovery: ${due.reason}\n`) // MARVEEN-EXT
+    return // MARVEEN-EXT
+  } // MARVEEN-EXT
+  const access = loadAccess() // MARVEEN-EXT
+  const targets: Array<{ channelId: string; onlyAuthor?: string }> = [] // MARVEEN-EXT
+  for (const [channelId, userId] of dmChannelUsers) if (access.allowFrom.includes(userId)) targets.push({ channelId, onlyAuthor: userId }) // MARVEEN-EXT
+  for (const channelId of Object.keys(access.groups)) targets.push({ channelId }) // MARVEEN-EXT
+  let delivered = 0 // MARVEEN-EXT
+  for (const t of targets) { // MARVEEN-EXT
+    const cursorId = backfillCursor.state.channels[t.channelId] // MARVEEN-EXT
+    if (!cursorId) continue // never delivered here before: nothing to compare against // MARVEEN-EXT
+    try { // MARVEEN-EXT
+      const ch = await fetchTextChannel(t.channelId) // MARVEEN-EXT
+      const msgs = await ch.messages.fetch({ after: cursorId, limit: BACKFILL.fetchLimit }) // MARVEEN-EXT
+      const { take, skipped } = selectRecovered( // MARVEEN-EXT
+        [...msgs.values()].map(m => ({ id: m.id, createdTimestamp: m.createdTimestamp, authorId: m.author.id, authorBot: m.author.bot })), // MARVEEN-EXT
+        { cursorId, cutoffMs: readyAt, nowMs: Date.now(), selfId: client.user?.id ?? '', onlyAuthor: t.onlyAuthor, exclude: liveDelivered }, // MARVEEN-EXT
+      ) // MARVEEN-EXT
+      if (skipped > 0) process.stderr.write(`discord channel: recovery in ${t.channelId}: ${skipped} older message(s) left out (max ${BACKFILL.maxPerChannel})\n`) // MARVEEN-EXT
+      for (const c of take) { // MARVEEN-EXT
+        await handleInbound(msgs.get(c.id)!, true) // MARVEEN-EXT
+        delivered++ // MARVEEN-EXT
+      } // MARVEEN-EXT
+    } catch (err) { // MARVEEN-EXT
+      process.stderr.write(`discord channel: recovery in ${t.channelId} failed: ${err}\n`) // MARVEEN-EXT
+    } // MARVEEN-EXT
+  } // MARVEEN-EXT
+  process.stderr.write(`discord channel: recovered ${delivered} message(s) from ${targets.length} channel(s)\n`) // MARVEEN-EXT
+} // MARVEEN-EXT
+
 client.once('ready', c => {
   process.stderr.write(`discord channel: gateway connected as ${c.user.tag}\n`)
-  // DCEXT1111 F2: the paired DMs are known again after a restart, before anyone writes. // MARVEEN-EXT
-  void dmResolver.warm(loadAccess().allowFrom) // MARVEEN-EXT
+  // DCEXT1111 F2: the paired DMs are known again after a restart, before anyone writes; then F4. // MARVEEN-EXT
+  const readyAt = Date.now() // MARVEEN-EXT
+  void (async () => { // MARVEEN-EXT
+    await dmResolver.warm(loadAccess().allowFrom) // MARVEEN-EXT
+    await recoverMissed(readyAt) // MARVEEN-EXT
+  })() // MARVEEN-EXT
+    .catch(err => process.stderr.write(`discord channel: start-up recovery failed: ${err}\n`)) // MARVEEN-EXT
+    .finally(() => { recoveryOpen = false; liveDelivered.clear() }) // MARVEEN-EXT
   const owner = currentOwner() // MARVEEN-EXT
   if (owner.id === null) process.stderr.write(`discord channel: no Discord owner (${owner.reason}) -- permission prompts stay in the terminal\n`) // MARVEEN-EXT
 })

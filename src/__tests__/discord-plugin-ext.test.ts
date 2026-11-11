@@ -131,7 +131,7 @@ describe('the wiring in the overlay server.ts', () => {
   it('a permission button and a typed "yes abcde" decide only for the owner in a DM', () => {
     expect(SERVER).not.toContain('if (!access.allowFrom.includes(interaction.user.id)) {')
     expect(SERVER).toContain("if (!mayDecidePermission(currentOwner(), interaction.user.id, interaction.guildId === null)) {")
-    expect(SERVER).toContain("if (permMatch && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) {")
+    expect(SERVER).toContain("if (permMatch && !recovered && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) {")
     expect(SERVER).not.toMatch(/^\s*if \(permMatch\) \{/m)
   })
 
@@ -143,7 +143,9 @@ describe('the wiring in the overlay server.ts', () => {
   it('the outbound gate asks the resolver for a DM it has not seen; the paired DMs are warmed at ready', () => {
     expect(SERVER).toContain('const userId = ch.recipientId ?? dmChannelUsers.get(id) ?? (await dmResolver.resolve(id, access.allowFrom))')
     const ready = SERVER.slice(SERVER.indexOf("client.once('ready'"), SERVER.indexOf('client.login(TOKEN)'))
-    expect(ready).toContain('void dmResolver.warm(loadAccess().allowFrom)')
+    // warm first (F2), then the recovery (F4), which needs the DM channels warm() found
+    expect(ready).toMatch(/await dmResolver\.warm\(loadAccess\(\)\.allowFrom\) \/\/ MARVEEN-EXT\n\s*await recoverMissed\(readyAt\)/)
+    expect(ready).toContain('.finally(() => { recoveryOpen = false; liveDelivered.clear() })')
   })
 })
 
@@ -183,5 +185,192 @@ describe('F5: paging and threads', () => {
     expect(handler).toContain('await fetchAllowedChannel(args.chat_id as string)')
     expect(handler.indexOf('fetchAllowedChannel')).toBeLessThan(handler.indexOf('threads.create'))
     expect(handler).toContain("if (ch.type === ChannelType.DM) throw new Error('threads do not exist in DMs')")
+  })
+})
+
+describe('F4: recovery logic', () => {
+  const NOW = 1_800_000_000_000
+  const id = (n: number) => String(1438000000000000000n + BigInt(n))
+
+  it('first start and a damaged file recover nothing; then at most every 10 minutes', () => {
+    expect(ext.backfillDue({ state: null, bad: false }, NOW)).toMatchObject({ due: false, reason: expect.stringContaining('first start') })
+    expect(ext.backfillDue({ state: null, bad: true }, NOW)).toMatchObject({ due: false, reason: expect.stringContaining('unreadable') })
+    const at = (ago: number) => ext.backfillDue({ state: { lastBackfillAt: NOW - ago, channels: {} }, bad: false }, NOW)
+    expect(at(9 * 60_000).due).toBe(false)
+    expect(at(9 * 60_000).reason).toContain('9 min ago (at most every 10 min)')
+    expect(at(10 * 60_000).due).toBe(true)
+  })
+
+  it('the cursor file: read back strictly, anything odd is "bad", a missing file is not', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dc-cursor-'))
+    try {
+      const p = join(dir, 'c.json')
+      expect(ext.readCursor(p)).toEqual({ state: null, bad: false })
+      writeFileSync(p, JSON.stringify({ lastBackfillAt: 5, channels: { [id(1)]: id(2) } }))
+      expect(ext.readCursor(p)).toEqual({ state: { lastBackfillAt: 5, channels: { [id(1)]: id(2) } }, bad: false })
+      for (const body of ['{ bad', '[]', JSON.stringify({ channels: {} }), JSON.stringify({ lastBackfillAt: 1, channels: { x: id(1) } }), JSON.stringify({ lastBackfillAt: 1, channels: { [id(1)]: 7 } })]) {
+        writeFileSync(p, body)
+        expect(ext.readCursor(p), body).toEqual({ state: null, bad: true })
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the cursor only moves forward, saves debounced, and flushes on markRun', async () => {
+    const saved: string[] = []
+    const c = new ext.BackfillCursor({ lastBackfillAt: 0, channels: {} }, (s: unknown) => saved.push(JSON.stringify(s)), 20)
+    c.note(id(1), id(10))
+    c.note(id(1), id(9)) // older: ignored
+    c.note(id(1), id(11))
+    c.note('not-a-channel', id(12)) // ignored
+    expect(saved).toEqual([])
+    await new Promise(r => setTimeout(r, 40))
+    expect(saved).toHaveLength(1)
+    expect(JSON.parse(saved[0]!)).toEqual({ lastBackfillAt: 0, channels: { [id(1)]: id(11) } })
+    c.markRun(NOW)
+    expect(JSON.parse(saved[1]!).lastBackfillAt).toBe(NOW)
+  })
+
+  it('selectRecovered: after the cursor, before the start, 24 h, no bots, the paired user only in a DM, no live duplicates, newest 50', () => {
+    const c = (n: number, o: Partial<{ ageMs: number; author: string; bot: boolean }> = {}) =>
+      ({ id: id(n), createdTimestamp: NOW - (o.ageMs ?? 60_000), authorId: o.author ?? OWNER, authorBot: o.bot ?? false })
+    const base = { cursorId: id(10), cutoffMs: NOW - 1000, nowMs: NOW, selfId: 'bot' }
+    const pick = (cs: unknown[], o = {}) => ext.selectRecovered(cs, { ...base, ...o }).take.map((x: { id: string }) => x.id)
+    expect(pick([c(12), c(11), c(10), c(9)])).toEqual([id(11), id(12)])
+    expect(pick([c(11, { ageMs: 0 })])).toEqual([]) // after the start: it comes live
+    expect(pick([c(11, { ageMs: 25 * 3600_000 })])).toEqual([])
+    expect(pick([c(11, { bot: true }), c(12, { author: 'bot' })])).toEqual([])
+    expect(pick([c(11, { author: OTHER }), c(12)], { onlyAuthor: OWNER })).toEqual([id(12)])
+    expect(pick([c(11), c(12)], { exclude: new Set([id(11)]) })).toEqual([id(12)])
+    const many = Array.from({ length: 70 }, (_, i) => c(11 + i))
+    const r = ext.selectRecovered(many, base)
+    expect(r.skipped).toBe(20)
+    expect(r.take).toHaveLength(50)
+    expect(r.take[0].id).toBe(id(31))
+  })
+})
+
+// The overlay's own handleInbound and recoverMissed, run with fakes for discord.js and the MCP server.
+function slice(from: string, to: string): string {
+  const a = SERVER.indexOf(from)
+  const b = SERVER.indexOf(to, a)
+  expect(a).toBeGreaterThan(0)
+  expect(b).toBeGreaterThan(a)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ts = require('typescript')
+  return ts.transpileModule(SERVER.slice(a, b), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+}
+const PERMISSION_REPLY_RE = new RegExp(SERVER.match(/const PERMISSION_REPLY_RE = \/(.*)\/i\n/)![1]!, 'i')
+
+function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER) {
+  const notes: Array<{ method: string; params: { content?: string; meta?: Record<string, string>; behavior?: string } }> = []
+  const replies: string[] = []
+  const typing: string[] = []
+  const cursorNotes: string[] = []
+  const decided = new Set<string>()
+  const handleInbound = new Function(
+    'gate', 'ChannelType', 'dmChannelUsers', 'liveDelivered', 'recoveryOpen', 'backfillCursor', 'PERMISSION_REPLY_RE',
+    'mayDecidePermission', 'currentOwner', 'decidedPermissions', 'mcp', 'pendingPermissions', 'permissionMessages',
+    'safeAttName', 'voiceMeta',
+    `${slice('async function handleInbound(', '// DCEXT1111 F4: deliver, once')}\nreturn handleInbound`,
+  )(
+    async () => gateResult, { DM: 1, GuildText: 0 }, new Map(), new Set(), true,
+    { note: (c: string, m: string) => cursorNotes.push(`${c}:${m}`) }, PERMISSION_REPLY_RE,
+    ext.mayDecidePermission, () => (ownerId ? { id: ownerId, source: 'setting' } : { id: null, reason: 'x' }), decided,
+    { notification: async (n: (typeof notes)[0]) => { notes.push(n) } }, new Map(), new Map(),
+    () => 'f', ext.voiceMeta,
+  ) as (msg: unknown, recovered?: boolean) => Promise<void>
+  const msg = (content: string, o: { dm?: boolean; author?: string } = {}) => ({
+    id: id(77), channelId: '1438000000000000500', content,
+    author: { id: o.author ?? OWNER, username: 'zoli' },
+    channel: { type: o.dm === false ? 0 : 1, isThread: () => false, sendTyping: async () => { typing.push('t') } },
+    createdAt: new Date(0), attachments: new Map(), flags: { bitfield: 0 },
+    reply: async (t: string) => { replies.push(t) }, react: async () => {},
+  })
+  return { handleInbound, msg, notes, replies, typing, cursorNotes }
+}
+const id = (n: number) => String(1438000000000000000n + BigInt(n))
+
+describe('F4: a recovered message (the overlay\'s handleInbound, run)', () => {
+  it('never answers with a pairing code', async () => {
+    const live = inboundHarness({ action: 'pair', code: 'abc123', isResend: false })
+    await live.handleInbound(live.msg('hello'))
+    expect(live.replies).toHaveLength(1) // control: a live one does
+    const h = inboundHarness({ action: 'pair', code: 'abc123', isResend: false })
+    await h.handleInbound(h.msg('hello'), true)
+    expect(h.replies).toEqual([])
+    expect(h.notes).toEqual([])
+  })
+
+  it('never decides a permission, even the owner\'s "yes abcde" in a DM: it is delivered as text, marked', async () => {
+    const live = inboundHarness({ action: 'deliver', access: {} })
+    await live.handleInbound(live.msg('yes abcde'))
+    expect(live.notes.map(n => n.method)).toEqual(['notifications/claude/channel/permission']) // control
+    const h = inboundHarness({ action: 'deliver', access: {} })
+    await h.handleInbound(h.msg('yes abcde'), true)
+    expect(h.notes.map(n => n.method)).toEqual(['notifications/claude/channel'])
+    expect(h.notes[0]!.params.meta).toMatchObject({ recovered: 'true' })
+    expect(h.typing).toEqual([])
+  })
+
+  it('a live message: no recovered mark, typing shown, the cursor noted', async () => {
+    const h = inboundHarness({ action: 'deliver', access: {} })
+    await h.handleInbound(h.msg('szia'))
+    expect(h.notes[0]!.params.meta!.recovered).toBeUndefined()
+    expect(h.typing).toEqual(['t'])
+    expect(h.cursorNotes).toEqual([`1438000000000000500:${id(77)}`])
+  })
+
+  it('F1 on the live path: a non-owner\'s or a guild channel\'s "yes abcde" is only text', async () => {
+    for (const o of [{ author: OTHER }, { dm: false }]) {
+      const h = inboundHarness({ action: 'deliver', access: {} })
+      await h.handleInbound(h.msg('yes abcde', o))
+      expect(h.notes.map(n => n.method), JSON.stringify(o)).toEqual(['notifications/claude/channel'])
+    }
+  })
+})
+
+describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through handleInbound', () => {
+  function recoverHarness(read: { state: { lastBackfillAt: number; channels: Record<string, string> } | null; bad: boolean }) {
+    const fetches: Array<{ channel: string; opts: unknown }> = []
+    const delivered: Array<{ id: string; recovered: boolean }> = []
+    const marks: number[] = []
+    const DM = '1438000000000000500'
+    const GROUP = '1438000000000000600'
+    const state = read.state ?? { lastBackfillAt: 0, channels: {} }
+    const messages = new Map([[id(21), { id: id(21), createdTimestamp: Date.now() - 60_000, author: { id: OWNER, bot: false } }]])
+    const recoverMissed = new Function(
+      'backfillCursor', 'cursorRead', 'backfillDue', 'loadAccess', 'dmChannelUsers', 'BACKFILL', 'fetchTextChannel',
+      'selectRecovered', 'client', 'liveDelivered', 'handleInbound',
+      `${slice('async function recoverMissed(', "client.once('ready'")}\nreturn recoverMissed`,
+    )(
+      { state, markRun: (n: number) => marks.push(n) }, read, ext.backfillDue,
+      () => ({ allowFrom: [OWNER], groups: { [GROUP]: {} } }), new Map([[DM, OWNER]]), ext.BACKFILL,
+      async (channel: string) => ({ messages: { fetch: async (opts: unknown) => { fetches.push({ channel, opts }); return messages } } }),
+      ext.selectRecovered, { user: { id: 'bot' } }, new Set(),
+      async (m: { id: string }, recovered: boolean) => { delivered.push({ id: m.id, recovered }) },
+    ) as (readyAt: number) => Promise<void>
+    return { recoverMissed, fetches, delivered, marks, DM, GROUP }
+  }
+
+  it('first start: no fetch at all, the file is started', async () => {
+    const h = recoverHarness({ state: null, bad: false })
+    await h.recoverMissed(Date.now())
+    expect(h.fetches).toEqual([])
+    expect(h.marks).toHaveLength(1)
+  })
+
+  it('within 10 minutes of the last run (a respawn loop): no fetch, the time-lock is not moved', async () => {
+    const h = recoverHarness({ state: { lastBackfillAt: Date.now() - 60_000, channels: { ['1438000000000000500']: id(20) } }, bad: false })
+    await h.recoverMissed(Date.now())
+    expect(h.fetches).toEqual([])
+    expect(h.marks).toEqual([])
+  })
+
+  it('due: one fetch per channel that has a cursor, after it; each message through handleInbound as recovered', async () => {
+    const h = recoverHarness({ state: { lastBackfillAt: 0, channels: { ['1438000000000000500']: id(20) } }, bad: false })
+    await h.recoverMissed(Date.now())
+    expect(h.fetches).toEqual([{ channel: h.DM, opts: { after: id(20), limit: 100 } }]) // the group has no cursor: skipped
+    expect(h.delivered).toEqual([{ id: id(21), recovered: true }])
+    expect(h.marks).toHaveLength(1)
   })
 })

@@ -111,3 +111,105 @@ export function threadName(raw: unknown): string {
   if (!name) throw new Error('name is required')
   return [...name].slice(0, 100).join('')
 }
+
+// F4: messages that came while the plugin was down, delivered once at start. REST only (messages.fetch), never a
+// gateway connect, and at most once per 10 minutes, so a respawn loop cannot multiply the load
+// (anthropics/claude-plugins-official#1965).
+export const BACKFILL = {
+  minIntervalMs: 10 * 60_000,
+  maxPerChannel: 50,
+  maxAgeMs: 24 * 60 * 60_000,
+  fetchLimit: 100,
+} as const
+
+export type CursorFile = { lastBackfillAt: number; channels: Record<string, string> }
+
+const SNOWFLAKE_ID = /^[0-9]{15,20}$/
+
+function newer(a: string, than: string | undefined): boolean {
+  return than === undefined || BigInt(a) > BigInt(than)
+}
+
+export function readCursor(path: string): { state: CursorFile | null; bad: boolean } {
+  let text: string
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch {
+    return { state: null, bad: false }
+  }
+  try {
+    const raw = JSON.parse(text) as Record<string, unknown>
+    const channels: Record<string, string> = {}
+    const ch = raw?.channels
+    if (typeof raw?.lastBackfillAt !== 'number' || typeof ch !== 'object' || ch === null) throw new Error('shape')
+    for (const [k, v] of Object.entries(ch)) {
+      if (!SNOWFLAKE_ID.test(k) || typeof v !== 'string' || !SNOWFLAKE_ID.test(v)) throw new Error('entry')
+      channels[k] = v
+    }
+    return { state: { lastBackfillAt: raw.lastBackfillAt, channels }, bad: false }
+  } catch {
+    return { state: null, bad: true }
+  }
+}
+
+// Whether this start recovers anything. No file: the first start, nothing to compare against, so nothing is
+// replayed (no flood). A damaged file: nothing either, the caller starts a fresh one.
+export function backfillDue(read: { state: CursorFile | null; bad: boolean }, nowMs: number): { due: boolean; reason: string } {
+  if (read.bad) return { due: false, reason: 'the cursor file is unreadable: starting a fresh one, nothing recovered this time' }
+  if (read.state === null) return { due: false, reason: 'first start: nothing to recover yet' }
+  const ago = nowMs - read.state.lastBackfillAt
+  if (ago < BACKFILL.minIntervalMs) {
+    return { due: false, reason: `the last recovery ran ${Math.max(0, Math.round(ago / 60_000))} min ago (at most every ${BACKFILL.minIntervalMs / 60_000} min)` }
+  }
+  return { due: true, reason: '' }
+}
+
+export class BackfillCursor {
+  private timer: ReturnType<typeof setTimeout> | null = null
+
+  constructor(
+    public readonly state: CursorFile,
+    private readonly save: (state: CursorFile) => void,
+    private readonly debounceMs = 1000,
+  ) {}
+
+  // The newest delivered message per channel; never moves back.
+  note(channelId: string, messageId: string): void {
+    if (!SNOWFLAKE_ID.test(channelId) || !SNOWFLAKE_ID.test(messageId)) return
+    if (!newer(messageId, this.state.channels[channelId])) return
+    this.state.channels[channelId] = messageId
+    if (this.timer === null) this.timer = setTimeout(() => this.flush(), this.debounceMs)
+  }
+
+  markRun(nowMs: number): void {
+    this.state.lastBackfillAt = nowMs
+    this.flush()
+  }
+
+  flush(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    this.save(this.state)
+  }
+}
+
+export type Candidate = { id: string; createdTimestamp: number; authorId: string; authorBot: boolean }
+
+// What to deliver from one channel: after the cursor, before the start (later ones come live), within 24 h, not a
+// bot's, only the paired user's in a DM, not already delivered live; oldest first, the newest 50 when more.
+export function selectRecovered(
+  candidates: readonly Candidate[],
+  o: { cursorId: string; cutoffMs: number; nowMs: number; selfId: string; onlyAuthor?: string; exclude?: ReadonlySet<string> },
+): { take: Candidate[]; skipped: number } {
+  const ok = candidates
+    .filter(c => SNOWFLAKE_ID.test(c.id) && newer(c.id, o.cursorId))
+    .filter(c => c.createdTimestamp < o.cutoffMs && c.createdTimestamp >= o.nowMs - BACKFILL.maxAgeMs)
+    .filter(c => !c.authorBot && c.authorId !== o.selfId)
+    .filter(c => o.onlyAuthor === undefined || c.authorId === o.onlyAuthor)
+    .filter(c => !o.exclude?.has(c.id))
+    .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+  const skipped = Math.max(0, ok.length - BACKFILL.maxPerChannel)
+  return { take: ok.slice(skipped), skipped }
+}
