@@ -4,13 +4,17 @@ const harness = vi.hoisted(() => ({
   pane: '› \n\n  default · 100% context left',
   calls: [] as string[][],
 }))
-vi.mock('node:child_process', async original => ({
-  ...await original<typeof import('node:child_process')>(),
-  execFileSync: vi.fn((_file: string, args: string[] = []) => {
-    harness.calls.push(args)
-    return args.includes('capture-pane') ? harness.pane : ''
-  }),
-}))
+vi.mock('node:child_process', async original => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
+  const mocked = {
+    ...await original<typeof import('node:child_process')>(),
+    execFileSync: vi.fn((_file: string, args: string[] = []) => {
+      harness.calls.push(args)
+      return args.includes('capture-pane') ? harness.pane : ''
+    }),
+  }
+  return { ...mocked, execFile: execFileFromSync(mocked.execFileSync) }
+})
 vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(), notifyTelegram: vi.fn() }))
 
 const { sendPromptToSession, isSessionReadyForPrompt } = await import('../web/agent-process.js')
