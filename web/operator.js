@@ -29,6 +29,45 @@
 
   function show(id, on) { $(id).hidden = !on }
 
+  // The page's own question, in place of the native confirm(): the same markup and classes as the
+  // dashboard's confirmDialog (this page loads the same style.css). Resolves true on the OK button only;
+  // Cancel, the close button, Escape and a click beside the dialog resolve false. Cancel holds the focus.
+  function askConfirm({ title, message, okLabel, danger = false }) {
+    return new Promise((resolve) => {
+      const overlay = el('div', null, 'modal-overlay active')
+      overlay.setAttribute('role', 'dialog')
+      overlay.setAttribute('aria-modal', 'true')
+      const modal = el('div', null, 'modal')
+      const header = el('div', null, 'modal-header')
+      const closeBtn = el('button', '\u00d7', 'modal-close')
+      closeBtn.type = 'button'
+      header.append(el('h2', title), closeBtn)
+      const body = el('div', null, 'modal-body confirm-dialog')
+      const actions = el('div', null, 'confirm-dialog-actions')
+      const cancelBtn = el('button', 'Mégse', 'btn-secondary')
+      cancelBtn.type = 'button'
+      const okBtn = el('button', okLabel, danger ? 'btn-danger' : 'btn-primary')
+      okBtn.type = 'button'
+      actions.append(cancelBtn, okBtn)
+      body.append(el('p', message), actions)
+      modal.append(header, body)
+      overlay.append(modal)
+      const finish = (answer) => {
+        document.removeEventListener('keydown', onKey)
+        overlay.remove()
+        resolve(answer)
+      }
+      const onKey = (e) => { if (e.key === 'Escape') finish(false) }
+      document.addEventListener('keydown', onKey)
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false) })
+      closeBtn.addEventListener('click', () => finish(false))
+      cancelBtn.addEventListener('click', () => finish(false))
+      okBtn.addEventListener('click', () => finish(true))
+      document.body.append(overlay)
+      cancelBtn.focus()
+    })
+  }
+
   function msg(id, text, kind) {
     const m = $(id)
     m.textContent = text || ''
@@ -127,16 +166,29 @@
       const enc = encodeURIComponent(a.name)
       if (a.isMain) {
         if (caps.mainAgentRestart && a.running) {
-          row.append(actionButton('Újraindítás', () => {
-            if (!confirm('A fő ágens újraindítása a gazda csatornáját is újraindítja. Folytatod?')) return Promise.resolve()
+          row.append(actionButton('Újraindítás', async () => {
+            // The owner route's gate refuses a busy main agent, and an operator cannot force it (OPERRESTART409_1018).
+            const confirmed = await askConfirm({
+              title: 'A fő ágens újraindítása',
+              message: 'Újraindítod a fő ágenst? Új beszélgetéssel indul, és vele a gazda csatornája (például a Telegram) is újraindul. Ha épp dolgozik, nem indul el: a futó kört csak a gazda szakíthatja meg.',
+              okLabel: 'Újraindítás',
+            })
+            if (!confirmed) return
             return agentAction(a.name, `/api/operator/agents/${enc}/restart`, 'Újraindítás')
           }))
         }
       } else if (caps.agentControl) {
         if (a.running) {
           row.append(actionButton('Újraindítás', () => agentAction(a.name, `/api/operator/agents/${enc}/restart`, 'Újraindítás')))
-          row.append(actionButton('Leállítás', () => {
-            if (!confirm(a.name + ' leállítása?')) return Promise.resolve()
+          row.append(actionButton('Leállítás', async () => {
+            // A stop also takes the agent off the desired run-state: a restart refuses it, only Start runs it.
+            const confirmed = await askConfirm({
+              title: 'Ágens leállítása',
+              message: 'Leállítod ezt az ágenst: "' + (a.displayName || a.name) + '"? A futó munkája megszakad, és leállítva marad: az újraindítás sem hozza vissza, csak az Indítás gomb.',
+              okLabel: 'Leállítás',
+              danger: true,
+            })
+            if (!confirmed) return
             return agentAction(a.name, `/api/operator/agents/${enc}/stop`, 'Leállítás')
           }, 'danger'))
         } else {
@@ -305,7 +357,13 @@
   })
 
   $('op-update-apply').addEventListener('click', async () => {
-    if (!confirm('Frissítés telepítése? A dashboard közben újraindul, utána újra be kell lépni.')) return
+    // update.sh restarts the dashboard and the channels; the operator session lives in memory only.
+    const confirmed = await askConfirm({
+      title: 'Frissítés telepítése',
+      message: 'Telepíted a frissítést? A dashboard és a csatornák újraindulnak, a fő ágens új beszélgetéssel indul. Ha a frissített dashboard nem indul el, a frissítés visszaáll. Utána újra be kell lépned, mert az üzemeltetői belépés a dashboard újraindulásával megszűnik.',
+      okLabel: 'Telepítés',
+    })
+    if (!confirmed) return
     msg('op-update-msg', 'Telepítés elindítva…')
     const r = await api('POST', '/api/operator/updates/apply')
     if (r.ok) msg('op-update-msg', 'A frissítés fut. Pár perc múlva lépj be újra.', 'ok')
