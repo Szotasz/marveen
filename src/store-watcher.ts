@@ -66,7 +66,7 @@ let knownFiles = new Set<string>()
 function scanStore(dir: string, relBase: string = '', excluded: ReadonlySet<string> = new Set()): void {
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (relBase === '' && excluded.has(entry.name)) continue
+      if (relBase === '' && excluded.has(entry.name) && entry.isDirectory()) continue
       const rel = relBase ? `${relBase}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
         scanStore(join(dir, entry.name), rel, excluded)
@@ -87,7 +87,8 @@ let watcher: FSWatcher | null = null
 const subWatchers = new Map<string, FSWatcher>()
 
 // SYSTEM_DIR_PREFIXES only filters audit rows; the tree is still watched.
-// STORE_WATCH_EXCLUDE removes a top-level tree from both the scan and the watch.
+// STORE_WATCH_EXCLUDE removes a top-level DIRECTORY tree from both the scan and the watch; a top-level file
+// with an excluded name is still scanned and logged.
 // Whole-directory denylist prefixes, for trees whose filenames vary (so a
 // fixed-name SYSTEM_FILES entry can't cover them). scheduled-runs/ is the
 // SCHEDPROMPTREF917 snapshot dir: ~100 new files/day by design (one per
@@ -210,17 +211,19 @@ export function startStoreWatcher(opts: StoreWatcherOptions = {}): void {
         if (filename == null) return
         const rel = String(filename).replace(/\\/g, '/')
         const top = rel.split('/')[0]
-        if (excluded.has(top)) {
+        let isDir = false
+        try {
+          isDir = lstatSync(join(STORE_DIR, top)).isDirectory()
+        } catch { /* gone: deleted or renamed away */ }
+        if (isDir && excluded.has(top)) {
           // Consume the actor slot, as handleWatchEvent does for every event.
           currentWriteActor = null
           return
         }
         if (eventType === 'rename') {
-          try {
-            if (lstatSync(join(STORE_DIR, top)).isDirectory() && !subWatchers.has(top)) {
-              startSubWatcher(top)
-            }
-          } catch {
+          if (isDir) {
+            if (!subWatchers.has(top)) startSubWatcher(top)
+          } else {
             const w = subWatchers.get(top)
             if (w) {
               try { w.close() } catch { /* best-effort */ }

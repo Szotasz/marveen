@@ -203,10 +203,46 @@ describe('store-watcher: top-level exclusions', () => {
     expect(startedInfo()).toMatchObject({ subWatchers: 1 })
   })
 
-  it('excludes a matching top-level file from the scan as well', () => {
+  it('does not exclude a top-level file whose name is in the list', () => {
     startStoreWatcher({ exclude: ['top.txt'] })
-    expect(startedInfo()).toMatchObject({ knownCount: 4 })
+    expect(startedInfo()).toMatchObject({ knownCount: 5 })
     recorded().cb('rename', 'top.txt')
     expect(logStoreFileEvent).not.toHaveBeenCalled()
+    stopStoreWatcher()
+    vi.clearAllMocks()
+    h.records.length = 0
+    startStoreWatcher({ exclude: ['reserved'] })
+    writeFileSync(`${h.dir}/reserved`, 'abc')
+    recorded().cb('rename', 'reserved')
+    expect(logStoreFileEvent).toHaveBeenCalledExactlyOnceWith('reserved', 'create', 0, 3, null)
+    expect(h.records.some(r => r.dir === `${h.dir}/reserved`)).toBe(false)
+  })
+
+  it('a top-level symlink whose name is in the list is still scanned', () => {
+    startStoreWatcher({ exclude: ['link'] })
+    expect(startedInfo()).toMatchObject({ knownCount: 5 })
+    expect(h.records.some(r => r.dir === `${h.dir}/link`)).toBe(false)
+  })
+
+  it('an excluded directory created after start gets no watcher and clears the actor slot', () => {
+    startStoreWatcher({ exclude: ['later'] })
+    mkdirSync(`${h.dir}/later`)
+    setStoreWriteActor('dashboard')
+    recorded().cb('rename', 'later')
+    expect(h.records.some(r => r.dir === `${h.dir}/later`)).toBe(false)
+    expect(logStoreFileEvent).not.toHaveBeenCalled()
+    writeFileSync(`${h.dir}/after.txt`, 'x')
+    recorded().cb('rename', 'after.txt')
+    expect(logStoreFileEvent).toHaveBeenCalledExactlyOnceWith('after.txt', 'create', 0, 1, null)
+  })
+
+  it('a top-level directory replaced by a file closes its sub-watcher and logs the file', () => {
+    startStoreWatcher({ exclude: ['heavy'] })
+    const sub = recorded('kept')
+    rmSync(`${h.dir}/kept`, { recursive: true, force: true })
+    writeFileSync(`${h.dir}/kept`, 'abcd')
+    recorded().cb('rename', 'kept')
+    expect(sub.w.close).toHaveBeenCalledTimes(1)
+    expect(logStoreFileEvent).toHaveBeenCalledExactlyOnceWith('kept', 'create', 0, 4, null)
   })
 })
