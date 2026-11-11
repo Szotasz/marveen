@@ -24,6 +24,9 @@ import { PROJECT_ROOT } from '../config.js'
 // so before this change a broken gate let every call through (af12a1d3 73814: rc 1 on all eight security
 // hooks). The gate commands now keep 0 and 2 and turn every other status into 2, with the reason on stderr.
 
+// AGENTEGRESS1111: spawned hooks must not inherit the running agent's vendor exceptions.
+delete process.env.BASH_EGRESS_AGENT_VENDOR_HOSTS
+
 const HAS_TIMEOUT = spawnSync('/bin/sh', ['-c', 'command -v timeout'], { encoding: 'utf-8' }).status === 0
 const SHELLS = ['/bin/sh', '/bin/bash']
 

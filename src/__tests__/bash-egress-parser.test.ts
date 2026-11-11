@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo, curlDestinations, wgetExecuteAllowed, envRedirect, envIndirect, shellCommandBody, shellCommandCall, positionalBody, destHost, CURL_HIDDEN, CURL_URL_FILE, WGET_HIDDEN, setDashboardTokenPath, setHookCwd } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, loadAgentVendorLists, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo, curlDestinations, wgetExecuteAllowed, envRedirect, envIndirect, shellCommandBody, shellCommandCall, positionalBody, destHost, CURL_HIDDEN, CURL_URL_FILE, WGET_HIDDEN, setDashboardTokenPath, setHookCwd } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -32,6 +32,9 @@ import { MAIN_AGENT_ID } from '../config.js'
 
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isPrivateTarget } from '../../scripts/hooks/bash-egress-parser.mjs'
+
+// AGENTEGRESS1111: spawned hooks must not inherit the running agent's vendor exceptions.
+delete process.env.BASH_EGRESS_AGENT_VENDOR_HOSTS
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs')
@@ -1933,5 +1936,80 @@ describe('review 9: curl -K passes only for the dashboard header written by prin
   it('--alt-svc stays hidden, a printf option is not the literal form', () => {
     expect(d(`${H} ${CAT} | curl -s -K - --alt-svc /tmp/a ${L}`)).toMatchObject({ deny: true })
     expect(d(`${H} -- ${CAT} | curl -K - ${L}`).deny).toBe(true)
+  })
+})
+
+// AGENTEGRESS1111: the agent list can add exceptions while the global list always applies.
+describe('per-agent vendor lists', () => {
+  it('loads nothing for empty, relative, missing, symlink, directory or malformed paths', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-vendor-'))
+    const empty = { hosts: new Set(), domains: new Set() }
+    try {
+      const file = join(dir, 'list.json')
+      const link = join(dir, 'link.json')
+      writeFileSync(file, JSON.stringify({ hosts: ['b.example.com'] }))
+      symlinkSync(file, link)
+      for (const path of ['', 'relative.json', join(dir, 'missing.json'), link, dir]) {
+        expect(loadAgentVendorLists(path)).toEqual(empty)
+      }
+      writeFileSync(file, '{ not json')
+      expect(loadAgentVendorLists(file)).toEqual(empty)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('loads shape-checked hosts and domains from the same regular file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-vendor-'))
+    try {
+      const file = join(dir, 'list.json')
+      writeFileSync(file, JSON.stringify({ hosts: ['b.example.com', '*.example.com'], domains: ['d.example.org', '.example.org'] }))
+      expect(loadAgentVendorLists(file)).toEqual({ hosts: new Set(['b.example.com']), domains: new Set(['d.example.org']) })
+      writeFileSync(file, JSON.stringify({ hosts: 'b.example.com', domains: ['d.example.org'] }))
+      expect(loadAgentVendorLists(file)).toEqual({ hosts: new Set(), domains: new Set(['d.example.org']) })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  // AGENTEGRESS1111: an existing relative agent list must not grant an exception.
+  it('the hook ignores an existing relative agent list but allows its absolute path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-vendor-hook-'))
+    try {
+      const vendor = join(dir, 'global.json')
+      const agent = join(dir, 'agent.json')
+      writeFileSync(vendor, JSON.stringify({ hosts: ['a.example.com'] }))
+      writeFileSync(agent, JSON.stringify({ hosts: ['b.example.com'] }))
+      const run = (path: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'curl https://b.example.com/x' } }),
+        encoding: 'utf-8',
+        cwd: dir,
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: vendor,
+          BASH_EGRESS_AGENT_VENDOR_HOSTS: path },
+      })
+      expect(run('agent.json').stdout).toContain('"permissionDecision":"deny"')
+      const r = run(agent)
+      expect(r.status).toBe(0)
+      expect(r.stdout).toBe('')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the hook unions global and agent hosts and domains, and an unset agent list adds nothing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-vendor-hook-'))
+    try {
+      const vendor = join(dir, 'global.json')
+      const agent = join(dir, 'agent.json')
+      writeFileSync(vendor, JSON.stringify({ hosts: ['a.example.com'] }))
+      writeFileSync(agent, JSON.stringify({ hosts: ['b.example.com'], domains: ['d.example.org'] }))
+      const run = (command: string, withAgent = true) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: vendor,
+          ...(withAgent ? { BASH_EGRESS_AGENT_VENDOR_HOSTS: agent } : {}) },
+      })
+      for (const command of ['curl https://a.example.com/x', 'curl https://b.example.com/x', 'curl https://x.d.example.org/']) {
+        const r = run(command)
+        expect(r.status).toBe(0)
+        expect(r.stdout).toBe('')
+      }
+      expect(run('curl https://c.example.com/x').stdout).toContain('"permissionDecision":"deny"')
+      expect(run('curl https://b.example.com/x', false).stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
