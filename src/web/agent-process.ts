@@ -2097,7 +2097,11 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
   const timeout = opts.timeout ?? (host ? 8000 : 3000)
   return new Promise<string>((resolve, reject) => {
     const child = execFile(inv.file, inv.args, { timeout, encoding: 'utf-8' }, (err, stdout, stderr) => {
-      if (err) { reject(Object.assign(err, { stdout, stderr })); return }
+      // A timed-out tmux client can exit 0 with empty output on SIGTERM; the sync twin throws ETIMEDOUT there.
+      if (err || child?.killed) {
+        reject(Object.assign(err ?? Object.assign(new Error('tmux timed out'), { code: 'ETIMEDOUT' }), { stdout, stderr }))
+        return
+      }
       resolve(stdout)
     })
     // The sync twin runs with stdin 'ignore'; close ours so an ssh-routed call never waits on it.

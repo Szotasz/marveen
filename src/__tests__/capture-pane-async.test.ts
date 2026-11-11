@@ -6,6 +6,8 @@ const h = vi.hoisted(() => ({
   finishes: [] as boolean[],
   calls: [] as { async: boolean; file: string; args: string[]; opts: { timeout?: number } }[],
   fail: false,
+  killed: false,
+  syncPane: null as string | null,
 }))
 
 vi.mock('node:child_process', async (orig) => ({
@@ -15,7 +17,7 @@ vi.mock('node:child_process', async (orig) => ({
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
     h.finishes.push(h.probeFired)
     if (h.fail) throw new Error('capture failed')
-    return h.pane
+    return h.syncPane ?? h.pane
   }),
   execFile: vi.fn((file: string, args: string[], opts: { timeout?: number }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
     h.calls.push({ async: true, file, args, opts })
@@ -23,7 +25,7 @@ vi.mock('node:child_process', async (orig) => ({
       h.finishes.push(h.probeFired)
       cb(h.fail ? new Error('capture failed') : null, h.fail ? '' : h.pane, '')
     }, 200)
-    return { stdin: { end() {} } }
+    return { stdin: { end() {} }, killed: h.killed }
   }),
 }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } }))
@@ -35,12 +37,15 @@ vi.mock('../notify.js', () => ({ alertIsRedirected: () => false, notifyChannel: 
 
 import * as agentProcess from '../web/agent-process.js'
 import { recoverStuckInputForSession } from '../web/channel-monitor.js'
+import { stuckInputSignature } from '../pane-state.js'
 
 beforeEach(() => {
   h.probeFired = false
   h.finishes.length = 0
   h.calls.length = 0
   h.fail = false
+  h.killed = false
+  h.syncPane = null
 })
 
 describe('async capture leaves the event loop responsive', () => {
@@ -88,5 +93,42 @@ describe.skipIf(process.env.CAPTURE_ASYNC_RED_CONTROL === '1')('async capture co
       expect(h.calls[1].async).toBe(true)
       expect(h.calls[1].opts.timeout).toBe(3000)
     }
+  })
+})
+
+describe('async capture timeout and recovery parity', () => {
+  it('returns null for a killed client even when it exits successfully with empty output', async () => {
+    const previous = h.pane
+    h.pane = ''
+    h.killed = true
+    try {
+      expect(await agentProcess.capturePaneAsync('agent-x')).toBeNull()
+      expect(await agentProcess.captureParkedInputViewAsync('agent-x')).toBeNull()
+      h.killed = false
+      expect(await agentProcess.capturePaneAsync('agent-x')).toBeTypeOf('string')
+    } finally { h.pane = previous }
+  })
+
+  it('recovery decides on a fresh synchronous read of parked input', async () => {
+    const previous = h.pane
+    const parkedPane = (text: string) => ['', '─'.repeat(80), `❯ ${text}`, '─'.repeat(80), '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
+    const p = parkedPane('first parked message')
+    const q = parkedPane('different parked message')
+    h.pane = p
+    h.syncPane = q
+    try {
+      expect(stuckInputSignature(p)).not.toBeNull()
+      expect(stuckInputSignature(q)).not.toBeNull()
+      expect(stuckInputSignature(p)).not.toBe(stuckInputSignature(q))
+      const next = await recoverStuckInputForSession('agent-x', { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }, { confirmMs: 1000, dedupMs: 1000, maxAttempts: 3 }, true)
+      expect(next.parkedSig).toBe(stuckInputSignature(q))
+    } finally { h.pane = previous }
+  })
+
+  it('recovery with nothing parked makes no synchronous capture calls', async () => {
+    await recoverStuckInputForSession('agent-x', { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }, { confirmMs: 1000, dedupMs: 1000, maxAttempts: 3 }, true)
+    // Not vacuous: the recovery did read the pane, asynchronously.
+    expect(h.calls.filter(call => call.async && call.args.includes('capture-pane')).length).toBeGreaterThan(0)
+    expect(h.calls.filter(call => !call.async && call.args.includes('capture-pane'))).toHaveLength(0)
   })
 })

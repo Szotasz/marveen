@@ -665,7 +665,12 @@ export async function recoverStuckInputForSession(
   // Ghost-stripped capture: a dim autocomplete hint in an empty box must NOT
   // read as parked input, or the recovery below would re-type + submit it
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
-  const pane = await captureParkedInputViewAsync(session)
+  const pre = await captureParkedInputViewAsync(session)
+  // Something looks parked: read the pane again synchronously, so the read that drives the
+  // decision and the lane acquisition in performStuckInputAction run in one synchronous
+  // stretch (no other writer can take and release the lane in between). The common case,
+  // nothing parked, stays off the event loop.
+  const pane = pre != null && stuckInputSignature(pre) != null ? captureParkedInputView(session) : pre
   const sig = pane != null ? stuckInputSignature(pane) : null
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {
