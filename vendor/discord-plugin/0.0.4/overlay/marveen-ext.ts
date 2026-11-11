@@ -84,3 +84,30 @@ export class DmResolver {
     return undefined
   }
 }
+
+// F3: Discord marks a recorded voice message with this message flag (discord-api-types MessageFlags.IsVoiceMessage).
+const IS_VOICE_MESSAGE = 1 << 13
+
+export function voiceMeta(flags: number): { voice?: 'true' } {
+  return (flags & IS_VOICE_MESSAGE) !== 0 ? { voice: 'true' } : {}
+}
+
+// F5: fetch_messages paging. Discord takes one of before/after per call; a message id is a snowflake.
+export function pagingOptions(args: Record<string, unknown>): { before?: string; after?: string } {
+  const out: { before?: string; after?: string } = {}
+  for (const key of ['before', 'after'] as const) {
+    const v = args[key]
+    if (v === undefined || v === null || v === '') continue
+    if (typeof v !== 'string' || !/^[0-9]{15,20}$/.test(v)) throw new Error(`${key} must be a message id`)
+    out[key] = v
+  }
+  if (out.before && out.after) throw new Error('pass before OR after, not both')
+  return out
+}
+
+// F5: a thread name as Discord takes it: 1-100 characters, one line.
+export function threadName(raw: unknown): string {
+  const name = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : ''
+  if (!name) throw new Error('name is required')
+  return [...name].slice(0, 100).join('')
+}

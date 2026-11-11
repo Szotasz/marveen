@@ -146,3 +146,42 @@ describe('the wiring in the overlay server.ts', () => {
     expect(ready).toContain('void dmResolver.warm(loadAccess().allowFrom)')
   })
 })
+
+describe('F3: a recorded voice message is marked', () => {
+  it('voice="true" only for the IsVoiceMessage flag (8192), whatever else is set', () => {
+    expect(ext.voiceMeta(8192)).toEqual({ voice: 'true' })
+    expect(ext.voiceMeta(8192 | 4 | 64)).toEqual({ voice: 'true' })
+    for (const f of [0, 4, 64, 4096, 16384]) expect(ext.voiceMeta(f)).toEqual({})
+  })
+
+  it('the inbound meta carries it, and the instructions say what to do with it', () => {
+    expect(SERVER).toMatch(/attachments: atts\.join\('; '\) \} : \{\}\),\n\s*\.\.\.voiceMeta\(msg\.flags\.bitfield\), \/\/ MARVEEN-EXT/)
+    expect(SERVER).toContain('A message with voice="true" is a recorded voice message')
+  })
+})
+
+describe('F5: paging and threads', () => {
+  it('fetch_messages takes before OR after, as a message id', () => {
+    expect(ext.pagingOptions({})).toEqual({})
+    expect(ext.pagingOptions({ before: '1438123456789012345' })).toEqual({ before: '1438123456789012345' })
+    expect(ext.pagingOptions({ after: '1438123456789012345', before: '' })).toEqual({ after: '1438123456789012345' })
+    for (const bad of [{ before: 'abc' }, { after: 12 }, { before: '1'.repeat(25) }]) expect(() => ext.pagingOptions(bad)).toThrow(/must be a message id/)
+    expect(() => ext.pagingOptions({ before: '1438123456789012345', after: '1438123456789012346' })).toThrow(/not both/)
+  })
+
+  it('a thread name: one line, 1-100 characters', () => {
+    expect(ext.threadName('  Napi  jelentés\n11-11 ')).toBe('Napi jelentés 11-11')
+    expect(ext.threadName('é'.repeat(150))).toHaveLength(100)
+    for (const bad of ['', '   ', undefined, 7]) expect(() => ext.threadName(bad)).toThrow(/name is required/)
+  })
+
+  it('the tools are wired: paging into fetch, create_thread behind the outbound gate, never in a DM', () => {
+    expect(SERVER).toContain('const msgs = await ch.messages.fetch({ limit, ...pagingOptions(args) })')
+    expect(SERVER).toMatch(/name: 'create_thread',/)
+    const handler = SERVER.slice(SERVER.indexOf("case 'create_thread': {"), SERVER.indexOf("case 'react': {"))
+    expect(handler).toContain('const name = threadName(args.name)')
+    expect(handler).toContain('await fetchAllowedChannel(args.chat_id as string)')
+    expect(handler.indexOf('fetchAllowedChannel')).toBeLessThan(handler.indexOf('threads.create'))
+    expect(handler).toContain("if (ch.type === ChannelType.DM) throw new Error('threads do not exist in DMs')")
+  })
+})
