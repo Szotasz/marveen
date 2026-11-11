@@ -43,8 +43,10 @@ jobs:
       # CIFFMPEG1111: on 2026-11-11 the ubuntu-26.04 runners could not resolve the Ubuntu archive hosts
       # ("Temporary failure resolving 'security.ubuntu.com'", 372 times, 20 s each), so apt-get update and
       # install hung for about an hour per run (run 43037450476) while github.com resolved fine. The binary
-      # therefore comes from a fixed GitHub release with a pinned sha256 (ffmpeg-static b6.1.1 = ffmpeg 6.1.1,
-      # linux x64), not from apt. A changed or missing asset fails the step loudly; there is no unchecked fallback.
+      # therefore comes from a fixed GitHub release with a pinned sha256 (ffmpeg-static release b6.1.1, asset
+      # ffmpeg-linux-x64.gz; the binary reports "ffmpeg version 7.0.2-static"), not from apt. A changed or missing
+      # asset fails the step loudly; there is no unchecked fallback. It goes to /usr/bin/ffmpeg, where apt put it:
+      # scripts/yt-ingest/yt-ingest.sh and its test call /usr/bin/ffmpeg by that path inside bwrap.
       - name: Install ffmpeg for the resize hook's tests
         timeout-minutes: 5
         run: |
@@ -52,7 +54,7 @@ jobs:
           url=https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz
           curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$RUNNER_TEMP/ffmpeg.gz" "$url"
           echo "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa  $RUNNER_TEMP/ffmpeg.gz" | sha256sum -c -
-          gunzip -c "$RUNNER_TEMP/ffmpeg.gz" | sudo install -m 755 /dev/stdin /usr/local/bin/ffmpeg
+          gunzip -c "$RUNNER_TEMP/ffmpeg.gz" | sudo install -m 755 /dev/stdin /usr/bin/ffmpeg
           ffmpeg -hide_banner -version | sed -n 1p
       # The suite resolves the `claude` binary at module load (resolveFromPath
       # throws when it is absent) -- without this stub 17 suites fail at
