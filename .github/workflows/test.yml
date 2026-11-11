@@ -18,6 +18,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # CIFFMPEG1111: a stuck step used to burn the 6-hour default. A normal run takes about 25 minutes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,8 +40,20 @@ jobs:
       # runner must have it too -- a missing binary is a real failure there,
       # not a reason to skip. ubuntu-latest does not ship it (measured: run
       # 36302092314, spawnSync ffmpeg ENOENT).
+      # CIFFMPEG1111: on 2026-11-11 the ubuntu-26.04 runners could not resolve the Ubuntu archive hosts
+      # ("Temporary failure resolving 'security.ubuntu.com'", 372 times, 20 s each), so apt-get update and
+      # install hung for about an hour per run (run 43037450476) while github.com resolved fine. The binary
+      # therefore comes from a fixed GitHub release with a pinned sha256 (ffmpeg-static b6.1.1 = ffmpeg 6.1.1,
+      # linux x64), not from apt. A changed or missing asset fails the step loudly; there is no unchecked fallback.
       - name: Install ffmpeg for the resize hook's tests
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          url=https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$RUNNER_TEMP/ffmpeg.gz" "$url"
+          echo "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa  $RUNNER_TEMP/ffmpeg.gz" | sha256sum -c -
+          gunzip -c "$RUNNER_TEMP/ffmpeg.gz" | sudo install -m 755 /dev/stdin /usr/local/bin/ffmpeg
+          ffmpeg -hide_banner -version | sed -n 1p
       # The suite resolves the `claude` binary at module load (resolveFromPath
       # throws when it is absent) -- without this stub 17 suites fail at
       # COLLECTION, before a single test runs (measured on the first ubuntu
@@ -218,6 +232,7 @@ jobs:
     # Pinned: setup-python has no 3.9 build for the newest ubuntu-latest image (measured: "The version '3.9' with
     # architecture 'x64' was not found for Ubuntu 26.04"); 22.04 has one.
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
