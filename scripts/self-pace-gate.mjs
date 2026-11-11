@@ -82,7 +82,21 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
-const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
+// The path-prefix branch must not START with an assignment (SELFPACEASSIGN1109). As
+// `(?:\S*/)?` it swallowed a VARIABLE ASSIGNMENT too, because an assignment to an
+// absolute path ends in a slash-separated word: in `SP=/tmp/.../scratchpad/batch;
+// ls "$SP"` the prefix ate `SP=/tmp/.../scratchpad/` and left `batch` sitting at
+// what looked like a command position -- AT_INVOCATION's end-of-segment branch then
+// read it as a real batch(1) submit. Measured: the same `ls` was denied with the
+// variable and allowed with the literal path, so an agent's choice of shell style
+// had become a security decision. Same bug class as the at/batch, launchctl and
+// /loop fixes above -- a keyword inside a PATH collided with a call pattern. An
+// assignment prefix is already handled by the `[A-Za-z_]\w*=\S*\s+` alternative,
+// which correctly demands the whitespace bash needs before the binary. Only a
+// LEADING `NAME=` is refused: a directory name may contain `=` anywhere else, and
+// `/tmp/d=1/at now` or `./a=b/crontab -` is a real scheduler call that must stay
+// denied (excluding every `=` from the path, as a first draft did, let those through).
+const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:(?![A-Za-z_]\w*=)\S*/)?`
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
