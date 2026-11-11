@@ -612,6 +612,39 @@ export function reShellsText(text) {
   })
 }
 
+// GATESCRIPTARG1111 (Samu 75780 A, Boni 75773): `python3 x.py "select count(*) ..."` is a SCRIPT FILE run with a quoted
+// argument. The shell never expands a glob in quotes, and the script's own code is not seen by this gate (the stated limit:
+// a script can write any path itself, it needs no glob for it), so the quoted argument's glob characters are data, as
+// they are for sqlite3. Such a segment is left out of the re-shell reading; the rest of the command is read as before.
+// Narrow on purpose: only python (any version) and node by their bare or system-dir name, only the harmless python flags
+// before the script, a script word that is a plain name (no `-`, no glob, no `$`), no `$` in any word (an unquoted
+// expansion is split and globbed by the shell), and no heredoc body. Inline code (-c, -e, -p, --eval, -m, stdin `-`),
+// bun/deno (their `run` goes to package scripts) and the shell family stay strict; an UNQUOTED glob still counts
+// (unquotedBareGlob), since the shell expands it before the script starts.
+const SCRIPT_PY_RX = /^(?:python(?:\d+(?:\.\d+)*)?|pypy\d*)$/
+const SCRIPT_NODE_RX = /^(?:node|nodejs)$/
+const PY_SCRIPT_FLAGS = new Set(['-I', '-S', '-B', '-u', '-E', '-s', '-O', '-OO', '-q'])
+export function scriptFileRun(words) {
+  if (!words || !words.length || words.some((w) => w.dollar || String(w.value).includes('$'))) return false
+  const name = commandName(words)
+  const py = SCRIPT_PY_RX.test(name)
+  if (!py && !SCRIPT_NODE_RX.test(name)) return false
+  let i = 1
+  for (; i < words.length && String(words[i].value).startsWith('-'); i++) {
+    if (!py || !PY_SCRIPT_FLAGS.has(words[i].value)) return false
+  }
+  const script = i < words.length ? String(words[i].value) : ''
+  return script !== '' && !/[*?[{]/.test(script)
+}
+// The command text the re-shell reading sees: every segment but the script-file runs above (unsplittable: the whole text).
+export function reShellText(cmd, root = INSTALL_ROOT) {
+  const segs = shellSegments(cmd, { surface: 'security', projectRoot: root })
+  if (!segs) return cmd
+  const kept = segs.filter((seg) => (seg.bodies?.length ?? 0) > 0 || !scriptFileRun(shellWords(seg.own)))
+  if (kept.length === segs.length) return cmd
+  return kept.map((seg) => [seg.own, ...(seg.bodies ?? [])].join('\n')).join('\n')
+}
+
 // INSTRFILES1104 A: the text a glob reading sees when no program in the command re-runs text as shell code
 // (reShellsText false). The shell never expands a glob inside quotes, nor in a heredoc body (a body is data for the
 // program it feeds), so their glob characters are literal: they are replaced by `_`, and the word is then read as the
@@ -1270,7 +1303,8 @@ export function installFileDeny(command, opts = {}) {
   const decoded = cmd.includes('\\') ? decodePrintEscapes(cmd) : ''
   if (!hitsIn(cmd, ctx).length && !(decoded && hitsIn(decoded, ctx).length) && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
   // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
-  ctx.reShell = reShellsText(cmd)
+  // GATESCRIPTARG1111: a python/node script-file run is no re-shelling program for its quoted arguments (reShellText)
+  ctx.reShell = reShellsText(reShellText(cmd, ctx.root))
   ctx.dotglob = namesDotglob(cmd, ctx.reShell)
   // the git environment that redirects a remote or points git at another repo or work tree, anywhere in a git command
   if (GIT_WORD_RX.test(cmd) && GIT_ENV_RX.test(cmd)) return 'git'
@@ -1835,6 +1869,7 @@ export const SUBAGENT_FILE_GATE_MSG =
   'a `claude plugin` paranccsal sem (csak list, validate, marketplace list, --help), es `--plugin-dir`-rel sem (PLUGINCODEWRITE1104; plugin-deploy a fo agensen at); ' +
   'sem barmely agens Telegram inbound-evidence naplojat (agents/<nev>/.claude/channels/telegram/inbound-evidence.jsonl es .1, es a folotte allo telegram/ es channels/ konyvtarat celzo parancsot; TGINREPLAYGATE1104: a pluginja irja, nem eszkozhivas); ' +
   'sem barmely agens agents/<nev>/agent-config.json fajljat (GATEFILES1110: customProvider, model, oauthTokenFile; az API-n owner-kapus, valtoztatas a fo agensen at); ' +
+  'egy python/node SZKRIPTFAJLNAK idezve atadott argumentum adat, a csillaga nem minta (GATESCRIPTARG1111: python3 x.py "count(*)" szabad; a -c/-e kod, a shell es az idezetlen * szigoru marad); ' +
   'ha a cwd egy ilyen fan belul van, minden nem-olvaso parancs tilt: elobb lepj ki onnan. ' +
   'amit ez a kapu NEM lat (limit): egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
