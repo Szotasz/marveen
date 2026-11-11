@@ -21,6 +21,7 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED, tokenSecretIdFor } from '../claude-plans.js'
+import { breaksLine } from '../../heartbeat-line.js'
 import { setSecret, deleteSecret, getSecret } from '../vault.js'
 import { readClaudePlansState, writeClaudePlansState, applyRotation, recordPlanObservation } from '../claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../claude-plan-usage-probe.js'
@@ -148,6 +149,12 @@ export function deleteOwnTokenSecret(planId: string, secretId: string | null | u
 export function commitNewPlan(rawBody: Record<string, unknown>): { status: number; payload: unknown } {
   if (hasAmbiguousTokenField(rawBody)) {
     return { status: 400, payload: { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' } }
+  }
+  // K1 (ROTSLACK1111, Dani 75718): a label goes into the heartbeat's line-by-line output; a line break or a control
+  // character is refused here (the value is never echoed). A label already on disk is not dropped by the reader:
+  // the heartbeat flattens it when it prints (heartbeat-line.ts).
+  if (typeof rawBody.label === 'string' && breaksLine(rawBody.label)) {
+    return { status: 400, payload: { error: 'Invalid plan: the label must be a single line, without control characters' } }
   }
   const rawId = typeof rawBody.id === 'string' ? rawBody.id.trim() : ''
   const { candidate, pendingToken } = prepareTokenCandidate(rawBody, rawId)
@@ -528,6 +535,11 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     const rawBody = { ...(body && typeof body === 'object' ? body : {}), id: idMatch[1] } as Record<string, unknown>
     if (hasAmbiguousTokenField(rawBody)) {
       json(res, { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' }, 400)
+      return true
+    }
+    // K1: the same single-line rule as a new plan (commitNewPlan).
+    if (typeof rawBody.label === 'string' && breaksLine(rawBody.label)) {
+      json(res, { error: 'Invalid plan: the label must be a single line, without control characters' }, 400)
       return true
     }
     const { candidate, pendingToken } = prepareTokenCandidate(rawBody, idMatch[1])

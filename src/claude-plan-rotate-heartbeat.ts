@@ -5,6 +5,7 @@
 // entry point) so it unit-tests under tsc's rootDir=src, the same reason
 // quota-gate.ts's decision logic lives under src/ instead of inside a script.
 import { parseQuotaSnapshot } from './quota-snapshot.js'
+import { oneLineField } from './heartbeat-line.js'
 import { decideRotationAction, candidateFromObservation, effectiveUsedPct, IDLE_PROBE_GATE, type RotationCandidate, type ObservedWindow } from './claude-plan-rotation.js'
 import type { ClaudePlan } from './web/claude-plans.js'
 import {
@@ -198,13 +199,13 @@ export function decideAndRecord(input: {
   if (decision.action === 'rotate') {
     const target = plans.find((p) => p.id === decision.targetPlanId)
     return {
-      printLine: `ROTATE agent=${agentId} target=${decision.targetPlanId} targetLabel=${target?.label ?? decision.targetPlanId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
+      printLine: `ROTATE agent=${agentId} target=${decision.targetPlanId} targetLabel=${oneLineField(target?.label ?? decision.targetPlanId)} currentLabel=${oneLineField(activePlan.label)} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
       nextState: stateWithObservation,
     }
   }
   if (decision.action === 'no-alternative') {
     return {
-      printLine: `NO_ALTERNATIVE agent=${agentId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
+      printLine: `NO_ALTERNATIVE agent=${agentId} currentLabel=${oneLineField(activePlan.label)} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
       nextState: stateWithObservation,
     }
   }
