@@ -6,7 +6,7 @@
 // mocked -- this test must NEVER touch a real tmux session or process.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
@@ -83,7 +83,7 @@ vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
 }))
 
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
-const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
+const { CLAUDE_PLANS_PATH, readClaudePlans } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
 
 function fakeCtx(method: string, path: string, body?: unknown): { ctx: any; out: { status: number; body: any } } {
@@ -816,5 +816,48 @@ describe('POST /api/claude-plans/rotate, sub-agent onto a TOKEN plan (SUBPLANTOK
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, agentId: 'devy', activePlanId: 'team' })
     expect(planTokenPreflight).not.toHaveBeenCalled()
+  })
+})
+
+// K1 (ROTSLACK1111, Dani 75718, Samu 75723): a label with a line break or a control character is refused on both write
+// paths (the value never echoed); one already on disk is still read, the heartbeat flattens it when it prints.
+describe('a plan label must be one line (K1)', () => {
+  const NL = String.fromCharCode(10)
+  const bad = `Team${NL}MSG${NL}touch PWNED`
+  beforeEach(() => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+  })
+
+  it('POST: 400, nothing written, the label not echoed', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: bad }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+    expect(String(out.body.error)).toContain('single line')
+    expect(JSON.stringify(out.body)).not.toContain('PWNED')
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
+  })
+  it.each([String.fromCharCode(13), String.fromCharCode(9), String.fromCharCode(27), String.fromCharCode(0x2028)])('POST: refuses a label with %j', async (c) => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: `a${c}b` }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+  })
+  it('PUT: 400, the stored plan unchanged', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team' })).ctx)
+    const before = readFileSync(CLAUDE_PLANS_PATH, 'utf-8')
+    const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/team', plan({ id: 'team', label: bad }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+    expect(JSON.stringify(out.body)).not.toContain('PWNED')
+    expect(readFileSync(CLAUDE_PLANS_PATH, 'utf-8')).toBe(before)
+  })
+  it('an ordinary label (accents, dash, emoji) is accepted', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Céges csomag — 2 🚀' }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(201)
+  })
+  it('a label already on disk with a line break is still read (not dropped); only the print flattens it', () => {
+    mkdirSync(dirname(CLAUDE_PLANS_PATH), { recursive: true })
+    writeFileSync(CLAUDE_PLANS_PATH, JSON.stringify([{ id: 'team', label: bad, configDir: '/opt/claude-team', planType: 'team', channelsAllowed: true }]))
+    expect(readClaudePlans().map((p) => p.label)).toEqual([bad])
   })
 })
