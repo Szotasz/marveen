@@ -202,6 +202,22 @@ export function startStoreWatcher(opts: StoreWatcherOptions = {}): void {
     }
   }
 
+  function catchUpSubtree(top: string): void {
+    function walk(dir: string, relBase: string): void {
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const rel = `${relBase}/${entry.name}`
+          if (entry.isDirectory()) {
+            walk(join(dir, entry.name), rel)
+          } else if (!knownFiles.has(rel)) {
+            handleWatchEvent('rename', rel)
+          }
+        }
+      } catch { /* non-fatal; directory may have disappeared */ }
+    }
+    walk(join(STORE_DIR, top), top)
+  }
+
   try {
     if (excluded.size === 0) {
       watcher = watch(STORE_DIR, { recursive: true }, handleWatchEvent)
@@ -222,9 +238,13 @@ export function startStoreWatcher(opts: StoreWatcherOptions = {}): void {
           knownFiles.delete(top)
           return
         }
+        let startedSubWatcher = false
         if (eventType === 'rename') {
           if (isDir) {
-            if (!subWatchers.has(top)) startSubWatcher(top)
+            if (!subWatchers.has(top)) {
+              startedSubWatcher = true
+              startSubWatcher(top)
+            }
           } else {
             const w = subWatchers.get(top)
             if (w) {
@@ -234,6 +254,8 @@ export function startStoreWatcher(opts: StoreWatcherOptions = {}): void {
           }
         }
         handleWatchEvent(eventType, rel)
+        // Catch files created in the new directory before its watch was attached.
+        if (startedSubWatcher) catchUpSubtree(top)
       })
       attachWatchErrorListener(watcher)
       for (const name of readdirSync(STORE_DIR)) {

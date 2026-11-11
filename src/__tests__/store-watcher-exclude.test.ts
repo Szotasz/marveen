@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import type { EventEmitter } from 'node:events'
 
 const h = vi.hoisted(() => ({
-  dir: `${process.env.TMPDIR || '/tmp'}/marveen-store-watcher-exclude-test-${process.pid}`,
+  dir: `${(process.env.TMPDIR || '/tmp').replace(/\/+$/, '')}/marveen-store-watcher-exclude-test-${process.pid}`,
   records: [] as {
     dir: string
     opts: { recursive?: boolean }
@@ -35,7 +35,7 @@ import { clearStoreWriteActor, setStoreWriteActor, startStoreWatcher, stopStoreW
 import { logStoreFileEvent } from '../db.js'
 import { logger } from '../logger.js'
 
-const { parseStoreWatchExclude } = await vi.importActual<typeof import('../config.js')>('../config.js')
+import { parseStoreWatchExclude } from '../config-registry.js'
 
 const recorded = (name = '') => h.records.find(r => r.dir === (name ? `${h.dir}/${name}` : h.dir))!
 const startedInfo = () => vi.mocked(logger.info).mock.calls.find(c => c[1] === 'Store file watcher started')![0]
@@ -262,4 +262,45 @@ describe('store-watcher: top-level exclusions', () => {
     expect(sub.w.close).toHaveBeenCalledTimes(1)
     expect(logStoreFileEvent).toHaveBeenCalledExactlyOnceWith('kept', 'create', 0, 4, null)
   })
+
+  it('a file created in a new top-level directory before its watch starts is logged once (catch-up)', () => {
+    startStoreWatcher({ exclude: ['heavy'] })
+    mkdirSync(`${h.dir}/fresh/deep`, { recursive: true })
+    writeFileSync(`${h.dir}/fresh/early.txt`, 'hello')
+    writeFileSync(`${h.dir}/fresh/deep/nested.txt`, 'abc')
+    writeFileSync(`${h.dir}/fresh/skip.tmp`, 'x')
+    setStoreWriteActor('dashboard')
+    recorded().cb('rename', 'fresh')
+    expect(logStoreFileEvent).toHaveBeenCalledTimes(2)
+    expect(logStoreFileEvent).toHaveBeenCalledWith('fresh/early.txt', 'create', 0, 5, null)
+    expect(logStoreFileEvent).toHaveBeenCalledWith('fresh/deep/nested.txt', 'create', 0, 3, null)
+    expect(recorded('fresh').opts.recursive).toBe(true)
+
+    vi.mocked(logStoreFileEvent).mockClear()
+    recorded('fresh').cb('rename', 'early.txt')
+    expect(logStoreFileEvent).not.toHaveBeenCalled()
+    writeFileSync(`${h.dir}/fresh/later.txt`, 'x')
+    recorded().cb('rename', 'fresh')
+    expect(logStoreFileEvent).not.toHaveBeenCalled()
+    expect(h.records.filter(r => r.dir === `${h.dir}/fresh`)).toHaveLength(1)
+  })
+
+  it('an excluded new directory gets no catch-up, and a failed sub-watch still gets one', () => {
+    startStoreWatcher({ exclude: ['heavy', 'later'] })
+    mkdirSync(`${h.dir}/later`)
+    writeFileSync(`${h.dir}/later/x.txt`, 'x')
+    recorded().cb('rename', 'later')
+    expect(logStoreFileEvent).not.toHaveBeenCalled()
+
+    h.failDir = `${h.dir}/broken`
+    mkdirSync(`${h.dir}/broken`)
+    writeFileSync(`${h.dir}/broken/y.txt`, 'yy')
+    recorded().cb('rename', 'broken')
+    expect(logStoreFileEvent).toHaveBeenCalledExactlyOnceWith('broken/y.txt', 'create', 0, 2, null)
+    expect(logger.warn).toHaveBeenCalledWith(
+      { err: expect.any(Error), dir: 'broken' },
+      'store-watcher: subdirectory watch failed to start',
+    )
+  })
+
 })
