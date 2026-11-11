@@ -175,8 +175,34 @@ _MAYBE_MAIL_TOOL = re.compile(
 # forward and the key is `action`, not `operation`. Adding them here rather than
 # in a second code path keeps ONE send test for every multiplexer.
 _MANAGE_EMAIL_SEND_OPS = {"send", "new", "reply", "reply_all", "replyall", "forward"}
-# The keys a multiplexer may name its operation with, in the order they are read.
+# The keys a multiplexer may name its operation with.
 _MANAGE_EMAIL_OP_KEYS = ("operation", "action")
+# EMAILMUXFOLLOWUP1111 (Dani's #2635 review F3, Samu 75811): the `email` server's
+# `messages` tool is judged by an ALLOW list of the operations measured as reads
+# on the live install (the #2635 test list). Its full operation list is not in
+# this repo, so a deny list of send words let an unknown one (`send_draft`,
+# `compose`) through; here every operation not on this list is a send.
+_EMAIL_MUX_READ_OPS = frozenset({
+    "search", "read", "mark_read", "mark_unread", "flag", "unflag", "move", "archive", "trash"})
+
+
+def _is_email_messages_mux(tool_name) -> bool:
+    """The `email` MCP server's `messages` multiplexer (email_extract.is_email_messages_mux, same test)."""
+    return str(tool_name or "").lower().replace("-", "_").endswith("email__messages")
+
+
+def _multiplexer_ops(tool_input: dict) -> list:
+    """Every operation the call names, normalised (lower case, '-' -> '_'), from EVERY op key.
+
+    F1 of the #2635 review: reading only the first non-empty key let a decoy
+    `operation: "search"` hide `action: "new"` (the key the `email` server reads).
+    A key is judged whatever the server reads, so all of them are collected."""
+    ops = []
+    for key in _MANAGE_EMAIL_OP_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            ops.append(value.strip().lower().replace("-", "_"))
+    return ops
 
 
 def _is_explicit_draft(tool_input: dict) -> bool:
@@ -314,10 +340,11 @@ def owner_cc_scope(tool: str, kind, tool_input: dict):
     its letter was checked where the draft was written."""
     if kind == "unclassified":
         return _draft_tool(tool), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
-    is_draft = (kind == "draft" and _draft_tool(tool)) or (
-        kind == "manage_email" and _is_explicit_draft(tool_input))
     is_send = kind in ("send_email", "connector_send") or (
-        kind == "manage_email" and manage_email_is_send(tool_input))
+        kind == "manage_email" and manage_email_is_send(tool_input, tool))
+    is_draft = (kind == "draft" and _draft_tool(tool)) or (
+        kind == "manage_email" and not is_send and _is_explicit_draft(tool_input)
+        and not _is_email_messages_mux(tool))
     return is_draft, is_send
 
 
@@ -343,7 +370,7 @@ def owner_cc_gate(tool_input: dict, is_draft_only: bool, tool: str = "") -> None
          "levelrol masolatot ker (MAIL_OWNER_CC az install .env-jeben).")
 
 
-def manage_email_is_send(tool_input: dict) -> bool:
+def manage_email_is_send(tool_input: dict, tool_name: str = "") -> bool:
     """Is this manage_email call a send? Unreadable operation -> True (closed).
 
     MANAGEDRAFT905: the send OPERATIONS are also the only way to write a
@@ -358,15 +385,20 @@ def manage_email_is_send(tool_input: dict) -> bool:
     to stop the SEND. Fail-closed stays: only an explicit draft:true passes,
     a missing/ambiguous flag is a send.
     """
-    op = None
-    for key in _MANAGE_EMAIL_OP_KEYS:
-        value = tool_input.get(key)
-        if isinstance(value, str) and value.strip():
-            op = value
-            break
-    if op is None:
+    ops = _multiplexer_ops(tool_input)
+    if not ops:
         return True
-    if op.strip().lower().replace("-", "_") not in _MANAGE_EMAIL_SEND_OPS:
+    if _is_email_messages_mux(tool_name):
+        # F3: allow list -- a read only when EVERY named operation is a measured read.
+        # A non-string `action` next to a read `operation` is unreadable: a send (closed).
+        action = tool_input.get("action")
+        if action is not None and not (isinstance(action, str) and action.strip()):
+            return True
+        # F2: no draft:true exemption here. It is measured for manage_email only
+        # (MANAGEDRAFT905); nothing shows this server keeps a letter as a draft.
+        return not all(op in _EMAIL_MUX_READ_OPS for op in ops)
+    # F1: a send when ANY key names a send operation.
+    if not any(op in _MANAGE_EMAIL_SEND_OPS for op in ops):
         return False
     return not _is_explicit_draft(tool_input)
 
@@ -1305,7 +1337,7 @@ def main():
             sys.exit(0)  # a draft puts nothing on the wire; the level stops SENDS
         # A multiplexer tool is in scope only when the call is a send; a search,
         # a read or a draft is not what email_send levels.
-        if kind == "manage_email" and not manage_email_is_send(tool_input):
+        if kind == "manage_email" and not manage_email_is_send(tool_input, tool):
             sys.exit(0)
 
     level, note = read_email_level()
