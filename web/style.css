@@ -4681,6 +4681,8 @@ a.oss-inv-name:hover { text-decoration: underline; }
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   font-size: 13px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .github-repo-status.loading { background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); }
 .github-repo-status.error { background: var(--bg-card); color: var(--danger); border: 1px solid var(--danger); }

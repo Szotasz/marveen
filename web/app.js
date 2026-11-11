@@ -10338,7 +10338,7 @@ async function offerGitHubRepoScriptsOptIn(name, skipped) {
     body: JSON.stringify({ runScripts: true }),
   })
   const data = await res.json()
-  if (data.error) alert(data.error)
+  if (data.error) showToast(data.error)
 }
 
 async function loadGitHubRepos() {
@@ -10361,7 +10361,7 @@ async function loadGitHubRepos() {
         try {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
-          if (data.error) { alert(data.error); return }
+          if (data.error) { showToast(data.error); return }
           await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
@@ -10570,8 +10570,8 @@ function renderOssRow(e) {
       }
       // Installed, but npm install failed: keep it visible instead of reporting success.
       // The opt-in is only offered after an install that completed.
-      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
-      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
+      const warning = data.installWarning ? t('connectors.install_warning', { msg: data.installWarning }) : ''
+      if (!warning) await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
@@ -10606,7 +10606,13 @@ function renderOssRow(e) {
       loadGitHubRepos()
       loadExternalPaths()
       loadConnectors()
-      setTimeout(() => { status.hidden = true }, 4000)
+      if (warning) {
+        // The failed npm install stays in the status line, in red, in place of the success text (the MCP
+        // servers may not start). A key-save failure is kept below it.
+        const keyError = status.className === 'github-repo-status error' ? '\n\n' + status.textContent : ''
+        status.className = 'github-repo-status error'
+        status.textContent = warning + keyError
+      } else setTimeout(() => { status.hidden = true }, 4000)
     } catch (err) {
       status.className = 'github-repo-status error'
       status.textContent = 'Hiba: ' + err.message
@@ -11837,7 +11843,7 @@ async function loadExternalPaths() {
       body: JSON.stringify({ path: val }),
     })
     const data = await res.json()
-    if (data.error) { alert(data.error); return }
+    if (data.error) { showToast(data.error); return }
     input.value = ''
     loadExternalPaths()
     loadConnectors()
