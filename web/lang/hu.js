@@ -1482,6 +1482,7 @@ window._i18n.hu = {
   'settings.claude_plans.login.error_busy': 'Már fut egy bejelentkezés. Előbb szakítsd meg.',
   'settings.claude_plans.login.error_id_taken': 'Ilyen azonosítójú plan már van. Adj meg másikat.',
   'settings.claude_plans.login.error_invalid': 'Az azonosító csak betűt, számot és _ . - jelet tartalmazhat, a címke kötelező.',
+  'settings.claude_plans.login.error_invalid_label': 'A címke egyetlen sor legyen, sortörés és vezérlőkarakter nélkül.',
   'settings.claude_plans.login.error_claude_missing': 'A claude parancs nem található ezen a gépen.',
   'settings.claude_plans.login.error_no_link': 'A claude setup-token nem adott bejelentkezési linket. Próbáld újra.',
   'settings.claude_plans.login.error_expired': 'A bejelentkezés lejárt vagy már lezárult. Kérj új linket.',
