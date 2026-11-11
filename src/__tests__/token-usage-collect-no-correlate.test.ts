@@ -6,6 +6,7 @@
 // and the real collect route leaves a NULL title NULL.
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
+import ts from 'typescript'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getDb, initDatabase } from '../db.js'
@@ -58,14 +59,34 @@ describe('no path writes a card title into token_usage (DBSIZE1111)', () => {
     expect(Object.keys(mod).filter((k) => /correlat/i.test(k))).toEqual([])
   })
 
-  it('no production source sets task_title or project on token_usage', () => {
+  it('no production source names task_title, or project next to token_usage, outside the db.ts schema', () => {
+    // Every string and template literal of every production file (the TypeScript parser, so comments do not
+    // count and a quoted or schema-qualified table name does not hide). task_title anywhere in code, and project in
+    // a literal (or template, or + chain) that names token_usage, are allowed only in db.ts's CREATE TABLE token_usage.
+    // Limit: a table name kept in a constant defined elsewhere is not resolved.
     const offenders: string[] = []
     for (const file of productionSources(SRC)) {
-      const text = readFileSync(file, 'utf-8')
-      // An UPDATE of token_usage that sets either column, in any statement shape.
-      for (const m of text.matchAll(/UPDATE\s+token_usage\b[\s\S]{0,400}?\bSET\b[\s\S]{0,400}?\b(task_title|project)\s*=/gi)) {
-        offenders.push(`${file.slice(SRC.length + 1)}: ${m[0].slice(0, 80).replace(/\s+/g, ' ')}`)
+      const rel = file.slice(SRC.length + 1)
+      const sf = ts.createSourceFile(file, readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true)
+      const check = (text: string, node: ts.Node) => {
+        const schema = rel === 'db.ts' && /CREATE TABLE IF NOT EXISTS token_usage \(/.test(text)
+        if (schema) return
+        const tableRef = /token_usage\b/i.test(text)
+        if (/\btask_title\b/i.test(text) || (tableRef && /\bproject\b/i.test(text))) {
+          offenders.push(`${rel}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${text.slice(0, 90).replace(/\s+/g, ' ')}`)
+        }
       }
+      const isPlus = (n: ts.Node): n is ts.BinaryExpression => ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken
+      const walk = (node: ts.Node) => {
+        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) check(node.text, node)
+        // A template and a + chain are read with their whole source text, so a table name or a column that
+        // comes from a ${...} expression or another string piece is seen with the statement around it.
+        else if (ts.isTemplateExpression(node)) check(node.getText(sf), node)
+        else if (isPlus(node) && !isPlus(node.parent)) check(node.getText(sf), node)
+        else if (ts.isIdentifier(node) && node.text === 'task_title') check(node.text, node)
+        ts.forEachChild(node, walk)
+      }
+      walk(sf)
     }
     expect(offenders).toEqual([])
   })
