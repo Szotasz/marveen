@@ -68,11 +68,15 @@ Segít megérteni:
 - `limit`: Max sorok (default: 100, max: 500)
 - `offset`: Lapozáshoz
 - `min_tokens`: Minimum input token szűrő
-- `q`: Szabad szöveges keresés (agent, tool_name, content_preview, task_title)
+- `q`: Szabad szöveges keresés (agent, tool_name, content_preview, és a kártyacím: a címre illő kártyák in_progress-ablakaiba eső sorok, legfeljebb a legújabb 200 ablak)
 
-### Kanban korreláció
+### Kártya-hozzárendelés (olvasáskor)
 
-A `correlateWithKanban()` függvény a `kanban_cards` tábla alapján összerendeli a token felhasználást a feladatokkal. Az assignee és időintervallum alapján párosít, így a dashboard megmutatja, melyik feladathoz mennyi tokent használt egy ágens.
+Egy token-sorhoz az a kártya tartozik, amelyik a sor időpontjában az ágensnél `in_progress` volt. Az ablakokat a `kanban_card_events` adja (a `to_status = 'in_progress'` nyit egyet, a következő, onnan kivezető lépés zárja; a nyitott ablak a mostani időig tart), ugyanúgy, mint a kártyánkénti token-összegnél (#568). Az ágens a kártya mostani felelőséből jön; a bot neve a fő ágenst jelenti. Archivált kártya is számít.
+
+- A részletek (`/api/token-usage`) minden sorhoz visszaadják: `taskCards` (az összes ekkor folyamatban lévő kártya, `id` + `title`), `taskCardId` és `taskTitle` (csak ha pontosan egy volt, egyébként `null`). Átfedő kártyáknál nincs kiválasztás, mert a hívásból nem derül ki, melyikhez tartozott; a felület mindet kiírja.
+- A modell-bontás (`/api/token-usage/model-dist?model=`) ágens + session szerint csoportosít, a `cards` mező a session ideje alatt folyamatban lévő kártyák listája.
+- Semmi nincs tárolva: a `token_usage.task_title` és `project` oszlopot új kód nem olvassa és nem írja. A korábbi `correlateWithKanban()` (a kártyák `updated_at`-jéből becsült, a sorokba írt cím) DBSIZE1111 óta nincs: a gyűjtő végpont minden hívásakor újraírta a táblát, és a DB-t 704-ről 1364 MB-ra növelte.
 
 ---
 

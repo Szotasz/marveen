@@ -20382,7 +20382,12 @@ function renderTuDetailsTable() {
     const totalIn = (d.input_tokens || 0) + (d.cache_read_tokens || 0) + (d.cache_creation_tokens || 0)
     const timeStr = tuFormatLocalDate(d.timestamp)
     const preview = d.content_preview ? d.content_preview.slice(0, 80) + (d.content_preview.length > 80 ? '...' : '') : ''
-    const taskInfo = d.task_title ? `<span style="color:var(--text-secondary);font-size:11px"> [${escapeHtml(d.task_title)}]</span>` : ''
+    // DBSIZE1111: the card comes from the agent's in_progress windows at read time (taskCards). Two or more
+    // overlapping cards are all shown, none is picked: the call itself does not say which one it was for.
+    const cards = Array.isArray(d.taskCards) ? d.taskCards : []
+    const taskInfo = cards.length
+      ? `<span style="color:var(--text-secondary);font-size:11px"${cards.length > 1 ? ` title="${escapeHtml(t('tokenUsage.cards_overlap', { n: cards.length }))}"` : ''}> [${cards.map(c => escapeHtml(c.title)).join(' / ')}]</span>`
+      : ''
     return `<tr>
       <td style="white-space:nowrap">${timeStr}</td>
       <td><span style="color:${tuGetColor(d.agent)};font-weight:600">${escapeHtml(d.agent)}</span>${taskInfo}</td>
