@@ -218,6 +218,23 @@ describe('store-watcher: top-level exclusions', () => {
     expect(h.records.some(r => r.dir === `${h.dir}/reserved`)).toBe(false)
   })
 
+  it('a top-level file that becomes an excluded directory and then a file again is logged', () => {
+    writeFileSync(`${h.dir}/flip`, 'a')
+    startStoreWatcher({ exclude: ['flip'] })
+    expect(startedInfo()).toMatchObject({ knownCount: 6 })
+
+    rmSync(`${h.dir}/flip`)
+    mkdirSync(`${h.dir}/flip`)
+    recorded().cb('rename', 'flip')
+    expect(logStoreFileEvent).not.toHaveBeenCalled()
+    expect(h.records.some(r => r.dir === `${h.dir}/flip`)).toBe(false)
+
+    rmSync(`${h.dir}/flip`, { recursive: true, force: true })
+    writeFileSync(`${h.dir}/flip`, 'abcde')
+    recorded().cb('rename', 'flip')
+    expect(logStoreFileEvent).toHaveBeenCalledExactlyOnceWith('flip', 'create', 0, 5, null)
+  })
+
   it('a top-level symlink whose name is in the list is still scanned', () => {
     startStoreWatcher({ exclude: ['link'] })
     expect(startedInfo()).toMatchObject({ knownCount: 5 })

@@ -217,7 +217,9 @@ export function startStoreWatcher(opts: StoreWatcherOptions = {}): void {
         } catch { /* gone: deleted or renamed away */ }
         if (isDir && excluded.has(top)) {
           // Consume the actor slot, as handleWatchEvent does for every event.
+          // A file with this name may have been known before it became a directory.
           currentWriteActor = null
+          knownFiles.delete(top)
           return
         }
         if (eventType === 'rename') {
