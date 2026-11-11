@@ -220,6 +220,14 @@ export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
 // Read at module load -- a change needs a dashboard restart.
 export const MESSAGE_URGENT_DEVICE_IDS = env['MESSAGE_URGENT_DEVICE_IDS'] ?? ''
 
+// Top-level directories of store/ that the store-watcher neither scans at start nor watches (STOREWATCHEXCL1111).
+// On Linux the recursive watcher puts one inotify watch on every file and directory under store/, so a large,
+// fast-changing runtime tree can use up a large part of the per-user inotify limit. Plain directory names, no
+// slashes, comma-separated:
+//   STORE_WATCH_EXCLUDE=build-cache,old-runs
+// Empty or unset: everything is watched, as before. Read at module load -- a change needs a dashboard restart.
+export const STORE_WATCH_EXCLUDE = env['STORE_WATCH_EXCLUDE'] ?? ''
+
 // Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is
 // provable without a live .env. Entries are normalized with the SAME function
 // the route matches on, keeping this guard symmetric with the coordinator and
@@ -243,6 +251,17 @@ export function parseDeviceKeyIds(raw: string | undefined): Set<number> {
       .map(s => s.trim())
       .filter(s => /^[1-9][0-9]{0,14}$/.test(s))
       .map(Number)
+  )
+}
+
+// Pure parse rule for STORE_WATCH_EXCLUDE. Entries are trimmed; an entry is dropped (never read generously) when it is
+// empty, '.', '..', or contains '/', '\\' or a NUL character.
+export function parseStoreWatchExclude(raw: string | undefined): Set<string> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s !== '' && s !== '.' && s !== '..' && !/[\/\\\0]/.test(s))
   )
 }
 
