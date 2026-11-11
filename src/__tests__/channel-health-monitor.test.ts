@@ -48,6 +48,7 @@ vi.mock('../web/agent-process.js', () => ({
   isAgentRunning: (name: string) => name === 'samu',
   capturePane: (session: string) => mockCapturePane(session),
   capturePaneAsync: async (session: string) => mockCapturePane(session),
+  captureParkedInputViewAsync: async (session: string) => mockCapturePane(session),
   agentSessionName: (name: string) => `agent-${name}`,
 }))
 
