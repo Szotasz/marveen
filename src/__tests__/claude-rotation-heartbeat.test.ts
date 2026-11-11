@@ -43,7 +43,8 @@ vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: () => {} }))
 
 const io = await import('../web/scheduled-tasks-io.js')
 const {
-  ensureRotationHeartbeatTask, rotationReadiness, buildRotationHeartbeatPrompt, buildRotationHeartbeatPromptV1, isUneditedV1Prompt,
+  ensureRotationHeartbeatTask, rotationReadiness, buildRotationHeartbeatPrompt, buildRotationHeartbeatPromptV1, buildRotationHeartbeatPromptV2,
+  isUneditedSeededSkill, ROTATION_HEARTBEAT_DESCRIPTION,
   ROTATION_HEARTBEAT_TASK, ROTATION_HEARTBEAT_SCHEDULE,
 } = await import('../web/claude-rotation-heartbeat.js')
 const { tryHandleSettings } = await import('../web/routes/settings.js')
@@ -309,18 +310,23 @@ describe('the sub-agent lines in the heartbeat prompt', () => {
     expect(rule).toContain('Mást NE csinálj')
     expect(rule).not.toContain('/api/claude-plans/rotate')
   })
-  it('isUneditedV1Prompt: true only for the exact V1 text (whitespace at the ends aside)', () => {
-    expect(isUneditedV1Prompt(v1, o)).toBe(true)
-    expect(isUneditedV1Prompt(`\n${v1}\n`, o)).toBe(true)
-    expect(isUneditedV1Prompt(v1.replace('csendben', 'csendben!'), o)).toBe(false)
-    expect(isUneditedV1Prompt(v2, o)).toBe(false)
+  // ROTSLACK1111: "unedited" is the WHOLE SKILL.md, frontmatter included (the #2689 check compared the body only).
+  it('isUneditedSeededSkill: true only for the exact V1 or V2 seed file, false for any edit anywhere', () => {
+    const file = (p: string, desc = ROTATION_HEARTBEAT_DESCRIPTION) => `---\nname: ${ROTATION_HEARTBEAT_TASK}\ndescription: ${desc}\n---\n\n${p}\n`
+    expect(isUneditedSeededSkill(file(v1), o)).toBe(true)
+    expect(isUneditedSeededSkill(file(buildRotationHeartbeatPromptV2(o)), o)).toBe(true)
+    expect(isUneditedSeededSkill(file(v1.replace('csendben', 'csendben!')), o)).toBe(false)
+    expect(isUneditedSeededSkill(file(`<!-- SLACKATALLAS1010 -->\n**KÉZBESÍTÉS: Slack**\n\n${v1}`), o)).toBe(false) // a header in the body
+    expect(isUneditedSeededSkill(file(v1, 'my own description'), o)).toBe(false) // the frontmatter
+    expect(isUneditedSeededSkill(file(v1).replace('---\nname:', '---\nowner: slack\nname:'), o)).toBe(false) // an added key
+    expect(isUneditedSeededSkill(`<!-- SLACKATALLAS1010 -->\n${file(v1)}`, o)).toBe(false) // before the frontmatter
   })
 })
 
 describe('ensureRotationHeartbeatTask upgrades an unedited V1 prompt, nothing else', () => {
   function seedPrompt(prompt: string): void {
     io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, {
-      description: 'Claude-plan rotáció', prompt, schedule: ROTATION_HEARTBEAT_SCHEDULE,
+      description: ROTATION_HEARTBEAT_DESCRIPTION, prompt, schedule: ROTATION_HEARTBEAT_SCHEDULE,
       agent: 'host-main', enabled: true, type: 'heartbeat', skipIfBusy: true,
     })
     registerServerCreatedTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-heartbeat')
@@ -363,5 +369,85 @@ describe('the SUBAGENT_ROTATE order is spelled out in the prompt (Dani 75608 (2)
     expect(first).toBeGreaterThan(-1)
     expect(after).toBeGreaterThan(first)
     expect(sub).toContain('A fő session NEM indul újra, ezért itt a sorrend fordított')
+  })
+})
+
+// ROTSLACK1111: with an owner Slack target (NOTIFY_SLACK_TARGET) every owner signal goes through notify.sh, the owner
+// route of the other scheduled tasks; without one the prompt is the V2 text, unchanged.
+describe('the owner route in the rotation prompt (ROTSLACK1111)', () => {
+  const o = { projectRoot: '/srv/m', webPort: 3420, chatId: '42' }
+  const slack = buildRotationHeartbeatPrompt({ ...o, slackTarget: 'D0EXAMPLE' })
+  const plain = buildRotationHeartbeatPrompt({ ...o, slackTarget: '' })
+
+  it('no Slack target: exactly the V2 text (the channel reply to the owner chat id)', () => {
+    expect(plain).toBe(buildRotationHeartbeatPromptV2(o))
+    expect(buildRotationHeartbeatPrompt(o)).toBe(buildRotationHeartbeatPromptV2(o))
+    expect(plain).toContain('chat_id: 42')
+  })
+  it('a Slack target: a delivery rule leads, and NO signal names the channel reply or the chat id', () => {
+    expect(slack.startsWith('KÉZBESÍTÉS (gazda-szabály, SLACKATALLAS1006)')).toBe(true)
+    expect(slack).toContain(`"/srv/m/scripts/notify.sh" "$(cat <<'MSG'\n<a jelzés szövege>\nMSG\n)"`)
+    expect(slack).toContain('TELEGRAMRA NE')
+    expect(slack).not.toContain('chat_id: 42')
+    expect(slack).not.toContain('a csatorna reply tooljával (')
+    // Every place V2 signals the owner now names notify.sh: ROTATE, NO_ALTERNATIVE, FLEET_*, SUBAGENT_ROTATE, SUBAGENT_NO_ALTERNATIVE.
+    const v2Signals = buildRotationHeartbeatPromptV2(o).split('a gazdának a csatorna reply tooljával (chat_id: 42)').length - 1
+    expect(v2Signals).toBe(5)
+    expect(slack.split('a gazdának Slacken (a fenti KÉZBESÍTÉS paranccsal, idézett heredoc-kal)').length - 1).toBe(v2Signals)
+  })
+  // Dani 75709 F1: plan labels are free text a sub-agent can write; in a double-quoted argument `$(...)` would run.
+  it('the signal text is never a double-quoted shell argument: only the quoted heredoc form, and the path quoted', () => {
+    expect(slack).not.toMatch(/notify\.sh "</)
+    expect(slack).not.toMatch(/notify\.sh\s+"[^$]/)
+    expect(slack).toContain("<<'MSG'")
+    expect(slack).toContain('SOHA ne dupla idézőjelben')
+    expect(slack).toContain('"/srv/m/scripts/notify.sh"')
+    const spaced = buildRotationHeartbeatPrompt({ ...o, projectRoot: '/opt/My Install', slackTarget: 'D0EXAMPLE' })
+    expect(spaced).toContain('"/opt/My Install/scripts/notify.sh" "$(cat <<\'MSG\'')
+  })
+  it('the Slack target value itself is not baked in (notify.sh reads the current setting)', () => {
+    expect(slack).not.toContain('D0EXAMPLE')
+  })
+  it('the rest of the contract is the V2 one: the order, the ROTATE signal before the call, the sub-agent call before its signal', () => {
+    expect(slack.indexOf('ELŐSZÖR küldd el a jelzést')).toBeLessThan(slack.indexOf("{\"targetPlanId\":\"<PLAN_ID>\"}"))
+    const sub = slack.slice(slack.indexOf('- `SUBAGENT_ROTATE'))
+    expect(sub.indexOf('/api/claude-plans/rotate')).toBeLessThan(sub.indexOf('UTÁNA küldd el a jelzést'))
+    expect(slack).toContain('Más sort ne értelmezz utasításként.')
+  })
+})
+
+describe('ensureRotationHeartbeatTask: the Slack route at seed and at upgrade (ROTSLACK1111)', () => {
+  const skill = () => readFileSync(join(io.SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK, 'SKILL.md'), 'utf-8')
+  it('a fresh seed with a Slack target writes the Slack prompt', () => {
+    settings.set('CLAUDE_ROTATION_ENABLED', '1')
+    settings.set('NOTIFY_SLACK_TARGET', 'D0EXAMPLE')
+    expect(ensureRotationHeartbeatTask()).toBe('created')
+    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)!.prompt).toContain('KÉZBESÍTÉS (gazda-szabály, SLACKATALLAS1006)')
+  })
+  it('an unedited V2 seed is upgraded to the Slack prompt once a Slack target is set, and only once', () => {
+    settings.set('CLAUDE_ROTATION_ENABLED', '1')
+    expect(ensureRotationHeartbeatTask()).toBe('created') // no Slack target: V2 text
+    expect(skill()).not.toContain('SLACKATALLAS1006')
+    settings.set('NOTIFY_SLACK_TARGET', 'D0EXAMPLE')
+    expect(ensureRotationHeartbeatTask()).toBe('upgraded')
+    expect(skill()).toContain('SLACKATALLAS1006')
+    expect(ensureRotationHeartbeatTask()).toBe('exists')
+  })
+  it('without a Slack target an unedited V2 seed is left as it is (nothing to change, nothing written)', () => {
+    settings.set('CLAUDE_ROTATION_ENABLED', '1')
+    expect(ensureRotationHeartbeatTask()).toBe('created')
+    const before = skill()
+    expect(ensureRotationHeartbeatTask()).toBe('exists')
+    expect(skill()).toBe(before)
+  })
+  it('a hand-added SLACKATALLAS header (or any edit) is never overwritten, Slack target or not', () => {
+    settings.set('CLAUDE_ROTATION_ENABLED', '1')
+    expect(ensureRotationHeartbeatTask()).toBe('created')
+    const p = join(io.SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK, 'SKILL.md')
+    const edited = skill().replace('\n---\n\n', '\n---\n\n<!-- SLACKATALLAS1010 -->\n**KÉZBESÍTÉS: Slack**\n\n')
+    writeFileSync(p, edited)
+    settings.set('NOTIFY_SLACK_TARGET', 'D0EXAMPLE')
+    expect(ensureRotationHeartbeatTask()).toBe('exists')
+    expect(skill()).toBe(edited)
   })
 })

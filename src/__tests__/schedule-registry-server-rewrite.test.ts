@@ -46,6 +46,7 @@ import { rewriteRegisteredTask } from '../web/schedule-registry-rewrite.js'
 import {
   ROTATION_HEARTBEAT_TASK,
   buildRotationHeartbeatPromptV1,
+  ROTATION_HEARTBEAT_DESCRIPTION,
   ensureRotationHeartbeatTask,
   syncRotationHeartbeatTask,
 } from '../web/claude-rotation-heartbeat.js'
@@ -141,7 +142,7 @@ describe('rotation heartbeat is registered', () => {
 describe('rotation heartbeat prompt upgrade keeps the registry honest', () => {
   const opts = { projectRoot: PROJECT_ROOT, webPort: WEB_PORT, chatId: CHANNEL_CHAT_ID }
   const v1Task = () => writeScheduledTask(ROTATION_HEARTBEAT_TASK, {
-    description: 'Claude-plan rotáció', prompt: buildRotationHeartbeatPromptV1(opts), schedule: '*/10 * * * *',
+    description: ROTATION_HEARTBEAT_DESCRIPTION, prompt: buildRotationHeartbeatPromptV1(opts), schedule: '*/10 * * * *',
     agent: 'marveen', enabled: true, type: 'heartbeat', skipIfBusy: true,
   })
 

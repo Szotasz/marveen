@@ -36,6 +36,10 @@
 //      rotation, printed once): relay it via `reply` -- restarted= / failed=
 //      name the sub-agents, and a non-empty failed= needs the operator;
 //   5. if it printed nothing: stay silent.
+// The owner signal's route (ROTSLACK1111): with an owner Slack target set
+// in Settings, the prompt sends every signal through scripts/notify.sh,
+// the owner route of the other scheduled tasks; without one, the channel reply
+// to the owner's chat id as above (claude-rotation-heartbeat.ts).
 // This mirrors the fleet's existing OPEN_QUESTION heartbeat pattern
 // (scripts/hooks/ledger-live-drain.py) rather than inventing a new one.
 //
