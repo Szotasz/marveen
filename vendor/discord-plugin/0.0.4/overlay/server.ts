@@ -36,6 +36,7 @@ import { join, sep } from 'path'
 import { fileURLToPath } from 'url' // MARVEEN-EXT
 import { loadExtConfig, resolveOwner, mayDecidePermission, DmResolver, voiceMeta, pagingOptions, threadName } from './marveen-ext.ts' // MARVEEN-EXT
 import { BACKFILL, readCursor, backfillDue, BackfillCursor, selectRecovered } from './marveen-ext.ts' // MARVEEN-EXT
+import { SAFE_MENTIONS, MAX_REPLY_CHUNKS, BotThreads, replyContextMeta, forwardedParts } from './marveen-ext.ts' // MARVEEN-EXT
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -90,6 +91,9 @@ const client = new Client({
   ],
   // DMs arrive as partial channels — messageCreate never fires without this.
   partials: [Partials.Channel],
+  // DCEXT1111 D1: the default for EVERY send/edit/reply/update: users and the replied-to user only, never // MARVEEN-EXT
+  // @everyone/@here or a role, whatever the model writes. A call site must not override it (tested). // MARVEEN-EXT
+  allowedMentions: SAFE_MENTIONS, // MARVEEN-EXT
 })
 
 type PendingEntry = {
@@ -252,6 +256,26 @@ const backfillCursor = cursorRead === null ? null : new BackfillCursor( // MARVE
 // Live deliveries while the recovery runs, so it never delivers the same message twice; emptied when it ends. // MARVEEN-EXT
 const liveDelivered = new Set<string>() // MARVEEN-EXT
 let recoveryOpen = backfillCursor !== null // MARVEEN-EXT
+// DCEXT1111 A1: threads in opted-in channels the bot wrote in; a follow-up there needs no @mention. // MARVEEN-EXT
+const BOT_THREADS_FILE = join(STATE_DIR, 'bot-threads.json') // MARVEEN-EXT
+const botThreads = new BotThreads( // MARVEEN-EXT
+  BotThreads.parse((() => { try { return readFileSync(BOT_THREADS_FILE, 'utf8') } catch { return null } })()), // MARVEEN-EXT
+  state => { // MARVEEN-EXT
+    try { // MARVEEN-EXT
+      const tmp = `${BOT_THREADS_FILE}.tmp` // MARVEEN-EXT
+      writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: 0o600 }) // MARVEEN-EXT
+      renameSync(tmp, BOT_THREADS_FILE) // MARVEEN-EXT
+    } catch (err) { // MARVEEN-EXT
+      process.stderr.write(`discord channel: cannot write ${BOT_THREADS_FILE}: ${err}\n`) // MARVEEN-EXT
+    } // MARVEEN-EXT
+  }, // MARVEEN-EXT
+) // MARVEEN-EXT
+// The bot's own thread (it opened it) or one it wrote in. Only reached for a thread whose parent is in // MARVEEN-EXT
+// access.groups (gate() looked the policy up by the parent): a thread elsewhere is never followed (Etelka 7021). // MARVEEN-EXT
+function inBotThread(msg: Message): boolean { // MARVEEN-EXT
+  const ch = msg.channel // MARVEEN-EXT
+  return ch.isThread() && (ch.ownerId === client.user?.id || botThreads.has(ch.id)) // MARVEEN-EXT
+} // MARVEEN-EXT
 
 function noteSent(id: string): void {
   recentSentIds.add(id)
@@ -316,7 +340,7 @@ async function gate(msg: Message): Promise<GateResult> {
   if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
     return { action: 'drop' }
   }
-  if (requireMention && !(await isMentioned(msg, access.mentionPatterns))) {
+  if (requireMention && !inBotThread(msg) && !(await isMentioned(msg, access.mentionPatterns))) { // MARVEEN-EXT
     return { action: 'drop' }
   }
   return { action: 'deliver', access }
@@ -465,6 +489,11 @@ async function downloadAttachment(att: Attachment): Promise<string> {
 function safeAttName(att: Attachment): string {
   return (att.name ?? att.id).replace(/[\[\]\r\n;]/g, '_')
 }
+
+// DCEXT1111 A3: the message's own files, then those of a forwarded message's snapshots. // MARVEEN-EXT
+function inboundAttachments(msg: Message): Attachment[] { // MARVEEN-EXT
+  return [...msg.attachments.values(), ...[...msg.messageSnapshots.values()].flatMap(s => [...(s.attachments?.values() ?? [])])] // MARVEEN-EXT
+} // MARVEEN-EXT
 
 const mcp = new Server(
   { name: 'discord', version: '1.0.0' },
@@ -695,6 +724,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
         const chunks = chunk(text, limit, mode)
+        // DCEXT1111 D2: no flood. Refused before anything is sent, so there is no half-sent answer. // MARVEEN-EXT
+        if (chunks.length > MAX_REPLY_CHUNKS) { // MARVEEN-EXT
+          throw new Error(`reply would be ${chunks.length} messages (max ${MAX_REPLY_CHUNKS}): nothing sent -- shorten it, or attach it as a file`) // MARVEEN-EXT
+        } // MARVEEN-EXT
         const sentIds: string[] = []
 
         try {
@@ -718,6 +751,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const msg = err instanceof Error ? err.message : String(err)
           throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
         }
+        // DCEXT1111 A1: a thread under an opted-in channel the bot answered in is followed without @mention. // MARVEEN-EXT
+        if (ch.isThread() && ch.parentId !== null && ch.parentId in loadAccess().groups) botThreads.add(ch.id) // MARVEEN-EXT
 
         const result =
           sentIds.length === 1
@@ -774,11 +809,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'download_attachment': {
         const ch = await fetchAllowedChannel(args.chat_id as string)
         const msg = await ch.messages.fetch(args.message_id as string)
-        if (msg.attachments.size === 0) {
+        const all = inboundAttachments(msg) // DCEXT1111 A3: a forward's files too // MARVEEN-EXT
+        if (all.length === 0) { // MARVEEN-EXT
           return { content: [{ type: 'text', text: 'message has no attachments' }] }
         }
         const lines: string[] = []
-        for (const att of msg.attachments.values()) {
+        for (const att of all) { // MARVEEN-EXT
           const path = await downloadAttachment(att)
           const kb = (att.size / 1024).toFixed(0)
           lines.push(`  ${path}  (${safeAttName(att)}, ${att.contentType ?? 'unknown'}, ${kb}KB)`)
@@ -1070,14 +1106,25 @@ async function handleInbound(msg: Message, recovered = false): Promise<boolean> 
   // calls download_attachment when it wants them. Keeps the notification
   // fast and avoids filling inbox/ with images nobody looked at.
   const atts: string[] = []
-  for (const att of msg.attachments.values()) {
+  for (const att of inboundAttachments(msg)) { // MARVEEN-EXT
     const kb = (att.size / 1024).toFixed(0)
     atts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
   }
 
+  // DCEXT1111 A3: a forwarded message's text and files live in its snapshots; its own content is empty. // MARVEEN-EXT
+  const fwd = forwardedParts([...msg.messageSnapshots.values()].map(s => ({ content: s.content ?? '', attachmentCount: s.attachments?.size ?? 0 }))) // MARVEEN-EXT
+  // DCEXT1111 A2: what a reply answers, in the meta (not for a forward: its reference is the source). // MARVEEN-EXT
+  let replyMeta: Record<string, string> = {} // MARVEEN-EXT
+  if (fwd === null && msg.reference?.messageId) { // MARVEEN-EXT
+    try { // MARVEEN-EXT
+      const ref = await msg.fetchReference() // MARVEEN-EXT
+      replyMeta = replyContextMeta({ id: ref.id, username: ref.author.username, content: ref.content ?? '', attachments: [...ref.attachments.values()].map(safeAttName) }) // MARVEEN-EXT
+    } catch {} // deleted, or no history permission: the meta just has no reply context // MARVEEN-EXT
+  } // MARVEEN-EXT
+
   // Attachment listing goes in meta only — an in-content annotation is
   // forgeable by any allowlisted sender typing that string.
-  const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+  const content = msg.content || fwd?.text || (atts.length > 0 ? '(attachment)' : '') // MARVEEN-EXT
 
   mcp.notification({
     method: 'notifications/claude/channel',
@@ -1092,6 +1139,8 @@ async function handleInbound(msg: Message, recovered = false): Promise<boolean> 
         ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
         ...voiceMeta(msg.flags.bitfield), // MARVEEN-EXT
         ...(recovered ? { recovered: 'true' } : {}), // MARVEEN-EXT
+        ...(fwd !== null ? { forwarded: '1' } : {}), // MARVEEN-EXT
+        ...replyMeta, // MARVEEN-EXT
       },
     },
   }).catch(err => {

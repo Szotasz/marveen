@@ -270,20 +270,31 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
   const handleInbound = new Function(
     'gate', 'ChannelType', 'dmChannelUsers', 'liveDelivered', 'recoveryOpen', 'backfillCursor', 'PERMISSION_REPLY_RE',
     'mayDecidePermission', 'currentOwner', 'decidedPermissions', 'mcp', 'pendingPermissions', 'permissionMessages',
-    'safeAttName', 'voiceMeta',
+    'safeAttName', 'voiceMeta', 'inboundAttachments', 'forwardedParts', 'replyContextMeta',
     `${slice('async function handleInbound(', '// DCEXT1111 F4: deliver, once')}\nreturn handleInbound`,
   )(
     async () => gateResult, { DM: 1, GuildText: 0 }, new Map(), new Set(), true,
     { note: (c: string, m: string) => cursorNotes.push(`${c}:${m}`) }, PERMISSION_REPLY_RE,
     ext.mayDecidePermission, () => (ownerId ? { id: ownerId, source: 'setting' } : { id: null, reason: 'x' }), decided,
     { notification: async (n: (typeof notes)[0]) => { notes.push(n) } }, new Map(), new Map(),
-    () => 'f', ext.voiceMeta,
-  ) as (msg: unknown, recovered?: boolean) => Promise<void>
-  const msg = (content: string, o: { dm?: boolean; author?: string } = {}) => ({
+    (a: { name?: string }) => a.name ?? 'f', ext.voiceMeta,
+    (m: { attachments: Map<string, unknown>; messageSnapshots: Map<string, { attachments?: Map<string, unknown> }> }) =>
+      [...m.attachments.values(), ...[...m.messageSnapshots.values()].flatMap(s => [...(s.attachments?.values() ?? [])])],
+    ext.forwardedParts, ext.replyContextMeta,
+  ) as (msg: unknown, recovered?: boolean) => Promise<boolean>
+  type Snap = { content: string; attachments: Map<string, { name: string; size: number; contentType: string }> }
+  const msg = (content: string, o: { dm?: boolean; author?: string; snapshots?: Snap[]; reference?: { id: string; username: string; content: string; attachments?: string[] } | 'gone' } = {}) => ({
     id: id(77), channelId: '1438000000000000500', content,
     author: { id: o.author ?? OWNER, username: 'zoli' },
     channel: { type: o.dm === false ? 0 : 1, isThread: () => false, sendTyping: async () => { typing.push('t') } },
     createdAt: new Date(0), attachments: new Map(), flags: { bitfield: 0 },
+    messageSnapshots: new Map((o.snapshots ?? []).map((sn, i) => [String(i), sn])),
+    reference: o.reference || o.snapshots?.length ? { messageId: id(5) } : undefined,
+    fetchReference: async () => {
+      if (!o.reference || o.reference === 'gone') throw new Error('Unknown Message')
+      const r = o.reference
+      return { id: r.id, author: { username: r.username }, content: r.content, attachments: new Map((r.attachments ?? []).map(n => [n, { name: n }])) }
+    },
     reply: async (t: string) => { replies.push(t) }, react: async () => {},
   })
   return { handleInbound, msg, notes, replies, typing, cursorNotes }
@@ -400,4 +411,199 @@ describe('F4: what the recovery reports is what reached the session (live probe 
     }
   })
 
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR1 (DCEXT1111 Hermes parity, terv.md 1. PR): D1, A1, A2, A3, D2
+// ---------------------------------------------------------------------------------------------------------------
+
+// Every Discord call in the overlay that puts a message (or a thread) on Discord. A new one fails this list until it
+// is added here: then it is known to go out with the client's allowedMentions default (D1), never its own.
+const OUTBOUND_SITES = [
+  'await ch.send("Paired! Say hi to Claude.")',
+  'await user.send({ content: text, components: [row] })',
+  'const sent = await ch.send({',
+  '.startThread({ name })',
+  'await ch.threads.create({ name })',
+  'const edited = await msg.edit(args.text as string)',
+  "await interaction.reply({ content: 'Not authorized.', ephemeral: true })",
+  "await interaction.reply({ content: 'Already answered.', ephemeral: true })",
+  "await interaction.reply({ content: 'Details no longer available.', ephemeral: true })",
+  'await interaction.update({ content: expanded, components: [row] })',
+  '.update({ content: `${interaction.message.content}\\n\\n${label}`, components: [] })',
+  "await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {}) // MARVEEN-PATCH",
+  "await interaction.reply({ content: 'Already answered.', ephemeral: true }).catch(() => {}) // MARVEEN-PATCH",
+  '.update(answered.length <= MAX_CHUNK_LIMIT ?',
+  'await msg.reply(',
+  'void prompt.edit({',
+]
+const OUTBOUND_RE = /\.(send|reply|edit|update|followUp|startThread|editReply|deferReply)\(|threads\.create\(/g
+
+describe('D1: no @everyone, @here or role ping from any outgoing call', () => {
+  it('the overlay has exactly the known outbound call sites (a new one must be listed here first)', () => {
+    const lines = SERVER.split('\n').filter(l => OUTBOUND_RE.test(l) && !(OUTBOUND_RE.lastIndex = 0))
+    expect(lines).toHaveLength(OUTBOUND_SITES.length)
+    for (const site of OUTBOUND_SITES) expect(SERVER, site).toContain(site)
+  })
+
+  it('allowedMentions is set ONCE, as the client default; no call site overrides it', () => {
+    expect(SERVER.match(/allowedMentions/g)).toHaveLength(1)
+    const client = SERVER.slice(SERVER.indexOf('const client = new Client({'), SERVER.indexOf('})', SERVER.indexOf('const client = new Client({')) + 2)
+    expect(client).toContain('allowedMentions: SAFE_MENTIONS,')
+    expect(ext.SAFE_MENTIONS).toEqual({ parse: ['users'], repliedUser: true })
+  })
+
+  // The real discord.js (the plugin's own node_modules): every send, edit, reply and update goes through
+  // MessagePayload.resolveBody, one branch for every target type (MessagePayload.js:177-180).
+  const NM = process.env.DISCORD_PLUGIN_NODE_MODULES ?? join(require('node:os').homedir(), '.claude', 'plugins', 'cache', 'claude-plugins-official', 'discord', '0.0.4', 'node_modules')
+  const haveDjs = require('node:fs').existsSync(join(NM, 'discord.js', 'package.json'))
+  if (!haveDjs) console.warn(`D1 runtime check SKIPPED: no discord.js at ${NM} (set DISCORD_PLUGIN_NODE_MODULES)`)
+  it.skipIf(!haveDjs)('with the overlay\'s client default, the request body never parses everyone or roles', () => {
+    const req = require('node:module').createRequire(join(NM, 'discord.js', 'package.json'))
+    const { Client, MessagePayload } = req('discord.js')
+    const client = new Client({ intents: [], allowedMentions: ext.SAFE_MENTIONS })
+    try {
+      for (const options of [
+        { content: '@everyone @here <@&123456789012345678> hi' },
+        { content: 'x', components: [] },
+        { content: 'y', reply: { messageReference: '1', failIfNotExists: false } },
+        { content: 'z', ephemeral: true },
+      ]) {
+        const body = new MessagePayload({ client, messages: { resolveId: (r: string) => r } }, options).resolveBody().body
+        expect(body.allowed_mentions, JSON.stringify(options)).toEqual({ parse: ['users'], replied_user: true })
+      }
+      // control: an override would win -- which is why no call site may pass one (test above)
+      const over = new MessagePayload({ client }, { content: 'x', allowedMentions: { parse: ['everyone'] } }).resolveBody().body
+      expect(over.allowed_mentions).toEqual({ parse: ['everyone'] })
+    } finally { client.destroy() }
+  })
+})
+
+describe('D2: a reply too long for 8 messages is refused before anything is sent', () => {
+  it('the cap is 8, checked before the send loop', () => {
+    expect(ext.MAX_REPLY_CHUNKS).toBe(8)
+    const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
+    expect(reply.indexOf('if (chunks.length > MAX_REPLY_CHUNKS) {')).toBeGreaterThan(0)
+    expect(reply.indexOf('if (chunks.length > MAX_REPLY_CHUNKS) {')).toBeLessThan(reply.indexOf('const sent = await ch.send({'))
+    expect(reply).toContain('nothing sent -- shorten it, or attach it as a file')
+  })
+})
+
+describe('A1: a follow-up in the bot\'s thread needs no @mention -- only under an opted-in channel', () => {
+  const NOW = 1_800_000_000_000
+  it('BotThreads: add, has, age-out, cap, and junk ignored', () => {
+    let now = NOW
+    const saved: Array<Record<string, number>> = []
+    const t = new ext.BotThreads(ext.BotThreads.parse(JSON.stringify({ [id(1)]: NOW - 1000, bad: 5, [id(2)]: NOW - 31 * 86400_000 })), (s: Record<string, number>) => saved.push(s), () => now)
+    expect(t.has(id(1))).toBe(true)
+    expect(t.has(id(2))).toBe(false) // older than 30 days
+    t.add(id(3))
+    expect(t.has(id(3))).toBe(true)
+    expect(Object.keys(saved.at(-1)!)).toEqual([id(1), id(3)])
+    t.add('not-an-id')
+    expect(saved).toHaveLength(1)
+    now += 31 * 86400_000
+    expect(t.has(id(3))).toBe(false)
+    expect(ext.BotThreads.parse('{ bad')).toEqual({})
+    expect(ext.BotThreads.parse('[1]')).toEqual({})
+  })
+
+  it('BotThreads keeps at most 500, dropping the oldest', () => {
+    const t = new ext.BotThreads({}, () => {}, () => NOW)
+    for (let i = 0; i < 510; i++) t.add(id(1000 + i))
+    expect(t.has(id(1000))).toBe(false)
+    expect(t.has(id(1509))).toBe(true)
+  })
+
+  // The overlay's own gate(), run: who gets through in a thread.
+  function gateHarness(o: { groups: Record<string, { requireMention?: boolean; allowFrom?: string[] }>; listed?: string[] }) {
+    const threads = new ext.BotThreads(Object.fromEntries((o.listed ?? []).map(t => [t, Date.now()])), () => {})
+    const inBotThread = new Function('client', 'botThreads', `${slice('function inBotThread(', 'function noteSent(')}\nreturn inBotThread`)({ user: { id: 'bot' } }, threads)
+    const gate = new Function(
+      'loadAccess', 'pruneExpired', 'saveAccess', 'ChannelType', 'isMentioned', 'inBotThread', 'randomBytes',
+      `${slice('async function gate(', 'async function isMentioned(')}\nreturn gate`,
+    )(() => ({ dmPolicy: 'allowlist', allowFrom: [OWNER], groups: o.groups, pending: {} }), () => false, () => {}, { DM: 1 },
+      async (m: { mentioned?: boolean }) => !!m.mentioned, inBotThread, () => Buffer.alloc(3))
+    const threadMsg = (parent: string, thread: string, owner: string | null, author = OWNER, mentioned = false) => ({
+      author: { id: author }, channelId: thread, mentioned,
+      channel: { type: 11, isThread: () => true, parentId: parent, id: thread, ownerId: owner },
+    })
+    return { gate: gate as (m: unknown) => Promise<{ action: string }>, threadMsg }
+  }
+  const CH = '1438000000000000700'
+  const OTHER_CH = '1438000000000000800'
+
+  it('a thread the bot opened, under an opted-in channel: delivered without @mention', async () => {
+    const h = gateHarness({ groups: { [CH]: { requireMention: true, allowFrom: [] } } })
+    expect((await h.gate(h.threadMsg(CH, id(50), 'bot'))).action).toBe('deliver')
+  })
+
+  it('a thread the bot wrote in (listed): delivered without @mention; an unlisted foreign thread is not', async () => {
+    const h = gateHarness({ groups: { [CH]: { requireMention: true, allowFrom: [] } }, listed: [id(51)] })
+    expect((await h.gate(h.threadMsg(CH, id(51), 'someone'))).action).toBe('deliver')
+    expect((await h.gate(h.threadMsg(CH, id(52), 'someone'))).action).toBe('drop')
+    expect((await h.gate(h.threadMsg(CH, id(52), 'someone', OWNER, true))).action).toBe('deliver') // control: a mention still works
+  })
+
+  it('a bot thread whose parent is NOT opted in is never followed (Etelka 7021)', async () => {
+    const h = gateHarness({ groups: { [CH]: { requireMention: true, allowFrom: [] } }, listed: [id(53)] })
+    expect((await h.gate(h.threadMsg(OTHER_CH, id(53), 'bot'))).action).toBe('drop')
+  })
+
+  it('the channel\'s own allowFrom still applies inside the bot\'s thread', async () => {
+    const h = gateHarness({ groups: { [CH]: { requireMention: true, allowFrom: [OWNER] } } })
+    expect((await h.gate(h.threadMsg(CH, id(54), 'bot', OTHER))).action).toBe('drop')
+  })
+
+  it('reply records a thread only when its parent channel is opted in', () => {
+    const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
+    expect(reply).toContain('if (ch.isThread() && ch.parentId !== null && ch.parentId in loadAccess().groups) botThreads.add(ch.id)')
+    expect(SERVER).toContain('if (requireMention && !inBotThread(msg) && !(await isMentioned(msg, access.mentionPatterns))) {')
+  })
+})
+
+describe('A2 + A3: reply context and forwarded messages (the overlay\'s handleInbound, run)', () => {
+  it('a reply carries what it answers, folded to one line and cut at 500', async () => {
+    const h = inboundHarness({ action: 'deliver', access: {} })
+    const long = 'első sor\nmásodik ' + 'x'.repeat(600)
+    await h.handleInbound(h.msg('igen', { reference: { id: id(5), username: 'heimdall', content: long, attachments: ['a.png'] } }))
+    const meta = h.notes[0]!.params.meta!
+    expect(meta.reply_to_message_id).toBe(id(5))
+    expect(meta.reply_to_user).toBe('heimdall')
+    expect(meta.reply_to_text).not.toContain('\n')
+    expect([...meta.reply_to_text!]).toHaveLength(501) // 500 + the ellipsis
+    expect(meta.reply_to_attachments).toBe('a.png')
+    expect(h.notes[0]!.params.content).toBe('igen')
+  })
+
+  it('a reply whose target is gone just has no reply context', async () => {
+    const h = inboundHarness({ action: 'deliver', access: {} })
+    expect(await h.handleInbound(h.msg('igen', { reference: 'gone' }))).toBe(true)
+    expect(h.notes[0]!.params.meta!.reply_to_message_id).toBeUndefined()
+  })
+
+  it('a forwarded message is not empty: its text, its files, forwarded="1", and no reply context from the source', async () => {
+    const h = inboundHarness({ action: 'deliver', access: {} })
+    await h.handleInbound(h.msg('', {
+      snapshots: [{ content: 'továbbított szöveg', attachments: new Map([['1', { name: 'doc.pdf', size: 2048, contentType: 'application/pdf' }]]) }],
+      reference: { id: id(6), username: 'source', content: 'the source message' }, // a forward also has a reference
+    }))
+    const p = h.notes[0]!.params
+    expect(p.content).toBe('továbbított szöveg')
+    expect(p.meta).toMatchObject({ forwarded: '1', attachment_count: '1' })
+    expect(p.meta!.attachments).toContain('doc.pdf')
+    expect(p.meta!.reply_to_message_id).toBeUndefined()
+  })
+
+  it('forwardedParts / replyContextMeta in isolation', () => {
+    expect(ext.forwardedParts([])).toBeNull()
+    expect(ext.forwardedParts([{ content: ' a ', attachmentCount: 1 }, { content: '', attachmentCount: 2 }])).toEqual({ text: 'a', attachmentCount: 3 })
+    expect(ext.replyContextMeta({ id: '1', username: 'u', content: 'a\r\nb', attachments: [] })).toEqual({ reply_to_message_id: '1', reply_to_user: 'u', reply_to_text: 'a ⏎ b' })
+  })
+
+  it('download_attachment also takes a forward\'s files', () => {
+    const dl = SERVER.slice(SERVER.indexOf("case 'download_attachment': {"), SERVER.indexOf("default:", SERVER.indexOf("case 'download_attachment': {")))
+    expect(dl).toContain('const all = inboundAttachments(msg)')
+    expect(dl).toContain('for (const att of all) {')
+  })
 })

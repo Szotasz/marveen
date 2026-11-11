@@ -213,3 +213,80 @@ export function selectRecovered(
   const skipped = Math.max(0, ok.length - BACKFILL.maxPerChannel)
   return { take: ok.slice(skipped), skipped }
 }
+
+// D1: the client-wide default for every outgoing message. Users (and the replied-to user) are pinged; @everyone,
+// @here and roles are never parsed, whatever text the model writes.
+export const SAFE_MENTIONS: { parse: Array<'users'>; repliedUser: boolean } = { parse: ['users'], repliedUser: true }
+
+// D2: a reply longer than this many 2000-char parts is refused before anything is sent (Hermes caps at 8 too).
+export const MAX_REPLY_CHUNKS = 8
+
+// A1: threads in allowed channels the bot has written in, so a follow-up there needs no @mention. Bounded and
+// aged out; the caller only adds threads whose parent channel is opted in (Etelka 7021).
+export const BOT_THREADS = { max: 500, ttlMs: 30 * 24 * 60 * 60_000 } as const
+
+export class BotThreads {
+  private readonly seen: Map<string, number>
+
+  constructor(
+    initial: Record<string, number>,
+    private readonly save: (state: Record<string, number>) => void,
+    private readonly now: () => number = Date.now,
+  ) {
+    this.seen = new Map(Object.entries(initial).filter(([k, v]) => SNOWFLAKE_ID.test(k) && typeof v === 'number'))
+    this.prune()
+  }
+
+  static parse(text: string | null): Record<string, number> {
+    if (text === null) return {}
+    try {
+      const raw = JSON.parse(text) as unknown
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, number>) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  private prune(): void {
+    const cutoff = this.now() - BOT_THREADS.ttlMs
+    for (const [k, t] of this.seen) if (t < cutoff) this.seen.delete(k)
+    while (this.seen.size > BOT_THREADS.max) this.seen.delete(this.seen.keys().next().value!)
+  }
+
+  has(threadId: string): boolean {
+    const t = this.seen.get(threadId)
+    return t !== undefined && t >= this.now() - BOT_THREADS.ttlMs
+  }
+
+  add(threadId: string): void {
+    if (!SNOWFLAKE_ID.test(threadId)) return
+    this.seen.delete(threadId)
+    this.seen.set(threadId, this.now())
+    this.prune()
+    this.save(Object.fromEntries(this.seen))
+  }
+}
+
+// A2: what the message replies to, in the meta. Newlines folded, as fetch_messages does: a multi-line quote
+// must not forge adjacent attributes. The attachment list is names only.
+export const REPLY_CONTEXT_MAX = 500
+
+export function replyContextMeta(ref: { id: string; username: string; content: string; attachments: string[] }): Record<string, string> {
+  const text = ref.content.replace(/[\r\n]+/g, ' ⏎ ')
+  const cut = [...text].length > REPLY_CONTEXT_MAX ? [...text].slice(0, REPLY_CONTEXT_MAX).join('') + '…' : text
+  return {
+    reply_to_message_id: ref.id,
+    reply_to_user: ref.username,
+    reply_to_text: cut,
+    ...(ref.attachments.length > 0 ? { reply_to_attachments: ref.attachments.join('; ') } : {}),
+  }
+}
+
+// A3: a forwarded message carries its text and files in message snapshots, its own content is empty.
+export function forwardedParts(snapshots: ReadonlyArray<{ content: string; attachmentCount: number }>): { text: string; attachmentCount: number } | null {
+  if (snapshots.length === 0) return null
+  return {
+    text: snapshots.map(s => s.content.trim()).filter(Boolean).join('\n'),
+    attachmentCount: snapshots.reduce((n, s) => n + s.attachmentCount, 0),
+  }
+}
