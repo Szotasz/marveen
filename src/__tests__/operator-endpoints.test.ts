@@ -506,7 +506,7 @@ describe('the owner section (web/app.js)', () => {
   })
 
   it('asks before turning on the pane view, and mints operator keys with the operator scope', () => {
-    expect(fn).toMatch(/dataset\.opCap === 'paneView' && ev\.target\.checked && !confirm\(t\('auth\.operator\.pane_warning'\)\)/)
+    expect(fn).toMatch(/dataset\.opCap === 'paneView' && ev\.target\.checked\) \{[\s\S]{0,260}box\.checked = false\s*const confirmed = await confirmDialog\(\{[\s\S]{0,120}message: t\('auth\.operator\.pane_warning', \{ cmds: OPERATOR_CMDS[\s\S]{0,160}if \(!confirmed\) return\s*box\.checked = true/)
     expect(fn).toMatch(/const payload = \{ name, scope: 'operator' \}/)
     // the field cannot ask for more than the server's operator ceiling (365 days)
     expect(fn).toMatch(/id="opKeyExpiry" type="number" min="1" max="365"/)
