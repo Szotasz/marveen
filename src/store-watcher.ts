@@ -1,4 +1,4 @@
-import { watch, statSync, lstatSync, readdirSync } from 'node:fs'
+import { watch, statSync, lstatSync, readdirSync, type FSWatcher } from 'node:fs'
 import { basename, join } from 'node:path'
 import { STORE_DIR } from './config.js'
 import { logStoreFileEvent } from './db.js'
@@ -63,12 +63,13 @@ export function clearStoreWriteActor(): void {
 // NOT in this set where the file NOW EXISTS means a new file was created.
 let knownFiles = new Set<string>()
 
-function scanStore(dir: string, relBase: string = ''): void {
+function scanStore(dir: string, relBase: string = '', excluded: ReadonlySet<string> = new Set()): void {
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (relBase === '' && excluded.has(entry.name) && entry.isDirectory()) continue
       const rel = relBase ? `${relBase}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
-        scanStore(join(dir, entry.name), rel)
+        scanStore(join(dir, entry.name), rel, excluded)
       } else {
         knownFiles.add(rel)
       }
@@ -82,8 +83,12 @@ function scanStore(dir: string, relBase: string = ''): void {
 const DEDUP_MS = 1000
 const recentEvents = new Map<string, number>()
 
-let watcher: ReturnType<typeof watch> | null = null
+let watcher: FSWatcher | null = null
+const subWatchers = new Map<string, FSWatcher>()
 
+// SYSTEM_DIR_PREFIXES only filters audit rows; the tree is still watched.
+// STORE_WATCH_EXCLUDE removes a top-level DIRECTORY tree from both the scan and the watch; a top-level file
+// with an excluded name is still scanned and logged.
 // Whole-directory denylist prefixes, for trees whose filenames vary (so a
 // fixed-name SYSTEM_FILES entry can't cover them). scheduled-runs/ is the
 // SCHEDPROMPTREF917 snapshot dir: ~100 new files/day by design (one per
@@ -97,95 +102,182 @@ function isSystemFile(rel: string): boolean {
   return SYSTEM_DIR_PREFIXES.some(prefix => rel.startsWith(prefix))
 }
 
-export function startStoreWatcher(): void {
-  if (watcher) return
+function handleWatchEvent(eventType: string, filename: string | null): void {
+  if (!filename) return
+  const rel = filename.replace(/\\/g, '/')
 
-  knownFiles = new Set<string>()
-  scanStore(STORE_DIR)
+  // Consume (clear) the actor slot for ALL events, including system-file
+  // events, so a slot set before a denylist-ed write cannot leak to the
+  // next unrelated event.
+  const agent = currentWriteActor
+  currentWriteActor = null
+
+  // Only rename events can indicate a new file. change = modification.
+  if (eventType !== 'rename') return
+
+  // Skip system and temp files -- Marveen's own runtime writes.
+  if (isSystemFile(rel)) return
+
+  // If the file no longer exists it was deleted or renamed away -- not a creation.
+  let fileSize: number | null = null
+  try {
+    // A directory is not a created file. On Linux the recursive watcher
+    // emits 'rename' for every directory it walks while setting itself up,
+    // and scanStore() only puts FILES into knownFiles, so without this
+    // every directory under store/ was logged as a new file on every boot
+    // (measured: 26 527 rows in one start, the same path 22 times, the
+    // synchronous INSERTs blocking the event loop for ~20 s).
+    // lstat, not stat: a symlink to a directory is an entry scanStore()
+    // counts as a file, so a new one must still be logged. The delete
+    // covers a known file replaced by a directory of the same name.
+    if (lstatSync(`${STORE_DIR}/${rel}`).isDirectory()) {
+      knownFiles.delete(rel)
+      return
+    }
+    const st = statSync(`${STORE_DIR}/${rel}`)
+    fileSize = st.size
+  } catch {
+    // File gone: deletion or rename-away. Update knownFiles and skip.
+    knownFiles.delete(rel)
+    return
+  }
+
+  // Already known → not a new creation (could be a rename-to-same or
+  // replace; ignore to avoid false positives).
+  if (knownFiles.has(rel)) return
+
+  // Dedup: fs.watch may fire the rename event several times.
+  const now = Date.now()
+  const dedupKey = rel
+  const last = recentEvents.get(dedupKey)
+  if (last !== undefined && now - last < DEDUP_MS) return
+  recentEvents.set(dedupKey, now)
+  if (recentEvents.size > 200) {
+    for (const [k, t] of recentEvents) if (now - t >= DEDUP_MS) recentEvents.delete(k)
+  }
+
+  // New file -- record it and mark as known.
+  knownFiles.add(rel)
+  const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
 
   try {
-    watcher = watch(STORE_DIR, { recursive: true }, (eventType, filename) => {
-      if (!filename) return
-      const rel = filename.replace(/\\/g, '/')
+    logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent)
+  } catch (err) {
+    logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
+  }
+}
 
-      // Consume (clear) the actor slot for ALL events, including system-file
-      // events, so a slot set before a denylist-ed write cannot leak to the
-      // next unrelated event.
-      const agent = currentWriteActor
-      currentWriteActor = null
+export interface StoreWatcherOptions {
+  exclude?: Iterable<string>
+}
 
-      // Only rename events can indicate a new file. change = modification.
-      if (eventType !== 'rename') return
+export function startStoreWatcher(opts: StoreWatcherOptions = {}): void {
+  if (watcher) return
 
-      // Skip system and temp files -- Marveen's own runtime writes.
-      if (isSystemFile(rel)) return
+  const excluded = new Set(opts.exclude ?? [])
+  knownFiles = new Set<string>()
+  scanStore(STORE_DIR, '', excluded)
 
-      // If the file no longer exists it was deleted or renamed away -- not a creation.
-      let fileSize: number | null = null
-      try {
-        // A directory is not a created file. On Linux the recursive watcher
-        // emits 'rename' for every directory it walks while setting itself up,
-        // and scanStore() only puts FILES into knownFiles, so without this
-        // every directory under store/ was logged as a new file on every boot
-        // (measured: 26 527 rows in one start, the same path 22 times, the
-        // synchronous INSERTs blocking the event loop for ~20 s).
-        // lstat, not stat: a symlink to a directory is an entry scanStore()
-        // counts as a file, so a new one must still be logged. The delete
-        // covers a known file replaced by a directory of the same name.
-        if (lstatSync(`${STORE_DIR}/${rel}`).isDirectory()) {
-          knownFiles.delete(rel)
-          return
-        }
-        const st = statSync(`${STORE_DIR}/${rel}`)
-        fileSize = st.size
-      } catch {
-        // File gone: deletion or rename-away. Update knownFiles and skip.
-        knownFiles.delete(rel)
-        return
-      }
-
-      // Already known → not a new creation (could be a rename-to-same or
-      // replace; ignore to avoid false positives).
-      if (knownFiles.has(rel)) return
-
-      // Dedup: fs.watch may fire the rename event several times.
-      const now = Date.now()
-      const dedupKey = rel
-      const last = recentEvents.get(dedupKey)
-      if (last !== undefined && now - last < DEDUP_MS) return
-      recentEvents.set(dedupKey, now)
-      if (recentEvents.size > 200) {
-        for (const [k, t] of recentEvents) if (now - t >= DEDUP_MS) recentEvents.delete(k)
-      }
-
-      // New file -- record it and mark as known.
-      knownFiles.add(rel)
-      const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
-
-      try {
-        logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent)
-      } catch (err) {
-        logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
-      }
-    })
-    // An unreadable subdirectory (another user's sandbox dir) makes the
-    // recursive watcher emit 'error'; without a listener that is an
-    // uncaughtException and the dashboard exits. Log once per (code, path), keep going.
-    const reportedWatchErrors = new Set<string>()
-    watcher.on('error', (err: NodeJS.ErrnoException) => {
+  // An unreadable subdirectory (another user's sandbox dir) makes the
+  // recursive watcher emit 'error'; without a listener that is an
+  // uncaughtException and the dashboard exits. Log once per (code, path), keep going.
+  const reportedWatchErrors = new Set<string>()
+  function attachWatchErrorListener(w: FSWatcher): void {
+    w.on('error', (err: NodeJS.ErrnoException) => {
       const key = JSON.stringify([err?.code ?? null, err?.path ?? null])
       if (reportedWatchErrors.has(key)) return
       reportedWatchErrors.add(key)
       logger.warn({ code: err?.code, path: err?.path }, 'store-watcher: subdirectory not watchable, skipped')
     })
-    logger.info({ dir: STORE_DIR, knownCount: knownFiles.size }, 'Store file watcher started')
+  }
+
+  function startSubWatcher(name: string): void {
+    try {
+      const w = watch(join(STORE_DIR, name), { recursive: true }, (eventType, filename) =>
+        handleWatchEvent(eventType, filename == null ? null : `${name}/${String(filename).replace(/\\/g, '/')}`))
+      attachWatchErrorListener(w)
+      subWatchers.set(name, w)
+    } catch (err) {
+      logger.warn({ err, dir: name }, 'store-watcher: subdirectory watch failed to start')
+    }
+  }
+
+  function catchUpSubtree(top: string): void {
+    function walk(dir: string, relBase: string): void {
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const rel = `${relBase}/${entry.name}`
+          if (entry.isDirectory()) {
+            walk(join(dir, entry.name), rel)
+          } else if (!knownFiles.has(rel)) {
+            handleWatchEvent('rename', rel)
+          }
+        }
+      } catch { /* non-fatal; directory may have disappeared */ }
+    }
+    walk(join(STORE_DIR, top), top)
+  }
+
+  try {
+    if (excluded.size === 0) {
+      watcher = watch(STORE_DIR, { recursive: true }, handleWatchEvent)
+      attachWatchErrorListener(watcher)
+    } else {
+      watcher = watch(STORE_DIR, { recursive: false }, (eventType, filename) => {
+        if (filename == null) return
+        const rel = String(filename).replace(/\\/g, '/')
+        const top = rel.split('/')[0]
+        let isDir = false
+        try {
+          isDir = lstatSync(join(STORE_DIR, top)).isDirectory()
+        } catch { /* gone: deleted or renamed away */ }
+        if (isDir && excluded.has(top)) {
+          // Consume the actor slot, as handleWatchEvent does for every event.
+          // A file with this name may have been known before it became a directory.
+          currentWriteActor = null
+          knownFiles.delete(top)
+          return
+        }
+        let startedSubWatcher = false
+        if (eventType === 'rename') {
+          if (isDir) {
+            if (!subWatchers.has(top)) {
+              startedSubWatcher = true
+              startSubWatcher(top)
+            }
+          } else {
+            const w = subWatchers.get(top)
+            if (w) {
+              try { w.close() } catch { /* best-effort */ }
+              subWatchers.delete(top)
+            }
+          }
+        }
+        handleWatchEvent(eventType, rel)
+        // Catch files created in the new directory before its watch was attached.
+        if (startedSubWatcher) catchUpSubtree(top)
+      })
+      attachWatchErrorListener(watcher)
+      for (const name of readdirSync(STORE_DIR)) {
+        if (excluded.has(name)) continue
+        try {
+          if (lstatSync(join(STORE_DIR, name)).isDirectory()) startSubWatcher(name)
+        } catch { /* entry may have disappeared since readdir */ }
+      }
+    }
+    logger.info({ dir: STORE_DIR, knownCount: knownFiles.size, excluded: [...excluded], subWatchers: subWatchers.size }, 'Store file watcher started')
   } catch (err) {
     logger.warn({ err }, 'Store file watcher failed to start')
   }
 }
 
 export function stopStoreWatcher(): void {
-  if (!watcher) return
-  try { watcher.close() } catch { /* best-effort */ }
+  if (watcher) {
+    try { watcher.close() } catch { /* best-effort */ }
+  }
+  for (const w of subWatchers.values()) {
+    try { w.close() } catch { /* best-effort */ }
+  }
+  subWatchers.clear()
   watcher = null
 }
