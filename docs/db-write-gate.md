@@ -28,6 +28,11 @@ For a sub-agent only, it also denies a write of the files listed in `SUBAGENT_PR
 The same list holds every agent's `agents/<name>/agent-config.json` (GATEFILES1110: `customProvider`, `model`,
 `oauthTokenFile`), any agent's, not only the caller's own. The main agent's skills write it directly, so it stays free
 for the main agent. Renaming a whole `agents/<name>` directory is not judged by this entry (stated limit).
+A bare `*` in a sub-agent's own directory reaches that file, so an UNQUOTED glob there is denied (`cp x *`). A QUOTED
+argument of a python/node script file is data, its glob no pattern (GATESCRIPTARG1111):
+`python3 scripts/supabase-logs.py <ref> "select count(*) ..."` passes, like `sqlite3 x.db "select count(*) ..."`.
+Inline code (`-c`, `-e`, `-m`, stdin), a heredoc a script reads, bun/deno and the shell family stay strict, and a
+protected path handed to a script is still denied.
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. The
