@@ -1207,6 +1207,28 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    // DCEXT1111 B1: per-channel extras for the Discord overlay. Not in access.json: `/discord:access group add`
+    // rewrites a channel's object there. Any change can widen who may talk to the agent: owner only.
+    key: 'DISCORD_CHANNEL_POLICY',
+    type: 'string',
+    default: '',
+    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...]}}. Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+    validate: (v: string) => {
+      const t = v.trim()
+      if (t === '') return null
+      try {
+        const o = JSON.parse(t) as unknown
+        return o && typeof o === 'object' && !Array.isArray(o) ? null : 'JSON-objektum kell. / A JSON object is required.'
+      } catch {
+        return 'Érvénytelen JSON. / Invalid JSON.'
+      }
+    },
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
     key: 'TELEGRAM_INBOUND_REPLAY_ENABLED',
     type: 'boolean',
     default: '0',

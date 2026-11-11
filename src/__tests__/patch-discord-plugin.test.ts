@@ -89,7 +89,7 @@ describe('patch-discord-plugin.py', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/overlaid .*server\.ts \(Marveen's Discord plugin 0\.0\.4, from upstream\)/)
     for (const n of overlayFiles()) expect(readFileSync(join(dir, n), 'utf-8')).toBe(readFileSync(join(OVERLAY, n), 'utf-8'))
-    expect(ext()).toEqual({ backfill: true, ownerUserId: '' })
+    expect(ext()).toEqual({ backfill: true, ownerUserId: '', channelPolicy: {} })
     const manifest = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
     expect(manifest.upstream).toBe(UPSTREAM_SHA)
     expect(manifest.files['server.ts']).toBe(sha(readFileSync(server)))
@@ -139,7 +139,7 @@ describe('patch-discord-plugin.py', () => {
     setOverrides({ DISCORD_OWNER_USER_ID: '290903699524550656', DISCORD_BACKFILL: '0' })
     const state = join(cache, 'state.json')
     expect(run(['--state', state]).stderr).toMatch(/upgraded/)
-    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656' })
+    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656', channelPolicy: {} })
     expect(readState(state)).toMatchObject({ owner_set: true, backfill: false })
   })
 
@@ -153,6 +153,23 @@ describe('patch-discord-plugin.py', () => {
     setOverrides({ DISCORD_BACKFILL: '1' })
     run()
     expect(ext().backfill).toBe(true)
+  })
+
+  it('DISCORD_CHANNEL_POLICY (overrides-only) goes to marveen-ext.json; bad JSON is dropped loudly; .env never counts', () => {
+    const policy = { '1438000000000000700': { allowRoles: ['1438000000000009001'] } }
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify(policy) })
+    run()
+    expect(ext().channelPolicy).toEqual(policy)
+    for (const bad of ['{ bad', '[1]', '"x"']) {
+      setOverrides({ DISCORD_CHANNEL_POLICY: bad })
+      const r = run()
+      expect(r.stderr).toContain('DISCORD_CHANNEL_POLICY is set but is not a JSON object -- NOT used')
+      expect(ext().channelPolicy).toEqual({})
+    }
+    setOverrides({})
+    setEnvFile(`DISCORD_CHANNEL_POLICY=${JSON.stringify(policy)}\n`)
+    run()
+    expect(ext().channelPolicy).toEqual({})
   })
 
   it('an owner id that is not a Discord user id is not used, loudly', () => {
@@ -260,7 +277,7 @@ describe('patch-discord-plugin.py', () => {
 
 // The inserted rows builder and click check, run with fake discord.js builders.
 type Access = { dmPolicy?: string; allowFrom: string[]; groups: Record<string, { requireMention?: boolean; allowFrom?: string[] }> }
-function inserted(): {
+function inserted(channelPolicy: Record<string, { allowRoles: string[] }> = {}): {
   buildButtonRows: (raw: unknown) => Array<{ buttons: Array<{ id: string; label: string; style: string }> }>
   clickAllowed: (interaction: unknown, access: Access) => boolean
 } {
@@ -282,7 +299,8 @@ function inserted(): {
     addComponents(b: ButtonBuilder[]) { this.buttons.push(...b); return this }
   }
   const ButtonStyle = { Primary: 'P', Secondary: 'S', Success: 'OK', Danger: 'D' }
-  return new Function('ButtonBuilder', 'ActionRowBuilder', 'ButtonStyle', `${js}\nreturn { buildButtonRows, clickAllowed }`)(ButtonBuilder, ActionRowBuilder, ButtonStyle)
+  return new Function('ButtonBuilder', 'ActionRowBuilder', 'ButtonStyle', 'EXT', 'memberRoleIds', `${js}\nreturn { buildButtonRows, clickAllowed }`)(
+    ButtonBuilder, ActionRowBuilder, ButtonStyle, { channelPolicy }, (m: { roles?: string[] } | null) => m?.roles ?? [])
 }
 
 describe('the inserted code', () => {
@@ -299,6 +317,17 @@ describe('the inserted code', () => {
     const bad: unknown[] = ['Igen', [{}], [{ label: '  ' }], [{ label: 'x'.repeat(81) }], [{ label: 'A' }, { label: 'A' }], [{ label: 'A', style: 'link' }], Array.from({ length: 26 }, (_, i) => ({ label: `${i}` }))]
     for (const b of bad) expect(() => buildButtonRows(b)).toThrow()
     expect(buildButtonRows([{ label: 'x'.repeat(80) }])).toHaveLength(1)
+  })
+
+  it('B1: with roles for the channel, a role holder may click; without the role, not even in an open channel', () => {
+    const CH = 'team'
+    const { clickAllowed } = inserted({ [CH]: { allowRoles: ['R1'] } })
+    const access: Access = { allowFrom: ['1'], groups: { [CH]: { requireMention: false, allowFrom: [] } } }
+    const click = (user: string, roles: string[] | null) => ({ user: { id: user }, guildId: 'g', member: roles === null ? null : { roles }, channel: { isThread: () => false, id: CH } })
+    expect(clickAllowed(click('2', ['R1']), access)).toBe(true)
+    expect(clickAllowed(click('2', ['R2']), access)).toBe(false) // roles configured: an open channel is no longer open to all
+    expect(clickAllowed(click('2', null), access)).toBe(false)
+    expect(inserted().clickAllowed(click('2', null), access)).toBe(true) // control: no policy, the old rule
   })
 
   it('a click passes the same check as a message', () => {
@@ -355,8 +384,8 @@ function clickHandler(access: Access) {
   const sent: Sent[] = []
   const mcp = { notification: async (n: { params: Sent }) => { sent.push(n.params) } }
   const dmChannelUsers = new Map<string, string>()
-  new Function('ButtonBuilder', 'ActionRowBuilder', 'ButtonStyle', 'client', 'loadAccess', 'MAX_CHUNK_LIMIT', 'dmChannelUsers', 'mcp', js)(
-    class {}, class {}, { Primary: 1, Secondary: 2, Success: 3, Danger: 4 }, client, () => access, 2000, dmChannelUsers, mcp)
+  new Function('ButtonBuilder', 'ActionRowBuilder', 'ButtonStyle', 'client', 'loadAccess', 'MAX_CHUNK_LIMIT', 'dmChannelUsers', 'mcp', 'EXT', 'memberRoleIds', js)(
+    class {}, class {}, { Primary: 1, Secondary: 2, Success: 3, Danger: 4 }, client, () => access, 2000, dmChannelUsers, mcp, { channelPolicy: {} }, () => [])
   expect(handlers).toHaveLength(1)
   let n = 0
   const click = (o: { user?: string; customId?: string; author?: string; guildId?: string | null; messageId?: string } = {}) => {

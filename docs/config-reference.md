@@ -191,6 +191,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `DISCORD_PLUGIN_EXT` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
 | `DISCORD_OWNER_USER_ID` | string | üres | mind | igen (csatorna-indítás) |
 | `DISCORD_BACKFILL` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `DISCORD_CHANNEL_POLICY` | string (JSON) | üres | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -341,6 +342,15 @@ csak az ő döntése érvényes. Üresen a fő bot egyetlen párosított DM-je; 
 kérés a terminálban marad). Felülírás-kulcs: `.env`-ből nem olvasódik.
 
 **Pótlás.** `DISCORD_BACKFILL=0` kikapcsolja a kiesett üzenetek induláskori pótlását.
+
+**Szerepek csatornánként.** `DISCORD_CHANNEL_POLICY` (csak a gazda, felülírás-kulcs), például
+`{"<csatorna-ID>": {"allowRoles": ["<szerep-ID>"]}}`. Ahol szerep van megadva, ott a csatorna engedélyezett
+felhasználói MELLETT a szerep birtokosai is írhatnak a botnak (üres felhasználói lista mellett csak ők).
+Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
+
+**Kapcsolat-figyelés.** A plugin 15 mp-enként nézi, él-e a Discord-kapcsolat; elakadásnál újra bejelentkezik,
+de legfeljebb 5 percenként, egyre ritkábban (5-60 perc), és 24 óra alatt legfeljebb 20-szor
+(`$DISCORD_STATE_DIR/reconnects.json`). A hosszú csend önmagában nem hiba, csak rossz heartbeattel együtt.
 
 **API végpontok:**
 

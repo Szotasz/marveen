@@ -37,6 +37,7 @@ import { fileURLToPath } from 'url' // MARVEEN-EXT
 import { loadExtConfig, resolveOwner, mayDecidePermission, DmResolver, voiceMeta, pagingOptions, threadName } from './marveen-ext.ts' // MARVEEN-EXT
 import { BACKFILL, readCursor, backfillDue, BackfillCursor, selectRecovered } from './marveen-ext.ts' // MARVEEN-EXT
 import { SAFE_MENTIONS, MAX_REPLY_CHUNKS, BotThreads, replyContextMeta, forwardedParts } from './marveen-ext.ts' // MARVEEN-EXT
+import { channelSenderAllowed, LIVENESS, assessHealth, reconnectDecision } from './marveen-ext.ts' // MARVEEN-EXT
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -337,7 +338,8 @@ async function gate(msg: Message): Promise<GateResult> {
   if (!policy) return { action: 'drop' }
   const groupAllowFrom = policy.allowFrom ?? []
   const requireMention = policy.requireMention ?? true
-  if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
+  // DCEXT1111 B1: with roles for this channel (DISCORD_CHANNEL_POLICY), a role holder may speak too. // MARVEEN-EXT
+  if (!channelSenderAllowed(groupAllowFrom, EXT.channelPolicy[channelId]?.allowRoles, senderId, memberRoleIds(msg.member))) { // MARVEEN-EXT
     return { action: 'drop' }
   }
   if (requireMention && !inBotThread(msg) && !(await isMentioned(msg, access.mentionPatterns))) { // MARVEEN-EXT
@@ -489,6 +491,15 @@ async function downloadAttachment(att: Attachment): Promise<string> {
 function safeAttName(att: Attachment): string {
   return (att.name ?? att.id).replace(/[\[\]\r\n;]/g, '_')
 }
+
+// DCEXT1111 B1: a guild member's role ids. A message carries a GuildMember (roles.cache); an interaction may // MARVEEN-EXT
+// carry the raw API member (roles: string[]). No member (a DM): no roles. // MARVEEN-EXT
+function memberRoleIds(member: unknown): string[] { // MARVEEN-EXT
+  const roles = (member as { roles?: unknown } | null | undefined)?.roles // MARVEEN-EXT
+  if (Array.isArray(roles)) return roles.filter((r): r is string => typeof r === 'string') // MARVEEN-EXT
+  const cache = (roles as { cache?: Map<string, unknown> } | undefined)?.cache // MARVEEN-EXT
+  return cache ? [...cache.keys()] : [] // MARVEEN-EXT
+} // MARVEEN-EXT
 
 // DCEXT1111 A3: the message's own files, then those of a forwarded message's snapshots. // MARVEEN-EXT
 function inboundAttachments(msg: Message): Attachment[] { // MARVEEN-EXT
@@ -974,6 +985,8 @@ function clickAllowed(interaction: Interaction, access: Access): boolean { // MA
   const policy = access.groups[channelId] // MARVEEN-PATCH(dcbtn1023)
   if (!policy) return false // MARVEEN-PATCH(dcbtn1023)
   const groupAllowFrom = policy.allowFrom ?? [] // MARVEEN-PATCH(dcbtn1023)
+  const roles = EXT.channelPolicy[channelId]?.allowRoles // DCEXT1111 B1: a click, like a message // MARVEEN-EXT
+  if (roles && roles.length > 0) return groupAllowFrom.includes(userId) || memberRoleIds(interaction.member).some(r => roles.includes(r)) // MARVEEN-EXT
   if (groupAllowFrom.length > 0) return groupAllowFrom.includes(userId) // MARVEEN-PATCH(dcbtn1023)
   if ((policy.requireMention ?? true) === false) return true // MARVEEN-PATCH(dcbtn1023)
   return access.allowFrom.includes(userId) // MARVEEN-PATCH(dcbtn1023)
@@ -1186,6 +1199,61 @@ async function recoverMissed(readyAt: number): Promise<void> { // MARVEEN-EXT
   } // MARVEEN-EXT
   process.stderr.write(`discord channel: recovered ${delivered} message(s) (${considered} missed, the rest dropped by the access check as live ones would be) from ${targets.length} channel(s)\n`) // MARVEEN-EXT
 } // MARVEEN-EXT
+
+// DCEXT1111 E1: a wedged gateway (ready but no heartbeat, or never ready again) is noticed and the client // MARVEEN-EXT
+// logs in again -- slowly: every login is an IDENTIFY (anthropics/claude-plugins-official#1965). The reconnect // MARVEEN-EXT
+// history lives in the state dir, so a session restart does not reset the limits. // MARVEEN-EXT
+const RECONNECT_FILE = join(STATE_DIR, 'reconnects.json') // MARVEEN-EXT
+let lastEventAt = Date.now() // MARVEEN-EXT
+let notReadySince: number | null = null // MARVEEN-EXT
+let badSamples = 0 // MARVEEN-EXT
+let reconnecting = false // MARVEEN-EXT
+let lastHeldReason = '' // MARVEEN-EXT
+client.on('raw', () => { lastEventAt = Date.now() }) // MARVEEN-EXT
+function readReconnects(): number[] { // MARVEEN-EXT
+  try { // MARVEEN-EXT
+    const v = JSON.parse(readFileSync(RECONNECT_FILE, 'utf8')) as unknown // MARVEEN-EXT
+    return Array.isArray(v) ? v.filter((t): t is number => typeof t === 'number') : [] // MARVEEN-EXT
+  } catch { return [] } // MARVEEN-EXT
+} // MARVEEN-EXT
+async function livenessTick(): Promise<void> { // MARVEEN-EXT
+  if (reconnecting || shuttingDown) return // MARVEEN-EXT
+  const now = Date.now() // MARVEEN-EXT
+  const ready = client.isReady() // MARVEEN-EXT
+  if (ready) notReadySince = null // MARVEEN-EXT
+  else notReadySince ??= now // MARVEEN-EXT
+  const v = assessHealth({ ready, notReadyForMs: ready ? 0 : now - notReadySince!, pingMs: client.ws.ping, eventSilenceMs: now - lastEventAt }) // MARVEEN-EXT
+  badSamples = v.bad ? badSamples + 1 : 0 // MARVEEN-EXT
+  if (badSamples < LIVENESS.failThreshold) return // MARVEEN-EXT
+  const history = readReconnects() // MARVEEN-EXT
+  const d = reconnectDecision(history, now) // MARVEEN-EXT
+  if (!d.allowed) { // MARVEEN-EXT
+    if (d.reason !== lastHeldReason) process.stderr.write(`discord channel: gateway unhealthy (${v.reason}), reconnect held: ${d.reason}\n`) // MARVEEN-EXT
+    lastHeldReason = d.reason // MARVEEN-EXT
+    return // MARVEEN-EXT
+  } // MARVEEN-EXT
+  reconnecting = true // MARVEEN-EXT
+  badSamples = 0 // MARVEEN-EXT
+  lastHeldReason = '' // MARVEEN-EXT
+  try { // MARVEEN-EXT
+    writeFileSync(RECONNECT_FILE, JSON.stringify([...history.filter(t => t > now - 24 * 60 * 60_000), now]) + '\n', { mode: 0o600 }) // MARVEEN-EXT
+  } catch (err) { // MARVEEN-EXT
+    process.stderr.write(`discord channel: cannot write ${RECONNECT_FILE}: ${err} -- not reconnecting without a record\n`) // MARVEEN-EXT
+    reconnecting = false // MARVEEN-EXT
+    return // MARVEEN-EXT
+  } // MARVEEN-EXT
+  process.stderr.write(`discord channel: gateway unhealthy (${v.reason}) -- logging in again\n`) // MARVEEN-EXT
+  try { // MARVEEN-EXT
+    await client.destroy() // MARVEEN-EXT
+    await client.login(TOKEN) // MARVEEN-EXT
+  } catch (err) { // MARVEEN-EXT
+    process.stderr.write(`discord channel: login again failed: ${err}\n`) // MARVEEN-EXT
+  } finally { // MARVEEN-EXT
+    lastEventAt = Date.now() // MARVEEN-EXT
+    reconnecting = false // MARVEEN-EXT
+  } // MARVEEN-EXT
+} // MARVEEN-EXT
+setInterval(() => { void livenessTick() }, LIVENESS.probeIntervalMs).unref() // MARVEEN-EXT
 
 client.once('ready', c => {
   process.stderr.write(`discord channel: gateway connected as ${c.user.tag}\n`)

@@ -4,7 +4,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-export type ExtConfig = { ownerUserId: string; backfill: boolean }
+export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: Record<string, { allowRoles: string[] }> }
 
 const SNOWFLAKE = /^[1-9][0-9]{16,19}$/
 
@@ -13,9 +13,9 @@ export function loadExtConfig(dir: string): ExtConfig {
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'marveen-ext.json'), 'utf8')) as Record<string, unknown>
     const owner = typeof raw?.ownerUserId === 'string' && SNOWFLAKE.test(raw.ownerUserId) ? raw.ownerUserId : ''
-    return { ownerUserId: owner, backfill: raw?.backfill === true }
+    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy) }
   } catch {
-    return { ownerUserId: '', backfill: false }
+    return { ownerUserId: '', backfill: false, channelPolicy: {} }
   }
 }
 
@@ -289,4 +289,83 @@ export function forwardedParts(snapshots: ReadonlyArray<{ content: string; attac
     text: snapshots.map(s => s.content.trim()).filter(Boolean).join('\n'),
     attachmentCount: snapshots.reduce((n, s) => n + s.attachmentCount, 0),
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR2 (Hermes parity): B1 role-based access, E1 liveness with an IDENTIFY-aware reconnect governor
+// ---------------------------------------------------------------------------------------------------------------
+
+// B1: per-channel extras from DISCORD_CHANNEL_POLICY (an owner-only setting; access.json's group object is
+// overwritten by `/discord:access group add`, so it cannot hold them). Junk is dropped, never widened.
+export type ChannelPolicy = Record<string, { allowRoles: string[] }>
+
+export function parseChannelPolicy(raw: unknown): ChannelPolicy {
+  const out: ChannelPolicy = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [ch, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!SNOWFLAKE_ID.test(ch) || !v || typeof v !== 'object') continue
+    const roles = (v as { allowRoles?: unknown }).allowRoles
+    const allowRoles = Array.isArray(roles) ? roles.filter((r): r is string => typeof r === 'string' && SNOWFLAKE_ID.test(r)) : []
+    if (allowRoles.length > 0) out[ch] = { allowRoles }
+  }
+  return out
+}
+
+// Who may speak in an opted-in channel. Without roles for the channel: the upstream rule (its allowFrom, or anyone
+// when that is empty). With roles: its allowFrom OR any of the roles -- an empty allowFrom no longer means anyone.
+export function channelSenderAllowed(
+  groupAllowFrom: readonly string[], allowRoles: readonly string[] | undefined, senderId: string, memberRoleIds: readonly string[],
+): boolean {
+  if (groupAllowFrom.includes(senderId)) return true
+  if (allowRoles && allowRoles.length > 0) return memberRoleIds.some(r => allowRoles.includes(r))
+  return groupAllowFrom.length === 0
+}
+
+// E1: when the gateway is wedged. discord.js reconnects a closed socket itself; this catches what it does not see.
+// Every reconnect is a new IDENTIFY, and Discord resets a bot token after ~1000 in 24 h
+// (anthropics/claude-plugins-official#1965), so the governor below is deliberately slow. Pinned by tests.
+export const LIVENESS = {
+  probeIntervalMs: 15_000,
+  failThreshold: 2,
+  heartbeatMaxLatencyMs: 30_000,
+  eventSilenceMaxMs: 4 * 60 * 60_000,
+  notReadyMaxMs: 2 * 60_000,
+  reconnectMinIntervalMs: 5 * 60_000,
+  backoffMs: [5, 10, 20, 40, 60].map(m => m * 60_000),
+  backoffWindowMs: 2 * 60 * 60_000,
+  maxReconnectsPer24h: 20,
+} as const
+
+export type HealthSample = { ready: boolean; notReadyForMs: number; pingMs: number; eventSilenceMs: number }
+
+// One sample's verdict. Event silence alone is NOT bad: a quiet server goes hours without an event (Etelka 7021);
+// it counts only together with a bad heartbeat. Not-ready only counts once discord.js has had time to resume.
+export function assessHealth(s: HealthSample): { bad: boolean; reason: string } {
+  if (!s.ready) {
+    return s.notReadyForMs >= LIVENESS.notReadyMaxMs
+      ? { bad: true, reason: `not ready for ${Math.round(s.notReadyForMs / 1000)} s` }
+      : { bad: false, reason: 'resuming' }
+  }
+  const heartbeatBad = s.pingMs < 0 || s.pingMs > LIVENESS.heartbeatMaxLatencyMs
+  if (heartbeatBad && s.eventSilenceMs >= LIVENESS.eventSilenceMaxMs) {
+    return { bad: true, reason: `no gateway event for ${Math.round(s.eventSilenceMs / 60_000)} min and heartbeat ${s.pingMs} ms` }
+  }
+  if (heartbeatBad && s.pingMs > LIVENESS.heartbeatMaxLatencyMs) {
+    return { bad: true, reason: `heartbeat ${s.pingMs} ms` }
+  }
+  return { bad: false, reason: 'ok' }
+}
+
+// Whether a reconnect may happen now: at most 20 in 24 h, never sooner than 5 min after the last, and the wait
+// grows with recent reconnects (5, 10, 20, 40, 60 min). The history survives a restart (the caller persists it).
+export function reconnectDecision(history: readonly number[], now: number): { allowed: boolean; waitMs: number; reason: string } {
+  const day = history.filter(t => t > now - 24 * 60 * 60_000)
+  if (day.length >= LIVENESS.maxReconnectsPer24h) {
+    return { allowed: false, waitMs: Infinity, reason: `${day.length} reconnects in 24 h (max ${LIVENESS.maxReconnectsPer24h})` }
+  }
+  const recent = history.filter(t => t > now - LIVENESS.backoffWindowMs).length
+  const gap = Math.max(LIVENESS.reconnectMinIntervalMs, LIVENESS.backoffMs[Math.min(recent, LIVENESS.backoffMs.length - 1)]!)
+  const last = history.length > 0 ? Math.max(...history) : -Infinity
+  const waitMs = Math.max(0, last + gap - now)
+  return waitMs > 0 ? { allowed: false, waitMs, reason: `backoff: ${Math.ceil(waitMs / 60_000)} min left` } : { allowed: true, waitMs: 0, reason: '' }
 }

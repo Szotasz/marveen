@@ -26,6 +26,11 @@
     - A2: a reply carries `reply_to_*` (what it answers);
     - A3: a forwarded message arrives with its text and files, `forwarded="1"`;
     - D2: a reply needing more than 8 messages is refused before anything is sent.
+  - Hermes parity, PR2:
+    - B1: roles per channel (`DISCORD_CHANNEL_POLICY`): a role holder may speak and click there;
+    - E1: a wedged gateway is noticed and the client logs in again, governed for IDENTIFY: at most every
+      5 min, backoff 5 to 60 min, max 20 per 24 h (`$DISCORD_STATE_DIR/reconnects.json`). Event silence alone
+      never triggers it.
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.

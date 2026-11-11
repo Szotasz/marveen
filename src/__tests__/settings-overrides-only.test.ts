@@ -430,6 +430,32 @@ describe('script parity with the store', () => {
     }
   })
 
+  // DCEXT1111 B1: DISCORD_CHANNEL_POLICY is overrides-only too; the mirror must pass on exactly the store's object.
+  it('the patch-discord-plugin.py mirror (DISCORD_CHANNEL_POLICY)', () => {
+    const script = join(ROOT, 'scripts', 'patch-discord-plugin.py')
+    const py = [
+      'import importlib.util, json, sys',
+      'spec = importlib.util.spec_from_file_location("pdp", sys.argv[1])',
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'print(json.dumps(m.settings(sys.argv[2])[1]["channelPolicy"]))',
+    ].join('\n')
+    const K = 'DISCORD_CHANNEL_POLICY'
+    const good = JSON.stringify({ '1438000000000000700': { allowRoles: ['1438000000000009001'] } })
+    const states: Array<Record<string, string> | 'unreadable' | null> = [null, 'unreadable', { v: good }, { v: '' }, { v: '{ bad' }, { v: '[1]' }, { v: ` ${good} ` }]
+    const envs: Array<Record<string, string>> = [{}, { v: good }]
+    for (const ov of states) {
+      for (const env of envs) {
+        const o = sub(ov, K)
+        const e = Object.fromEntries(Object.entries(env).map(([, v]) => [K, v]))
+        const stored = String(storeView(K, o, e)).trim()
+        let want: unknown = {}
+        try { const p = JSON.parse(stored); if (p && typeof p === 'object' && !Array.isArray(p)) want = p } catch { /* junk: nothing used */ }
+        const got = JSON.parse(execFileSync('python3', ['-c', py, script, install(o, e)], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }))
+        expect(got, JSON.stringify([ov, env])).toEqual(want)
+      }
+    }
+  })
+
   it('ledger-capture keeps the .env for ALLOWED_CHAT_ID (no registry key)', () => {
     const hook = join(ROOT, 'scripts', 'hooks', 'ledger-capture.py')
     const py = [
