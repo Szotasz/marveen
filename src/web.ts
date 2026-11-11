@@ -832,6 +832,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     try {
       const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
       if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
+      if (seeded === 'upgraded') logger.info('Claude rotation heartbeat prompt upgraded (sub-agent lines)')
     } catch (err) {
       logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
     }

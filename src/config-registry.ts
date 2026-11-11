@@ -132,7 +132,8 @@ function validUnitFraction(v: string): string | null {
 }
 
 // A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
-const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+// Exported for the sub-agent rotation stage (claude-plan-subagent-rotation.ts), which puts a name into a heartbeat line.
+export const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
