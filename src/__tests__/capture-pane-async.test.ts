@@ -4,9 +4,11 @@ const h = vi.hoisted(() => ({
   pane: ['', '─'.repeat(80), '❯ ', '─'.repeat(80), '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n'),
   probeFired: false,
   finishes: [] as boolean[],
-  calls: [] as { async: boolean; file: string; args: string[]; opts: { timeout?: number } }[],
+  calls: [] as { async: boolean; file: string; args: string[]; opts: { timeout?: number; killSignal?: string } }[],
   fail: false,
   killed: false,
+  hang: false,
+  killSignals: [] as (string | undefined)[],
   syncPane: null as string | null,
 }))
 
@@ -19,8 +21,11 @@ vi.mock('node:child_process', async (orig) => ({
     if (h.fail) throw new Error('capture failed')
     return h.syncPane ?? h.pane
   }),
-  execFile: vi.fn((file: string, args: string[], opts: { timeout?: number }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+  execFile: vi.fn((file: string, args: string[], opts: { timeout?: number; killSignal?: string }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
     h.calls.push({ async: true, file, args, opts })
+    if (h.hang) {
+      return { stdin: { end() {} }, killed: false, kill: (sig?: string) => { h.killSignals.push(sig); return true } }
+    }
     setTimeout(() => {
       h.finishes.push(h.probeFired)
       cb(h.fail ? new Error('capture failed') : null, h.fail ? '' : h.pane, '')
@@ -45,6 +50,8 @@ beforeEach(() => {
   h.calls.length = 0
   h.fail = false
   h.killed = false
+  h.hang = false
+  h.killSignals.length = 0
   h.syncPane = null
 })
 
@@ -130,5 +137,32 @@ describe('async capture timeout and recovery parity', () => {
     // Not vacuous: the recovery did read the pane, asynchronously.
     expect(h.calls.filter(call => call.async && call.args.includes('capture-pane')).length).toBeGreaterThan(0)
     expect(h.calls.filter(call => !call.async && call.args.includes('capture-pane'))).toHaveLength(0)
+  })
+})
+
+describe('async capture never hangs on a child that does not exit', () => {
+  it('kills the child with SIGKILL and settles to null after timeout plus grace', async () => {
+    vi.useFakeTimers()
+    try {
+      h.hang = true
+      for (const capture of [agentProcess.capturePaneAsync, agentProcess.captureParkedInputViewAsync]) {
+        h.calls.length = 0
+        h.killSignals.length = 0
+        let settled = false
+        let value: string | null | undefined
+        const p = capture('agent-x', null).then(v => { settled = true; value = v })
+        await vi.advanceTimersByTimeAsync(3000 + 999)
+        expect(settled, 'still waiting inside the grace period').toBe(false)
+        await vi.advanceTimersByTimeAsync(2)
+        expect(settled, 'the call settled after timeout plus grace').toBe(true)
+        await p
+        expect(value).toBeNull()
+        expect(h.killSignals).toEqual(['SIGKILL'])
+        expect(h.calls[0].opts.killSignal).toBe('SIGKILL')
+      }
+    } finally {
+      h.hang = false
+      vi.useRealTimers()
+    }
   })
 })

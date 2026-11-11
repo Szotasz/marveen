@@ -2090,13 +2090,22 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
+// Extra time after the execFile timeout before the fallback timer gives up on the child.
+const CAPTURE_ASYNC_GRACE_MS = 1000
+
 // Async capture avoids blocking the dashboard event loop (card e7ca41a3).
+// SIGKILL on timeout plus a fallback timer: a child that ignores SIGTERM or never exits cannot hold the call open.
 function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): Promise<string> {
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
   const timeout = opts.timeout ?? (host ? 8000 : 3000)
   return new Promise<string>((resolve, reject) => {
-    const child = execFile(inv.file, inv.args, { timeout, encoding: 'utf-8' }, (err, stdout, stderr) => {
+    let settled = false
+    let fallback: ReturnType<typeof setTimeout> | undefined
+    const child = execFile(inv.file, inv.args, { timeout, killSignal: 'SIGKILL', encoding: 'utf-8' }, (err, stdout, stderr) => {
+      if (settled) return
+      settled = true
+      if (fallback) clearTimeout(fallback)
       // A timed-out tmux client can exit 0 with empty output on SIGTERM; the sync twin throws ETIMEDOUT there.
       if (err || child?.killed) {
         reject(Object.assign(err ?? Object.assign(new Error('tmux timed out'), { code: 'ETIMEDOUT' }), { stdout, stderr }))
@@ -2104,6 +2113,13 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
       }
       resolve(stdout)
     })
+    fallback = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child?.kill?.('SIGKILL')
+      reject(Object.assign(new Error('tmux timed out'), { code: 'ETIMEDOUT', stdout: '', stderr: '' }))
+    }, timeout + CAPTURE_ASYNC_GRACE_MS)
+    fallback.unref?.()
     // The sync twin runs with stdin 'ignore'; close ours so an ssh-routed call never waits on it.
     child?.stdin?.end()
   })
