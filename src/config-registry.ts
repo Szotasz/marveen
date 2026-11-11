@@ -1212,7 +1212,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'DISCORD_CHANNEL_POLICY',
     type: 'string',
     default: '',
-    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...]}}. Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
+    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...], "history": true}}. A "history": true (alapból ki) a botnak szóló üzenet elé teszi, amit a csatornában a bot utolsó üzenete óta írtak (legfeljebb 20, csak az írásra jogosultaktól). Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

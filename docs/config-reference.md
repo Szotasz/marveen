@@ -347,6 +347,9 @@ kérés a terminálban marad). Felülírás-kulcs: `.env`-ből nem olvasódik.
 `{"<csatorna-ID>": {"allowRoles": ["<szerep-ID>"]}}`. Ahol szerep van megadva, ott a csatorna engedélyezett
 felhasználói MELLETT a szerep birtokosai is írhatnak a botnak (üres felhasználói lista mellett csak ők).
 Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
+Ugyanitt kapcsolható be csatornánként a **csatorna-előzmény**: `{"<csatorna-ID>": {"history": true}}` (a
+szerepekkel együtt is). Ilyenkor a botnak szóló üzenet elé bekerül, amit a csatornában a bot utolsó üzenete óta
+írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva.
 
 **Kapcsolat-figyelés.** A plugin 15 mp-enként nézi, él-e a Discord-kapcsolat; elakadásnál újra bejelentkezik,
 de legfeljebb 5 percenként, egyre ritkábban (5-60 perc), és 24 óra alatt legfeljebb 20-szor

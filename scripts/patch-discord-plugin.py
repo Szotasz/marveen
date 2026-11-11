@@ -127,7 +127,7 @@ def settings(install_dir):
         log("LOUD: DISCORD_OWNER_USER_ID is set but is not a Discord user id -- NOT used")
         owner = ""
     backfill = tg.flag_setting(install_dir, "DISCORD_BACKFILL", True)
-    # DISCORD_CHANNEL_POLICY (overrides-only): per-channel extras, e.g. {"<channel>": {"allowRoles": ["<role>"]}}.
+    # DISCORD_CHANNEL_POLICY (overrides-only): per-channel extras, e.g. {"<channel>": {"allowRoles": ["<role>"], "history": true}}.
     # Passed through as parsed JSON; the overlay keeps only well-formed entries (marveen-ext.ts parseChannelPolicy).
     policy = {}
     raw_policy = (override_value(install_dir, "DISCORD_CHANNEL_POLICY") or "").strip(tg.JS_TRIM)

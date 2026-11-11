@@ -3,13 +3,14 @@
 // official one, only when that is the vendored upstream file. Run for real on a
 // copy of the verbatim upstream 0.0.4 server.ts in a scratch plugins cache; the
 // overlay's button code is then run with fake discord.js builders.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, chmodSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import ts from 'typescript'
+import { pathToFileURL } from 'node:url'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'patch-discord-plugin.py')
@@ -384,23 +385,26 @@ function clickHandler(access: Access) {
   const sent: Sent[] = []
   const mcp = { notification: async (n: { params: Sent }) => { sent.push(n.params) } }
   const dmChannelUsers = new Map<string, string>()
-  new Function('ButtonBuilder', 'ActionRowBuilder', 'ButtonStyle', 'client', 'loadAccess', 'MAX_CHUNK_LIMIT', 'dmChannelUsers', 'mcp', 'EXT', 'memberRoleIds', js)(
-    class {}, class {}, { Primary: 1, Secondary: 2, Success: 3, Danger: 4 }, client, () => access, 2000, dmChannelUsers, mcp, { channelPolicy: {} }, () => [])
+  new Function('ButtonBuilder', 'ActionRowBuilder', 'ButtonStyle', 'client', 'loadAccess', 'MAX_CHUNK_LIMIT', 'dmChannelUsers', 'mcp', 'EXT', 'memberRoleIds', 'SELECT_CUSTOM_ID', 'selectedLabel', js)(
+    class {}, class {}, { Primary: 1, Secondary: 2, Success: 3, Danger: 4 }, client, () => access, 2000, dmChannelUsers, mcp, { channelPolicy: {} }, () => [],
+    extMod.SELECT_CUSTOM_ID, extMod.selectedLabel)
   expect(handlers).toHaveLength(1)
   let n = 0
-  const click = (o: { user?: string; customId?: string; author?: string; guildId?: string | null; messageId?: string } = {}) => {
+  const click = (o: { user?: string; customId?: string; author?: string; guildId?: string | null; messageId?: string; values?: string[] } = {}) => {
     const replies: string[] = []
     const updates: Array<{ content?: string; components: unknown[] }> = []
     const interaction = {
-      isButton: () => true,
-      customId: o.customId ?? 'choice:0',
+      isButton: () => o.values === undefined,
+      isStringSelectMenu: () => o.values !== undefined,
+      values: o.values,
+      customId: o.customId ?? (o.values === undefined ? 'choice:0' : 'select:choice'),
       message: { id: o.messageId ?? `m${++n}`, author: { id: o.author ?? 'bot' }, content: 'Mehet?' },
       user: { id: o.user ?? '1', username: 'mdylan', displayName: 'Molnár Dávid' },
       member: null,
       guildId: o.guildId ?? null,
       channel: {},
       channelId: 'dm1',
-      component: { label: 'Igen' },
+      component: o.values === undefined ? { label: 'Igen' } : { options: [{ label: 'Alfa', value: '0' }, { label: 'Béta', value: '1' }] },
       reply: async (r: { content: string }) => { replies.push(r.content) },
       update: async (u: { content?: string; components: unknown[] }) => { updates.push(u) },
     }
@@ -409,8 +413,55 @@ function clickHandler(access: Access) {
   return { click, sent, dmChannelUsers }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let extMod: any
+beforeAll(async () => { extMod = await import(pathToFileURL(join(ROOT, 'vendor', 'discord-plugin', '0.0.4', 'overlay', 'marveen-ext.ts')).href) })
+
 describe('the inserted click handler', () => {
   const access: Access = { allowFrom: ['1'], groups: {} }
+
+  // DCEXT1111 D8: a select menu answers through the very same handler and access check as a button.
+  it('a select choice: the label comes from the message\'s own options, delivered with select="true"', async () => {
+    const h = clickHandler(access)
+    const c = h.click({ values: ['1'] })
+    await c.run()
+    expect(c.updates).toEqual([{ content: 'Mehet?\n\n➡️ Béta (Molnár Dávid)', components: [] }])
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0].content).toBe('Béta')
+    expect(h.sent[0].meta).toMatchObject({ chat_id: 'dm1', user_id: '1', select: 'true' })
+    expect(h.sent[0].meta.button).toBeUndefined()
+  })
+
+  it('a select: refused like a button for a stranger; a value not among the options is ignored and not "answered"', async () => {
+    const h = clickHandler(access)
+    const refused = h.click({ values: ['0'], user: '2' })
+    await refused.run()
+    expect(refused.replies).toEqual(['Not authorized.'])
+    const forged = h.click({ values: ['7'], messageId: 'f' })
+    await forged.run()
+    expect(forged.updates).toEqual([])
+    expect(h.sent).toEqual([])
+    await h.click({ values: ['0'], messageId: 'f' }).run() // the message is still answerable
+    expect(h.sent.map(x => x.content)).toEqual(['Alfa'])
+  })
+
+  it('a select and a button on one message: the first answer closes both', async () => {
+    const h = clickHandler(access)
+    await h.click({ values: ['0'], messageId: 'both' }).run()
+    const btn = h.click({ messageId: 'both' })
+    await btn.run()
+    expect(btn.replies).toEqual(['Already answered.'])
+    expect(h.sent).toHaveLength(1)
+  })
+
+  it('ids cross-checked: a select with a button id, or a button with the select id, is not ours', async () => {
+    const h = clickHandler(access)
+    for (const c of [h.click({ values: ['0'], customId: 'choice:0' }), h.click({ customId: 'select:choice' })]) {
+      await c.run()
+      expect(c.updates).toEqual([])
+    }
+    expect(h.sent).toEqual([])
+  })
 
   it('an allowed click: buttons replaced by the answer, the label delivered with button="true"', async () => {
     const h = clickHandler(access)

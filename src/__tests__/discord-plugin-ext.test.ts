@@ -131,7 +131,7 @@ describe('the wiring in the overlay server.ts', () => {
   it('a permission button and a typed "yes abcde" decide only for the owner in a DM', () => {
     expect(SERVER).not.toContain('if (!access.allowFrom.includes(interaction.user.id)) {')
     expect(SERVER).toContain("if (!mayDecidePermission(currentOwner(), interaction.user.id, interaction.guildId === null)) {")
-    expect(SERVER).toContain("if (permMatch && !recovered && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) {")
+    expect(SERVER).toContain("if (permMatch && !recovered && !edited && mayDecidePermission(currentOwner(), msg.author.id, msg.channel.type === ChannelType.DM)) {")
     expect(SERVER).not.toMatch(/^\s*if \(permMatch\) \{/m)
   })
 
@@ -261,7 +261,10 @@ function slice(from: string, to: string): string {
 }
 const PERMISSION_REPLY_RE = new RegExp(SERVER.match(/const PERMISSION_REPLY_RE = \/(.*)\/i\n/)![1]!, 'i')
 
-function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER) {
+function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number } } = {}) {
+  const historyCalls: string[] = []
+  const typingStarts: string[] = []
+  const deliveredIds = new ext.BoundedIds()
   const notes: Array<{ method: string; params: { content?: string; meta?: Record<string, string>; behavior?: string } }> = []
   const replies: string[] = []
   const typing: string[] = []
@@ -271,6 +274,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     'gate', 'ChannelType', 'dmChannelUsers', 'liveDelivered', 'recoveryOpen', 'backfillCursor', 'PERMISSION_REPLY_RE',
     'mayDecidePermission', 'currentOwner', 'decidedPermissions', 'mcp', 'pendingPermissions', 'permissionMessages',
     'safeAttName', 'voiceMeta', 'inboundAttachments', 'forwardedParts', 'replyContextMeta',
+    'typingKeeper', 'deliveredIds', 'channelHistory',
     `${slice('async function handleInbound(', '// DCEXT1111 F4: deliver, once')}\nreturn handleInbound`,
   )(
     async () => gateResult, { DM: 1, GuildText: 0 }, new Map(), new Set(), true,
@@ -281,7 +285,9 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     (m: { attachments: Map<string, unknown>; messageSnapshots: Map<string, { attachments?: Map<string, unknown> }> }) =>
       [...m.attachments.values(), ...[...m.messageSnapshots.values()].flatMap(s => [...(s.attachments?.values() ?? [])])],
     ext.forwardedParts, ext.replyContextMeta,
-  ) as (msg: unknown, recovered?: boolean) => Promise<boolean>
+    { start: (c: string, send: () => Promise<unknown>) => { typingStarts.push(c); void send() } }, deliveredIds,
+    async (m: { id: string }) => { historyCalls.push(m.id); return o.history ?? { text: '', count: 0 } },
+  ) as (msg: unknown, recovered?: boolean, edited?: boolean) => Promise<boolean>
   type Snap = { content: string; attachments: Map<string, { name: string; size: number; contentType: string }> }
   const msg = (content: string, o: { dm?: boolean; author?: string; snapshots?: Snap[]; reference?: { id: string; username: string; content: string; attachments?: string[] } | 'gone' } = {}) => ({
     id: id(77), channelId: '1438000000000000500', content,
@@ -297,7 +303,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     },
     reply: async (t: string) => { replies.push(t) }, react: async () => {},
   })
-  return { handleInbound, msg, notes, replies, typing, cursorNotes }
+  return { handleInbound, msg, notes, replies, typing, cursorNotes, historyCalls, typingStarts, deliveredIds }
 }
 const id = (n: number) => String(1438000000000000000n + BigInt(n))
 
@@ -468,6 +474,8 @@ describe('D1: no @everyone, @here or role ping from any outgoing call', () => {
         { content: 'x', components: [] },
         { content: 'y', reply: { messageReference: '1', failIfNotExists: false } },
         { content: 'z', ephemeral: true },
+        // DCEXT1111 D8: an embed and a select menu travel in the same body
+        { content: '', embeds: [{ title: '@everyone', description: '<@&123456789012345678>' }], components: [{ type: 1, components: [{ type: 3, custom_id: 'select:choice', options: [{ label: '@here', value: '0' }] }] }] },
       ]) {
         const body = new MessagePayload({ client, messages: { resolveId: (r: string) => r } }, options).resolveBody().body
         expect(body.allowed_mentions, JSON.stringify(options)).toEqual({ parse: ['users'], replied_user: true })
@@ -518,7 +526,7 @@ describe('A1: a follow-up in the bot\'s thread needs no @mention -- only under a
   // The overlay's own gate(), run: who gets through in a thread.
   function gateHarness(o: { groups: Record<string, { requireMention?: boolean; allowFrom?: string[] }>; listed?: string[]; channelPolicy?: Record<string, { allowRoles: string[] }> }) {
     const threads = new ext.BotThreads(Object.fromEntries((o.listed ?? []).map(t => [t, Date.now()])), () => {})
-    const inBotThread = new Function('client', 'botThreads', `${slice('function inBotThread(', 'function noteSent(')}\nreturn inBotThread`)({ user: { id: 'bot' } }, threads)
+    const inBotThread = new Function('client', 'botThreads', `${slice('function inBotThread(', '// DCEXT1111 D3: "typing"')}\nreturn inBotThread`)({ user: { id: 'bot' } }, threads)
     const gate = new Function(
       'loadAccess', 'pruneExpired', 'saveAccess', 'ChannelType', 'isMentioned', 'inBotThread', 'randomBytes',
       'channelSenderAllowed', 'EXT', 'memberRoleIds',
@@ -782,5 +790,373 @@ describe('E1: liveness and the IDENTIFY-aware reconnect governor (#1965)', () =>
   it('the wiring: raw events feed the silence clock, the probe runs on the pinned interval', () => {
     expect(SERVER).toContain("client.on('raw', () => { lastEventAt = Date.now() })")
     expect(SERVER).toContain('setInterval(() => { void livenessTick() }, LIVENESS.probeIntervalMs).unref()')
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR3 (DCEXT1111 Hermes parity, terv.md 3. PR): D3, A4, D8, G1, A5
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('D3: "typing" is renewed until the reply, at most 10 minutes', () => {
+  it('the constants are pinned', () => {
+    expect(ext.TYPING).toEqual({ intervalMs: 9_000, maxMs: 600_000 })
+  })
+
+  it('TypingKeeper: at once, then every 9 s; stop ends it; the 10-minute cap ends it without a reply', () => {
+    vi.useFakeTimers()
+    try {
+      let sends = 0
+      const k = new ext.TypingKeeper()
+      k.start('c1', async () => { sends++ })
+      expect(sends).toBe(1)
+      vi.advanceTimersByTime(9_000)
+      expect(sends).toBe(2)
+      k.stop('c1')
+      vi.advanceTimersByTime(60_000)
+      expect(sends).toBe(2)
+      expect(k.active('c1')).toBe(false)
+
+      sends = 0
+      k.start('c2', async () => { sends++ })
+      vi.advanceTimersByTime(ext.TYPING.maxMs + 10_000)
+      expect(k.active('c2')).toBe(false)
+      expect(sends).toBe(1 + Math.floor((ext.TYPING.maxMs - 1) / ext.TYPING.intervalMs))
+      vi.advanceTimersByTime(60 * 60_000)
+      expect(sends).toBe(1 + Math.floor((ext.TYPING.maxMs - 1) / ext.TYPING.intervalMs))
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a second message in the channel restarts it (one timer per channel); a failed send is swallowed', () => {
+    vi.useFakeTimers()
+    try {
+      let sends = 0
+      const k = new ext.TypingKeeper()
+      k.start('c', async () => { sends++; throw new Error('429') })
+      k.start('c', async () => { sends++ })
+      vi.advanceTimersByTime(9_000)
+      expect(sends).toBe(3) // 2 immediate + 1 tick: the first timer is gone
+    } finally { vi.useRealTimers() }
+  })
+
+  it('wiring: a live message starts it, a recovered one does not; reply stops it before sending', async () => {
+    const live = inboundHarness({ action: 'deliver', access: {} })
+    await live.handleInbound(live.msg('szia'))
+    expect(live.typingStarts).toEqual(['1438000000000000500'])
+    const rec = inboundHarness({ action: 'deliver', access: {} })
+    await rec.handleInbound(rec.msg('szia'), true)
+    expect(rec.typingStarts).toEqual([])
+    const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
+    expect(reply.indexOf('typingKeeper.stop(chat_id)')).toBeGreaterThan(0)
+    expect(reply.indexOf('typingKeeper.stop(chat_id)')).toBeLessThan(reply.indexOf('const sent = await ch.send({'))
+    expect(SERVER).not.toContain('void msg.channel.sendTyping()')
+  })
+})
+
+describe('A4: channel history when the bot is addressed (off by default, per channel)', () => {
+  const H = (n: number, author: string, content = `m${n}`, bot = false) =>
+    ({ id: id(n), authorId: author, authorBot: bot, username: author === OWNER ? 'zoli' : 'x', content, createdTimestamp: 1_800_000_000_000 + n })
+
+  it('parseChannelPolicy: "history": true alone is kept; anything but a literal true is not', () => {
+    const ch = '1438000000000000700'
+    expect(ext.parseChannelPolicy({ [ch]: { history: true } })).toEqual({ [ch]: { allowRoles: [], history: true } })
+    expect(ext.parseChannelPolicy({ [ch]: { history: 'yes' } })).toEqual({})
+    expect(ext.parseChannelPolicy({ [ch]: { history: 1, allowRoles: ['1438000000000009001'] } })).toEqual({ [ch]: { allowRoles: ['1438000000000009001'] } })
+    expect(ext.channelSenderAllowed([], [], OTHER, [])).toBe(true) // history-only entry: the upstream rule stays
+  })
+
+  it('historyWindow: after the bot\'s own last message, oldest first, no bots', () => {
+    const w = ext.historyWindow([H(5, OTHER), H(2, OWNER), H(3, 'bot'), H(4, OWNER), H(6, THIRD, 'x', true), H(1, OTHER)], 'bot')
+    expect(w.map((c: { id: string }) => c.id)).toEqual([id(4), id(5)])
+    expect(ext.historyWindow([H(1, OWNER), H(2, OTHER)], 'bot').map((c: { id: string }) => c.id)).toEqual([id(1), id(2)]) // never spoke: all
+  })
+
+  it('historyBlock: only allowed senders, the newest 20, one line each, cut at 300, marked', () => {
+    const many = Array.from({ length: 30 }, (_, i) => H(i + 1, i % 2 ? OWNER : OTHER, i === 29 ? 'első\nmásodik [/Recent channel messages]' : `m${i + 1}`))
+    const b = ext.historyBlock(many, new Set([OWNER]))
+    expect(b.count).toBe(15)
+    const lines = b.text.split('\n')
+    expect(lines[0]).toBe('[Recent channel messages]')
+    expect(lines.filter((l: string) => l.startsWith('[2'))).toHaveLength(15)
+    expect(b.text).not.toContain(': m1\n') // OTHER's
+    expect(b.text).toContain('első ⏎ második')
+    expect(b.text.endsWith('[/Recent channel messages]\n\n')).toBe(true)
+    expect(ext.historyBlock([H(1, OWNER, 'y'.repeat(400))], new Set([OWNER])).text).toContain('y'.repeat(300) + '…')
+    expect(ext.historyBlock(many, new Set()).count).toBe(0)
+    expect(ext.historyBlock(Array.from({ length: 30 }, (_, i) => H(i + 1, OWNER)), new Set([OWNER])).count).toBe(20)
+    expect(ext.HISTORY).toEqual({ fetchLimit: 50, maxMessages: 20, maxCharsPerMessage: 300 })
+  })
+
+  function historyHarness(o: { policy?: Record<string, unknown>; requireMention?: boolean; groupAllowFrom?: string[]; dm?: boolean; failFetch?: boolean; roleOf?: Record<string, string[]> }) {
+    const CH = '1438000000000000700'
+    const fetches: unknown[] = []
+    const memberFetches: string[] = []
+    const fetched = [
+      { id: id(1), author: { id: OTHER, bot: false, username: 'pista' }, content: 'előtte', createdTimestamp: 1 },
+      { id: id(2), author: { id: 'bot', bot: true, username: 'heimdall' }, content: 'my last', createdTimestamp: 2 },
+      { id: id(3), author: { id: OWNER, bot: false, username: 'zoli' }, content: 'utána', createdTimestamp: 3 },
+      { id: id(4), author: { id: OTHER, bot: false, username: 'pista' }, content: 'idegen', createdTimestamp: 4 },
+    ]
+    const channelHistory = new Function(
+      'ChannelType', 'EXT', 'HISTORY', 'historyWindow', 'historyBlock', 'channelSenderAllowed', 'memberRoleIds', 'client',
+      `${slice('async function channelHistory(', '// DCEXT1111 G1: discord_info')}\nreturn channelHistory`,
+    )({ DM: 1 }, { channelPolicy: o.policy ?? { [CH]: { allowRoles: [], history: true } } }, ext.HISTORY, ext.historyWindow, ext.historyBlock,
+      ext.channelSenderAllowed, (m: { roles?: string[] } | null) => m?.roles ?? [], { user: { id: 'bot' } })
+    const msg = {
+      id: id(9), channelId: CH, guild: o.dm ? null : { members: { fetch: async (u: string) => { memberFetches.push(u); if (!o.roleOf?.[u]) throw new Error('Unknown Member'); return { roles: o.roleOf[u] } } } },
+      channel: {
+        type: o.dm ? 1 : 0, isThread: () => false,
+        messages: { fetch: async (opts: unknown) => { fetches.push(opts); if (o.failFetch) throw new Error('Missing Access'); return new Map(fetched.map(m => [m.id, m])) } },
+      },
+    }
+    const access = { groups: { [CH]: { requireMention: o.requireMention ?? true, allowFrom: o.groupAllowFrom ?? [OWNER] } } }
+    return { run: () => (channelHistory as (m: unknown, a: unknown) => Promise<{ text: string; count: number }>)(msg, access), fetches, memberFetches, CH }
+  }
+
+  it('the overlay\'s channelHistory, run: one REST fetch before the mention; only allowed senders since the bot\'s last message', async () => {
+    const h = historyHarness({})
+    const r = await h.run()
+    expect(h.fetches).toEqual([{ before: id(9), limit: 50 }])
+    expect(r.count).toBe(1)
+    expect(r.text).toContain('zoli: utána')
+    expect(r.text).not.toContain('idegen') // OTHER is not in the channel's allowFrom
+    expect(r.text).not.toContain('előtte') // before the bot's last message
+  })
+
+  it('off unless the channel opted in; never in a DM or a listen-to-all channel; a failed fetch is just no history', async () => {
+    for (const o of [{ policy: {} }, { policy: { '1438000000000000700': { allowRoles: ['1438000000000009001'] } } }, { dm: true }, { requireMention: false }]) {
+      const h = historyHarness(o)
+      expect(await h.run(), JSON.stringify(o)).toEqual({ text: '', count: 0 })
+      expect(h.fetches, JSON.stringify(o)).toEqual([])
+    }
+    expect(await historyHarness({ failFetch: true }).run()).toEqual({ text: '', count: 0 })
+  })
+
+  it('with roles: a role holder\'s message is in (member fetched once per author), a failed member fetch keeps it out', async () => {
+    const policy = { '1438000000000000700': { allowRoles: ['1438000000000009001'], history: true } }
+    const yes = historyHarness({ policy, roleOf: { [OTHER]: ['1438000000000009001'] } })
+    expect((await yes.run()).text).toContain('pista: idegen')
+    expect(yes.memberFetches).toEqual([OTHER]) // OWNER is in allowFrom: no fetch
+    const no = historyHarness({ policy })
+    expect((await no.run()).text).not.toContain('idegen')
+  })
+
+  it('handleInbound: the block goes in front of the content, channel_history counts it; never for a recovered or edited message', async () => {
+    const h = inboundHarness({ action: 'deliver', access: {} }, OWNER, { history: { text: '[Recent channel messages]\nx\n[/Recent channel messages]\n\n', count: 1 } })
+    await h.handleInbound(h.msg('@bot mi a helyzet?'))
+    expect(h.notes[0]!.params.content).toBe('[Recent channel messages]\nx\n[/Recent channel messages]\n\n@bot mi a helyzet?')
+    expect(h.notes[0]!.params.meta!.channel_history).toBe('1')
+    for (const [recovered, edited] of [[true, false], [false, true]]) {
+      const q = inboundHarness({ action: 'deliver', access: {} }, OWNER, { history: { text: 'X', count: 1 } })
+      await q.handleInbound(q.msg('hi'), recovered, edited)
+      expect(q.historyCalls).toEqual([])
+      expect(q.notes[0]!.params.content).toBe('hi')
+    }
+  })
+})
+
+describe('D8: embed and select menu in reply', () => {
+  it('embedSpec: Discord\'s limits checked up front; junk refused', () => {
+    expect(ext.embedSpec(undefined)).toBeNull()
+    expect(ext.embedSpec({ title: 'T', description: 'D', color: 0x00ff00, fields: [{ name: ' n ', value: 'v', inline: true }, { name: 'a', value: 'b', inline: 'yes' }] }))
+      .toEqual({ title: 'T', description: 'D', color: 0x00ff00, fields: [{ name: 'n', value: 'v', inline: true }, { name: 'a', value: 'b' }] })
+    for (const bad of [
+      'x', [], {}, { title: 't'.repeat(257) }, { description: 'd'.repeat(4097) }, { title: 'T', color: -1 }, { title: 'T', color: 1.5 },
+      { fields: Array.from({ length: 26 }, (_, i) => ({ name: `n${i}`, value: 'v' })) }, { fields: [{ name: 'n' }] },
+      { fields: [{ name: 'n', value: 'v'.repeat(1025) }] }, { title: 't'.repeat(256), description: 'd'.repeat(4096), fields: [{ name: 'n'.repeat(256), value: 'v'.repeat(1024) }, { name: 'n'.repeat(256), value: 'v'.repeat(1024) }] },
+    ]) expect(() => ext.embedSpec(bad), JSON.stringify(bad).slice(0, 80)).toThrow()
+    expect(ext.EMBED_LIMITS).toEqual({ title: 256, description: 4096, fields: 25, fieldName: 256, fieldValue: 1024, total: 6000 })
+  })
+
+  it('selectSpec: values are indexes, labels unique, at most 25; selectedLabel trusts only the message\'s own options', () => {
+    const s = ext.selectSpec({ placeholder: 'Válassz', options: [{ label: 'Alfa' }, { label: 'Béta', description: 'második' }] })
+    expect(s).toEqual({ placeholder: 'Válassz', options: [{ label: 'Alfa', value: '0' }, { label: 'Béta', value: '1', description: 'második' }] })
+    for (const bad of ['x', {}, { options: [] }, { options: [{ label: 'a' }, { label: 'a' }] }, { options: [{ label: '' }] }, { options: [{ label: 'l'.repeat(101) }] },
+      { options: Array.from({ length: 26 }, (_, i) => ({ label: `o${i}` })) }, { options: [{ label: 'a' }], placeholder: 'p'.repeat(151) }]) {
+      expect(() => ext.selectSpec(bad), JSON.stringify(bad).slice(0, 60)).toThrow()
+    }
+    expect(ext.selectedLabel(s.options, ['1'])).toBe('Béta')
+    expect(ext.selectedLabel(s.options, ['Béta'])).toBeNull() // a label sent as a value is not an option
+    expect(ext.selectedLabel(s.options, ['7'])).toBeNull()
+    expect(ext.selectedLabel(s.options, ['0', '1'])).toBeNull()
+    expect(ext.SELECT_CUSTOM_ID).toBe('select:choice')
+    expect(ext.MAX_COMPONENT_ROWS).toBe(5)
+  })
+
+  it('wiring: both checked before the channel is even fetched; on the last chunk; buttons + select within 5 rows', () => {
+    const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
+    const fetchAt = reply.indexOf('const ch = await fetchAllowedChannel(chat_id)')
+    for (const s of ['const embed = embedSpec(args.embed)', 'const select = selectSpec(args.select)', 'if (rows.length + (select ? 1 : 0) > MAX_COMPONENT_ROWS)']) {
+      expect(reply.indexOf(s), s).toBeGreaterThan(0)
+      expect(reply.indexOf(s), s).toBeLessThan(fetchAt)
+    }
+    expect(reply).toContain('...(i === chunks.length - 1 && components.length > 0 ? { components } : {}),')
+    expect(reply).toContain('...(i === chunks.length - 1 && embed ? { embeds: [embed] } : {}),')
+    expect(reply).toContain('new StringSelectMenuBuilder().setCustomId(SELECT_CUSTOM_ID).addOptions(select.options)')
+    expect(SERVER).toContain("...(interaction.isStringSelectMenu() ? { select: 'true' } : { button: 'true' }),")
+  })
+})
+
+describe('G1: discord_info, read-only', () => {
+  it('infoRequest: known actions only, their ids checked, the query capped', () => {
+    expect(ext.infoRequest({ action: 'list_guilds' })).toEqual({ action: 'list_guilds' })
+    expect(ext.infoRequest({ action: 'member_info', guild_id: id(1), user_id: OWNER })).toEqual({ action: 'member_info', guild_id: id(1), user_id: OWNER })
+    expect(ext.infoRequest({ action: 'search_members', guild_id: id(1), query: `  ${'q'.repeat(150)} ` }).query).toBe('q'.repeat(100))
+    for (const bad of [{}, { action: 'delete_message' }, { action: 'toString' }, { action: '__proto__' }, { action: 'server_info' }, { action: 'server_info', guild_id: 'abc' }, { action: 'list_pins', channel_id: '' }]) {
+      expect(() => ext.infoRequest(bad), JSON.stringify(bad)).toThrow()
+    }
+    for (const proto of ['toString', '__proto__', 'constructor', 'hasOwnProperty']) {
+      expect(() => ext.infoRequest({ action: proto }), proto).toThrow('action must be one of') // refused as unknown, not by accident
+    }
+    expect(Object.keys(ext.INFO_ACTIONS)).toEqual(['list_guilds', 'server_info', 'list_channels', 'channel_info', 'list_roles', 'list_pins', 'member_info', 'search_members'])
+  })
+
+  it('oneLine folds and cuts; allowedGuildIds keeps real guild ids only', () => {
+    expect(ext.oneLine('a\nb\r\nc', 200)).toBe('a ⏎ b ⏎ c')
+    expect(ext.oneLine('x'.repeat(5), 3)).toBe('xxx…')
+    expect(ext.oneLine(null)).toBe('')
+    expect([...ext.allowedGuildIds(new Map([['c1', id(1)], ['c2', null], ['c3', id(1)], ['c4', 'junk']]))]).toEqual([id(1)])
+  })
+
+  function infoHarness(o: { memberFail?: boolean } = {}) {
+    const G1 = id(1)
+    const G2 = id(2)
+    const guildFetches: string[] = []
+    const searches: unknown[] = []
+    const allowedChannelCalls: string[] = []
+    const guild = (gid: string) => ({
+      id: gid, name: `szerver\n${gid}`, memberCount: 3, ownerId: OWNER, createdAt: new Date(0), description: null,
+      channels: { fetch: async () => new Map([['a', { id: '1438000000000000700', name: 'általános', type: 0, parentId: null, rawPosition: 1 }], ['b', { id: id(8), name: 'titkos\nsor', type: 0, parentId: null, rawPosition: 0 }]]) },
+      roles: { fetch: async () => new Map([['r', { id: id(9), name: 'Avengers', position: 2, managed: false, mentionable: true }]]) },
+      members: {
+        fetch: async () => { if (o.memberFail) throw new Error('Missing Access'); return { id: OWNER, user: { username: 'zoli', bot: false }, displayName: 'Zoli', joinedAt: new Date(0), roles: { cache: new Map([[gid, { id: gid, name: '@everyone' }], ['r', { id: id(9), name: 'Avengers' }]]) } } },
+        search: async (q: unknown) => { searches.push(q); return new Map() },
+      },
+    })
+    const client = {
+      channels: { fetch: async (cid: string) => (cid === '1438000000000000700' ? { guildId: G1 } : null) },
+      guilds: { fetch: async (gid: string) => { guildFetches.push(gid); return guild(gid) } },
+    }
+    const fetchAllowedChannel = async (cid: string) => {
+      allowedChannelCalls.push(cid)
+      if (cid !== '1438000000000000700') throw new Error(`channel ${cid} is not allowlisted`)
+      return { id: cid, type: 0, name: 'általános', topic: 'téma\nkét sor', messages: { fetchPins: async () => ({ items: [{ pinnedAt: new Date(0), message: { id: id(5), author: { username: 'zoli' }, content: 'kitűzve\nitt' } }] }) } }
+    }
+    const fns = new Function(
+      'client', 'loadAccess', 'allowedGuildIds', 'oneLine', 'ChannelType', 'fetchAllowedChannel', 'SEARCH_MEMBERS_LIMIT',
+      `${slice('// DCEXT1111 G1: discord_info', 'const mcp = new Server(')}\nreturn { discordInfo }`,
+    )(client, () => ({ groups: { '1438000000000000700': { requireMention: true, allowFrom: [] } } }), ext.allowedGuildIds, ext.oneLine, { 0: 'GuildText' }, fetchAllowedChannel, ext.SEARCH_MEMBERS_LIMIT)
+    const run = (a: Record<string, unknown>) => (fns.discordInfo as (r: unknown) => Promise<string>)(ext.infoRequest(a))
+    return { run, guildFetches, searches, allowedChannelCalls, G1, G2 }
+  }
+
+  it('the overlay\'s discordInfo, run: only servers with an allowed channel; another server is refused before it is fetched', async () => {
+    const h = infoHarness()
+    expect(await h.run({ action: 'list_guilds' })).toBe(`szerver ⏎ ${h.G1} (id: ${h.G1}, members: 3)`)
+    await expect(h.run({ action: 'server_info', guild_id: h.G2 })).rejects.toThrow('has no allowed channel')
+    await expect(h.run({ action: 'member_info', guild_id: h.G2, user_id: OWNER })).rejects.toThrow('has no allowed channel')
+    expect(h.guildFetches).toEqual([h.G1])
+    const chans = await h.run({ action: 'list_channels', guild_id: h.G1 })
+    expect(chans.split('\n')).toEqual([`titkos ⏎ sor (id: ${id(8)}, type: GuildText)`, 'általános (id: 1438000000000000700, type: GuildText, allowed)'])
+    expect(await h.run({ action: 'list_roles', guild_id: h.G1 })).toBe(`Avengers (id: ${id(9)}, mentionable)`)
+  })
+
+  it('channel_info and list_pins go through the outbound allowlist; text is folded to one line', async () => {
+    const h = infoHarness()
+    expect(await h.run({ action: 'channel_info', channel_id: '1438000000000000700' })).toContain('topic: téma ⏎ két sor')
+    expect(await h.run({ action: 'list_pins', channel_id: '1438000000000000700' })).toContain('zoli: kitűzve ⏎ itt')
+    await expect(h.run({ action: 'list_pins', channel_id: id(8) })).rejects.toThrow('not allowlisted')
+    expect(h.allowedChannelCalls).toEqual(['1438000000000000700', '1438000000000000700', id(8)])
+  })
+
+  it('members: REST lookups, search capped at 10, a refusal explained (privileged intent)', async () => {
+    const h = infoHarness()
+    expect(await h.run({ action: 'member_info', guild_id: h.G1, user_id: OWNER })).toContain('roles: Avengers')
+    await h.run({ action: 'search_members', guild_id: h.G1, query: 'zo' })
+    expect(h.searches).toEqual([{ query: 'zo', limit: 10 }])
+    await expect(infoHarness({ memberFail: true }).run({ action: 'member_info', guild_id: id(1), user_id: OWNER })).rejects.toThrow('Server Members privileged intent')
+  })
+
+  it('wiring: listed, dispatched, and the info code calls nothing that writes', () => {
+    expect(SERVER).toContain("name: 'discord_info',")
+    expect(SERVER).toContain("return { content: [{ type: 'text', text: await discordInfo(infoRequest(args)) }] }")
+    const info = SERVER.slice(SERVER.indexOf('// DCEXT1111 G1: discord_info'), SERVER.indexOf('const mcp = new Server('))
+    expect(info).not.toMatch(/\.(send|edit|delete|pin|unpin|reply|update|create|add|remove|set[A-Z]\w*|ban|kick|bulkDelete)\(/)
+  })
+})
+
+describe('A5: edits and deletes', () => {
+  it('BoundedIds: a delete is reported once; at most 1000, oldest dropped', () => {
+    const b = new ext.BoundedIds(3)
+    for (const x of ['a', 'b', 'c', 'd']) b.add(x)
+    expect(b.size).toBe(3)
+    expect(b.take('a')).toBe(false)
+    expect(b.take('d')).toBe(true)
+    expect(b.take('d')).toBe(false)
+    expect(ext.DELIVERED_MAX).toBe(1000)
+    const big = new ext.BoundedIds()
+    for (let i = 0; i < 1500; i++) big.add(String(i))
+    expect(big.size).toBe(1000)
+  })
+
+  it('editWorthDelivering: a link preview (same text) is not an edit; unknown old text is not passed on', () => {
+    expect(ext.editWorthDelivering('a', 'a')).toBe(false)
+    expect(ext.editWorthDelivering('a', 'b')).toBe(true)
+    expect(ext.editWorthDelivering(null, 'b')).toBe(false)
+    expect(ext.editWorthDelivering(undefined, 'b')).toBe(false)
+    expect(ext.editWorthDelivering('a', '')).toBe(true)
+  })
+
+  it('handleInbound, edited: marked edited="1", never pairs, never decides a permission; a delivered id is remembered', async () => {
+    const h = inboundHarness({ action: 'deliver', access: {} })
+    expect(await h.handleInbound(h.msg('javítva'), false, true)).toBe(true)
+    expect(h.notes[0]!.params.meta).toMatchObject({ edited: '1' })
+    expect(h.deliveredIds.take(id(77))).toBe(true)
+    const pair = inboundHarness({ action: 'pair', code: 'abc123', isResend: false })
+    await pair.handleInbound(pair.msg('hi'), false, true)
+    expect(pair.replies).toEqual([])
+    const perm = inboundHarness({ action: 'deliver', access: {} })
+    await perm.handleInbound(perm.msg('yes abcde'), false, true)
+    expect(perm.notes.map(n => n.method)).toEqual(['notifications/claude/channel'])
+    const drop = inboundHarness({ action: 'drop' })
+    await drop.handleInbound(drop.msg('x'))
+    expect(drop.deliveredIds.size).toBe(0)
+  })
+
+  function listeners() {
+    const on: Record<string, (...a: unknown[]) => void> = {}
+    const inbound: Array<[string, boolean, boolean]> = []
+    const notes: Array<{ params: { content: string; meta: Record<string, string> } }> = []
+    const deliveredIds = new ext.BoundedIds()
+    new Function('client', 'editWorthDelivering', 'handleInbound', 'deliveredIds', 'mcp',
+      slice('// DCEXT1111 A5: an edit goes through', '// recovered: delivered by'))(
+      { on: (ev: string, fn: (...a: unknown[]) => void) => { on[ev] = fn } }, ext.editWorthDelivering,
+      async (m: { id: string }, r: boolean, e: boolean) => { inbound.push([m.id, r, e]); return true }, deliveredIds,
+      { notification: async (n: (typeof notes)[0]) => { notes.push(n) } })
+    return { on, inbound, notes, deliveredIds }
+  }
+  const upd = (content: string, o: { bot?: boolean; partial?: boolean } = {}) => ({ id: id(7), content, partial: !!o.partial, author: { bot: !!o.bot } })
+
+  it('messageUpdate, run: only a changed text, not a bot, not a partial, goes to handleInbound as edited', () => {
+    const l = listeners()
+    l.on.messageUpdate!({ content: 'a' }, upd('a'))
+    l.on.messageUpdate!({ content: null }, upd('b'))
+    l.on.messageUpdate!({ content: 'a' }, upd('b', { bot: true }))
+    l.on.messageUpdate!({ content: 'a' }, upd('b', { partial: true }))
+    expect(l.inbound).toEqual([])
+    l.on.messageUpdate!({ content: 'a' }, upd('b'))
+    expect(l.inbound).toEqual([[id(7), false, true]])
+  })
+
+  it('messageDelete, run: reported once, deleted="1", only for a message that reached the session', async () => {
+    const l = listeners()
+    l.on.messageDelete!({ id: id(8), channelId: 'c' })
+    expect(l.notes).toEqual([])
+    l.deliveredIds.add(id(7))
+    l.on.messageDelete!({ id: id(7), channelId: 'c', author: { username: 'zoli', id: OWNER } })
+    l.on.messageDelete!({ id: id(7), channelId: 'c', author: { username: 'zoli', id: OWNER } })
+    await new Promise(r => setTimeout(r, 0))
+    expect(l.notes).toHaveLength(1)
+    expect(l.notes[0]!.params.content).toBe('(message deleted)')
+    expect(l.notes[0]!.params.meta).toMatchObject({ chat_id: 'c', message_id: id(7), user_id: OWNER, deleted: '1' })
   })
 })
