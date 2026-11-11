@@ -3488,7 +3488,8 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
 // WHAT THIS CHANGES ABOUT THE DATA. After this, a parent's updated_at means "something happened on
 // this THREAD", not "this card was written". Every reader of that column inherits the new meaning;
 // the ones that existed when this landed are listed in the card (68763e8f) and in
-// correlateWithKanban(), which had to be taught the difference.
+// correlateWithKanban(), which had to be taught the difference (that function is gone since DBSIZE1111: the
+// token rows' card now comes from kanban_card_events at read time, not from updated_at).
 //
 // WHAT IS DELIBERATELY NOT HERE, AND HOW FAR THAT HOLDS. Archive, unarchive and delete do NOT
 // bubble up: those tidy a thread rather than advance it, and a parent that looks "active" because

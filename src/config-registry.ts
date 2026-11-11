@@ -121,6 +121,17 @@ export function envValueTightens(def: SettingDefinition, envValue: string): bool
   return !def.loosens(String(def.default), envValue)
 }
 
+// Pure parse rule for STORE_WATCH_EXCLUDE. Entries are trimmed; an entry is dropped (never read generously) when it is
+// empty, '.', '..', or contains '/', '\\' or a NUL character.
+export function parseStoreWatchExclude(raw: string | undefined): Set<string> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s !== '' && s !== '.' && s !== '..' && !/[\/\\\0]/.test(s))
+  )
+}
+
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
 // A '' (use the default) or a number in [0, 1], e.g. a cosine-similarity threshold.
@@ -864,6 +875,23 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     loosens: (oldValue: string, newValue: string) => ['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && !['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
+  },
+  // STOREWATCHEXCL1111 review B1: adding a name loosens the audit, so this key is overrides-only (a loosening .env line is ignored).
+  {
+    key: 'STORE_WATCH_EXCLUDE',
+    type: 'string',
+    default: '',
+    description: 'A store/ alatti felső szintű könyvtárak, amelyeket a store-figyelő (az ügynökök által a store/-ban létrehozott fájlok naplója) induláskor nem jár be és nem figyel. Nagy, gyorsan változó futásidejű fákra való: Linuxon a figyelő minden fájlra és könyvtárra külön inotify-figyelést tesz. Csak könyvtárnevek, perjel nélkül, vesszővel elválasztva (pl. build-cache,old-runs). Üresen (alapértelmezés) minden figyelve marad. Egy név felvétele lazítás, mert a kizárt fában létrehozott fájl nem kerül a naplóba: csak dashboard-belépéssel állítható, és a .env-ben álló érték nem érvényesül. A dashboard újraindítása után lép életbe.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: true,
+    validate: (v) => v.split(',').map(s => s.trim()).filter(Boolean).some(s => s === '.' || s === '..' || /[/\\\0]/.test(s))
+      ? 'Csak felső szintű könyvtárnevek, vesszővel elválasztva; perjel, "." és ".." nem lehet.'
+      : null,
+    loosens: (oldValue, newValue) => {
+      const prev = parseStoreWatchExclude(oldValue)
+      return [...parseStoreWatchExclude(newValue)].some((n) => !prev.has(n))
+    },
   },
   // --- Token usage module ---
   {

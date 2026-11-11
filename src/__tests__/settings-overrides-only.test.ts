@@ -60,6 +60,24 @@ beforeEach(() => {
 })
 
 describe('registry: which keys are overrides-only', () => {
+  it('STORE_WATCH_EXCLUDE: an overrides-only audit key; adding a name loosens, removing or reordering does not', () => {
+    const def = registry.getSettingDefinition('STORE_WATCH_EXCLUDE')!
+    expect(def).toMatchObject({ type: 'string', default: '', module: 'audit', requiresRestart: true })
+    expect(registry.isOverridesOnly(def)).toBe(true)
+    expect(def.loosens!('', 'a')).toBe(true)
+    expect(def.loosens!('a', 'a,b')).toBe(true)
+    expect(def.loosens!('a', 'A')).toBe(true)
+    expect(def.loosens!('a,b', ' b , a ')).toBe(false)
+    expect(def.loosens!('a,b', 'a')).toBe(false)
+    expect(def.loosens!('a', '')).toBe(false)
+    expect(def.loosens!('', '..')).toBe(false)
+    expect(def.loosens!('', 'x/y')).toBe(false)
+    expect(registry.validateSettingValue(def, 'a, b').ok).toBe(true)
+    for (const v of ['..', 'a/b', 'a\\b', '.', 'ok,..']) {
+      expect(registry.validateSettingValue(def, v).ok).toBe(false)
+    }
+  })
+
   it('every key with a loosens function is overrides-only (inventory), BASH_EGRESS_HOST_ALLOW among them', () => {
     const withLoosens = registry.SETTINGS_REGISTRY.filter((d) => typeof d.loosens === 'function')
     expect(withLoosens.length).toBeGreaterThanOrEqual(8)
@@ -88,6 +106,15 @@ describe('registry: which keys are overrides-only', () => {
 })
 
 describe('store: override > .env (only if it tightens) > default', () => {
+  it('STORE_WATCH_EXCLUDE: its .env line is ignored and named; the owner override applies', () => {
+    envFile.STORE_WATCH_EXCLUDE = 'build-cache'
+    expect(store.getEffectiveSettingSource('STORE_WATCH_EXCLUDE')).toEqual({ value: '', source: 'default' })
+    expect(store.getIgnoredEnvKeys()).toContain('STORE_WATCH_EXCLUDE')
+    expect(store.setOverride('STORE_WATCH_EXCLUDE', 'build-cache,old-runs').ok).toBe(true)
+    expect(store.getEffectiveSettingSource('STORE_WATCH_EXCLUDE')).toEqual({ value: 'build-cache,old-runs', source: 'override' })
+    expect(store.setOverride('STORE_WATCH_EXCLUDE', '../x').ok).toBe(false)
+  })
+
   it('a loosening .env line is IGNORED: the default answers', () => {
     envFile.NOTIFY_SLACK_TARGET = 'D0ROUTEELSEWHERE'
     envFile.APPROVAL_SLACK_REACTIONS = 'on'
@@ -197,6 +224,10 @@ describe('config.ts cfg(): an overrides-only key cannot be read through its own 
     expect(() => cfg('VAULT_ACL_MODE')).toThrow(/overrides-only/)
     expect(() => cfg('BASH_EGRESS_HOST_ALLOW')).toThrow(/overrides-only/)
     expect(() => cfg('SCHEDULER_TZ')).not.toThrow()
+  })
+
+  it('refuses STORE_WATCH_EXCLUDE through cfg()', () => {
+    expect(() => cfg('STORE_WATCH_EXCLUDE')).toThrow(/overrides-only/)
   })
 })
 
@@ -460,6 +491,13 @@ describe('grep guard: script mentions of overrides-only keys', () => {
 })
 
 describe('wiring (static)', () => {
+  it('the store-watcher takes its exclusions from the settings store, not from an env constant', () => {
+    const src = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf-8')
+    expect(src).toContain("startStoreWatcher({ exclude: parseStoreWatchExclude(String(getEffectiveSettingValue('STORE_WATCH_EXCLUDE'))) })")
+    expect(readFileSync(join(ROOT, 'src', 'config.ts'), 'utf-8')).not.toContain('STORE_WATCH_EXCLUDE')
+    expect(readFileSync(join(ROOT, '.env.example'), 'utf-8')).not.toContain('STORE_WATCH_EXCLUDE')
+  })
+
   it('the dashboard boot starts the settings health check', () => {
     const src = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf-8')
     expect(src).toMatch(/import \{ startSettingsHealth \} from '\.\/settings-health\.js'/)

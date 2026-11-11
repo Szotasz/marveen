@@ -4946,11 +4946,14 @@ async function openAgentDetail(agentName) {
   // Authorization header and the API would 401 it.
   document.getElementById('exportAgentBtn').onclick = async () => {
     if (!currentAgent) return
-    const withSecrets = confirm(
-      'Belevegyük a titkokat (channel bot token, párosítási állapot)?\n\n' +
-      'OK = igen, csak saját gépek közötti átvitelhez.\n' +
-      'Mégse = nem, biztonságosan megosztható (csak identitás + viselkedés).'
-    )
+    const choice = await askAgentExport({
+      title: t('agents.export.confirm_title'),
+      message: t('agents.export.confirm', { name: currentAgent.name }),
+      okLabel: t('agents.export.confirm_ok'),
+      secretsLabel: t('agents.export.with_secrets'),
+    })
+    if (!choice) return
+    const withSecrets = choice.withSecrets
     const name = currentAgent.name
     const url = `/api/agents/${encodeURIComponent(name)}/export${withSecrets ? '?secrets=1' : ''}`
     try {
@@ -5989,7 +5992,12 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
     const createBtn = document.getElementById('createModelChangeCardsBtn')
     if (createBtn) {
       createBtn.addEventListener('click', async () => {
-        if (!confirm(t('agents.model.cards_confirm', { n: changes.length }))) return
+        const confirmed = await confirmDialog({
+          title: t('agents.model.cards_confirm_title'),
+          message: t('agents.model.cards_confirm', { n: changes.length }),
+          okLabel: t('agents.model.cards_confirm_ok'),
+        })
+        if (!confirmed) return
         createBtn.disabled = true
         createBtn.textContent = t('agents.model.creating_cards')
         let created = 0
@@ -6016,15 +6024,32 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
   } catch { panel.innerHTML = '<p style="color:var(--error);font-size:13px">' + t('agents.model.error') + '</p>' }
 })
 
+// The export question: export or not, and whether the channel secrets go too. The box starts unticked,
+// and Cancel exports nothing (the native confirm() made Cancel the export without secrets).
+async function askAgentExport({ title, message, okLabel, secretsLabel }) {
+  const label = document.createElement('label')
+  label.className = 'confirm-dialog-check'
+  const box = document.createElement('input')
+  box.type = 'checkbox'
+  const text = document.createElement('span')
+  text.textContent = secretsLabel
+  label.append(box, text)
+  const ok = await confirmDialog({ title, message, okLabel, content: label })
+  return ok ? { withSecrets: box.checked } : null
+}
+
 // === Export ALL agents (whole fleet) into one .tar.gz bundle ===
 const exportAllAgentsBtn = document.getElementById('exportAllAgentsBtn')
 if (exportAllAgentsBtn) {
   exportAllAgentsBtn.addEventListener('click', async () => {
-    const withSecrets = confirm(
-      'Belevegyük a titkokat (channel bot tokenek, párosítási állapot) MINDEN ügynöknél?\n\n' +
-      'OK = igen, csak saját gépek közötti átvitelhez.\n' +
-      'Mégse = nem, biztonságosan megosztható (csak identitás + viselkedés).'
-    )
+    const choice = await askAgentExport({
+      title: t('agents.export_all.confirm_title'),
+      message: t('agents.export_all.confirm'),
+      okLabel: t('agents.export.confirm_ok'),
+      secretsLabel: t('agents.export_all.with_secrets'),
+    })
+    if (!choice) return
+    const withSecrets = choice.withSecrets
     const url = `/api/agents/export-all${withSecrets ? '?secrets=1' : ''}`
     try {
       const res = await fetch(url)
@@ -6071,14 +6096,35 @@ if (importAgentBtn && importAgentFile) {
     try {
       let { res, data } = await upload(false)
       if (res.status === 409) {
-        const prompt = data.kind === 'fleet'
-          ? 'Néhány ügynök már létezik ezen a gépen. Felülírjuk az ütközőket?'
-          : `Már létezik "${data.name || ''}" nevű ügynök. Felülírjuk?`
-        if (confirm(prompt)) {
-          ;({ res, data } = await upload(true))
+        // Overwriting deletes the existing agent's folder and puts the bundle's content in its place.
+        let message
+        if (data.kind === 'fleet') {
+          const existing = (data.skipped || []).filter((s) => s.reason === 'already exists').map((s) => s.name)
+          const done = (data.imported || []).length
+          message = t('agents.import.fleet_overwrite_confirm', { list: existing.join(', ') }) + '\n\n' +
+            t('agents.import.fleet_overwrite_effect') +
+            (done ? '\n\n' + t('agents.import.fleet_already_imported', { n: done }) : '')
         } else {
+          // The single-agent 409 carries the name in its error only (importAgentBundle).
+          const m = /^Agent "([^"]+)" already exists/.exec(data.error || '')
+          message = (m ? t('agents.import.overwrite_confirm', { name: m[1] }) : t('agents.import.overwrite_confirm_no_name')) +
+            '\n\n' + t('agents.import.overwrite_effect')
+        }
+        const confirmed = await confirmDialog({
+          title: t('agents.import.overwrite_confirm_title'),
+          message,
+          okLabel: t('agents.import.overwrite_confirm_ok'),
+          danger: true,
+        })
+        if (!confirmed) {
+          // A fleet bundle's new agents are already in: show them, and say the existing ones were left alone.
+          if (data.kind === 'fleet' && (data.imported || []).length) {
+            showToast(t('agents.import.fleet_kept', { n: data.imported.length }))
+            loadAgents()
+          }
           return
         }
+        ;({ res, data } = await upload(true))
       }
       if (!res.ok) { showToast(data.error || 'Hiba az importálás során'); return }
       const note = data.includedSecrets ? ' (titkokkal)' : ''
@@ -10338,7 +10384,7 @@ async function offerGitHubRepoScriptsOptIn(name, skipped) {
     body: JSON.stringify({ runScripts: true }),
   })
   const data = await res.json()
-  if (data.error) alert(data.error)
+  if (data.error) showToast(data.error)
 }
 
 async function loadGitHubRepos() {
@@ -10361,7 +10407,7 @@ async function loadGitHubRepos() {
         try {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
-          if (data.error) { alert(data.error); return }
+          if (data.error) { showToast(data.error); return }
           await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
@@ -10570,8 +10616,8 @@ function renderOssRow(e) {
       }
       // Installed, but npm install failed: keep it visible instead of reporting success.
       // The opt-in is only offered after an install that completed.
-      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
-      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
+      const warning = data.installWarning ? t('connectors.install_warning', { msg: data.installWarning }) : ''
+      if (!warning) await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
@@ -10606,7 +10652,13 @@ function renderOssRow(e) {
       loadGitHubRepos()
       loadExternalPaths()
       loadConnectors()
-      setTimeout(() => { status.hidden = true }, 4000)
+      if (warning) {
+        // The failed npm install stays in the status line, in red, in place of the success text (the MCP
+        // servers may not start). A key-save failure is kept below it.
+        const keyError = status.className === 'github-repo-status error' ? '\n\n' + status.textContent : ''
+        status.className = 'github-repo-status error'
+        status.textContent = warning + keyError
+      } else setTimeout(() => { status.hidden = true }, 4000)
     } catch (err) {
       status.className = 'github-repo-status error'
       status.textContent = 'Hiba: ' + err.message
@@ -11837,7 +11889,7 @@ async function loadExternalPaths() {
       body: JSON.stringify({ path: val }),
     })
     const data = await res.json()
-    if (data.error) { alert(data.error); return }
+    if (data.error) { showToast(data.error); return }
     input.value = ''
     loadExternalPaths()
     loadConnectors()
@@ -13126,7 +13178,13 @@ document.getElementById('fleetDryRunBtn').addEventListener('click', async () => 
 document.getElementById('fleetApplyBtn').addEventListener('click', async () => {
   if (!fleetLastBody) return
 
-  if (!confirm(t('fleet.import.apply_confirm'))) return
+  const confirmed = await confirmDialog({
+    title: t('fleet.import.apply_confirm_title'),
+    message: t('fleet.import.apply_confirm'),
+    okLabel: t('fleet.import.apply_confirm_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
 
   const btn = document.getElementById('fleetApplyBtn')
   btn.disabled = true
@@ -20382,7 +20440,12 @@ function renderTuDetailsTable() {
     const totalIn = (d.input_tokens || 0) + (d.cache_read_tokens || 0) + (d.cache_creation_tokens || 0)
     const timeStr = tuFormatLocalDate(d.timestamp)
     const preview = d.content_preview ? d.content_preview.slice(0, 80) + (d.content_preview.length > 80 ? '...' : '') : ''
-    const taskInfo = d.task_title ? `<span style="color:var(--text-secondary);font-size:11px"> [${escapeHtml(d.task_title)}]</span>` : ''
+    // DBSIZE1111: the card comes from the agent's in_progress windows at read time (taskCards). Two or more
+    // overlapping cards are all shown, none is picked: the call itself does not say which one it was for.
+    const cards = Array.isArray(d.taskCards) ? d.taskCards : []
+    const taskInfo = cards.length
+      ? `<span style="color:var(--text-secondary);font-size:11px"${cards.length > 1 ? ` title="${escapeHtml(t('tokenUsage.cards_overlap', { n: cards.length }))}"` : ''}> [${cards.map(c => escapeHtml(c.title)).join(' / ')}]</span>`
+      : ''
     return `<tr>
       <td style="white-space:nowrap">${timeStr}</td>
       <td><span style="color:${tuGetColor(d.agent)};font-weight:600">${escapeHtml(d.agent)}</span>${taskInfo}</td>

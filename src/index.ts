@@ -13,6 +13,8 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { getEffectiveSettingValue } from './settings-store.js'
+import { parseStoreWatchExclude } from './config-registry.js'
 import { ownerAlertChatOverride, resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
@@ -626,7 +628,7 @@ async function main(): Promise<void> {
   startChannelRequestWatcher()
 
   // Store file audit watcher
-  startStoreWatcher()
+  startStoreWatcher({ exclude: parseStoreWatchExclude(String(getEffectiveSettingValue('STORE_WATCH_EXCLUDE'))) })
 
   // ENVRELAXGATE1104 step 2: name the ignored .env security lines, and tell the owner (once per state change) when
   // config-overrides.json turns unreadable.
