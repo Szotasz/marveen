@@ -1095,8 +1095,9 @@ describe('the auth and device questions use it', () => {
     expect(line(HU, 'auth.devices.revoke_confirm_bridge')).toContain('SSH-alagútja is megszűnik')
     expect(line(HU, 'auth.operator.pane_warning')).toContain('Írni nem tud bele')
     // Even the commands right sends only the fixed commands (OPERATOR_COMMANDS); the list comes from the code.
-    expect(line(HU, 'auth.operator.pane_warning')).toContain('a parancsküldés jogával is csak az általad engedélyezett fix parancsokat')
-    expect(line(EN, 'auth.operator.pane_warning')).toContain('even with the commands permission they can only send the fixed commands')
+    // The list is fixed; the owner allows some of it, not all of it (Szotasz on #2669).
+    expect(line(HU, 'auth.operator.pane_warning')).toContain('a parancsküldés jogával is csak a fix listából ({cmds}) küldheti az általad engedélyezetteket')
+    expect(line(EN, 'auth.operator.pane_warning')).toContain('they can only send the ones you allowed from the fixed list ({cmds})')
     for (const lang of [HU, EN]) {
       expect(line(lang, 'auth.operator.pane_warning')).toContain('({cmds})')
       expect(line(lang, 'auth.operator.pane_warning')).not.toContain('/login')
@@ -1338,5 +1339,8 @@ describe('the Gromzo agent switches use it', () => {
     expect(line(HU, 'gromzo.agents.confirm_off')).toContain('új jóváhagyással')
     expect(line(HU, 'gromzo.agents.confirm_off')).not.toContain('chat-szolgáltatás')
     expect(line(HU, 'gromzo.agents.main.confirm_off')).toContain('új jóváhagyás nélkül')
+    // The main agent's switch-on asks for no approval when mxd already lists it (gromzo-agents.ts), so its text names none.
+    expect(line(HU, 'gromzo.agents.main.confirm_on')).not.toMatch(/jóváhagy/u)
+    expect(line(EN, 'gromzo.agents.main.confirm_on')).not.toMatch(/approv/iu)
   })
 })
