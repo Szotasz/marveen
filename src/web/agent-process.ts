@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatS
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
@@ -2090,6 +2090,41 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
+// Extra time after the execFile timeout before the fallback timer gives up on the child.
+const CAPTURE_ASYNC_GRACE_MS = 1000
+
+// Async capture avoids blocking the dashboard event loop (card e7ca41a3).
+// SIGKILL on timeout plus a fallback timer: a child that ignores SIGTERM or never exits cannot hold the call open.
+function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): Promise<string> {
+  const { host } = resolveTarget(target, tmuxArgs)
+  const inv = tmuxInvocationFor(tmuxArgs, target)
+  const timeout = opts.timeout ?? (host ? 8000 : 3000)
+  return new Promise<string>((resolve, reject) => {
+    let settled = false
+    let fallback: ReturnType<typeof setTimeout> | undefined
+    const child = execFile(inv.file, inv.args, { timeout, killSignal: 'SIGKILL', encoding: 'utf-8' }, (err, stdout, stderr) => {
+      if (settled) return
+      settled = true
+      if (fallback) clearTimeout(fallback)
+      // A child we killed counts as a timeout even if it exited 0 before the signal landed; the sync twin throws ETIMEDOUT there.
+      if (err || child?.killed) {
+        reject(Object.assign(err ?? Object.assign(new Error('tmux timed out'), { code: 'ETIMEDOUT' }), { stdout, stderr }))
+        return
+      }
+      resolve(stdout)
+    })
+    fallback = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child?.kill?.('SIGKILL')
+      reject(Object.assign(new Error('tmux timed out'), { code: 'ETIMEDOUT', stdout: '', stderr: '' }))
+    }, timeout + CAPTURE_ASYNC_GRACE_MS)
+    fallback.unref?.()
+    // The sync twin runs with stdin 'ignore'; close ours so an ssh-routed call never waits on it.
+    child?.stdin?.end()
+  })
+}
+
 // Tri-state run state. For a remote agent a failed list-sessions query is
 // 'unreachable' (the session is almost certainly still alive on the laptop --
 // an SSH drop must never read as 'stopped', which would trigger a wrong
@@ -3621,7 +3656,7 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // which runs its own pre-emit dismissals, so skipping loses nothing.
 export async function clearFeedbackModalAndRecheck(session: string, host: string | null = null): Promise<boolean> {
   try {
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     if (pane == null || !detectsFeedbackDraftModal(pane)) return false
     const releaseLane = tryAcquireSessionSendLane(session, host)
     if (!releaseLane) {
@@ -4829,6 +4864,15 @@ export function capturePane(session: string, host: string | null = null): string
   }
 }
 
+/** Same contract as capturePane, without blocking the event loop; the sync twin stays for synchronous callers (withTmuxBatch accepts only synchronous functions). */
+export async function capturePaneAsync(session: string, host: string | null = null): Promise<string | null> {
+  try {
+    return stripAllAnsi(stripSessionTitleBanner(await captureTmuxAsync(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
 /**
  * REMOTESAWTURN1022: newest transcript write of a remote agent, as a local-clock
  * epoch ms, read over the existing ssh path. The local clock is taken before the
@@ -4930,6 +4974,15 @@ export function capturePaneWithHistory(session: string, historyLines = 500, host
 export function captureParkedInputView(session: string, host: string | null = null): string | null {
   try {
     return stripGhostSuggestion(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p']))
+  } catch {
+    return null
+  }
+}
+
+/** Same contract as captureParkedInputView, without blocking the event loop; the sync twin stays for synchronous callers (withTmuxBatch accepts only synchronous functions). */
+export async function captureParkedInputViewAsync(session: string, host: string | null = null): Promise<string | null> {
+  try {
+    return stripGhostSuggestion(await captureTmuxAsync(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p']))
   } catch {
     return null
   }
@@ -5038,19 +5091,19 @@ export async function isSessionReadyForPrompt(
   // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
   // capture to decide whether anything REAL is parked (see
   // idleConsideringDimGhost / captureParkedInputView).
-  const idleOrGhost = (plain: string): boolean =>
-    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
-  const first = capturePane(session, host)
+  const idleOrGhost = async (plain: string): Promise<boolean> =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? await captureParkedInputViewAsync(session, host) : null)
+  const first = await capturePaneAsync(session, host)
   if (first == null) return false
   if (saturationRefusesDispatch(first, session)) {
     logger[saturationLog]({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  if (!idleOrGhost(first)) return false
+  if (!(await idleOrGhost(first))) return false
 
   await delay(PANE_READY_CONFIRM_DELAY_MS)
 
-  const second = capturePane(session, host)
+  const second = await capturePaneAsync(session, host)
   if (second == null) return false
   if (saturationRefusesDispatch(second, session)) {
     logger[saturationLog]({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
@@ -5293,7 +5346,7 @@ export async function clearStaleParkedInput(
   host: string | null = null,
   opts: { lockMode?: 'acquire' | 'held' } = {},
 ): Promise<boolean> {
-  const a = capturePane(session, host)
+  const a = await capturePaneAsync(session, host)
   if (a == null || detectPaneState(a) !== 'typing') return false
   // DIM-GUARD (2026-06-30, Szabi insight): extract the parked TEXT from the
   // dim-stripped (-e) view. Ghost/phantom frames -- stale captures, placeholder
@@ -5303,7 +5356,7 @@ export async function clearStaleParkedInput(
   // as a wedge (no clear, no escalate). Only a REAL typed line (normal intensity)
   // survives the strip. Falls back to the plain capture only if the -e capture
   // fails (rare), preserving prior behaviour in that edge case.
-  const parked = parkedInputText(captureParkedInputView(session, host) ?? a)
+  const parked = parkedInputText((await captureParkedInputViewAsync(session, host)) ?? a)
   if (!parked) return false
 
   // Cooldown guard FIRST, before any blocking sleep: if the same parked text was
@@ -5344,11 +5397,11 @@ async function clearStaleParkedInputInLane(
   prev: { last: number; sig: string; fails: number; escalated: boolean } | undefined,
 ): Promise<boolean> {
   await delay(PARKED_STABLE_CONFIRM_MS)
-  const b = capturePane(session, host)
+  const b = await capturePaneAsync(session, host)
   // Changed (someone is typing) or already cleared -> leave it alone, and do not
   // record an attempt (this was never a stuck box). Compare on the SAME dim-
   // stripped view as the initial extraction so a dim ghost can't flip the result.
-  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(captureParkedInputView(session, host) ?? b) !== parked) return false
+  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText((await captureParkedInputViewAsync(session, host)) ?? b) !== parked) return false
 
   // The main agent's input box is NEVER auto-cleared (a parked line could be a
   // real reply -- the 2026-06-30 "Balogh" near-miss). That stays absolute.
@@ -5425,7 +5478,7 @@ async function clearStaleParkedInputInLane(
     runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), sequence[i]], { timeout: 5000 })
     if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
       await delay(PARKED_CLEAR_SETTLE_MS)
-      const after = capturePane(session, host)
+      const after = await capturePaneAsync(session, host)
       if (after == null || detectPaneState(after) !== 'typing') break
     }
   }
@@ -5434,7 +5487,7 @@ async function clearStaleParkedInputInLane(
   // Verify the box is ACTUALLY empty before claiming success: only then is the
   // pending message safe to deliver next tick. Otherwise record the failure so
   // the cooldown guard above backs us off instead of hammering every tick.
-  const final = capturePane(session, host)
+  const final = await capturePaneAsync(session, host)
   const stillStuck = final != null && detectPaneState(final) === 'typing' && parkedInputText(final) === parked
   if (stillStuck) {
     const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1

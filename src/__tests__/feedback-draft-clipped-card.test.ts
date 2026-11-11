@@ -17,12 +17,13 @@ const { panes, sent, notify } = vi.hoisted(() => ({
 }))
 
 vi.mock('node:child_process', async (orig) => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
   const actual = await orig<typeof import('node:child_process')>()
   const nextPane = (args: string[]) => {
     if (!args.includes('-e') && panes.queue.length > 0) panes.last = panes.queue.shift() as string
     return args.includes('-e') ? panes.last : panes.last.replace(/\x1b\[[0-9;]*m/g, '')
   }
-  return {
+  const mocked = {
     ...actual,
     execFileSync: vi.fn((_file: string, args: string[]) => {
       if (Array.isArray(args) && args.includes('capture-pane')) return nextPane(args)
@@ -30,6 +31,7 @@ vi.mock('node:child_process', async (orig) => {
       return ''
     }),
   }
+  return { ...mocked, execFile: execFileFromSync(mocked.execFileSync) }
 })
 
 vi.mock('../notify.js', async (orig) => ({

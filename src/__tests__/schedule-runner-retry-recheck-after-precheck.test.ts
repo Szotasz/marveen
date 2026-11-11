@@ -44,8 +44,9 @@ vi.mock('../web/schedule-registry.js', () => ({
 }))
 
 vi.mock('node:child_process', async (importOriginal) => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
   const real = await importOriginal<typeof import('node:child_process')>()
-  return {
+  const mocked = {
     ...real,
     spawn: vi.fn(() => {
       preCheckRuns++
@@ -62,6 +63,7 @@ vi.mock('node:child_process', async (importOriginal) => {
       return child
     }),
   }
+  return { ...mocked, execFile: execFileFromSync(mocked.execFileSync) }
 })
 
 vi.mock('../logger.js', () => ({
@@ -116,6 +118,7 @@ vi.mock('../web/agent-process.js', () => ({
   startAgentProcess: vi.fn(() => ({ ok: true })),
   sessionExistsOnHost: () => true,
   capturePane: () => null,
+  capturePaneAsync: async () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
   resolveAgentProvider: () => 'telegram',
