@@ -6712,6 +6712,18 @@ a.oss-inv-name:hover { text-decoration: underline; }
   line-height: 1.5;
   white-space: pre-line;
 }
+.confirm-dialog-token {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 18px;
+  padding: 8px 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
 .settings-reset-confirm-keys {
   list-style: none;
   margin: 0 0 20px;
