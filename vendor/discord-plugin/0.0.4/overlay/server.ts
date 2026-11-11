@@ -339,7 +339,14 @@ async function gate(msg: Message): Promise<GateResult> {
   const groupAllowFrom = policy.allowFrom ?? []
   const requireMention = policy.requireMention ?? true
   // DCEXT1111 B1: with roles for this channel (DISCORD_CHANNEL_POLICY), a role holder may speak too. // MARVEEN-EXT
-  if (!channelSenderAllowed(groupAllowFrom, EXT.channelPolicy[channelId]?.allowRoles, senderId, memberRoleIds(msg.member))) { // MARVEEN-EXT
+  // A message fetched over REST (the F4 recovery) carries no member: its roles are fetched once, only when the // MARVEEN-EXT
+  // channel has roles and the sender is not already in its allowFrom. A failed fetch means no roles (closed). // MARVEEN-EXT
+  const allowRoles = EXT.channelPolicy[channelId]?.allowRoles // MARVEEN-EXT
+  let member: unknown = msg.member // MARVEEN-EXT
+  if (!member && allowRoles?.length && !groupAllowFrom.includes(senderId) && msg.guild) { // MARVEEN-EXT
+    member = await msg.guild.members.fetch(senderId).catch(() => null) // MARVEEN-EXT
+  } // MARVEEN-EXT
+  if (!channelSenderAllowed(groupAllowFrom, allowRoles, senderId, memberRoleIds(member))) { // MARVEEN-EXT
     return { action: 'drop' }
   }
   if (requireMention && !inBotThread(msg) && !(await isMentioned(msg, access.mentionPatterns))) { // MARVEEN-EXT

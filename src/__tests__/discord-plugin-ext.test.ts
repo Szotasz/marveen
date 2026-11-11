@@ -657,8 +657,34 @@ describe('B1: roles per channel (DISCORD_CHANNEL_POLICY)', () => {
     expect((await h({ [CH]: { allowRoles: [ROLE] } })(msg(OTHER, [ROLE], true))).action).toBe('drop') // a DM: allowFrom only
   })
 
+  // Live probe 2026-11-11: a message fetched over REST (the F4 recovery) has no member, so its roles were
+  // invisible and a role holder's recovered message was dropped. The gate now fetches the member once.
+  it('a message without a member (REST-fetched): the roles are fetched once; a failed fetch stays closed', async () => {
+    const CH = '1438000000000000700'
+    const fetches: string[] = []
+    const gate = (allowFrom: string[], fetchResult: 'ok' | 'fail') => new Function(
+      'loadAccess', 'pruneExpired', 'saveAccess', 'ChannelType', 'isMentioned', 'inBotThread', 'randomBytes',
+      'channelSenderAllowed', 'EXT', 'memberRoleIds',
+      `${slice('async function gate(', 'async function isMentioned(')}\nreturn gate`,
+    )(() => ({ dmPolicy: 'allowlist', allowFrom: [OWNER], groups: { [CH]: { requireMention: false, allowFrom } }, pending: {} }),
+      () => false, () => {}, { DM: 1 }, async () => false, () => false, () => Buffer.alloc(3),
+      ext.channelSenderAllowed, { channelPolicy: { [CH]: { allowRoles: [ROLE] } } }, (m: { roles?: string[] } | null | undefined) => m?.roles ?? [],
+    ) as (m: unknown) => Promise<{ action: string }>
+    const restMsg = (author: string, fetchResult: 'ok' | 'fail') => ({
+      author: { id: author }, channelId: CH, member: null,
+      guild: { members: { fetch: async (id: string) => { fetches.push(id); if (fetchResult === 'fail') throw new Error('Unknown Member'); return { roles: [ROLE] } } } },
+      channel: { type: 0, isThread: () => false, id: CH },
+    })
+    expect((await gate([OWNER], 'ok')(restMsg(OTHER, 'ok'))).action).toBe('deliver')
+    expect(fetches).toEqual([OTHER])
+    expect((await gate([OWNER], 'fail')(restMsg(OTHER, 'fail'))).action).toBe('drop')
+    fetches.length = 0
+    expect((await gate([OTHER], 'ok')(restMsg(OTHER, 'ok'))).action).toBe('deliver')
+    expect(fetches).toEqual([]) // already allowed by allowFrom: no REST call
+  })
+
   it('the wiring: gate() and the click check both read the policy; memberRoleIds handles both member shapes', () => {
-    expect(SERVER).toContain('if (!channelSenderAllowed(groupAllowFrom, EXT.channelPolicy[channelId]?.allowRoles, senderId, memberRoleIds(msg.member))) {')
+    expect(SERVER).toContain('if (!channelSenderAllowed(groupAllowFrom, allowRoles, senderId, memberRoleIds(member))) {')
     expect(SERVER).toContain('if (roles && roles.length > 0) return groupAllowFrom.includes(userId) || memberRoleIds(interaction.member).some(r => roles.includes(r))')
     const memberRoleIds = new Function(`${slice('function memberRoleIds(', '// DCEXT1111 A3: the message')}\nreturn memberRoleIds`)()
     expect(memberRoleIds({ roles: { cache: new Map([[ROLE, {}], [ROLE2, {}]]) } })).toEqual([ROLE, ROLE2])
