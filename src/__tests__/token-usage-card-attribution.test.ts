@@ -2,15 +2,15 @@
 // windows in kanban_card_events (the #568 logic), not from the stored task_title. Real in-memory DB.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
-import { getTokenDetails, TOKEN_DETAILS_Q_MAX_WINDOWS } from '../web/token-usage.js'
+import { getTokenDetails, likeContains, TOKEN_DETAILS_Q_MAX_WINDOWS } from '../web/token-usage.js'
 
 const MAP = { botName: 'Marveen', mainAgentId: 'marveen', now: 100_000 }
 
-function row(agent: string, ts: number, opts: { taskTitle?: string; preview?: string } = {}) {
+function row(agent: string, ts: number, opts: { taskTitle?: string; preview?: string; toolName?: string } = {}) {
   getDb().prepare(
-    `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, content_preview, task_title, project)
-     VALUES (?, 's', ?, 10, 1, 0, 0, ?, ?, ?)`,
-  ).run(agent, ts, opts.preview ?? `call ${ts}`, opts.taskTitle ?? null, opts.taskTitle ? 'stale-project' : null)
+    `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, content_preview, tool_name, task_title, project)
+     VALUES (?, 's', ?, 10, 1, 0, 0, ?, ?, ?, ?)`,
+  ).run(agent, ts, opts.preview ?? `call ${ts}`, opts.toolName ?? null, opts.taskTitle ?? null, opts.taskTitle ? 'stale-project' : null)
 }
 
 function card(id: string, title: string, assignee: string, moves: [string | null, string, number][], archivedAt: number | null = null) {
@@ -139,5 +139,49 @@ describe('q searches the card title through the windows (DBSIZE1111)', () => {
     expect(keys.size).toBe(TOKEN_DETAILS_Q_MAX_WINDOWS)
     expect(keys.has('samu@10001')).toBe(false)
     expect(keys.has(`samu@${10_000 + TOKEN_DETAILS_Q_MAX_WINDOWS * 10 + 1}`)).toBe(true)
+  })
+})
+
+describe('q is taken literally: %, _ and the backslash are not wildcards (DBSIZE1111 follow-up)', () => {
+  beforeEach(() => {
+    row('samu', 1000, { preview: 'plain text' })
+    row('samu', 1100, { preview: 'cut 50% of it' })
+    row('samu', 1200, { preview: 'a_b' })
+    row('samu', 1300, { preview: 'axb' })
+    row('samu', 1400, { preview: 'C:\\temp' })
+    card('c-pct', '100% done', 'geri', [['planned', 'in_progress', 5000], ['in_progress', 'done', 6000]])
+    card('c-other', 'Other card', 'geri', [['planned', 'in_progress', 7000], ['in_progress', 'done', 8000]])
+    row('geri', 5500, { preview: 'work' })
+    row('geri', 7500, { preview: 'work' })
+  })
+
+  it('q="%" matches only the rows with a literal %, on every column and the card title', () => {
+    expect([...details({ q: '%' }).keys()].sort()).toEqual(['geri@5500', 'samu@1100'])
+  })
+
+  it('q="_" matches a literal underscore, not any one character', () => {
+    expect([...details({ q: 'a_b' }).keys()]).toEqual(['samu@1200'])
+    expect([...details({ q: '_' }).keys()]).toEqual(['samu@1200'])
+  })
+
+  it('a backslash is matched as itself', () => {
+    expect([...details({ q: '\\temp' }).keys()]).toEqual(['samu@1400'])
+  })
+
+  it('the tool_name column is escaped too', () => {
+    // Without the ESCAPE clause the escaped pattern reads as "a backslash, then anything": a path would match.
+    row('samu', 9100, { preview: 'no wildcard here', toolName: 'C:\\bin' })
+    expect([...details({ q: '%' }).keys()].sort()).toEqual(['geri@5500', 'samu@1100'])
+    row('samu', 9200, { preview: 'nothing', toolName: 'run%tool' })
+    expect([...details({ q: 'n%t' }).keys()]).toEqual(['samu@9200'])
+  })
+
+  it('the agent column is escaped too', () => {
+    row('a%gent', 9000)
+    expect([...details({ q: 'a%g' }).keys()]).toEqual(['a%gent@9000'])
+  })
+
+  it('likeContains escapes %, _ and the backslash, and wraps the text', () => {
+    expect(likeContains('50%_\\x')).toBe('%50\\%\\_\\\\x%')
   })
 })

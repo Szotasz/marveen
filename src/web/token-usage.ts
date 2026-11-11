@@ -711,6 +711,12 @@ export interface TokenDetail {
  *  still searched). */
 export const TOKEN_DETAILS_Q_MAX_WINDOWS = 200
 
+/** LIKE with a backslash escape: the clause and the pattern for "contains this text literally". */
+const LIKE_ESCAPE = "ESCAPE '\\'"
+export function likeContains(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+}
+
 export function getTokenDetails(
   opts: {
     agent?: string; from?: number; to?: number; limit?: number; offset?: number; minTokens?: number; q?: string
@@ -731,8 +737,9 @@ export function getTokenDetails(
     params.push(opts.minTokens)
   }
   if (opts.q) {
-    const like = `%${opts.q}%`
-    const terms = ['agent LIKE ?', 'tool_name LIKE ?', 'content_preview LIKE ?']
+    // The search text is taken literally: %, _ and the backslash in it are escaped, not wildcards.
+    const like = likeContains(opts.q)
+    const terms = [`agent LIKE ? ${LIKE_ESCAPE}`, `tool_name LIKE ? ${LIKE_ESCAPE}`, `content_preview LIKE ? ${LIKE_ESCAPE}`]
     params.push(like, like, like)
     // The card title: matching cards -> their in_progress windows -> the agent's rows inside them.
     for (const w of cardTitleWindows(opts.q, opts)) {
@@ -822,7 +829,7 @@ function cardTitleWindows(
   opts: { agent?: string; botName?: string; mainAgentId?: string; now?: number },
 ): { agent: string; from: number; to: number }[] {
   const db = getDb()
-  const ids = new Set((db.prepare('SELECT id FROM kanban_cards WHERE title LIKE ?').all(`%${q}%`) as { id: string }[]).map((r) => r.id))
+  const ids = new Set((db.prepare(`SELECT id FROM kanban_cards WHERE title LIKE ? ${LIKE_ESCAPE}`).all(likeContains(q)) as { id: string }[]).map((r) => r.id))
   if (ids.size === 0) return []
   const all: { agent: string; from: number; to: number }[] = []
   for (const [agent, list] of agentCardWindows(opts.agent ? new Set([opts.agent]) : null, opts)) {
