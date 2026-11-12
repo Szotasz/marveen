@@ -10,13 +10,17 @@ Ez nem skálázható éles üzem: az SQLite és a tmux session-ök miatt egyetle
 
 ```bash
 kind create cluster --config deploy/kind/kind-config.yaml
-helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
+docker build -t marveen:dev .                    # amíg nincs publikus hivatalos image, lásd lent
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
 kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token
 # nyisd meg: http://127.0.0.1:3420/?token=<a fenti token>
 kind delete cluster --name marveen    # cluster törlése (a PVC-kkel együtt)
 ```
 
 Az első indítás eltart egy ideig (kód-szinkron, first-boot beállítás); a pod akkor lesz ready, amikor a dashboard válaszol. A dashboard jelszavát, a Claude-bejelentkezést és a csatorna botját a beállító varázslóban adod meg, ugyanúgy, mint [a Docker útmutatóban](docker.md).
+
+Az alábbi `helm` példákhoz add hozzá ugyanazt az `--set image.repository=marveen --set image.tag=dev` kapcsolót, amíg nincs publikus hivatalos image.
 
 Az első indítás beállításai (`MARVEEN_CHANNEL`, `MARVEEN_AGENT_ID`, `MARVEEN_LANG`, `TZ`) sima chart értékek, és az install élettartamára rögzülnek (lásd [a Docker útmutatót](docker.md)):
 
@@ -51,13 +55,15 @@ helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen -
 
 **Readiness.** A próba ugyanazt a `curl` ellenőrzést futtatja, mint az image `HEALTHCHECK`-je, így a hallgatózó, de még nem kész dashboard nem kap forgalmat.
 
-A chart a `ghcr.io/szotasz/marveen:latest` image-et használja. Ha a saját, még nem publikált kódodat akarod kipróbálni, építsd meg a gyökér Dockerfile-lal, töltsd be a cluster-be, és add meg a chartnak:
+**Image.** A chart alapértéke a hivatalos `ghcr.io/szotasz/marveen:latest`. **Amíg ez az image nincs publikálva (és publikusan letölthető), a pod `ImagePullBackOff`-ba fut**, ezért addig a gyökér Dockerfile-ból kell megépíteni az image-et, betölteni a cluster-be, és megadni a chartnak (a gyorsindítás ezt teszi):
 
 ```bash
 docker build -t marveen:dev .
 kind load docker-image marveen:dev --name marveen
 helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
 ```
+
+Ugyanez érvényes, ha a saját, még nem publikált kódodat akarod kipróbálni. A Helm megtartja a korábbi `--set` értékeket, ezért ha később a hivatalos image-re váltasz, add hozzá a `--reset-values` kapcsolót.
 
 ## Korlátok
 

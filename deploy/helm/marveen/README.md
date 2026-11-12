@@ -12,7 +12,9 @@ workload (`Recreate` strategy, `ReadWriteOnce` volumes).
 
 ```sh
 kind create cluster --config deploy/kind/kind-config.yaml
-helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
+docker build -t marveen:dev .   # until there is a public official image
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
 open http://127.0.0.1:3420/?token=$(kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token)
 kind delete cluster --name marveen
 ```
@@ -36,7 +38,7 @@ Follows the official layout, run as the image's user (uid 1000):
 | env | object | `{}` | First-start settings of the official image, plain environment values (see `docs/docker.md`): `MARVEEN_CHANNEL` (telegram|discord|slack, fixed for the install), `MARVEEN_AGENT_ID`, `MARVEEN_LANG` (en|hu), `TZ`, `MARVEEN_OLLAMA_URL`. |
 | existingSecret | string | `""` | Name of an existing Secret. All its keys are injected as env vars (optional, mounted read-only as env only). |
 | image.pullPolicy | string | `"IfNotPresent"` | Image pull policy. |
-| image.repository | string | `"ghcr.io/szotasz/marveen"` | Image repository. The official image. To try local code, build the root Dockerfile, `kind load docker-image` it, and override `image.repository`/`image.tag`. |
+| image.repository | string | `"ghcr.io/szotasz/marveen"` | Image repository. The official image. Until it is published and public, build the root Dockerfile, `kind load docker-image` it, and override `image.repository`/`image.tag` (add `--reset-values` when switching back). |
 | image.tag | string | `"latest"` | Image tag. |
 | persistence.home.size | string | `"1Gi"` | Size of the PVC mounted at `/home/marveen` (`~/.claude`: Claude login, plugins, skills). |
 | persistence.install.size | string | `"2Gi"` | Size of the PVC mounted at `/opt/marveen` (the code copy, `.env`, `store/` with the database, agents, workspace). |

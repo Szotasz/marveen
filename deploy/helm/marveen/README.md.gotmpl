@@ -11,7 +11,9 @@ workload (`Recreate` strategy, `ReadWriteOnce` volumes).
 
 ```sh
 kind create cluster --config deploy/kind/kind-config.yaml
-helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
+docker build -t marveen:dev .   # until there is a public official image
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
 open http://127.0.0.1:3420/?token=$(kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token)
 kind delete cluster --name marveen
 ```

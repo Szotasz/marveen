@@ -10,13 +10,17 @@ This is not a scalable production setup: SQLite and tmux sessions make it a sing
 
 ```bash
 kind create cluster --config deploy/kind/kind-config.yaml
-helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
+docker build -t marveen:dev .                    # until there is a public official image, see below
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
 kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token
 # open: http://127.0.0.1:3420/?token=<the token above>
 kind delete cluster --name marveen    # delete the cluster (PVCs included)
 ```
 
 The first start takes a while (code sync, first-boot setup); the pod becomes ready when the dashboard answers. Set the dashboard password and finish the Claude login and the channel bot in the setup wizard, exactly as in [the Docker guide](../docker.md).
+
+For the `helm` examples below, add the same `--set image.repository=marveen --set image.tag=dev` flags until there is a public official image.
 
 First-start settings (`MARVEEN_CHANNEL`, `MARVEEN_AGENT_ID`, `MARVEEN_LANG`, `TZ`) are plain chart values, fixed for the install (see [the Docker guide](../docker.md)):
 
@@ -51,13 +55,15 @@ helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen -
 
 **Readiness.** The probe runs the same `curl` check as the image's `HEALTHCHECK`, so a dashboard that listens but is not ready receives no traffic.
 
-The chart uses `ghcr.io/szotasz/marveen:latest`. To try your own, not yet published code, build the root Dockerfile, load it into the cluster and point the chart at it:
+**Image.** The chart defaults to the official `ghcr.io/szotasz/marveen:latest`. **Until that image is published (and publicly pullable), the pod ends in `ImagePullBackOff`**, so for now build the image from the root Dockerfile, load it into the cluster and point the chart at it (the quick start does this):
 
 ```bash
 docker build -t marveen:dev .
 kind load docker-image marveen:dev --name marveen
 helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
 ```
+
+The same applies if you want to try your own, not yet published code. Helm keeps earlier `--set` values, so when you later switch to the official image, add `--reset-values`.
 
 ## Limits
 

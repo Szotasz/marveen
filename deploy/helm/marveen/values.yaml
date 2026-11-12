@@ -1,5 +1,5 @@
 image:
-  # -- Image repository. The official image. To try local code, build the root Dockerfile, `kind load docker-image` it, and override `image.repository`/`image.tag`.
+  # -- Image repository. The official image. Until it is published and public, build the root Dockerfile, `kind load docker-image` it, and override `image.repository`/`image.tag` (add `--reset-values` when switching back).
   repository: ghcr.io/szotasz/marveen
   # -- Image tag.
   tag: latest
