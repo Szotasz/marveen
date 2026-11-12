@@ -175,3 +175,30 @@ describe('the hook end to end', () => {
     expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason).toContain('Egress-engedelylista TILTOTT')
   })
 })
+
+// AGENTEGRESS1111: per-agent lists receive the global list's write protection and read allowance.
+describe('per-agent protected vendor lists', () => {
+  const file = 'egress-vendor-hosts-alpha.json'
+  it.each(['Write', 'Edit'])('%s on store/egress-vendor-hosts-alpha.json is denied', (tool) => {
+    expect(decide(tool, { file_path: `store/${file}`, content: '{}' })).toEqual(DENY)
+    expect(decide(tool, { file_path: join(root, file), content: '{}' })).toEqual(DENY)
+  })
+  it('a renamed symlink to the agent list is denied', () => {
+    writeFileSync(join(store, file), '{}')
+    const link = join(root, 'innocent.json')
+    symlinkSync(join(store, file), link)
+    expect(decide('Write', { file_path: link, content: '{}' })).toEqual(DENY)
+  })
+  it('a Bash printf write to the agent list is denied', () => {
+    expect(decide('Bash', { command: `printf x > store/${file}` })).toEqual(DENY)
+  })
+  it('a read-only Bash cat of the agent list is allowed', () => {
+    expect(decide('Bash', { command: `cat store/${file}` }).deny).toBe(false)
+  })
+  it('Write on docs/egress-vendor-hosts-guide.md is allowed', () => {
+    expect(decide('Write', { file_path: 'docs/egress-vendor-hosts-guide.md', content: '' }).deny).toBe(false)
+  })
+  it('Bash cat docs/egress-vendor-hosts-guide.md is allowed', () => {
+    expect(decide('Bash', { command: 'cat docs/egress-vendor-hosts-guide.md' }).deny).toBe(false)
+  })
+})

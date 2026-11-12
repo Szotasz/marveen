@@ -434,6 +434,7 @@ export function allowlistBashSegmentAllowed(seg, ctx) {
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
 // treatment as the allowlist above:
+//   egress-vendor-hosts-<agent>.json -- per-agent additions to the global list (AGENTEGRESS1111)
 //   egress-vendor-hosts.json       -- the hosts bash-egress-parser lets curl/wget reach
 //   config-overrides.json          -- dashboard settings; BASH_SANDBOX_AGENTS is one of them
 //   bash-sandbox-write-paths.json  -- where a sandboxed agent may write (#2149)
@@ -445,6 +446,7 @@ export function allowlistBashSegmentAllowed(seg, ctx) {
 // process; none of them runs this gate. Unlike the allowlist, these have no hash baseline yet,
 // so what this gate cannot see (a path built at runtime) is not reported after the fact.
 const DEFAULT_STORE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'store')
+export const AGENT_VENDOR_HOSTS_RX = /^egress[-_]?vendor[-_]?hosts[-_][\w.-]+\.json$/i
 export const PROTECTED_STORE_FILES = new Set([
   'egress-vendor-hosts.json',
   'config-overrides.json',
@@ -458,7 +460,7 @@ export const PROTECTED_STORE_FILES = new Set([
 // approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
 // glob over src/approval-bot* stays out too.
 const PROTECTED_MENTION_RX =
-  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+  /(?:egress[-_]?vendor[-_]?hosts(?:[-_][\w.-]*)?|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
 
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
@@ -665,8 +667,10 @@ function substituteDefinite(text, definite) {
 export function fileToolTargetsProtectedStoreFile(toolInput, storeDir = DEFAULT_STORE_DIR, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (PROTECTED_STORE_FILES.has(basename(raw).toLowerCase())) return true
+  if (PROTECTED_STORE_FILES.has(basename(raw).toLowerCase()) || AGENT_VENDOR_HOSTS_RX.test(basename(raw))) return true
   const real = realOrSelf(resolve(cwd, expandHome(raw)))
+  // AGENTEGRESS1111: a renamed symlink must not bypass the per-agent list protection.
+  if (dirname(real) === realOrSelf(storeDir) && AGENT_VENDOR_HOSTS_RX.test(basename(real))) return true
   return [...PROTECTED_STORE_FILES].some((f) => real === realOrSelf(join(storeDir, f)))
 }
 
@@ -3902,7 +3906,7 @@ const MCP_GATE_MSG =
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
-  'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
+  'store/egress-vendor-hosts.json, store/egress-vendor-hosts-<agent>.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
   'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
   'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
   'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +
