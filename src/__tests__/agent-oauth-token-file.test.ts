@@ -294,11 +294,16 @@ describe('launcher wiring (agent-process.ts)', () => {
   const FLEET_EXPORT = 'oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat \'${FLEET_OAUTH_TOKEN_PATH}\')" && `'
 
   it('decides BEFORE the remote branch, the running check and any tmux call, and a refusal returns', () => {
-    const decide = FN.indexOf('decideOwnOauthToken({')
+    // ENGINEPILOT: the codex engine dispatch at the top is a parallel flow with
+    // its own running check and tmux call (no Claude auth is involved); the
+    // fail-closed ordering contract is about the Claude flow, measured from the
+    // first statement after that dispatch.
+    const CLAUDE = FN.slice(FN.indexOf('// Remote agents are handled entirely by the ssh path above'))
+    const decide = CLAUDE.indexOf('decideOwnOauthToken({')
     expect(decide).toBeGreaterThan(0)
-    expect(decide).toBeLessThan(FN.indexOf('return startRemoteAgentProcess('))
-    expect(decide).toBeLessThan(FN.indexOf('if (isAgentRunning(name))'))
-    expect(decide).toBeLessThan(FN.indexOf('runTmux('))
+    expect(decide).toBeLessThan(CLAUDE.indexOf('return startRemoteAgentProcess('))
+    expect(decide).toBeLessThan(CLAUDE.indexOf('if (isAgentRunning(name))'))
+    expect(decide).toBeLessThan(CLAUDE.indexOf('runTmux('))
     const refused = FN.slice(FN.indexOf("if (ownOauth.kind === 'refused') {"))
     expect(refused.slice(0, 400)).toMatch(/return \{ ok: false, error: `oauthTokenFile: /)
   })

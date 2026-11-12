@@ -102,7 +102,10 @@ describe('every default launch path is wired to the guard', () => {
   })
   it('agent create without a model: guarded, not the raw default', () => {
     const src = readFileSync(join(SRC, 'web', 'routes', 'agents.ts'), 'utf-8')
-    expect(src).toContain("rawModel || await launchableInstallDefault('agent-create', { fresh: true })")
+    // ENGINEPILOT: engine=codex has no launchable Claude install to guard, so
+    // the raw DEFAULT_MODEL shortcut exists ONLY inside the codex ternary; the
+    // claude path still resolves through the install guard.
+    expect(src).toContain("rawModel || (engineConfig.engine === 'codex' ? DEFAULT_MODEL : await launchableInstallDefault('agent-create', { fresh: true }))")
     expect(src).not.toMatch(/rawModel \|\| DEFAULT_MODEL/)
   })
   it('main respawn: the distribution-default layer is guarded', () => {

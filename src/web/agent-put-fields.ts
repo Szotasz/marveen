@@ -13,6 +13,7 @@
 // unusable for hours while the API kept reporting success.
 
 export const AGENT_PUT_WRITABLE_FIELDS = [
+  'engine', 'codexConfigDir',
   'claudeMd', 'soulMd', 'mcpJson', 'model',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
   'modelProfile', 'customProvider',
@@ -24,6 +25,7 @@ export const AGENT_PUT_WRITABLE_FIELDS = [
 // shared access token every sub-agent can read. model and modelProfile stay token-writable (Samu 69185): the id is
 // validated and changes neither a target nor an instruction, and the quota and install flows set it with the token.
 export const AGENT_PUT_OWNER_FIELDS = [
+  'engine', 'codexConfigDir',
   'claudeMd', 'soulMd', 'mcpJson',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
   'customProvider',

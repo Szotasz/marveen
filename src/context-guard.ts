@@ -1528,3 +1528,6 @@ export function contextGuardTokenRefusals(before: ContextGuardConfig, after: Con
   }
   return out
 }
+
+/** No context measurement or restart decisions for the Codex pilot. */
+export function contextGuardSupportsEngine(engine: string): boolean { return engine === 'claude' }

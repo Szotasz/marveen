@@ -75,6 +75,8 @@ vi.mock('../web/agent-config.js', () => ({
   agentDir: (n: string) => join(ROOT, 'agents', n),
   readAgentModel: () => null,
   readAgentRemoteHost: () => null,
+  readAgentEngineConfig: () => ({ engine: 'claude', codexConfigDir: null }),
+  readAgentEngineConfigSafe: () => ({ engine: 'claude', codexConfigDir: null }),
   readAgentWorksourceChannel: () => h.worksource,
 }))
 vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))

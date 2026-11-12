@@ -1,0 +1,6 @@
+{
+  "name": "codex-pilot",
+  "description": "Disposable test agent without channel ownership",
+  "engine": "codex",
+  "codexConfigDir": "/var/lib/marveen/codex-pilot"
+}

@@ -1,3 +1,4 @@
+import { validateAgentEngine, resolveAgentEngine, resolveCodexConfigDir, type AgentEngineConfig } from './agent-engine.js'
 import { readFileSync, existsSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -5,7 +6,7 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readEnvFile } from '../env.js'
 import { parseExtraChannels, wantsGromzo } from './agent-extra-channels.js'
-import type { ChannelProviderType } from '../channel-provider.js'
+import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { safeJoin } from './sanitize.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
@@ -1018,4 +1019,40 @@ export function writeAgentCustomProvider(name: string, id: string | null): void 
   if (id && id.trim()) config.customProvider = id.trim()
   else delete config.customProvider
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+export function validateAgentEngineConfig(name: string, config: Record<string, unknown>): AgentEngineConfig {
+  const resolved = validateAgentEngine(config)
+  if (resolved.engine === 'codex') {
+    const providers: ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams', 'gromzo']
+    const hasChannel = name === MAIN_AGENT_ID || providers.some(provider =>
+      readChannelToken(provider, join(channelStateDir(provider, agentDir(name)), '.env')) !== null)
+    return validateAgentEngine(config, hasChannel)
+  }
+  return resolved
+}
+
+export function readAgentEngineConfig(name: string): AgentEngineConfig {
+  let config: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(readFileOr(join(agentConfigRoot(name), 'agent-config.json'), '{}'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed as Record<string, unknown>
+  } catch { /* Malformed JSON has the same defaults as an absent config. */ }
+  return { engine: resolveAgentEngine(config.engine), codexConfigDir: resolveCodexConfigDir(config.codexConfigDir) }
+}
+
+const invalidEngineWarnings = new Set<string>()
+
+export function readAgentEngineConfigSafe(name: string): AgentEngineConfig {
+  try {
+    return readAgentEngineConfig(name)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const key = JSON.stringify([name, message])
+    if (!invalidEngineWarnings.has(key)) {
+      invalidEngineWarnings.add(key)
+      logger.warn({ name, err: message }, 'agent-config.json engine is invalid; supervising the agent as claude')
+    }
+    return { engine: 'claude', codexConfigDir: null }
+  }
 }

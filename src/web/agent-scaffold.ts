@@ -1,3 +1,4 @@
+import { scaffoldCodexHome } from './agent-engine.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
@@ -11,7 +12,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, readJsonObjectForWrite, agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
@@ -3331,6 +3332,30 @@ export function ensureDefaultScheduledTasks(lang: AgentTextLang = agentTextLang(
   }
 }
 
+export function inheritedMcpConfigForNewAgent(name: string, opts: { log?: boolean } = {}): Record<string, unknown> {
+  // MCPOROKLES923: a new agent inherits from the project-root .mcp.json ONLY the
+  // servers on AGENT_INHERITED_MCP_SERVERS (mcp-inheritance.ts). This used to be a
+  // plain copy, so whatever the operator put into the root -- a mail connector is a
+  // natural thing to put there -- reached every new agent unasked.
+  const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
+  let inherited: Record<string, unknown> = { mcpServers: {} }
+  if (existsSync(sharedMcp)) {
+    try {
+      const parsed = JSON.parse(readFileSync(sharedMcp, 'utf-8')) as Record<string, unknown>
+      const servers = parsed && typeof parsed.mcpServers === 'object' && parsed.mcpServers !== null && !Array.isArray(parsed.mcpServers)
+        ? parsed.mcpServers as Record<string, unknown>
+        : {}
+      const { kept, dropped } = filterInheritableMcpServers(servers, readInheritableMcpServerNames())
+      if (opts.log !== false) logNotInherited(name, 'scaffold', dropped)
+      inherited = { ...parsed, mcpServers: kept }
+    } catch (err) {
+      // Unparseable root config: inherit nothing rather than copy what we cannot filter.
+      if (opts.log !== false) logger.warn({ err, name }, 'MCP inheritance: project .mcp.json unreadable, new agent inherits no servers')
+    }
+  }
+  return inherited
+}
+
 export function scaffoldAgentDir(name: string) {
   const dir = agentDir(name)
   mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
@@ -3362,28 +3387,8 @@ export function scaffoldAgentDir(name: string) {
   if (!existsSync(memoryMd)) writeFileSync(memoryMd, '')
   const mcpJson = join(dir, '.mcp.json')
   if (!existsSync(mcpJson)) {
-    // MCPOROKLES923: a new agent inherits from the project-root .mcp.json ONLY the
-    // servers on AGENT_INHERITED_MCP_SERVERS (mcp-inheritance.ts). This used to be a
-    // plain copy, so whatever the operator put into the root -- a mail connector is a
-    // natural thing to put there -- reached every new agent unasked.
-    const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
-    let inherited: Record<string, unknown> = { mcpServers: {} }
-    if (existsSync(sharedMcp)) {
-      try {
-        const parsed = JSON.parse(readFileSync(sharedMcp, 'utf-8')) as Record<string, unknown>
-        const servers = parsed && typeof parsed.mcpServers === 'object' && parsed.mcpServers !== null && !Array.isArray(parsed.mcpServers)
-          ? parsed.mcpServers as Record<string, unknown>
-          : {}
-        const { kept, dropped } = filterInheritableMcpServers(servers, readInheritableMcpServerNames())
-        logNotInherited(name, 'scaffold', dropped)
-        inherited = { ...parsed, mcpServers: kept }
-      } catch (err) {
-        // Unparseable root config: inherit nothing rather than copy what we cannot filter.
-        logger.warn({ err, name }, 'MCP inheritance: project .mcp.json unreadable, new agent inherits no servers')
-      }
-    }
     // Valid empty shape when nothing is inherited -- `claude /doctor` rejects plain "{}"
-    atomicWriteFileSync(mcpJson, JSON.stringify(inherited, null, 2))
+    atomicWriteFileSync(mcpJson, JSON.stringify(inheritedMcpConfigForNewAgent(name), null, 2))
   }
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the
@@ -3409,6 +3414,12 @@ export function scaffoldAgentDir(name: string) {
       const resolved = resolveTemplatePlaceholders(localizeSettingsTemplate(readFileSync(tplPath, 'utf-8')))
       atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
+  }
+  const engineConfig = readAgentEngineConfig(name)
+  if (engineConfig.engine === 'codex') {
+    validateAgentEngineConfig(name, readJsonObjectForWrite(join(dir, 'agent-config.json')))
+    const servers = JSON.parse(readFileSync(mcpJson, 'utf-8')).mcpServers ?? {}
+    scaffoldCodexHome(engineConfig.codexConfigDir!, dir, servers)
   }
 }
 
