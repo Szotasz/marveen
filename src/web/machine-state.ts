@@ -10,8 +10,11 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import * as os from 'node:os'
 
-// Aggregated jiffies of the `cpu ` line of /proc/stat: total = all fields, idleAll =
-// idle + iowait (the buckets that mean "the CPU did nothing").
+// One aggregated CPU reading from a single source: total = every bucket that source counts
+// (/proc/stat: the first 8 fields, user..steal, guest excluded -- see parseStatTotalLine;
+// os.cpus(): user + nice + sys + idle + irq), idleAll = its idle buckets (idle + iowait on
+// /proc/stat, idle on os.cpus()). Only the delta of two readings from the same source means
+// anything (computeBusyFrac).
 export interface CpuSnapshot { total: number; idleAll: number }
 
 // Page size for the resident-pages -> MB conversion. os.pageSize() is newer than the
@@ -92,7 +95,8 @@ export function computeBusyFrac(prev: CpuSnapshot | null, cur: CpuSnapshot | nul
 
 // Parse /proc/meminfo (kB values -> MB, rounded). meminfo has no SwapUsed key: swap in use
 // is SwapTotal - SwapFree (SwapCached is kernel bookkeeping, not usage). A missing or
-// non-finite key -> null for just that field.
+// non-finite key -> null for just that field. SwapFree above SwapTotal is an inconsistent
+// reading: swapUsedMB is null, not negative.
 export function parseMeminfo(text: string): { memAvailableMB: number | null; swapUsedMB: number | null } {
   const kb = new Map<string, number>()
   for (const line of text.split('\n')) {
@@ -107,7 +111,7 @@ export function parseMeminfo(text: string): { memAvailableMB: number | null; swa
   const swapFree = kb.get('SwapFree')
   return {
     memAvailableMB: memAvailable === undefined ? null : Math.round(memAvailable / 1024),
-    swapUsedMB: swapTotal === undefined || swapFree === undefined
+    swapUsedMB: swapTotal === undefined || swapFree === undefined || swapFree > swapTotal
       ? null
       : Math.round((swapTotal - swapFree) / 1024),
   }
