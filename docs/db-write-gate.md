@@ -12,7 +12,11 @@
    `~/.config/git/config`;
    and the owner-gated agent settings the dashboard keeps in `store/` (GATEFILES1110): `store/custom-providers.json`
    (each provider's `baseUrl`) and `store/context-guard.json`. Their API routes are owner-gated; only the dashboard
-   writes them;
+   writes them. Also `store/email-draft-only-scripts.json` (DRAFTONLYSCRIPT1111): the owner's registry of local
+   draft-only mail scripts (`{"scripts": [{"path": "<abs>", "sha256": "<hex>", "note": "..."}]}`). A script on it whose
+   current sha256 matches is a draft for `email-approval-gate.py` (no approval, only as one literal
+   `python3 <abs path> args` call); an agent that could write it could register its own sender, so only the owner
+   edits it. The hash covers the script file only, not what it imports;
 4. in the install's main checkout, every git subcommand that changes the tree or the refs except
    `git fetch [origin]`, exactly `git pull --ff-only origin <branch>`, and `git checkout -- <paths>` /
    `git restore <paths>` with no ref; everywhere, a write of `refs/remotes/*` and of the config keys that redirect a

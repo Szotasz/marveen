@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
-const FILES = ['egress-vendor-hosts.json', 'config-overrides.json', 'bash-sandbox-write-paths.json', 'email-standing-recipients.json',
+const FILES = ['egress-vendor-hosts.json', 'config-overrides.json', 'bash-sandbox-write-paths.json', 'email-standing-recipients.json', 'email-draft-only-scripts.json',
   '.approval-bot-token', '.approval-bot-key']
 
 let root: string
