@@ -1,51 +1,44 @@
 # marveen
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![AppVersion: 1.46.0](https://img.shields.io/badge/AppVersion-1.46.0-informational?style=flat-square)
+![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square)
 
 Marveen on a single pod, for local kind clusters
 
-Runs the whole app (dashboard on port 3420, tmux-based agents, Telegram channel)
-in a single pod. It is meant for a local [kind](https://kind.sigs.k8s.io/)
+Runs the official Marveen image (see `docs/docker.md`) in a single pod. It is meant for a local [kind](https://kind.sigs.k8s.io/)
 cluster, not for scaling out: SQLite and tmux sessions make it a single-replica
 workload (`Recreate` strategy, `ReadWriteOnce` volumes).
 
 ## Quick start
 
 ```sh
-make -f deploy/Makefile up          # build image, create kind cluster, helm install
-open http://127.0.0.1:3420/?token=$(kubectl exec deploy/marveen -- cat /app/store/.dashboard-token)
+make -f deploy/Makefile up          # build the root Dockerfile, create kind cluster, helm install
+open http://127.0.0.1:3420/?token=$(kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token)
 make -f deploy/Makefile down
 ```
 
-With secrets (`env` key = `.env` content, used on first start only):
-
-```sh
-kubectl create secret generic marveen-secrets --from-file=env=./kind.env
-make -f deploy/Makefile deploy SECRET=marveen-secrets
-```
+First-start settings (`MARVEEN_CHANNEL`, `MARVEEN_AGENT_ID`, `MARVEEN_LANG`, `TZ`) are plain `env` values;
+a Secret (`existingSecret`) is injected as environment variables.
 
 ## Persistence
 
+Follows the official layout, run as the image's user (uid 1000):
+
 | Path in the pod | Volume | Content |
 |---|---|---|
-| `/app/store` | `store` PVC | database, `.env` copy, `data/{.claude,agents,workspace,reports}` |
-| `/home/node/.claude` | `claude-home` PVC | Claude login, plugins |
-
-`/app/.env` is rendered from `store/.env` at start and mirrored back every
-3 seconds, because the dashboard rewrites it. To re-seed it from the Secret:
-`kubectl exec deploy/marveen -- rm /app/store/.env`, then restart the pod.
+| `/opt/marveen` | `install` PVC | the install: code, `.env`, `store/`, agents, workspace |
+| `/home/marveen` | `home` PVC | `~/.claude` (Claude login, plugins), `~/.claude.json` |
 
 ## Values
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| env | object | `{}` | Extra plain environment variables for the container. Note that the app reads its settings from `.env`, not from the process environment. |
-| existingSecret | string | `""` | Name of an existing Secret. All its keys are injected as env vars. An optional key `env` is mounted as `/config/env` and seeds the app's `.env` on the very first start only (after that `store/.env` on the PVC is the source of truth, because the dashboard rewrites it). Example content of the `env` key: `CLAUDE_CODE_OAUTH_TOKEN=...`. |
+| env | object | `{}` | First-start settings of the official image, plain environment values (see `docs/docker.md`): `MARVEEN_CHANNEL` (telegram|discord|slack, fixed for the install), `MARVEEN_AGENT_ID`, `MARVEEN_LANG` (en|hu), `TZ`, `MARVEEN_OLLAMA_URL`. |
+| existingSecret | string | `""` | Name of an existing Secret. All its keys are injected as env vars (optional, mounted read-only as env only). |
 | image.pullPolicy | string | `"IfNotPresent"` | Image pull policy. |
-| image.repository | string | `"marveen"` | Image repository. With kind, load it via `make -f deploy/Makefile load`. |
-| image.tag | string | `"dev"` | Image tag. |
-| persistence.claudeHome.size | string | `"512Mi"` | Size of the PVC mounted at `/home/node/.claude` (Claude login, plugins). |
-| persistence.store.size | string | `"2Gi"` | Size of the PVC mounted at `/app/store` (database, `.env`, agents, workspace, reports, Telegram state). |
+| image.repository | string | `"ghcr.io/szotasz/marveen"` | Image repository. The official image; with kind, `make -f deploy/Makefile up` builds the root Dockerfile as `marveen:dev` and loads it. |
+| image.tag | string | `"latest"` | Image tag. |
+| persistence.home.size | string | `"1Gi"` | Size of the PVC mounted at `/home/marveen` (`~/.claude`: Claude login, plugins, skills). |
+| persistence.install.size | string | `"2Gi"` | Size of the PVC mounted at `/opt/marveen` (the code copy, `.env`, `store/` with the database, agents, workspace). |
 | resources | object | `{}` | Container resource requests/limits (unset by default). |
 | service.nodePort | int | `30420` | NodePort of the dashboard service. The kind config maps it to host port 3420. |
 

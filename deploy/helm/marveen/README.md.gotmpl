@@ -3,36 +3,29 @@
 
 {{ template "chart.description" . }}
 
-Runs the whole app (dashboard on port 3420, tmux-based agents, Telegram channel)
-in a single pod. It is meant for a local [kind](https://kind.sigs.k8s.io/)
+Runs the official Marveen image (see `docs/docker.md`) in a single pod. It is meant for a local [kind](https://kind.sigs.k8s.io/)
 cluster, not for scaling out: SQLite and tmux sessions make it a single-replica
 workload (`Recreate` strategy, `ReadWriteOnce` volumes).
 
 ## Quick start
 
 ```sh
-make -f deploy/Makefile up          # build image, create kind cluster, helm install
-open http://127.0.0.1:3420/?token=$(kubectl exec deploy/marveen -- cat /app/store/.dashboard-token)
+make -f deploy/Makefile up          # build the root Dockerfile, create kind cluster, helm install
+open http://127.0.0.1:3420/?token=$(kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token)
 make -f deploy/Makefile down
 ```
 
-With secrets (`env` key = `.env` content, used on first start only):
-
-```sh
-kubectl create secret generic marveen-secrets --from-file=env=./kind.env
-make -f deploy/Makefile deploy SECRET=marveen-secrets
-```
+First-start settings (`MARVEEN_CHANNEL`, `MARVEEN_AGENT_ID`, `MARVEEN_LANG`, `TZ`) are plain `env` values;
+a Secret (`existingSecret`) is injected as environment variables.
 
 ## Persistence
 
+Follows the official layout, run as the image's user (uid 1000):
+
 | Path in the pod | Volume | Content |
 |---|---|---|
-| `/app/store` | `store` PVC | database, `.env` copy, `data/{.claude,agents,workspace,reports}` |
-| `/home/node/.claude` | `claude-home` PVC | Claude login, plugins |
-
-`/app/.env` is rendered from `store/.env` at start and mirrored back every
-3 seconds, because the dashboard rewrites it. To re-seed it from the Secret:
-`kubectl exec deploy/marveen -- rm /app/store/.env`, then restart the pod.
+| `/opt/marveen` | `install` PVC | the install: code, `.env`, `store/`, agents, workspace |
+| `/home/marveen` | `home` PVC | `~/.claude` (Claude login, plugins), `~/.claude.json` |
 
 {{ template "chart.valuesSection" . }}
 

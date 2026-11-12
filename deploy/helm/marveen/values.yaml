@@ -1,21 +1,22 @@
 image:
-  # -- Image repository. With kind, load it via `make -f deploy/Makefile load`.
-  repository: marveen
+  # -- Image repository. The official image; with kind, `make -f deploy/Makefile up` builds the root Dockerfile as `marveen:dev` and loads it.
+  repository: ghcr.io/szotasz/marveen
   # -- Image tag.
-  tag: dev
+  tag: latest
   # -- Image pull policy.
   pullPolicy: IfNotPresent
 
-# -- Name of an existing Secret. All its keys are injected as env vars. An
-# optional key `env` is mounted as `/config/env` and seeds the app's `.env` on
-# the very first start only (after that `store/.env` on the PVC is the source of
-# truth, because the dashboard rewrites it). Example content of the `env` key:
-# `CLAUDE_CODE_OAUTH_TOKEN=...`.
+# -- Name of an existing Secret. All its keys are injected as env vars (optional, mounted read-only as env only).
 existingSecret: ""
 
-# -- Extra plain environment variables for the container. Note that the app
-# reads its settings from `.env`, not from the process environment.
+# -- First-start settings of the official image, plain environment values (see `docs/docker.md`): `MARVEEN_CHANNEL`
+# (telegram|discord|slack, fixed for the install), `MARVEEN_AGENT_ID`, `MARVEEN_LANG` (en|hu), `TZ`,
+# `MARVEEN_OLLAMA_URL`.
 env: {}
+# env:
+#   MARVEEN_CHANNEL: telegram
+#   MARVEEN_LANG: en
+#   TZ: Europe/Budapest
 
 # -- Container resource requests/limits (unset by default).
 resources: {}
@@ -24,12 +25,12 @@ resources: {}
 #   limits: { memory: 2Gi }
 
 persistence:
-  store:
-    # -- Size of the PVC mounted at `/app/store` (database, `.env`, agents, workspace, reports, Telegram state).
+  install:
+    # -- Size of the PVC mounted at `/opt/marveen` (the code copy, `.env`, `store/` with the database, agents, workspace).
     size: 2Gi
-  claudeHome:
-    # -- Size of the PVC mounted at `/home/node/.claude` (Claude login, plugins).
-    size: 512Mi
+  home:
+    # -- Size of the PVC mounted at `/home/marveen` (`~/.claude`: Claude login, plugins, skills).
+    size: 1Gi
 
 service:
   # -- NodePort of the dashboard service. The kind config maps it to host port 3420.

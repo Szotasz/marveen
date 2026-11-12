@@ -51,7 +51,7 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában —
 | Háttér-feladatok | [docs/background-tasks.md](docs/background-tasks.md) |
 | Ütemezett feladatok | [docs/scheduled-tasks.md](docs/scheduled-tasks.md) |
 | Költöztetés (másik gépre) | [docs/MIGRATION.md](docs/MIGRATION.md) |
-| Kind / Docker / Helm (lokális Kubernetes cluster) | [docs/kind-deploy.md](docs/kind-deploy.md) |
+| Kind / Helm (lokális Kubernetes cluster) | [docs/kind-deploy.md](docs/kind-deploy.md) |
 | Beszélgetés-folytonosság | [docs/conversation-continuity.md](docs/conversation-continuity.md) |
 | Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
 | Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
