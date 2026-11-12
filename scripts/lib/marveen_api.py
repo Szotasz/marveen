@@ -18,6 +18,7 @@ Entry point: scripts/marveen-api.sh (the allow-listed command), which runs this 
 Exit codes: 0 = HTTP 2xx; 1 = the server answered with a non-2xx status (the body is printed to
 stderr); 2 = usage error or no token, nothing was sent; 3 = the dashboard could not be reached or did not answer.
 """
+import datetime
 import json
 import os
 import posixpath
@@ -41,6 +42,7 @@ CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # the status set belongs to the server; this only keeps the value one plain token
 STATUS_RE = re.compile(r'^[a-z][a-z_]{1,31}$')
 PRIORITIES = ('low', 'normal', 'high', 'urgent')
+DATE_RE = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
 # a card's assignee: an agent name, or the owner's name as the board holds it ("Szabolcs"); letters (any script),
 # digits, space, '.', '-', '_'; a JSON value in the body, never a path or a shell word
 ASSIGNEE_RE = re.compile(r'^[^\W_][\w .-]{0,63}$')
@@ -70,6 +72,12 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-comment <card-id> <author> <content-file>
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
+  agent-restart <agent> [--fresh]
+                (sub-agents only: the main agent is refused; no force)
+  federation-directory
+  daily-log-read <agent> [--date YYYY-MM-DD]
+                (without --date: today on this machine's clock; the server's own default is the UTC day)
+  memory-backfill
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -136,6 +144,15 @@ def check_env():
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
     return None
+
+
+def main_agent_ids():
+    """The main agent's id(s): the install's .env MAIN_AGENT_ID (default 'marveen', as src/config.ts), plus the
+    process environment's value if it names another one. Both are refused by agent-restart."""
+    ids = {env_file_values('MAIN_AGENT_ID').get('MAIN_AGENT_ID') or 'marveen'}
+    if os.environ.get('MAIN_AGENT_ID'):
+        ids.add(os.environ['MAIN_AGENT_ID'].strip())
+    return ids
 
 
 def api_base():
@@ -418,6 +435,38 @@ def build_request(verb, args):
     if verb == 'agents-list':
         positional(args, 0, verb)
         return 'GET', '/api/agents', None, headers, {}
+    if verb == 'agent-restart':
+        # The main agent's restart of a sub-agent (e.g. after an update). There is deliberately no --force: the
+        # route's pane gate for a busy main agent stays in place, and a forced restart remains a dashboard action.
+        fresh = take_flag(args, '--fresh')
+        (agent,) = positional(args, 1, verb)
+        check(agent, NAME_RE, 'agent name')
+        # The verb is for restarting a SUB-agent. The main agent's restart restarts the owner's chat channel session,
+        # so a sub-agent must not get a ready-made one-word way to do it (review of #2720). The raw API route is unchanged.
+        if agent in main_agent_ids():
+            fail_usage(f'agent-restart: {agent!r} is the main agent; this verb only restarts sub-agents '
+                       '(restart the main agent from the dashboard)')
+        # A JSON body always goes, {} when there is no option: the route refuses a body that did not arrive in full.
+        return 'POST', f'/api/agents/{agent}/restart', {'fresh': True} if fresh else {}, headers, {}
+    if verb == 'federation-directory':
+        # The catalog the federation block tells the agent to read before any substantive request.
+        positional(args, 0, verb)
+        return 'GET', '/api/federation/directory', None, headers, {}
+    if verb == 'daily-log-read':
+        date = take_opt(args, '--date')
+        (agent,) = positional(args, 1, verb)
+        check(agent, NAME_RE, 'agent name')
+        if date is None:
+            # The route defaults to the UTC day, which between local midnight and the UTC offset is the wrong day
+            # (a 22:00-24:00 run in Europe/Budapest would read tomorrow). The helper sends the local day instead.
+            date = datetime.date.today().isoformat()
+        check(date, DATE_RE, 'date (YYYY-MM-DD)')
+        return 'GET', '/api/daily-log?' + urllib.parse.urlencode({'agent': agent, 'date': date}), None, headers, {}
+    if verb == 'memory-backfill':
+        # Embeds the memories that have no vector yet. The route answers 502 when rows were pending and none could be
+        # embedded (the embedding backend is down), so that case exits 1 here instead of looking like an empty backlog.
+        positional(args, 0, verb)
+        return 'POST', '/api/memories/backfill', {}, headers, {}
     if verb == 'kanban-create':
         assignee, priority, title_file = positional(args, 3, verb)
         check(assignee, NAME_RE, 'agent name')
