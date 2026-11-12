@@ -49,6 +49,8 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     // default to unmeasurable: every pre-existing case below must keep
     // describing an agent this tier cannot act on.
     dailyHandoffDue: false,
+    periodicHandoffDue: false,
+    taskCloseHandoffDue: false,
     // Idle-flush probes default to unmeasurable, so every pre-existing case
     // below describes an agent the idle tier cannot act on. That keeps this
     // helper's change from silently arming a new tier under the old tests.

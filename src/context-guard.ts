@@ -83,6 +83,29 @@ export interface ContextGuardConfig {
    *  (measured: a 36-minute gated test run ended in 143 with no result). Past
    *  it the restart goes ahead. 0 = never hold. */
   heavyJobDeferMaxMinutes: number
+  /** Periodic-handoff tier: hand off and restart on a fixed wall-clock
+   *  cadence, independent of context size -- the hourly counterpart of the
+   *  daily tier, for an operator who wants a session refreshed on a clock
+   *  rather than on a measurement. Independent of `enabled` and default
+   *  FALSE, like the other scheduled tiers. */
+  periodicHandoffEnabled: boolean
+  /** How often the periodic tier may fire, in minutes. */
+  periodicHandoffMinutes: number
+  /** Below this much context GROWTH since the tier's last run, a due slot is
+   *  skipped: a quiet agent whose context barely moved gets nothing from a
+   *  handoff/restart cycle but the cost of one (a handoff-writing turn plus a
+   *  restart). The clock is pushed a full interval out from now when this
+   *  skips it, so a quiet agent is not re-checked every sweep until growth
+   *  catches up (see periodicHandoffStep). */
+  periodicHandoffMinTokens: number
+  /** Task-close tier: hand off and restart when the agent's kanban queue
+   *  drains to empty (no in_progress/waiting card left) with no open owner
+   *  question -- a natural pause, not a measurement. Edge-triggered: fires
+   *  once when the queue goes from non-empty to empty, not on every sweep
+   *  that finds it empty, so a board that stays empty does not restart every
+   *  sweep and a single card closing while others stay open does not fire.
+   *  Independent of `enabled` and default FALSE, like the other tiers. */
+  taskCloseHandoffEnabled: boolean
 }
 
 export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
@@ -142,6 +165,14 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // (2182 s = 36 min), shorter than a saturated agent should stay
   // unreachable. A job that outlives it is killed, loudly.
   heavyJobDeferMaxMinutes: 45,
+  periodicHandoffEnabled: false,
+  periodicHandoffMinutes: 30,
+  // 50k: deliberately smaller than idleFlushTokens (400k) -- this tier is a
+  // cheap, scheduled insurance restart, not the cost-driven idle-flush, so
+  // the floor only needs to rule out "the clock came round but the agent did
+  // nothing at all", not the much larger expensive-session threshold.
+  periodicHandoffMinTokens: 50_000,
+  taskCloseHandoffEnabled: false,
 }
 
 /**
@@ -152,6 +183,10 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
  * (about 5800 years): it keeps the latest possible Date plus two such durations
  * a safe integer.
  */
+/** Lowest accepted periodicHandoffMinutes; a smaller value is raised to this
+ *  (not reset to the default), so "as often as allowed" stays meaningful. */
+export const PERIODIC_HANDOFF_MIN_MINUTES = 15
+
 export const MAX_GUARD_MINUTES = Math.floor((Number.MAX_SAFE_INTEGER - 8.64e15) / (2 * 60_000))
 
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
@@ -197,6 +232,21 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
       (typeof o.heavyJobDeferMaxMinutes === 'number' && Number.isFinite(o.heavyJobDeferMaxMinutes) && o.heavyJobDeferMaxMinutes >= 0)
         ? Math.min(o.heavyJobDeferMaxMinutes, 24 * 60)
         : DEFAULT_CONTEXT_GUARD.heavyJobDeferMaxMinutes,
+    periodicHandoffEnabled: o.periodicHandoffEnabled === true, // default-off (opt-in), like the other scheduled tiers
+    // Floored at PERIODIC_HANDOFF_MIN_MINUTES: the shared token can lower this
+    // for another agent (contextGuardWeakenings reads a lower value as a
+    // strengthening), and without a floor 0.1 would arm a restart on every
+    // sweep -- the "no per-minute restart" rule this tier is built around.
+    periodicHandoffMinutes: Math.max(PERIODIC_HANDOFF_MIN_MINUTES, mins(o.periodicHandoffMinutes, DEFAULT_CONTEXT_GUARD.periodicHandoffMinutes)),
+    // 0 is a real value here (fire on the clock regardless of growth), so not
+    // the >= 10_000 typo-guard idleFlushTokens/limitTokens use: those gate
+    // "is this session big", this one gates "how much growth is enough to be
+    // worth a cycle", where an operator choosing 0 is not a typo.
+    periodicHandoffMinTokens:
+      (typeof o.periodicHandoffMinTokens === 'number' && Number.isFinite(o.periodicHandoffMinTokens) && o.periodicHandoffMinTokens >= 0)
+        ? Math.floor(o.periodicHandoffMinTokens)
+        : DEFAULT_CONTEXT_GUARD.periodicHandoffMinTokens,
+    taskCloseHandoffEnabled: o.taskCloseHandoffEnabled === true, // default-off (opt-in), like the other tiers
   }
 }
 
@@ -498,6 +548,17 @@ export interface GuardInputs {
    *  midnight and the last-served stamp -- neither of which belongs in this
    *  clock-free module's decision function. */
   dailyHandoffDue: boolean
+  /** The periodic-handoff tier's clock+token-floor slot has come round and
+   *  has not been served yet. Computed by the runner with
+   *  applyPeriodicHandoffSkipSweep(), which needs the per-agent last-run
+   *  record and the measured context growth -- neither belongs in this
+   *  clock-free module's decision function. */
+  periodicHandoffDue: boolean
+  /** The task-close tier's empty-queue edge fired and has not been served
+   *  yet. Computed by the runner with applyTaskCloseSkipSweep(), which needs
+   *  the kanban queue count -- a DB read that does not belong in this
+   *  dependency-free module. */
+  taskCloseHandoffDue: boolean
   /** The session is CURRENTLY blocked by a plan usage limit, as decided by
    *  usageLimitVerdict() from the session transcript -- NOT the pane banner,
    *  which outlives the limit (see USAGE_LIMIT_REASON_PREFIX). */
@@ -750,6 +811,23 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
 export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
 
 /**
+ * Reason prefix for the periodic-handoff tier. A fifth wording: this agent's
+ * session is not near its limit, expensive, finished, or a day old -- its
+ * clock slot simply came round. The runner matches this constant to pick the
+ * prompt (and, like the daily tier's pct is null here too, so the prompt must
+ * not claim a percentage that was never measured).
+ */
+export const PERIODIC_HANDOFF_REASON_PREFIX = 'periodic-handoff'
+
+/**
+ * Reason prefix for the task-close tier: the agent's kanban queue just
+ * drained to empty. A sixth wording, for the same reason as the others --
+ * none of "critical", "expensive", "a day old" or "a clock slot" is true of a
+ * session that simply ran out of open work.
+ */
+export const TASK_CLOSE_REASON_PREFIX = 'task-close'
+
+/**
  * Reason prefix of the one-time busy-pane warning: the pane is still mid-turn a
  * whole handoffTimeoutMinutes past the handoff deadline. The decision stays
  * action 'none' (a busy pane is never restarted); the runner matches this
@@ -941,6 +1019,245 @@ export function applyDailyHandoffSkipSweep(
   return r.due
 }
 
+/** One agent's periodic-handoff bookkeeping record: when the tier last ran,
+ *  and how much context the session had at that point (for the token-floor
+ *  check). */
+export interface PeriodicHandoffRecord {
+  atMs: number
+  tokens: number
+}
+
+/**
+ * One sweep's step of the periodic tier's "last served" record, for one agent.
+ *
+ * Mirrors dailyHandoffStep's seed-on-first-sight rule (a guard process that
+ * starts mid-interval must not fire at once), but on TWO conditions instead of
+ * one: the clock interval has elapsed, AND the context grew by at least the
+ * configured floor since the last run. The due:true branch deliberately
+ * leaves the record UNCHANGED, exactly like dailyHandoffStep -- the runner
+ * commits the advance only once the decision actually fires this reason (see
+ * the periodic bookkeeping in context-guard-runner.ts), so a higher-ranked
+ * tier winning this sweep leaves the slot due again next sweep instead of
+ * silently consuming it.
+ */
+export function periodicHandoffStep(
+  cfg: ContextGuardConfig,
+  lastRun: PeriodicHandoffRecord | undefined,
+  contextTokens: number,
+  nowMs: number,
+): { due: boolean; record: PeriodicHandoffRecord } {
+  if (lastRun === undefined) {
+    return { due: false, record: { atMs: nowMs, tokens: contextTokens } }
+  }
+  if (nowMs - lastRun.atMs < cfg.periodicHandoffMinutes * 60_000) {
+    return { due: false, record: lastRun }
+  }
+  if (contextTokens - lastRun.tokens < cfg.periodicHandoffMinTokens) {
+    // Due by the clock but not worth it (the token floor): push the clock a
+    // full interval out from NOW, token baseline unchanged, instead of
+    // re-checking every sweep until growth catches up.
+    return { due: false, record: { atMs: nowMs, tokens: lastRun.tokens } }
+  }
+  return { due: true, record: lastRun }
+}
+
+/**
+ * periodicHandoffStep plus the enabled/eligible gates, the way
+ * dailyHandoffSweep wraps dailyHandoffStep. A disarmed tier forgets its
+ * record on EVERY sweep, ahead of the eligibility gate, for the same reason
+ * as the daily tier: an agent that was never idle while the tier was off must
+ * not keep an old armed record that fires at once when the tier is armed
+ * later.
+ */
+export function periodicHandoffSweep(
+  cfg: ContextGuardConfig,
+  lastRun: PeriodicHandoffRecord | undefined,
+  eligible: boolean,
+  contextTokens: number,
+  nowMs: number,
+): { due: boolean; record: PeriodicHandoffRecord | undefined } {
+  if (!cfg.periodicHandoffEnabled) return { due: false, record: undefined }
+  if (!eligible) return { due: false, record: lastRun }
+  return periodicHandoffStep(cfg, lastRun, contextTokens, nowMs)
+}
+
+/**
+ * periodicHandoffSweep applied to the runner's record map: an `undefined`
+ * record deletes the agent's entry, anything else replaces it. Mirrors
+ * applyDailyHandoffSweep.
+ */
+export function applyPeriodicHandoffSweep(
+  records: Map<string, PeriodicHandoffRecord>,
+  name: string,
+  cfg: ContextGuardConfig,
+  eligible: boolean,
+  contextTokens: number,
+  nowMs: number,
+): boolean {
+  const sweep = periodicHandoffSweep(cfg, records.get(name), eligible, contextTokens, nowMs)
+  if (sweep.record === undefined) records.delete(name)
+  else records.set(name, sweep.record)
+  return sweep.due
+}
+
+/**
+ * periodicHandoffSweep plus the open-question hold. Unlike the daily tier
+ * (which skips at most one slot, then fires regardless), the periodic tier
+ * HOLDS a due slot for as long as an owner question is open, the way the
+ * task-close tier does: the record is left unchanged, so the slot stays due
+ * and the question is re-read on every sweep, and the handoff fires on the
+ * first sweep after the question clears. The daily rule ("the next slot fires
+ * regardless") would, on a 30-minute cadence, type a handoff into the agent
+ * mid-question whenever a question stays unanswered past one interval.
+ *
+ * `skippedLast` here means "currently holding": it stays true across the held
+ * sweeps so onSkip is logged once per hold, not once per sweep, and it clears
+ * as soon as the slot fires or stops being due.
+ */
+export function periodicHandoffSkipSweep(
+  cfg: ContextGuardConfig,
+  lastRun: PeriodicHandoffRecord | undefined,
+  skippedLast: boolean,
+  eligible: boolean,
+  contextTokens: number,
+  nowMs: number,
+  readQuestionOpen: () => boolean | undefined,
+): { due: boolean; record: PeriodicHandoffRecord | undefined; skippedLast: boolean; skippedNow: boolean } {
+  const sweep = periodicHandoffSweep(cfg, lastRun, eligible, contextTokens, nowMs)
+  if (!cfg.periodicHandoffEnabled) return { due: false, record: sweep.record, skippedLast: false, skippedNow: false }
+  if (!sweep.due) return { ...sweep, skippedLast: false, skippedNow: false }
+  if (readQuestionOpen() === true) return { due: false, record: sweep.record, skippedLast: true, skippedNow: !skippedLast }
+  return { ...sweep, skippedLast: false, skippedNow: false }
+}
+
+/**
+ * periodicHandoffSkipSweep applied to the runner's record map and skip set,
+ * mirroring applyDailyHandoffSkipSweep.
+ */
+export function applyPeriodicHandoffSkipSweep(
+  records: Map<string, PeriodicHandoffRecord>,
+  skipped: Set<string>,
+  name: string,
+  cfg: ContextGuardConfig,
+  eligible: boolean,
+  contextTokens: number,
+  nowMs: number,
+  readQuestionOpen: () => boolean | undefined,
+  onSkip: () => void,
+): boolean {
+  const r = periodicHandoffSkipSweep(cfg, records.get(name), skipped.has(name), eligible, contextTokens, nowMs, readQuestionOpen)
+  if (r.record === undefined) records.delete(name)
+  else records.set(name, r.record)
+  if (r.skippedLast) skipped.add(name)
+  else skipped.delete(name)
+  if (r.skippedNow) onSkip()
+  return r.due
+}
+
+/**
+ * One sweep's step of the task-close tier's arm/fire record, for one agent.
+ *
+ * Edge-triggered, unlike every other tier here: it fires once when the
+ * kanban queue goes from non-empty to empty, not on every sweep that finds it
+ * empty (a board that stays empty forever would otherwise restart every
+ * sweep -- the exact "percenkénti restart" the owner's requirement 4 rules
+ * out), and not at all while a single card closes but others stay open.
+ *
+ * The due:true branch deliberately returns `armed: true`, NOT false: the
+ * runner commits the actual disarm only once the decision produced by this
+ * sweep actually fires this reason (see the task-close bookkeeping in
+ * context-guard-runner.ts), exactly like the daily/periodic tiers never
+ * advance their "last served" record inside the pure step. Without this, a
+ * higher-ranked tier winning the very sweep this fired on (saturation, usage
+ * limit, a wedge tier, idle-flush) would disarm the edge here and the event
+ * would never be retried -- lost for good if the board then stays empty.
+ */
+export function taskCloseStep(
+  armed: boolean | undefined,
+  openCardsNow: boolean,
+): { due: boolean; armed: boolean } {
+  const wasArmed = armed ?? false // first sight: never fire even if a card happens to be open already
+  if (wasArmed && !openCardsNow) return { due: true, armed: true } // fires; stays armed until the runner commits the serve
+  return { due: false, armed: wasArmed || openCardsNow } // arms when work opens, stays armed while it is open
+}
+
+/**
+ * taskCloseStep plus the enabled/eligible gates, mirroring
+ * periodicHandoffSweep/dailyHandoffSweep. A disarmed tier forgets its arming
+ * on every sweep, ahead of the eligibility gate, for the same reason as the
+ * other tiers.
+ */
+export function taskCloseSweep(
+  cfg: ContextGuardConfig,
+  armed: boolean | undefined,
+  openCardsNow: boolean,
+  eligible: boolean,
+): { due: boolean; armed: boolean } {
+  if (!cfg.taskCloseHandoffEnabled) return { due: false, armed: false }
+  if (!eligible) return { due: false, armed: armed ?? false }
+  return taskCloseStep(armed, openCardsNow)
+}
+
+/**
+ * taskCloseSweep applied to the runner's arm-state map, mirroring
+ * applyDailyHandoffSweep/applyPeriodicHandoffSweep. The map always gets the
+ * new `armed` value (there is no "undefined means forget" shape here: false
+ * already means disarmed/never-armed, so there is nothing distinct to
+ * delete).
+ */
+export function applyTaskCloseSweep(
+  records: Map<string, boolean>,
+  name: string,
+  cfg: ContextGuardConfig,
+  openCardsNow: boolean,
+  eligible: boolean,
+): boolean {
+  const sweep = taskCloseSweep(cfg, records.get(name), openCardsNow, eligible)
+  records.set(name, sweep.armed)
+  return sweep.due
+}
+
+/**
+ * taskCloseSweep plus the open-question skip.
+ *
+ * DELIBERATELY DIFFERENT semantics from the daily/periodic skip: those tiers
+ * have a real "next slot" to defer to, so skipping records the slot as served
+ * and moves on. An edge has no such next slot -- if the board stays empty
+ * forever, deferring "to the next time this fires" would mean never -- so a
+ * question-open skip here stays armed and is retried on every following
+ * sweep (no separate skipped-set bookkeeping needed: `armed` staying true
+ * already is the retry) until the question clears.
+ */
+export function taskCloseSkipSweep(
+  cfg: ContextGuardConfig,
+  armed: boolean | undefined,
+  openCardsNow: boolean,
+  eligible: boolean,
+  readQuestionOpen: () => boolean | undefined,
+): { due: boolean; armed: boolean } {
+  const sweep = taskCloseSweep(cfg, armed, openCardsNow, eligible)
+  if (!sweep.due) return sweep
+  if (readQuestionOpen() === true) return { due: false, armed: sweep.armed }
+  return sweep
+}
+
+/**
+ * taskCloseSkipSweep applied to the runner's arm-state map, mirroring
+ * applyTaskCloseSweep.
+ */
+export function applyTaskCloseSkipSweep(
+  records: Map<string, boolean>,
+  name: string,
+  cfg: ContextGuardConfig,
+  openCardsNow: boolean,
+  eligible: boolean,
+  readQuestionOpen: () => boolean | undefined,
+): boolean {
+  const r = taskCloseSkipSweep(cfg, records.get(name), openCardsNow, eligible, readQuestionOpen)
+  records.set(name, r.armed)
+  return r.due
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so
@@ -1085,7 +1402,7 @@ export function decideGuard(
     return none(reason)
   }
 
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.periodicHandoffEnabled && !cfg.taskCloseHandoffEnabled) {
     return none('disabled', INITIAL_GUARD_STATE)
   }
 
@@ -1132,12 +1449,34 @@ export function decideGuard(
         const flush = decideIdleFlush(nowMs, inputs, cfg, cleared, none)
         if (flush) return flush
       }
-      // Daily tier, ranked LAST. The three tiers above answer measured
+      // Task-close tier, ranked just below idle-flush: both answer "is this
+      // session finished", idle-flush by a quiet transcript, this one by an
+      // emptied kanban queue -- a more direct signal where it is available,
+      // so it gets the next slot in rank.
+      //
+      // Both this tier and the periodic one below ARE gated on a positively
+      // busy pane, unlike daily: neither has a slot to keep (a due periodic
+      // slot and an armed task-close edge both stay due until served), so
+      // there is no reason to type a handoff directive into a live reply --
+      // the next sweep that finds the turn over sends it. await-handoff still
+      // refuses to cut a turn that starts after the request.
+      if (cfg.taskCloseHandoffEnabled && inputs.taskCloseHandoffDue && !inputs.paneBusy) {
+        return handoffRequest(nowMs, inputs, cfg, `${TASK_CLOSE_REASON_PREFIX}: kanban queue emptied, no open owner question or pending inbound`)
+      }
+      // Periodic tier, ranked just below task-close: an hourly-ish clock is a
+      // weaker reason to hand off than "the work is actually done", but still
+      // a better one than "it is 04:00" below -- a 30-minute cadence runs far
+      // more often than the once-a-day tier, so it sits above it.
+      if (cfg.periodicHandoffEnabled && inputs.periodicHandoffDue && !inputs.paneBusy) {
+        return handoffRequest(nowMs, inputs, cfg, `${PERIODIC_HANDOFF_REASON_PREFIX} (every ${cfg.periodicHandoffMinutes}m)`)
+      }
+      // Daily tier, ranked LAST. The tiers above answer measured or observed
       // questions -- is this session about to break, is it expensive, is it
-      // finished -- and any of them is a better reason to state than "it is
-      // 04:00". This one exists for the sessions none of them ever reach: an
-      // agent below every threshold still carries a day of context into a
-      // nightly fresh restart that would otherwise drop it on the floor.
+      // finished, has its clock slot come round -- and any of them is a
+      // better reason to state than "it is 04:00". This one exists for the
+      // sessions none of them ever reach: an agent below every threshold
+      // still carries a day of context into a nightly fresh restart that
+      // would otherwise drop it on the floor.
       //
       // Deliberately NOT gated on paneIdle. Unlike the idle tier, which only
       // wants finished sessions, this one has a slot to keep: a busy agent
@@ -1155,7 +1494,7 @@ export function decideGuard(
     }
 
     case 'await-handoff': {
-      if (!cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
+      if (!cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.periodicHandoffEnabled && !cfg.taskCloseHandoffEnabled) {
         // Operator disabled the proactive guard mid-sequence; stand down.
         // Every tier that can ENTER this phase has to appear here: omitting
         // one would stand the sequence down on the sweep after it started,
@@ -1466,19 +1805,21 @@ function handoffRequest(
  *  normalized config before and after the change. The shared access token (every sub-agent can read it) may only
  *  strengthen a guard (the main agent arms other agents' guards with it); any weakening needs the owner, on any
  *  agent, so a sub-agent cannot switch off or loosen another agent's guard. Weaker means:
- *   - a switch going from on to off: enabled, saturationRestart, idleFlushEnabled, dailyHandoffEnabled;
+ *   - a switch going from on to off: enabled, saturationRestart, idleFlushEnabled, dailyHandoffEnabled,
+ *     periodicHandoffEnabled, taskCloseHandoffEnabled;
  *   - a number going up (the guard acts later, waits longer or holds longer): actPct, hardPct, cooldownMinutes,
- *     handoffTimeoutMinutes, idleFlushTokens, idleMinutes, heavyJobDeferMaxMinutes;
+ *     handoffTimeoutMinutes, idleFlushTokens, idleMinutes, heavyJobDeferMaxMinutes, periodicHandoffMinutes,
+ *     periodicHandoffMinTokens (a higher floor means the periodic tier skips more slots);
  *   - limitTokens changing in any way except to a smaller explicit number (null means "infer from the model", which
  *     may be a larger window, so clearing it is treated as weakening);
  *   - dailyHandoffTime moved or cleared once set (a moved time can postpone the restart; setting it from null arms).
  *  A reset to the shipped defaults is not special: the default enabled is false, so a reset can switch a guard off. */
 export function contextGuardWeakenings(before: ContextGuardConfig, after: ContextGuardConfig): string[] {
   const out: string[] = []
-  for (const k of ['enabled', 'saturationRestart', 'idleFlushEnabled', 'dailyHandoffEnabled'] as const) {
+  for (const k of ['enabled', 'saturationRestart', 'idleFlushEnabled', 'dailyHandoffEnabled', 'periodicHandoffEnabled', 'taskCloseHandoffEnabled'] as const) {
     if (before[k] === true && after[k] !== true) out.push(k)
   }
-  for (const k of ['actPct', 'hardPct', 'cooldownMinutes', 'handoffTimeoutMinutes', 'idleFlushTokens', 'idleMinutes', 'heavyJobDeferMaxMinutes'] as const) {
+  for (const k of ['actPct', 'hardPct', 'cooldownMinutes', 'handoffTimeoutMinutes', 'idleFlushTokens', 'idleMinutes', 'heavyJobDeferMaxMinutes', 'periodicHandoffMinutes', 'periodicHandoffMinTokens'] as const) {
     if (after[k] > before[k]) out.push(k)
   }
   if (after.limitTokens !== before.limitTokens) {
@@ -1505,6 +1846,10 @@ export const CONTEXT_GUARD_FIELD_KIND: Record<keyof ContextGuardConfig, 'switch'
   idleMinutes: 'value',
   dailyHandoffTime: 'value',
   heavyJobDeferMaxMinutes: 'value',
+  periodicHandoffEnabled: 'switch',
+  periodicHandoffMinutes: 'value',
+  periodicHandoffMinTokens: 'value',
+  taskCloseHandoffEnabled: 'switch',
 }
 
 /** OWNERGATE3-1104 (review, Dani 69657): the fields of a context-guard change the shared access token may NOT make.

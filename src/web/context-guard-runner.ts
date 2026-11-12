@@ -1,7 +1,7 @@
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
@@ -54,14 +54,18 @@ import {
 import { localMidnightMs } from '../auto-restart.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
-import { createAgentMessage, countRestartQueueState } from '../db.js'
+import { createAgentMessage, countRestartQueueState, listKanbanCards, hasOpenInboundQuestion } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
   applyDailyHandoffSkipSweep,
+  applyPeriodicHandoffSkipSweep,
+  applyTaskCloseSkipSweep,
   DAILY_HANDOFF_REASON_PREFIX,
+  PERIODIC_HANDOFF_REASON_PREFIX,
+  TASK_CLOSE_REASON_PREFIX,
   HANDOFF_RESEND_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -77,6 +81,7 @@ import {
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
+  type PeriodicHandoffRecord,
 } from '../context-guard.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 
@@ -199,6 +204,67 @@ const dailySkipped = new Set<string>()
 function dailyQuestionOpen(name: string): boolean | undefined {
   try { return ownerQuestionHolds(name) }
   catch { return undefined }
+}
+
+// agent name -> the periodic-handoff tier's last-run record (when, and the
+// context size at that time). Same in-memory discipline as lastDailyHandoff:
+// a dashboard restart re-seeds and at worst delays one cycle.
+const lastPeriodicHandoff = new Map<string, PeriodicHandoffRecord>()
+// Agents whose due periodic slot is currently HELD for an open inbound
+// question (see periodicHandoffSkipSweep: held until the question clears, so
+// onSkip logs once per hold). In-memory: a dashboard restart only re-logs.
+const periodicSkipped = new Set<string>()
+
+// agent name -> whether the task-close tier is currently ARMED (a card is, or
+// was, open since the tier last served). In-memory: a dashboard restart
+// forgets it, which at worst drops one close-to-empty edge that happened
+// entirely during the outage -- the safe direction, same as every other
+// in-memory record here.
+const taskCloseArmed = new Map<string, boolean>()
+
+/** Open (in_progress/waiting) kanban card count for the task-close tier, or
+ *  null when unreadable. A read failure must NOT read as "queue empty" --
+ *  that would fire the tier on a DB hiccup -- so the caller treats null as
+ *  "still open" (taskCloseQueueOpen below), the fail-closed direction every
+ *  other optional measurement in this file already takes.
+ *
+ *  The main agent's cards may carry either its id or its display name as the
+ *  assignee (kanban-dispatch.ts canonicalAgentId accepts both), so both are
+ *  counted; the SQL match is already case-insensitive. */
+function openKanbanCardCount(name: string): number | null {
+  try {
+    const assignees = name === MAIN_AGENT_ID && BOT_NAME.toLowerCase() !== name.toLowerCase() ? [name, BOT_NAME] : [name]
+    return assignees.reduce((n, agent) => n + listKanbanCards({ agent, statuses: ['in_progress', 'waiting'] }).length, 0)
+  } catch { return null }
+}
+
+/** The task-close tier's "queue still open" input: an unreadable board counts as open. */
+function taskCloseQueueOpen(name: string): boolean {
+  const n = openKanbanCardCount(name)
+  return n === null || n > 0
+}
+
+/**
+ * Does anything inbound still wait for this agent, for the task-close tier?
+ * Three signals, any of which holds the tier back:
+ *   - the owner's open question by the /clear gate's rule (ownerQuestionHolds,
+ *     the same hold the daily and periodic tiers respect);
+ *   - the owner's last inbound having no outbound after it at all
+ *     (hasOpenInboundQuestion), even once the drain has surfaced it: a queue
+ *     that just drained while the owner's message is still unanswered is not
+ *     a natural pause, it is the agent about to answer;
+ *   - inter-agent messages addressed to it still pending delivery
+ *     (countRestartQueueState): work is about to arrive.
+ * Unlike the daily tier's read (fail-open), a failed read here counts as
+ * "something waits": the tier is an optional refresh with no slot to lose,
+ * and an armed edge simply retries on the next sweep.
+ */
+function taskCloseInboundOpen(name: string): boolean {
+  try {
+    if (ownerQuestionHolds(name)) return true
+    if (hasOpenInboundQuestion(name)) return true
+    return countRestartQueueState(name, 0).pending > 0
+  } catch { return true }
 }
 const remoteSkipLogged = new Set<string>()
 // Agents currently in the banner-vs-measurement mismatch state. The
@@ -488,6 +554,37 @@ export function dailyHandoffPrompt(atTime: string, handoffPath: string): string 
   return (
     `[CONTEXT-GUARD] Ütemezett napi újraindítás (${atTime}), nem vészhelyzet és nem hiba. ` +
     `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
+    `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
+  )
+}
+
+/**
+ * Handoff request for the periodic tier. Same honesty rule as the daily
+ * prompt: pct is null for a periodic-only agent, so the only true claim is
+ * that the clock slot came round and the session is about to be refreshed.
+ */
+export function periodicHandoffPrompt(everyMinutes: number, handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] Ütemezett, ${everyMinutes} percenkénti frissítés, nem vészhelyzet és nem hiba. ` +
+    `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
+    `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
+  )
+}
+
+/**
+ * Handoff request for the task-close tier: the agent's kanban queue just
+ * drained, so the prompt says exactly that and nothing about context size.
+ */
+export function taskCloseHandoffPrompt(handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] Lezárult az utolsó nyitott kanban-kártyád, és nincs megválaszolatlan bejövő üzeneted: ` +
+    `ez természetes szünet, a sessionöd most friss kontextussal indul újra. Nem vészhelyzet és nem hiba. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
     `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
@@ -912,8 +1009,13 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // missing from exactly this one: an operator who turned the saturation net
   // off and the daily tier on would have been skipped here, before
   // decideGuard ever saw the agent, with no log line to say so.
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.periodicHandoffEnabled && !cfg.taskCloseHandoffEnabled) {
     guardStates.delete(name)
+    // Forget the scheduled tiers' records too, the same "disarmed forgets"
+    // rule their sweeps apply: this early return means the sweep never runs.
+    lastPeriodicHandoff.delete(name)
+    periodicSkipped.delete(name)
+    taskCloseArmed.delete(name)
     dropPendingResume(name, 'guard disabled')
     return
   }
@@ -956,7 +1058,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // TRANSCRIPT_TAIL_BYTES per agent per sweep) would buy nothing. The handoff
   // phases still read it: a sequence can outlive a config change that disarmed
   // its tier, and await-ready parks the resume for any agent.
-  const onlyNetArmed = !cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled
+  const onlyNetArmed = !cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.periodicHandoffEnabled && !cfg.taskCloseHandoffEnabled
   const usageCanMatter = !onlyNetArmed || state.phase === 'await-handoff' || state.phase === 'await-ready'
   let usage: ReturnType<typeof usageLimitVerdict> | null = null
   if (running && state.phase !== 'cooldown' && usageCanMatter) {
@@ -1050,6 +1152,30 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     }
   }
 
+  // The periodic tier's token floor needs the context size. Reuse the
+  // idle-flush probe's reading when that tier is armed (one transcript read,
+  // not two); otherwise read it only when the periodic tier can use it. An
+  // unmeasurable size makes the agent ineligible for this sweep (record kept,
+  // nothing fires): the floor cannot be judged, and guessing either way is
+  // worse than waiting one sweep.
+  const idleFlushTokens = running && needPct && cfg.idleFlushEnabled ? measureContextTokens(name) : null
+  const periodicTokens = cfg.periodicHandoffEnabled && running && state.phase === 'idle'
+    ? (cfg.idleFlushEnabled ? idleFlushTokens : measureContextTokens(name))
+    : null
+  const periodicDue = applyPeriodicHandoffSkipSweep(
+    lastPeriodicHandoff, periodicSkipped, name, cfg,
+    running && state.phase === 'idle' && periodicTokens !== null,
+    periodicTokens ?? 0, nowMs,
+    () => dailyQuestionOpen(name),
+    () => logger.info({ name }, 'context-guard: periodic handoff slot held -- open inbound question (fires once the question clears)'),
+  )
+  // Task-close: the board is read only while the tier is armed. Eligible only
+  // in the idle phase, like the scheduled tiers; the edge keeps its arming
+  // through every other phase.
+  const taskCloseDue = cfg.taskCloseHandoffEnabled && running && state.phase === 'idle'
+    ? applyTaskCloseSkipSweep(taskCloseArmed, name, cfg, taskCloseQueueOpen(name), true, () => taskCloseInboundOpen(name))
+    : applyTaskCloseSkipSweep(taskCloseArmed, name, cfg, false, false, () => true)
+
   const inputs: GuardInputs = {
     nowMs,
     running,
@@ -1073,7 +1199,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // Note the condition is cfg.idleFlushEnabled, NOT cfg.enabled: the two
     // tiers are independently switchable, so an agent running the idle tier
     // alone must still get its measurements.
-    contextTokens: running && needPct && cfg.idleFlushEnabled ? measureContextTokens(name) : null,
+    contextTokens: idleFlushTokens,
     // idleMs is NOT gated on the idle-flush tier: the handoff-staleness check
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
@@ -1082,6 +1208,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // open-question skip: dailyHandoffSkipSweep decides all three,
     // applyDailyHandoffSkipSweep applies the record and the skip flag.
     dailyHandoffDue: applyDailyHandoffSkipSweep(lastDailyHandoff, dailySkipped, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs, () => dailyQuestionOpen(name), () => logger.info({ name }, 'context-guard: daily handoff skipped today -- open inbound question (the next slot fires regardless)')),
+    periodicHandoffDue: periodicDue,
+    taskCloseHandoffDue: taskCloseDue,
     usageLimited: usage?.limited === true,
     // Same edge as restorableResumeStates, so the in-memory park and the
     // persisted obligation end together. No clamp here: restartedAtMs was
@@ -1156,6 +1284,26 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     heavyToAlert = gate
   }
 
+  // The periodic and task-close tiers' serve-commit. Placed AFTER the two
+  // deferrals above (main respawn grace, heavy-job hold), unlike the daily
+  // stamp: a deferred restart keeps the previous state and re-decides next
+  // sweep, and committing here first would disarm the task-close edge for a
+  // cycle that never ran -- lost for good if the board then stays empty.
+  // Any decision that starts a handoff cycle or restarts the session (whichever
+  // tier won) serves both: the session is about to be refreshed anyway, so an
+  // armed task-close edge or a due periodic slot left standing would only buy
+  // a second, back-to-back cycle on the fresh session. The periodic record is
+  // DELETED, not stamped: the next eligible sweep (the fresh session, back in
+  // idle) re-seeds it with the fresh session's own context size as the
+  // token-floor baseline -- stamping the pre-restart size would make the
+  // floor compare a small fresh context against a large old one and skip
+  // every slot until the new session outgrew the old.
+  if (decision.action === 'request-handoff' || decision.action === 'restart') {
+    lastPeriodicHandoff.delete(name)
+    periodicSkipped.delete(name)
+    taskCloseArmed.set(name, false)
+  }
+
   guardStates.set(name, decision.nextState)
   // Leaving await-ready WITHOUT delivering (ready timeout, guard disabled
   // mid-wait) ends the obligation too; delivery clears it in inject-resume.
@@ -1221,7 +1369,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 // agent, so the percentage prompt would announce "~0% --
                 // critical" at 04:00 to a session that is perfectly healthy.
                 ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
-                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+                : promptReason.startsWith(PERIODIC_HANDOFF_REASON_PREFIX)
+                  // pct is null for a periodic-only agent too: same trap.
+                  ? periodicHandoffPrompt(cfg.periodicHandoffMinutes, handoffPathFor(name))
+                  : promptReason.startsWith(TASK_CLOSE_REASON_PREFIX)
+                    ? taskCloseHandoffPrompt(handoffPathFor(name))
+                    : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
         )
         break
       case 'restart': {
