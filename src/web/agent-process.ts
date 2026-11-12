@@ -3,6 +3,7 @@ import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
@@ -2067,9 +2068,79 @@ function assertSync<T>(r: T): T {
   return r
 }
 
+export function prefetchPaneCaptures(sessions: string[]): void {
+  try {
+    if (tmuxBatch === null) return
+    const captureArgs = (session: string): string[] => ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p']
+    const eligible = [...new Set(sessions)].filter(session => !tmuxNeedsIndirection(captureArgs(session), null))
+    if (eligible.length < 2) return
+
+    const nonce = randomBytes(16).toString('hex')
+    const markers = eligible.map((_, i) => `__marveen_capture_${nonce}_${i}__`)
+    const args: string[] = []
+    eligible.forEach((session, i) => {
+      if (i > 0) args.push(';')
+      args.push('display-message', '-p', markers[i], ';', ...captureArgs(session))
+    })
+    const inv = tmuxInvocationFor(args)
+    let out: string
+    let failed = false
+    let positionalFailure = false
+    let error: unknown
+    try {
+      out = execFileSync(inv.file, inv.args, {
+        timeout: 3000 + 200 * eligible.length,
+        encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (err) {
+      failed = true
+      error = err
+      const failure = err as { status?: unknown; signal?: unknown; code?: unknown } | null
+      // Timeouts can exit with status 1 too; only a clean exit is positional.
+      positionalFailure = failure?.status === 1 && failure.signal == null && failure.code == null
+      const stdout = (err as { stdout?: unknown } | null)?.stdout
+      out = typeof stdout === 'string' ? stdout : Buffer.isBuffer(stdout) ? stdout.toString('utf-8') : ''
+    }
+
+    // Reject collisions before trusting any frame or failed-session position.
+    const matches = [...out.matchAll(new RegExp(`(?<=^|\\n)__marveen_capture_${nonce}_[0-9]+__\\n`, 'g'))]
+    if (!out.startsWith(markers[0] + '\n') || matches.length > eligible.length ||
+        matches.some((match, i) => match[0] !== markers[i] + '\n') ||
+        out.split(nonce).length - 1 !== matches.length) return
+    if (!failed && matches.length !== eligible.length) return
+
+    if (failed && (!positionalFailure || !out.endsWith(markers[matches.length - 1] + '\n'))) return
+
+    for (let i = 0; i < matches.length; i++) {
+      const single = tmuxInvocationFor(captureArgs(eligible[i]))
+      const key = JSON.stringify([single.file, single.args])
+      if (positionalFailure && i === matches.length - 1) {
+        tmuxBatch.set(key, { err: error })
+      } else {
+        const start = matches[i].index! + matches[i][0].length
+        tmuxBatch.set(key, { out: out.slice(start, matches[i + 1]?.index ?? out.length) })
+      }
+    }
+    // tmux stops at a failed capture; later commands have not run yet.
+    if (positionalFailure) prefetchPaneCaptures(eligible.slice(matches.length))
+  } catch (err) {
+    logger.debug({ err }, 'Pane capture prefetch failed')
+  }
+}
+
 function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
+  if (tmuxBatch !== null && tmuxArgs[0] === 'capture-pane') {
+    const key = JSON.stringify([inv.file, inv.args])
+    const hit = tmuxBatch.get(key)
+    if (hit) {
+      // Consume once so another reader always gets a fresh frame.
+      tmuxBatch.delete(key)
+      if ('err' in hit) throw hit.err
+      return hit.out as string
+    }
+  }
   if (tmuxBatch !== null && tmuxArgs[0] === 'list-sessions') {
     const key = JSON.stringify([inv.file, inv.args])
     const hit = tmuxBatch.get(key)

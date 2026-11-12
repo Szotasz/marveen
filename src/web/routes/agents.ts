@@ -131,6 +131,7 @@ import {
   sendPromptToSession,
   capturePane,
   withTmuxBatch,
+  prefetchPaneCaptures,
   paneCurrentCommand,
   delay,
   resolveAgentProvider,
@@ -1077,6 +1078,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; bgAgents: { total: number; running: number; queued: number } | null; tail: string[] }> = []
 
     withTmuxBatch(() => {
+      const agents = withoutMainAgent(listAgentNames()).map(name => {
+        const host = readAgentRemoteHost(name)
+        return { name, host, runState: agentRunStateCached(name, host != null) }
+      })
+      prefetchPaneCaptures([MAIN_CHANNELS_SESSION, ...agents
+        .filter(({ host, runState }) => host == null && runState === 'running')
+        .map(({ name }) => agentSessionName(name))])
       // Main agent runs in the --channels session, not agent-<name>.
       {
         const mainPane = capturePane(MAIN_CHANNELS_SESSION)
@@ -1093,11 +1101,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         })
       }
 
-      for (const name of withoutMainAgent(listAgentNames())) {
+      for (const { name, host, runState } of agents) {
         // Remote agents: resolve run state + pane through the short-TTL caches so
         // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
-        const host = readAgentRemoteHost(name)
-        const runState = agentRunStateCached(name, host != null)
         const running = runState === 'running'
         let pane: string | null = null
         if (running) {
@@ -1161,15 +1167,20 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     const rows: AgentStatusRow[] = []
     withTmuxBatch(() => {
+      const agents = withoutMainAgent(listAgentNames()).map(name => {
+        const host = readAgentRemoteHost(name)
+        return { name, host, runState: agentRunStateCached(name, host != null) }
+      })
+      prefetchPaneCaptures([MAIN_CHANNELS_SESSION, ...agents
+        .filter(({ host, runState }) => host == null && runState === 'running')
+        .map(({ name }) => agentSessionName(name))])
       {
         const mainPane = capturePane(MAIN_CHANNELS_SESSION)
         const running = mainPane !== null
         const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
         rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped', mainPaneCommand)))
       }
-      for (const name of withoutMainAgent(listAgentNames())) {
-        const host = readAgentRemoteHost(name)
-        const runState = agentRunStateCached(name, host != null)
+      for (const { name, host, runState } of agents) {
         const running = runState === 'running'
         let pane: string | null = null
         if (running) {
