@@ -127,7 +127,10 @@ class Restores(Base):
                                                "package-lock.json": "restored"})
         self.assertEqual(self.r.status(), " M README.md\n")
         self.assertEqual(self.r.read(".claude/settings.json"), SHIPPED_SETTINGS)
-        self.assertEqual(os.stat(os.path.join(self.r.dir, "install-macos.sh")).st_mode & 0o777, 0o755)
+        # Git applies the umask on checkout, as on any clone.
+        m = os.umask(0)
+        os.umask(m)
+        self.assertEqual(os.stat(os.path.join(self.r.dir, "install-macos.sh")).st_mode & 0o777, 0o777 & ~m)
 
     def test_slack_install_shipped_channel_value_flip(self):
         self.r.write(".claude/settings.json", cli_enable(SHIPPED_SETTINGS, "slack-channel@marveen-marketplace", True))
