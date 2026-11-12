@@ -73,7 +73,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
   agent-restart <agent> [--fresh]
-                (no force: a busy main agent answers 409 restart-blocked, as on the dashboard)
+                (sub-agents only: the main agent is refused; no force)
   federation-directory
   daily-log-read <agent> [--date YYYY-MM-DD]
                 (without --date: today on this machine's clock; the server's own default is the UTC day)
@@ -144,6 +144,15 @@ def check_env():
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
     return None
+
+
+def main_agent_ids():
+    """The main agent's id(s): the install's .env MAIN_AGENT_ID (default 'marveen', as src/config.ts), plus the
+    process environment's value if it names another one. Both are refused by agent-restart."""
+    ids = {env_file_values('MAIN_AGENT_ID').get('MAIN_AGENT_ID') or 'marveen'}
+    if os.environ.get('MAIN_AGENT_ID'):
+        ids.add(os.environ['MAIN_AGENT_ID'].strip())
+    return ids
 
 
 def api_base():
@@ -432,6 +441,11 @@ def build_request(verb, args):
         fresh = take_flag(args, '--fresh')
         (agent,) = positional(args, 1, verb)
         check(agent, NAME_RE, 'agent name')
+        # The verb is for restarting a SUB-agent. The main agent's restart restarts the owner's chat channel session,
+        # so a sub-agent must not get a ready-made one-word way to do it (review of #2720). The raw API route is unchanged.
+        if agent in main_agent_ids():
+            fail_usage(f'agent-restart: {agent!r} is the main agent; this verb only restarts sub-agents '
+                       '(restart the main agent from the dashboard)')
         # A JSON body always goes, {} when there is no option: the route refuses a body that did not arrive in full.
         return 'POST', f'/api/agents/{agent}/restart', {'fresh': True} if fresh else {}, headers, {}
     if verb == 'federation-directory':
