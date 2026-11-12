@@ -9,10 +9,11 @@ This is not a scalable production setup: SQLite and tmux sessions make it a sing
 ## Quick start
 
 ```bash
-make -f deploy/Makefile up      # build the root Dockerfile + kind cluster + helm install
+kind create cluster --config deploy/kind/kind-config.yaml
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
 kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token
 # open: http://127.0.0.1:3420/?token=<the token above>
-make -f deploy/Makefile down    # delete the cluster (PVCs included)
+kind delete cluster --name marveen    # delete the cluster (PVCs included)
 ```
 
 The first start takes a while (code sync, first-boot setup); the pod becomes ready when the dashboard answers. Set the dashboard password and finish the Claude login and the channel bot in the setup wizard, exactly as in [the Docker guide](../docker.md).
@@ -28,7 +29,7 @@ A token can come from a Secret, whose keys are injected as environment variables
 
 ```bash
 kubectl --context kind-marveen create secret generic marveen-secrets --from-literal=KEY=value
-make -f deploy/Makefile deploy SECRET=marveen-secrets
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set existingSecret=marveen-secrets
 ```
 
 ## How it works
@@ -38,7 +39,6 @@ make -f deploy/Makefile deploy SECRET=marveen-secrets
 | `Dockerfile` (repo root) | The official image; the chart does not build or pin anything of its own |
 | `deploy/helm/marveen/` | Deployment (1 replica, `Recreate`), two PVCs, NodePort Service ([values](../../deploy/helm/marveen/README.md)) |
 | `deploy/kind/kind-config.yaml` | Maps the node's port 30420 to the host's `127.0.0.1:3420` only |
-| `deploy/Makefile` | `up`, `cluster`, `image`, `load`, `deploy`, `down` (all pinned to the `kind-marveen` context) |
 
 **Volumes.** They follow the official layout and the image's user (uid 1000):
 
@@ -51,7 +51,13 @@ make -f deploy/Makefile deploy SECRET=marveen-secrets
 
 **Readiness.** The probe runs the same `curl` check as the image's `HEALTHCHECK`, so a dashboard that listens but is not ready receives no traffic.
 
-By default the chart uses `ghcr.io/szotasz/marveen:latest`; `make up` builds the root Dockerfile as `marveen:dev`, loads it into the cluster, and installs that.
+The chart uses `ghcr.io/szotasz/marveen:latest`. To try your own, not yet published code, build the root Dockerfile, load it into the cluster and point the chart at it:
+
+```bash
+docker build -t marveen:dev .
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
+```
 
 ## Limits
 

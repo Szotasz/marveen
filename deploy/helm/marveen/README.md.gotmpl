@@ -10,9 +10,10 @@ workload (`Recreate` strategy, `ReadWriteOnce` volumes).
 ## Quick start
 
 ```sh
-make -f deploy/Makefile up          # build the root Dockerfile, create kind cluster, helm install
+kind create cluster --config deploy/kind/kind-config.yaml
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
 open http://127.0.0.1:3420/?token=$(kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token)
-make -f deploy/Makefile down
+kind delete cluster --name marveen
 ```
 
 First-start settings (`MARVEEN_CHANNEL`, `MARVEEN_AGENT_ID`, `MARVEEN_LANG`, `TZ`) are plain `env` values;

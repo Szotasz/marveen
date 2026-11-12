@@ -9,10 +9,11 @@ Ez nem skálázható éles üzem: az SQLite és a tmux session-ök miatt egyetle
 ## Gyorsindítás
 
 ```bash
-make -f deploy/Makefile up      # a gyökér Dockerfile build + kind cluster + helm install
+kind create cluster --config deploy/kind/kind-config.yaml
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen
 kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token
 # nyisd meg: http://127.0.0.1:3420/?token=<a fenti token>
-make -f deploy/Makefile down    # cluster törlése (a PVC-kkel együtt)
+kind delete cluster --name marveen    # cluster törlése (a PVC-kkel együtt)
 ```
 
 Az első indítás eltart egy ideig (kód-szinkron, first-boot beállítás); a pod akkor lesz ready, amikor a dashboard válaszol. A dashboard jelszavát, a Claude-bejelentkezést és a csatorna botját a beállító varázslóban adod meg, ugyanúgy, mint [a Docker útmutatóban](docker.md).
@@ -28,7 +29,7 @@ A token Secretből is jöhet, annak kulcsai környezeti változóként kerülnek
 
 ```bash
 kubectl --context kind-marveen create secret generic marveen-secrets --from-literal=KEY=value
-make -f deploy/Makefile deploy SECRET=marveen-secrets
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set existingSecret=marveen-secrets
 ```
 
 ## 🛠 Hogyan működik
@@ -38,7 +39,6 @@ make -f deploy/Makefile deploy SECRET=marveen-secrets
 | `Dockerfile` (a repo gyökerében) | A hivatalos image; a chart nem épít és nem pinel semmit a sajátjából |
 | `deploy/helm/marveen/` | Deployment (1 replika, `Recreate`), két PVC, NodePort Service ([értékek](../deploy/helm/marveen/README.md)) |
 | `deploy/kind/kind-config.yaml` | A node 30420-as portját csak a host `127.0.0.1:3420`-ra képezi |
-| `deploy/Makefile` | `up`, `cluster`, `image`, `load`, `deploy`, `down` (mind a `kind-marveen` contextre rögzítve) |
 
 **Volume-ok.** A hivatalos elrendezést és az image felhasználóját (uid 1000) követik:
 
@@ -51,7 +51,13 @@ make -f deploy/Makefile deploy SECRET=marveen-secrets
 
 **Readiness.** A próba ugyanazt a `curl` ellenőrzést futtatja, mint az image `HEALTHCHECK`-je, így a hallgatózó, de még nem kész dashboard nem kap forgalmat.
 
-Alapból a chart a `ghcr.io/szotasz/marveen:latest` image-et használja; a `make up` a gyökér Dockerfile-t `marveen:dev` néven építi, betölti a cluster-be, és azt telepíti.
+A chart a `ghcr.io/szotasz/marveen:latest` image-et használja. Ha a saját, még nem publikált kódodat akarod kipróbálni, építsd meg a gyökér Dockerfile-lal, töltsd be a cluster-be, és add meg a chartnak:
+
+```bash
+docker build -t marveen:dev .
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
+```
 
 ## Korlátok
 

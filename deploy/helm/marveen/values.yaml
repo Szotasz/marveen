@@ -1,5 +1,5 @@
 image:
-  # -- Image repository. The official image; with kind, `make -f deploy/Makefile up` builds the root Dockerfile as `marveen:dev` and loads it.
+  # -- Image repository. The official image. To try local code, build the root Dockerfile, `kind load docker-image` it, and override `image.repository`/`image.tag`.
   repository: ghcr.io/szotasz/marveen
   # -- Image tag.
   tag: latest
