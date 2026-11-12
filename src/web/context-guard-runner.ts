@@ -17,6 +17,7 @@ import {
   clearSaturationBannerOverride,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
+import { sendResumeWithDrain } from './resume-queue-drain.js'
 import { deliverWhenReady, RESUME_DELIVERY_OPTIONS } from './resume-delivery.js'
 import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -899,7 +900,12 @@ function startResumeDelivery(name: string): void {
         resumeSending.add(name)
         try {
           // GUARDHITELES903 anchor, and 'abort': a busy pane gets nothing.
-          const outcome = await sendSystemDirective(name, target, text, null, { onBusyTimeout: 'abort' })
+          // Card 2e1a5659: the drain delivers the pending rows held through
+          // the restart in THIS injection -- after it the fresh session is
+          // busy for its whole first turn (measured 2026-11-08: rows waited
+          // 67 min and outlived two restart cycles), so a resume without the
+          // drain re-opens exactly that wait.
+          const outcome = await sendResumeWithDrain(name, target, text, null, { onBusyTimeout: 'abort' })
           // Settle BEFORE the claim is released: the loop's .then runs a few
           // microtasks later, and a sweep in that gap would see no claim and a
           // still-owed obligation in await-ready, and send a second resume.
@@ -1583,7 +1589,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         resumeSending.add(name)
         let outcome: Awaited<ReturnType<typeof sendSystemDirective>>
         try {
-          outcome = await sendSystemDirective(
+          // Card 2e1a5659: through the drain, so the rows the delivery hold
+          // kept through the restart ride in this same injection instead of
+          // waiting out the fresh session's first (long) turn.
+          outcome = await sendResumeWithDrain(
             name,
             session,
             resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes, pendingResumes[name]?.heavyJobs ?? null),
