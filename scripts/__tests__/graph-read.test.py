@@ -182,6 +182,15 @@ def main():
             op = FakeOpener()
             code, _, _ = run(m, ["123", "%s=1" % k], op)
             check("olvasasi kulcs %s= engedelyezett" % k, (code, len(op.calls)), (0, 1))
+        # the Instagram Audio API search (GET ig_audio) goes through as one GET
+        op = FakeOpener()
+        code, _, _ = run(m, ["v22.0/ig_audio", "audio_type=music", "user_id=1784",
+                             "search_query=house"], op)
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(op.calls[0]["url"]).query) if op.calls else {}
+        check("ig_audio kereses: 1 GET a harom kulccsal",
+              (code, len(op.calls), op.calls and op.calls[0]["method"], q.get("audio_type"),
+               q.get("user_id"), q.get("search_query")),
+              (0, 1, "GET", ["music"], ["1784"], ["house"]))
         for k in ("foo", "ids", "q", "type", "debug", "locale"):
             op = FakeOpener()
             code, _, err = run(m, ["123", "%s=1" % k], op)

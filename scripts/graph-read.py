@@ -160,6 +160,8 @@ WRITE_PARAMS = frozenset((
 READ_PARAMS = frozenset((
     "fields", "limit", "after", "before", "since", "until", "metadata",
     "summary", "date_preset", "period", "metric", "breakdowns",
+    # GET ig_audio (Instagram Audio API): audio search for Reels
+    "audio_type", "user_id", "search_query",
 ))
 # Inside a fields= value: a token field (me/accounts{access_token} would put a
 # page token into the output; masked, but never asked for) or a .as() alias
