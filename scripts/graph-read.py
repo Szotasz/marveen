@@ -26,8 +26,9 @@ guarantees it is a read:
     dot, so no host and no "..", no "?"); query parameters only as key=value
     arguments, and the key must be on the READ_PARAMS allowlist (fields,
     limit, after, before, since, until, metadata, summary, date_preset,
-    period, metric, breakdowns); a fields= value naming access_token or a
-    .as() alias is refused;
+    period, metric, breakdowns, and for GET ig_audio audio_type, user_id,
+    search_query); a fields= value naming access_token or a .as() alias is
+    refused;
   - write-marker parameters are refused before any network call (WRITE_PARAMS:
     message, caption, method, batch, published, is_hidden ...): Graph honours a
     `method=` override on GET, and the rest have no business in a read;
