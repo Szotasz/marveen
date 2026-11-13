@@ -34,6 +34,7 @@
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/voice-reply-directive.py\"", "timeout": 180 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/slack_progress.py\"", "timeout": 15 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/googlechat-thread-guard.py\"", "timeout": 5 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/marveen-commands.py\"", "timeout": 45 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/taskstate-stub.py\"", "timeout": 10 } ] }
     ],
@@ -74,7 +75,8 @@
       { "matcher": "Write|Edit|MultiEdit", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-gate.py\"", "timeout": 10 } ] },
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-bash-gate.py\"", "timeout": 10 } ] },
       { "matcher": "^(?:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$", "hooks": [ { "type": "command", "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: node interpreter hianyzik, a kapu BLOKKOL\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): db-write-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"", "timeout": 10 } ] },
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/shell-rescan-guard.py\"", "timeout": 10 } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/shell-rescan-guard.py\"", "timeout": 10 } ] },
+      { "matcher": "mcp__plugin_googlechat_googlechat__reply", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/googlechat-thread-guard.py\"", "timeout": 5 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"", "timeout": 10 } ] },

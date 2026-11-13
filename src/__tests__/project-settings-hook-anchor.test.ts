@@ -47,6 +47,12 @@ const EXPECTED: Record<string, string[]> = {
     'provenance-gate.py', 'staleness-guard.py', 'memory-lookup-nudge.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py', 'slack_progress.py',
     'marveen-commands.py',
+    // PELENKAGCHAT1113 (Google Chat thread guard, the recording half), a reviewed
+    // decision: it only reads the prompt and writes its own state file under the
+    // Google Chat plugin's state dir (ids only), no network call, no subprocess;
+    // every path exits 0, so it cannot block a prompt. A no-op on a prompt with
+    // no Google Chat envelope.
+    'googlechat-thread-guard.py',
     // #946 (taskstate stub writer), a reviewed decision: every exit path is
     // sys.exit(0), the only cross-module import is guarded, there is no network
     // call or subprocess, and the write is atomic (os.replace). It cannot block
@@ -99,6 +105,11 @@ const EXPECTED: Record<string, string[]> = {
     // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
     // any internal error, so it cannot wedge a session.
     'shell-rescan-guard.py @ Bash',
+    // PELENKAGCHAT1113 (the judging half): stops a Google Chat reply whose
+    // reply_to is not a thread that space was heard in. Fail-open on any
+    // internal error and bounded (two stops in a row, then the call passes),
+    // so it cannot silence the channel or trap a session.
+    'googlechat-thread-guard.py @ mcp__plugin_googlechat_googlechat__reply',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   StopFailure: ['ledger-turn-failure.py'],

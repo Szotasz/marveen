@@ -95,6 +95,10 @@ jobs:
       # A turn that died on an API error while a channel message waited must leave
       # a trace (StopFailure hook); hermetic, isolated ledger DB.
       - run: python3 scripts/__tests__/ledger-turn-failure.test.py
+      # PELENKAGCHAT1113: a Google Chat reply must land in the thread of the
+      # question (the guard blocks one that would open a new thread); hermetic,
+      # the state dir is a tmp directory.
+      - run: python3 scripts/__tests__/googlechat-thread-guard.test.py
       # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
       # error path that said SKIP would silence the community sentinel for
       # good, so its fail-direction cases are gate instruments (hermetic:
