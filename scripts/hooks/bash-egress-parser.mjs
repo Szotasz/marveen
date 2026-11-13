@@ -84,7 +84,9 @@
 //
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
 // the name-and-shape list will never be complete. Still open, by family:
-//   - network calls INSIDE a script file: the hook sees only the outer command line;
+//   - network calls INSIDE a script file: only a PYTHON file named on the command line is read
+//     (EGRESSPYFILE1113, `python3 f.py`); a shell / node / other script, a module it imports, a file
+//     the same command writes first, and a path computed at run time are not;
 //   - a program that reaches an interpreter through a PIPE or a file rather than through a heredoc /
 //     here-string attached to the interpreter itself;
 //   - for an INTERPRETER one-liner (not curl / wget): values bound by builtins other than `for` and a
@@ -350,6 +352,49 @@ function pythonUsesNetwork(text) {
   const code = pythonCodeOnly(text)
   if (code === null || PY_DYNAMIC.test(code) || !pythonImportsPlain(code)) return NET_PRIMITIVE.test(text)
   return NET_PRIMITIVE.test(code)
+}
+// EGRESSPYFILE1113: the program file of a `python3 [options] file.py [args]` run, read from disk. null
+// when there is no file to read: a -c / -m / stdin run (judged elsewhere or not at all), a path this
+// hook cannot place (a `$` or a glob left in it, a relative path whose directory cwdAt cannot tell),
+// a missing or unreadable file, something that is not a regular file, or one over PY_FILE_MAX. All of
+// those PASS, as before this rule: it reads what is plainly there and is not a fence around the rest
+// (a script written by the same command, an imported module, a path computed at run time).
+import { statSync as fileStat } from 'node:fs'
+const PY_VALUE_FLAG = new Set(['-W', '-X', '--check-hash-based-pycs'])
+const PY_FILE_MAX = 1024 * 1024
+// The directory a command at offset `at` runs in: the hook's cwd moved by every plain `cd DIR` before
+// it, in order. null when that cannot be told: no cwd from the hook, a pushd / popd, a cd with no
+// literal operand (`cd`, `cd -`, `cd "$D"`).
+function cwdAt(masked, orig, at) {
+  if (hookCwd === null) return null
+  const head = masked.slice(0, at)
+  if (/(?:^|[\s;&|(!{])(?:pushd|popd)(?=[\s;&|)]|$)/.test(head)) return null
+  let dir = hookCwd
+  for (const m of head.matchAll(/(?:^|[\s;&|(!{])cd(?=[\s;&|)]|$)[ \t]*(\S*)/g)) {
+    const from = m.index + m[0].length - m[1].length
+    const w = unquoteWord(orig.slice(from, from + m[1].length).replace(/[;&|)]+$/, ''))
+    if (w === '' || w === '-' || w === '--' || /[$*?[{`~]/.test(w)) return null
+    dir = resolve(dir, w)
+  }
+  return dir
+}
+function pythonScriptRun(args, base) {
+  let k = 0
+  for (; k < args.length; k++) {
+    const w = args[k]
+    if (w === '-' || w === '-c' || w === '-m' || /^-[A-Za-z]*[cm]/.test(w)) return null
+    if (PY_VALUE_FLAG.has(w)) { k++; continue }
+    if (!w.startsWith('-')) break
+  }
+  const p = args[k]
+  if (typeof p !== 'string' || p === '' || /[$*?[{`~]/.test(p)) return null
+  if (!p.startsWith('/') && base === null) return null
+  const abs = p.startsWith('/') ? p : resolve(base, p)
+  try {
+    const st = fileStat(abs)
+    if (!st.isFile() || st.size > PY_FILE_MAX) return null
+    return { body: readFileSync(abs, 'utf-8'), args: args.slice(k + 1) }
+  } catch { return null }
 }
 // Words that can stand before the real command word of a sub-command. The shell keywords are here
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
@@ -1916,6 +1961,16 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       if (cmd === 'curl') target = 'curl'
       else if (cmd === 'wget') target = 'wget'
       else if (INTERPRETER.test(cmd.toLowerCase()) && hasCodeFlag(cmd, mw.slice(i + 1)) && usesNetwork(cmd, text)) target = 'one-liner'
+      // EGRESSPYFILE1113: a Python program run from a FILE (`python3 fetch.py [args]`). Its body is read
+      // from disk and judged like a heredoc body (4.), with the URLs of the run's own arguments added.
+      if (!target && PYTHON.test(cmd.toLowerCase())) {
+        const run = pythonScriptRun(args, cwdAt(masked, orig, a))
+        if (run !== null && pythonUsesNetwork(run.body)) {
+          const found = [...`${run.body}\n${run.args.join('\n')}`.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+          const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+          if (hosts.length) return { deny: true, reason: 'script-file-external', hosts }
+        }
+      }
       if (!target) continue
       // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
       // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
