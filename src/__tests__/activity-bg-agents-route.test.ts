@@ -42,6 +42,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/agent-process.js')>()
   return {
     ...actual,
+    prefetchPaneCaptures: () => {},
     agentSessionName: (n: string) => `agent-${n}`,
     agentRunState: () => 'running',
     isAgentRunning: () => true,
