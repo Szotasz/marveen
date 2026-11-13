@@ -73,6 +73,14 @@ def _id_from_text(text):
     m = re.search(r"\(ids:\s*(\d+)", text, re.IGNORECASE)
     if m:
         return str(m.group(1))
+    # PELENKAGCHAT1113: a Google Chat id is a resource name, not a number
+    # ("sent (id: spaces/AAAA/messages/BBBB.BBBB)", multi-part "(ids: spaces/...,
+    # ..." -- the plugin's src/tools.ts handleReply). Without it the row had no
+    # message_id and a double-fire of the hook stored the reply twice (measured
+    # 2026-11-13). Only the parenthesized forms, and only this exact shape.
+    m = re.search(r"\(ids?:\s*(spaces/[A-Za-z0-9_-]+/messages/[A-Za-z0-9_.-]+)[,)]", text)
+    if m:
+        return m.group(1)
     # Word-boundary fallback for looser formats.
     m = re.search(r"\bid[:\s]+(\d+)", text, re.IGNORECASE)
     return str(m.group(1)) if m else None

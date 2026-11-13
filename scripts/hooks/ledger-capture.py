@@ -72,6 +72,9 @@ SENDER_KEY = {"telegram": "user_id", "discord": "user_id", "slack": "user_id", "
 #   discord  server.ts: DISCORD_STATE_DIR ?? ~/.claude/channels/discord
 #   slack    server.ts: SLACK_STATE_DIR || ~/.claude/channels/slack
 #   teams    config.ts: TEAMS_PLUGIN_STATE_DIR || TEAMS_STATE_DIR || ~/.claude/channels/teams
+#   googlechat config.ts: GOOGLECHAT_STATE_DIR ?? ~/.claude/channels/googlechat
+#            (read from the plugin source, buglime/claude-channel-googlechat
+#            3421b382a; the plugin is not installed on the host this was written on)
 # "??" keeps a set-but-empty variable, "||" skips it: the hook must read the
 # file the plugin reads, nothing else.
 _STATE_DIR_RULE = {
@@ -79,6 +82,7 @@ _STATE_DIR_RULE = {
     "discord": (("DISCORD_STATE_DIR",), True),
     "slack": (("SLACK_STATE_DIR",), False),
     "teams": (("TEAMS_PLUGIN_STATE_DIR", "TEAMS_STATE_DIR"), False),
+    "googlechat": (("GOOGLECHAT_STATE_DIR",), True),
 }
 
 
@@ -114,6 +118,94 @@ def _allowlist(provider, cache):
     return allowed
 
 
+# --- Google Chat (PELENKAGCHAT1113) -------------------------------------------
+#
+# The Google Chat plugin has no pairing and no DM allowlist of sender ids: its
+# access.json names ONE `owner` (a Workspace email, or a raw users/<id> when no
+# email can be resolved) and the plugin writes the role it derived from that
+# into the envelope (role="owner" | "user", src/inbound.ts + src/access.ts
+# roleFor). So this channel is gated on the role, the way Gromzo is, and the
+# role is then CHECKED against the file it came from:
+#
+#   1. the source is exactly the plugin's own (another plugin whose server is
+#      merely named googlechat is an unknown provider);
+#   2. role="owner". Any other role, or none, refuses the WHOLE prompt: only the
+#      owner's rows go in, there is no 'paired' Google Chat row (Samu 76792; the
+#      replay hands inbound rows back as the owner's words);
+#   3. the sender is the `owner` of the access.json THIS session's plugin reads
+#      (_state_dir, the plugin's own rule), by the plugin's own comparison: an
+#      email owner against the envelope's `user` (the plugin puts the resolved
+#      email there), a users/<id> owner against `user_id`;
+#   4. and of the MAIN install's Google Chat access.json (owner_chat._state_dir):
+#      who the owner is comes from the main install only, never from a
+#      sub-agent's own channel dir (the rule of _owner_id below).
+#
+# A second person the plugin's `roles` map promotes to "owner" also arrives with
+# role="owner". They are NOT the install's owner, and the replay would print
+# their words under the owner's name, so they fail step 3 and the prompt is
+# refused. Fail-closed wherever the owner cannot be decided: no readable file,
+# no `owner`, an `owner` that is neither an email nor a users/<id>.
+#
+# NOT MEASURED LIVE: there is no Google Chat test environment. The envelope
+# shape is taken from the plugin source, not from a real session.
+GOOGLECHAT_SOURCE = "plugin:googlechat:googlechat"
+
+
+def _googlechat_owner(access_path):
+    """The `owner` an access.json names, or None when it names none."""
+    try:
+        with open(access_path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    owner = raw.get("owner") if isinstance(raw, dict) else None
+    return owner if isinstance(owner, str) and owner else None
+
+
+def _attr_text(value):
+    """An envelope attribute as the plugin sent it. Claude Code escapes five
+    characters in an attribute value (& < > " '; read from the 2.1.323 binary,
+    2026-11-13), so an owner email with an apostrophe arrives as &apos;. Used
+    only to COMPARE a value with the access.json owner, never to build a tag."""
+    for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&apos;", "'"), ("&amp;", "&")):
+        value = value.replace(entity, char)
+    return value
+
+
+def _googlechat_sender_is(owner, attrs):
+    """The plugin's own comparison (access.ts roleFor): the key is the resolved
+    email, else the raw users/<id>; it equals the owner case-insensitively."""
+    if owner.startswith("users/"):
+        return _attr_text(attrs.get("user_id", "")).lower() == owner.lower()
+    if "@" not in owner:
+        return None  # neither an email nor an id: no owner can be decided
+    return _attr_text(attrs.get("user", "")).lower() == owner.lower()
+
+
+def _googlechat_refusal(source, attrs, cache):
+    if source != GOOGLECHAT_SOURCE:
+        return "unknown-provider"
+    if attrs.get("role") != "owner":
+        return "sender-not-owner"
+    if not attrs.get("user_id"):
+        return "sender-missing"
+    if "googlechat" not in cache:
+        main_env = os.path.join(_owner_install_dir(), ".env")
+        cache["googlechat"] = tuple(
+            _googlechat_owner(os.path.join(d, "access.json"))
+            for d in (_state_dir("googlechat"), owner_chat._state_dir(main_env, "googlechat"))
+        )
+    for owner in cache["googlechat"]:
+        if owner is None:
+            return "owner-undecidable"
+        same = _googlechat_sender_is(owner, attrs)
+        if same is None:
+            return "owner-undecidable"
+        if not same:
+            return "sender-not-owner"
+    return None
+
+
 def _prompt_refusal(prompt):
     """None when every envelope in the prompt is from its channel's owner, else
     the reason (a fixed token, never the sender id or any text)."""
@@ -136,6 +228,11 @@ def _prompt_refusal(prompt):
             # The Gromzo plugin writes the role itself; only its verified owner counts.
             if attrs.get("sender_role") != "owner" or attrs.get("verified") != "true":
                 return "sender-not-owner"
+            continue
+        if provider == "googlechat":
+            why = _googlechat_refusal(source, attrs, cache)
+            if why is not None:
+                return why
             continue
         key = SENDER_KEY.get(provider)
         if key is None:
@@ -265,8 +362,8 @@ def _prompt_role(prompt):
     for match in CHANNEL_TAG_RE.finditer(prompt):
         attrs = dict(ATTR_RE.findall(match.group(1)))
         provider = attrs.get("source", "").rsplit(":", 1)[-1]
-        if provider == "gromzo":
-            continue  # the gate let in only the verified owner's envelope
+        if provider in ("gromzo", "googlechat"):
+            continue  # the gate let in only the owner's envelope (Google Chat: the main install's)
         sender = attrs.get(SENDER_KEY.get(provider, ""), "")
         owner = _owner_id(provider, cache)
         if not owner or _norm(provider, sender) != owner:
@@ -318,6 +415,8 @@ def main():
         reply_to_message_id = _attr(attrs, "reply_to_message_id")
         provider = source.rsplit(":", 1)[-1]
         sender_id = _attr(attrs, SENDER_KEY[provider]) if provider in SENDER_KEY else None
+        if provider == "googlechat":
+            sender_id = _attr(attrs, "user_id")  # users/<id>; not in SENDER_KEY, which keys the allowFrom gate
         sender_name = _attr(attrs, "sender_name" if provider == "gromzo" else "user")
         if chat_id and message_id:
             try:
