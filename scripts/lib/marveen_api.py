@@ -522,6 +522,30 @@ def build_request(verb, args):
     fail_usage(f'unknown verb: {verb!r}')
 
 
+# The server's own prefix for the receipt a close sends back (src/db.ts COMPLETION_REPORT_PREFIX).
+COMPLETION_REPORT_PREFIX = '[Eredmény]'
+
+
+def completion_close_refused(path, token):
+    """A reason to refuse a --result-file close of a receipt, else None. Closing an `[Eredmény]` receipt sends
+    nothing back (the server's ping-pong guard), so a result written there never reaches anyone: a task answered
+    inside a receipt was lost this way twice on 2026-11-10. An unreadable row is not refused: the close then fails
+    or succeeds on its own."""
+    req = urllib.request.Request(api_base() + path, method='GET')
+    req.add_header('Authorization', f'Bearer {token}')
+    try:
+        with OPENER.open(req, timeout=30) as resp:
+            row = json.loads(resp.read().decode('utf-8', 'replace'))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    content = row.get('content') if isinstance(row, dict) else None
+    if isinstance(content, str) and content.startswith(COMPLETION_REPORT_PREFIX):
+        return ('this message is an [Eredmény] receipt: closing it sends nothing back, so the result would reach '
+                'no one. Send the result as a new message to the sender (message verb), then close this one with '
+                '--no-notify. Nothing was sent.')
+    return None
+
+
 def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
@@ -551,6 +575,11 @@ def main(argv):
         print(f'FAIL: {refused}', file=sys.stderr)
         return 2
     token = read_token()
+    if verb == 'message-close' and body is not None and 'result' in body:
+        refused = completion_close_refused(path, token)
+        if refused:
+            print(f'FAIL: {refused}', file=sys.stderr)
+            return 2
     data = json.dumps(body).encode('utf-8') if body is not None else None
     req = urllib.request.Request(api_base() + path, data=data, method=method)
     req.add_header('Authorization', f'Bearer {token}')
