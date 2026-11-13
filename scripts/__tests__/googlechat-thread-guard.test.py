@@ -55,11 +55,12 @@ def inbound(sd, *tags):
     return run(sd, {"hook_event_name": "UserPromptSubmit", "prompt": "\n".join(tags)})
 
 
-def reply(sd, lang="hu", tool=TOOL, **tool_input):
+def reply(sd, lang="hu", tool=TOOL, env=None, **tool_input):
     """-> (denied, reason, rc)."""
     tool_input.setdefault("chat_id", SPACE)
     tool_input.setdefault("text", "valasz")
-    rc, out, err = run(sd, {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}, lang=lang)
+    rc, out, err = run(sd, {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}, lang=lang,
+                       env_extra=env)
     if not out:
         return False, "", rc
     d = json.loads(out)["hookSpecificOutput"]
@@ -284,6 +285,89 @@ with open(os.path.join(sd, "access.json"), "w", encoding="utf-8") as fh:
     fh.write("{not json")
 inbound(sd, tag("M1.M1", T1))
 check("an unreadable access.json is the plugin's default (first)", reply(sd, reply_to=T1, text=LONG)[0] is True)
+
+print("the default is the INSTALLED plugin's: the fork threads every part, the original the first only")
+PLUGIN = "googlechat@claude-channel-googlechat"
+FORK_SOURCE = ("export type ReplyToMode = 'off' | 'first' | 'all'\n\n/** Every part of a chunked reply goes into the thread"
+               " unless the operator says otherwise. */\nexport const DEFAULT_REPLY_TO_MODE: ReplyToMode = 'all'\n")
+
+
+def plugin_install(source):
+    """One install directory of the plugin. source None = the original plugin, which has no src/threading.ts."""
+    d = tempfile.mkdtemp(prefix="gchat-plugin-")
+    os.makedirs(os.path.join(d, "src"))
+    with open(os.path.join(d, "src", "tools.ts"), "w", encoding="utf-8") as fh:
+        fh.write("const replyMode = access.replyToMode ?? 'first'\n")
+    if source is not None:
+        with open(os.path.join(d, "src", "threading.ts"), "w", encoding="utf-8") as fh:
+            fh.write(source)
+    return d
+
+
+def config_dir(registry):
+    """A Claude config dir whose plugin registry is `registry` (a dict, or a string written as it is)."""
+    d = tempfile.mkdtemp(prefix="gchat-config-")
+    os.makedirs(os.path.join(d, "plugins"))
+    with open(os.path.join(d, "plugins", "installed_plugins.json"), "w", encoding="utf-8") as fh:
+        fh.write(registry if isinstance(registry, str) else json.dumps(registry))
+    return d
+
+
+def registry(*sources, plugin=PLUGIN):
+    return {"version": 2, "plugins": {
+        "telegram@claude-plugins-official": [{"scope": "user", "installPath": "/nonexistent/telegram", "version": "0.0.6"}],
+        plugin: [{"scope": "user", "installPath": plugin_install(src), "version": "0.0.1"} for src in sources]}}
+
+
+def long_reply_stopped(access, cfg, home=None):
+    """A 5000-character reply into the right thread, with `access` as access.json (None = no file)."""
+    d = with_access(access) if access is not None else fresh()
+    if access is None:
+        inbound(d, tag("M1.M1", T1))
+    env = {"HOME": home} if home else {"CLAUDE_CONFIG_DIR": cfg}
+    return reply(d, reply_to=T1, text=LONG, env=env)
+
+
+fork = config_dir(registry(FORK_SOURCE))
+check("the fork installed, no replyToMode set: the long reply passes", long_reply_stopped({}, fork)[0] is False)
+check("...with no access.json at all too", long_reply_stopped(None, fork)[0] is False)
+home = tempfile.mkdtemp(prefix="gchat-home-")
+os.rename(fork, os.path.join(home, ".claude"))
+fork = os.path.join(home, ".claude")
+check("...and when the registry is found under ~/.claude (no CLAUDE_CONFIG_DIR)",
+      long_reply_stopped({}, None, home=home)[0] is False)
+denied, reason, _ = long_reply_stopped({"replyToMode": "first"}, fork)
+check('the fork installed, but access.json says "first": stopped, the setting wins',
+      denied and '"replyToMode": "first"' in reason)
+denied, reason, _ = long_reply_stopped({"replyToMode": "off"}, fork)
+check('the fork installed, access.json says "off": stopped as before', denied and '"replyToMode": "off"' in reason)
+check("the fork installed, an unknown replyToMode: the fork's default (all), passes",
+      long_reply_stopped({"replyToMode": "bogus"}, fork)[0] is False)
+check("the original plugin installed (no src/threading.ts): stopped, as before",
+      long_reply_stopped({}, config_dir(registry(None)))[0] is True)
+check("two installs, one of them the original: stopped",
+      long_reply_stopped({}, config_dir(registry(FORK_SOURCE, None)))[0] is True)
+check("two installs, both the fork: passes",
+      long_reply_stopped({}, config_dir(registry(FORK_SOURCE, FORK_SOURCE)))[0] is False)
+check('a plugin whose stated default is "first": stopped',
+      long_reply_stopped({}, config_dir(registry(FORK_SOURCE.replace("= 'all'", "= 'first'"))))[0] is True)
+check("the name mentioned without the assignment (a comment) is not a default: stopped",
+      long_reply_stopped({}, config_dir(registry("// DEFAULT_REPLY_TO_MODE is 'all' in the fork\n")))[0] is True)
+check("the plugin is not in the registry: stopped",
+      long_reply_stopped({}, config_dir(registry(FORK_SOURCE, plugin="googlechat@some-other-marketplace")))[0] is True)
+check("the plugin has no installs listed: stopped", long_reply_stopped({}, config_dir(registry()))[0] is True)
+check("an install path that does not exist: stopped",
+      long_reply_stopped({}, config_dir({"version": 2, "plugins": {PLUGIN: [{"installPath": "/nonexistent/gchat"}]}}))[0] is True)
+check("a registry that is not JSON: stopped", long_reply_stopped({}, config_dir("{not json"))[0] is True)
+check("a registry of an unexpected shape: stopped",
+      long_reply_stopped({}, config_dir({"version": 2, "plugins": {PLUGIN: {"installPath": plugin_install(FORK_SOURCE)}}}))[0] is True)
+check("no registry at all: stopped", long_reply_stopped({}, tempfile.mkdtemp(prefix="gchat-config-"))[0] is True)
+sd = with_access({})
+denied, reason, _ = reply(sd, env={"CLAUDE_CONFIG_DIR": fork})
+check("the fork installed: a reply with no reply_to is still stopped", denied and f'reply_to="{T1}"' in reason)
+denied, reason, _ = reply(sd, reply_to=SPACE + "/messages/M1.M1", env={"CLAUDE_CONFIG_DIR": fork})
+check("the fork installed: a MESSAGE name as reply_to is still stopped, the thread named",
+      denied and f'reply_to="{T1}"' in reason)
 
 print("the state file holds identifiers only")
 sd = fresh()
