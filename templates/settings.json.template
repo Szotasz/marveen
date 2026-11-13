@@ -186,6 +186,11 @@
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py; exit 0'",
             "timeout": 15
           }
+          ,{
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/googlechat-thread-guard.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/googlechat-thread-guard.py; exit 0'",
+            "timeout": 5
+          }
         ]
       }
     ],
@@ -237,6 +242,16 @@
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/shell-rescan-guard.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/shell-rescan-guard.py; exit 0'",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_googlechat_googlechat__reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/googlechat-thread-guard.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/googlechat-thread-guard.py; exit 0'",
+            "timeout": 5
           }
         ]
       }
