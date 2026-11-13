@@ -64,7 +64,8 @@ export function slackEscape(text: string): string {
 
 /**
  * Posts the request as ONE message into the owner's DM with the main bot and records what was posted. The text is
- * escaped (no link or mention can come out of an agent's text) and its sha256 is taken over that exact posted form.
+ * escaped (no mention or labelled link can come out of an agent's text; Slack still auto-links a bare URL, domain or
+ * address, shown as written) and its sha256 is taken over the form Slack reports it stored.
  */
 export async function postApprovalPrompt(call: SlackCall, ownerUserId: string, text: string, directChannel: string | null = null):
 Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false; error: string }> {
@@ -87,7 +88,7 @@ Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false;
   if (r.ok !== true || typeof r.ts !== 'string') return { ok: false, error: `post:${String(r.error ?? 'no_ts')}` }
   // Slack stores its own form (a bare URL becomes <url>), and checkPost compares against the stored text: hash that.
   const stored = (r.message as { text?: unknown } | undefined)?.text
-  return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(typeof stored === 'string' ? stored : posted), ownerUserId, botUserId } }
+  return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(typeof stored === 'string' && stored ? stored : posted), ownerUserId, botUserId } }
 }
 
 export type Binding = 'thread' | 'next_message'
