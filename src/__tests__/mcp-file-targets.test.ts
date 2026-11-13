@@ -107,12 +107,24 @@ describe('mcpFileTargets', () => {
       ['mcp__plugin_telegram_telegram__download_attachment', { file_id: 'AgACAgIAAxkBAAIB' }],
       ['mcp__plugin_discord_discord__download_attachment', { chat_id: '123456789012345678', message_id: '123456789012345679' }],
       ['mcp__plugin_gromzo-channel_gromzo__download_attachment', { attachment_id: 'att-1' }],
+      // PELENKAGCHAT1113: the Google Chat plugin (file_id only, written into its own inbox); an opaque id, no slash
+      ['mcp__plugin_googlechat_googlechat__download_attachment', { file_id: 'ClxzcGFjZXMvQUFBQTEvbWVzc2FnZXMvTU1NMS5NTU0x' }],
       ['mcp__Plugin_Slack-Channel_Slack__Download_Attachment', { chat_id: 'D1', message_id: '1.2' }],
     ])('%s', (name, input) => {
       const m = mcpFileTargets(name, input)
       expect(m.missingPath).toBe(false)
       expect(m.cls).toBe('writer')
       expect(m.targets).toEqual([])
+    })
+    // PELENKAGCHAT1113: the real shape of a Google Chat file_id (attachmentDataRef.resourceName) is not measured.
+    // If it carries slashes it is a path-looking leaf like any other: the required rule is lifted, the leaf is
+    // still handed to the gates as a relative path. Nothing is loosened for it here.
+    it('a Google Chat file_id with slashes: not missingPath, and the id is still judged as a path leaf', () => {
+      const id = 'spaces/AAAA1/messages/MMM1.MMM1/attachments/ATT1'
+      const m = mcpFileTargets('mcp__plugin_googlechat_googlechat__download_attachment', { file_id: id })
+      expect(m.missingPath).toBe(false)
+      expect(m.cls).toBe('writer')
+      expect(m.targets).toEqual([{ path: id, dir: false }])
     })
     it('a path-looking leaf on it is still a target (only the required rule is lifted)', () => {
       const m = mcpFileTargets('mcp__plugin_slack-channel_slack__download_attachment', { chat_id: 'D1', message_id: '1.2', savePath: '/x/store' })
@@ -124,6 +136,9 @@ describe('mcpFileTargets', () => {
       ['mcp__slack__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
       ['mcp__plugin_slack-channel_slackx__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
       ['mcp__plugin_evil_slack-channel_slack__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
+      ['mcp__googlechat__download_attachment', { file_id: 'x' }],
+      ['mcp__plugin_googlechat_googlechatx__download_attachment', { file_id: 'x' }],
+      ['mcp__plugin_evil_googlechat_googlechat__download_attachment', { file_id: 'x' }],
       ['mcp__x__download_attachment', { messageId: '1', attachmentId: '2' }],
       ['mcp__evil__download_attachment', { chat_id: 'D1', message_id: '1.2' }],
     ])('the same tool on any other server still needs its path (%s)', (name, input) => {
