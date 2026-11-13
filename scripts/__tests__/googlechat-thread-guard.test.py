@@ -114,7 +114,11 @@ check("a reply into the older thread passes", reply(sd, reply_to=T1)[0] is False
 check("a reply into the newer thread passes", reply(sd, reply_to=T2)[0] is False)
 denied, reason, _ = reply(sd)
 check("no reply_to: the latest thread first, the earlier one listed",
-      denied and reason.index(T2) < reason.index(T1) and "több szálból" in reason)
+      denied and T1 in reason and T2 in reason and reason.index(T2) < reason.index(T1) and "több szálból" in reason)
+# The message named belongs to the OLDER thread: the reason must give that thread, not the latest one.
+denied, reason, _ = reply(sd, reply_to=SPACE + "/messages/M1.M1")
+check("reply_to is a message of the older thread: its own thread is named, not the latest",
+      denied and f'reply_to="{T1}"' in reason and T2 not in reason)
 sd = fresh()
 inbound(sd, tag("M1.M1", T1), tag("M2.M2", T2))
 check("two envelopes in ONE prompt: both threads recorded",
