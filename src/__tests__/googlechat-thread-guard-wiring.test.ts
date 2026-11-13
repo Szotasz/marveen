@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { ensureAgentHooks } from '../web/agent-scaffold.js'
 import { KNOWN_HOOK_SCRIPTS } from '../web/hook-registration-guard.js'
 import { PROJECT_ROOT } from '../config.js'
 
@@ -69,6 +70,63 @@ describe('PELENKAGCHAT1113: the Google Chat thread guard is wired as a pair', ()
     expect(rx.test('mcp__plugin_googlechat_googlechat__reply')).toBe(true)
     expect(rx.test('mcp__plugin_googlechat_googlechat__edit_message')).toBe(false)
     expect(rx.test('mcp__plugin_telegram_telegram__reply')).toBe(false)
+  })
+})
+
+// The migration: an agent scaffolded BEFORE this change has every template hook
+// except the pair. ensureAgentHooks (run for every agent at dashboard start)
+// must add both halves, each under its own event and matcher, and adding them
+// twice must not happen.
+describe('PELENKAGCHAT1113: an existing sub-agent gets the pair from ensureAgentHooks', () => {
+  const PROBE = 'gchat1113-probe'
+  const probeDir = join(PROJECT_ROOT, 'agents', PROBE)
+  const settingsPath = join(probeDir, '.claude', 'settings.json')
+  let fakeHome: string
+  let realHome: string | undefined
+
+  beforeEach(() => {
+    realHome = process.env.HOME
+    fakeHome = mkdtempSync(join(tmpdir(), 'gchat1113-'))
+    process.env.HOME = fakeHome
+    mkdirSync(join(fakeHome, '.claude'), { recursive: true })
+    writeFileSync(join(fakeHome, '.claude', 'settings.json'), '{}')
+    if (existsSync(join(probeDir, 'HANDOFF.md'))) throw new Error(`refusing: agents/${PROBE} looks live`)
+    rmSync(probeDir, { recursive: true, force: true })
+    mkdirSync(probeDir, { recursive: true })
+  })
+  afterEach(() => {
+    process.env.HOME = realHome
+    rmSync(fakeHome, { recursive: true, force: true })
+    rmSync(probeDir, { recursive: true, force: true })
+  })
+
+  const read = (): { hooks: Hooks } => JSON.parse(readFileSync(settingsPath, 'utf-8')) as { hooks: Hooks }
+  const commandCount = (hooks: Hooks): number =>
+    Object.values(hooks).reduce((n, groups) => n + groups.reduce((m, g) => m + (g.hooks?.length ?? 0), 0), 0)
+
+  it('a pre-change agent (every template hook but the pair) gains exactly the pair, once', () => {
+    ensureAgentHooks(PROBE)
+    const full = read()
+    expect(shape(full.hooks), 'a fresh agent has the pair').toEqual(PAIR)
+
+    // The pre-change agent: the same file with the two guard entries removed.
+    const before = read()
+    for (const event of Object.keys(before.hooks)) {
+      before.hooks[event] = before.hooks[event]
+        .map((g) => ({ ...g, hooks: (g.hooks ?? []).filter((h) => !(h.command ?? '').includes(SCRIPT)) }))
+        .filter((g) => (g.hooks?.length ?? 0) > 0)
+    }
+    expect(shape(before.hooks), 'the fixture really lacks the pair').toEqual([])
+    const without = commandCount(before.hooks)
+    writeFileSync(settingsPath, JSON.stringify(before, null, 2))
+
+    ensureAgentHooks(PROBE)
+    const after = read()
+    expect(shape(after.hooks), 'the migration adds both halves under their own event and matcher').toEqual(PAIR)
+    expect(commandCount(after.hooks), 'and nothing else').toBe(without + 2)
+
+    ensureAgentHooks(PROBE)
+    expect(commandCount(read().hooks), 'a second run adds nothing').toBe(without + 2)
   })
 })
 
