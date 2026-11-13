@@ -85,6 +85,14 @@
       },
       {
         "index": 10,
+        "id": "user-prompt-submit/googlechat-thread-guard",
+        "hook": "googlechat-thread-guard",
+        "gate": true,
+        "purpose": "UserPromptSubmit half of the Google Chat thread guard (PELENKAGCHAT1113): records which message arrived in which thread, identifiers only, for the PreToolUse half to judge a reply by.",
+        "fingerprint": "9c97b8ab521de58f707156b64bbade9848e5edc4d14f55f9f363fc2350ffa19e"
+      },
+      {
+        "index": 11,
         "id": "user-prompt-submit/marveen-commands",
         "hook": "marveen-commands",
         "gate": false,
@@ -92,7 +100,7 @@
         "fingerprint": "dba408c7acf29f1656b7bb66ba03372a85df5748297fd90a171ed71453384c80"
       },
       {
-        "index": 11,
+        "index": 12,
         "id": "user-prompt-submit/taskstate-stub",
         "hook": "taskstate-stub",
         "gate": false,
@@ -368,6 +376,14 @@
         "gate": true,
         "purpose": "PreToolUse gate: refuse a Bash command whose own TEXT will be re-scanned by the shell, because that is how prose becomes an executed command.",
         "fingerprint": "c57da1ed93fdc70ed0ede7bf1eb03c19d7a9de601178c97f0a5f4ce777c54342"
+      },
+      {
+        "index": 23,
+        "id": "pre-tool-use/googlechat-thread-guard",
+        "hook": "googlechat-thread-guard",
+        "gate": true,
+        "purpose": "PreToolUse half of the Google Chat thread guard (PELENKAGCHAT1113): stops a reply that would not land in the thread of the question it answers, and names the thread to use.",
+        "fingerprint": "d226afbb836e3ae6011082173f34c2f2746906a8aabed55bfce8305373379e8b"
       }
     ],
     "Stop": [

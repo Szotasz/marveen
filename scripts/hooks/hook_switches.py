@@ -74,6 +74,7 @@ DEFAULT_NON_DISABLEABLE = frozenset({
     # reply enforcement and channel ownership
     "telegram-reply-guard",
     "channel-reply-guard",
+    "googlechat-thread-guard",       # a Google Chat reply that would open a new thread (PELENKAGCHAT1113)
     "channel-process-gate",
     "child-claude-channel-guard",
     # fleet control (KILLSWITCH1022): the red button must not be env-disabled
