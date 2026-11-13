@@ -156,7 +156,10 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen[0].url).toBe('/api/messages/43071')
     expect(JSON.parse(seen[0].body)).toEqual({ status: 'done', notify: false })
     expect((await run(['message-close', '5', '--failed', '--result-file', file('r.txt', 'mit csináltam')])).code).toBe(0)
-    expect(JSON.parse(seen[1].body)).toEqual({ status: 'failed', result: 'mit csináltam' })
+    // a --result-file close reads the row first (a receipt is refused), then closes it
+    expect(seen[1].method).toBe('GET')
+    expect(seen[1].url).toBe('/api/messages/5')
+    expect(JSON.parse(seen[2].body)).toEqual({ status: 'failed', result: 'mit csináltam' })
   })
 
   it('directive-verify, daily-log and the three approval verbs', async () => {
@@ -277,7 +280,7 @@ describe('marveen-api.sh: a recipe payload file is sent once', () => {
     const m = file('api-memoria.txt', 'új')
     expect((await run(['memory-update', '5', 'dani', m])).code).toBe(0)
     for (const p of [r, a, m]) expect(content(p), p).toBe('')
-    expect(seen).toHaveLength(3)
+    expect(seen).toHaveLength(4) // message-close --result-file: the row read, then the close
   })
 
   it('the message verb too: emptied after the send, an empty one exits 2 before agent-msg.sh runs', async () => {
