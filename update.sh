@@ -2243,6 +2243,29 @@ elif command -v setsid >/dev/null 2>&1; then
   # background so a parent signal during restart cannot abort the health/
   # rollback sequence and update.sh returns promptly.
   setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+elif command -v python3 >/dev/null 2>&1; then
+  # FINDETACHMAC1113: macOS has no setsid(1) (measured), and a plain `&` job
+  # stays in the CALLER's process group (measured: same PGID as the launching
+  # shell). Measured 2026-11-10 12:28 on a Mac install: update.sh ran as a
+  # background Bash task of the main agent's own Claude Code session; stop.sh's
+  # `tmux kill-session` ended that session, a TERM reached the finalizer's group
+  # right after stop.sh returned (start.sh never printed its header), and the
+  # finalizer was gone after stage=health with no verdict and no rollback: the
+  # services stayed down for ~33 minutes until a manual start.sh.
+  # setsid(2) through python3 after a double fork: the finalizer leads its own
+  # session and process group and is re-parented to launchd, so neither a group
+  # kill nor a process-tree kill aimed at the caller can reach it. The parent
+  # exits 0 right after the first fork, so the fallback below runs only when
+  # python3 could not fork at all (no double launch).
+  if ! python3 -I -c 'import os, sys
+if os.fork():
+    sys.exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+os.execvp(sys.argv[1], sys.argv[1:])' bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1; then
+    bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+  fi
 else
   bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 fi
