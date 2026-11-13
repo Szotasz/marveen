@@ -85,7 +85,9 @@ Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false;
   const posted = slackEscape(text)
   const r = await call('chat.postMessage', { channel, text: posted, unfurl_links: false, unfurl_media: false })
   if (r.ok !== true || typeof r.ts !== 'string') return { ok: false, error: `post:${String(r.error ?? 'no_ts')}` }
-  return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(posted), ownerUserId, botUserId } }
+  // Slack stores its own form (a bare URL becomes <url>), and checkPost compares against the stored text: hash that.
+  const stored = (r.message as { text?: unknown } | undefined)?.text
+  return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(typeof stored === 'string' ? stored : posted), ownerUserId, botUserId } }
 }
 
 export type Binding = 'thread' | 'next_message'

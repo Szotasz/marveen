@@ -14,6 +14,8 @@ interface World {
   owner?: Record<string, unknown>
   calls: string[]
   rateLimitOn?: string
+  /** The text Slack reports it stored (chat.postMessage message.text), when it differs from what was sent. */
+  storedAs?: string
 }
 
 function fake(w: World): SlackCall {
@@ -23,7 +25,7 @@ function fake(w: World): SlackCall {
     switch (method) {
       case 'auth.test': return { ok: true, user_id: BOT }
       case 'conversations.open': return { ok: true, channel: { id: 'D0DMCHAN1' } }
-      case 'chat.postMessage': return { ok: true, ts: '1700000000.000100', channel: body.channel }
+      case 'chat.postMessage': return { ok: true, ts: '1700000000.000100', channel: body.channel, ...(w.storedAs !== undefined ? { message: { text: w.storedAs } } : {}) }
       case 'conversations.history': return { ok: true, messages: w.message ? [w.message] : [] }
       case 'users.info': return { ok: true, user: w.owner ?? { id: OWNER, is_bot: false, is_app_user: false, deleted: false } }
       default: return { ok: false, error: 'unknown_method' }
@@ -43,6 +45,13 @@ describe('postApprovalPrompt', () => {
     const r = await postApprovalPrompt(fake(w), OWNER, TEXT)
     expect(r).toEqual({ ok: true, post: { channel: 'D0DMCHAN1', ts: '1700000000.000100', textSha256: sha256('Címzett: a@example.com\nSzöveg:\n&lt;b&gt;x&lt;/b&gt; &amp; y'), ownerUserId: OWNER, botUserId: BOT } })
     expect(w.calls).toEqual(['auth.test', 'conversations.open', 'chat.postMessage'])
+  })
+
+  it('records the sha256 of the text Slack stored, so an auto-linked URL is not a changed message (live 11-13)', async () => {
+    const stored = 'Vagy a dashboardon: <http://localhost:3420/#approvals> (id: x)'
+    const w: World = { calls: [], storedAs: stored }
+    const r = await postApprovalPrompt(fake(w), OWNER, 'Vagy a dashboardon: http://localhost:3420/#approvals (id: x)')
+    expect(r.ok && r.post.textSha256).toBe(sha256(stored))
   })
 
   it('a malformed owner id is refused before any call', async () => {
