@@ -14,6 +14,16 @@ src/tools.ts handleReply and src/chat-client.ts):
                                        new threads.
 So the rule "answer in the thread" lived only in the plugin's instructions.
 
+THE FORK (Szotasz/claude-channel-googlechat, from b4b7240) changed the last one:
+its default replyToMode is "all", so every part of a split reply is threaded
+unless access.json says otherwise. The guard therefore does not assume a
+default: when access.json sets no replyToMode it reads the default of the
+plugin that is INSTALLED (plugin_default_mode below), and anything it cannot
+read is "first", the stricter reading. With the original plugin nothing
+changes. A message name as reply_to is still stopped with both plugins: the
+original drops it, the fork resolves it, and naming the thread is right for
+both.
+
 ONE SCRIPT, TWO HOOKS, told apart by hook_event_name:
 
   UserPromptSubmit  records, per space, which message arrived in which thread.
@@ -76,6 +86,11 @@ NAMED_THREADS = 3         # how many recent threads a block reason lists
 KEEP_CONFIRMED = 5        # threads per space the model confirmed by repeating them
 CHUNK_LIMIT = 4096        # the plugin's MAX_CHUNK_LIMIT (src/config.ts)
 
+PLUGIN_ID = "googlechat@claude-channel-googlechat"
+# The fork's default, as its source states it (src/threading.ts):
+#   export const DEFAULT_REPLY_TO_MODE: ReplyToMode = 'all'
+DEFAULT_MODE_RE = re.compile(r"\bDEFAULT_REPLY_TO_MODE\b[^=\n]*=\s*['\"](off|first|all)['\"]")
+
 # A whole envelope: the opening tag, the body, the closing tag. Only whole,
 # non-overlapping blocks are read, so a tag written into a message body (which
 # sits INSIDE the real block) is never taken for an inbound of its own.
@@ -131,6 +146,38 @@ def state_dir():
     if d is not None:
         return d
     return os.path.join(os.path.expanduser("~"), ".claude", "channels", "googlechat")
+
+
+def plugin_default_mode():
+    """The replyToMode the INSTALLED Google Chat plugin uses when access.json sets
+    none: "all" only when every install of the plugin that this session's plugin
+    registry lists states that default in its source; "first" otherwise.
+
+    "first" is the answer to everything that cannot be read (no registry, no
+    entry, a missing or unreadable source, installs that disagree, a default
+    this guard does not know). It is the original plugin's default and the
+    stricter reading: the cost of a wrong "first" is a long reply stopped and
+    sent in parts, the cost of a wrong "all" is a reply that leaves its thread
+    without a word.
+
+    The registry is the one Claude Code itself reads for this session
+    (<config dir>/plugins/installed_plugins.json, version 2: plugins[id] is a
+    list of installs, each with an installPath), the config dir being
+    CLAUDE_CONFIG_DIR when set, else ~/.claude."""
+    try:
+        cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+        with open(os.path.join(cfg, "plugins", "installed_plugins.json"), encoding="utf-8") as fh:
+            installs = json.load(fh)["plugins"][PLUGIN_ID]
+        if not isinstance(installs, list) or not installs:
+            return "first"
+        for inst in installs:
+            with open(os.path.join(inst["installPath"], "src", "threading.ts"), encoding="utf-8") as fh:
+                m = DEFAULT_MODE_RE.search(fh.read(400000))
+            if not m or m.group(1) != "all":
+                return "first"
+        return "all"
+    except Exception:
+        return "first"
 
 
 def lang(sd):
@@ -328,8 +375,11 @@ def decide(tool_input, state, access, texts):
         return " ".join(parts), chat_id, None
 
     # The thread is right. What the plugin does with it depends on its own settings.
+    # A value access.json sets wins. With none (or one the plugin does not know)
+    # the plugin falls back to its own default, and that differs between the
+    # original plugin ("first") and the fork ("all"): read it, do not assume it.
     mode = access.get("replyToMode")
-    mode = mode if mode in ("off", "first", "all") else "first"
+    mode = mode if mode in ("off", "first", "all") else plugin_default_mode()
     if mode == "off":
         return texts["off"].format(space=chat_id), chat_id, note
     limit = access.get("textChunkLimit")
