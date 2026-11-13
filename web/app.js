@@ -4443,6 +4443,14 @@ function applyMarveenReadonlyMode(readOnly) {
   if (authModeGroup) authModeGroup.hidden = readOnly
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
+  // #2727: the security profile and the Claude plan are per SUB-agent settings. openMarveenDetail never fills
+  // their selects, so for the main agent they showed whatever the last opened sub-agent left there (or an empty
+  // select on a fresh load), above a Save button that returns early for role 'main'. Hidden here, the one hook
+  // both open paths run; openAgentDetail used to hide the plan group itself, which the main agent never reached.
+  for (const id of ['securityProfileGroup', 'claudePlanGroup']) {
+    const group = document.getElementById(id)
+    if (group) group.hidden = readOnly
+  }
   // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
   const mainAuthGroup = document.getElementById('mainAuthGroup')
   if (mainAuthGroup) {
@@ -4880,10 +4888,7 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentProfileDesc'),
     currentAgent.securityProfile || 'default',
   )
-  // The main agent's Claude login is managed via channels.sh, not the per-agent
-  // config path, so plan selection does not apply to it. Hide the whole group.
-  const planGroup = document.getElementById('claudePlanGroup')
-  if (planGroup) planGroup.hidden = currentAgent.role === 'main'
+  // (the main agent has no plan to pick here: applyMarveenReadonlyMode hides the group for it)
   populatePlanSelect(
     document.getElementById('editAgentPlan'),
     document.getElementById('editAgentPlanDesc'),
