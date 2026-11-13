@@ -577,7 +577,14 @@ def main(argv):
     token = read_token()
     if verb == 'message-close' and body is not None and 'result' in body:
         refused = completion_close_refused(path, token)
-        if refused:
+        if refused and body.get('notify') is False:
+            # --no-notify is the close the refusal itself asks for: it wins, and the unread result is dropped,
+            # but its file is kept (not emptied) so the result can still go out as a new message.
+            del body['result']
+            SENT_PAYLOADS.clear()
+            print('NOTE: this message is an [Eredmény] receipt: with --no-notify the --result-file is '
+                  'ignored (a receipt close sends nothing back). Send the result as a new message.', file=sys.stderr)
+        elif refused:
             print(f'FAIL: {refused}', file=sys.stderr)
             return 2
     data = json.dumps(body).encode('utf-8') if body is not None else None
