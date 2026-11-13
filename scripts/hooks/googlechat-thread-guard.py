@@ -20,13 +20,24 @@ ONE SCRIPT, TWO HOOKS, told apart by hook_event_name:
                     IDS ONLY: the space, the message name, the thread name and a
                     time. Never the text, never the sender.
   PreToolUse        on mcp__plugin_googlechat_googlechat__reply: BLOCKS the call
-                    when its reply_to is not a thread this space was heard in,
-                    and names the right thread in the reason.
+                    when its reply_to is missing, is a message name or is not a
+                    thread of the space, and names the right thread in the
+                    reason.
 
 It blocks, it does not rewrite: with two open threads in one space only the
 model knows which question it is answering, and a silent rewrite could send the
 answer into the wrong one. A blocked call is retried by the model with the
 thread the reason names.
+
+A THREAD OF THE SPACE THAT THE RECORD DOES NOT KNOW is a different case, and the
+guard does not claim to know better there. The record can miss an inbound (an
+envelope shape this parser does not read, two sessions on one state dir), and
+then the model's value is the right one and the record is the wrong one. So such
+a call is stopped ONCE, with a reason that states only what is known (no message
+recorded in that thread, the threads that are recorded) and says: if this is the
+thread attribute of the message you are answering, send the same call again. The
+same value on the very next call passes, and is remembered for the space
+(identifier only), so the rest of a multi-part reply is not stopped again.
 
 WHAT PASSES WITHOUT A QUESTION ASKED:
   - a space with no recorded inbound (a message the agent starts on its own);
@@ -62,12 +73,23 @@ KEEP_PER_SPACE = 40       # newest inbounds remembered per space
 KEEP_SECONDS = 7 * 86400  # and none older than this
 MAX_SPACES = 200
 NAMED_THREADS = 3         # how many recent threads a block reason lists
+KEEP_CONFIRMED = 5        # threads per space the model confirmed by repeating them
 CHUNK_LIMIT = 4096        # the plugin's MAX_CHUNK_LIMIT (src/config.ts)
 
 # A whole envelope: the opening tag, the body, the closing tag. Only whole,
 # non-overlapping blocks are read, so a tag written into a message body (which
 # sits INSIDE the real block) is never taken for an inbound of its own.
-BLOCK_RX = re.compile(r'<channel\s+([^>]*)>(.*?)</channel>', re.DOTALL)
+#
+# The opening tag is read as name="value" pairs first (group 1), so a ">" inside
+# a quoted value does not cut the tag short and lose the attributes after it.
+# Claude Code 2.1.323 writes ">" in a value as "&gt;" (read from its binary: the
+# value goes through & < > " ' escaping), so there this cannot happen; a version
+# that left it raw must not make the recorder miss an inbound. A tag that is not
+# made of such pairs is still read up to its first ">" (group 2), as before: an
+# opening tag this parser could not read at all would hand its block to a tag
+# forged in the body.
+BLOCK_RX = re.compile(
+    r'<channel(?:((?:\s+[A-Za-z_][A-Za-z0-9_]*="[^"]*")+)\s*|\s+([^>]*))>(.*?)</channel>', re.DOTALL)
 ATTR_RX = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
 SPACE_RX = re.compile(r'^spaces/[A-Za-z0-9_-]+$')
 NAME_RX = re.compile(r'^[A-Za-z0-9_.-]+$')
@@ -77,7 +99,8 @@ TEXTS = {
         "missing": "a reply_to hiányzik",
         "message": "a reply_to egy ÜZENET neve, a plugin csak SZÁL nevét fogadja el (az üzenet-azonosítót szó nélkül eldobja)",
         "not_thread": "a reply_to nem szálnév (spaces/.../threads/... alak kell)",
-        "unknown": "a reply_to olyan szál, amelyből ebben a space-ben nem érkezett üzenet",
+        "unknown": "a reply_to nem ennek a space-nek a szála",
+        "unheard": "⚠️ GOOGLE CHAT VÁLASZ MEGÁLLÍTVA ({space}): a megadott szálból (reply_to=\"{thread}\") ebben a space-ben nincs feljegyzett bejövő üzenet. Az itt feljegyzett szálak: {known}. A feljegyzésből kimaradhat üzenet. Ha a megadott érték annak az üzenetnek a thread attribútuma, amelyre válaszolsz, küldd újra a hívást VÁLTOZATLANUL. Ha nem az, annak az üzenetnek a thread attribútumát add meg, amelyre válaszolsz.",
         "head": "⚠️ GOOGLE CHAT VÁLASZ MEGÁLLÍTVA ({space}): {why}. Így a válasz NEM a kérdés szálába menne, hanem új szálat nyitna.",
         "one": "Küldd újra ugyanezt a választ ezzel: reply_to=\"{thread}\" (a legutóbbi bejövő üzenet szála).",
         "known": "Küldd újra ezzel: reply_to=\"{thread}\" (annak az üzenetnek a szála, amelyet megadtál).",
@@ -89,7 +112,8 @@ TEXTS = {
         "missing": "reply_to is missing",
         "message": "reply_to is a MESSAGE name, the plugin takes a THREAD name only (it drops a message id without a word)",
         "not_thread": "reply_to is not a thread name (it must look like spaces/.../threads/...)",
-        "unknown": "reply_to is a thread no message in this space arrived in",
+        "unknown": "reply_to is not a thread of this space",
+        "unheard": "⚠️ GOOGLE CHAT REPLY STOPPED ({space}): no message recorded in this space arrived in the thread you named (reply_to=\"{thread}\"). The threads recorded here: {known}. The record can miss a message. If the value you gave is the thread attribute of the message you are answering, send the call again UNCHANGED. If it is not, use the thread attribute of the message you are answering.",
         "head": "⚠️ GOOGLE CHAT REPLY STOPPED ({space}): {why}. Sent like this, the reply would NOT land in the thread of the question, it would open a new thread.",
         "one": "Send the same reply again with: reply_to=\"{thread}\" (the thread of the latest inbound message).",
         "known": "Send it again with: reply_to=\"{thread}\" (the thread of the message you named).",
@@ -173,6 +197,18 @@ def _blocks(state, space):
     return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
 
 
+def _confirmed(state, space):
+    entry = state["spaces"].get(space)
+    conf = entry.get("confirmed") if isinstance(entry, dict) else None
+    return [t for t in conf if isinstance(t, str)] if isinstance(conf, list) else []
+
+
+def _pending(state, space):
+    entry = state["spaces"].get(space)
+    p = entry.get("pending") if isinstance(entry, dict) else None
+    return p if isinstance(p, str) else None
+
+
 def _under(space, kind, name):
     """Is `name` exactly <space>/<kind>/<one segment>?"""
     prefix = "%s/%s/" % (space, kind)
@@ -185,7 +221,7 @@ def envelopes(prompt):
     value that is not a resource name, is not recorded."""
     out = []
     for m in BLOCK_RX.finditer(prompt):
-        pairs = ATTR_RX.findall(m.group(1))
+        pairs = ATTR_RX.findall(m.group(1) or m.group(2) or "")
         attrs = dict(pairs)
         if len(attrs) != len(pairs) or attrs.get("source") != SOURCE:
             continue
@@ -210,7 +246,11 @@ def on_prompt(payload):
         seen.append({"message": message, "thread": thread, "at": now})
         seen = [e for e in seen if isinstance(e.get("at"), int) and now - e["at"] <= KEEP_SECONDS]
         # a new inbound is a new question: the block count starts over
-        state["spaces"][space] = {"seen": seen[-KEEP_PER_SPACE:], "blocks": 0}
+        entry = {"seen": seen[-KEEP_PER_SPACE:], "blocks": 0}
+        confirmed = _confirmed(state, space)
+        if confirmed:
+            entry["confirmed"] = confirmed[-KEEP_CONFIRMED:]
+        state["spaces"][space] = entry
     if len(state["spaces"]) > MAX_SPACES:
         newest = sorted(state["spaces"].items(),
                         key=lambda kv: max([e.get("at", 0) for e in kv[1].get("seen", [])
@@ -239,13 +279,16 @@ def _sent_length(text, fmt):
 
 
 def decide(tool_input, state, access, texts):
-    """(reason or None, space). None = the call passes."""
+    """(reason or None, space, note). A None reason = the call passes. The note
+    is what the caller writes into the state: ("pending", thread) for a thread of
+    the space the record does not know, stopped this once; ("confirm", thread)
+    when that same value came again."""
     chat_id = tool_input.get("chat_id")
     if not isinstance(chat_id, str):
-        return None, None
+        return None, None, None
     seen = _seen(state, chat_id)
     if not seen:
-        return None, chat_id  # no inbound recorded for this space: nothing to hold the reply to
+        return None, chat_id, None  # no inbound recorded for this space: nothing to hold the reply to
     threads = []
     for e in reversed(seen):  # newest first, each thread once
         if e["thread"] not in threads:
@@ -254,7 +297,7 @@ def decide(tool_input, state, access, texts):
 
     raw = tool_input.get("reply_to")
     reply_to = "" if raw is None else str(raw).strip()
-    why = known = None
+    why = known = note = None
     if not reply_to:
         why = texts["missing"]
     elif "/messages/" in reply_to:
@@ -262,8 +305,17 @@ def decide(tool_input, state, access, texts):
         known = next((e["thread"] for e in seen if e["message"] == reply_to), None)
     elif "/threads/" not in reply_to:
         why = texts["not_thread"]
-    elif reply_to not in threads:
-        why = texts["unknown"]
+    elif reply_to not in threads and reply_to not in _confirmed(state, chat_id):
+        if not _under(chat_id, "threads", reply_to):
+            why = texts["unknown"]
+        elif _pending(state, chat_id) == reply_to:
+            # The same value on the very next call: the model says it is the
+            # inbound's own thread, and the record can be the one that is wrong.
+            note = ("confirm", reply_to)
+        else:
+            listed = ", ".join('"%s"' % t for t in threads[:NAMED_THREADS])
+            return (texts["unheard"].format(space=chat_id, thread=reply_to, known=listed),
+                    chat_id, ("pending", reply_to))
     if why is not None:
         parts = [texts["head"].format(space=chat_id, why=why)]
         if known:
@@ -273,13 +325,13 @@ def decide(tool_input, state, access, texts):
         else:
             others = ", ".join('"%s"' % t for t in threads[1:NAMED_THREADS])
             parts.append(texts["many"].format(thread=latest, others=others))
-        return " ".join(parts), chat_id
+        return " ".join(parts), chat_id, None
 
     # The thread is right. What the plugin does with it depends on its own settings.
     mode = access.get("replyToMode")
     mode = mode if mode in ("off", "first", "all") else "first"
     if mode == "off":
-        return texts["off"].format(space=chat_id), chat_id
+        return texts["off"].format(space=chat_id), chat_id, note
     limit = access.get("textChunkLimit")
     limit = limit if isinstance(limit, int) and not isinstance(limit, bool) else CHUNK_LIMIT
     limit = max(1, min(limit, CHUNK_LIMIT))
@@ -287,8 +339,8 @@ def decide(tool_input, state, access, texts):
     length = _sent_length(text if isinstance(text, str) else "", tool_input.get("format"))
     if mode != "all" and length > limit:
         return texts["long"].format(space=chat_id, length=length, limit=limit,
-                                    mode='"replyToMode": "%s"' % mode), chat_id
-    return None, chat_id
+                                    mode='"replyToMode": "%s"' % mode), chat_id, note
+    return None, chat_id, note
 
 
 def on_reply(payload):
@@ -300,14 +352,21 @@ def on_reply(payload):
     sd = state_dir()
     state = load(sd)
     texts = TEXTS[lang(sd)]
-    reason, space = decide(tool_input, state, _access(sd), texts)
-    if space is None or space not in state["spaces"]:
+    reason, space, note = decide(tool_input, state, _access(sd), texts)
+    if space is None or not isinstance(state["spaces"].get(space), dict):
         return None
     entry = state["spaces"][space]
     blocks = _blocks(state, space)
+    # "the very next call" only: whatever this call is, the earlier pending value is spent
+    changed = entry.pop("pending", None) is not None
+    if note and note[0] == "confirm":
+        entry["confirmed"] = ([t for t in _confirmed(state, space) if t != note[1]] + [note[1]])[-KEEP_CONFIRMED:]
+        changed = True
     if reason is None:
         if blocks:
             entry["blocks"] = 0
+            changed = True
+        if changed:
             save(sd, state)
         return None
     if blocks >= MAX_BLOCKS:
@@ -316,6 +375,8 @@ def on_reply(payload):
         save(sd, state)
         return None
     entry["blocks"] = blocks + 1
+    if note and note[0] == "pending":
+        entry["pending"] = note[1]
     save(sd, state)
     return reason
 
