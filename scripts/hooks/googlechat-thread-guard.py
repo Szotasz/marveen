@@ -14,7 +14,7 @@ src/tools.ts handleReply and src/chat-client.ts):
                                        new threads.
 So the rule "answer in the thread" lived only in the plugin's instructions.
 
-THE FORK (Szotasz/claude-channel-googlechat, from fe686af) changed the last one:
+THE FORK (Szotasz/claude-channel-googlechat, from b4b7240) changed the last one:
 its default replyToMode is "all", so every part of a split reply is threaded
 unless access.json says otherwise. The guard therefore does not assume a
 default: when access.json sets no replyToMode it reads the default of the
