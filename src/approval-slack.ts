@@ -64,7 +64,9 @@ export function slackEscape(text: string): string {
 
 /**
  * Posts the request as ONE message into the owner's DM with the main bot and records what was posted. The text is
- * escaped (no link or mention can come out of an agent's text) and its sha256 is taken over that exact posted form.
+ * escaped (no mention or labelled link can come out of an agent's text; Slack still auto-links a bare URL, domain or
+ * address, shown as written) and its sha256 is taken over the form Slack reports it stored, when that form is the
+ * posted text with only Slack's link wrappers added; otherwise over the posted text.
  */
 export async function postApprovalPrompt(call: SlackCall, ownerUserId: string, text: string, directChannel: string | null = null):
 Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false; error: string }> {
@@ -85,7 +87,17 @@ Promise<{ ok: true; post: Omit<ApprovalSlackPost, 'approvalId'> } | { ok: false;
   const posted = slackEscape(text)
   const r = await call('chat.postMessage', { channel, text: posted, unfurl_links: false, unfurl_media: false })
   if (r.ok !== true || typeof r.ts !== 'string') return { ok: false, error: `post:${String(r.error ?? 'no_ts')}` }
-  return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(posted), ownerUserId, botUserId } }
+  // Slack stores its own form (a bare URL becomes <url>), and checkPost compares against the stored text: hash that,
+  // but only when it IS the posted text with Slack's link wrappers; anything else keeps the posted hash (fail closed).
+  const stored = (r.message as { text?: unknown } | undefined)?.text
+  const same = typeof stored === 'string' && unwrapSlackLinks(stored) === posted
+  return { ok: true, post: { channel, ts: r.ts, textSha256: sha256(same ? stored : posted), ownerUserId, botUserId } }
+}
+
+/** Slack's link wrappers back to the text shown: `<target|label>` -> label, `<target>` -> target. After slackEscape the
+ * posted text has no `<` or `>`, so every wrapper in the stored form is Slack's own. */
+export function unwrapSlackLinks(text: string): string {
+  return text.replace(/<([^<>|]*)\|([^<>]*)>/g, '$2').replace(/<([^<>|]*)>/g, '$1')
 }
 
 export type Binding = 'thread' | 'next_message'
