@@ -1127,14 +1127,20 @@ echo "(gc) Google Chat: only the owner's envelope is logged"
 
 GC_OWNER="owner@example.com"
 GC_SPACE="spaces/AAAA1"
-# gc_access dir owner: an access.json in the plugin's shape (+ the .env owner_chat._state_dir looks for)
+# gc_access dir owner [roles-json|-]: an access.json in the plugin's shape (+ the .env owner_chat._state_dir
+# looks for). The roles map defaults to one person promoted by email; "-" writes the file with no roles key.
 gc_access() {
     mkdir -p "$1"
     : > "$1/.env"
-    python3 - "$1/access.json" "$2" <<'PYEOF'
+    python3 - "$1/access.json" "$2" "${3-}" <<'PYEOF'
 import json, sys
-json.dump({"policy": "allowlist", "owner": sys.argv[2], "allowFrom": ["anna@example.com"],
-           "allowDomains": [], "roles": {"lead@example.com": "owner"}, "spaces": {}}, open(sys.argv[1], "w"))
+access = {"policy": "allowlist", "owner": sys.argv[2], "allowFrom": ["anna@example.com"],
+          "allowDomains": [], "roles": {"lead@example.com": "owner"}, "spaces": {}}
+if sys.argv[3] == "-":
+    del access["roles"]
+elif sys.argv[3]:
+    access["roles"] = json.loads(sys.argv[3])
+json.dump(access, open(sys.argv[1], "w"))
 PYEOF
 }
 # gc_install name owner|-: a main install like OWNER_INSTALL, with (or without) a Google Chat channel dir
@@ -1201,6 +1207,32 @@ assert_eq "googlechat: an envelope with no role is not logged" "0" "$(in_rows "$
 gc_prompt "$(gc_tag M5.M5 lead@example.com users/300 owner "masodik kiemelt szemely")" | run_gc ledger-capture.py "$DB_GC2"
 assert_eq "googlechat: role=owner from the roles map, not the access.json owner: not logged" "0" "$(in_rows "$DB_GC2")"
 assert_eq "googlechat: ...refused as not the owner" "why=sender-not-owner" "$(gc_why "$DB_GC2")"
+# Promoted by users/<id> instead: the plugin's key is the id only when no email resolved, and then `user` is the
+# DISPLAY NAME, which the sender writes. A promoted person named after the owner's email must not pass as the owner.
+DB_GCR="$(case_db gcr)"
+GC_STATE_IDROLE="$TMPDIR_BASE/gc-state-idrole"; gc_access "$GC_STATE_IDROLE" "$GC_OWNER" '{"users/300": "owner"}'
+gc_prompt "$(gc_tag R1.R1 "$GC_OWNER" users/300 owner "a nevem a tulaj emailje")" | GC_T_STATE="$GC_STATE_IDROLE" run_gc ledger-capture.py "$DB_GCR"
+assert_eq "googlechat: promoted by users/<id>, display name = the owner's email: not logged" "0" "$(in_rows "$DB_GCR")"
+assert_eq "googlechat: ...refused as not the owner" "why=sender-not-owner" "$(gc_why "$DB_GCR")"
+gc_prompt "$(gc_tag R2.R2 "$GC_OWNER" users/100 owner "a valodi tulaj")" | GC_T_STATE="$GC_STATE_IDROLE" run_gc ledger-capture.py "$DB_GCR"
+assert_eq "googlechat: ...the real owner on the same install is still logged" "1" "$(in_rows "$DB_GCR")"
+GC_STATE_IDCASE="$TMPDIR_BASE/gc-state-idcase"; gc_access "$GC_STATE_IDCASE" "$GC_OWNER" '{"Users/300": "owner"}'
+gc_prompt "$(gc_tag R3.R3 "$GC_OWNER" users/300 owner "mas betumeret a kulcsban")" | GC_T_STATE="$GC_STATE_IDCASE" run_gc ledger-capture.py "$DB_GCR"
+assert_eq "googlechat: the roles key is matched case-insensitively, like the plugin does" "1" "$(in_rows "$DB_GCR")"
+# ANY key of the map, whatever role it gives: an id key is in play only when no email resolved.
+GC_STATE_IDUSER="$TMPDIR_BASE/gc-state-iduser"; gc_access "$GC_STATE_IDUSER" "$GC_OWNER" '{"users/100": "user"}'
+gc_prompt "$(gc_tag R4.R4 "$GC_OWNER" users/100 owner "a tulaj sajat id-ja a terkepben")" | GC_T_STATE="$GC_STATE_IDUSER" run_gc ledger-capture.py "$DB_GCR"
+assert_eq "googlechat: the owner's own id listed in roles: refused (fail-closed, the price of the rule)" "1" "$(in_rows "$DB_GCR")"
+assert_eq "googlechat: ...refused as not the owner" "why=sender-not-owner" "$(gc_why "$DB_GCR")"
+# A roles value that is not an object: the plugin's own reading of it is undefined, so is the owner.
+GC_STATE_BADROLES="$TMPDIR_BASE/gc-state-badroles"; gc_access "$GC_STATE_BADROLES" "$GC_OWNER" '["users/300"]'
+gc_prompt "$(gc_tag R5.R5 "$GC_OWNER" users/100 owner "a roles nem objektum")" | GC_T_STATE="$GC_STATE_BADROLES" run_gc ledger-capture.py "$DB_GCR"
+assert_eq "googlechat: a roles value that is not an object: not logged" "1" "$(in_rows "$DB_GCR")"
+assert_eq "googlechat: ...owner undecidable" "why=owner-undecidable" "$(gc_why "$DB_GCR")"
+# No roles key at all is the plugin's empty map: the owner goes in.
+GC_STATE_NOROLES="$TMPDIR_BASE/gc-state-noroles"; gc_access "$GC_STATE_NOROLES" "$GC_OWNER" -
+gc_prompt "$(gc_tag R6.R6 "$GC_OWNER" users/100 owner "nincs roles kulcs")" | GC_T_STATE="$GC_STATE_NOROLES" run_gc ledger-capture.py "$DB_GCR"
+assert_eq "googlechat: an access.json with no roles key: the owner is logged" "2" "$(in_rows "$DB_GCR")"
 # Another plugin whose MCP server is merely named googlechat.
 gc_prompt "$(gc_tag M6.M6 "$GC_OWNER" users/100 owner "mas plugin" plugin:evil:googlechat)" | run_gc ledger-capture.py "$DB_GC2"
 assert_eq "googlechat: a different plugin with a googlechat server is an unknown provider" "0" "$(in_rows "$DB_GC2")"

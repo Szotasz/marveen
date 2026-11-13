@@ -142,24 +142,49 @@ def _allowlist(provider, cache):
 #
 # A second person the plugin's `roles` map promotes to "owner" also arrives with
 # role="owner". They are NOT the install's owner, and the replay would print
-# their words under the owner's name, so they fail step 3 and the prompt is
-# refused. Fail-closed wherever the owner cannot be decided: no readable file,
-# no `owner`, an `owner` that is neither an email nor a users/<id>.
+# their words under the owner's name, so the prompt is refused. Promoted by
+# EMAIL they fail step 3: their `user` is their own resolved email. Promoted by
+# users/<id> they would NOT fail it on an email-owner install: the plugin's key
+# is `email ?? senderId` (access.ts gate), so an id key is in play exactly when
+# no email resolved, and then `user` is the DISPLAY NAME (identity.ts
+# displayUser), which the sender writes. A promoted person who names themselves
+# after the owner's email would pass the comparison (review finding, Samu). So:
+#
+#   5. on an email-owner install, an envelope whose user_id is ANY key of the
+#      session access.json's `roles` map is refused. role="owner" arises in two
+#      ways only (key == owner, or roles[key] == "owner"), and the id-keyed way
+#      is the one where `user` is not a resolved email. A `roles` that is there
+#      but is not an object: the owner cannot be decided.
+#
+# Fail-closed wherever the owner cannot be decided: no readable file, no
+# `owner`, an `owner` that is neither an email nor a users/<id>. The price of
+# step 5: an owner whose own users/<id> is also listed in `roles` is refused.
 #
 # NOT MEASURED LIVE: there is no Google Chat test environment. The envelope
 # shape is taken from the plugin source, not from a real session.
 GOOGLECHAT_SOURCE = "plugin:googlechat:googlechat"
 
 
-def _googlechat_owner(access_path):
-    """The `owner` an access.json names, or None when it names none."""
+def _googlechat_access(access_path):
+    """(owner, role keys) of an access.json. The owner is None when the file
+    names none. The role keys are the lower-cased keys of its `roles` map: empty
+    when there is no map (the plugin reads a missing or null one as {}), None
+    when `roles` is there but is not an object."""
     try:
         with open(access_path, encoding="utf-8") as fh:
             raw = json.load(fh)
     except (OSError, ValueError):
-        return None
-    owner = raw.get("owner") if isinstance(raw, dict) else None
-    return owner if isinstance(owner, str) and owner else None
+        return None, None
+    if not isinstance(raw, dict):
+        return None, None
+    owner = raw.get("owner")
+    owner = owner if isinstance(owner, str) and owner else None
+    roles = raw.get("roles")
+    if roles is None:
+        return owner, frozenset()
+    if not isinstance(roles, dict):
+        return owner, None
+    return owner, frozenset(k.lower() for k in roles if isinstance(k, str))
 
 
 def _attr_text(value):
@@ -192,16 +217,23 @@ def _googlechat_refusal(source, attrs, cache):
     if "googlechat" not in cache:
         main_env = os.path.join(_owner_install_dir(), ".env")
         cache["googlechat"] = tuple(
-            _googlechat_owner(os.path.join(d, "access.json"))
+            _googlechat_access(os.path.join(d, "access.json"))
             for d in (_state_dir("googlechat"), owner_chat._state_dir(main_env, "googlechat"))
         )
-    for owner in cache["googlechat"]:
+    for owner, _role_keys in cache["googlechat"]:
         if owner is None:
             return "owner-undecidable"
         same = _googlechat_sender_is(owner, attrs)
         if same is None:
             return "owner-undecidable"
         if not same:
+            return "sender-not-owner"
+    # Step 5. The session's file is the one the role in this envelope came from.
+    session_owner, role_keys = cache["googlechat"][0]
+    if not session_owner.startswith("users/"):
+        if role_keys is None:
+            return "owner-undecidable"
+        if _attr_text(attrs.get("user_id", "")).lower() in role_keys:
             return "sender-not-owner"
     return None
 
