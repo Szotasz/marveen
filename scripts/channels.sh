@@ -2146,6 +2146,15 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 #   - EFFECT: after a fired unlock the bun-poller check re-runs and the log
 #     records whether the plugin actually came up -- a green "firing unlock"
 #     line alone said nothing about whether the fix landed.
+# SLACKWATCHDOGNODE1113: the plugin poller under a claude pid. The Telegram plugin is a bun child; the Slack plugin
+# is a Node (tsx) child whose argv names its slack-channel plugin root, and a bun-only check never finds it.
+plugin_child_pid() {
+  [ -n "$1" ] || return 0
+  case "$CHANNEL_PROVIDER" in
+    slack) /usr/bin/pgrep -P "$1" -f '/slack-channel/' 2>/dev/null | head -1 ;;
+    *)     /usr/bin/pgrep -P "$1" bun 2>/dev/null | head -1 ;;
+  esac
+}
 (
   # GROMZONOPROVIDER1108: the Gromzo plugin runs on Node and is never in a "failed" /mcp row this unlock handles.
   [ "$CHANNEL_PROVIDER" = "gromzo" ] && exit 0
@@ -2156,7 +2165,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
   # Check 1: bun grandchild of the marveen-channels claude
   BUN_CHILD=""
   if [ -n "$CLAUDE_PID" ]; then
-    BUN_CHILD="$(/usr/bin/pgrep -P "$CLAUDE_PID" bun 2>/dev/null | head -1)"
+    BUN_CHILD="$(plugin_child_pid "$CLAUDE_PID")"
   fi
   if [ -n "$BUN_CHILD" ]; then
     # Plugin is alive via the authoritative process-tree check. Don't probe the
@@ -2266,7 +2275,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
     for _w in 1 2 3 4 5 6 7 8 9 10 11 12; do
       sleep 5
       if [ -n "$CLAUDE_PID" ]; then
-        BUN_AFTER="$(/usr/bin/pgrep -P "$CLAUDE_PID" bun 2>/dev/null | head -1)"
+        BUN_AFTER="$(plugin_child_pid "$CLAUDE_PID")"
       fi
       [ -n "$BUN_AFTER" ] && break
     done
@@ -2593,7 +2602,15 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   # failure the watchdog exists to catch, silently defeated. Single-agent
   # installs never saw this because there was only ever one plugin process to
   # find, and it happened to be the right one.
-  if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
+  if [ "$CHANNEL_PROVIDER" = "slack" ]; then
+    # SLACKWATCHDOGNODE1113: the Slack plugin is a Node (tsx) child of THIS session's claude, never a bun process,
+    # so the bun check below can never see it: measured 2026-11-13 on a Slack main agent, the live plugin was missed
+    # and the never-started budget restarted the healthy session at 600, 1200 and 2400 s (exit 1, OnFailure alert).
+    if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ] \
+      && [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" -f '/slack-channel/' >/dev/null 2>&1; then
+      _plugin_alive=true
+    fi
+  elif [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
     # The Gromzo plugin: a Node child of THIS session's claude whose command names the gromzo-channel plugin root
     # (no bot.pid, no Bun; GROMZO_ROOT_RE / SLUG_RX gromzo in the TS probes).
     if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" -f '/gromzo-channel/' >/dev/null 2>&1; then
