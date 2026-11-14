@@ -204,7 +204,7 @@ describe('which call site asks which predicate (source pin, every route file)', 
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
   it('the non-issuing owner actions take the Bridge key beside the cookie', () => {
-    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 3] /* pending approve/reject, assign, + the global SKILL.md edit (PUT /api/skills/:name): no credential issued, so the Bridge key beside the cookie, like its two neighbours */, ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
+    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 4] /* pending approve/reject, assign, + the global SKILL.md edit (PUT /api/skills/:name) and the main-agent SKILL.md edit (?agent=<main agent>): no credential issued, so the Bridge key beside the cookie, like their two neighbours */, ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 2], ['settings.ts', 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerOrFirstRun')]).toEqual([f, n, 0])
     }
   })
