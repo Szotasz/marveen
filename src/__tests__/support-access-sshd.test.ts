@@ -582,6 +582,20 @@ describe('assessSshd', () => {
   )
 
   // B2 of Dani's review (measured, 9.6): a non-root sshd -T can miss a drop-in the daemon applies.
+  it('takes a non-root answer with the proof, gives the proof\'s reason without it, and then ignores the root login setting', () => {
+    const nonRoot = { ...every(config({ permitrootlogin: 'no' })), loginIsRoot: false, loginUser: 'root', loginHome: '/root' }
+    expect(assessSshd({ ...nonRoot, nonRootProof: { ok: true } })).toMatchObject({ ok: true })
+    for (const problem of ['sshd_config_include_unlistable', 'sshd_config_include_unparsed', 'sshd_daemon_unknown', 'sshd_daemon_options', 'sshd_reload_pending'] as const) {
+      expect(assessSshd({ ...nonRoot, nonRootProof: { ok: false, problem } })).toEqual({ ok: false, problem, version: { major: 10, minor: 0 } })
+    }
+    // A proof does not stand in for any other check.
+    expect(assessSshd({ ...every(config({ permittunnel: 'yes' })), loginIsRoot: false, nonRootProof: { ok: true } })).toMatchObject({
+      problem: 'tunnel_permitted',
+    })
+    // A root login keeps its own check whatever the proof says.
+    expect(assessSshd({ ...every(config({ permitrootlogin: 'no' })), nonRootProof: { ok: true } })).toMatchObject({ problem: 'root_login_disabled' })
+  })
+
   it('refuses every install whose user is not root, whatever the answers say, with its own reason', () => {
     for (const input of [ok, every(config({ permitrootlogin: 'no' })), every(null), { ...ok, answers: [] }]) {
       expect(assessSshd({ ...input, loginIsRoot: false, loginUser: 'marveen', loginHome: '/home/marveen' })).toEqual({

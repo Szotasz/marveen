@@ -8,17 +8,31 @@
 // - Programs are started WITHOUT a shell, by absolute path, with a fixed
 //   argument list. Nothing a request says reaches an argument: the user comes
 //   from the process, the addresses from the pins and from the interfaces.
-// - ONLY AS ROOT. A non-root `sshd -T` can miss a drop-in the daemon applies
-//   (measured, see support-access-sshd.ts), so for another user nothing but the
-//   version is asked, and the assessment refuses. (Earlier a non-root probe made
-//   a throwaway host key for `-h`, because without one sshd will not answer;
-//   that path is gone with the rule, and nothing is written anywhere now.)
+// - AS ANOTHER USER THAN ROOT the answers count only with the proof of
+//   support-access-sshd-nonroot.ts. Such a user cannot read the system host
+//   keys, and sshd then will not answer ("no hostkeys available", measured on
+//   8.9 to 10.0), so a throwaway host key is made in a private directory and
+//   passed with `-h`; the directory is removed afterwards, also on failure. The
+//   key is never used for a connection. sshd is also asked once with
+//   `-f /etc/ssh/sshd_config`: the answer must be the same, or the probe does
+//   not know which file the daemon reads. The daemon check is Linux only for
+//   now; elsewhere (macOS, not measured yet) it refuses.
 // - Every failure is a refusal, never a rejection. A program that is missing,
 //   exits with anything but 0, or runs into the time limit gives no text, and
 //   no text means "configuration unknown" in the assessment; anything that
 //   throws on the way is the same answer.
 import { execFile } from 'node:child_process'
-import { networkInterfaces, userInfo } from 'node:os'
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { networkInterfaces, tmpdir, userInfo } from 'node:os'
+import { join } from 'node:path'
+import {
+  checkDaemon,
+  pidfileOf,
+  SSHD_MAIN_CONFIG,
+  walkIncludes,
+  type DaemonFs,
+  type NonRootProblem,
+} from './support-access-sshd-nonroot.js'
 import {
   assessSshd,
   formatSshdConnectionSpec,
@@ -32,6 +46,7 @@ import {
 } from './support-access-sshd.js'
 
 export const SSHD_PROGRAM = '/usr/sbin/sshd'
+export const SSH_KEYGEN_PROGRAM = '/usr/bin/ssh-keygen'
 /** Each program gets this long. `sshd -T` answers in milliseconds; a hang is a refusal. */
 export const SSHD_PROBE_TIMEOUT_MS = 5_000
 /** More connections than this are not asked about: the answer is a refusal. */
@@ -58,6 +73,14 @@ export interface SshdProbeDeps {
   readonly user: { readonly name: string; readonly isRoot: boolean; readonly home: string }
   /** Every address of every network interface of this machine. */
   readonly interfaceAddresses: () => readonly LocalInterfaceAddress[]
+  /** Make a new private directory (0700) and return its path. May throw: that is a refusal. */
+  readonly makePrivateDir: () => string
+  /** Remove a directory made by makePrivateDir, with what is in it. Must not throw. */
+  readonly removeDir: (path: string) => void
+  /** Read the configuration files, the pidfile and /proc, for the non-root proof. */
+  readonly fs: DaemonFs
+  /** process.platform: the daemon check knows `linux` only. */
+  readonly platform: string
 }
 
 /**
@@ -100,15 +123,31 @@ async function askSshd(input: { readonly fromCidrs: readonly string[] }, deps: S
     loginHome: deps.user.home,
     fromCidrs: input.fromCidrs,
   }
-  // No sshd to ask, or not root: nothing else is started, and the assessment says why.
-  if (versionText === null || !deps.user.isRoot) return assessSshd({ ...base, localAddresses: [], answers: [] })
+  // No sshd to ask: nothing else is started, and the assessment says why.
+  if (versionText === null) return assessSshd({ ...base, localAddresses: [], answers: [] })
+  if (deps.user.isRoot) return askAll(base, [], deps, null)
+  let keyDir: string | null = null
+  try {
+    keyDir = deps.makePrivateDir()
+    const keyPath = join(keyDir, 'probe_host_key')
+    const made = await deps.run(SSH_KEYGEN_PROGRAM, ['-q', '-t', 'ed25519', '-N', '', '-f', keyPath], SSHD_PROBE_TIMEOUT_MS)
+    if (made.code !== 0) return assessSshd({ ...base, localAddresses: [], answers: [], nonRootProof: { ok: false, problem: 'sshd_config_unknown' } })
+    return await askAll(base, ['-h', keyPath], deps, keyPath)
+  } finally {
+    if (keyDir !== null) deps.removeDir(keyDir)
+  }
+}
 
+type ProbeBase = Omit<Parameters<typeof assessSshd>[0], 'localAddresses' | 'answers' | 'nonRootProof'>
+
+async function askAll(base: ProbeBase, hostKeyArgs: readonly string[], deps: SshdProbeDeps, keyPath: string | null): Promise<SshdAssessment> {
   const localAddresses = reachableLocalAddresses(deps.interfaceAddresses())
-  const refused = (answers: readonly SshdProbeAnswer[]): SshdAssessment => assessSshd({ ...base, localAddresses, answers })
-  const ask = async (spec: SshdConnectionSpec): Promise<SshdProbeAnswer> => {
+  let nonRootProof: { ok: true } | { ok: false; problem: NonRootProblem } | undefined
+  const refused = (answers: readonly SshdProbeAnswer[]): SshdAssessment => assessSshd({ ...base, localAddresses, answers, nonRootProof })
+  const ask = async (spec: SshdConnectionSpec, extra: readonly string[] = []): Promise<SshdProbeAnswer> => {
     const connection = formatSshdConnectionSpec(spec)
     if (connection === null) return { spec, text: null }
-    const out = await deps.run(SSHD_PROGRAM, ['-T', '-C', connection], SSHD_PROBE_TIMEOUT_MS)
+    const out = await deps.run(SSHD_PROGRAM, ['-T', ...hostKeyArgs, ...extra, '-C', connection], SSHD_PROBE_TIMEOUT_MS)
     return { spec, text: out.code === 0 ? out.stdout : null }
   }
 
@@ -117,6 +156,24 @@ async function askSshd(input: { readonly fromCidrs: readonly string[] }, deps: S
   const first = await ask(discovery[0])
   const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text)
   if (firstConfig === null) return refused([first])
+
+  if (keyPath !== null) {
+    // The non-root proof: sshd reads the main file this walks from, every Include is visible, the daemon is a
+    // plain listener and nothing is newer than its last reload. A failed proof asks nothing more.
+    const named = await ask(discovery[0], ['-f', SSHD_MAIN_CONFIG])
+    if (named.text !== first.text) {
+      nonRootProof = { ok: false, problem: 'sshd_config_unknown' }
+      return refused([])
+    }
+    const walk = walkIncludes(deps.fs)
+    const daemon = !walk.ok
+      ? walk
+      : deps.platform === 'linux'
+        ? checkDaemon(deps.fs, pidfileOf(first.text as string), walk.files)
+        : { ok: false as const, problem: 'sshd_daemon_unknown' as const }
+    nonRootProof = daemon.ok ? { ok: true } : { ok: false, problem: daemon.problem }
+    if (!nonRootProof.ok) return refused([])
+  }
 
   // The addresses sshd is told to listen on are asked about too; the assessment adds them the same way.
   const plan = planSshdProbes({
@@ -149,6 +206,52 @@ export function currentLoginUser(): SshdProbeDeps['user'] {
  * fixed PATH and the C locale (so what they print is what the parsers were
  * written against), and are killed at the time limit.
  */
+/** Read a file following a link (as sshd does), with the cap, its mtime in nanoseconds; never throws. */
+function readCapped(path: string, max: number): ReturnType<DaemonFs['readText']> {
+  let fd: number
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK)
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unreadable' }
+  }
+  try {
+    const st = fstatSync(fd, { bigint: true })
+    if (!st.isFile()) return { kind: 'unreadable' }
+    const buf = Buffer.alloc(max + 1)
+    let n = 0
+    for (;;) {
+      const got = readSync(fd, buf, n, buf.length - n, n)
+      if (got === 0) break
+      n += got
+      if (n > max) return { kind: 'unreadable' }
+    }
+    return { kind: 'ok', text: buf.subarray(0, n).toString('latin1'), mtimeNs: st.mtimeNs }
+  } catch {
+    return { kind: 'unreadable' }
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** The real file access of the non-root proof. */
+export const realNonRootFs: DaemonFs = {
+  readText: readCapped,
+  listDir: (path) => {
+    try {
+      return { kind: 'ok', names: readdirSync(path) }
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unlistable' }
+    }
+  },
+  mtimeNs: (path) => {
+    try {
+      return statSync(path, { bigint: true }).mtimeNs
+    } catch {
+      return null
+    }
+  },
+}
+
 export function createSshdProbeDeps(user: SshdProbeDeps['user'] = currentLoginUser()): SshdProbeDeps {
   return {
     run: (file, args, timeoutMs) =>
@@ -171,5 +274,15 @@ export function createSshdProbeDeps(user: SshdProbeDeps['user'] = currentLoginUs
     user,
     interfaceAddresses: () =>
       Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
+    makePrivateDir: () => mkdtempSync(join(tmpdir(), 'marveen-sshd-probe-')),
+    removeDir: (path) => {
+      try {
+        rmSync(path, { recursive: true, force: true })
+      } catch {
+        /* a leftover empty directory in the temp folder is not worth failing for */
+      }
+    },
+    fs: realNonRootFs,
+    platform: process.platform,
   }
 }
