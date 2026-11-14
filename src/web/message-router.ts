@@ -40,7 +40,7 @@ import {
   clearFeedbackModalAndRecheck,
   withTmuxBatch,
 } from './agent-process.js'
-import { detectPaneState, detectQuotaWall, detectsBlockingMenu, detectsFirstRunGate, detectsHeldPeerMessage, detectsPermissionDialog, permissionPromptSummary, type FirstRunGateKind, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
+import { detectPaneState, detectQuotaWall, detectsBlockingMenu, detectsFirstRunGate, detectsHeldPeerMessage, detectsPermissionDialog, footerWordsOffAnchor, permissionPromptSummary, type FirstRunGateKind, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { shouldNotifySenderOfFailure } from './requeue-notice.js'
@@ -114,6 +114,7 @@ export function formatStuckSessionAlert(
   permissionAsk: PermissionPromptSummary | null = null,
   quotaWall: QuotaWall | null = null,
   lastProgressAgoMs: number | null = null,
+  footerOffAnchor = false,
 ): string | null {
   if (agent === mainAgentId) return null
   const min = Math.round(stuckMs / 60000)
@@ -155,12 +156,19 @@ export function formatStuckSessionAlert(
     const resume = quotaWall.resetsAt ? `The CLI resumes by itself at ${quotaWall.resetsAt} (as the pane prints it).` : 'The banner does not say when it resets.'
     return `[session-stuck] Agent '${agent}' (tmux ${session}) is at the PLAN USAGE LIMIT (quota wall) for ${min} min with ${queue}. ${resume} Banner: "${quotaWall.banner}". Not wedged and not a question: a restart on the same key does not lift the limit, only the reset or a key switch does. One alert per wall: the same banner is not alerted again for 5 h.`
   }
+  // PANEFOOTEROUTSIDE1114: the footer words are on the screen, but no live
+  // footer is where the UI draws it -- a quoted footer above an open dialog, or
+  // a footer shape this version does not know. The October outages were this
+  // shape; a bare "not-ready" sent the reader to a restart guess first.
+  if (footerOffAnchor) {
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. The footer words are on screen, but NOT where the live footer is drawn: either a line quotes the footer above an open dialog, or the footer has a shape this version does not recognise. Look at the pane first (tmux attach -t ${session}): an open dialog needs an answer, not a restart; an unrecognised footer is a reader bug to report.`
+  }
   return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
 }
 
-function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false, permissionAsk: PermissionPromptSummary | null = null, quotaWall: QuotaWall | null = null, lastProgressAgoMs: number | null = null): void {
+function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false, permissionAsk: PermissionPromptSummary | null = null, quotaWall: QuotaWall | null = null, lastProgressAgoMs: number | null = null, footerOffAnchor = false): void {
   try {
-    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission, permissionAsk, quotaWall, lastProgressAgoMs)
+    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission, permissionAsk, quotaWall, lastProgressAgoMs, footerOffAnchor)
     if (!alert) return
     createAgentMessage('system', MAIN_AGENT_ID, alert)
     logger.info({ agent, session, stuckMs, pendingCount, paneState, awaitingPermission, quotaWall: quotaWall != null, resetsAt: quotaWall?.resetsAt ?? null }, 'session-stuck surfaced to orchestrator')
@@ -1179,7 +1187,7 @@ export async function runMessageRouterTick(): Promise<void> {
               }, 'message-router: session at the plan usage limit -- this wall was already alerted, staying quiet')
             } else {
               if (wallStep.kind === 'alert') agentQuotaWallAlerted.set(msg.to_agent, { key: wallStep.key, at: now })
-              notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk, wallStep.kind === 'alert' ? quotaWall : null, lastProgressAt != null ? now - lastProgressAt : null)
+              notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk, wallStep.kind === 'alert' ? quotaWall : null, lastProgressAt != null ? now - lastProgressAt : null, pane != null && footerWordsOffAnchor(pane))
             }
             // Reset timer so we don't spam every tick; re-escalate after another window.
             agentStuckSince.set(msg.to_agent, now)

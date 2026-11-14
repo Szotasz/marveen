@@ -64,6 +64,24 @@ describe('formatStuckSessionAlert: silent stall becomes a main-agent alert', () 
     expect(formatStuckSessionAlert(MAIN, MAIN, 'marveen-channels', 20 * 60 * 1000, 5)).toBeNull()
   })
 
+  it('PANEFOOTEROUTSIDE1114: names a footer seen off its live place instead of a bare not-ready', () => {
+    const alert = formatStuckSessionAlert('prisma', MAIN, 'agent-prisma', 35 * 60 * 1000, 2, 'unknown', false, null, null, null, true)!
+    expect(alert).toContain('[session-stuck]')
+    expect(alert).toContain('NOT where the live footer is drawn')
+    expect(alert).toContain('tmux attach -t agent-prisma')
+    expect(alert).not.toContain('restart the agent if it is wedged')
+    // Without the flag the ordinary not-ready text is unchanged.
+    expect(formatStuckSessionAlert('prisma', MAIN, 'agent-prisma', 35 * 60 * 1000, 2, 'unknown')).toContain('restart the agent if it is wedged')
+    // A permission prompt still wins: it says who has to act.
+    expect(formatStuckSessionAlert('prisma', MAIN, 'agent-prisma', 35 * 60 * 1000, 2, 'unknown', true, null, null, null, true)).toContain('TOOL-PERMISSION PROMPT')
+  })
+
+  it('PANEFOOTEROUTSIDE1114: the router hands the off-anchor verdict of the pane it holds to the alert (source pin)', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'message-router.ts'), 'utf8')
+    expect(src).toMatch(/notifyOrchestratorOfStuckSession\([^\n]*, pane != null && footerWordsOffAnchor\(pane\)\)/)
+    expect(src).toMatch(/formatStuckSessionAlert\([^\n]*lastProgressAgoMs, footerOffAnchor\)/)
+  })
+
   it('rounds the stall duration to whole minutes', () => {
     // 11 min 29 s -> 11 min; the alert is triage, not telemetry.
     expect(formatStuckSessionAlert('edina1', MAIN, 'agent-edina1', 689_000, 1)).toContain('11 min')
