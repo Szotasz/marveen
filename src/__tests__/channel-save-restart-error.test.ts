@@ -104,7 +104,7 @@ describe('every restart-failed response carries the command, every message uses 
   it('the agent-detail channel save does not toast "connected" on a failed restart', () => {
     const save = between(appSource, "const payload = { botToken: token }", "document.getElementById('chTestBtn')")
     const errAt = save.indexOf("if (result.restartError) showToast(t('agents.channel.saved_restart_failed'")
-    const okAt = save.indexOf('sikeresen csatlakoztatva')
+    const okAt = save.indexOf("t('channel.toast.connected'")
     expect(errAt).toBeGreaterThan(-1)
     expect(errAt).toBeLessThan(okAt)
     expect(save.slice(errAt, okAt)).toContain('else showToast(')
