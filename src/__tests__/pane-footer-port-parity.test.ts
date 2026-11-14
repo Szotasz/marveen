@@ -77,6 +77,8 @@ function corpus(): Array<[string, string]> {
     ['background agents under the footer', [RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on · ← for agents', '  ⏺ main', '    ⎿ agent-a  12s']],
     ['quota-wall lines between rule and footer', [RULE, '❯ ', RULE, '  ⚠ approaching usage limit', '  ⏵⏵ bypass permissions on (shift+tab to cycle)']],
     ['rule but no footer under it', ['⏺ Done.', RULE, '❯ ', RULE, 'some text']],
+    ['footer words without the live start under the rule', [RULE, '❯ ', RULE, 'bypass permissions on (shift+tab to cycle)']],
+    ['a quote under the rule above the live footer', [RULE, '❯ ', RULE, '  ⚠ it said: bypass permissions on (shift+tab to cycle)', '  ⏸ plan mode on (shift+tab to cycle)']],
     ['footer above the last rule only', ['  ⏵⏵ bypass permissions on (shift+tab to cycle)', RULE, '❯ hi', RULE]],
     ['coloured glyph', [RULE, '❯ ', RULE, '\x1b[38;5;211m  ⏵⏵\x1b[39m bypass permissions on (shift+tab to cycle)']],
     ['colour inside the words', [RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on\x1b[2m (shift+tab to cycle)\x1b[22m']],

@@ -226,6 +226,13 @@ QUOTE_PLAIN_OVER_DIALOG='the log said: bypass permissions on and ? for shortcuts
  ❯ 1. Yes
    2. No'
 assert_eq "stuck: the bare footer words in prose above a dialog" "stuck" "$(classify "$QUOTE_PLAIN_OVER_DIALOG")"
+# Under the last rule, a line with the footer words that does not START like the
+# live footer is skipped; the live footer under it is the one.
+UNDER_RULE="$(printf '%s\n❯ \n%s\n  ⚠ it said: bypass permissions on (shift+tab to cycle)\n  ⏸ plan mode on (shift+tab to cycle)' "$RULE" "$RULE")"
+assert_eq "footer-line: a quote under the rule is skipped for the live footer" \
+  "  ⏸ plan mode on (shift+tab to cycle)" "$(printf '%s' "$UNDER_RULE" | bash "$GUARD" footer-line)"
+NO_START="$(printf '%s\n❯ \n%s\nbypass permissions on (shift+tab to cycle)' "$RULE" "$RULE")"
+assert_eq "stuck: the footer words under the rule without the live start" "stuck" "$(classify "$NO_START")"
 
 # ---------------------------------------------------------------------------
 echo ""
