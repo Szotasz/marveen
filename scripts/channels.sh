@@ -2079,16 +2079,15 @@ sleep 1
 # #1954: text and Enter go separately, and the Enter is repeated (bounded) while
 # the input box still holds the command -- a one-shot send whose Enter was lost
 # parked `/rename` in the box for an hour after a reboot. See the library.
-# If the library cannot be loaded, the old one-shot send still names the session.
+# If the library cannot be loaded, NOTHING is typed (TYPINGPATHS1114): the old
+# one-shot send typed the name without `-l` and looked only for an at-sign, so
+# it was the one place where a name reached the pane unchecked. The session
+# then keeps its default name, and this line says why.
 # shellcheck source=lib/main-rename.sh
 if . "$INSTALL_DIR/scripts/lib/main-rename.sh"; then
   main_rename_send "$TMUX" "=$SESSION:" "$_bot_name" || true
 else
-  echo "$(date '+%F %T') channels.sh: scripts/lib/main-rename.sh could not be loaded -- one-shot /rename" >&2
-  case "$_bot_name" in
-    *@*) echo "$(date '+%F %T') channels.sh: boot /rename -- the name contains an at-sign, NOT typing (ENVATLEAK1114)" >&2 ;;
-    *) $TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter ;;
-  esac
+  echo "$(date '+%F %T') channels.sh: scripts/lib/main-rename.sh could not be loaded -- boot /rename NOT typed, the session keeps its default name (TYPINGPATHS1114)" >&2
 fi
 unset _bot_name
 

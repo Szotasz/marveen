@@ -607,6 +607,12 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
   const lines: string[] = []
   // An effort-only hold has no model to put back.
   if (!state || state.model !== null) {
+    // TYPINGPATHS1114: the same check setModel runs before its send. A hold's
+    // revert_to is validated when the hold is read; with no hold the base is
+    // the configured model (the app .env), and nothing checked it before it was
+    // typed into the session.
+    // The value is quoted and cut: it is not a model id, so it is not echoed raw.
+    if (!isValidModelId(base)) return fail(`Nem váltottam: érvénytelen modell-azonosító a konfigurációban: ${JSON.stringify(String(base).slice(0, 60))}`)
     const out = await sendModel(base, deps)
     if (out.rejected !== null) return fail(rejectedText(base, out.rejected))
     if (out.confirmStuck) return fail(confirmStuckText(base, deps))
