@@ -160,7 +160,11 @@ def api_base():
     if base:
         return base.strip().rstrip('/')
     port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT') or env_file_values('WEB_PORT').get('WEB_PORT')
-    return f'http://localhost:{port or 3420}'
+    # A literal loopback address, not "localhost": where localhost resolves to ::1 first and the dashboard
+    # listens on IPv4 only (WEB_HOST defaults to 127.0.0.1, src/config.ts), urllib has no fallback to the next
+    # address in time and every call waits for its 30 s timeout. Only an install that binds ::1 gets [::1].
+    host = '[::1]' if env_file_values('WEB_HOST').get('WEB_HOST') == '::1' else '127.0.0.1'
+    return f'http://{host}:{port or 3420}'
 
 
 def read_token():
