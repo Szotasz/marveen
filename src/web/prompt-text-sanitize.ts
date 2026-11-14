@@ -17,7 +17,10 @@ const WRAPPER_TAG_RX = /<\s*\/?\s*(channel|scheduled-task|trusted-peer|untrusted
 // space: the text is typed into the pane on one line, where a line break or a
 // lone CR becomes a space (pane-text.ts), so a header written across a line
 // break was no header here and became one in the pane (review of #2753).
-const WRAPPER_PREFIX_RX = /\[\s*(Uzenet\s+\\?@|Uzenet\s+a\s+tavoli\s+\\?@|Üzenet\s+\\?@|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
+// Both spellings of the header word take the optional federated words, and the
+// second of those in both spellings too (review of #2756): the router emits only
+// the unaccented ones, but a reader takes the accented ones for a header as well.
+const WRAPPER_PREFIX_RX = /\[\s*((?:Uzenet|Üzenet)\s+(?:a\s+t[aá]voli\s+)?\\?@|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
 const ZERO_WIDTH_RX = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g
 
 // What the model will effectively read, so the deny-list below matches it:
