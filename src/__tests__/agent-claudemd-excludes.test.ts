@@ -39,6 +39,8 @@ import { writeAgentSettingsFromProfile, agentSettingsPath } from '../web/agent-s
 import { agentDir, agentExcludesRootClaudeMd } from '../web/agent-config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { getSettingDefinition } from '../config-registry.js'
+import { logger } from '../logger.js'
 
 const NAME = 'mdexcl-test-agent'
 const OTHER = 'mdexcl-test-other'
@@ -54,15 +56,19 @@ beforeEach(() => {
   }
   env.value = undefined
 })
-afterEach(() => { for (const a of [NAME, OTHER]) rmSync(agentDir(a), { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const a of [NAME, OTHER]) rmSync(agentDir(a), { recursive: true, force: true }) })
 afterAll(() => rmSync(sandbox.root, { recursive: true, force: true }))
 
 it(`${KEY}: listed sub-agent gets the root CLAUDE.md excluded, an unlisted one does not`, () => {
   env.value = `${NAME}, nobody`
+  const info = vi.spyOn(logger, 'info')
   spawn(NAME)
   spawn(OTHER)
   expect(settingsOf(NAME).claudeMdExcludes).toEqual([ROOT_MD])
   expect(settingsOf(OTHER)).not.toHaveProperty('claudeMdExcludes')
+  // One dashboard-log line per listed agent, none for the unlisted one.
+  const lines = info.mock.calls.filter((c) => String(c[1]).includes(KEY))
+  expect(lines).toEqual([[{ agent: NAME }, `root CLAUDE.md excluded for this agent (${KEY})`]])
 })
 
 it(`${KEY}: unset or cleared env removes the key at the next spawn (and a stale value too)`, () => {
@@ -84,4 +90,21 @@ it(`${KEY}: an agent's own agent-config.json cannot grant it, and the main agent
   expect(settingsOf(NAME)).not.toHaveProperty('claudeMdExcludes')
   env.value = MAIN_AGENT_ID
   expect(agentExcludesRootClaudeMd(MAIN_AGENT_ID)).toBe(false)
+})
+
+it(`${KEY}: settings.local.json (the operator's manual override) stays byte-identical, key set or unset`, () => {
+  // Deliberately compact, no trailing newline, foreign pattern: any rewrite would change the bytes.
+  const local = `{"claudeMdExcludes":["${ROOT_MD}","**/x.md"],"effortLevel":"high"}`
+  const localPath = join(agentDir(NAME), '.claude', 'settings.local.json')
+  for (const v of [NAME, undefined]) {
+    mkdirSync(join(agentDir(NAME), '.claude'), { recursive: true })
+    writeFileSync(localPath, local)
+    env.value = v
+    spawn(NAME)
+    expect(readFileSync(localPath, 'utf-8'), String(v)).toBe(local)
+  }
+})
+
+it(`${KEY}: not a settings-registry key, so POST /api/settings cannot write it`, () => {
+  expect(getSettingDefinition(KEY)).toBeUndefined()
 })
