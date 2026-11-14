@@ -173,6 +173,7 @@ import {
   resolveProfilePlaceholders,
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
+import { AGENT_NAME_RE } from '../../config-registry.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, readBodyOrRefuse, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
@@ -1518,7 +1519,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const avatarUploadMatch = path.match(/^\/api\/agents\/([^/]+)\/avatar$/)
   if (avatarUploadMatch && method === 'POST') {
     const name = decodeURIComponent(avatarUploadMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // A name agentDir()'s safeJoin would throw on (traversal) is a plain 404, not a 500 + error log.
+    if (!AGENT_NAME_RE.test(name) || !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
@@ -1556,7 +1558,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (avatarUploadMatch && method === 'GET') {
     const name = decodeURIComponent(avatarUploadMatch[1])
-    const avatarPath = findAvatarForAgent(name)
+    // Public route: a traversal name gets the plain 404 below, not a thrown 500 from agentDir().
+    const avatarPath = AGENT_NAME_RE.test(name) ? findAvatarForAgent(name) : null
     // 1h client cache: see /api/marveen/avatar for the staleness trade-off.
     if (avatarPath) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
