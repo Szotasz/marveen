@@ -87,6 +87,7 @@ function canonical(p: string): string {
 const SSH_DIR_MODE = 0o700
 const AUTH_KEYS_MODE = 0o600
 const AUTH_KEYS_NAME = 'authorized_keys'
+const SECOND_KEYS_NAME = 'authorized_keys2'
 const LOCK_NAME = 'authorized_keys.lock'
 
 export interface EnrollOptions {
@@ -129,6 +130,7 @@ export class AuthorizedKeysRewriteError extends Error {
     | 'AUTHORIZED_KEYS_READBACK'
     | 'AUTHORIZED_KEYS_ASYNC_TRANSFORM'
     | 'AUTHORIZED_KEYS_NOT_BYTES'
+    | 'AUTHORIZED_KEYS_FILE_NAME'
   constructor(code: AuthorizedKeysRewriteError['code'], message: string) {
     super(message)
     this.name = 'AuthorizedKeysRewriteError'
@@ -405,8 +407,15 @@ export async function removeEnrolledKey(opts: RemoveEnrolledOptions): Promise<Re
   }
 }
 
+/** The two files of a `.ssh` directory the stock sshd setting reads keys from. */
+export type AuthorizedKeysFileName = 'authorized_keys' | 'authorized_keys2'
+
 export interface LockedRewriteOptions {
   sshDir: string
+  /** Which of the two files; `authorized_keys` when left out. The LOCK is the
+   * same file for both, so no two writers of either file interleave. Any
+   * other name is refused: this helper writes nowhere else. */
+  fileName?: AuthorizedKeysFileName
   /** Words for the ENROLL813 refusal message, e.g. "write a support line into". */
   operation: string
   /** Create the .ssh directory (0700) when it is missing. A removal leaves this off. */
@@ -455,6 +464,7 @@ export async function rewriteAuthorizedKeysLocked<T>(
 ): Promise<LockedRewriteOutcome<T>> {
   const {
     operation,
+    fileName = AUTH_KEYS_NAME,
     createDir = false,
     refuseSymlink = false,
     preserveBytes = false,
@@ -470,8 +480,12 @@ export async function rewriteAuthorizedKeysLocked<T>(
   // depend on how the caller happened to write the path.
   const sshDir = resolve(opts.sshDir)
   assertSafeSshDir(sshDir, operation)
+  // A caller that forces a value past the type must not turn this into a writer of any file.
+  if (fileName !== AUTH_KEYS_NAME && fileName !== SECOND_KEYS_NAME) {
+    throw new AuthorizedKeysRewriteError('AUTHORIZED_KEYS_FILE_NAME', 'only authorized_keys and authorized_keys2 can be rewritten')
+  }
   const warnings: string[] = []
-  const authPath = join(sshDir, AUTH_KEYS_NAME)
+  const authPath = join(sshDir, fileName)
   const lockPath = join(sshDir, LOCK_NAME)
   const encoding = preserveBytes ? 'latin1' : 'utf8'
 

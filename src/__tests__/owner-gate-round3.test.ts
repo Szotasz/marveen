@@ -166,6 +166,7 @@ const state = () => ({
   openrouterManual: read(OPENROUTER_MANUAL_FILE),
   agentConfig: read(join(DIR, 'agent-config.json')),
   agentSkill: list(AGENT_SKILL_DIR),
+  agentSkillMd: read(join(AGENT_SKILL_DIR, 'SKILL.md')),
   globalSkill: read(join(GLOBAL_SKILL_DIR, 'SKILL.md')),
   mainSkill: read(join(MAIN_SKILL_DIR, 'SKILL.md')),
   peerSkills: list(join(PEER_DIR, '.claude', 'skills')),
@@ -285,6 +286,18 @@ const CASES: Case[] = [
     label: 'PUT /api/skills/:name?agent=<main agent>', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/${SKILL}?agent=${MAIN_AGENT_ID}`,
     body: { content: '---\nname: og3 main edited\n---\n' },
     ownerCheck: (r) => { expect(r.status).toBe(200); expect(read(join(MAIN_SKILL_DIR, 'SKILL.md'))).toBe('---\nname: og3 main edited\n---\n') },
+  },
+  {
+    // SKILLPUTSCOPE1114: ?agent=<a sub-agent> let any holder of the shared token (every agent) rewrite ANOTHER agent's skill.
+    label: 'PUT /api/skills/:name?agent=<sub-agent>', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/${SKILL}?agent=${AGENT}`,
+    body: { content: '---\nname: og3 agent edited\n---\n' },
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(read(join(AGENT_SKILL_DIR, 'SKILL.md'))).toBe('---\nname: og3 agent edited\n---\n') },
+  },
+  {
+    // SKILLPUTSCOPE1114: the gate is first, so a non-owner cannot tell an unknown agent name (404 only for the owner).
+    label: 'PUT /api/skills/:name?agent=<unknown agent>', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/${SKILL}?agent=__og3-no-such-agent`,
+    body: { content: 'x' },
+    ownerCheck: (r) => { expect(r.status).toBe(404) },
   },
   {
     // An unknown key: the owner lanes stop at the field check (400) right after the gate, so store/ stays as it is.
