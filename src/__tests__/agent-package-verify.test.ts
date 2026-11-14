@@ -152,7 +152,23 @@ describe('VerifiedPackage', () => {
     const doc = JSON.parse(Buffer.from(delivery).toString('utf8')) as { manifest_jws: string }
     const payloadBytes = Buffer.from(doc.manifest_jws.split('.')[1], 'base64url')
     expect(result.pkg.payloadSha256).toBe(createHash('sha256').update(payloadBytes).digest('hex'))
-    expect(result.pkg.payloadText).toBe(payloadBytes.toString('utf8'))
+    expect(Buffer.from(result.pkg.unverifiedPayloadBytes()).equals(payloadBytes)).toBe(true)
+  })
+
+  it('the raw payload is not a property: only checked fields are, and the bytes come from a method, as a copy', () => {
+    if (!result.ok) throw new Error('expected ok')
+    const pkg = result.pkg
+    // Pinned: a new property has to be added here, with the pattern or the rule it passed (review of d021f7f2b).
+    expect(Object.keys(pkg).sort()).toEqual(
+      ['avatar', 'connectors', 'description', 'displayName', 'files', 'kid', 'minMarveenVersion', 'modelHint', 'payloadSha256', 'slug', 'title', 'version'],
+    )
+    expect(Reflect.ownKeys(pkg).every((k) => typeof k === 'string')).toBe(true)
+    expect('payloadText' in pkg).toBe(false)
+    const copy = pkg.unverifiedPayloadBytes()
+    const first = copy[0]
+    copy[0] = first ^ 0xff
+    expect(pkg.unverifiedPayloadBytes()[0]).toBe(first)
+    expect(createHash('sha256').update(pkg.unverifiedPayloadBytes()).digest('hex')).toBe(pkg.payloadSha256)
   })
 
   it('is immutable, and avatarBytes() hands out a copy', () => {
@@ -179,7 +195,7 @@ describe('VerifiedPackage', () => {
     minMarveenVersion: '1.0.0',
     kid: 'k',
     payloadSha256: 'a'.repeat(64),
-    payloadText: '{}',
+    payloadBytes: new Uint8Array([0x7b, 0x7d]),
     title: 't',
     description: 'd',
     displayName: 'n',

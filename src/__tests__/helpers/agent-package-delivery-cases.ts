@@ -259,6 +259,15 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('display name with a CR', d({ displayName: 'Invoice\rhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
     refused('connector reason with an LF', d({ connectors: [{ name: 'bb', level: 'required', reason: 'a\nb' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
     refused('second connector reason with a CR', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'a\rb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
+    // A lone surrogate reaches a manifest text through a JSON escape, in payload bytes that are well formed
+    // (parity review of 8e1f906a6; the reference scanner's invalid-utf16 rule).
+    refused('title with a lone high surrogate', d({ title: 'Invoice \ud800 helper' }), 5, 'bad_text', { field: 'title', rule: 'invalid-utf16' }),
+    refused('description with a lone low surrogate', d({ description: 'Keeps \udc00 invoices' }), 5, 'bad_text', { field: 'description', rule: 'invalid-utf16' }),
+    refused('display name ending in a lone high surrogate', d({ displayName: 'Anna\udbff' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'invalid-utf16' }),
+    refused('second connector reason with a reversed surrogate pair', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'a\udc00\ud800b' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'invalid-utf16' }),
+    ok('manifest texts with a well-formed surrogate pair', d({
+      title: 'Invoice helper 😀', description: 'Keeps 😀 invoices', displayName: 'Anna 😀', connectors: [{ name: 'bb', level: 'required', reason: 'Reads 😀 mail.' }],
+    })),
     ok('manifest texts with an e-mail shape and a bang at a sentence end', d({
       title: 'Invoice helper!', description: 'Write to anna1@example.com.', displayName: 'Anna', connectors: [{ name: 'bb', level: 'required', reason: 'Reads mail.' }],
     })),
@@ -299,6 +308,9 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
       ['with a second IHDR', ['IHDR', 'IDAT', 'IHDR', 'IEND']],
       ['with a block after IEND', ['IHDR', 'IDAT', 'IEND', 'IDAT']],
       ['with a second IEND', ['IHDR', 'IDAT', 'IEND', 'IEND']],
+      // Contract decision (Mira 78020): PLTE and tRNS at most once.
+      ['with a second PLTE', ['IHDR', 'PLTE', 'PLTE', 'IDAT', 'IEND']],
+      ['with a second tRNS', ['IHDR', 'PLTE', 'tRNS', 'IDAT', 'tRNS', 'IEND']],
     ] as const).map(([what, types]) =>
       refused(`PNG ${what}`, d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng(types.map((t) => pngChunk(t, new Uint8Array(t === 'IHDR' ? 13 : t === 'IEND' ? 0 : 4)))) } }),
         5, 'bad_avatar', { path: 'avatar.png', rule: 'block-structure' })),

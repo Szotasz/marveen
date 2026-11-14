@@ -135,7 +135,13 @@ function charAndImportFindings(text: string, lineOf: (i: number) => number): Tex
   const out: TextFinding[] = []
   let i = 0
   for (const ch of text) {
-    if (isForbiddenCodePoint(ch.codePointAt(0)!)) {
+    const cp = ch.codePointAt(0)!
+    // By code point, so a lone surrogate shows as itself. A file text cannot
+    // hold one (it is decoded from strict UTF-8 bytes); a manifest text can,
+    // through a JSON escape in a payload whose bytes are well formed.
+    if (cp >= 0xd800 && cp <= 0xdfff) {
+      out.push({ reason: 'bad_text', rule: 'invalid-utf16', line: lineOf(i) })
+    } else if (isForbiddenCodePoint(cp)) {
       out.push({ reason: 'bad_text', rule: 'forbidden-char', line: lineOf(i) })
     }
     i += ch.length
@@ -342,7 +348,7 @@ interface VerifiedFields {
   minMarveenVersion: string
   kid: string
   payloadSha256: string
-  payloadText: string
+  payloadBytes: Uint8Array
   title: string
   description: string
   displayName: string
@@ -365,10 +371,14 @@ let mintVerifiedPackage: (f: VerifiedFields) => VerifiedPackage
  * that no property leads to, the class and its prototype are frozen, and
  * instanceof is true only for an object the constructor built (it asks for
  * the private field, so an object that merely has this prototype fails).
- * Every string on an instance passed a closed pattern (slug, versions, paths,
- * hashes, connector name and level, model hint) or the manifest text rules
- * (title, description, display name, connector reason; D10); the installer
- * reads them from here, never from the raw payload.
+ * Every string PROPERTY of an instance passed a closed pattern (slug,
+ * versions, paths, hashes, connector name and level, model hint) or the
+ * manifest text rules (title, description, display name, connector reason;
+ * D10); the installer reads them from here, never from the raw payload.
+ * The raw signed payload is NOT a property: it holds unknown keys and values
+ * no rule has seen, so it is handed out only as bytes, by a method whose name
+ * says so (`unverifiedPayloadBytes`), for the record the installer keeps of
+ * what was signed.
  */
 export class VerifiedPackage {
   readonly slug: string
@@ -378,8 +388,6 @@ export class VerifiedPackage {
   readonly kid: string
   /** sha256 of the base64url-decoded JWS payload segment bytes (contract B5/S7). */
   readonly payloadSha256: string
-  /** The signed payload, decoded, exactly as signed (unknown payload keys included). */
-  readonly payloadText: string
   readonly title: string
   readonly description: string
   readonly displayName: string
@@ -388,6 +396,7 @@ export class VerifiedPackage {
   readonly files: ReadonlyArray<VerifiedFile>
   readonly avatar: VerifiedAvatar | null
   readonly #avatarBytes: Uint8Array | null
+  readonly #payloadBytes: Uint8Array
 
   private constructor(token: typeof MINT_TOKEN, f: VerifiedFields) {
     if (token !== MINT_TOKEN) throw new TypeError('VerifiedPackage is created by verifyDelivery only')
@@ -396,7 +405,7 @@ export class VerifiedPackage {
     this.minMarveenVersion = f.minMarveenVersion
     this.kid = f.kid
     this.payloadSha256 = f.payloadSha256
-    this.payloadText = f.payloadText
+    this.#payloadBytes = Uint8Array.from(f.payloadBytes)
     this.title = f.title
     this.description = f.description
     this.displayName = f.displayName
@@ -421,6 +430,17 @@ export class VerifiedPackage {
   /** A copy of the verified avatar bytes, or null. */
   avatarBytes(): Uint8Array | null {
     return this.#avatarBytes === null ? null : Uint8Array.from(this.#avatarBytes)
+  }
+
+  /**
+   * A copy of the signed payload bytes, exactly as signed: the bytes
+   * `payloadSha256` is the hash of. UNVERIFIED beyond the fields this class
+   * names: unknown payload keys pass step 2, and no text rule ran on them.
+   * For storing what was signed; never a source of a text to show or to write
+   * into a file the CLI reads.
+   */
+  unverifiedPayloadBytes(): Uint8Array {
+    return Uint8Array.from(this.#payloadBytes)
   }
 }
 
@@ -681,7 +701,7 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
       minMarveenVersion: payload.min_marveen_version,
       kid: key.kid,
       payloadSha256: sha256Hex(decoded.bytes),
-      payloadText: decoded.text,
+      payloadBytes: decoded.bytes,
       title: payload.title,
       description: payload.description,
       displayName: agent.display_name,
@@ -737,7 +757,8 @@ function hasMagic(b: Uint8Array, contentType: string | undefined): boolean {
  * Walk every block of the container to the end of the bytes. Refused: a block
  * whose header or length runs past the end, a block type outside the
  * allowlist, and a block order the contract does not name (PNG: IHDR first
- * and once, at least one IDAT, IEND last and once; WebP: one of the layouts).
+ * and once, at least one IDAT, IEND last and once, PLTE and tRNS at most
+ * once; WebP: one of the layouts, so ALPH at most once and one image).
  */
 function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyReason; rule: string } | null {
   const truncated = { reason: N21B_PROVISIONAL_REASONS.avatarTruncatedBlock, rule: 'truncated-block' }
@@ -760,6 +781,8 @@ function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyRea
     if (types[0] !== 'IHDR' || count('IHDR') !== 1) return structure
     if (count('IDAT') < 1) return structure
     if (types[types.length - 1] !== 'IEND' || count('IEND') !== 1) return structure
+    // Contract decision (Mira 78020): the palette and the transparency block at most once.
+    if (count('PLTE') > 1 || count('tRNS') > 1) return structure
     return null
   }
   // WebP: the RIFF size must not point past the end; then every chunk, padded to an even length.
