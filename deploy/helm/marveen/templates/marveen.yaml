@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: {{ .Release.Name }}-install }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: {{ .Values.persistence.install.size }} } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: {{ .Release.Name }}-home }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: {{ .Values.persistence.home.size }} } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: {{ .Release.Name }} }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: {{ .Release.Name }} } }
+  template:
+    metadata: { labels: { app: {{ .Release.Name }} } }
+    spec:
+      securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 }
+      containers:
+        - name: marveen
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{ containerPort: 3420 }]
+          {{- with .Values.env }}
+          env:
+            {{- range $k, $v := . }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+          {{- end }}
+          {{- if .Values.existingSecret }}
+          envFrom:
+            - secretRef: { name: {{ .Values.existingSecret }}, optional: true }
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            exec:
+              command: [curl, -fsS, -o, /dev/null, "http://127.0.0.1:3420/"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          volumeMounts:
+            - { name: install, mountPath: /opt/marveen }
+            - { name: home, mountPath: /home/marveen }
+      volumes:
+        - name: install
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-install }
+        - name: home
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-home }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: {{ .Release.Name }} }
+spec:
+  type: NodePort
+  selector: { app: {{ .Release.Name }} }
+  ports:
+    - { port: 3420, targetPort: 3420, nodePort: {{ .Values.service.nodePort }} }

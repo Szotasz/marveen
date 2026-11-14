@@ -1,0 +1,35 @@
+{{ template "chart.header" . }}
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+Runs the official Marveen image (see `docs/docker.md`) in a single pod. It is meant for a local [kind](https://kind.sigs.k8s.io/)
+cluster, not for scaling out: SQLite and tmux sessions make it a single-replica
+workload (`Recreate` strategy, `ReadWriteOnce` volumes).
+
+## Quick start
+
+```sh
+kind create cluster --config deploy/kind/kind-config.yaml
+docker build -t marveen:dev .   # until there is a public official image
+kind load docker-image marveen:dev --name marveen
+helm --kube-context kind-marveen upgrade --install marveen deploy/helm/marveen --set image.repository=marveen --set image.tag=dev
+open http://127.0.0.1:3420/?token=$(kubectl --context kind-marveen exec deploy/marveen -- cat /opt/marveen/store/.dashboard-token)
+kind delete cluster --name marveen
+```
+
+First-start settings (`MARVEEN_CHANNEL`, `MARVEEN_AGENT_ID`, `MARVEEN_LANG`, `TZ`) are plain `env` values;
+a Secret (`existingSecret`) is injected as environment variables.
+
+## Persistence
+
+Follows the official layout, run as the image's user (uid 1000):
+
+| Path in the pod | Volume | Content |
+|---|---|---|
+| `/opt/marveen` | `install` PVC | the install: code, `.env`, `store/`, agents, workspace |
+| `/home/marveen` | `home` PVC | `~/.claude` (Claude login, plugins), `~/.claude.json` |
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "helm-docs.versionFooter" . }}
