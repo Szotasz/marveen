@@ -476,7 +476,9 @@ overrides, credential targets, exfil shapes) and appends a record to
 `store/browser-content.log` for reading outside the model's context. The record
 holds the tool, source, byte count, pattern counts and nonce, plus the payload
 itself, except for the catalog mail, calendar, Drive and playwright servers below,
-whose payload is kept only when a forged frame matched; the log sits in the shared
+whose record keeps no payload, a source without query string or fragment, and,
+when a forged frame matched, only 200 characters either side of each of the first
+five matches with their character offsets; the log sits in the shared
 `store/`, so every agent running as the same OS user can read it. The log is
 capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
 `browser-content.log.1`, replacing an older one, so at most about twice the cap
@@ -520,7 +522,8 @@ server installed under another name (another browser MCP, `mcp__chrome*`) is
 service from another MCP package (another Gmail or Calendar server), a
 plugin-provided server (named `mcp__plugin_<plugin>_<server>__...`), and a hosted
 connector. Operators who run one add its matcher themselves, in
-the project `settings.json` or `settings.local.json`:
+the project `settings.json` or `settings.local.json`. Such a server is not in the
+hook's private list, so its records keep the full payload and URL, like a web page:
 
 ```json
 {
@@ -578,7 +581,7 @@ first as sufficient:
 
 The label quotes nothing back. Its own text is trusted framing, so echoing a
 matched line there would reopen the channel the hook exists to close. Pattern
-names and counts only; the payload itself goes to the log (for the private servers above, only when a forged frame matched).
+names and counts only; the payload itself goes to the log (for the private servers above, only excerpts around a forged frame).
 
 `envelope_attempted` in the log records which shape the hook tried. It says
 "attempted", never "succeeded": the hook cannot observe the harness's decision,
