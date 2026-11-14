@@ -8,18 +8,17 @@
 // - Programs are started WITHOUT a shell, by absolute path, with a fixed
 //   argument list. Nothing a request says reaches an argument: the user comes
 //   from the process, the addresses from the pins and from the interfaces.
-// - A non-root user cannot read the system host keys, and sshd then refuses to
-//   answer ("no hostkeys available", measured). So a throwaway host key is made
-//   in a private directory and passed with `-h`; the directory is removed
-//   afterwards, also when something fails. The key is never used for a
-//   connection: sshd only needs one to be present.
-// - Every failure is a refusal. A program that is missing, exits with anything
-//   but 0, or runs into the time limit gives no text, and no text means
-//   "configuration unknown" in the assessment.
+// - ONLY AS ROOT. A non-root `sshd -T` can miss a drop-in the daemon applies
+//   (measured, see support-access-sshd.ts), so for another user nothing but the
+//   version is asked, and the assessment refuses. (Earlier a non-root probe made
+//   a throwaway host key for `-h`, because without one sshd will not answer;
+//   that path is gone with the rule, and nothing is written anywhere now.)
+// - Every failure is a refusal, never a rejection. A program that is missing,
+//   exits with anything but 0, or runs into the time limit gives no text, and
+//   no text means "configuration unknown" in the assessment; anything that
+//   throws on the way is the same answer.
 import { execFile } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { networkInterfaces, tmpdir, userInfo } from 'node:os'
-import { join } from 'node:path'
+import { networkInterfaces, userInfo } from 'node:os'
 import {
   assessSshd,
   formatSshdConnectionSpec,
@@ -33,7 +32,6 @@ import {
 } from './support-access-sshd.js'
 
 export const SSHD_PROGRAM = '/usr/sbin/sshd'
-export const SSH_KEYGEN_PROGRAM = '/usr/bin/ssh-keygen'
 /** Each program gets this long. `sshd -T` answers in milliseconds; a hang is a refusal. */
 export const SSHD_PROBE_TIMEOUT_MS = 5_000
 /** More connections than this are not asked about: the answer is a refusal. */
@@ -60,10 +58,6 @@ export interface SshdProbeDeps {
   readonly user: { readonly name: string; readonly isRoot: boolean; readonly home: string }
   /** Every address of every network interface of this machine. */
   readonly interfaceAddresses: () => readonly LocalInterfaceAddress[]
-  /** Make a new private directory (0700) and return its path. */
-  readonly makePrivateDir: () => string
-  /** Remove a directory made by makePrivateDir, with what is in it. Must not throw. */
-  readonly removeDir: (path: string) => void
 }
 
 /**
@@ -83,64 +77,71 @@ export function reachableLocalAddresses(all: readonly LocalInterfaceAddress[]): 
 
 /**
  * Ask sshd about every connection a support login could be, and assess the
- * answers. Resolves with a refusal for anything that goes wrong; it does not
- * throw for what a program or the machine does.
+ * answers. Resolves with a refusal for anything that goes wrong, also for
+ * something that throws on the way (the interface list, a dependency): it
+ * never rejects.
  */
 export async function probeSshd(input: { readonly fromCidrs: readonly string[] }, deps: SshdProbeDeps): Promise<SshdAssessment> {
+  try {
+    return await askSshd(input, deps)
+  } catch {
+    return { ok: false, problem: 'sshd_config_unknown', version: null }
+  }
+}
+
+async function askSshd(input: { readonly fromCidrs: readonly string[] }, deps: SshdProbeDeps): Promise<SshdAssessment> {
   const version = await deps.run(SSHD_PROGRAM, ['-V'], SSHD_PROBE_TIMEOUT_MS)
   // Older builds answer `-V` with "unknown option" and the usage text, exit code 1, the version line in it (measured).
   const versionText = version.code === null ? null : version.stdout + '\n' + version.stderr
-  const localAddresses = reachableLocalAddresses(deps.interfaceAddresses())
   const base = {
     versionText,
     loginIsRoot: deps.user.isRoot,
     loginUser: deps.user.name,
     loginHome: deps.user.home,
     fromCidrs: input.fromCidrs,
-    localAddresses,
   }
-  const refused = (answers: readonly SshdProbeAnswer[]): SshdAssessment => assessSshd({ ...base, answers })
-  // No sshd to ask: nothing else is started.
-  if (versionText === null) return refused([])
+  // No sshd to ask, or not root: nothing else is started, and the assessment says why.
+  if (versionText === null || !deps.user.isRoot) return assessSshd({ ...base, localAddresses: [], answers: [] })
 
-  let keyDir: string | null = null
-  try {
-    const hostKeyArgs: string[] = []
-    if (!deps.user.isRoot) {
-      keyDir = deps.makePrivateDir()
-      const keyPath = keyDir + '/probe_host_key'
-      const made = await deps.run(SSH_KEYGEN_PROGRAM, ['-q', '-t', 'ed25519', '-N', '', '-f', keyPath], SSHD_PROBE_TIMEOUT_MS)
-      if (made.code !== 0) return refused([])
-      hostKeyArgs.push('-h', keyPath)
-    }
-    const ask = async (spec: SshdConnectionSpec): Promise<SshdProbeAnswer> => {
-      const connection = formatSshdConnectionSpec(spec)
-      if (connection === null) return { spec, text: null }
-      const out = await deps.run(SSHD_PROGRAM, ['-T', ...hostKeyArgs, '-C', connection], SSHD_PROBE_TIMEOUT_MS)
-      return { spec, text: out.code === 0 ? out.stdout : null }
-    }
-
-    const discovery = planSshdProbes({ ...base, listenPorts: null })
-    if (discovery === null) return refused([])
-    const first = await ask(discovery[0])
-    const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text)
-    if (firstConfig === null) return refused([first])
-
-    // The addresses sshd is told to listen on are asked about too; the assessment adds them the same way.
-    const plan = planSshdProbes({
-      ...base,
-      localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
-      listenPorts: firstConfig.listenPorts,
-    })
-    if (plan === null || plan.length > SSHD_PROBE_MAX_QUERIES) return refused([])
-    const answers: SshdProbeAnswer[] = []
-    for (const spec of plan) {
-      answers.push(formatSshdConnectionSpec(spec) === formatSshdConnectionSpec(first.spec) ? first : await ask(spec))
-    }
-    return assessSshd({ ...base, answers })
-  } finally {
-    if (keyDir !== null) deps.removeDir(keyDir)
+  const localAddresses = reachableLocalAddresses(deps.interfaceAddresses())
+  const refused = (answers: readonly SshdProbeAnswer[]): SshdAssessment => assessSshd({ ...base, localAddresses, answers })
+  const ask = async (spec: SshdConnectionSpec): Promise<SshdProbeAnswer> => {
+    const connection = formatSshdConnectionSpec(spec)
+    if (connection === null) return { spec, text: null }
+    const out = await deps.run(SSHD_PROGRAM, ['-T', '-C', connection], SSHD_PROBE_TIMEOUT_MS)
+    return { spec, text: out.code === 0 ? out.stdout : null }
   }
+
+  const discovery = planSshdProbes({ ...base, localAddresses, listenPorts: null })
+  if (discovery === null) return refused([])
+  const first = await ask(discovery[0])
+  const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text)
+  if (firstConfig === null) return refused([first])
+
+  // The addresses sshd is told to listen on are asked about too; the assessment adds them the same way.
+  const plan = planSshdProbes({
+    ...base,
+    localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
+    listenPorts: firstConfig.listenPorts,
+  })
+  if (plan === null || plan.length > SSHD_PROBE_MAX_QUERIES) return refused([])
+  const answers: SshdProbeAnswer[] = []
+  for (const spec of plan) {
+    answers.push(formatSshdConnectionSpec(spec) === formatSshdConnectionSpec(first.spec) ? first : await ask(spec))
+  }
+  return refused(answers)
+}
+
+/**
+ * The login user of this process as sshd sees it: the name and the home from
+ * the user database. NOT the HOME of the environment (os.homedir follows HOME,
+ * userInfo does not): a HOME kept under sudo or left stale in a service must not
+ * point the status at another directory than the one sshd reads (Dani's review
+ * of #2765, S1). Every support path that needs the home takes it from here.
+ */
+export function currentLoginUser(): SshdProbeDeps['user'] {
+  const info = userInfo()
+  return { name: info.username, isRoot: process.getuid?.() === 0, home: info.homedir }
 }
 
 /**
@@ -148,7 +149,7 @@ export async function probeSshd(input: { readonly fromCidrs: readonly string[] }
  * fixed PATH and the C locale (so what they print is what the parsers were
  * written against), and are killed at the time limit.
  */
-export function createSshdProbeDeps(): SshdProbeDeps {
+export function createSshdProbeDeps(user: SshdProbeDeps['user'] = currentLoginUser()): SshdProbeDeps {
   return {
     run: (file, args, timeoutMs) =>
       new Promise<ProgramResult>((resolve) => {
@@ -167,16 +168,8 @@ export function createSshdProbeDeps(): SshdProbeDeps {
           },
         )
       }),
-    user: { name: userInfo().username, isRoot: process.getuid?.() === 0, home: userInfo().homedir },
+    user,
     interfaceAddresses: () =>
       Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
-    makePrivateDir: () => mkdtempSync(join(tmpdir(), 'marveen-sshd-probe-')),
-    removeDir: (path) => {
-      try {
-        rmSync(path, { recursive: true, force: true })
-      } catch {
-        /* a leftover empty directory in the temp folder is not worth failing for */
-      }
-    },
   }
 }

@@ -14,6 +14,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import {
   isSupportToken,
   readSupportToken,
@@ -197,16 +198,48 @@ describe('support token on disk', () => {
     })
 
     it.each([
-      ['a second line', TOKEN + '\n' + OTHER + '\n'],
+      ['a second line', TOKEN + '\nx\n'],
       ['two final newlines', TOKEN + '\n\n'],
       ['a leading space', ' ' + TOKEN + '\n'],
       ['a carriage return', TOKEN + '\r\n'],
       ['another shape', 'mrv_' + 'A'.repeat(43) + '\n'],
       ['an empty file', ''],
-      ['an oversized file', TOKEN + '\n' + 'x'.repeat(600)],
     ])('does NOT use a file with %s', (_label, content) => {
       writeFileSync(file, content, { mode: 0o600 })
       expect(readSupportToken(dir)).toEqual({ kind: 'invalid', reason: 'shape' })
+    })
+
+    // S2 of Dani's review: a size cap, checked on the opened descriptor.
+    it.each([
+      ['a second token on a second line', TOKEN + '\n' + OTHER + '\n'],
+      ['an oversized file', TOKEN + '\n' + 'x'.repeat(600)],
+      ['one byte over the cap', 'x'.repeat(65)],
+    ])('does NOT read a file with %s', (_label, content) => {
+      writeFileSync(file, content, { mode: 0o600 })
+      expect(readSupportToken(dir)).toEqual({ kind: 'invalid', reason: 'size' })
+    })
+
+    it('reads a file at the cap as far as the shape check', () => {
+      writeFileSync(file, 'x'.repeat(64), { mode: 0o600 })
+      expect(readSupportToken(dir)).toEqual({ kind: 'invalid', reason: 'shape' })
+    })
+
+    it('does NOT read through a directory that is a link or that others can write', () => {
+      writeFileSync(file, TOKEN + '\n', { mode: 0o600 })
+      symlinkSync(dir, join(root, 'link'))
+      expect(readSupportToken(join(root, 'link'))).toEqual({ kind: 'invalid', reason: 'dir' })
+      for (const mode of [0o770, 0o707, 0o777]) {
+        chmodSync(dir, mode)
+        expect(readSupportToken(dir)).toEqual({ kind: 'invalid', reason: 'dir' })
+      }
+      chmodSync(dir, 0o755)
+      expect(readSupportToken(dir)).toEqual({ kind: 'ok', token: TOKEN })
+    })
+
+    it('does not wait on a named pipe at the path', () => {
+      const made = spawnSync('mkfifo', ['-m', '600', file])
+      expect(made.status).toBe(0)
+      expect(readSupportToken(dir)).toEqual({ kind: 'invalid', reason: 'not_a_file' })
     })
 
     it('does NOT follow a symbolic link, even to a well-formed token', () => {

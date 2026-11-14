@@ -4,36 +4,8 @@
 
 // src/support-standby-cli.ts
 import { accessSync, constants, readFileSync as readFileSync2, realpathSync as realpathSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
-
-// src/ssh-dir.ts
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-// src/test-run-marker.ts
-function isTestRun() {
-  return process.env["VITEST"] !== void 0 || process.env["NODE_ENV"] === "test";
-}
-
-// src/ssh-dir.ts
-var SSH_DIR_GUARD_CODE = "ENROLL813";
-var SshDirGuardError = class extends Error {
-  code = SSH_DIR_GUARD_CODE;
-  constructor(message) {
-    super(message);
-    this.name = "SshDirGuardError";
-  }
-};
-function realSshDir() {
-  return join(homedir(), ".ssh");
-}
-function describeTestRunSignal() {
-  const signals = [];
-  if (process.env["VITEST"] !== void 0) signals.push(`VITEST=${process.env["VITEST"]}`);
-  if (process.env["NODE_ENV"] === "test") signals.push("NODE_ENV=test");
-  return signals.length > 0 ? signals.join(" + ") : "no test signal";
-}
 
 // src/support-access-pins.ts
 import { createHash } from "node:crypto";
@@ -141,9 +113,7 @@ function validateSupportPins(keys, fromCidrs) {
 
 // src/support-access-sshd-run.ts
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { networkInterfaces, tmpdir, userInfo } from "node:os";
-import { join as join2 } from "node:path";
+import { networkInterfaces, userInfo } from "node:os";
 
 // src/support-access-sshd.ts
 import { isIP as isIP2 } from "node:net";
@@ -342,7 +312,8 @@ var SINGLE_SETTINGS = [
   "usedns",
   "authorizedkeysfile",
   "authorizedkeyscommand",
-  "trustedusercakeys"
+  "trustedusercakeys",
+  "forcecommand"
 ];
 var LISTEN_ADDRESS = /^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):(\d{1,5})$/;
 function portOf(text) {
@@ -354,6 +325,7 @@ function parseSshdEffectiveConfig(text) {
   const seen = /* @__PURE__ */ new Map();
   const ports = /* @__PURE__ */ new Set();
   const addresses = /* @__PURE__ */ new Set();
+  const acceptEnv = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     const space = line.indexOf(" ");
@@ -372,6 +344,9 @@ function parseSshdEffectiveConfig(text) {
       if (isIP2(address) !== (m[1] === void 0 ? 4 : 6)) return null;
       ports.add(port);
       addresses.add(address);
+    } else if (key === "acceptenv") {
+      if (value.length === 0) return null;
+      acceptEnv.push(...value.split(/\s+/));
     } else if (SINGLE_SETTINGS.includes(key)) {
       if (seen.has(key) || value.length === 0) return null;
       seen.set(key, value);
@@ -395,6 +370,8 @@ function parseSshdEffectiveConfig(text) {
     authorizedKeysFiles: files,
     authorizedKeysCommand: seen.get("authorizedkeyscommand"),
     trustedUserCaKeys: seen.get("trustedusercakeys"),
+    forceCommand: seen.get("forcecommand"),
+    acceptEnv,
     listenPorts: [...ports].sort((a, b) => a - b),
     listenAddresses: [...addresses].sort()
   };
@@ -439,6 +416,10 @@ function planSshdProbes(input) {
   return input.listenPorts === null ? specs.slice(0, 1) : specs;
 }
 var ROOT_LOGIN_BY_KEY = /* @__PURE__ */ new Set(["yes", "without-password", "prohibit-password", "forced-commands-only"]);
+var HARMLESS_ENV = /^(?:LANG|LANGUAGE|LC_\*|LC_[A-Z]+|COLORTERM|COLORFGBG|NO_COLOR)$/;
+function acceptEnvPatternIsHarmless(pattern) {
+  return HARMLESS_ENV.test(pattern);
+}
 var ACCOUNT_HOME = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
 function expandKeysFileEntry(entry, account) {
   if (!LOGIN_USER.test(account.user)) return null;
@@ -476,6 +457,7 @@ function assessSshd(input) {
   if (version === null) return { ok: false, problem: "sshd_version_unknown", version };
   if (!sshdAtLeast(version, SUPPORT_MIN_SSHD)) return { ok: false, problem: "sshd_too_old", version };
   const refuse = (problem) => ({ ok: false, problem, version });
+  if (!input.loginIsRoot) return refuse("sshd_config_not_fully_readable");
   const configs = [];
   for (const answer of input.answers) {
     const config = answer.text === null ? null : parseSshdEffectiveConfig(answer.text);
@@ -497,7 +479,7 @@ function assessSshd(input) {
   const asked = new Set(input.answers.map((a) => formatSshdConnectionSpec(a.spec)));
   if (!planned.every((spec) => asked.has(formatSshdConnectionSpec(spec)))) return refuse("sshd_config_unknown");
   if (!configs.every((c) => c.useDns === "no")) return refuse("sshd_usedns_enabled");
-  if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
+  if (!configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
   if (!configs.every((c) => c.permitTunnel === "no")) return refuse("tunnel_permitted");
   const account = { user: input.loginUser, home: input.loginHome };
   const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account);
@@ -510,12 +492,13 @@ function assessSshd(input) {
   if (!configs.every((c) => c.authorizedKeysCommand === "none" && c.trustedUserCaKeys === "none")) {
     return refuse("other_key_source");
   }
+  if (!configs.every((c) => c.forceCommand === "none")) return refuse("force_command_set");
+  if (!configs.every((c) => c.acceptEnv.every(acceptEnvPatternIsHarmless))) return refuse("accept_env_too_wide");
   return { ok: true, version, keysFiles };
 }
 
 // src/support-access-sshd-run.ts
 var SSHD_PROGRAM = "/usr/sbin/sshd";
-var SSH_KEYGEN_PROGRAM = "/usr/bin/ssh-keygen";
 var SSHD_PROBE_TIMEOUT_MS = 5e3;
 var SSHD_PROBE_MAX_QUERIES = 64;
 function reachableLocalAddresses(all) {
@@ -527,56 +510,53 @@ function reachableLocalAddresses(all) {
   return [...out].sort();
 }
 async function probeSshd(input, deps) {
+  try {
+    return await askSshd(input, deps);
+  } catch {
+    return { ok: false, problem: "sshd_config_unknown", version: null };
+  }
+}
+async function askSshd(input, deps) {
   const version = await deps.run(SSHD_PROGRAM, ["-V"], SSHD_PROBE_TIMEOUT_MS);
   const versionText = version.code === null ? null : version.stdout + "\n" + version.stderr;
-  const localAddresses = reachableLocalAddresses(deps.interfaceAddresses());
   const base = {
     versionText,
     loginIsRoot: deps.user.isRoot,
     loginUser: deps.user.name,
     loginHome: deps.user.home,
-    fromCidrs: input.fromCidrs,
-    localAddresses
+    fromCidrs: input.fromCidrs
   };
-  const refused = (answers) => assessSshd({ ...base, answers });
-  if (versionText === null) return refused([]);
-  let keyDir = null;
-  try {
-    const hostKeyArgs = [];
-    if (!deps.user.isRoot) {
-      keyDir = deps.makePrivateDir();
-      const keyPath = keyDir + "/probe_host_key";
-      const made = await deps.run(SSH_KEYGEN_PROGRAM, ["-q", "-t", "ed25519", "-N", "", "-f", keyPath], SSHD_PROBE_TIMEOUT_MS);
-      if (made.code !== 0) return refused([]);
-      hostKeyArgs.push("-h", keyPath);
-    }
-    const ask = async (spec) => {
-      const connection = formatSshdConnectionSpec(spec);
-      if (connection === null) return { spec, text: null };
-      const out = await deps.run(SSHD_PROGRAM, ["-T", ...hostKeyArgs, "-C", connection], SSHD_PROBE_TIMEOUT_MS);
-      return { spec, text: out.code === 0 ? out.stdout : null };
-    };
-    const discovery = planSshdProbes({ ...base, listenPorts: null });
-    if (discovery === null) return refused([]);
-    const first = await ask(discovery[0]);
-    const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text);
-    if (firstConfig === null) return refused([first]);
-    const plan = planSshdProbes({
-      ...base,
-      localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
-      listenPorts: firstConfig.listenPorts
-    });
-    if (plan === null || plan.length > SSHD_PROBE_MAX_QUERIES) return refused([]);
-    const answers = [];
-    for (const spec of plan) {
-      answers.push(formatSshdConnectionSpec(spec) === formatSshdConnectionSpec(first.spec) ? first : await ask(spec));
-    }
-    return assessSshd({ ...base, answers });
-  } finally {
-    if (keyDir !== null) deps.removeDir(keyDir);
+  if (versionText === null || !deps.user.isRoot) return assessSshd({ ...base, localAddresses: [], answers: [] });
+  const localAddresses = reachableLocalAddresses(deps.interfaceAddresses());
+  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2 });
+  const ask = async (spec) => {
+    const connection = formatSshdConnectionSpec(spec);
+    if (connection === null) return { spec, text: null };
+    const out = await deps.run(SSHD_PROGRAM, ["-T", "-C", connection], SSHD_PROBE_TIMEOUT_MS);
+    return { spec, text: out.code === 0 ? out.stdout : null };
+  };
+  const discovery = planSshdProbes({ ...base, localAddresses, listenPorts: null });
+  if (discovery === null) return refused([]);
+  const first = await ask(discovery[0]);
+  const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text);
+  if (firstConfig === null) return refused([first]);
+  const plan = planSshdProbes({
+    ...base,
+    localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
+    listenPorts: firstConfig.listenPorts
+  });
+  if (plan === null || plan.length > SSHD_PROBE_MAX_QUERIES) return refused([]);
+  const answers = [];
+  for (const spec of plan) {
+    answers.push(formatSshdConnectionSpec(spec) === formatSshdConnectionSpec(first.spec) ? first : await ask(spec));
   }
+  return refused(answers);
 }
-function createSshdProbeDeps() {
+function currentLoginUser() {
+  const info = userInfo();
+  return { name: info.username, isRoot: process.getuid?.() === 0, home: info.homedir };
+}
+function createSshdProbeDeps(user = currentLoginUser()) {
   return {
     run: (file, args, timeoutMs) => new Promise((resolve2) => {
       execFile(
@@ -594,15 +574,8 @@ function createSshdProbeDeps() {
         }
       );
     }),
-    user: { name: userInfo().username, isRoot: process.getuid?.() === 0, home: userInfo().homedir },
-    interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
-    makePrivateDir: () => mkdtempSync(join2(tmpdir(), "marveen-sshd-probe-")),
-    removeDir: (path) => {
-      try {
-        rmSync(path, { recursive: true, force: true });
-      } catch {
-      }
-    }
+    user,
+    interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal })))
   };
 }
 
@@ -675,7 +648,7 @@ import {
   chmodSync,
   realpathSync
 } from "node:fs";
-import { join as join3, resolve } from "node:path";
+import { join as join2, resolve } from "node:path";
 
 // src/remote-enroll-core.ts
 var REMOTE_PORT = 3420;
@@ -685,6 +658,32 @@ function restrictOptions(webPort = REMOTE_PORT) {
   return `restrict,port-forwarding,permitopen="127.0.0.1:${webPort}",command="/bin/false"`;
 }
 var RESTRICT_OPTIONS = restrictOptions(REMOTE_PORT);
+
+// src/test-run-marker.ts
+function isTestRun() {
+  return process.env["VITEST"] !== void 0 || process.env["NODE_ENV"] === "test";
+}
+
+// src/ssh-dir.ts
+import { homedir } from "node:os";
+import { join } from "node:path";
+var SSH_DIR_GUARD_CODE = "ENROLL813";
+var SshDirGuardError = class extends Error {
+  code = SSH_DIR_GUARD_CODE;
+  constructor(message) {
+    super(message);
+    this.name = "SshDirGuardError";
+  }
+};
+function realSshDir() {
+  return join(homedir(), ".ssh");
+}
+function describeTestRunSignal() {
+  const signals = [];
+  if (process.env["VITEST"] !== void 0) signals.push(`VITEST=${process.env["VITEST"]}`);
+  if (process.env["NODE_ENV"] === "test") signals.push("NODE_ENV=test");
+  return signals.length > 0 ? signals.join(" + ") : "no test signal";
+}
 
 // src/remote-enroll-fs.ts
 function assertSafeSshDir(sshDir, operation) {
@@ -786,7 +785,7 @@ function releaseLock(fd, lockPath) {
   }
 }
 function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
-  const tmpPath = join3(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
+  const tmpPath = join2(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
   const tfd = openSync(tmpPath, "wx", AUTH_KEYS_MODE);
   try {
     writeSync(tfd, content, null, encoding);
@@ -823,8 +822,8 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
     throw new AuthorizedKeysRewriteError("AUTHORIZED_KEYS_FILE_NAME", "only authorized_keys and authorized_keys2 can be rewritten");
   }
   const warnings = [];
-  const authPath = join3(sshDir, fileName);
-  const lockPath = join3(sshDir, LOCK_NAME);
+  const authPath = join2(sshDir, fileName);
+  const lockPath = join2(sshDir, LOCK_NAME);
   const encoding = preserveBytes ? "latin1" : "utf8";
   if (refuseSymlink && lstatOrNull(sshDir)?.isSymbolicLink()) {
     throw new AuthorizedKeysRewriteError(
@@ -1020,12 +1019,12 @@ function reconcileFirstFile(base, expected, operation) {
 
 // src/support-standby-cli.ts
 var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n";
-function createStatusDeps() {
-  const sshDir = realSshDir();
+function createStatusDeps(account = currentLoginUser()) {
+  const sshDir = join3(account.home, ".ssh");
   return {
     nodeVersion: process.version,
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
-    probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps()),
+    probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
         accessSync(path, constants.X_OK);
@@ -1036,7 +1035,7 @@ function createStatusDeps() {
     },
     readKeysFile: (name) => {
       try {
-        return readFileSync2(join4(sshDir, name), "latin1");
+        return readFileSync2(join3(sshDir, name), "latin1");
       } catch (err) {
         return err.code === "ENOENT" ? null : "unreadable";
       }

@@ -11,12 +11,14 @@
 //
 // The directory is a PARAMETER; this layer never decides where the token lives.
 import {
-  chmodSync,
   closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   openSync,
-  readFileSync,
+  readSync,
   renameSync,
   unlinkSync,
   writeSync,
@@ -27,6 +29,8 @@ import { join } from 'node:path'
 
 export const SUPPORT_TOKEN_FILE = 'support-access.token'
 const TOKEN_MODE = 0o600
+/** The token and its newline are 48 bytes; a file larger than this is not read at all. */
+const TOKEN_READ_CAP = 64
 
 /**
  * `mst_` and exactly 43 URL-safe characters (the frozen v1 shape of the
@@ -43,7 +47,7 @@ export type SupportTokenProblem = 'token_shape' | 'token_dir_unsafe' | 'token_pa
 
 const SENTENCES: Record<SupportTokenProblem, string> = {
   token_shape: 'the value is not a support token',
-  token_dir_unsafe: 'the token directory is missing, is not a directory, or is writable by others',
+  token_dir_unsafe: 'the token directory is missing, is not a directory of this user, or is writable by others',
   token_path_unsafe: 'the token path exists and is not a regular file',
   token_readback: 'the token file does not hold what was written',
   token_remains: 'the token file is still there after the removal',
@@ -68,17 +72,35 @@ function lstatOrNull(path: string): Stats | null {
   }
 }
 
-function assertSafeDir(dir: string): void {
-  const st = lstatOrNull(dir)
-  // lstat, not stat: a symbolic link in place of the directory is refused too.
-  if (st === null || !st.isDirectory() || (st.mode & 0o022) !== 0) throw new SupportTokenError('token_dir_unsafe')
+/** The effective uid of this process, or null on a platform without one. */
+function effectiveUid(): number | null {
+  return typeof process.geteuid === 'function' ? process.geteuid() : null
 }
 
 /**
- * Write the token: a temporary file created 0600 in the same directory, synced,
- * then renamed over the target, then read back. The token is never in a file
- * that is readable by anyone else, not even for a moment, and a failed write
- * leaves the previous file (or no file) in place.
+ * The directory must be a real directory (lstat: a symbolic link in its place
+ * is refused), owned by this user, and not writable by group or others.
+ */
+function dirState(dir: string): 'ok' | 'missing' | 'unsafe' {
+  const st = lstatOrNull(dir)
+  if (st === null) return 'missing'
+  const uid = effectiveUid()
+  if (!st.isDirectory() || (st.mode & 0o022) !== 0 || (uid !== null && st.uid !== uid)) return 'unsafe'
+  return 'ok'
+}
+
+function assertSafeDir(dir: string): void {
+  if (dirState(dir) !== 'ok') throw new SupportTokenError('token_dir_unsafe')
+}
+
+/**
+ * Write the token: a temporary file created 0600 in the same directory, its
+ * mode set again ON THE DESCRIPTOR before it is closed, synced, then renamed
+ * over the target, then read back. The token is never in a file that is
+ * readable by anyone else, not even for a moment. A write that fails before the
+ * rename leaves the previous file (or no file) in place; a read-back that does
+ * not give exactly this token removes the file, so then there is no token at
+ * all, not the previous one either.
  */
 export function writeSupportToken(dir: string, token: string): void {
   if (!isSupportToken(token)) throw new SupportTokenError('token_shape')
@@ -90,13 +112,13 @@ export function writeSupportToken(dir: string, token: string): void {
   const fd = openSync(tmp, 'wx', TOKEN_MODE)
   try {
     try {
+      // The umask can trim the create mode (never widen it); the owner must be able to read the file back.
+      fchmodSync(fd, TOKEN_MODE)
       writeSync(fd, token + '\n')
       fsyncSync(fd)
     } finally {
       closeSync(fd)
     }
-    // The umask can trim the create mode (never widen it); the owner must be able to read the file back.
-    chmodSync(tmp, TOKEN_MODE)
     renameSync(tmp, target)
   } catch (err) {
     try {
@@ -117,20 +139,47 @@ export type SupportTokenRead =
   | { readonly kind: 'ok'; readonly token: string }
   | { readonly kind: 'missing' }
   /** There is something at the path, and it is not usable as a token. It is NOT used. */
-  | { readonly kind: 'invalid'; readonly reason: 'not_a_file' | 'mode' | 'shape' }
+  | { readonly kind: 'invalid'; readonly reason: 'dir' | 'not_a_file' | 'owner' | 'mode' | 'size' | 'shape' }
 
 /**
  * Read the token. Anything unexpected is `invalid`, and an invalid token is no
- * token: a symbolic link, a file that others can read, a second line, a value
- * of another shape.
+ * token: a directory that is not safe (the same rule as for a write), a
+ * symbolic link, a file of another user, a file that others can read, a file
+ * larger than a token, a second line, a value of another shape.
+ *
+ * The file is opened ONCE, without following a link (and without waiting on a
+ * pipe), and every check is made on that descriptor (Dani's review of #2765,
+ * S2): what is checked is what is read.
  */
 export function readSupportToken(dir: string): SupportTokenRead {
+  const state = dirState(dir)
+  if (state === 'missing') return { kind: 'missing' }
+  if (state === 'unsafe') return { kind: 'invalid', reason: 'dir' }
   const target = join(dir, SUPPORT_TOKEN_FILE)
-  const st = lstatOrNull(target)
-  if (st === null) return { kind: 'missing' }
-  if (!st.isFile()) return { kind: 'invalid', reason: 'not_a_file' }
-  if ((st.mode & 0o077) !== 0) return { kind: 'invalid', reason: 'mode' }
-  const content = readFileSync(target, 'utf8')
+  let fd: number
+  try {
+    fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return { kind: 'missing' }
+    // ELOOP: a symbolic link at the path. Anything else that cannot be opened is no token either.
+    return { kind: 'invalid', reason: 'not_a_file' }
+  }
+  let content: string
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) return { kind: 'invalid', reason: 'not_a_file' }
+    const uid = effectiveUid()
+    if (uid !== null && st.uid !== uid) return { kind: 'invalid', reason: 'owner' }
+    if ((st.mode & 0o077) !== 0) return { kind: 'invalid', reason: 'mode' }
+    // One byte more than the cap is asked for: getting it means the file is too large, whatever its size said.
+    const buf = Buffer.alloc(TOKEN_READ_CAP + 1)
+    const n = readSync(fd, buf, 0, buf.length, 0)
+    if (n > TOKEN_READ_CAP) return { kind: 'invalid', reason: 'size' }
+    content = buf.subarray(0, n).toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
   const token = content.endsWith('\n') ? content.slice(0, -1) : content
   if (!isSupportToken(token)) return { kind: 'invalid', reason: 'shape' }
   return { kind: 'ok', token }
