@@ -465,6 +465,8 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/hooks/persona-change-notify.py': 1,
     // VAULTSZELES826 PR-A: the header comment names VAULT_ACL_AGENT_MODE; the script reads the LOG, never the setting
     'scripts/vault-acl-suggest.mjs': 1,
+    // the docstring names NOTIFY_SLACK_TARGET; the brake never reads it, notify.sh (above) resolves the channel
+    'scripts/ram-emergency-brake.py': 1,
   }
   function walk(dir: string, out: string[] = []): string[] {
     for (const e of readdirSync(dir, { withFileTypes: true })) {

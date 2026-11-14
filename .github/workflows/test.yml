@@ -229,6 +229,11 @@ jobs:
       # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
       # SKIP where the runner has no systemd user manager or its MemoryMax is not in effect.
       - run: python3 scripts/__tests__/heavy-job-gate.test.py
+      # The RAM emergency brake decides what gets killed when memory runs out
+      # anyway; its never-kill cases are gate instruments. Hermetic: a fake
+      # /proc tree, fake meminfo and cgroup fs, a recording killer and a fake
+      # send helper.
+      - run: python3 scripts/__tests__/ram-emergency-brake.test.py
 
   # EMAILGATEPY39-1104: the hooks run under the PATH's python3, which is 3.9 on a Mac without Homebrew python
   # (/usr/bin/python3 from the command line tools). A 3.10-only form in a hook dependency broke the approval and
