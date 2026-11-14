@@ -188,6 +188,10 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `DISCORD_PLUGIN_EXT` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `DISCORD_OWNER_USER_ID` | string | üres | mind | igen (csatorna-indítás) |
+| `DISCORD_BACKFILL` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `DISCORD_CHANNEL_POLICY` | string (JSON) | üres | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -322,6 +326,31 @@ kapcsolás előtt kiküldött gombra koppintás egyszer még válaszol.
 `.env`-ben `TELEGRAM_REPLY_BUTTONS=0`. A csatorna következő indításakor a script átírja a
 plugin forrását. Az ügynökök viszont addig a régi kóddal futnak, amíg a saját plugin-folyamatuk
 újra nem indul: a session újraindítása hozza el náluk.
+
+#### `DISCORD_PLUGIN_EXT`, `DISCORD_OWNER_USER_ID`, `DISCORD_BACKFILL`: a Marveen Discord-pluginja
+
+**Mire szolgál.** A csatorna-indítás (`scripts/patch-discord-plugin.py`) a hivatalos Discord plugin
+forrását a Marveen-változatra cseréli (`vendor/discord-plugin/<verzió>/overlay`, a különbség a
+`VENDOR.md`-ben). Csak akkor, ha a telepített plugin pontosan az ismert verzió; plugin-frissítés
+után a hivatalos plugin fut változatlanul, és a `store/channels-failures.log` egy `LOUD:` sorban jelzi.
+
+**Kikapcsolás.** `DISCORD_PLUGIN_EXT=0` (csak a gazda: felülírás-kulcs, `.env`-sor nem kapcsolja ki).
+A csatorna következő indításakor a hivatalos plugin áll vissza byte-azonosan.
+
+**A gazda.** `DISCORD_OWNER_USER_ID`: csak ő kapja Discordon az eszköz-jóváhagyás kérését, és
+csak az ő döntése érvényes. Üresen a fő bot egyetlen párosított DM-je; több DM mellett senki (a
+kérés a terminálban marad). Felülírás-kulcs: `.env`-ből nem olvasódik.
+
+**Pótlás.** `DISCORD_BACKFILL=0` kikapcsolja a kiesett üzenetek induláskori pótlását.
+
+**Szerepek csatornánként.** `DISCORD_CHANNEL_POLICY` (csak a gazda, felülírás-kulcs), például
+`{"<csatorna-ID>": {"allowRoles": ["<szerep-ID>"]}}`. Ahol szerep van megadva, ott a csatorna engedélyezett
+felhasználói MELLETT a szerep birtokosai is írhatnak a botnak (üres felhasználói lista mellett csak ők).
+Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
+
+**Kapcsolat-figyelés.** A plugin 15 mp-enként nézi, él-e a Discord-kapcsolat; elakadásnál újra bejelentkezik,
+de legfeljebb 5 percenként, egyre ritkábban (5-60 perc), és 24 óra alatt legfeljebb 20-szor
+(`$DISCORD_STATE_DIR/reconnects.json`). A hosszú csend önmagában nem hiba, csak rossz heartbeattel együtt.
 
 **API végpontok:**
 
