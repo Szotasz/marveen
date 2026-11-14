@@ -117,13 +117,18 @@ export async function revokeSupportLines(opts: SupportFsBase): Promise<RevokeSup
   return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings }
 }
 
+/** Why a reconcile expected no line: the builder's own refusal, or a grant that is not even the typed shape. */
+export type SupportReconcileProblem = SupportLineProblem | 'grant_malformed'
+
 export interface ReconcileSupportLinesResult {
   authorizedKeysPath: string
   kept: number
   removed: number
   missing: number
-  /** Set when the live grant could not be built into lines: then no line was expected, and every support line went. */
-  unbuildable: SupportLineProblem | null
+  /** Set when the live grant could not be built into lines: then no line was expected, and every support line went.
+   * A refusal of the builder carries the builder's code; anything else (a record that is not the typed shape) is
+   * `grant_malformed`. */
+  unbuildable: SupportReconcileProblem | null
   warnings: string[]
 }
 
@@ -131,22 +136,30 @@ export interface ReconcileSupportLinesResult {
  * Remove every support line that is not, byte for byte, a line of the live
  * grant. Never adds a line. `grant` is the live grant's inputs, or null when
  * there is none (then every support line goes). The expected lines are built
- * here, by the one builder. A grant the builder refuses expects NO line, so
+ * here, by the one builder. A grant that cannot be built expects NO line, so
  * every support line goes and `unbuildable` says why: a reconcile is a removal
  * too, and must not be stopped by a grant that can no longer be built.
+ *
+ * ANY failure of the build counts, not only the builder's own refusal. The
+ * live grant comes from a stored record, and a record of an older version, or
+ * one that was cut short, is not the typed shape: a missing `keys` makes the
+ * builder throw a TypeError, not a SupportLineError. That is the very case in
+ * which the stale lines most need to go, so it is reported as
+ * `grant_malformed` and the removal runs. (grantSupportLines keeps throwing:
+ * an addition may be refused.) Errors of the file layer, a held lock for
+ * instance, are not caught here.
  */
 export async function reconcileSupportLinesOnDisk(
   opts: SupportFsBase & { grant: SupportGrantInput | null },
 ): Promise<ReconcileSupportLinesResult> {
   const { sshDir, pinnedBlobs, grant, ...lock } = opts
   let expected: string[] = []
-  let unbuildable: SupportLineProblem | null = null
+  let unbuildable: SupportReconcileProblem | null = null
   if (grant !== null) {
     try {
       expected = buildSupportGrantLines(grant)
     } catch (err) {
-      if (!(err instanceof SupportLineError)) throw err
-      unbuildable = err.code
+      unbuildable = err instanceof SupportLineError ? err.code : 'grant_malformed'
     }
   }
   const out = await rewriteAuthorizedKeysLocked(

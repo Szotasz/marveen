@@ -366,10 +366,31 @@ describe('mergeSupportLines', () => {
     ['a line feed', '\n'],
     ['a carriage return', '\r'],
     ['a carriage return and a line feed', '\r\n'],
+    ['a vertical tab', '\v'],
+    ['a form feed', '\f'],
+    ['a NUL', '\0'],
   ])('refuses a built line that carries a second key behind %s', (_label, separator) => {
     expect(codeOf(() => mergeSupportLines(PERSONAL_LINE + '\n', [LINE1 + separator + FOREIGN_KEY], TEST_ONLY_BLOBS))).toBe(
       'line_refused',
     )
+  })
+
+  // A built line is printable ASCII, so nothing else is taken: how sshd reads
+  // a NUL in the middle of a line is not something this check has to know.
+  it.each([
+    ['a foreign key, a NUL, then our comment', FOREIGN_KEY + '\0' + 'marveen-support:' + GRANT + ':k1'],
+    ['a foreign key, a NUL, then a whole built line', FOREIGN_KEY + '\0' + LINE1],
+    ['a built line with a tab in it', LINE1 + '\tx'],
+    ['a built line with a DEL at the end', LINE1 + '\x7f'],
+    ['a built line with a no-break space at the end', LINE1 + '\u00a0'],
+    ['a built line with a letter above ASCII in the comment', LINE1 + '\u00e9'],
+  ])('refuses %s', (_label, line) => {
+    expect(codeOf(() => mergeSupportLines(PERSONAL_LINE + '\n', [line], TEST_ONLY_BLOBS))).toBe('line_refused')
+  })
+
+  it('says which of the two refusals it was', () => {
+    expect(() => mergeSupportLines('', [LINE1 + '\v' + FOREIGN_KEY], TEST_ONLY_BLOBS)).toThrow(/not printable ASCII/)
+    expect(() => mergeSupportLines('', [FOREIGN_KEY], TEST_ONLY_BLOBS)).toThrow(/not recognised as a support line/)
   })
 
   it('refuses a built line with a trailing line break', () => {

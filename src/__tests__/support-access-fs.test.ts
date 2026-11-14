@@ -147,6 +147,40 @@ describe('support access on disk', () => {
       expect(lstatSync(sshDir).isSymbolicLink()).toBe(true)
     })
 
+    // lstat on a path that ends in a slash or a dot segment FOLLOWS the link,
+    // so the refusal must not depend on how the directory is spelled. A
+    // configured directory with a trailing slash is an ordinary thing to see.
+    it.each([
+      ['a trailing slash', (dir: string) => dir + '/'],
+      ['a trailing dot segment', (dir: string) => dir + '/.'],
+      ['dot segments before and after', (dir: string) => dir.replace('/.ssh', '/./.ssh') + '/.'],
+      ['doubled slashes', (dir: string) => dir.replace('/.ssh', '//.ssh') + '//'],
+    ])('REFUSES a linked .ssh directory spelled with %s, and writes nothing', async (_label, spell) => {
+      const elsewhere = join(root, 'dotfiles-ssh')
+      mkdirSync(elsewhere, { mode: 0o700 })
+      symlinkSync(elsewhere, sshDir)
+      await expect(grantSupportLines({ ...base(), sshDir: spell(sshDir), grant: KEY1_ONLY })).rejects.toMatchObject({
+        code: 'AUTHORIZED_KEYS_SYMLINK',
+      })
+      expect(readdirSync(elsewhere)).toEqual([])
+    })
+
+    it('REFUSES a dangling link spelled with a trailing slash instead of creating its target', async () => {
+      const elsewhere = join(root, 'not-there')
+      symlinkSync(elsewhere, sshDir)
+      await expect(grantSupportLines({ ...base(), sshDir: sshDir + '/', grant: KEY1_ONLY })).rejects.toMatchObject({
+        code: 'AUTHORIZED_KEYS_SYMLINK',
+      })
+      expect(existsSync(elsewhere)).toBe(false)
+    })
+
+    it('a real directory spelled with a trailing slash is written, and the result names the one resolved path', async () => {
+      const res = await grantSupportLines({ ...base(), sshDir: sshDir + '/./', grant: KEY1_ONLY })
+      expect(res.authorizedKeysPath).toBe(authPath)
+      expect(read()).toBe(LINE1 + '\n')
+      expect(readdirSync(sshDir)).toEqual(['authorized_keys'])
+    })
+
     it('REFUSES a dangling link in place of the .ssh directory instead of creating its target', async () => {
       const elsewhere = join(root, 'not-there')
       symlinkSync(elsewhere, sshDir)
@@ -295,6 +329,16 @@ describe('support access on disk', () => {
       expect(res).toMatchObject({ removed: 2, warnings: [] })
       expect(readFileSync(join(elsewhere, 'authorized_keys'), 'utf8')).toBe(BRIDGE + '\n')
     })
+
+    it('is NOT refused by a linked .ssh directory spelled with a trailing slash either', async () => {
+      const elsewhere = join(root, 'dotfiles-ssh')
+      mkdirSync(elsewhere, { mode: 0o700 })
+      writeFileSync(join(elsewhere, 'authorized_keys'), [BRIDGE, LINE1, LINE2].join('\n') + '\n', { mode: 0o600 })
+      symlinkSync(elsewhere, sshDir)
+      const res = await revokeSupportLines({ ...base(), sshDir: sshDir + '/' })
+      expect(res).toMatchObject({ removed: 2, warnings: [] })
+      expect(readFileSync(join(elsewhere, 'authorized_keys'), 'utf8')).toBe(BRIDGE + '\n')
+    })
   })
 
   describe('reconcileSupportLinesOnDisk', () => {
@@ -335,10 +379,39 @@ describe('support access on disk', () => {
       expect(read()).toBe(BRIDGE + '\n')
     })
 
-    it('an error that is not a refusal of the builder is not swallowed, and the file is left alone', async () => {
-      seed([LINE1, BRIDGE])
+    // The live grant will come from a stored record. A record of an older
+    // version, or one cut short, is not the typed shape, and that is when the
+    // stale lines most need to go: the reconcile must still remove.
+    it.each([
+      ['keys is missing', (g: SupportGrantInput) => ({ ...g, keys: undefined })],
+      ['keys is null', (g: SupportGrantInput) => ({ ...g, keys: null })],
+      ['a key entry is null', (g: SupportGrantInput) => ({ ...g, keys: [g.keys[0], null] })],
+      ['fromCidrs is missing', (g: SupportGrantInput) => ({ ...g, fromCidrs: undefined })],
+      ['sshd is missing', (g: SupportGrantInput) => ({ ...g, sshd: undefined })],
+      ['the grant is an empty object', () => ({})],
+      ['the grant is undefined', () => undefined],
+      ['the grant is a string', () => 'not a grant'],
+    ])('a grant that is not the typed shape expects no line either: %s', async (_label, breakIt) => {
+      seed([LINE1, BRIDGE, LINE2])
+      const broken = breakIt(grantInput()) as unknown as SupportGrantInput
+      const res = await reconcileSupportLinesOnDisk({ ...base(), grant: broken })
+      expect(res).toMatchObject({ kept: 0, removed: 2, missing: 0, unbuildable: 'grant_malformed' })
+      expect(read()).toBe(BRIDGE + '\n')
+    })
+
+    it('an ADDITION is still refused for a grant that is not the typed shape, and writes nothing', async () => {
+      seed([BRIDGE])
       const broken = { ...grantInput(), keys: null } as unknown as SupportGrantInput
-      await expect(reconcileSupportLinesOnDisk({ ...base(), grant: broken })).rejects.toBeInstanceOf(TypeError)
+      await expect(grantSupportLines({ ...base(), grant: broken })).rejects.toBeInstanceOf(TypeError)
+      expect(read()).toBe(BRIDGE + '\n')
+    })
+
+    it('an error of the file layer is not turned into a removal: a held lock still throws', async () => {
+      seed([LINE1, BRIDGE])
+      writeFileSync(join(sshDir, 'authorized_keys.lock'), '')
+      await expect(
+        reconcileSupportLinesOnDisk({ ...base(), grant: null, lockRetries: 2, staleLockMs: 60_000 }),
+      ).rejects.toBeInstanceOf(AuthorizedKeysLockError)
       expect(read()).toBe([LINE1, BRIDGE].join('\n') + '\n')
     })
 

@@ -306,10 +306,21 @@ export interface MergeSupportResult {
  * case left to refuse, because any line that holds a pinned key IS a support
  * line and is replaced by the canonical one.
  *
- * A new line is refused, and nothing is merged, when it holds a line break or
- * a carriage return (it would reach the file as more than one line, and the
- * extra one could be any key) or when it is not recognised as a support line
- * (no later removal or reconcile would ever take it out again).
+ * A new line is refused, and nothing is merged, when it holds anything but
+ * printable ASCII, or when it is not recognised as a support line (no later
+ * removal or reconcile would ever take it out again). A built line is
+ * printable ASCII by construction (key name, path, grant id and blob
+ * alphabets). A line break or a carriage return would reach the file as more
+ * than one line, and the extra one could be any key; a NUL, a vertical tab or
+ * a form feed could hide a second key from this check without anyone having
+ * measured how sshd reads them.
+ *
+ * THIS IS THE SECOND LAYER, NOT THE BUILDER. It accepts whatever the
+ * recogniser calls ours, and that includes a line with no options at all that
+ * only carries our comment prefix: the "treated as ours" choice of
+ * isSupportLine, seen from the write side. What makes a written line the
+ * closed option list is that the on-disk writers pass nothing here but the
+ * output of buildSupportGrantLines.
  */
 export function mergeSupportLines(
   existing: string,
@@ -318,8 +329,8 @@ export function mergeSupportLines(
 ): MergeSupportResult {
   if (newLines.length === 0) throw new Error('mergeSupportLines needs at least one line')
   for (const line of newLines) {
-    if (/[\n\r]/.test(line)) {
-      throw new SupportLineError('line_refused', 'a line to write holds a line break or a carriage return')
+    if (/[^\x20-\x7e]/.test(line)) {
+      throw new SupportLineError('line_refused', 'a line to write holds a character that is not printable ASCII')
     }
     if (!isSupportLine(line, pinnedBlobs)) {
       throw new SupportLineError('line_refused', 'a line to write is not recognised as a support line')

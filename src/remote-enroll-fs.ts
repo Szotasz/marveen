@@ -454,7 +454,6 @@ export async function rewriteAuthorizedKeysLocked<T>(
   transform: (existing: string) => { content: string | null; result: T },
 ): Promise<LockedRewriteOutcome<T>> {
   const {
-    sshDir,
     operation,
     createDir = false,
     refuseSymlink = false,
@@ -464,6 +463,12 @@ export async function rewriteAuthorizedKeysLocked<T>(
     staleLockMs = 15000,
     sleep = defaultSleep,
   } = opts
+  // ONE spelling of the directory for the link check, the lock and the file.
+  // resolve() is lexical: it drops a trailing slash and a `.` segment and does
+  // not follow a link. lstat on `<dir>/.ssh/` or `<dir>/.ssh/.` FOLLOWS the
+  // link and reports a directory, so without this the refusal below would
+  // depend on how the caller happened to write the path.
+  const sshDir = resolve(opts.sshDir)
   assertSafeSshDir(sshDir, operation)
   const warnings: string[] = []
   const authPath = join(sshDir, AUTH_KEYS_NAME)
@@ -515,6 +520,9 @@ export async function rewriteAuthorizedKeysLocked<T>(
     if (out.content === null || out.content === existing) {
       return { result: out.result, wrote: false, authorizedKeysPath: authPath, warnings }
     }
+    // Only an ADDITION can trip this: a removal's content is the decoded file
+    // minus some lines, and every character of that is already one byte. So
+    // this refusal never stands in the way of taking access out.
     if (preserveBytes && /[^\u0000-\u00ff]/.test(out.content)) {
       throw new AuthorizedKeysRewriteError(
         'AUTHORIZED_KEYS_NOT_BYTES',
