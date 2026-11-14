@@ -157,6 +157,7 @@ describe('parseSshdEffectiveConfig', () => {
   it.each([
     ['no port and no listenaddress line at all', ''],
     ['a port that is not a number', 'port ssh\n'],
+    ['a port that is not a number next to one that is', 'port 22\nport ssh\n'],
     ['port 0', 'port 0\n'],
     ['a port above 65535', 'port 65536\n'],
     ['a listenaddress without a port', 'port 22\nlistenaddress 0.0.0.0\n'],
@@ -184,6 +185,10 @@ describe('formatSshdConnectionSpec', () => {
     ['an empty user', { user: '' }],
     ['a user of 65 characters', { user: 'a'.repeat(65) }],
     ['a source that is a host name', { addr: 'support.example' }],
+    ['a source that is a word of hexadecimal letters', { addr: 'beef' }],
+    ['a source with three numbers', { addr: '203.0.113' }],
+    ['a source with a number above 255', { addr: '203.0.113.700' }],
+    ['a local address of colons only', { laddr: ':::' }],
     ['a source with a prefix length', { addr: '203.0.113.7/32' }],
     ['a source that carries a second criterion', { addr: '203.0.113.7,user=root' }],
     ['a local address with a zone id', { laddr: 'fe80::1%eth0' }],
@@ -367,15 +372,12 @@ describe('assessSshd', () => {
     expect(assessSshd({ ...ok, answers: other })).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
   })
 
-  it('refuses when the answers disagree about the ports', () => {
-    const first = answers()[0].spec
-    const input = {
-      ...ok,
-      answers: answers((spec) => (spec === first ? T_DEFAULT : T_DEFAULT)).map((a, i) =>
-        i === 0 ? { ...a, text: T_DEFAULT.replace('port 22\n', 'port 22\nport 2222\n') } : a,
-      ),
+  it('refuses when the answers disagree about the ports, whichever answer names the extra one', () => {
+    const twoPorts = T_DEFAULT.replace('port 22\n', 'port 22\nport 2222\n')
+    for (const odd of [0, answers().length - 1]) {
+      const input = { ...ok, answers: answers().map((a, i) => (i === odd ? { ...a, text: twoPorts } : a)) }
+      expect(assessSshd(input)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
     }
-    expect(assessSshd(input)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
   })
 
   it('refuses when UseDNS is on, for every connection or for one', () => {
