@@ -1,0 +1,182 @@
+[
+ {
+  "name": "start of text",
+  "in": "@cel.md es mas",
+  "out": "\\@cel.md es mas"
+ },
+ {
+  "name": "after a space",
+  "in": "lasd @cel.md",
+  "out": "lasd \\@cel.md"
+ },
+ {
+  "name": "after a tab",
+  "in": "lasd\t@cel.md",
+  "out": "lasd\t\\@cel.md"
+ },
+ {
+  "name": "after a line feed",
+  "in": "sor\n@cel.md",
+  "out": "sor\n\\@cel.md"
+ },
+ {
+  "name": "after a lone carriage return",
+  "in": "sor\r@cel.md",
+  "out": "sor\r\\@cel.md"
+ },
+ {
+  "name": "after U+00A0",
+  "in": "x\u00a0@cel.md",
+  "out": "x\u00a0\\@cel.md"
+ },
+ {
+  "name": "after U+2009",
+  "in": "x\u2009@cel.md",
+  "out": "x\u2009\\@cel.md"
+ },
+ {
+  "name": "after U+3000",
+  "in": "x\u3000@cel.md",
+  "out": "x\u3000\\@cel.md"
+ },
+ {
+  "name": "after U+FEFF",
+  "in": "x\ufeff@cel.md",
+  "out": "x\ufeff\\@cel.md"
+ },
+ {
+  "name": "after U+2028",
+  "in": "x\u2028@cel.md",
+  "out": "x\u2028\\@cel.md"
+ },
+ {
+  "name": "after U+200B: not whitespace, untouched",
+  "in": "x\u200b@cel.md",
+  "out": "x\u200b@cel.md"
+ },
+ {
+  "name": "after U+0085: Python-only whitespace, untouched",
+  "in": "x\u0085@cel.md",
+  "out": "x\u0085@cel.md"
+ },
+ {
+  "name": "after U+001C: Python-only whitespace, untouched",
+  "in": "x\u001c@cel.md",
+  "out": "x\u001c@cel.md"
+ },
+ {
+  "name": "email-like, untouched",
+  "in": "irj: info@cel.md",
+  "out": "irj: info@cel.md"
+ },
+ {
+  "name": "after an opening parenthesis, untouched",
+  "in": "(@cel.md)",
+  "out": "(@cel.md)"
+ },
+ {
+  "name": "after a quote, untouched",
+  "in": "\"@cel.md\"",
+  "out": "\"@cel.md\""
+ },
+ {
+  "name": "after a colon, untouched",
+  "in": "lasd:@cel.md",
+  "out": "lasd:@cel.md"
+ },
+ {
+  "name": "code span, at-sign right after the backtick, untouched",
+  "in": "`@cel.md`",
+  "out": "`@cel.md`"
+ },
+ {
+  "name": "code span with a space before the at-sign",
+  "in": "futtasd `cat @cel.md`",
+  "out": "futtasd `cat \\@cel.md`"
+ },
+ {
+  "name": "fenced block",
+  "in": "pelda:\n```\n@cel.md\n```",
+  "out": "pelda:\n```\n\\@cel.md\n```"
+ },
+ {
+  "name": "absolute path",
+  "in": "lasd @/tmp/x/cel.md",
+  "out": "lasd \\@/tmp/x/cel.md"
+ },
+ {
+  "name": "tilde path",
+  "in": "lasd @~/x/cel.md",
+  "out": "lasd \\@~/x/cel.md"
+ },
+ {
+  "name": "parent path",
+  "in": "lasd @../../x/cel.md",
+  "out": "lasd \\@../../x/cel.md"
+ },
+ {
+  "name": "quoted path",
+  "in": "lasd @\"cel fajl.md\"",
+  "out": "lasd \\@\"cel fajl.md\""
+ },
+ {
+  "name": "directory with a slash",
+  "in": "lasd @mappa/",
+  "out": "lasd \\@mappa/"
+ },
+ {
+  "name": "space after the at-sign: still escaped (whatever follows)",
+  "in": "jel: @ es mas",
+  "out": "jel: \\@ es mas"
+ },
+ {
+  "name": "two at-signs in a row: only the first follows whitespace",
+  "in": "x @@cel.md",
+  "out": "x \\@@cel.md"
+ },
+ {
+  "name": "two tokens",
+  "in": "a @egy.md b @ketto.md",
+  "out": "a \\@egy.md b \\@ketto.md"
+ },
+ {
+  "name": "already escaped: idempotent",
+  "in": "lasd \\@cel.md",
+  "out": "lasd \\@cel.md"
+ },
+ {
+  "name": "addressing an agent",
+  "in": "Koszi @samu, megneztem.",
+  "out": "Koszi \\@samu, megneztem."
+ },
+ {
+  "name": "router header",
+  "in": "[Uzenet @samu-tol -- trusted team member, msg_id:7]: szia",
+  "out": "[Uzenet \\@samu-tol -- trusted team member, msg_id:7]: szia"
+ },
+ {
+  "name": "federated header",
+  "in": "[Uzenet a tavoli @peer/agent ugynoktol -- x, msg_id:8]: szia",
+  "out": "[Uzenet a tavoli \\@peer/agent ugynoktol -- x, msg_id:8]: szia"
+ },
+ {
+  "name": "agent mention shape",
+  "in": "kerlek @agent-general-purpose nezd meg",
+  "out": "kerlek \\@agent-general-purpose nezd meg"
+ },
+ {
+  "name": "no at-sign at all",
+  "in": "semmi kulonos\nket sorban",
+  "out": "semmi kulonos\nket sorban"
+ },
+ {
+  "name": "empty",
+  "in": "",
+  "out": ""
+ },
+ {
+  "name": "lone at-sign",
+  "in": "irj @",
+  "out": "irj \\@"
+ }
+]

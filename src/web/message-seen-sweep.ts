@@ -22,7 +22,9 @@ import { whileNotFrozen } from './fleet-freeze.js'
 export const SEEN_WINDOW_SEC = 24 * 60 * 60
 export const SEEN_SWEEP_INTERVAL_MS = 60_000
 
-const HEADER_RE = /(?:^|\s)\[Uzenet (?:@([^\s\]]+)-tol|a tavoli @([^\s\]]+) ugynoktol)\b[^\]\n]*?msg_id:(\d+)[,\]]/g
+// `\\?` before each at-sign: the transcript holds the TYPED header, and the pane mapping puts a backslash
+// there (ENVATLEAK1114, pane-text.ts). Without it no delivered message would ever be marked seen.
+const HEADER_RE = /(?:^|\s)\[Uzenet (?:\\?@([^\s\]]+)-tol|a tavoli \\?@([^\s\]]+) ugynoktol)\b[^\]\n]*?msg_id:(\d+)[,\]]/g
 
 export function findSeenMsgIds(transcriptTail: string, candidates: ReadonlyMap<number, string>): Set<number> {
   const found = new Set<number>()

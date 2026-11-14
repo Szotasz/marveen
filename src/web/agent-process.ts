@@ -61,7 +61,7 @@ import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { paneOneLine } from './pane-text.js'
+import { paneTyped } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
   buildTmuxInvocation,
@@ -4003,7 +4003,15 @@ export async function answerFirstRunGates(
 // operator no longer uses Remote Control, and the agent's inference-only OAuth
 // token can't satisfy it anyway.) Pure helper for the exact slash commands so
 // they are unit-tested; scheduleIdentitySetup wires them to tmux after a wait.
+//
+// ENVATLEAK1114: this command is typed WITHOUT the pane mapping (it is not a
+// prompt, and a display name legitimately contains spaces: "Lean Publisher"),
+// so a display name with an at-sign would put an attachable at-sign token into
+// the pane -- Claude Code expands one after whitespace into a file attachment.
+// Such a name is never typed: no command comes back, the session keeps its
+// default title, and the caller logs why.
 export function identitySlashCommands(displayName: string): string[] {
+  if (displayName.includes('@')) return []
   return [`/rename ${displayName}`]
 }
 
@@ -4182,6 +4190,9 @@ export async function scheduleIdentitySetup(session: string, displayName: string
               continue
             }
             try {
+              if (identitySlashCommands(displayName).length === 0) {
+                logger.warn({ session }, 'Identity /rename skipped -- the display name contains an at-sign, which the pane would expand into a file attachment (ENVATLEAK1114)')
+              }
               for (const cmd of identitySlashCommands(displayName)) {
                 // RENAMEPARK1014: record the command before typing it. When the
                 // TUI swallows this Enter the line parks, and without a record
@@ -4655,8 +4666,10 @@ export async function sendPromptToSession(
   }
 
   // The mapping lives in pane-text.ts: the provenance gate re-applies it to
-  // the queue row, so the two must never drift (DIREKTIVASORTORES920).
-  const oneLine = paneOneLine(text)
+  // the queue row, so the two must never drift (DIREKTIVASORTORES920). It is
+  // one line AND free of expandable at-signs (ENVATLEAK1114): Claude Code would
+  // otherwise attach the file an at-sign token names, with no tool call.
+  const oneLine = paneTyped(text)
   // STUCKINPUT827: remember the EXACT byte stream we are about to type. If the
   // submitting Enter does not land, the stuck-input watcher re-injects THIS
   // instead of guessing from a lossy screen scrape. Recorded before the send so

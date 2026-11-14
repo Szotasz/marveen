@@ -2085,7 +2085,11 @@ if . "$INSTALL_DIR/scripts/lib/main-rename.sh"; then
   main_rename_send "$TMUX" "=$SESSION:" "$_bot_name" || true
 else
   echo "$(date '+%F %T') channels.sh: scripts/lib/main-rename.sh could not be loaded -- one-shot /rename" >&2
-  $TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
+  # ENVATLEAK1114: never type a name with an at-sign (same rule as the library).
+  case "$_bot_name" in
+    *@*) echo "$(date '+%F %T') channels.sh: boot /rename -- the name contains an at-sign, NOT typing (ENVATLEAK1114)" >&2 ;;
+    *) $TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter ;;
+  esac
 fi
 unset _bot_name
 

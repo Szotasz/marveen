@@ -83,7 +83,7 @@ import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
-import { paneOneLine } from './pane-text.js'
+import { paneTyped } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, readTeamsCreds, type ChannelProviderType } from '../channel-provider.js'
 import { sendTeamsMessage } from '../teams-send.js'
@@ -2468,7 +2468,7 @@ async function attemptFireTask(
       runId: firedRunId,
       taskType: task.type,
       // Local agents only: a remote agent's transcript is on its own host.
-      ...(host == null ? { sentText: paneOneLine(fullPrompt), typedAt } : {}),
+      ...(host == null ? { sentText: paneTyped(fullPrompt), typedAt } : {}),
       ...(host != null ? { remoteWorkdir: readAgentRemoteConfig(agentName).workdir ?? undefined } : {}),
       deliveryPending: true,
     }

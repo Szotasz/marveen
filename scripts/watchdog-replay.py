@@ -13,9 +13,32 @@ reading once.
 argv: session_name agent_id cutoff_epoch data_file log_target
 """
 import json
+import re
 import subprocess
 import sys
 import time
+
+# ENVATLEAK1114: the SAME rule as src/web/pane-text.ts `neutralizeAtMentions`
+# (and scripts/hooks/provenance-gate.py `pane_shape`): a backslash before every
+# at-sign at the start of the text or after whitespace. Claude Code expands such
+# an at-sign token into a file attachment with no tool call, and this script
+# types message content straight into a pane. JS_SPACE is JavaScript's
+# whitespace class spelled out, because Python's own class is a different set;
+# src/__tests__/fixtures/pane-at-neutralize-vectors.json holds the shared cases.
+JS_SPACE = "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
+AT_AFTER_SPACE_RX = re.compile("(^|[" + JS_SPACE + "])@")
+
+
+def neutralize_at_mentions(text):
+    return AT_AFTER_SPACE_RX.sub(lambda m: m.group(1) + "\\@", text or "")
+
+
+# Test seam: `watchdog-replay.py --neutralize-vectors <file.json>` applies the
+# function to every case's "in" and prints the results as JSON. Nothing is typed.
+if len(sys.argv) == 3 and sys.argv[1] == "--neutralize-vectors":
+    with open(sys.argv[2], encoding="utf-8") as vf:
+        json.dump([neutralize_at_mentions(c["in"]) for c in json.load(vf)], sys.stdout)
+    sys.exit(0)
 
 session_name, agent_id, cutoff_str, data_file, log_target = sys.argv[1:6]
 cutoff = int(cutoff_str)
@@ -60,7 +83,7 @@ def mark(msg_id: object, note: str) -> None:
 
 for m in pending:
     content = m.get('content', '')
-    full_msg = f"[Újraküldés - feladat elveszett restart előtt]: {content}"
+    full_msg = neutralize_at_mentions(f"[Újraküldés - feladat elveszett restart előtt]: {content}")
     chunk_size = 990
     for i in range(0, len(full_msg), chunk_size):
         chunk = full_msg[i:i + chunk_size]
