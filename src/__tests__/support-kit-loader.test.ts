@@ -147,6 +147,9 @@ describe('running the kit copy of the routine', () => {
     rmSync(supportDir, { recursive: true })
     await kitWithRoutine('export async function main() { return "0" }\n')
     expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: KIT_LOADER_EXIT.failed, stdout: '' })
+    rmSync(supportDir, { recursive: true })
+    await kitWithRoutine('export async function main() { process.stdout.write("x\\n"); return 300 }\n')
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: KIT_LOADER_EXIT.failed, stdout: 'x\n' })
   })
 
   it('stops a routine that prints too much, or that does not finish in time', async () => {
@@ -167,6 +170,29 @@ describe('running the kit copy of the routine', () => {
   describe('the loader on its own', () => {
     const runLoader = (args: string[], extraNodeArgs: string[] = []) =>
       spawnSync(NODE, [...extraNodeArgs, ...kitRunArgs(args[0], args[1], args.slice(2))], { encoding: 'utf8', env: { ...KIT_RUN_ENV }, timeout: 20_000 })
+
+    it('turns an error that escapes the routine into the fixed line, not a trace with the data: URL', async () => {
+      const routine = await kitWithRoutine(
+        'export async function main() {\n' +
+          '  setTimeout(() => { throw new Error("y".repeat(3000)) }, 0)\n' +
+          '  await new Promise((r) => setTimeout(r, 200))\n' +
+          '  return 0\n' +
+          '}\n',
+      )
+      const run = runLoader([sha(readFileSync(routine)), routine])
+      expect(run.status).toBe(KIT_LOADER_EXIT.failed)
+      expect(run.stderr).toBe(FIXED_LINE(KIT_LOADER_EXIT.failed))
+      const rejecting = await kitWithRoutine(
+        'export async function main() {\n' +
+          '  void Promise.reject(new Error("z".repeat(3000)))\n' +
+          '  await new Promise((r) => setTimeout(r, 200))\n' +
+          '  return 0\n' +
+          '}\n',
+      )
+      const again = runLoader([sha(readFileSync(rejecting)), rejecting])
+      expect(again.status).toBe(KIT_LOADER_EXIT.failed)
+      expect(again.stderr).toBe(FIXED_LINE(KIT_LOADER_EXIT.failed))
+    })
 
     it('stops with its own code and ONE fixed line for every refusal, never a trace with the data: URL', async () => {
       const routine = await kitWithRoutine('export async function main() { throw new Error("x".repeat(3000)) }\n')
