@@ -1,323 +1,235 @@
 #!/usr/bin/env python3
 """
-Answer buttons on the Discord channel plugin's reply tool (DCBTN1023).
+Marveen's version of the Discord channel plugin, put in place over the cached
+official one (DCEXT1111; replaces the DCBTN1023 anchor patch, whose answer
+buttons it carries).
 
-The official plugin (claude-plugins-official/discord/<ver>/server.ts) can only
-send text and files, so a question with a few fixed answers ("Igen / Nem",
-"A / B / C") has to be answered by typing. This script adds an optional
-`buttons` list to the reply tool: the buttons go under the last chunk, a click
-arrives as an ordinary <channel> message whose text is the label (with
-button="true" in the meta), and the first accepted click replaces the buttons
-with "-> <label> (<display name>)". Clicks pass the same access check as
-messages (DMs: allowFrom; a channel: its own allowFrom when set, else anyone
-there when it listens to every message, else allowFrom); a refused click gets
-an ephemeral "Not authorized." and the buttons stay. The Telegram counterpart
-is the kbd patch in scripts/patch-telegram-plugin.py (c67f5f34).
-
-Upstream does not take outside pull requests (its close-external-prs workflow
-closes them), so the change lives here and is put back after every plugin
-update. The same code is offered upstream on
-anthropics/claude-plugins-official#895.
+The official plugin (claude-plugins-official/discord/<ver>/server.ts) is
+vendored verbatim in vendor/discord-plugin/<ver>/upstream/, our version of it in
+vendor/discord-plugin/<ver>/overlay/ (see vendor/discord-plugin/VENDOR.md for
+what differs and why). Upstream does not take outside pull requests (its
+close-external-prs workflow closes them), so the change lives here.
 
 Runs at every channel start (scripts/channels.sh) when the session listens on
-Discord (CHANNEL_PROVIDER=discord, or discord@... in CHANNEL_PLUGINS_EXTRA),
-before the plugin is spawned, over every cached plugin version in ONE cache:
-the one this install launches from ($CLAUDE_CONFIG_DIR/plugins/cache, or
+Discord, before the plugin is spawned, over every cached plugin version in ONE
+cache: the one this install launches from ($CLAUDE_CONFIG_DIR/plugins/cache, or
 ~/.claude/plugins/cache when the variable is unset).
 
-- idempotent: a file carrying the marker is left alone, unless this script's
-  code changed since: then the old lines are taken out and the current ones
-  put in ("upgraded");
-- all-or-nothing: if ANY anchor is missing or not unique (a plugin update
-  changed the code), the file is left unchanged and one loud line says so --
-  the reply tool then has no buttons, everything else works as before;
-- a plugin whose reply tool already declares `buttons` (upstream took the
-  feature) is left alone: status "native";
-- every line it adds ends with TAG (a blank line is the TAG alone), so taking
-  the patch back is deleting those lines: the file is then byte-identical to
-  the unpatched one (tested);
-- uses only names the plugin already imports (ButtonBuilder, ButtonStyle,
-  ActionRowBuilder, Interaction);
-- always exits 0: a failed patch must never stop the channel from starting;
-- with --state FILE, the outcome per file is written there as JSON.
+What a cached server.ts is decides what happens, never its folder name:
+- the vendored upstream file (sha256), or that file with the old DCBTN1023
+  tagged lines in it: ours goes in ("overlaid");
+- a file this script wrote (its sha256 in the .marveen-overlay.json manifest
+  next to it): brought to the current overlay and settings ("upgraded"), or
+  left alone when already current ("already");
+- anything else (a plugin update): left alone, one loud line, the plugin runs
+  as shipped ("unknown"). Nothing is ever written over a file we cannot name.
 
-Usage: patch-discord-plugin.py [--state FILE] [<plugins cache root>]
-(default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache)
+DISCORD_PLUGIN_EXT=off puts the vendored upstream file back, byte-identical,
+and removes everything else this script wrote ("restored"): the plugin is the
+official one again after the next channel start. DISCORD_OWNER_USER_ID and
+DISCORD_BACKFILL go to marveen-ext.json next to server.ts, which the overlay
+reads at start. Settings are read as the dashboard's settings store answers
+them (the first two are overrides-only: the owner's override, never .env);
+a change takes effect at the next channel start.
+
+Always exits 0: a failed run must never stop the channel from starting.
+With --state FILE, the outcome per file is written there as JSON.
+
+Usage: patch-discord-plugin.py [--state FILE] [--install DIR] [<plugins cache root>]
+(default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache;
+default install: the one this script lives in)
 """
+import hashlib
+import importlib.util
 import json
 import os
 import re
 import sys
 import time
 
-TAG = "// MARVEEN-PATCH(dcbtn1023)"
+HERE = os.path.dirname(os.path.abspath(__file__))
+INSTALL_DIR = os.path.dirname(HERE)
+VENDOR = os.path.join(INSTALL_DIR, "vendor", "discord-plugin")
 
-# A reply tool that already declares `buttons` (upstream took the feature, or
-# a hand-applied copy without the tag): adding ours would duplicate the key.
-NATIVE = re.compile(r"^ *buttons: \{\n", re.MULTILINE)
-
-INSTRUCTIONS = """\
-'reply accepts buttons (buttons: [{label: "Yes"}, {label: "No", style: "danger"}]) for decisions with a few fixed answers. A click arrives as a normal <channel> message whose text is the button label, with button="true" in its attributes; the user can still type an answer instead. Clicks pass the same access check as messages, and the buttons are removed after the first accepted click.',
-'',
-"""
-
-SCHEMA = """\
-buttons: {
-  type: 'array',
-  description: 'Optional answer buttons, shown under the last chunk (max 25, 5 per row). A click comes back as an inbound message whose text is the label.',
-  items: {
-    type: 'object',
-    properties: {
-      label: { type: 'string', description: 'Button text, max 80 chars. This is what you receive on click.' },
-      style: { type: 'string', enum: ['primary', 'secondary', 'success', 'danger'] },
-    },
-    required: ['label'],
-  },
-},
-"""
-
-ROWS = """\
-const rows = buildButtonRows(args.buttons)
-"""
-
-SEND = """\
-...(i === chunks.length - 1 && rows.length > 0 ? { components: rows } : {}),
-"""
-
-HANDLER = """\
-const BUTTON_STYLES: Record<string, ButtonStyle> = {
-  primary: ButtonStyle.Primary,
-  secondary: ButtonStyle.Secondary,
-  success: ButtonStyle.Success,
-  danger: ButtonStyle.Danger,
-}
-
-// reply's buttons param -> action rows. customId is `choice:<n>`; the label
-// itself is read back from the clicked component, so no state survives here.
-function buildButtonRows(raw: unknown): ActionRowBuilder<ButtonBuilder>[] {
-  if (raw == null) return []
-  if (!Array.isArray(raw)) throw new Error('buttons must be an array')
-  if (raw.length > 25) throw new Error('Discord allows max 25 buttons per message')
-  const seen = new Set<string>()
-  const buttons = raw.map((b, i) => {
-    const label = typeof b?.label === 'string' ? b.label.trim() : ''
-    if (!label) throw new Error(`button ${i}: label is required`)
-    if (label.length > 80) throw new Error(`button ${i}: label longer than 80 chars`)
-    if (seen.has(label)) throw new Error(`button ${i}: duplicate label "${label}"`)
-    seen.add(label)
-    const style = BUTTON_STYLES[b?.style ?? 'secondary']
-    if (style === undefined) throw new Error(`button ${i}: unknown style "${b.style}"`)
-    return new ButtonBuilder().setCustomId(`choice:${i}`).setLabel(label).setStyle(style)
-  })
-  const rows: ActionRowBuilder<ButtonBuilder>[] = []
-  for (let i = 0; i < buttons.length; i += 5) {
-    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5)))
-  }
-  return rows
-}
-
-// Who may answer with a button: gate() for messages, minus the mention.
-// Inbound switched off (dmPolicy disabled) drops clicks too, so buttons sent
-// before that stop being answerable. DMs: only allowFrom, like messages. Guild
-// channels: the channel must be opted in and groupAllowFrom (if set) applies.
-// In a channel that listens to every message (requireMention: false) anyone
-// there may click; otherwise only allowFrom / groupAllowFrom members, because
-// a click carries no mention to gate on.
-function clickAllowed(interaction: Interaction, access: Access): boolean {
-  if (access.dmPolicy === 'disabled') return false
-  const userId = interaction.user.id
-  if (interaction.guildId === null) return access.allowFrom.includes(userId)
-  const ch = interaction.channel
-  if (!ch) return false
-  const channelId = ch.isThread() ? ch.parentId ?? ch.id : ch.id
-  const policy = access.groups[channelId]
-  if (!policy) return false
-  const groupAllowFrom = policy.allowFrom ?? []
-  if (groupAllowFrom.length > 0) return groupAllowFrom.includes(userId)
-  if ((policy.requireMention ?? true) === false) return true
-  return access.allowFrom.includes(userId)
-}
-
-// Message ids whose buttons were already answered: two quick clicks must not
-// both reach the session before the first update removes the buttons.
-const answeredChoices = new Set<string>()
-
-client.on('interactionCreate', async (interaction: Interaction) => {
-  if (!interaction.isButton()) return
-  if (!/^choice:\\d{1,2}$/.test(interaction.customId)) return
-  if (interaction.message.author.id !== client.user?.id) return
-  const access = loadAccess()
-  if (!clickAllowed(interaction, access)) {
-    await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})
-    return
-  }
-  const message_id = interaction.message.id
-  if (answeredChoices.has(message_id)) {
-    await interaction.reply({ content: 'Already answered.', ephemeral: true }).catch(() => {})
-    return
-  }
-  answeredChoices.add(message_id)
-  const c = interaction.component
-  const label = ('label' in c ? c.label : null) ?? ''
-  // Show the choice under the message; if that would pass Discord's 2000-char
-  // cap, only drop the buttons so the same message can't be answered twice.
-  // Show the name people see in the chat: server nickname, then the
-  // account's display name, then the username.
-  const m = interaction.member
-  const who = m === null ? interaction.user.displayName
-    : 'displayName' in m ? m.displayName
-    : m.nick ?? interaction.user.displayName
-  const answered = `${interaction.message.content}\\n\\n➡️ ${label} (${who})`
-  await interaction
-    .update(answered.length <= MAX_CHUNK_LIMIT ? { content: answered, components: [] } : { components: [] })
-    .catch(err => process.stderr.write(`discord channel: failed to close buttons: ${err}\\n`))
-  if (interaction.guildId === null) {
-    dmChannelUsers.set(interaction.channelId, interaction.user.id)
-  }
-  mcp.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content: label,
-      meta: {
-        chat_id: interaction.channelId,
-        message_id,
-        user: interaction.user.username,
-        user_id: interaction.user.id,
-        ts: new Date().toISOString(),
-        button: 'true',
-      },
-    },
-  }).catch(err => {
-    process.stderr.write(`discord channel: failed to deliver button click to Claude: ${err}\\n`)
-  })
-})
-
-"""
-
-# The names the inserted code uses from the plugin. An anchor only proves the
-# code next to the insertion is still there; if a later version renamed or
-# dropped one of these, the patched file would still say "patched" and then
-# fail: a top-level ButtonStyle reference throws ReferenceError when the module
-# loads, so the channel would not start at all. Missing -> the same loud
-# "left out" path as a moved anchor.
-DISCORD_IMPORT = re.compile(r"^import \{\n((?:[^\n]*\n)*?)\} from 'discord\.js'\n", re.MULTILINE)
-
-
-def _imports(*names):
-    def ok(text):
-        m = DISCORD_IMPORT.search(text)
-        return bool(m) and all(re.search(rf"^\s*(?:type\s+)?{n},?\s*$", m.group(1), re.MULTILINE) for n in names)
-    return ok
-
-
-def _defines(rx):
-    return lambda text: len(re.findall(rx, text, re.MULTILINE)) == 1
-
-
-REQUIRES = [
-    ("discord.js imports ButtonBuilder, ButtonStyle, ActionRowBuilder, Interaction",
-     _imports("ButtonBuilder", "ButtonStyle", "ActionRowBuilder", "Interaction")),
-    ("function loadAccess", _defines(r"^function loadAccess\(")),
-    ("const dmChannelUsers", _defines(r"^const dmChannelUsers = ")),
-    ("const MAX_CHUNK_LIMIT", _defines(r"^const MAX_CHUNK_LIMIT = ")),
-    ("const client", _defines(r"^const client = ")),
-    ("const mcp", _defines(r"^const mcp = ")),
-]
-
-# (name, anchor, mode, lines). The anchor's group 1 is the indent the lines
-# get; each anchor must match exactly once.
-STEPS = [
-    # The model learns the parameter from the server instructions, before the
-    # files hint.
-    ("instructions inbound tag", re.compile(
-        r"^( *)'Messages from Discord arrive as <channel source=\"discord\" [^\n]*\n *'',\n", re.MULTILINE),
-     "insert-after", INSTRUCTIONS),
-    # The parameter itself, after `files` in the reply tool's schema.
-    ("reply schema files property", re.compile(
-        r"^ *description: 'Absolute file paths to attach[^\n]*\n( *)\},\n", re.MULTILINE),
-     "insert-after", SCHEMA),
-    # Checked before anything is sent: a bad list is a tool error, not a half-sent reply.
-    ("reply files arg", re.compile(
-        r"^( *)const files = \(args\.files as string\[\] \| undefined\) \?\? \[\]\n", re.MULTILINE),
-     "insert-after", ROWS),
-    # The buttons go on the LAST chunk, under the whole answer.
-    ("reply send files option", re.compile(
-        r"^( *)\.\.\.\(i === 0 && files\.length > 0 \? \{ files \} : \{\}\),\n", re.MULTILINE),
-     "insert-after", SEND),
-    # The rows builder, the click check and the click handler, before the
-    # inbound message handler.
-    ("messageCreate handler", re.compile(r"^()client\.on\('messageCreate', msg => \{\n", re.MULTILINE),
-     "insert-before", HANDLER),
-]
+# The old anchor patch tagged every line it added; a file still carrying them
+# is the upstream file plus our buttons, and is taken over like the upstream one.
+DCBTN_TAG = "// MARVEEN-PATCH(dcbtn1023)"
+MANIFEST = ".marveen-overlay.json"
+EXT_CONFIG = "marveen-ext.json"
+SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
 
 
 def log(msg):
     sys.stderr.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} patch-discord-plugin: {msg}\n")
 
 
-def tagged(indent, block):
-    return "".join((f"{indent}{line} {TAG}\n" if line else f"{TAG}\n") for line in block.split("\n")[:-1])
+def sha(data):
+    return hashlib.sha256(data if isinstance(data, bytes) else data.encode("utf-8")).hexdigest()
 
 
-def patch_text(text):
-    """Returns (new_text, status): 'patched' | 'upgraded' | 'already' | 'native' | 'anchor-missing:<name>'."""
-    if TAG in text:
-        # Patched before. Take our lines out (byte-exact) and patch again, so a
-        # file patched by an older version of this script gets the current code.
-        fresh, status = patch_text(unpatch_text(text))
-        if status == "patched" and fresh != text:
-            return fresh, "upgraded"
-        return text, "already"
-    if NATIVE.search(text):
-        return text, "native"
-    for name, ok in REQUIRES:
-        if not ok(text):
-            return text, f"anchor-missing:{name}"
-    out = text
-    for name, rx, mode, block in STEPS:
-        found = list(rx.finditer(out))
-        if len(found) != 1:
-            return text, f"anchor-missing:{name}"
-        m = found[0]
-        added = tagged(m.group(1), block)
-        at = m.start() if mode == "insert-before" else m.end()
-        out = out[:at] + added + out[at:]
-    return out, "patched"
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
 
 
-def unpatch_text(text):
-    """The unpatched text back: every line carrying TAG removed."""
-    return "".join(l for l in text.splitlines(keepends=True) if not l.rstrip("\n").endswith(TAG))
+def strip_dcbtn(text):
+    return "".join(l for l in text.splitlines(keepends=True) if not l.rstrip("\n").endswith(DCBTN_TAG))
 
 
-def patch_file(path):
+def load_vendor():
+    """{upstream sha256: {"version", "upstream": bytes, "overlay": {name: bytes}}} for every vendored version."""
+    out = {}
+    if not os.path.isdir(VENDOR):
+        return out
+    for ver in sorted(os.listdir(VENDOR)):
+        up = os.path.join(VENDOR, ver, "upstream", "server.ts")
+        ov = os.path.join(VENDOR, ver, "overlay")
+        if not (os.path.isfile(up) and os.path.isdir(ov)):
+            continue
+        upstream = read_bytes(up)
+        overlay = {n: read_bytes(os.path.join(ov, n)) for n in sorted(os.listdir(ov)) if os.path.isfile(os.path.join(ov, n))}
+        if "server.ts" not in overlay:
+            continue
+        out[sha(upstream)] = {"version": ver, "upstream": upstream, "overlay": overlay}
+    return out
+
+
+def _telegram_helpers():
+    # The store's .env parsing and flag reading, mirrored once in the Telegram patcher (parity-tested there).
+    spec = importlib.util.spec_from_file_location("patch_telegram_plugin", os.path.join(HERE, "patch-telegram-plugin.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def override_value(install_dir, key):
+    """An OVERRIDES-ONLY key as settings-store answers it: store/config-overrides.json, never .env."""
     try:
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
+        with open(os.path.join(install_dir, "store", "config-overrides.json"), encoding="utf-8") as f:
+            ov = json.load(f)
+        v = ov.get(key) if isinstance(ov, dict) else None
+        if isinstance(v, (str, int)) and not isinstance(v, bool):
+            return str(v)
+    except Exception:
+        pass
+    return None
+
+
+def settings(install_dir):
+    """(ext on?, marveen-ext.json content). DISCORD_PLUGIN_EXT and DISCORD_OWNER_USER_ID are overrides-only
+    (src/config-registry.ts: switching the overlay off, or naming another owner, loosens who approves a tool);
+    DISCORD_BACKFILL is a plain flag (override, then .env, then on)."""
+    tg = _telegram_helpers()
+    raw = override_value(install_dir, "DISCORD_PLUGIN_EXT")
+    ext_on = True if raw is None else tg.is_on(raw)
+    owner = (override_value(install_dir, "DISCORD_OWNER_USER_ID") or "").strip(tg.JS_TRIM)
+    if owner and not SNOWFLAKE.match(owner):
+        log("LOUD: DISCORD_OWNER_USER_ID is set but is not a Discord user id -- NOT used")
+        owner = ""
+    backfill = tg.flag_setting(install_dir, "DISCORD_BACKFILL", True)
+    return ext_on, {"ownerUserId": owner, "backfill": bool(backfill)}
+
+
+def identify(dirpath, text_bytes, vendor):
+    """(kind, vendor entry, manifest): kind is 'upstream' | 'dcbtn' | 'ours' | 'unknown'."""
+    h = sha(text_bytes)
+    if h in vendor:
+        return "upstream", vendor[h], None
+    # Ours before DCBTN: the overlay carries the DCBTN-tagged button lines too.
+    try:
+        with open(os.path.join(dirpath, MANIFEST), encoding="utf-8") as f:
+            manifest = json.load(f)
+        if manifest.get("files", {}).get("server.ts") == h and manifest.get("upstream") in vendor:
+            return "ours", vendor[manifest["upstream"]], manifest
+    except Exception:
+        pass
+    try:
+        text = text_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = ""
+    if DCBTN_TAG in text:
+        base = sha(strip_dcbtn(text))
+        if base in vendor:
+            return "dcbtn", vendor[base], None
+    return "unknown", None, None
+
+
+def write_atomic(path, data):
+    tmp = path + ".marveen-tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def desired_files(entry, ext):
+    files = dict(entry["overlay"])
+    files[EXT_CONFIG] = (json.dumps(ext, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    return files
+
+
+def apply_file(path, vendor, ext_on, ext):
+    dirpath = os.path.dirname(path)
+    try:
+        current = read_bytes(path)
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
         return "unreadable"
-    new, status = patch_text(text)
-    if status.startswith("anchor-missing"):
-        log(f"LOUD: {status.split(':', 1)[1]} not found exactly once in {path} (plugin changed?) -- "
-            "the buttons patch left out, the reply tool has no buttons")
-    elif status == "native":
-        log(f"{path}: the reply tool already has buttons -- left alone")
-    if status not in ("patched", "upgraded"):
-        return status
-    tmp = path + ".marveen-tmp"
+    kind, entry, manifest = identify(dirpath, current, vendor)
+    if kind == "unknown":
+        if vendor:
+            log(f"LOUD: {path} is not a plugin version this install knows (plugin updated?) -- "
+                "left as shipped, Marveen's Discord additions are off until vendor/discord-plugin catches up")
+        else:
+            log(f"LOUD: vendor/discord-plugin missing or empty -- {path} left as shipped")
+        return "unknown"
+    old_files = set((manifest or {}).get("files", {})) - {"server.ts"}
+
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(new)
-        os.replace(tmp, path)
+        if not ext_on:
+            if kind == "upstream" and manifest is None and not os.path.exists(os.path.join(dirpath, MANIFEST)):
+                return "upstream"
+            write_atomic(path, entry["upstream"])
+            for name in sorted(old_files | {EXT_CONFIG}):
+                p = os.path.join(dirpath, name)
+                if os.path.exists(p):
+                    os.remove(p)
+            if os.path.exists(os.path.join(dirpath, MANIFEST)):
+                os.remove(os.path.join(dirpath, MANIFEST))
+            log(f"restored {path} to the official plugin {entry['version']} (DISCORD_PLUGIN_EXT=off)")
+            return "restored"
+
+        want = desired_files(entry, ext)
+        if kind == "ours":
+            same = all(
+                os.path.isfile(os.path.join(dirpath, n)) and read_bytes(os.path.join(dirpath, n)) == data
+                for n, data in want.items()
+            ) and old_files | {"server.ts", EXT_CONFIG} == set(want)
+            if same:
+                return "already"
+        # Supporting files first, server.ts last: until it is replaced, the old
+        # server.ts runs and never imports a half-written set.
+        for name, data in sorted(want.items()):
+            if name != "server.ts":
+                write_atomic(os.path.join(dirpath, name), data)
+        for name in sorted(old_files - set(want)):
+            p = os.path.join(dirpath, name)
+            if os.path.exists(p):
+                os.remove(p)
+        write_atomic(path, want["server.ts"])
+        write_atomic(os.path.join(dirpath, MANIFEST), (json.dumps({
+            "upstream": sha(entry["upstream"]),
+            "version": entry["version"],
+            "files": {n: sha(d) for n, d in sorted(want.items()) if n != EXT_CONFIG},
+        }, indent=1) + "\n").encode("utf-8"))
     except Exception as e:
-        log(f"cannot write {path}: {type(e).__name__} -- left unpatched")
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
+        log(f"cannot write in {dirpath}: {type(e).__name__} -- left as it was")
         return "unwritable"
-    log(f"{status} {path} (buttons)")
+    status = "upgraded" if kind == "ours" else "overlaid"
+    log(f"{status} {path} (Marveen's Discord plugin {entry['version']}, from {kind})")
     return status
 
 
@@ -341,24 +253,33 @@ def write_state(state_path, state):
 def main(argv):
     args = argv[1:]
     state_path = None
-    if len(args) >= 2 and args[0] == "--state":
-        state_path = args[1]
+    install_dir = INSTALL_DIR
+    while len(args) >= 2 and args[0] in ("--state", "--install"):
+        if args[0] == "--state":
+            state_path = args[1]
+        else:
+            install_dir = args[1]
         args = args[2:]
     root = args[0] if args else default_root()
+    ext_on, ext = settings(install_dir)
+    vendor = load_vendor()
     files = []
     base = os.path.join(root, "claude-plugins-official", "discord")
     if os.path.isdir(base):
         for ver in sorted(os.listdir(base)):
             path = os.path.join(base, ver, "server.ts")
             if os.path.isfile(path):
-                files.append({"version": ver, "path": path, "status": patch_file(path)})
+                files.append({"version": ver, "path": path, "status": apply_file(path, vendor, ext_on, ext)})
     if state_path:
-        write_state(state_path, {"at": int(time.time()), "root": root, "files": files})
+        write_state(state_path, {
+            "at": int(time.time()), "root": root, "mode": "on" if ext_on else "off",
+            "owner_set": bool(ext["ownerUserId"]), "backfill": ext["backfill"], "files": files,
+        })
 
 
 if __name__ == "__main__":
     try:
         main(sys.argv)
     except Exception as e:  # never stop the channel from starting
-        log(f"unexpected {type(e).__name__}, nothing patched")
+        log(f"unexpected {type(e).__name__}, nothing changed")
     sys.exit(0)
