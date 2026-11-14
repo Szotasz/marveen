@@ -119,6 +119,7 @@ import { join } from "node:path";
 
 // src/support-access-sshd-nonroot.ts
 import { posix } from "node:path";
+var SSHD_LISTENER_PROGRAM = "/usr/sbin/sshd";
 var SSHD_MAIN_CONFIG = "/etc/ssh/sshd_config";
 var SSHD_CONFIG_DIR = "/etc/ssh";
 var NONROOT_MAX_DEPTH = 16;
@@ -154,6 +155,11 @@ function patternMatches(pattern, name) {
 }
 function walkIncludes(fs, main = SSHD_MAIN_CONFIG) {
   const files = [];
+  const mainDir = posix.dirname(main);
+  const mainDirTime = fs.ctimeNs(mainDir);
+  if (mainDirTime === null) return { ok: false, problem: "sshd_config_unknown" };
+  files.push({ path: mainDir, ctimeNs: mainDirTime });
+  const listedDirs = /* @__PURE__ */ new Set([mainDir]);
   const seen = /* @__PURE__ */ new Set();
   const visit = (path, depth) => {
     if (depth > NONROOT_MAX_DEPTH || files.length >= NONROOT_MAX_FILES) return "sshd_config_include_unparsed";
@@ -162,7 +168,7 @@ function walkIncludes(fs, main = SSHD_MAIN_CONFIG) {
     const read = fs.readText(path, NONROOT_MAX_FILE_BYTES);
     if (read.kind === "missing") return depth === 0 ? "sshd_config_unknown" : null;
     if (read.kind === "unreadable") return "sshd_config_unknown";
-    files.push({ path, mtimeNs: read.mtimeNs });
+    files.push({ path, ctimeNs: read.ctimeNs });
     const args = includeArguments(read.text);
     if (args === null) return "sshd_config_include_unparsed";
     for (const arg of args) {
@@ -171,6 +177,10 @@ function walkIncludes(fs, main = SSHD_MAIN_CONFIG) {
       const listed = fs.listDir(target.dir);
       if (listed.kind === "unlistable") return "sshd_config_include_unlistable";
       if (listed.kind === "missing") continue;
+      if (!listedDirs.has(target.dir)) {
+        listedDirs.add(target.dir);
+        files.push({ path: target.dir, ctimeNs: listed.ctimeNs });
+      }
       for (const name of [...listed.names].sort()) {
         if (!patternMatches(target.pattern, name)) continue;
         const problem2 = visit(target.dir + "/" + name, depth + 1);
@@ -182,11 +192,14 @@ function walkIncludes(fs, main = SSHD_MAIN_CONFIG) {
   const problem = visit(main, 0);
   return problem === null ? { ok: true, files } : { ok: false, problem };
 }
-var LISTENER_TITLE = /^sshd: (\/[A-Za-z0-9._/-]+)((?: -[De])*) \[listener\] /;
+var LISTENER_PREFIX = "sshd: " + SSHD_LISTENER_PROGRAM + " ";
+var LISTENER_FLAGS = /^((?:-[De] )*)\[listener\] /;
 function listenerTitleProblem(cmdline) {
   const title = cmdline.replace(/\0/g, " ").trim() + " ";
-  if (LISTENER_TITLE.test(title)) return null;
-  return /^sshd: \/\S+ .*\[listener\] /.test(title) ? "sshd_daemon_options" : "sshd_daemon_unknown";
+  if (!title.startsWith(LISTENER_PREFIX)) return "sshd_daemon_unknown";
+  const rest = title.slice(LISTENER_PREFIX.length);
+  if (LISTENER_FLAGS.test(rest)) return null;
+  return /\[listener\] /.test(rest) ? "sshd_daemon_options" : "sshd_daemon_unknown";
 }
 function pidfileOf(sshdT) {
   let found = null;
@@ -201,8 +214,8 @@ function pidfileOf(sshdT) {
 function checkDaemon(fs, pidfile, walked) {
   if (pidfile === null) return { ok: false, problem: "sshd_daemon_unknown" };
   const pidText = fs.readText(pidfile, 64);
-  const pidMtime = fs.mtimeNs(pidfile);
-  if (pidText.kind !== "ok" || pidMtime === null || !/^[1-9][0-9]{0,9}\n?$/.test(pidText.text)) return { ok: false, problem: "sshd_daemon_unknown" };
+  if (pidText.kind !== "ok" || !/^[1-9][0-9]{0,9}\n?$/.test(pidText.text)) return { ok: false, problem: "sshd_daemon_unknown" };
+  const pidTime = pidText.ctimeNs;
   const pid = pidText.text.trim();
   const comm = fs.readText("/proc/" + pid + "/comm", 64);
   if (comm.kind !== "ok" || comm.text !== "sshd\n") return { ok: false, problem: "sshd_daemon_unknown" };
@@ -210,7 +223,7 @@ function checkDaemon(fs, pidfile, walked) {
   if (cmdline.kind !== "ok") return { ok: false, problem: "sshd_daemon_unknown" };
   const title = listenerTitleProblem(cmdline.text);
   if (title !== null) return { ok: false, problem: title };
-  if (walked.some((f) => f.mtimeNs > pidMtime)) return { ok: false, problem: "sshd_reload_pending" };
+  if (walked.some((f) => f.ctimeNs > pidTime)) return { ok: false, problem: "sshd_reload_pending" };
   return { ok: true };
 }
 
@@ -686,7 +699,7 @@ function readCapped(path, max) {
       n += got;
       if (n > max) return { kind: "unreadable" };
     }
-    return { kind: "ok", text: buf.subarray(0, n).toString("latin1"), mtimeNs: st.mtimeNs };
+    return { kind: "ok", text: buf.subarray(0, n).toString("latin1"), ctimeNs: st.ctimeNs };
   } catch {
     return { kind: "unreadable" };
   } finally {
@@ -697,14 +710,15 @@ var realNonRootFs = {
   readText: readCapped,
   listDir: (path) => {
     try {
-      return { kind: "ok", names: readdirSync(path) };
+      const names = readdirSync(path);
+      return { kind: "ok", names, ctimeNs: statSync(path, { bigint: true }).ctimeNs };
     } catch (err) {
       return err.code === "ENOENT" ? { kind: "missing" } : { kind: "unlistable" };
     }
   },
-  mtimeNs: (path) => {
+  ctimeNs: (path) => {
     try {
-      return statSync(path, { bigint: true }).mtimeNs;
+      return statSync(path, { bigint: true }).ctimeNs;
     } catch {
       return null;
     }

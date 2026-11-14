@@ -12,11 +12,16 @@
 //   B2  the running daemon is a listener started as `<sshd> [-D] [-e]`, with
 //       no option that changes its configuration (its process title, which is
 //       what /proc shows, not the raw argv; measured);
-//   B3  no configuration file is newer than the daemon's pidfile: a listener
-//       hands its children the configuration it read at its start or its last
-//       reload (measured: an edit without a reload does not reach a new
+//   B3  nothing the configuration is read from changed after the daemon's
+//       last start or reload: a listener hands its children the configuration
+//       it read then (measured: an edit without a reload does not reach a new
 //       connection; a SIGHUP keeps the PID and the start time but rewrites the
-//       pidfile, so the pidfile is the reference, not the process).
+//       pidfile, so the pidfile is the reference, not the process). The
+//       CHANGE time (ctime) is compared, not the modification time: a file
+//       copied in with its old mtime (cp -p, an archive, touch -d) still gets
+//       a new ctime, and a user cannot set it back. The folders count too
+//       (Dani's review of #2769, S1): a drop-in DELETED without a reload
+//       changes no file, only the folder it was in.
 //
 // Anything this cannot tell is a refusal with its own reason, never an `ok`.
 // Kept narrow on purpose: an Include argument with a quote, an escape, a
@@ -28,6 +33,9 @@
 // writes the pidfile; an edit inside that window looks older than the
 // pidfile although the daemon read the previous text.
 import { posix } from 'node:path'
+
+/** The only program a listener may be (Dani's review of #2769, S2): another sshd binary would have other built-in defaults. */
+export const SSHD_LISTENER_PROGRAM = '/usr/sbin/sshd'
 
 export type NonRootProblem =
   | 'sshd_config_include_unlistable'
@@ -87,29 +95,41 @@ export function patternMatches(pattern: string, name: string): boolean {
 }
 
 export type TextRead =
-  | { readonly kind: 'ok'; readonly text: string; readonly mtimeNs: bigint }
+  | { readonly kind: 'ok'; readonly text: string; readonly ctimeNs: bigint }
   | { readonly kind: 'missing' }
   | { readonly kind: 'unreadable' }
 
-export type DirList = { readonly kind: 'ok'; readonly names: readonly string[] } | { readonly kind: 'missing' } | { readonly kind: 'unlistable' }
+export type DirList =
+  | { readonly kind: 'ok'; readonly names: readonly string[]; readonly ctimeNs: bigint }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'unlistable' }
 
 export interface NonRootFs {
   /** Read a file (following a link, as sshd does), at most `max` bytes; larger is `unreadable`. */
   readonly readText: (path: string, max: number) => TextRead
   readonly listDir: (path: string) => DirList
+  /** The change time of a path (following a link) in nanoseconds, or null when it cannot be read. */
+  readonly ctimeNs: (path: string) => bigint | null
 }
 
 export type IncludeWalk =
-  | { readonly ok: true; readonly files: readonly { readonly path: string; readonly mtimeNs: bigint }[] }
+  | { readonly ok: true; readonly files: readonly { readonly path: string; readonly ctimeNs: bigint }[] }
   | { readonly ok: false; readonly problem: NonRootProblem }
 
 /**
  * B1: walk the configuration from the main file through every Include. Every
  * file that is reached must be readable; every directory an Include names
- * must be listable (a missing one hides nothing and is fine, measured).
+ * must be listable (a missing one hides nothing and is fine, measured). The
+ * result lists every file read and every folder listed, and the main file's
+ * folder, each with its change time, for B3.
  */
 export function walkIncludes(fs: NonRootFs, main: string = SSHD_MAIN_CONFIG): IncludeWalk {
-  const files: { path: string; mtimeNs: bigint }[] = []
+  const files: { path: string; ctimeNs: bigint }[] = []
+  const mainDir = posix.dirname(main)
+  const mainDirTime = fs.ctimeNs(mainDir)
+  if (mainDirTime === null) return { ok: false, problem: 'sshd_config_unknown' }
+  files.push({ path: mainDir, ctimeNs: mainDirTime })
+  const listedDirs = new Set<string>([mainDir])
   const seen = new Set<string>()
   const visit = (path: string, depth: number): NonRootProblem | null => {
     if (depth > NONROOT_MAX_DEPTH || files.length >= NONROOT_MAX_FILES) return 'sshd_config_include_unparsed'
@@ -118,7 +138,7 @@ export function walkIncludes(fs: NonRootFs, main: string = SSHD_MAIN_CONFIG): In
     const read = fs.readText(path, NONROOT_MAX_FILE_BYTES)
     if (read.kind === 'missing') return depth === 0 ? 'sshd_config_unknown' : null
     if (read.kind === 'unreadable') return 'sshd_config_unknown'
-    files.push({ path, mtimeNs: read.mtimeNs })
+    files.push({ path, ctimeNs: read.ctimeNs })
     const args = includeArguments(read.text)
     if (args === null) return 'sshd_config_include_unparsed'
     for (const arg of args) {
@@ -127,6 +147,10 @@ export function walkIncludes(fs: NonRootFs, main: string = SSHD_MAIN_CONFIG): In
       const listed = fs.listDir(target.dir)
       if (listed.kind === 'unlistable') return 'sshd_config_include_unlistable'
       if (listed.kind === 'missing') continue
+      if (!listedDirs.has(target.dir)) {
+        listedDirs.add(target.dir)
+        files.push({ path: target.dir, ctimeNs: listed.ctimeNs })
+      }
       for (const name of [...listed.names].sort()) {
         if (!patternMatches(target.pattern, name)) continue
         const problem = visit(target.dir + '/' + name, depth + 1)
@@ -140,14 +164,18 @@ export function walkIncludes(fs: NonRootFs, main: string = SSHD_MAIN_CONFIG): In
 }
 
 // `sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups`: what sshd writes as its title (measured 8.9 to 10.0).
-// Only the bare program, `-D` and `-e` are accepted before the marker; any other option could change the config.
-const LISTENER_TITLE = /^sshd: (\/[A-Za-z0-9._/-]+)((?: -[De])*) \[listener\] /
+// Only /usr/sbin/sshd itself, then `-D` and `-e`, are accepted before the marker; any other option could change the
+// configuration, and any other program could have other built-in defaults than the one the probe asks.
+const LISTENER_PREFIX = 'sshd: ' + SSHD_LISTENER_PROGRAM + ' '
+const LISTENER_FLAGS = /^((?:-[De] )*)\[listener\] /
 
 /** B2: the listener's title, as /proc shows it (NUL bytes count as spaces). */
 export function listenerTitleProblem(cmdline: string): NonRootProblem | null {
   const title = cmdline.replace(/\0/g, ' ').trim() + ' '
-  if (LISTENER_TITLE.test(title)) return null
-  return /^sshd: \/\S+ .*\[listener\] /.test(title) ? 'sshd_daemon_options' : 'sshd_daemon_unknown'
+  if (!title.startsWith(LISTENER_PREFIX)) return 'sshd_daemon_unknown'
+  const rest = title.slice(LISTENER_PREFIX.length)
+  if (LISTENER_FLAGS.test(rest)) return null
+  return /\[listener\] /.test(rest) ? 'sshd_daemon_options' : 'sshd_daemon_unknown'
 }
 
 /** The `pidfile` line of a `sshd -T` answer: an absolute path, or null for `none`, a missing or an odd line. */
@@ -162,23 +190,20 @@ export function pidfileOf(sshdT: string): string | null {
   return found !== null && /^\/[A-Za-z0-9._/-]+$/.test(found) ? found : null
 }
 
-export interface DaemonFs extends NonRootFs {
-  /** The mtime of the pidfile in nanoseconds, or null when it cannot be read. */
-  readonly mtimeNs: (path: string) => bigint | null
-}
+export type DaemonFs = NonRootFs
 
 export type DaemonCheck = { readonly ok: true } | { readonly ok: false; readonly problem: NonRootProblem }
 
 /**
  * B2 and B3 on Linux: the pidfile sshd names exists and holds a live PID whose
- * comm is `sshd` and whose title is a plain listener; no walked configuration
- * file is newer than the pidfile.
+ * comm is `sshd` and whose title is a plain /usr/sbin/sshd listener; nothing
+ * the walk read or listed changed after the pidfile did.
  */
-export function checkDaemon(fs: DaemonFs, pidfile: string | null, walked: readonly { readonly mtimeNs: bigint }[]): DaemonCheck {
+export function checkDaemon(fs: DaemonFs, pidfile: string | null, walked: readonly { readonly ctimeNs: bigint }[]): DaemonCheck {
   if (pidfile === null) return { ok: false, problem: 'sshd_daemon_unknown' }
   const pidText = fs.readText(pidfile, 64)
-  const pidMtime = fs.mtimeNs(pidfile)
-  if (pidText.kind !== 'ok' || pidMtime === null || !/^[1-9][0-9]{0,9}\n?$/.test(pidText.text)) return { ok: false, problem: 'sshd_daemon_unknown' }
+  if (pidText.kind !== 'ok' || !/^[1-9][0-9]{0,9}\n?$/.test(pidText.text)) return { ok: false, problem: 'sshd_daemon_unknown' }
+  const pidTime = pidText.ctimeNs
   const pid = pidText.text.trim()
   const comm = fs.readText('/proc/' + pid + '/comm', 64)
   if (comm.kind !== 'ok' || comm.text !== 'sshd\n') return { ok: false, problem: 'sshd_daemon_unknown' }
@@ -186,6 +211,6 @@ export function checkDaemon(fs: DaemonFs, pidfile: string | null, walked: readon
   if (cmdline.kind !== 'ok') return { ok: false, problem: 'sshd_daemon_unknown' }
   const title = listenerTitleProblem(cmdline.text)
   if (title !== null) return { ok: false, problem: title }
-  if (walked.some((f) => f.mtimeNs > pidMtime)) return { ok: false, problem: 'sshd_reload_pending' }
+  if (walked.some((f) => f.ctimeNs > pidTime)) return { ok: false, problem: 'sshd_reload_pending' }
   return { ok: true }
 }

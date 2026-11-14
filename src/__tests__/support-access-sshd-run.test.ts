@@ -119,21 +119,24 @@ function fake(
 
 /** The files a non-root probe reads, as a map: a text with its mtime, or "unreadable"; folders list their names. */
 interface Machine {
-  files: Map<string, { text: string; mtimeNs: bigint } | 'unreadable'>
-  dirs: Map<string, string[] | 'unlistable'>
+  files: Map<string, { text: string; ctimeNs: bigint } | 'unreadable'>
+  dirs: Map<string, { names: string[]; ctimeNs: bigint } | 'unlistable'>
 }
 
 /** A stock Debian machine with a listener: one drop-in, the pidfile written after every config file. */
 function goodMachine(): Machine {
   return {
-    files: new Map<string, { text: string; mtimeNs: bigint } | 'unreadable'>([
-      ['/etc/ssh/sshd_config', { text: 'Include /etc/ssh/sshd_config.d/*.conf\nKbdInteractiveAuthentication no\n', mtimeNs: 100n }],
-      ['/etc/ssh/sshd_config.d/50-cloud.conf', { text: 'PasswordAuthentication no\n', mtimeNs: 150n }],
-      ['/run/sshd.pid', { text: '812\n', mtimeNs: 200n }],
-      ['/proc/812/comm', { text: 'sshd\n', mtimeNs: 0n }],
-      ['/proc/812/cmdline', { text: 'sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups\0', mtimeNs: 0n }],
+    files: new Map<string, { text: string; ctimeNs: bigint } | 'unreadable'>([
+      ['/etc/ssh/sshd_config', { text: 'Include /etc/ssh/sshd_config.d/*.conf\nKbdInteractiveAuthentication no\n', ctimeNs: 100n }],
+      ['/etc/ssh/sshd_config.d/50-cloud.conf', { text: 'PasswordAuthentication no\n', ctimeNs: 150n }],
+      ['/run/sshd.pid', { text: '812\n', ctimeNs: 200n }],
+      ['/proc/812/comm', { text: 'sshd\n', ctimeNs: 0n }],
+      ['/proc/812/cmdline', { text: 'sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups\0', ctimeNs: 0n }],
     ]),
-    dirs: new Map<string, string[] | 'unlistable'>([['/etc/ssh/sshd_config.d', ['50-cloud.conf']]]),
+    dirs: new Map<string, { names: string[]; ctimeNs: bigint } | 'unlistable'>([
+      ['/etc/ssh', { names: ['sshd_config', 'sshd_config.d'], ctimeNs: 90n }],
+      ['/etc/ssh/sshd_config.d', { names: ['50-cloud.conf'], ctimeNs: 120n }],
+    ]),
   }
 }
 
@@ -142,16 +145,18 @@ function machineFs(m: Machine): SshdProbeDeps['fs'] {
     readText: (path) => {
       const f = m.files.get(path)
       if (f === undefined) return { kind: 'missing' }
-      return f === 'unreadable' ? { kind: 'unreadable' } : { kind: 'ok', text: f.text, mtimeNs: f.mtimeNs }
+      return f === 'unreadable' ? { kind: 'unreadable' } : { kind: 'ok', text: f.text, ctimeNs: f.ctimeNs }
     },
     listDir: (path) => {
       const d = m.dirs.get(path)
       if (d === undefined) return { kind: 'missing' }
-      return d === 'unlistable' ? { kind: 'unlistable' } : { kind: 'ok', names: d }
+      return d === 'unlistable' ? { kind: 'unlistable' } : { kind: 'ok', names: d.names, ctimeNs: d.ctimeNs }
     },
-    mtimeNs: (path) => {
+    ctimeNs: (path) => {
       const f = m.files.get(path)
-      return f === undefined || f === 'unreadable' ? null : f.mtimeNs
+      if (f !== undefined && f !== 'unreadable') return f.ctimeNs
+      const d = m.dirs.get(path)
+      return d !== undefined && d !== 'unlistable' ? d.ctimeNs : null
     },
   }
 }
@@ -271,15 +276,22 @@ describe('probeSshd', () => {
   it.each<[string, (m: Machine) => void, string]>([
     ['an Include folder it cannot list', (m) => m.dirs.set('/etc/ssh/sshd_config.d', 'unlistable'), 'sshd_config_include_unlistable'],
     ['a nested Include folder it cannot list', (m) => {
-      m.files.set('/etc/ssh/sshd_config.d/50-cloud.conf', { text: 'Include /etc/ssh/inner.d/*.conf\n', mtimeNs: 150n })
+      m.files.set('/etc/ssh/sshd_config.d/50-cloud.conf', { text: 'Include /etc/ssh/inner.d/*.conf\n', ctimeNs: 150n })
       m.dirs.set('/etc/ssh/inner.d', 'unlistable')
     }, 'sshd_config_include_unlistable'],
-    ['a quoted Include path', (m) => m.files.set('/etc/ssh/sshd_config', { text: 'Include "/etc/ssh/a b.conf"\n', mtimeNs: 100n }), 'sshd_config_include_unparsed'],
+    ['a quoted Include path', (m) => m.files.set('/etc/ssh/sshd_config', { text: 'Include "/etc/ssh/a b.conf"\n', ctimeNs: 100n }), 'sshd_config_include_unparsed'],
     ['a main configuration it cannot read', (m) => m.files.set('/etc/ssh/sshd_config', 'unreadable'), 'sshd_config_unknown'],
     ['no pidfile', (m) => m.files.delete('/run/sshd.pid'), 'sshd_daemon_unknown'],
-    ['a pidfile of a dead or other process', (m) => m.files.set('/proc/812/comm', { text: 'bash\n', mtimeNs: 0n }), 'sshd_daemon_unknown'],
-    ['a listener started with -o', (m) => m.files.set('/proc/812/cmdline', { text: 'sshd: /usr/sbin/sshd -D -o PermitTunnel=yes [listener] 0 of 10-100 startups', mtimeNs: 0n }), 'sshd_daemon_options'],
-    ['an edit newer than the last reload', (m) => m.files.set('/etc/ssh/sshd_config.d/50-cloud.conf', { text: 'PasswordAuthentication no\n', mtimeNs: 201n }), 'sshd_reload_pending'],
+    ['a pidfile of a dead or other process', (m) => m.files.set('/proc/812/comm', { text: 'bash\n', ctimeNs: 0n }), 'sshd_daemon_unknown'],
+    ['a listener started with -o', (m) => m.files.set('/proc/812/cmdline', { text: 'sshd: /usr/sbin/sshd -D -o PermitTunnel=yes [listener] 0 of 10-100 startups', ctimeNs: 0n }), 'sshd_daemon_options'],
+    ['an edit newer than the last reload', (m) => m.files.set('/etc/ssh/sshd_config.d/50-cloud.conf', { text: 'PasswordAuthentication no\n', ctimeNs: 201n }), 'sshd_reload_pending'],
+    // Dani's review of #2769, S1: a drop-in deleted without a reload changes no file, only its folder.
+    ['a drop-in deleted without a reload', (m) => {
+      m.files.delete('/etc/ssh/sshd_config.d/50-cloud.conf')
+      m.dirs.set('/etc/ssh/sshd_config.d', { names: [], ctimeNs: 250n })
+    }, 'sshd_reload_pending'],
+    ['a change next to the main file without a reload', (m) => m.dirs.set('/etc/ssh', { names: ['sshd_config', 'sshd_config.d', 'new'], ctimeNs: 230n }), 'sshd_reload_pending'],
+    ['a listener of another sshd binary', (m) => m.files.set('/proc/812/cmdline', { text: 'sshd: /usr/local/sbin/sshd -D [listener] 0 of 10-100 startups', ctimeNs: 0n }), 'sshd_daemon_unknown'],
   ])('as another user: refuses %s with its own reason, asks no more, and removes the key folder', async (_label, spoil, problem) => {
     const machine = goodMachine()
     spoil(machine)

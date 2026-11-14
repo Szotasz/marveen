@@ -225,7 +225,7 @@ function readCapped(path: string, max: number): ReturnType<DaemonFs['readText']>
       n += got
       if (n > max) return { kind: 'unreadable' }
     }
-    return { kind: 'ok', text: buf.subarray(0, n).toString('latin1'), mtimeNs: st.mtimeNs }
+    return { kind: 'ok', text: buf.subarray(0, n).toString('latin1'), ctimeNs: st.ctimeNs }
   } catch {
     return { kind: 'unreadable' }
   } finally {
@@ -238,14 +238,15 @@ export const realNonRootFs: DaemonFs = {
   readText: readCapped,
   listDir: (path) => {
     try {
-      return { kind: 'ok', names: readdirSync(path) }
+      const names = readdirSync(path)
+      return { kind: 'ok', names, ctimeNs: statSync(path, { bigint: true }).ctimeNs }
     } catch (err) {
       return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unlistable' }
     }
   },
-  mtimeNs: (path) => {
+  ctimeNs: (path) => {
     try {
-      return statSync(path, { bigint: true }).mtimeNs
+      return statSync(path, { bigint: true }).ctimeNs
     } catch {
       return null
     }

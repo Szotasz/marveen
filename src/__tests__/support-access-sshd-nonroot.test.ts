@@ -17,22 +17,28 @@ import {
 import { realNonRootFs } from '../support-access-sshd-run.js'
 
 /** A machine as a map of files (text + mtime, or unreadable) and folders (names, or unlistable). */
-function fsOf(files: Record<string, string | [string, bigint] | 'UNREADABLE'>, dirs: Record<string, string[] | 'UNLISTABLE'> = {}): DaemonFs {
+/** A machine as a map of files (text + change time, or unreadable) and folders (names, or unlistable); /etc/ssh is there. */
+function fsOf(files: Record<string, string | [string, bigint] | 'UNREADABLE'>, dirs: Record<string, string[] | [string[], bigint] | 'UNLISTABLE'> = {}): DaemonFs {
+  const dirTime = (d: string[] | [string[], bigint]): bigint => (d.length === 2 && typeof d[1] === 'bigint' ? d[1] : 1n)
+  const dirNames = (d: string[] | [string[], bigint]): string[] => (d.length === 2 && typeof d[1] === 'bigint' ? (d[0] as string[]) : (d as string[]))
   return {
     readText: (path) => {
       const f = files[path]
       if (f === undefined) return { kind: 'missing' }
       if (f === 'UNREADABLE') return { kind: 'unreadable' }
-      return Array.isArray(f) ? { kind: 'ok', text: f[0], mtimeNs: f[1] } : { kind: 'ok', text: f, mtimeNs: 1n }
+      return Array.isArray(f) ? { kind: 'ok', text: f[0], ctimeNs: f[1] } : { kind: 'ok', text: f, ctimeNs: 1n }
     },
     listDir: (path) => {
       const d = dirs[path]
       if (d === undefined) return { kind: 'missing' }
-      return d === 'UNLISTABLE' ? { kind: 'unlistable' } : { kind: 'ok', names: d }
+      return d === 'UNLISTABLE' ? { kind: 'unlistable' } : { kind: 'ok', names: dirNames(d), ctimeNs: dirTime(d) }
     },
-    mtimeNs: (path) => {
+    ctimeNs: (path) => {
       const f = files[path]
-      return f === undefined || f === 'UNREADABLE' ? null : Array.isArray(f) ? f[1] : 1n
+      if (f !== undefined && f !== 'UNREADABLE') return Array.isArray(f) ? f[1] : 1n
+      const d = dirs[path]
+      if (d !== undefined && d !== 'UNLISTABLE') return dirTime(d)
+      return path === '/etc/ssh' ? 1n : null
     },
   }
 }
@@ -108,11 +114,15 @@ describe('walkIncludes', () => {
     expect(walkIncludes(fs)).toEqual({
       ok: true,
       files: [
-        { path: '/etc/ssh/sshd_config', mtimeNs: 10n },
-        { path: '/etc/ssh/sshd_config.d/10-a.conf', mtimeNs: 20n },
-        { path: '/etc/ssh/inner.d/t.conf', mtimeNs: 40n },
-        { path: '/etc/ssh/sshd_config.d/20-b.conf', mtimeNs: 30n },
-        { path: '/etc/ssh/m.d/m.conf', mtimeNs: 50n },
+        { path: '/etc/ssh', ctimeNs: 1n },
+        { path: '/etc/ssh/sshd_config', ctimeNs: 10n },
+        { path: '/etc/ssh/sshd_config.d', ctimeNs: 1n },
+        { path: '/etc/ssh/sshd_config.d/10-a.conf', ctimeNs: 20n },
+        { path: '/etc/ssh/inner.d', ctimeNs: 1n },
+        { path: '/etc/ssh/inner.d/t.conf', ctimeNs: 40n },
+        { path: '/etc/ssh/sshd_config.d/20-b.conf', ctimeNs: 30n },
+        { path: '/etc/ssh/m.d', ctimeNs: 1n },
+        { path: '/etc/ssh/m.d/m.conf', ctimeNs: 50n },
       ],
     })
   })
@@ -132,12 +142,25 @@ describe('walkIncludes', () => {
 
   it('is fine with an Include whose folder or file does not exist (nothing hides there, measured), and with a non-matching name', () => {
     const fs = fsOf({ '/etc/ssh/sshd_config': 'Include /nope/*.conf\nInclude /d/missing.conf\nInclude /d/*.conf\n' }, { '/d': ['readme.txt'] })
-    expect(walkIncludes(fs)).toEqual({ ok: true, files: [{ path: '/etc/ssh/sshd_config', mtimeNs: 1n }] })
+    expect(walkIncludes(fs)).toEqual({
+      ok: true,
+      files: [
+        { path: '/etc/ssh', ctimeNs: 1n },
+        { path: '/etc/ssh/sshd_config', ctimeNs: 1n },
+        { path: '/d', ctimeNs: 1n },
+      ],
+    })
   })
 
   it('reads a file that two Includes name once, does not loop, and stops at the depth limit', () => {
     const looping = fsOf({ '/etc/ssh/sshd_config': 'Include /etc/ssh/sshd_config\nInclude /etc/ssh/sshd_config\n' }, { '/etc/ssh': ['sshd_config'] })
-    expect(walkIncludes(looping)).toEqual({ ok: true, files: [{ path: '/etc/ssh/sshd_config', mtimeNs: 1n }] })
+    expect(walkIncludes(looping)).toEqual({
+      ok: true,
+      files: [
+        { path: '/etc/ssh', ctimeNs: 1n },
+        { path: '/etc/ssh/sshd_config', ctimeNs: 1n },
+      ],
+    })
     const files: Record<string, string> = {}
     for (let i = 0; i <= NONROOT_MAX_DEPTH + 1; i++) files[i === 0 ? '/etc/ssh/sshd_config' : '/c/' + i + '.conf'] = 'Include /c/' + (i + 1) + '.conf\n'
     const names = Array.from({ length: NONROOT_MAX_DEPTH + 3 }, (_, i) => i + '.conf')
@@ -166,6 +189,10 @@ describe('the daemon', () => {
     ['/usr/sbin/sshd -D', 'sshd_daemon_unknown'],
     ['sshd: marveen [priv]', 'sshd_daemon_unknown'],
     ['sshd: usr/sbin/sshd -D [listener] 0 of 10', 'sshd_daemon_unknown'],
+    // Dani's review of #2769, S2: another sshd binary has other built-in defaults than the one the probe asks.
+    ['sshd: /usr/local/sbin/sshd -D [listener] 0 of 10-100 startups', 'sshd_daemon_unknown'],
+    ['sshd: /usr/sbin/sshd.old -D [listener] 0 of 10-100 startups', 'sshd_daemon_unknown'],
+    ['sshd: /usr/sbin/sshd2 [listener] 0 of 10-100 startups', 'sshd_daemon_unknown'],
   ])('title %j -> %s', (title, problem) => {
     expect(listenerTitleProblem(title)).toBe(problem)
   })
@@ -179,11 +206,11 @@ describe('the daemon', () => {
     })
 
   it('accepts a live plain listener with no configuration file newer than its pidfile', () => {
-    expect(checkDaemon(daemon(), '/run/sshd.pid', [{ mtimeNs: 100n }, { mtimeNs: 200n }])).toEqual({ ok: true })
+    expect(checkDaemon(daemon(), '/run/sshd.pid', [{ ctimeNs: 100n }, { ctimeNs: 200n }])).toEqual({ ok: true })
   })
 
   it('refuses an edit newer than the pidfile (the last start or reload, measured)', () => {
-    expect(checkDaemon(daemon(), '/run/sshd.pid', [{ mtimeNs: 100n }, { mtimeNs: 201n }])).toEqual({ ok: false, problem: 'sshd_reload_pending' })
+    expect(checkDaemon(daemon(), '/run/sshd.pid', [{ ctimeNs: 100n }, { ctimeNs: 201n }])).toEqual({ ok: false, problem: 'sshd_reload_pending' })
   })
 
   it.each<[string, Parameters<typeof fsOf>[0] | null, string | null]>([
@@ -214,25 +241,29 @@ describe('realNonRootFs, on a real folder', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  it('reads a file with its mtime in nanoseconds, follows a link as sshd does, and caps the size', () => {
+  it('reads a file with its CHANGE time, which an old mtime does not hide, follows a link as sshd does, and caps the size', () => {
+    const before = BigInt(Date.now() - 5000) * 1_000_000n
     writeFileSync(join(root, 'a.conf'), 'X yes\n')
+    // A copy with its old modification time (cp -p, an archive, touch -d): the change time is still now.
     utimesSync(join(root, 'a.conf'), 1000, 1000)
     symlinkSync(join(root, 'a.conf'), join(root, 'link.conf'))
-    expect(realNonRootFs.readText(join(root, 'a.conf'), 100)).toEqual({ kind: 'ok', text: 'X yes\n', mtimeNs: 1_000_000_000_000n })
+    const read = realNonRootFs.readText(join(root, 'a.conf'), 100)
+    expect(read).toMatchObject({ kind: 'ok', text: 'X yes\n' })
+    expect(read.kind === 'ok' && read.ctimeNs > before).toBe(true)
     expect(realNonRootFs.readText(join(root, 'link.conf'), 100)).toMatchObject({ kind: 'ok', text: 'X yes\n' })
     expect(realNonRootFs.readText(join(root, 'missing.conf'), 100)).toEqual({ kind: 'missing' })
     writeFileSync(join(root, 'big.conf'), 'x'.repeat(NONROOT_MAX_FILE_BYTES + 1))
     expect(realNonRootFs.readText(join(root, 'big.conf'), NONROOT_MAX_FILE_BYTES)).toEqual({ kind: 'unreadable' })
     mkdirSync(join(root, 'dir.conf'))
     expect(realNonRootFs.readText(join(root, 'dir.conf'), 100)).toEqual({ kind: 'unreadable' })
-    expect(realNonRootFs.mtimeNs(join(root, 'a.conf'))).toBe(1_000_000_000_000n)
-    expect(realNonRootFs.mtimeNs(join(root, 'missing.conf'))).toBeNull()
+    expect((realNonRootFs.ctimeNs(join(root, 'a.conf')) ?? 0n) > before).toBe(true)
+    expect(realNonRootFs.ctimeNs(join(root, 'missing.conf'))).toBeNull()
   })
 
   it.skipIf(process.getuid?.() === 0)('tells a folder it cannot list from a missing one, and a file it cannot read', () => {
     mkdirSync(join(root, 'open'))
     writeFileSync(join(root, 'open', 'x.conf'), 'X\n')
-    expect(realNonRootFs.listDir(join(root, 'open'))).toEqual({ kind: 'ok', names: ['x.conf'] })
+    expect(realNonRootFs.listDir(join(root, 'open'))).toMatchObject({ kind: 'ok', names: ['x.conf'] })
     expect(realNonRootFs.listDir(join(root, 'none'))).toEqual({ kind: 'missing' })
     mkdirSync(join(root, 'closed'))
     // Searchable, not listable for this user: the case that hides drop-ins from a non-root sshd -T (measured on a
@@ -241,5 +272,13 @@ describe('realNonRootFs, on a real folder', () => {
     expect(realNonRootFs.listDir(join(root, 'closed'))).toEqual({ kind: 'unlistable' })
     writeFileSync(join(root, 'secret.conf'), 'X\n', { mode: 0o000 })
     expect(realNonRootFs.readText(join(root, 'secret.conf'), 100)).toEqual({ kind: 'unreadable' })
+  })
+})
+
+describe('the listener program', () => {
+  it('is the same program the probe asks', async () => {
+    const { SSHD_LISTENER_PROGRAM } = await import('../support-access-sshd-nonroot.js')
+    const { SSHD_PROGRAM } = await import('../support-access-sshd-run.js')
+    expect(SSHD_LISTENER_PROGRAM).toBe(SSHD_PROGRAM)
   })
 })
