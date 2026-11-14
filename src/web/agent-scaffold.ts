@@ -11,7 +11,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
+import { agentDir, agentConfigRoot, agentExcludesRootClaudeMd, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
@@ -1343,6 +1343,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
   // Install-local extras LAST, so they land after every built-in gate.
   injectExtraHookEntries(name, existing, extraHooksPath)
+  // claudeMdExcludes is dashboard-owned: set for the agents .env lists, dropped for every other sub-agent so taking a
+  // name off the list restores the root CLAUDE.md at the next respawn. The main agent's tracked settings are not touched.
+  if (agentExcludesRootClaudeMd(name)) existing.claudeMdExcludes = [join(PROJECT_ROOT, 'CLAUDE.md')]
+  else if (name !== MAIN_AGENT_ID) delete existing.claudeMdExcludes
   // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
   // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
   // live fleet) stays. The gate hooks themselves are put back by the inject* calls above.
