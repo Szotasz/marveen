@@ -663,7 +663,7 @@ describe('assessSshd', () => {
   })
 
   // S3 of Dani's review: what a client may set before the login shell starts the dispatcher.
-  it.each(['*', 'BASH_ENV', 'LC_*X', 'L*', 'LANG?', 'ENV', 'LD_PRELOAD', 'PATH', 'lang', 'LC_'])(
+  it.each(['*', 'BASH_ENV', 'LC_*X', 'L*', 'LANG?', '*LANG', 'XLANG', 'ENV', 'LD_PRELOAD', 'PATH', 'lang', 'LC_'])(
     'refuses when a client may send %s',
     (pattern) => {
       const text = config({ acceptenv: '' }) + 'acceptenv LANG\nacceptenv ' + pattern + '\n'
