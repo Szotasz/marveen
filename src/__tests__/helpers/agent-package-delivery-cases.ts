@@ -1,0 +1,289 @@
+// The installer's own delivery-level case list (MIOAGENTINSTALL1114, plan 10.1):
+// steps 1-6 of Sz-4.4 and S13, in the plan's schema
+//   {name, stage, delivery, requestedSlug, expect: {ok: true} | {step, reason}}.
+// The deliveries are signed at run time with generated keys (no private key in
+// the repo), so the list is built by a function; `keys` is the key list the
+// cases are verified against. Each refused case breaks exactly one rule.
+import {
+  DEFAULT_FILES,
+  makeKeyPair,
+  makePng,
+  makeSignedDelivery,
+  makeWebp,
+  pngChunk,
+  webpChunk,
+  type DeliveryInput,
+  type TestKeyPair,
+} from './make-delivery.js'
+import type { Jwk, VerifyReason, VerifyStep } from '../../web/agent-package/verify.js'
+
+export interface DeliveryCase {
+  name: string
+  stage: 'install' | Array<'upload' | 'install'>
+  delivery: Uint8Array
+  requestedSlug: string
+  expect: { ok: true } | { step: VerifyStep; reason: VerifyReason; detail?: Record<string, unknown> }
+}
+
+const SLUG = 'invoice-helper'
+type Obj = Record<string, unknown>
+
+/** Replace one segment of a compact JWS. */
+const withSegment = (i: number, seg: string) => (jws: string) => {
+  const parts = jws.split('.')
+  parts[i] = seg
+  return parts.join('.')
+}
+const b64url = (s: string) => Buffer.from(s).toString('base64url')
+const filesOf = (p: Obj) => p.files as Obj[]
+
+export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: DeliveryCase[] } {
+  const signer = makeKeyPair()
+  const second = makeKeyPair()
+  const foreign = makeKeyPair()
+  const keys = [signer.jwk, second.jwk]
+
+  const d = (over: Partial<DeliveryInput> = {}) =>
+    makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: SLUG, ...over })
+  const tamper = (t: DeliveryInput['tamper'], over: Partial<DeliveryInput> = {}) => d({ ...over, tamper: t })
+  const ok = (name: string, delivery: Uint8Array): DeliveryCase => ({
+    name,
+    stage: 'install',
+    delivery,
+    requestedSlug: SLUG,
+    expect: { ok: true },
+  })
+  const refused = (
+    name: string,
+    delivery: Uint8Array,
+    step: VerifyStep,
+    reason: VerifyReason,
+    detail?: Record<string, unknown>,
+  ): DeliveryCase => ({
+    name,
+    stage: 'install',
+    delivery,
+    requestedSlug: SLUG,
+    expect: detail === undefined ? { step, reason } : { step, reason, detail },
+  })
+
+  const withSkill = {
+    ...DEFAULT_FILES,
+    'skills/billing/SKILL.md': '---\nname: billing\ndescription: Reads invoices.\n---\n# Billing\n',
+    'skills/billing/references/Rates_2026.md': '# Rates\n\nmail: anna1@example.com\n',
+  }
+
+  const cases: DeliveryCase[] = [
+    // ---- accepted
+    ok('minimal package', d()),
+    ok('package with a skill, a reference and a PNG avatar', d({
+      files: withSkill,
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+    })),
+    ok('WebP avatar without metadata', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp() } })),
+    ok('signed by the second key of the list', makeSignedDelivery({ kid: second.kid, privateKey: second.privateKey, slug: SLUG })),
+    ok('outer format is informational only', tamper({ document: (doc) => ({ ...doc, format: 'something-else/9' }) })),
+    ok('unknown payload key passes', tamper({ payload: (p) => ({ ...p, future_field: { a: 1 } }) })),
+    ok('model_hint as a string', d({ modelHint: 'claude-sonnet-5' })),
+    ok('exactly 64 text files', d({ files: manyFiles(64) })),
+    ok('a text file of exactly 256 KiB', d({ files: { ...DEFAULT_FILES, 'skills/big/SKILL.md': 'a'.repeat(256 * 1024) } })),
+    ok('an avatar of exactly 512 KiB', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: pngOfSize(512 * 1024) } })),
+
+    // ---- step 1: document, header, kid, signature
+    refused('document is not UTF-8', new Uint8Array([0x7b, 0xff, 0x7d]), 1, 'bad_document'),
+    refused('document is not JSON', new Uint8Array(Buffer.from('not json')), 1, 'bad_document'),
+    refused('document is a JSON array', new Uint8Array(Buffer.from('[]')), 1, 'bad_document'),
+    refused('manifest_jws missing', tamper({ document: ({ manifest_jws: _x, ...rest }) => rest }), 1, 'bad_document'),
+    refused('outer files is not an object', tamper({ document: (doc) => ({ ...doc, files: ['CLAUDE.md'] }) }), 1, 'bad_document'),
+    refused('outer file value is not a string', tamper({ document: (doc) => ({ ...doc, files: { ...(doc.files as Obj), 'SOUL.md': 7 } }) }), 1, 'bad_document'),
+    refused('outer avatar is not an object', tamper({ document: (doc) => ({ ...doc, avatar: 'avatar.png' }) }), 1, 'bad_document'),
+    refused('JWS with two segments', tamper({ jws: (j) => j.split('.').slice(0, 2).join('.') }), 1, 'bad_document'),
+    refused('JWS with four segments', tamper({ jws: (j) => `${j}.AAAA` }), 1, 'bad_document'),
+    refused('JWS header is not base64url', tamper({ jws: withSegment(0, 'e30=') }), 1, 'bad_document'),
+    refused('JWS header is not JSON', tamper({ jws: withSegment(0, b64url('alg')) }), 1, 'bad_document'),
+    refused('kid not in the list (signed by a listed key)', tamper({ header: (h) => ({ ...h, kid: foreign.kid }) }), 1, 'unknown_kid'),
+    refused('kid missing from the header', tamper({ header: ({ kid: _k, ...rest }) => rest }), 1, 'unknown_kid'),
+    refused('kid of a foreign key, signed by that key', makeSignedDelivery({ kid: foreign.kid, privateKey: foreign.privateKey, slug: SLUG }), 1, 'unknown_kid'),
+    refused('alg is not EdDSA', tamper({ header: (h) => ({ ...h, alg: 'none' }) }), 1, 'header_mismatch'),
+    refused('typ is not the package typ', tamper({ header: (h) => ({ ...h, typ: 'JWT' }) }), 1, 'header_mismatch'),
+    refused('typ missing', tamper({ header: ({ typ: _t, ...rest }) => rest }), 1, 'header_mismatch'),
+    refused('S13: extra header key crit', tamper({ header: (h) => ({ ...h, crit: ['exp'] }) }), 1, 'header_mismatch'),
+    refused('S13: extra header key jku', tamper({ header: (h) => ({ ...h, jku: 'https://example.invalid/keys' }) }), 1, 'header_mismatch'),
+    refused('signature bytes flipped', tamper({ jws: (j) => {
+      const parts = j.split('.')
+      const sig = Buffer.from(parts[2], 'base64url')
+      sig[0] ^= 0x01
+      parts[2] = sig.toString('base64url')
+      return parts.join('.')
+    } }), 1, 'bad_signature'),
+    refused('listed kid, signed by another key', makeSignedDelivery({ kid: signer.kid, privateKey: foreign.privateKey, slug: SLUG }), 1, 'bad_signature'),
+    refused('payload changed after signing', tamper({ jws: (j) => {
+      const parts = j.split('.')
+      const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Obj
+      parts[1] = b64url(JSON.stringify({ ...p, version: '9.9.9' }))
+      return parts.join('.')
+    } }), 1, 'bad_signature'),
+    refused('payload is not even JSON, but the signature fails first', tamper({ jws: withSegment(1, b64url('not json')) }), 1, 'bad_signature'),
+
+    // ---- step 2: payload
+    refused('payload is not JSON', tamper({ payloadText: () => 'not json' }), 2, 'bad_payload'),
+    refused('payload is a JSON array', tamper({ payloadText: () => '[]' }), 2, 'bad_payload'),
+    refused('unknown payload format', tamper({ payload: (p) => ({ ...p, format: 'mio-agent-package/2' }) }), 2, 'unknown_format'),
+    refused('payload slug differs from the requested one', d({ slug: 'other-agent' }), 2, 'slug_mismatch'),
+    refused('version with a leading zero', d({ version: '1.02.0' }), 2, 'bad_payload'),
+    refused('version with two parts', d({ version: '1.0' }), 2, 'bad_payload'),
+    refused('min_marveen_version malformed', d({ minMarveenVersion: 'v1.0.0' }), 2, 'bad_payload'),
+    refused('files is not an array', tamper({ payload: (p) => ({ ...p, files: {} }) }), 2, 'bad_payload'),
+    refused('a files entry without sha256', tamper({ payload: (p) => ({ ...p, files: filesOf(p).map(({ sha256: _s, ...f }) => f) }) }), 2, 'bad_payload'),
+    refused('a files entry with an uppercase sha256', tamper({ payload: (p) => ({ ...p, files: filesOf(p).map((f) => ({ ...f, sha256: String(f.sha256).toUpperCase() })) }) }), 2, 'bad_payload'),
+    refused('a files entry with a negative size', tamper({ payload: (p) => ({ ...p, files: filesOf(p).map((f) => ({ ...f, size: -1 })) }) }), 2, 'bad_payload'),
+    refused('payload avatar is not an object', tamper({ payload: (p) => ({ ...p, avatar: 'avatar.png' }) }), 2, 'bad_payload'),
+    refused('payload avatar key missing', tamper({ payload: ({ avatar: _a, ...rest }) => rest }), 2, 'bad_payload'),
+    refused('display name is not a string', tamper({ payload: (p) => ({ ...p, agent: { display_name: 5, model_hint: null } }) }), 2, 'bad_payload'),
+    refused('connectors is not an array', tamper({ payload: (p) => ({ ...p, connectors: null }) }), 2, 'bad_payload'),
+
+    // ---- step 3: file set
+    refused('an outer file the payload does not list', tamper({ document: (doc) => ({ ...doc, files: { ...(doc.files as Obj), 'skills/x/SKILL.md': '# x\n' } }) }), 3, 'file_set_mismatch'),
+    refused('a payload file the outer document lacks', tamper({ document: (doc) => {
+      const { 'SOUL.md': _s, ...rest } = doc.files as Obj
+      return { ...doc, files: rest }
+    } }), 3, 'file_set_mismatch'),
+    refused('a duplicated payload path', tamper({ payload: (p) => ({ ...p, files: [...filesOf(p), filesOf(p)[0]] }) }), 3, 'file_set_mismatch'),
+    refused('CLAUDE.md missing', d({ files: { 'SOUL.md': DEFAULT_FILES['SOUL.md'] } }), 3, 'missing_required_file', { path: 'CLAUDE.md' }),
+    refused('SOUL.md missing', d({ files: { 'CLAUDE.md': DEFAULT_FILES['CLAUDE.md'] } }), 3, 'missing_required_file', { path: 'SOUL.md' }),
+    refused('the avatar listed among the files', d({
+      files: { ...DEFAULT_FILES, 'avatar.png': 'x' },
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+    }), 3, 'file_set_mismatch'),
+    refused('outer avatar null, payload avatar set', d({
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+      tamper: { document: (doc) => ({ ...doc, avatar: null }) },
+    }), 3, 'file_set_mismatch'),
+    refused('outer avatar set, payload avatar null', tamper({ document: (doc) => ({ ...doc, avatar: { path: 'avatar.png', content_type: 'image/png', base64: makePng().toString('base64') } }) }), 3, 'file_set_mismatch'),
+    refused('outer and payload avatar paths differ', d({
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+      tamper: { document: (doc) => ({ ...doc, avatar: { ...(doc.avatar as Obj), path: 'avatar.webp' } }) },
+    }), 3, 'file_set_mismatch'),
+
+    // ---- step 4: paths
+    refused('a scripts/ path', d({ files: { ...DEFAULT_FILES, 'scripts/run.sh': 'echo hi\n' } }), 4, 'path_not_allowed'),
+    refused('a traversal path', d({ files: { ...DEFAULT_FILES, 'skills/../CLAUDE.md': 'x\n' } }), 4, 'path_not_allowed'),
+    refused('an uppercase skill name', d({ files: { ...DEFAULT_FILES, 'skills/Billing/SKILL.md': '# b\n' } }), 4, 'path_not_allowed'),
+    refused('a reference that is not markdown', d({ files: { ...DEFAULT_FILES, 'skills/b/references/x.txt': 'x\n' } }), 4, 'path_not_allowed'),
+    refused('an avatar path that is not allowed', d({ avatar: { path: 'avatar.jpg', contentType: 'image/png', bytes: makePng() } }), 4, 'path_not_allowed'),
+    refused('two references differing only in case', d({
+      files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n', 'skills/b/references/Rates.md': 'a\n', 'skills/b/references/rates.md': 'b\n' },
+    }), 4, 'case_collision'),
+
+    // ---- step 5: content
+    refused('file content differs, same length', tamper({ document: (doc) => ({ ...doc, files: { ...(doc.files as Obj), 'SOUL.md': 'Calm, precise, BRIEF.\n' } }) }), 5, 'hash_mismatch', { path: 'SOUL.md' }),
+    refused('payload size differs from the content', tamper({ payload: (p) => ({ ...p, files: filesOf(p).map((f) => (f.path === 'SOUL.md' ? { ...f, size: Number(f.size) + 1 } : f)) }) }), 5, 'size_mismatch', { path: 'SOUL.md' }),
+    refused('a leading BOM', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '﻿# Agent\n' } }), 5, 'bad_text', { path: 'CLAUDE.md', line: 1 }),
+    refused('a NUL', d({ files: { ...DEFAULT_FILES, 'SOUL.md': 'a\nb\u0000\n' } }), 5, 'bad_text', { path: 'SOUL.md', line: 2 }),
+    refused('a CR', d({ files: { ...DEFAULT_FILES, 'SOUL.md': 'a\r\nb\n' } }), 5, 'bad_text', { path: 'SOUL.md', line: 1 }),
+    refused('S11: a zero-width space in a reference', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n', 'skills/b/references/r.md': 'x\n\ny​z\n' } }), 5, 'bad_text', { path: 'skills/b/references/r.md', line: 3 }),
+    refused('S10: an at sign at a line start in a skill', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n@notes.md\n' } }), 5, 'forbidden_import_token', { path: 'skills/b/SKILL.md', line: 2 }),
+    refused('S10: an at sign at a line start in SOUL.md', d({ files: { ...DEFAULT_FILES, 'SOUL.md': 'ok\nok\n@x\n' } }), 5, 'forbidden_import_token', { path: 'SOUL.md', line: 3 }),
+    refused('S17: an inline pre-run shape in CLAUDE.md', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '# A\n!`ls`\n' } }), 5, 'forbidden_exec_token', { path: 'CLAUDE.md', line: 2 }),
+    refused('S17: an inline pre-run shape in a skill', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': 'run !`date`\n' } }), 5, 'forbidden_exec_token', { path: 'skills/b/SKILL.md', line: 1 }),
+    refused('S17: a fenced pre-run shape in a reference', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n', 'skills/b/references/r.md': 'a\n```!\nls\n```\n' } }), 5, 'forbidden_exec_token', { path: 'skills/b/references/r.md', line: 2 }),
+    // Frontmatter cases come only from the shared text vector (run inside a delivery in the verify test).
+
+    // ---- step 5: manifest free texts (D10, S18 point 1; provisional codes, N21/b)
+    refused('title with a word-initial at sign', d({ title: 'Help @x' }), 5, 'forbidden_import_token', { field: 'title' }),
+    refused('description with a zero-width joiner', d({ description: 'Keeps‍ invoices' }), 5, 'bad_text', { field: 'description' }),
+    refused('display name with a word-initial at sign', d({ displayName: '@helper' }), 5, 'forbidden_import_token', { field: 'agent.display_name' }),
+    refused('display name with a bidi override', d({ displayName: 'help‮er' }), 5, 'bad_text', { field: 'agent.display_name' }),
+    refused('connector reason with a word-initial at sign', d({ connectors: [{ name: 'billing', level: 'required', reason: 'see @x' }] }), 5, 'forbidden_import_token', { field: 'connectors[0].reason' }),
+    refused('connector reason with a full-width at sign', d({ connectors: [{ name: 'billing', level: 'required', reason: 'see ＠x' }] }), 5, 'bad_text', { field: 'connectors[0].reason' }),
+    refused('title with an LF', d({ title: 'Invoice\nhelper' }), 5, 'bad_text', { field: 'title', rule: 'manifest-line-break' }),
+    refused('description with an LF', d({ description: 'Keeps\nthe invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-line-break' }),
+    refused('description with a CR', d({ description: 'Keeps\rthe invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-line-break' }),
+    refused('display name with an LF', d({ displayName: 'Invoice\nhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
+    refused('display name with a CR', d({ displayName: 'Invoice\rhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
+    refused('connector reason with an LF', d({ connectors: [{ name: 'b', level: 'required', reason: 'a\nb' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
+    refused('second connector reason with a CR', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b', level: 'required', reason: 'a\rb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
+    ok('manifest texts with an e-mail shape and a bang at a sentence end', d({
+      title: 'Invoice helper!', description: 'Write to anna1@example.com.', displayName: 'Anna', connectors: [{ name: 'b', level: 'required', reason: 'Reads mail.' }],
+    })),
+
+    // ---- step 5: avatar
+    refused('avatar base64 is not base64', d({
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+      tamper: { document: (doc) => ({ ...doc, avatar: { ...(doc.avatar as Obj), base64: '***' } }) },
+    }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'base64' }),
+    refused('avatar bytes differ', d({
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+      tamper: { document: (doc) => ({ ...doc, avatar: { ...(doc.avatar as Obj), base64: makePng([pngChunk('IHDR', new Uint8Array(13)), pngChunk('IDAT', new Uint8Array([1, 2, 3, 4])), pngChunk('IEND')]).toString('base64') } }) },
+    }), 5, 'hash_mismatch', { path: 'avatar.png' }),
+    refused('avatar size differs', d({
+      avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng() },
+      tamper: { payload: (p) => ({ ...p, avatar: { ...(p.avatar as Obj), size: 1 } }) },
+    }), 5, 'size_mismatch', { path: 'avatar.png' }),
+    refused('content_type does not match the extension', d({ avatar: { path: 'avatar.png', contentType: 'image/webp', bytes: makePng() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'content-type' }),
+    refused('PNG name and type, WebP bytes', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makeWebp() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'content-type' }),
+    refused('WebP name and type, PNG bytes', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makePng() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'content-type' }),
+    ...(['tEXt', 'iTXt', 'zTXt', 'eXIf'] as const).map((type) =>
+      refused(`PNG with a ${type} block`, d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng([
+        pngChunk('IHDR', new Uint8Array(13)), pngChunk(type, new Uint8Array(Buffer.from('k\u0000v'))), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND'),
+      ]) } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'metadata-block' })),
+    ...(['EXIF', 'XMP '] as const).map((fourcc) =>
+      refused(`WebP with an ${fourcc.trim()} block`, d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp([
+        webpChunk('VP8X', new Uint8Array(10)), webpChunk('VP8L', new Uint8Array(6)), webpChunk(fourcc, new Uint8Array(5)),
+      ]) } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'metadata-block' })),
+    refused('PNG block length past the end', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: truncatedPng() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'truncated-block' }),
+    refused('PNG with a partial block header at the end', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: Buffer.concat([makePng(), Buffer.from([0, 0, 0])]) } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'truncated-block' }),
+    refused('WebP chunk length past the end', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: truncatedWebpChunk() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'truncated-block' }),
+    refused('WebP RIFF size past the end', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: riffSizePastEnd() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'truncated-block' }),
+
+    // ---- step 6: limits
+    refused('65 text files', d({ files: manyFiles(65) }), 6, 'limit_exceeded', { limit: 'file_count' }),
+    refused('more than 1 MiB of text in total', d({ files: { ...DEFAULT_FILES, ...bigFiles(4, 256 * 1024) } }), 6, 'limit_exceeded', { limit: 'total_text_bytes' }),
+    refused('a text file over 256 KiB', d({ files: { ...DEFAULT_FILES, 'skills/big/SKILL.md': 'a'.repeat(256 * 1024 + 1) } }), 6, 'limit_exceeded', { limit: 'text_file_bytes', path: 'skills/big/SKILL.md' }),
+    refused('an avatar over 512 KiB', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: pngOfSize(512 * 1024 + 1) } }), 6, 'limit_exceeded', { limit: 'avatar_bytes', path: 'avatar.png' }),
+
+    // ---- the first failure stops
+    refused('slug mismatch AND a scripts/ path: step 2 wins', d({ slug: 'other-agent', files: { ...DEFAULT_FILES, 'scripts/x.sh': 'x\n' } }), 2, 'slug_mismatch'),
+    refused('missing SOUL.md AND a bad path: step 3 wins', d({ files: { 'CLAUDE.md': '# a\n', 'scripts/x.sh': 'x\n' } }), 3, 'missing_required_file', { path: 'SOUL.md' }),
+    refused('a bad path AND a BOM: step 4 wins', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '﻿x\n', 'scripts/x.sh': 'x\n' } }), 4, 'path_not_allowed'),
+    refused('a BOM AND 65 files: step 5 wins', d({ files: { ...manyFiles(65), 'CLAUDE.md': '﻿x\n' } }), 5, 'bad_text', { path: 'CLAUDE.md', line: 1 }),
+  ]
+  return { keys, signer, cases }
+}
+
+/** CLAUDE.md, SOUL.md and skills up to `count` text files in total. */
+export function manyFiles(count: number): Record<string, string> {
+  const out: Record<string, string> = { ...DEFAULT_FILES }
+  for (let i = 0; Object.keys(out).length < count; i++) out[`skills/s${i}/SKILL.md`] = `# s${i}\n`
+  return out
+}
+
+function bigFiles(count: number, size: number): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (let i = 0; i < count; i++) out[`skills/big${i}/SKILL.md`] = 'a'.repeat(size)
+  return out
+}
+
+/** A metadata-free PNG of exactly `size` bytes (one padded IDAT). */
+function pngOfSize(size: number): Buffer {
+  const fixed = makePng([pngChunk('IHDR', new Uint8Array(13)), pngChunk('IDAT'), pngChunk('IEND')]).length
+  return makePng([pngChunk('IHDR', new Uint8Array(13)), pngChunk('IDAT', new Uint8Array(size - fixed)), pngChunk('IEND')])
+}
+
+function truncatedPng(): Buffer {
+  const idat = pngChunk('IDAT', new Uint8Array(4))
+  idat.writeUInt32BE(400, 0)
+  return makePng([pngChunk('IHDR', new Uint8Array(13)), idat])
+}
+
+function truncatedWebpChunk(): Buffer {
+  const chunk = webpChunk('VP8L', new Uint8Array(6))
+  chunk.writeUInt32LE(600, 4)
+  return makeWebp([chunk])
+}
+
+function riffSizePastEnd(): Buffer {
+  const b = makeWebp()
+  b.writeUInt32LE(b.length, 4)
+  return b
+}

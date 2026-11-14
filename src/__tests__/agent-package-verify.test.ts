@@ -1,0 +1,233 @@
+import { createHash } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import {
+  VerifiedPackage,
+  classifyVersion,
+  compareVersions,
+  meetsMinMarveenVersion,
+  verifyDelivery,
+  type Jwk,
+} from '../web/agent-package/verify.js'
+import { makeDeliveryCases } from './helpers/agent-package-delivery-cases.js'
+import { DEFAULT_FILES, makeKeyPair, makePng, makeSignedDelivery } from './helpers/make-delivery.js'
+import { isInstallCase, loadTextVector } from './helpers/package-text-vector.js'
+
+const { keys, signer, cases } = makeDeliveryCases()
+
+describe('verifyDelivery: the delivery-level case list (Sz-4.4 steps 1-6, S13)', () => {
+  it('covers every step and both outcomes', () => {
+    const steps = new Set(cases.flatMap((c) => ('ok' in c.expect ? [] : [c.expect.step])))
+    expect([...steps].sort()).toEqual([1, 2, 3, 4, 5, 6])
+    expect(cases.some((c) => 'ok' in c.expect)).toBe(true)
+  })
+
+  it.each(cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+    const got = verifyDelivery(c.delivery, c.requestedSlug, keys)
+    if ('ok' in c.expect) {
+      expect(got.ok, JSON.stringify(got)).toBe(true)
+      return
+    }
+    expect(got.ok).toBe(false)
+    if (got.ok) return
+    expect({ step: got.step, reason: got.reason }).toEqual({ step: c.expect.step, reason: c.expect.reason })
+    if (c.expect.detail) expect(got.detail).toMatchObject(c.expect.detail)
+  })
+})
+
+describe('verifyDelivery: the shared text vector inside a signed delivery, at each case path', () => {
+  // The scanner test runs the bytes alone; this one proves the rules run on
+  // EVERY text file of a delivery (CLAUDE.md, SOUL.md and skill files), with
+  // the path and line in the refusal. A case whose bytes are not valid UTF-8
+  // cannot travel inside a JSON string, so it runs only in the scanner test.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+  const runnable = loadTextVector()
+    .cases.filter(isInstallCase)
+    .flatMap((c) => {
+      try {
+        return [[c.name, c, decoder.decode(Buffer.from(c.bytes_b64, 'base64'))] as const]
+      } catch {
+        return []
+      }
+    })
+
+  it('runs all but the invalid UTF-8 case', () => {
+    const all = loadTextVector().cases.filter(isInstallCase).length
+    expect(runnable.length).toBe(all - 1)
+  })
+
+  it.each(runnable)('%s', (_name, c, text) => {
+    const files: Record<string, string> = { ...DEFAULT_FILES, [c.path]: text }
+    const got = verifyDelivery(
+      makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: 'invoice-helper', files }),
+      'invoice-helper',
+      keys,
+    )
+    if ('ok' in c.expect) {
+      expect(got.ok, JSON.stringify(got)).toBe(true)
+      return
+    }
+    expect(got.ok).toBe(false)
+    if (got.ok) return
+    expect(got.step).toBe(5)
+    expect(got.reason).toBe(c.expect.reason)
+    expect(got.detail).toMatchObject({ path: c.path, line: c.expect.findings[0].line })
+  })
+})
+
+describe('verifyDelivery: a refusal never carries file content', () => {
+  const MARKER = 'ZEBRAQUOKKA'
+  const leaky: Array<[string, Record<string, string>]> = [
+    ['S10', { ...DEFAULT_FILES, 'SOUL.md': `ok\n@${MARKER}\n` }],
+    ['S11', { ...DEFAULT_FILES, 'SOUL.md': `${MARKER}​\n` }],
+    ['S17 exec', { ...DEFAULT_FILES, 'CLAUDE.md': `!\`${MARKER}\`\n` }],
+    ['S17 frontmatter', { ...DEFAULT_FILES, 'skills/a/SKILL.md': `---\n${MARKER}: x\n---\n` }],
+  ]
+  it.each(leaky)('%s', (_name, files) => {
+    const got = verifyDelivery(
+      makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: 'invoice-helper', files }),
+      'invoice-helper',
+      keys,
+    )
+    expect(got.ok).toBe(false)
+    expect(JSON.stringify(got)).not.toContain(MARKER)
+  })
+
+  it('manifest text', () => {
+    const got = verifyDelivery(
+      makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: 'invoice-helper', displayName: `@${MARKER}` }),
+      'invoice-helper',
+      keys,
+    )
+    expect(got.ok).toBe(false)
+    expect(JSON.stringify(got)).not.toContain(MARKER)
+  })
+})
+
+describe('VerifiedPackage', () => {
+  const avatarBytes = makePng()
+  const delivery = makeSignedDelivery({
+    kid: signer.kid,
+    privateKey: signer.privateKey,
+    slug: 'invoice-helper',
+    version: '1.2.3',
+    minMarveenVersion: '1.40.0',
+    displayName: 'Invoice helper',
+    modelHint: 'claude-sonnet-5',
+    avatar: { path: 'avatar.png', contentType: 'image/png', bytes: avatarBytes },
+  })
+  const result = verifyDelivery(delivery, 'invoice-helper', keys)
+
+  it('carries the verified fields', () => {
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const pkg = result.pkg
+    expect(pkg).toBeInstanceOf(VerifiedPackage)
+    expect(pkg.slug).toBe('invoice-helper')
+    expect(pkg.version).toBe('1.2.3')
+    expect(pkg.minMarveenVersion).toBe('1.40.0')
+    expect(pkg.kid).toBe(signer.kid)
+    expect(pkg.displayName).toBe('Invoice helper')
+    expect(pkg.modelHint).toBe('claude-sonnet-5')
+    expect(pkg.files.map((f) => [f.path, f.text])).toEqual(Object.entries(DEFAULT_FILES))
+    expect(pkg.avatar).toMatchObject({ path: 'avatar.png', contentType: 'image/png', size: avatarBytes.length })
+    expect(Buffer.from(pkg.avatarBytes()!).equals(avatarBytes)).toBe(true)
+  })
+
+  it('payloadSha256 is the sha256 of the decoded JWS payload segment', () => {
+    if (!result.ok) throw new Error('expected ok')
+    const doc = JSON.parse(Buffer.from(delivery).toString('utf8')) as { manifest_jws: string }
+    const payloadBytes = Buffer.from(doc.manifest_jws.split('.')[1], 'base64url')
+    expect(result.pkg.payloadSha256).toBe(createHash('sha256').update(payloadBytes).digest('hex'))
+    expect(result.pkg.payloadText).toBe(payloadBytes.toString('utf8'))
+  })
+
+  it('is immutable, and avatarBytes() hands out a copy', () => {
+    if (!result.ok) throw new Error('expected ok')
+    const pkg = result.pkg
+    expect(Object.isFrozen(pkg)).toBe(true)
+    expect(Object.isFrozen(pkg.files)).toBe(true)
+    const copy = pkg.avatarBytes()!
+    copy[0] = 0
+    expect(pkg.avatarBytes()![0]).toBe(0x89)
+  })
+
+  it('cannot be constructed outside verifyDelivery', () => {
+    expect(() => Reflect.construct(VerifiedPackage, [Symbol('forged'), {}])).toThrow(TypeError)
+    expect(() => Reflect.construct(VerifiedPackage, [])).toThrow(TypeError)
+  })
+
+  it('a raw document is not a VerifiedPackage (type level, enforced by npm run typecheck)', () => {
+    function typeOnly(): void {
+      // @ts-expect-error the constructor is private
+      new VerifiedPackage()
+      // @ts-expect-error a plain object of the same shape is not assignable (private member)
+      const raw: VerifiedPackage = { slug: 'x', version: '1.0.0', files: [], avatar: null }
+      void raw
+    }
+    expect(typeof typeOnly).toBe('function')
+  })
+})
+
+describe('classifyVersion (Sz-4.4/7, plan 8.1)', () => {
+  const h1 = 'a'.repeat(64)
+  const h2 = 'b'.repeat(64)
+
+  it('compares number by number, not as text: 1.10.0 > 1.9.0', () => {
+    expect(compareVersions('1.10.0', '1.9.0')).toBe(1)
+    expect(classifyVersion({ version: '1.9.0', payloadSha256: h1 }, { version: '1.10.0', payloadSha256: h2 })).toBe('upgrade')
+    expect(classifyVersion({ version: '1.10.0', payloadSha256: h1 }, { version: '1.9.0', payloadSha256: h2 })).toBe('downgrade_refused')
+    expect(classifyVersion({ version: '0.0.9', payloadSha256: h1 }, { version: '0.0.10', payloadSha256: h2 })).toBe('upgrade')
+    expect(classifyVersion({ version: '2.0.0', payloadSha256: h1 }, { version: '10.0.0', payloadSha256: h2 })).toBe('upgrade')
+  })
+
+  it('same version and same payload hash is a repair', () => {
+    expect(classifyVersion({ version: '1.2.3', payloadSha256: h1 }, { version: '1.2.3', payloadSha256: h1 })).toBe('repair')
+  })
+
+  it('same version and a different payload hash is version_conflict', () => {
+    expect(classifyVersion({ version: '1.2.3', payloadSha256: h1 }, { version: '1.2.3', payloadSha256: h2 })).toBe('version_conflict')
+  })
+
+  it('a lower version is downgrade_refused, even with the same hash', () => {
+    expect(classifyVersion({ version: '1.2.3', payloadSha256: h1 }, { version: '1.2.2', payloadSha256: h1 })).toBe('downgrade_refused')
+    expect(classifyVersion({ version: '2.0.0', payloadSha256: h1 }, { version: '1.99.99', payloadSha256: h2 })).toBe('downgrade_refused')
+  })
+
+  it('the own version must be at least min_marveen_version', () => {
+    expect(meetsMinMarveenVersion('1.49.1', '1.49.1')).toBe(true)
+    expect(meetsMinMarveenVersion('1.49.1', '1.9.0')).toBe(true)
+    expect(meetsMinMarveenVersion('1.9.0', '1.49.1')).toBe(false)
+    expect(meetsMinMarveenVersion('1.49.1', '1.49.2')).toBe(false)
+  })
+
+  it('a version outside the contract shape throws instead of comparing', () => {
+    expect(() => compareVersions('1.02.0', '1.2.0')).toThrow(RangeError)
+    expect(() => compareVersions('1.2', '1.2.0')).toThrow(RangeError)
+  })
+})
+
+describe('pinning tests of plan 9.1 that need no web.ts wiring', () => {
+  it('(4) with a two-key list, a package signed by either key is valid, and the kids are unique', () => {
+    const a = makeKeyPair()
+    const b = makeKeyPair()
+    const list: Jwk[] = [a.jwk, b.jwk]
+    expect(new Set(list.map((k) => k.kid)).size).toBe(list.length)
+    for (const k of [a, b]) {
+      const got = verifyDelivery(makeSignedDelivery({ kid: k.kid, privateKey: k.privateKey }), 'invoice-helper', list)
+      expect(got.ok).toBe(true)
+      if (got.ok) expect(got.pkg.kid).toBe(k.kid)
+    }
+  })
+
+  it('(5) a byte-identical payload with a new signature classifies as repair, not upgrade', () => {
+    const a = makeKeyPair()
+    const b = makeKeyPair()
+    const list: Jwk[] = [a.jwk, b.jwk]
+    // Same payload bytes: the kid is in the header, not in the payload.
+    const first = verifyDelivery(makeSignedDelivery({ kid: a.kid, privateKey: a.privateKey }), 'invoice-helper', list)
+    const second = verifyDelivery(makeSignedDelivery({ kid: b.kid, privateKey: b.privateKey }), 'invoice-helper', list)
+    if (!first.ok || !second.ok) throw new Error('expected both to verify')
+    expect(second.pkg.payloadSha256).toBe(first.pkg.payloadSha256)
+    expect(classifyVersion(first.pkg, second.pkg)).toBe('repair')
+  })
+})
