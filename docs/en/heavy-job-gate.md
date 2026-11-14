@@ -181,7 +181,8 @@ started, so a gated job of that agent (running, or still queued) would end with 
 or never start, and its output would go to the dying session. The guard therefore
 holds a restart it has decided while the agent owns a live gated job:
 
-- **Which job is the agent's:** the lock record's gate pid (the running job) and the
+- **Which job is the agent's:** the lock records' gate pids (the running job, and a
+  side-lane job beside it from `<lock>.side`) and the
   queue tickets' pids (the queued ones), each alive with the same process start time,
   whose gate process descends from one of the agent's tmux panes. Labels are never
   used for ownership. The dashboard resolves the paths like the gate (`HEAVY_JOB_STORE`,

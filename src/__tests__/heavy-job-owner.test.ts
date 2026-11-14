@@ -65,6 +65,26 @@ describe('liveGatedJobs', () => {
     ])
   })
 
+  it('a side-lane job (<lock>.side, same record format) is a running job, owned by its tree', () => {
+    const deps = world({ 204: { ppid: 202, start: '11', state: 'S', cmdline: GATE } }, {
+      [`${PATHS.lock}.side`]: 'token=def pid=204 unit=heavy-job-1-204 since=now label=beta-side\n',
+    })
+    expect(liveGatedJobs(deps, PATHS)).toEqual([
+      { pid: 103, label: 'alpha-tests', state: 'running', start: '4' },
+      { pid: 204, label: 'beta-side', state: 'running', start: '11' },
+      { pid: 105, label: 'alpha-build', state: 'queued', start: '6' },
+      { pid: 203, label: 'beta-render', state: 'queued', start: '10' },
+    ])
+    expect(agentHeavyJobs([200], deps, PATHS).map((j) => [j.label, j.state])).toEqual([['beta-side', 'running'], ['beta-render', 'queued']])
+    expect(agentHeavyJobs([100], deps, PATHS).map((j) => j.label)).toEqual(['alpha-tests', 'alpha-build'])
+  })
+
+  it('a stale side-lock record (holder gone) is not a running job; no side lock leaves the result unchanged', () => {
+    const stale = world({}, { [`${PATHS.lock}.side`]: 'token=def pid=204 unit=heavy-job-1-204 since=now label=beta-side\n' })
+    expect(liveGatedJobs(stale, PATHS)).toEqual(liveGatedJobs(world(), PATHS))
+    expect(liveGatedJobs(world(), PATHS).map((j) => j.pid)).toEqual([103, 105, 203])
+  })
+
   it('a stale lock record (holder dead, zombie, or pid reused by a non-gate) is not a running job', () => {
     for (const holder of [null, { ppid: 102, start: '4', state: 'Z', cmdline: GATE }, { ppid: 102, start: '4', state: 'S', cmdline: 'vim notes' }]) {
       const jobs = liveGatedJobs(world({ 103: holder }), PATHS)
@@ -153,6 +173,8 @@ describe('read errors are never "no job"', () => {
     const deps = world()
     const failing: HeavyJobDeps = { ...deps, readFile: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
     expect(() => agentHeavyJobs([100], failing, PATHS)).toThrow('EACCES')
+    const failingSide: HeavyJobDeps = { ...deps, readFile: (p) => { if (p.endsWith('.side')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return deps.readFile(p) } }
+    expect(() => agentHeavyJobs([100], failingSide, PATHS)).toThrow('EACCES')
     const failingDir: HeavyJobDeps = { ...deps, listDir: () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }) } }
     expect(() => agentHeavyJobs([100], failingDir, PATHS)).toThrow('EIO')
   })

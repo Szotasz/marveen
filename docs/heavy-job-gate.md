@@ -141,7 +141,8 @@ A context-guard restart megöli az ügynök tmux-paneljét és minden folyamatot
 leállna vagy el sem indulna, a kimenete pedig a haldokló sessionhöz menne. Ezért a
 guard a már eldöntött restartot visszatartja, amíg az ügynöknek él kapus feladata:
 
-- **Melyik feladat az ügynöké:** a zár-rekord kapu-pidje (a futó feladat) és a sor
+- **Melyik feladat az ügynöké:** a zár-rekordok kapu-pidjei (a futó feladat, és a
+  mellette futó mellék-sávos a `<lock>.side`-ból) és a sor
   jegyeinek pidjei (a várakozók), élve és ugyanazzal a folyamat-indulási idővel, ha a
   kapu-folyamat az ügynök valamelyik tmux-paneljéből származik. A label sosem dönt a
   tulajdonról. A dashboard az utakat úgy oldja fel, mint a kapu (`HEAVY_JOB_STORE`,
