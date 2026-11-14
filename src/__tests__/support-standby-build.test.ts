@@ -127,7 +127,9 @@ describe('scripts/support-standby.mjs', () => {
     const run = spawnSync(process.execPath, [FILE, 'bogus'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home }, timeout: 30_000 })
     expect(run.status).toBe(2)
     expect(run.stdout).toBe('')
-    expect(run.stderr).toBe('usage: support-standby.mjs status\n')
+    expect(run.stderr).toBe(
+      'usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n',
+    )
     expect(readdirSync(home)).toEqual([])
   })
 

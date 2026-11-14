@@ -3,8 +3,8 @@
 // Source: src/support-standby-cli.ts. Rebuild: node scripts/build-support-standby.mjs
 
 // src/support-standby-cli.ts
-import { accessSync, constants, readFileSync as readFileSync2, realpathSync as realpathSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { accessSync as accessSync2, constants as constants3, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
+import { join as join6 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/support-access-pins.ts
@@ -210,15 +210,28 @@ function splitAuthorizedKeysLine(line) {
   if (blob === null) return null;
   return { options, keyType: type.value, blob: blob.value, comment: trimmed.slice(blob.next).trim() };
 }
+var pinnedBytesCache = /* @__PURE__ */ new WeakMap();
+function pinnedBytesOf(pinnedBlobs) {
+  let bytes = pinnedBytesCache.get(pinnedBlobs);
+  if (bytes === void 0) {
+    bytes = [...pinnedBlobs].filter((blob) => parseSkEd25519Blob(blob).ok).map((blob) => Buffer.from(blob, "base64"));
+    pinnedBytesCache.set(pinnedBlobs, bytes);
+  }
+  return bytes;
+}
+function holdsPinnedKey(word, pinnedBlobs) {
+  const decoded = Buffer.from(word, "base64");
+  return pinnedBytesOf(pinnedBlobs).some((pinned) => decoded.subarray(0, pinned.length).equals(pinned));
+}
 function isSupportLine(line, pinnedBlobs) {
   const trimmed = line.trim();
   if (trimmed.length === 0 || trimmed.startsWith("#")) return false;
   const fields = splitAuthorizedKeysLine(trimmed);
   if (fields === null) {
     const words = trimmed.split(/\s+/);
-    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || pinnedBlobs.has(w));
+    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || holdsPinnedKey(w, pinnedBlobs));
   }
-  if (pinnedBlobs.has(fields.blob)) return true;
+  if (holdsPinnedKey(fields.blob, pinnedBlobs)) return true;
   return fields.comment.split(/\s+/).some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX));
 }
 function splitLines(existing) {
@@ -258,6 +271,7 @@ function reconcileSupportLines(existing, expected, pinnedBlobs) {
   const wanted = new Set(expected);
   const seen = /* @__PURE__ */ new Set();
   let removed = 0;
+  let lineEndOnly = 0;
   const kept = splitLines(existing).filter((line) => {
     if (wanted.has(line) && !seen.has(line)) {
       seen.add(line);
@@ -265,6 +279,7 @@ function reconcileSupportLines(existing, expected, pinnedBlobs) {
     }
     if (wanted.has(line) || isSupportLine(line, pinnedBlobs)) {
       removed++;
+      if (line.endsWith("\r") && wanted.has(line.slice(0, -1))) lineEndOnly++;
       return false;
     }
     return true;
@@ -273,7 +288,8 @@ function reconcileSupportLines(existing, expected, pinnedBlobs) {
     content: removed === 0 ? existing : joinLines(kept),
     kept: seen.size,
     removed,
-    missing: wanted.size - seen.size
+    missing: wanted.size - seen.size,
+    lineEndOnly
   };
 }
 
@@ -542,7 +558,7 @@ function currentLoginUser() {
 }
 function createSshdProbeDeps(user = currentLoginUser()) {
   return {
-    run: (file, args, timeoutMs) => new Promise((resolve2) => {
+    run: (file, args, timeoutMs) => new Promise((resolve3) => {
       execFile(
         file,
         [...args],
@@ -553,8 +569,8 @@ function createSshdProbeDeps(user = currentLoginUser()) {
           env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C" }
         },
         (err, stdout, stderr) => {
-          if (err === null) resolve2({ code: 0, stdout, stderr });
-          else resolve2({ code: typeof err.code === "number" && err.killed !== true ? err.code : null, stdout, stderr });
+          if (err === null) resolve3({ code: 0, stdout, stderr });
+          else resolve3({ code: typeof err.code === "number" && err.killed !== true ? err.code : null, stdout, stderr });
         }
       );
     }),
@@ -616,23 +632,420 @@ function formatSupportStatus(report) {
   ].join("\n") + "\n";
 }
 
+// src/support-kit.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
+import { join, resolve } from "node:path";
+var KIT_SUBFOLDER = "kit";
+var KIT_MANIFEST_NAME = "manifest";
+var KIT_LOCK_NAME = "kit.lock";
+var KIT_MANIFEST_HEADER = "marveen-support-kit 1";
+var KIT_MANIFEST_MAX_BYTES = 4096;
+var KIT_MAX_FILES = 16;
+var KitError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "KitError";
+    this.code = code;
+  }
+};
+var FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var SHA256_HEX = /^[0-9a-f]{64}$/;
+var RELEASE = /^[0-9a-f]{7,40}$/;
+var SAFE_ABSOLUTE_PATH2 = /^\/[A-Za-z0-9._/-]+$/;
+var SAFE_NODE_PATH = /^\/[A-Za-z0-9._@/-]+$/;
+var LEFTOVER = /^\.kit-(?:new|old)-[0-9a-f]{16}$/;
+function sha256Hex(bytes) {
+  return createHash2("sha256").update(bytes).digest("hex");
+}
+function manifestProblem(m) {
+  const names = Object.keys(m.files);
+  if (names.length === 0) return "the kit has no file";
+  if (names.length > KIT_MAX_FILES) return "the kit has more files than a manifest may name";
+  for (const name of names) {
+    if (!FILE_NAME.test(name) || name === KIT_MANIFEST_NAME) return "a file name is not a plain lower case name";
+    if (!SHA256_HEX.test(m.files[name])) return "a hash is not 64 lower case hex digits";
+  }
+  if (!SAFE_ABSOLUTE_PATH2.test(m.installRoot)) return "the install root is not a plain absolute path";
+  if (!SAFE_NODE_PATH.test(m.nodePath)) return "the node path is not a plain absolute path";
+  if (!RELEASE.test(m.release)) return "the release is not a commit id";
+  if (!Number.isInteger(m.nodeMin) || m.nodeMin < 1 || m.nodeMin > 999) return "the node minimum is not a major version";
+  return null;
+}
+function formatKitManifest(m) {
+  const problem = manifestProblem(m);
+  if (problem !== null) throw new KitError("kit_input_invalid", problem);
+  const lines = [KIT_MANIFEST_HEADER];
+  for (const name of Object.keys(m.files).sort()) lines.push("file " + name + " " + m.files[name]);
+  lines.push("install-root " + m.installRoot, "node " + m.nodePath, "node-min " + m.nodeMin, "release " + m.release);
+  const text = lines.join("\n") + "\n";
+  if (text.length > KIT_MANIFEST_MAX_BYTES) throw new KitError("kit_input_invalid", "the manifest would be larger than a manifest may be");
+  return text;
+}
+function parseKitManifest(text) {
+  if (text.length > KIT_MANIFEST_MAX_BYTES || !text.endsWith("\n")) return null;
+  const lines = text.slice(0, -1).split("\n");
+  if (lines[0] !== KIT_MANIFEST_HEADER) return null;
+  const files = {};
+  const single = /* @__PURE__ */ new Map();
+  for (const line of lines.slice(1)) {
+    const parts = line.split(" ");
+    if (parts[0] === "file" && parts.length === 3) {
+      if (Object.prototype.hasOwnProperty.call(files, parts[1])) return null;
+      files[parts[1]] = parts[2];
+    } else if ((parts[0] === "install-root" || parts[0] === "node" || parts[0] === "node-min" || parts[0] === "release") && parts.length === 2) {
+      if (single.has(parts[0])) return null;
+      single.set(parts[0], parts[1]);
+    } else return null;
+  }
+  const manifest = {
+    files,
+    installRoot: single.get("install-root") ?? "",
+    nodePath: single.get("node") ?? "",
+    // Only digits are a number here; the canonical-text check below refuses a leading zero or a sign.
+    nodeMin: /^[0-9]{1,3}$/.test(single.get("node-min") ?? "") ? Number(single.get("node-min")) : NaN,
+    release: single.get("release") ?? ""
+  };
+  if (manifestProblem(manifest) !== null) return null;
+  return formatKitManifest(manifest) === text ? manifest : null;
+}
+function lstatOrNull(path) {
+  try {
+    return lstatSync(path);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+function ownUid() {
+  return typeof process.getuid === "function" ? process.getuid() : null;
+}
+function folderFinding(path, uid) {
+  const st = lstatOrNull(path);
+  if (st === null) return { problem: "kit_missing", detail: path + " does not exist" };
+  if (st.isSymbolicLink()) return { problem: "kit_link", detail: path + " is a symbolic link" };
+  if (!st.isDirectory()) return { problem: "kit_not_a_folder", detail: path + " is not a folder" };
+  if (uid !== null && st.uid !== uid) return { problem: "kit_foreign_owner", detail: path + " belongs to another user" };
+  if ((st.mode & 18) !== 0) return { problem: "kit_writable_by_others", detail: path + " can be written by group or others" };
+  return null;
+}
+var KIT_FILE_MAX_BYTES = 4 * 1024 * 1024;
+function readKitFile(path, uid, max) {
+  const no = (problem, detail, tooLarge = false) => ({ ok: false, finding: { problem, detail: path + detail }, tooLarge });
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT") return no("kit_file_missing", " does not exist");
+    if (code === "ELOOP") return no("kit_link", " is a symbolic link");
+    return no("kit_mismatch", " cannot be opened");
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return no("kit_mismatch", " is not a regular file");
+    if (uid !== null && st.uid !== uid) return no("kit_foreign_owner", " belongs to another user");
+    if ((st.mode & 18) !== 0) return no("kit_writable_by_others", " can be written by group or others");
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (; ; ) {
+      const got = readSync(fd, buf, n, buf.length - n, n);
+      if (got === 0) break;
+      n += got;
+      if (n > max) return no("kit_mismatch", " is larger than a kit file may be", true);
+    }
+    return { ok: true, bytes: buf.subarray(0, n) };
+  } finally {
+    closeSync(fd);
+  }
+}
+function verifyKit(opts) {
+  const supportDir = resolve(opts.supportDir);
+  const uid = opts.uid === void 0 ? ownUid() : opts.uid;
+  const kitDir = join(supportDir, KIT_SUBFOLDER);
+  const refuse = (finding) => ({ ok: false, ...finding });
+  for (const folder of [supportDir, kitDir]) {
+    const finding = folderFinding(folder, uid);
+    if (finding !== null) return refuse(finding);
+  }
+  const manifestPath = join(kitDir, KIT_MANIFEST_NAME);
+  const manifestRead = readKitFile(manifestPath, uid, KIT_MANIFEST_MAX_BYTES);
+  if (!manifestRead.ok) {
+    const missingOrLarge = manifestRead.finding.problem === "kit_file_missing" || manifestRead.tooLarge;
+    return refuse(missingOrLarge ? { problem: "kit_manifest_unreadable", detail: manifestRead.finding.detail } : manifestRead.finding);
+  }
+  const manifest = parseKitManifest(manifestRead.bytes.toString("latin1"));
+  if (manifest === null) return refuse({ problem: "kit_manifest_unreadable", detail: manifestPath + " is not a manifest" });
+  for (const name of Object.keys(manifest.files).sort()) {
+    const path = join(kitDir, name);
+    const read = readKitFile(path, uid, KIT_FILE_MAX_BYTES);
+    if (!read.ok) return refuse(read.finding);
+    if (sha256Hex(read.bytes) !== manifest.files[name]) {
+      return refuse({ problem: "kit_mismatch", detail: path + " is not the file the manifest names" });
+    }
+  }
+  return { ok: true, kitDir, manifest };
+}
+var defaultSleep = (ms) => new Promise((done) => setTimeout(done, ms));
+async function withKitLock(supportDir, tuning, work) {
+  const { lockRetries = 20, lockRetryDelayMs = 100, staleLockMs = 15e3, sleep = defaultSleep } = tuning;
+  const lockPath = join(resolve(supportDir), KIT_LOCK_NAME);
+  let fd = null;
+  for (let attempt = 0; attempt < lockRetries && fd === null; attempt++) {
+    try {
+      fd = openSync(lockPath, "wx", 384);
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      let stale = false;
+      try {
+        stale = Date.now() - statSync(lockPath).mtimeMs > staleLockMs;
+      } catch {
+        continue;
+      }
+      if (stale) {
+        try {
+          unlinkSync(lockPath);
+        } catch {
+        }
+        continue;
+      }
+      await sleep(lockRetryDelayMs);
+    }
+  }
+  if (fd === null) {
+    throw new KitError("kit_locked", `could not take ${lockPath} after ${lockRetries} attempts; another kit write or a reconcile is running`);
+  }
+  try {
+    const out = work();
+    if (out !== null && typeof out === "object" && typeof out.then === "function") {
+      throw new KitError("kit_input_invalid", "the work under the kit lock returned a promise; nothing slow may run while the lock is held");
+    }
+    return out;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+    }
+    try {
+      unlinkSync(lockPath);
+    } catch {
+    }
+  }
+}
+function writeNewFile(path, content, mode) {
+  const fd = openSync(path, "wx", mode);
+  try {
+    writeSync(fd, content);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+function syncFolder(path) {
+  try {
+    const fd = openSync(path, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+  }
+}
+async function writeKit(opts) {
+  const { files, installRoot, nodePath, nodeMin, release, ...tuning } = opts;
+  const supportDir = resolve(opts.supportDir);
+  if (!SAFE_ABSOLUTE_PATH2.test(supportDir)) {
+    throw new KitError("kit_input_invalid", "the support folder is not a plain absolute path");
+  }
+  const hashes = {};
+  for (const file of files) {
+    if (Object.prototype.hasOwnProperty.call(hashes, file.name)) throw new KitError("kit_input_invalid", "a file name is given twice");
+    hashes[file.name] = file.sha256;
+  }
+  const manifest = { files: hashes, installRoot, nodePath, nodeMin, release };
+  const manifestText = formatKitManifest(manifest);
+  for (const file of files) {
+    if (sha256Hex(file.content) !== file.sha256) {
+      throw new KitError("kit_source_mismatch", `${file.name} in the install tree is not the file of this release (its hash is not the stored one); nothing was written`);
+    }
+  }
+  const uid = ownUid();
+  if (lstatOrNull(supportDir) === null) mkdirSync(supportDir, { recursive: true, mode: 448 });
+  const parentFinding = folderFinding(supportDir, uid);
+  if (parentFinding !== null) throw new KitError(parentFinding.problem, parentFinding.detail + "; the kit is not written there");
+  const kitDir = join(supportDir, KIT_SUBFOLDER);
+  return withKitLock(supportDir, tuning, () => {
+    const cleaned = [];
+    for (const name of readdirSync(supportDir).sort()) {
+      if (!LEFTOVER.test(name)) continue;
+      rmSync(join(supportDir, name), { recursive: true, force: true });
+      cleaned.push(name);
+    }
+    const existing = lstatOrNull(kitDir);
+    if (existing !== null) {
+      const finding = folderFinding(kitDir, uid);
+      if (finding !== null) throw new KitError(finding.problem, finding.detail + "; the kit is not written over it");
+    }
+    const suffix = randomBytes(8).toString("hex");
+    const staging = join(supportDir, ".kit-new-" + suffix);
+    const aside = join(supportDir, ".kit-old-" + suffix);
+    mkdirSync(staging, { mode: 448 });
+    try {
+      for (const file of files) writeNewFile(join(staging, file.name), file.content, file.executable ? 448 : 384);
+      writeNewFile(join(staging, KIT_MANIFEST_NAME), Buffer.from(manifestText, "latin1"), 384);
+      for (const file of files) {
+        if (sha256Hex(readFileSync(join(staging, file.name))) !== file.sha256) {
+          throw new KitError("kit_mismatch", `${file.name} does not hold what was just written`);
+        }
+      }
+      syncFolder(staging);
+    } catch (err) {
+      rmSync(staging, { recursive: true, force: true });
+      throw err;
+    }
+    if (existing !== null) {
+      try {
+        renameSync(kitDir, aside);
+      } catch (err) {
+        rmSync(staging, { recursive: true, force: true });
+        throw err;
+      }
+    }
+    renameSync(staging, kitDir);
+    syncFolder(supportDir);
+    if (existing !== null) rmSync(aside, { recursive: true, force: true });
+    const verdict = verifyKit({ supportDir });
+    if (!verdict.ok) throw new KitError(verdict.problem, "the kit that was just written does not verify: " + verdict.detail);
+    return { kitDir, replaced: existing !== null, cleaned };
+  });
+}
+
+// src/support-kit-install.ts
+import { accessSync, constants as constants2, closeSync as closeSync2, fstatSync as fstatSync2, lstatSync as lstatSync2, openSync as openSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+
+// src/support-kit-sources.ts
+var KIT_HASHES_FILE = "scripts/support-kit.sha256";
+var KIT_DISPATCHER_NAME = "support-dispatch.sh";
+var KIT_ROUTINE_NAME = "support-standby.mjs";
+var KIT_SOURCES = [
+  { name: KIT_DISPATCHER_NAME, treePath: "scripts/support-dispatch.sh", executable: false },
+  { name: KIT_ROUTINE_NAME, treePath: "scripts/support-standby.mjs", executable: false }
+];
+var HASH_LINE = /^([0-9a-f]{64}) {2}([a-z0-9][a-z0-9._-]{0,63})$/;
+function parseKitHashes(text) {
+  if (!text.endsWith("\n")) return null;
+  const lines = text.slice(0, -1).split("\n");
+  const out = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const m = HASH_LINE.exec(line);
+    if (m === null || out.has(m[2])) return null;
+    out.set(m[2], m[1]);
+  }
+  const expected = KIT_SOURCES.map((s) => s.name);
+  return [...out.keys()].join("\n") === expected.join("\n") ? out : null;
+}
+
+// src/support-kit-install.ts
+var SUPPORT_DIR_IN_HOME = ".marveen/support";
+var KIT_SOURCE_MAX_BYTES = KIT_FILE_MAX_BYTES;
+var HASHES_MAX_BYTES = 4096;
+var SAFE_ABSOLUTE_PATH3 = /^\/[A-Za-z0-9._/-]+$/;
+function readTreeFile(path, max) {
+  let fd;
+  try {
+    fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync2(fd).isFile()) return null;
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (; ; ) {
+      const got = readSync2(fd, buf, n, buf.length - n, n);
+      if (got === 0) break;
+      n += got;
+      if (n > max) return null;
+    }
+    return buf.subarray(0, n);
+  } finally {
+    closeSync2(fd);
+  }
+}
+async function installKit(input) {
+  const { installRoot, nodePath, release, supportDir, ...tuning } = input;
+  for (const [what, path] of [["install root", installRoot], ["support folder", supportDir]]) {
+    if (!SAFE_ABSOLUTE_PATH3.test(path)) throw new KitError("kit_input_invalid", "the " + what + " is not a plain absolute path");
+  }
+  if (!SAFE_NODE_PATH.test(nodePath)) throw new KitError("kit_input_invalid", "the node path is not a plain absolute path");
+  let rootIsFolder = false;
+  try {
+    rootIsFolder = lstatSync2(installRoot).isDirectory();
+  } catch {
+  }
+  if (!rootIsFolder) throw new KitError("kit_input_invalid", "the install root is not a folder");
+  try {
+    if (!statSync2(nodePath).isFile()) throw new Error("not a file");
+    accessSync(nodePath, constants2.X_OK);
+  } catch {
+    throw new KitError("kit_input_invalid", "the node path is not an executable file");
+  }
+  const hashesBytes = readTreeFile(join2(installRoot, KIT_HASHES_FILE), HASHES_MAX_BYTES);
+  const stored = hashesBytes === null ? null : parseKitHashes(hashesBytes.toString("latin1"));
+  if (stored === null) {
+    throw new KitError("kit_source_mismatch", "the stored hashes of this release are missing or unreadable; nothing was written");
+  }
+  const files = [];
+  for (const source of KIT_SOURCES) {
+    const content = readTreeFile(join2(installRoot, source.treePath), KIT_SOURCE_MAX_BYTES);
+    if (content === null) {
+      throw new KitError("kit_source_mismatch", source.name + " is missing from the install tree or is not a plain file; nothing was written");
+    }
+    files.push({ name: source.name, content, sha256: stored.get(source.name), executable: source.executable });
+  }
+  return writeKit({ supportDir, files, installRoot, nodePath, nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR, release, ...tuning });
+}
+
+// src/support-access-fs.ts
+import { lstatSync as lstatSync4, readFileSync as readFileSync3, statSync as statSync4 } from "node:fs";
+import { join as join5 } from "node:path";
+
 // src/remote-enroll-fs.ts
 import {
-  openSync,
-  closeSync,
-  writeSync,
-  fsyncSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  mkdirSync,
-  statSync,
-  lstatSync,
+  openSync as openSync3,
+  closeSync as closeSync3,
+  writeSync as writeSync2,
+  fsyncSync as fsyncSync2,
+  readFileSync as readFileSync2,
+  renameSync as renameSync2,
+  unlinkSync as unlinkSync2,
+  mkdirSync as mkdirSync2,
+  statSync as statSync3,
+  lstatSync as lstatSync3,
   existsSync,
   chmodSync,
   realpathSync
 } from "node:fs";
-import { join as join2, resolve } from "node:path";
+import { join as join4, resolve as resolve2 } from "node:path";
 
 // src/remote-enroll-core.ts
 var REMOTE_PORT = 3420;
@@ -650,7 +1063,7 @@ function isTestRun() {
 
 // src/ssh-dir.ts
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join as join3 } from "node:path";
 var SSH_DIR_GUARD_CODE = "ENROLL813";
 var SshDirGuardError = class extends Error {
   code = SSH_DIR_GUARD_CODE;
@@ -660,7 +1073,7 @@ var SshDirGuardError = class extends Error {
   }
 };
 function realSshDir() {
-  return join(homedir(), ".ssh");
+  return join3(homedir(), ".ssh");
 }
 function describeTestRunSignal() {
   const signals = [];
@@ -684,12 +1097,13 @@ function canonical(p) {
   try {
     return realpathSync(p);
   } catch {
-    return resolve(p);
+    return resolve2(p);
   }
 }
 var SSH_DIR_MODE = 448;
 var AUTH_KEYS_MODE = 384;
 var AUTH_KEYS_NAME = "authorized_keys";
+var SECOND_KEYS_NAME = "authorized_keys2";
 var LOCK_NAME = "authorized_keys.lock";
 var AuthorizedKeysLockError = class extends Error {
   code = "AUTHORIZED_KEYS_LOCKED";
@@ -706,7 +1120,7 @@ var AuthorizedKeysRewriteError = class extends Error {
     this.code = code;
   }
 };
-var defaultSleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+var defaultSleep2 = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
 function looserThan(mode, ownerMask) {
   return (mode & 511 & ~ownerMask) !== 0;
 }
@@ -715,11 +1129,11 @@ function fmtMode(mode) {
 }
 function ensureSshDir(sshDir, warnings) {
   if (!existsSync(sshDir)) {
-    mkdirSync(sshDir, { recursive: true, mode: SSH_DIR_MODE });
+    mkdirSync2(sshDir, { recursive: true, mode: SSH_DIR_MODE });
     chmodSync(sshDir, SSH_DIR_MODE);
     return;
   }
-  const st = statSync(sshDir);
+  const st = statSync3(sshDir);
   if (!st.isDirectory()) {
     throw new Error(`${sshDir} exists but is not a directory`);
   }
@@ -732,9 +1146,9 @@ function ensureSshDir(sshDir, warnings) {
 async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const fd = openSync(lockPath, "wx", AUTH_KEYS_MODE);
+      const fd = openSync3(lockPath, "wx", AUTH_KEYS_MODE);
       try {
-        writeSync(fd, `${process.pid}
+        writeSync2(fd, `${process.pid}
 `);
       } catch {
       }
@@ -742,9 +1156,9 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       try {
-        const st = statSync(lockPath);
+        const st = statSync3(lockPath);
         if (Date.now() - st.mtimeMs > staleMs) {
-          unlinkSync(lockPath);
+          unlinkSync2(lockPath);
           continue;
         }
       } catch {
@@ -759,29 +1173,29 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
 }
 function releaseLock(fd, lockPath) {
   try {
-    closeSync(fd);
+    closeSync3(fd);
   } catch {
   }
   try {
-    unlinkSync(lockPath);
+    unlinkSync2(lockPath);
   } catch {
   }
 }
 function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
-  const tmpPath = join2(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
-  const tfd = openSync(tmpPath, "wx", AUTH_KEYS_MODE);
+  const tmpPath = join4(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
+  const tfd = openSync3(tmpPath, "wx", AUTH_KEYS_MODE);
   try {
-    writeSync(tfd, content, null, encoding);
-    fsyncSync(tfd);
+    writeSync2(tfd, content, null, encoding);
+    fsyncSync2(tfd);
   } finally {
-    closeSync(tfd);
+    closeSync3(tfd);
   }
   chmodSync(tmpPath, AUTH_KEYS_MODE);
   try {
-    renameSync(tmpPath, authPath);
+    renameSync2(tmpPath, authPath);
   } catch (err) {
     try {
-      unlinkSync(tmpPath);
+      unlinkSync2(tmpPath);
     } catch {
     }
     throw err;
@@ -790,21 +1204,25 @@ function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
 async function rewriteAuthorizedKeysLocked(opts, transform) {
   const {
     operation,
+    fileName = AUTH_KEYS_NAME,
     createDir = false,
     refuseSymlink = false,
     preserveBytes = false,
     lockRetries = 20,
     lockRetryDelayMs = 100,
     staleLockMs = 15e3,
-    sleep = defaultSleep
+    sleep = defaultSleep2
   } = opts;
-  const sshDir = resolve(opts.sshDir);
+  const sshDir = resolve2(opts.sshDir);
   assertSafeSshDir(sshDir, operation);
+  if (fileName !== AUTH_KEYS_NAME && fileName !== SECOND_KEYS_NAME) {
+    throw new AuthorizedKeysRewriteError("AUTHORIZED_KEYS_FILE_NAME", "only authorized_keys and authorized_keys2 can be rewritten");
+  }
   const warnings = [];
-  const authPath = join2(sshDir, AUTH_KEYS_NAME);
-  const lockPath = join2(sshDir, LOCK_NAME);
+  const authPath = join4(sshDir, fileName);
+  const lockPath = join4(sshDir, LOCK_NAME);
   const encoding = preserveBytes ? "latin1" : "utf8";
-  if (refuseSymlink && lstatOrNull(sshDir)?.isSymbolicLink()) {
+  if (refuseSymlink && lstatOrNull2(sshDir)?.isSymbolicLink()) {
     throw new AuthorizedKeysRewriteError(
       "AUTHORIZED_KEYS_SYMLINK",
       `${sshDir} is a symbolic link; refusing to add access through it`
@@ -822,7 +1240,7 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
   const fd = await acquireLock(lockPath, lockRetries, lockRetryDelayMs, staleLockMs, sleep);
   try {
     let existing = "";
-    const link = lstatOrNull(authPath);
+    const link = lstatOrNull2(authPath);
     if (link !== null) {
       if (link.isSymbolicLink() && refuseSymlink) {
         throw new AuthorizedKeysRewriteError(
@@ -831,13 +1249,13 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
         );
       }
       if (existsSync(authPath)) {
-        const st = statSync(authPath);
+        const st = statSync3(authPath);
         if (looserThan(st.mode, AUTH_KEYS_MODE)) {
           warnings.push(
             `${authPath} permissions were ${fmtMode(st.mode)} (looser than 0600); the rewritten file is 0600`
           );
         }
-        existing = readFileSync(authPath, encoding);
+        existing = readFileSync2(authPath, encoding);
       }
     }
     const out = transform(existing);
@@ -852,7 +1270,7 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
       );
     }
     writeAtomic(sshDir, authPath, out.content, encoding);
-    if (readFileSync(authPath, encoding) !== out.content) {
+    if (readFileSync2(authPath, encoding) !== out.content) {
       throw new AuthorizedKeysRewriteError(
         "AUTHORIZED_KEYS_READBACK",
         `${authPath} does not hold what was just written`
@@ -868,9 +1286,9 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
     releaseLock(fd, lockPath);
   }
 }
-function lstatOrNull(path) {
+function lstatOrNull2(path) {
   try {
-    return lstatSync(path);
+    return lstatSync3(path);
   } catch (err) {
     if (err.code === "ENOENT") return null;
     throw err;
@@ -886,6 +1304,88 @@ function assertSyncTransform(out) {
 }
 
 // src/support-access-fs.ts
+var SECOND_FILE = "authorized_keys2";
+var SupportKeysLayoutError = class extends Error {
+  code = "SUPPORT_KEYS_LAYOUT";
+  constructor(message) {
+    super(message);
+    this.name = "SupportKeysLayoutError";
+  }
+};
+function lstatOrNull3(path) {
+  try {
+    return lstatSync4(path);
+  } catch {
+    return null;
+  }
+}
+function statOrNull(path) {
+  try {
+    return statSync4(path);
+  } catch {
+    return null;
+  }
+}
+function keysFileLayout(sshDir) {
+  const second = lstatOrNull3(join5(sshDir, SECOND_FILE));
+  if (second === null) return "separate";
+  const first = lstatOrNull3(join5(sshDir, "authorized_keys"));
+  const sameAsFirst = (st) => first !== null && first.isFile() && st.dev === first.dev && st.ino === first.ino;
+  if (second.isSymbolicLink()) {
+    const target = statOrNull(join5(sshDir, SECOND_FILE));
+    if (target === null) return "link-to-nothing";
+    return sameAsFirst(target) ? "link-to-first" : "link-elsewhere";
+  }
+  return second.isFile() && sameAsFirst(second) ? "hard-link" : "separate";
+}
+function assertLayoutForGrant(sshDir) {
+  const layout = keysFileLayout(sshDir);
+  const second = join5(sshDir, SECOND_FILE);
+  if (layout === "link-elsewhere") throw new SupportKeysLayoutError(`${second} is a symbolic link to another file than authorized_keys; nothing was written`);
+  if (layout === "hard-link") throw new SupportKeysLayoutError(`${second} is a hard link of authorized_keys; nothing was written`);
+}
+function splitWarning(sshDir, before) {
+  if (before !== "hard-link" || keysFileLayout(sshDir) === "hard-link") return [];
+  return [
+    `${join5(sshDir, "authorized_keys")} and ${join5(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
+  ];
+}
+async function removeEverySupportLine(base, fileName, operation) {
+  const { sshDir, pinnedBlobs, ...lock } = base;
+  if (fileName === SECOND_FILE) {
+    const secondPath = join5(sshDir, SECOND_FILE);
+    const layout = keysFileLayout(sshDir);
+    if (layout === "link-to-first" || layout === "link-to-nothing") {
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a link to authorized_keys (or to nothing); it was cleaned through that file`] };
+    }
+    if (layout === "hard-link") {
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [] };
+    }
+    if (layout === "link-elsewhere") {
+      let held = 0;
+      try {
+        held = countSupportLines(readFileSync3(secondPath, "latin1"), pinnedBlobs);
+      } catch {
+        throw new SupportKeysLayoutError(`${secondPath} is a symbolic link to a file that cannot be read; it was not written`);
+      }
+      if (held > 0) {
+        throw new SupportKeysLayoutError(
+          `${secondPath} is a symbolic link to another file that holds ${held} support line(s); it was not written. Remove the line(s) from that file by hand`
+        );
+      }
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a symbolic link to another file; it holds no support line and was not written`] };
+    }
+  }
+  const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
+    const { content, removed } = removeSupportLines(existing, pinnedBlobs);
+    const left = countSupportLines(content, pinnedBlobs);
+    if (left !== 0) {
+      throw new SupportLinesRemainError(`${left} support line(s) would remain in ${fileName} after the removal`);
+    }
+    return { content: removed === 0 ? null : content, result: removed };
+  });
+  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings };
+}
 var SupportLinesRemainError = class extends Error {
   code = "SUPPORT_LINES_REMAIN";
   constructor(message) {
@@ -899,6 +1399,8 @@ async function grantSupportLines(opts) {
     throw new SupportLineError("pins_invalid", "a key of the grant is not one of the pinned keys");
   }
   const lines = buildSupportGrantLines(grant);
+  assertLayoutForGrant(sshDir);
+  const second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, "remove support access lines from");
   const out = await rewriteAuthorizedKeysLocked(
     { sshDir, operation: "write support access lines into", createDir: true, refuseSymlink: true, preserveBytes: true, ...lock },
     (existing) => {
@@ -906,22 +1408,34 @@ async function grantSupportLines(opts) {
       return { content: merged.content, result: merged.replaced };
     }
   );
-  return { authorizedKeysPath: out.authorizedKeysPath, replaced: out.result, warnings: out.warnings };
+  return {
+    authorizedKeysPath: out.authorizedKeysPath,
+    replaced: out.result,
+    removedFromSecond: second.removed,
+    warnings: [...second.warnings, ...out.warnings]
+  };
 }
 async function revokeSupportLines(opts) {
-  const { sshDir, pinnedBlobs, ...lock } = opts;
-  const out = await rewriteAuthorizedKeysLocked(
-    { sshDir, operation: "remove support access lines from", preserveBytes: true, ...lock },
-    (existing) => {
-      const { content, removed } = removeSupportLines(existing, pinnedBlobs);
-      const left = countSupportLines(content, pinnedBlobs);
-      if (left !== 0) {
-        throw new SupportLinesRemainError(`${left} support line(s) would remain after the removal`);
-      }
-      return { content: removed === 0 ? null : content, result: removed };
+  const operation = "remove support access lines from";
+  const layoutBefore = keysFileLayout(opts.sshDir);
+  const failures = [];
+  const done = [];
+  for (const fileName of ["authorized_keys", SECOND_FILE]) {
+    try {
+      done.push(await removeEverySupportLine(opts, fileName, operation));
+    } catch (err) {
+      failures.push(err);
+      done.push(null);
     }
-  );
-  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings };
+  }
+  const [first, second] = done;
+  if (first === null || second === null) throw failures[0];
+  return {
+    authorizedKeysPath: first.authorizedKeysPath,
+    removed: first.removed + second.removed,
+    removedFromSecond: second.removed,
+    warnings: [...first.warnings, ...second.warnings, ...splitWarning(opts.sshDir, layoutBefore)]
+  };
 }
 async function reconcileSupportLinesOnDisk(opts) {
   const { sshDir, pinnedBlobs, grant, ...lock } = opts;
@@ -934,30 +1448,73 @@ async function reconcileSupportLinesOnDisk(opts) {
       unbuildable = err instanceof SupportLineError ? err.code : "grant_malformed";
     }
   }
-  const out = await rewriteAuthorizedKeysLocked(
-    { sshDir, operation: "reconcile support access lines in", preserveBytes: true, ...lock },
-    (existing) => {
-      const r = reconcileSupportLines(existing, expected, pinnedBlobs);
-      return {
-        content: r.removed === 0 ? null : r.content,
-        result: { kept: r.kept, removed: r.removed, missing: r.missing }
-      };
-    }
-  );
-  return { authorizedKeysPath: out.authorizedKeysPath, ...out.result, unbuildable, warnings: out.warnings };
+  const operation = "reconcile support access lines in";
+  const layoutBefore = keysFileLayout(sshDir);
+  const failures = [];
+  let first = null;
+  let second = null;
+  try {
+    first = await reconcileFirstFile({ sshDir, pinnedBlobs, ...lock }, expected, operation);
+  } catch (err) {
+    failures.push(err);
+  }
+  try {
+    second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, operation);
+  } catch (err) {
+    failures.push(err);
+  }
+  if (first === null || second === null) throw failures[0];
+  return {
+    authorizedKeysPath: first.authorizedKeysPath,
+    kept: first.result.kept,
+    removed: first.result.removed + second.removed,
+    removedFromSecond: second.removed,
+    missing: first.result.missing,
+    lineEndOnly: first.result.lineEndOnly,
+    unbuildable,
+    warnings: [...first.warnings, ...second.warnings, ...splitWarning(sshDir, layoutBefore)]
+  };
+}
+function reconcileFirstFile(base, expected, operation) {
+  const { sshDir, pinnedBlobs, ...lock } = base;
+  return rewriteAuthorizedKeysLocked({ sshDir, operation, preserveBytes: true, ...lock }, (existing) => {
+    const r = reconcileSupportLines(existing, expected, pinnedBlobs);
+    return {
+      content: r.removed === 0 ? null : r.content,
+      result: { kept: r.kept, removed: r.removed, missing: r.missing, lineEndOnly: r.lineEndOnly }
+    };
+  });
 }
 
 // src/support-standby-cli.ts
-var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n";
+var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n";
+var INSTALL_KIT_FLAGS = {
+  "--install-root": "installRoot",
+  "--node": "nodePath",
+  "--release": "release"
+};
+function parseInstallKitArgs(argv) {
+  if (argv.length !== 6) return null;
+  const out = {};
+  for (let i = 0; i < argv.length; i += 2) {
+    const key = Object.prototype.hasOwnProperty.call(INSTALL_KIT_FLAGS, argv[i]) ? INSTALL_KIT_FLAGS[argv[i]] : void 0;
+    if (key === void 0 || out[key] !== void 0 || argv[i + 1].length === 0) return null;
+    out[key] = argv[i + 1];
+  }
+  return out.installRoot !== void 0 && out.nodePath !== void 0 && out.release !== void 0 ? { installRoot: out.installRoot, nodePath: out.nodePath, release: out.release } : null;
+}
+function createInstallKit(account = currentLoginUser()) {
+  return (args) => installKit({ ...args, supportDir: join6(account.home, SUPPORT_DIR_IN_HOME) });
+}
 function createStatusDeps(account = currentLoginUser()) {
-  const sshDir = join3(account.home, ".ssh");
+  const sshDir = join6(account.home, ".ssh");
   return {
     nodeVersion: process.version,
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
-        accessSync(path, constants.X_OK);
+        accessSync2(path, constants3.X_OK);
         return true;
       } catch {
         return false;
@@ -965,7 +1522,7 @@ function createStatusDeps(account = currentLoginUser()) {
     },
     readKeysFile: (name) => {
       try {
-        return readFileSync2(join3(sshDir, name), "latin1");
+        return readFileSync4(join6(sshDir, name), "latin1");
       } catch (err) {
         return err.code === "ENOENT" ? null : "unreadable";
       }
@@ -977,8 +1534,32 @@ async function runSupportCli(argv, io, deps) {
     io.out(formatSupportStatus(await supportStatus(deps.status())));
     return 0;
   }
+  const installArgs = argv[0] === "install-kit" ? parseInstallKitArgs(argv.slice(1)) : null;
+  if (installArgs !== null) {
+    try {
+      const done = await deps.installKit(installArgs);
+      io.out("kit=written\nreplaced=" + (done.replaced ? "yes" : "no") + "\ncleaned=" + done.cleaned.length + "\n");
+      return 0;
+    } catch (err) {
+      if (!(err instanceof KitError)) throw err;
+      io.err("install-kit: refused: " + err.code + "\n");
+      return 1;
+    }
+  }
   io.err(SUPPORT_CLI_USAGE);
   return 2;
+}
+async function main(argv) {
+  try {
+    return await runSupportCli(
+      argv,
+      { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
+      { status: createStatusDeps, installKit: createInstallKit() }
+    );
+  } catch {
+    process.stderr.write("support-standby: stopped on an unexpected error\n");
+    return 1;
+  }
 }
 function startedDirectly() {
   try {
@@ -988,28 +1569,21 @@ function startedDirectly() {
   }
 }
 if (startedDirectly()) {
-  runSupportCli(
-    process.argv.slice(2),
-    { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-    { status: createStatusDeps }
-  ).then(
-    (code) => {
-      process.exitCode = code;
-    },
-    () => {
-      process.stderr.write("support-standby: stopped on an unexpected error\n");
-      process.exitCode = 1;
-    }
-  );
+  void main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }
 export {
   SUPPORT_CLI_USAGE,
   SUPPORT_ROUTINE_MIN_NODE_MAJOR,
   buildSupportGrantLines,
   buildSupportLine,
+  createInstallKit,
   createStatusDeps,
   formatSupportStatus,
   grantSupportLines,
+  main,
+  parseInstallKitArgs,
   reconcileSupportLinesOnDisk,
   revokeSupportLines,
   runSupportCli,

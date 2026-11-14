@@ -241,12 +241,43 @@ export function splitAuthorizedKeysLine(line: string): AuthorizedKeysFields | nu
   return { options, keyType: type.value, blob: blob.value, comment: trimmed.slice(blob.next).trim() }
 }
 
+const pinnedBytesCache = new WeakMap<ReadonlySet<string>, readonly Buffer[]>()
+
+function pinnedBytesOf(pinnedBlobs: ReadonlySet<string>): readonly Buffer[] {
+  let bytes = pinnedBytesCache.get(pinnedBlobs)
+  if (bytes === undefined) {
+    // Only a pin that is a whole sk-ssh-ed25519 key counts (Dani's review of #2768, S2): every OpenSSH key blob
+    // starts with a length field of zero bytes, so a short pin would be a prefix of EVERY key, and a removal
+    // that matched on it would take out all of the owner's keys.
+    bytes = [...pinnedBlobs].filter((blob) => parseSkEd25519Blob(blob).ok).map((blob) => Buffer.from(blob, 'base64'))
+    pinnedBytesCache.set(pinnedBlobs, bytes)
+  }
+  return bytes
+}
+
+/**
+ * Does this word hold a pinned key? The comparison is on the DECODED BYTES,
+ * not on the base64 text: the same key can be written without the padding,
+ * with the spare bits of the last character set, or in the other base64
+ * alphabet, and whether some sshd reads such a spelling as the key is not
+ * something a removal may depend on. The decoder used here is the lenient one
+ * (it skips what is not base64 and stops at the padding), so it reads at least
+ * what a stricter reader would. A word whose bytes only START with a pinned
+ * key counts too: nothing but our key begins with our key.
+ */
+export function holdsPinnedKey(word: string, pinnedBlobs: ReadonlySet<string>): boolean {
+  const decoded = Buffer.from(word, 'base64')
+  return pinnedBytesOf(pinnedBlobs).some((pinned) => decoded.subarray(0, pinned.length).equals(pinned))
+}
+
 /**
  * Is this line support access? Yes when its comment carries the support prefix
- * OR it holds one of the pinned key blobs, whatever the rest says. The second
- * half matters: a copy of a pinned key with looser options and another comment
- * is still our key on the customer's machine, and must go when support goes.
- * A blank line or a `#` comment is never a support line (sshd ignores it).
+ * OR it holds one of the pinned keys, whatever the rest says. The second half
+ * matters: a copy of a pinned key with looser options and another comment is
+ * still our key on the customer's machine, and must go when support goes. The
+ * key is recognised by its bytes (holdsPinnedKey), so another spelling of it
+ * does not hide a copy. A blank line or a `#` comment is never a support line
+ * (sshd ignores it).
  */
 export function isSupportLine(line: string, pinnedBlobs: ReadonlySet<string>): boolean {
   const trimmed = line.trim()
@@ -256,9 +287,9 @@ export function isSupportLine(line: string, pinnedBlobs: ReadonlySet<string>): b
     // Unreadable (for instance an unbalanced quote). Fall back to plain words so
     // a mangled copy of our line does not survive by being mangled.
     const words = trimmed.split(/\s+/)
-    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || pinnedBlobs.has(w))
+    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || holdsPinnedKey(w, pinnedBlobs))
   }
-  if (pinnedBlobs.has(fields.blob)) return true
+  if (holdsPinnedKey(fields.blob, pinnedBlobs)) return true
   return fields.comment.split(/\s+/).some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX))
 }
 
@@ -349,6 +380,14 @@ export interface ReconcileSupportResult {
   readonly removed: number
   /** Expected lines that are not in the file. They are NOT created. */
   readonly missing: number
+  /**
+   * Of the removed lines, those that are an expected line with one carriage
+   * return after it and nothing else: the file was saved with CR LF line ends
+   * (an editor does that), nobody changed the line. They are removed all the
+   * same, because only a line that is byte for byte the built one stays; the
+   * count is there so the notice can say what happened instead of "tampered".
+   */
+  readonly lineEndOnly: number
 }
 
 /**
@@ -366,6 +405,7 @@ export function reconcileSupportLines(
   const wanted = new Set(expected)
   const seen = new Set<string>()
   let removed = 0
+  let lineEndOnly = 0
   const kept = splitLines(existing).filter((line) => {
     if (wanted.has(line) && !seen.has(line)) {
       seen.add(line)
@@ -373,6 +413,7 @@ export function reconcileSupportLines(
     }
     if (wanted.has(line) || isSupportLine(line, pinnedBlobs)) {
       removed++
+      if (line.endsWith('\r') && wanted.has(line.slice(0, -1))) lineEndOnly++
       return false
     }
     return true
@@ -382,5 +423,6 @@ export function reconcileSupportLines(
     kept: seen.size,
     removed,
     missing: wanted.size - seen.size,
+    lineEndOnly,
   }
 }
