@@ -92,6 +92,10 @@ const RELEASE = /^[0-9a-f]{7,40}$/
 // The same alphabet the line builder accepts for the dispatcher path: a kit
 // that could not be bound in a line is not written.
 const SAFE_ABSOLUTE_PATH = /^\/[A-Za-z0-9._/-]+$/
+// The node path may also hold an at sign: a versioned Homebrew node lives under
+// `.../Cellar/node@22/...` and `.../opt/node@22/...` (measured on this Mac).
+// An at sign is not special to a POSIX shell; the launcher quotes the value anyway.
+export const SAFE_NODE_PATH = /^\/[A-Za-z0-9._@/-]+$/
 const LEFTOVER = /^\.kit-(?:new|old)-[0-9a-f]{16}$/
 
 export function sha256Hex(bytes: Uint8Array): string {
@@ -106,7 +110,7 @@ function manifestProblem(m: KitManifest): string | null {
     if (!SHA256_HEX.test(m.files[name])) return 'a hash is not 64 lower case hex digits'
   }
   if (!SAFE_ABSOLUTE_PATH.test(m.installRoot)) return 'the install root is not a plain absolute path'
-  if (!SAFE_ABSOLUTE_PATH.test(m.nodePath)) return 'the node path is not a plain absolute path'
+  if (!SAFE_NODE_PATH.test(m.nodePath)) return 'the node path is not a plain absolute path'
   if (!RELEASE.test(m.release)) return 'the release is not a commit id'
   return null
 }

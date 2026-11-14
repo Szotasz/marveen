@@ -77,6 +77,16 @@ describe('the kit manifest', () => {
     })
   })
 
+  it('takes a node path with an at sign (a versioned Homebrew node), and nothing else beyond the plain alphabet', () => {
+    const homebrew = { ...MANIFEST, nodePath: '/opt/homebrew/opt/node@22/bin/node' }
+    expect(parseKitManifest(formatKitManifest(homebrew))).toEqual(homebrew)
+    for (const nodePath of ['/opt/node 22/node', '/opt/node$x/node', '/opt/node#1/node', '/opt/node~/node']) {
+      expect(() => formatKitManifest({ ...MANIFEST, nodePath })).toThrow()
+    }
+    // The install root keeps the narrow alphabet.
+    expect(() => formatKitManifest({ ...MANIFEST, installRoot: '/opt/marveen@1' })).toThrow()
+  })
+
   it.each<[string, Partial<KitManifest>]>([
     ['no file', { files: {} }],
     ['a file name with a slash', { files: { 'a/b': HASH_A } }],

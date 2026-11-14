@@ -11,6 +11,7 @@ import {
   type SupportStatusDeps,
 } from '../support-standby.js'
 import { createStatusDeps, runSupportCli, SUPPORT_CLI_USAGE } from '../support-standby-cli.js'
+import { KitError } from '../support-kit.js'
 import { buildSupportGrantLines } from '../support-access-line.js'
 import type { SshdAssessment } from '../support-access-sshd.js'
 import { currentLoginUser } from '../support-access-sshd-run.js'
@@ -167,30 +168,90 @@ describe('runSupportCli', () => {
     return { out, err, io: { out: (t) => out.push(t), err: (t) => err.push(t) } }
   }
 
+  const noInstall = async (): Promise<never> => {
+    throw new Error('install-kit must not run here')
+  }
+
   it('status prints the report and exits with 0', async () => {
     const c = io()
-    expect(await runSupportCli(['status'], c.io, { status: () => deps().deps })).toBe(0)
+    expect(await runSupportCli(['status'], c.io, { status: () => deps().deps, installKit: noInstall })).toBe(0)
     expect(c.out.join('')).toContain('sshd=ok\n')
     expect(c.err).toEqual([])
   })
 
-  it.each([[[]], [['bogus']], [['status', 'extra']], [['--help']], [['enable']]])(
-    'anything else (%j) prints the usage, exits with 2 and measures nothing',
-    async (argv) => {
-      const c = io()
-      let measured = false
-      const code = await runSupportCli(argv, c.io, {
-        status: () => {
-          measured = true
-          return deps().deps
+  const ROOT_ARGS = ['--install-root', '/opt/marveen', '--node', '/usr/bin/node', '--release', 'abc1234']
+
+  it.each([
+    [[]],
+    [['bogus']],
+    [['status', 'extra']],
+    [['--help']],
+    [['enable']],
+    [['install-kit']],
+    [['install-kit', ...ROOT_ARGS.slice(0, 4)]],
+    [['install-kit', ...ROOT_ARGS, '--force']],
+    [['install-kit', '--install-root', '/a', '--install-root', '/b', '--release', 'abc1234']],
+    [['install-kit', '--install-root', '', '--node', '/usr/bin/node', '--release', 'abc1234']],
+    [['install-kit', '--install-root=/opt/marveen', '--node', '/usr/bin/node', '--release', 'abc1234', 'x']],
+    [['install-kit', '--node', '/usr/bin/node', '--release', 'abc1234', '--support-dir', '/tmp/x']],
+    [['install-kit', '--INSTALL-ROOT', '/opt/marveen', '--node', '/usr/bin/node', '--release', 'abc1234']],
+    [['install-kit', '__proto__', '/x', '--node', '/usr/bin/node', '--release', 'abc1234']],
+  ])('anything else (%j) prints the usage, exits with 2, and neither measures nor writes', async (argv) => {
+    const c = io()
+    let touched = false
+    const code = await runSupportCli(argv, c.io, {
+      status: () => {
+        touched = true
+        return deps().deps
+      },
+      installKit: async () => {
+        touched = true
+        throw new Error('no')
+      },
+    })
+    expect(code).toBe(2)
+    expect(c.err.join('')).toBe(SUPPORT_CLI_USAGE)
+    expect(c.out).toEqual([])
+    expect(touched).toBe(false)
+  })
+
+  it('install-kit hands the three values over, in any order, and prints what happened', async () => {
+    const c = io()
+    const seen: unknown[] = []
+    const argv = ['install-kit', '--release', 'abc1234', '--node', '/usr/bin/node', '--install-root', '/opt/marveen']
+    const code = await runSupportCli(argv, c.io, {
+      status: () => deps().deps,
+      installKit: async (args) => {
+        seen.push(args)
+        return { kitDir: '/home/x/.marveen/support/kit', replaced: true, cleaned: ['.kit-old-0123456789abcdef'] }
+      },
+    })
+    expect(code).toBe(0)
+    expect(seen).toEqual([{ installRoot: '/opt/marveen', nodePath: '/usr/bin/node', release: 'abc1234' }])
+    expect(c.out.join('')).toBe('kit=written\nreplaced=yes\ncleaned=1\n')
+    expect(c.err).toEqual([])
+  })
+
+  it('install-kit says a refusal by its code only, and exits with 1; anything else is not swallowed', async () => {
+    const c = io()
+    const code = await runSupportCli(['install-kit', ...ROOT_ARGS], c.io, {
+      status: () => deps().deps,
+      installKit: async () => {
+        throw new KitError('kit_source_mismatch', 'support-standby.mjs in /home/someone/secret-place is not the file of this release')
+      },
+    })
+    expect(code).toBe(1)
+    expect(c.err.join('')).toBe('install-kit: refused: kit_source_mismatch\n')
+    expect(c.out).toEqual([])
+    await expect(
+      runSupportCli(['install-kit', ...ROOT_ARGS], c.io, {
+        status: () => deps().deps,
+        installKit: async () => {
+          throw new Error('disk on fire')
         },
-      })
-      expect(code).toBe(2)
-      expect(c.err.join('')).toBe(SUPPORT_CLI_USAGE)
-      expect(c.out).toEqual([])
-      expect(measured).toBe(false)
-    },
-  )
+      }),
+    ).rejects.toThrow('disk on fire')
+  })
 })
 
 describe('createStatusDeps', () => {
