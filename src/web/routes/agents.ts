@@ -12,7 +12,7 @@ import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
-  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards, requeueDeliveredOpenForAgent } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
@@ -2714,11 +2714,45 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const freshness = {
         ageMs: Date.now() - msg.created_at * 1000,
         newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
+        redelivered: msg.redelivered_at != null,
       }
       const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
+    return true
+  }
+
+  // REPLAYNOENVELOPE1114: after scripts/watchdog.sh restarted a sub-agent's session, it asks HERE for the rows the
+  // old session was handed and did not close. The caller names the agent and nothing else: no row id, no
+  // filter, no content. The server chooses the rows (requeueDeliveredOpenForAgent: delivered, open, inside
+  // the window, never from `system`, each at most once) and puts them back to pending; the router's normal tick
+  // delivers them through the usual envelope, which says it is a redelivery. Nothing is delivered from here.
+  // Refused with 400: any query string, and any request body at all (not even `{}` or whitespace), so a selector can
+  // never ride in. The main agent is refused too: its delivery path is the inbox drain, and the watchdog's replay
+  // never ran for it. Auth is the global /api bearer gate (the watchdog uses the fleet token, as before).
+  const redeliverMatch = path.match(/^\/api\/agents\/([^/]+)\/redeliver-open$/)
+  if (redeliverMatch && method === 'POST') {
+    if (url.search !== '' || (req.url ?? '').includes('?')) {
+      json(res, { error: 'redeliver-open takes no query string: the server chooses the rows' }, 400)
+      return true
+    }
+    const redeliverBody = await readBodyOrRefuse(req, res)
+    if (!redeliverBody) return true
+    if (redeliverBody.length > 0) {
+      json(res, { error: 'redeliver-open takes no request body: the server chooses the rows' }, 400)
+      return true
+    }
+    let name: string
+    try { name = decodeURIComponent(redeliverMatch[1]) } catch { json(res, { error: 'Agent not found' }, 404); return true }
+    if (isMainChannelsAgent(name)) {
+      json(res, { error: 'redeliver-open is for sub-agents (the main agent drains its own inbox)' }, 400)
+      return true
+    }
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    const ids = requeueDeliveredOpenForAgent(name)
+    logger.info({ agent: name, ids }, 'redeliver-open: delivered, open rows put back to pending for the router')
+    json(res, { ok: true, requeued: ids.length, ids })
     return true
   }
 

@@ -3,7 +3,8 @@
 // quoted such a token put a secrets file into two agents' contexts. The fix is one mapping
 // (src/web/pane-text.ts `paneTyped`) applied to everything sendPromptToSession types, and every
 // reader of the typed shape applies the same one. This file pins:
-//   - the rule itself, on ONE vector file shared by the TypeScript and the two Python sides;
+//   - the rule itself, on ONE vector file shared by the TypeScript and the Python side (the watchdog's
+//     Python replay, the second Python side, is gone: REPLAYNOENVELOPE1114);
 //   - that the readers of the router header accept the typed (escaped) header;
 //   - that the places typing WITHOUT the mapping cannot type an at-sign;
 //   - that tmux typing does not appear in a file nobody listed.
@@ -11,8 +12,7 @@
 // message, a card or a PR description.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { neutralizeAtMentions, paneOneLine, paneTyped, stripPaneControls, PANE_CONTROL_MARK } from '../web/pane-text.js'
 import { scrubSecurityTags, wrapUntrusted, wrapUntrustedFetch, wrapTrustedPeer, wrapScheduledTask, wrapChannelInbound } from '../prompt-safety.js'
@@ -83,11 +83,6 @@ describe('the rule: one line, no control character, a backslash before every at-
     expect(stripPaneControls('a bé c')).toBe('a bé c')
   })
 
-  it('Python, scripts/watchdog-replay.py: the same vectors, through the script itself', () => {
-    const out = execFileSync('python3', [join(ROOT, 'scripts', 'watchdog-replay.py'), '--neutralize-vectors', VECTORS_PATH], { encoding: 'utf-8' })
-    expect(JSON.parse(out)).toEqual(VECTORS.map((v) => v.out))
-  })
-
   it('Python, scripts/hooks/provenance-gate.py pane_shape: equals paneTyped on every vector', () => {
     const py = [
       'import importlib.util, json, sys',
@@ -97,14 +92,6 @@ describe('the rule: one line, no control character, a backslash before every at-
     ].join('\n')
     const out = execFileSync('python3', ['-c', py, join(ROOT, 'scripts', 'hooks', 'provenance-gate.py'), VECTORS_PATH], { encoding: 'utf-8' })
     expect(JSON.parse(out)).toEqual(VECTORS.map((v) => paneTyped(v.in)))
-  })
-
-  it('the watchdog replay types the mapped text through its own safe chunker, not raw slices', () => {
-    const src = readFileSync(join(ROOT, 'scripts', 'watchdog-replay.py'), 'utf-8')
-    expect(src).toMatch(/full_msg = pane_typed\(f"/)
-    expect(src).not.toMatch(/^\s*full_msg = f"/m)
-    expect(src).toMatch(/for chunk in typed_chunks\(full_msg\):/)
-    expect(src).not.toMatch(/full_msg\[i:i \+ chunk_size\]/)
   })
 })
 
@@ -190,29 +177,6 @@ describe('the typed stream: the chunks joined carry no at-sign at the start or a
     expect(body).toMatch(/'-l', chunks\[c\]\]/)
     expect(src).toContain('const oneLine = paneTyped(text)')
     expect(src).toContain('const CHUNK = PANE_CHUNK')
-  })
-
-  it('Python, scripts/watchdog-replay.py: its own chunker gives the same stream property', () => {
-    const texts = UNITS.flatMap((unit) => [0, 7, 15, 16, 17, 31, 33].map((off) => 'x'.repeat(off) + unit + ' vege'))
-    const dir = mkdtempSync(join(tmpdir(), 'pane-chunks-'))
-    try {
-      const f = join(dir, 'texts.json')
-      writeFileSync(f, JSON.stringify(texts))
-      for (const size of ['16', '9', '990']) {
-        const out: string[][] = JSON.parse(execFileSync('python3', [join(ROOT, 'scripts', 'watchdog-replay.py'), '--typed-chunks', f, size], { encoding: 'utf-8' }))
-        out.forEach((chunks, i) => {
-          expect(EXPANDABLE.test(chunks.join('')), `size ${size} text ${i}`).toBe(false)
-          for (const c of chunks) {
-            expect(c.startsWith('-'), `size ${size} text ${i}: a chunk starts with a dash`).toBe(false)
-            expect(c.endsWith(';'), `size ${size} text ${i}: a chunk ends with a semicolon`).toBe(false)
-          }
-          // the same chunks as the TypeScript chunker for the same mapped line and size
-          expect(chunks).toEqual(paneTypedChunks(paneTyped(texts[i]), Number(size)))
-        })
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
   })
 })
 
@@ -464,7 +428,6 @@ describe('tmux typing lives only in the listed files', () => {
   const TYPING_FILES: Record<string, string> = {
     'src/web/agent-process.ts': 'A: sendPromptToSession types paneTyped(text); the identity /rename refuses an at-sign',
     'src/web/routes/agent-terminal.ts': 'A, DELIBERATELY unmapped: the owner types into the dashboard terminal on purpose',
-    'scripts/watchdog-replay.py': 'A: neutralize_at_mentions() on the replayed content',
     'scripts/lib/main-rename.sh': 'A: /rename <name>, refuses an at-sign',
     'scripts/channels.sh': 'A (fallback /rename, refuses an at-sign) + B/C',
     'src/web/context-restart-gate-runner.ts': 'B: /clear, /model <validated id>, /effort <fixed level>',
