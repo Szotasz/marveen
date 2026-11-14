@@ -164,6 +164,13 @@ describe('settleOnceAfterRun: the sweep\'s done branch, behaviour on a real task
     expect(onceLogs(info)).toHaveLength(0)
     expect(rawOf('plain-task', 'task-config.json')).toBe(before)
   })
+  it('a recurring (non-once) task after an acknowledged WORKSOURCE run stays on, its file byte-identical', () => {
+    fixture('ws-plain-acked', { schedule: '*/30 * * * *', agent: 'c3po', enabled: true })
+    const before = rawOf('ws-plain-acked', 'task-config.json')
+    runner.settleOnceAfterRun('ws-plain-acked', 'done', undefined, NOW, false, true)
+    expect(cfgOf('ws-plain-acked').enabled).toBe(true)
+    expect(rawOf('ws-plain-acked', 'task-config.json')).toBe(before)
+  })
 })
 
 describe('disableOnceTask: only task-config.json, only a once task that is still on', () => {
