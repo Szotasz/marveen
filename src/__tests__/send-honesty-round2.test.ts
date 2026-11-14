@@ -6,9 +6,9 @@ import { join } from 'node:path'
 
 // NOTIFYVAKSWEEP826 round 2: the remaining Telegram senders move to the shared
 // contract (telegram_api_call generalizes it beyond sendMessage), their
-// cooldown/backoff/state stamps move to after-confirmed-delivery, and the
-// watchdog replay path -- until now a fully RECORD-LESS injection route
-// (MSGSZIVARGAS826) -- writes a dated marker per injected message. Empirical
+// cooldown/backoff/state stamps move to after-confirmed-delivery. (The
+// watchdog replay marker this round added, MSGSZIVARGAS826, is gone together
+// with the record-less replay path itself: REPLAYNOENVELOPE1114.) Empirical
 // staged-tree tests, PATH-stubbed curl/tmux, nothing leaves the machine.
 // stuck-modal-guard is the one static-only conversion (running it needs a live
 // stuck tmux session); its alert_owner is byte-identical to the disk-guard
@@ -227,48 +227,9 @@ describe('github-pr-monitor.sh: failed alert keeps the snapshot for retry', () =
   })
 })
 
-describe('watchdog-replay.py: the injection path now leaves a record (MSGSZIVARGAS826)', () => {
-  const runReplay = (msgs: unknown[], env: Record<string, string> = {}) => {
-    const { bin } = stageTree([])
-    cpSync(join(ROOT, 'scripts', 'watchdog-replay.py'), join(stage, 'scripts', 'watchdog-replay.py'))
-    const data = join(stage, 'msgs.json')
-    writeFileSync(data, JSON.stringify(msgs))
-    const logTarget = join(stage, 'store', 'dashboard.log')
-    const r = spawnSync('python3', [join(stage, 'scripts', 'watchdog-replay.py'),
-      'agent-testbot', 'testbot', '0', data, logTarget], {
-      env: {
-        PATH: `${bin}:/usr/bin:/bin`,
-        TMUX_ARGV_LOG: join(stage, 'tmux-argv.log'),
-        ...env,
-      },
-      encoding: 'utf-8',
-      timeout: 60000,
-    })
-    return { r, logTarget, tmuxLog: join(stage, 'tmux-argv.log') }
-  }
-  it('writes one dated marker per injected message, with the msg id', () => {
-    const { r, logTarget, tmuxLog } = runReplay([
-      { id: 16029, to_agent: 'testbot', status: 'delivered', completed_at: null, created_at: 5, content: 'hello' },
-      { id: 16030, to_agent: 'other', status: 'delivered', completed_at: null, created_at: 5, content: 'not mine' },
-    ])
-    expect(r.status).toBe(0)
-    expect(existsSync(tmuxLog)).toBe(true) // injection provably attempted
-    const lines = readFileSync(logTarget, 'utf-8').trim().split('\n')
-    expect(lines).toHaveLength(1) // only the addressed message, not the other agent's
-    const marker = JSON.parse(lines[0])
-    expect(marker.msg).toBe('watchdog-replay injected')
-    expect(marker.id).toBe(16029)
-    expect(marker.agent).toBe('testbot')
-    // Full date in the stamp -- time-only lines are the measured instrument trap.
-    expect(marker.time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
-  })
-  it('RED-BEFORE property: with no pending messages, no marker and no injection', () => {
-    const { r, logTarget, tmuxLog } = runReplay([])
-    expect(r.status).toBe(0)
-    expect(existsSync(logTarget)).toBe(false)
-    expect(existsSync(tmuxLog)).toBe(false)
-  })
-})
+// The watchdog-replay.py marker block that stood here went away with the script (REPLAYNOENVELOPE1114): the
+// record-less injection path it put a marker on no longer exists. After a restart the watchdog asks the server to
+// put the delivered but unseen rows back, and the router delivers them with the normal envelope and delivery trace.
 
 describe('stuck-modal-guard.sh: static conversion checks (live run needs a stuck session)', () => {
   const src = readFileSync(join(ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')

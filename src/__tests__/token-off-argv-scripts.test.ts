@@ -1,6 +1,7 @@
 // VOICETOKENLEAK1101 round 3, PR 2 (Samu 65565/65800): four more scripts put the dashboard token on curl's argv, which
 // ps shows to every process of the same user: scripts/doctor.sh (the Dashboard API probe), scripts/migrate.sh (every
-// import, through AUTH_HEADER), scripts/watchdog.sh (the replay's message list, through TOKEN) and the post-checkout
+// import, through AUTH_HEADER), scripts/watchdog.sh (the post-restart redelivery request, through TOKEN; until
+// REPLAYNOENVELOPE1114 it was the replay's message list) and the post-checkout
 // hook scripts/install-prod-tree-guard-hook.sh writes. Each now hands curl the header from a process substitution
 // (-H @<(printf ...): printf is a builtin, so no child's argv carries it, and nothing goes to disk), as #2439 did for
 // agent-msg.sh. Where the token sits in a shell variable (watchdog's TOKEN, migrate's AUTH_HEADER) the variable is
@@ -209,29 +210,30 @@ describe('migrate.sh: every import call', () => {
   })
 })
 
-describe('watchdog.sh: the replay\'s message list', () => {
-  // From the token's read to the end of replay_unfinished_messages in the real file, then one replay.
+describe('watchdog.sh: the post-restart redelivery request', () => {
+  // From the token's read to the end of request_unseen_redelivery in the real file, then one request.
+  // (REPLAYNOENVELOPE1114: this used to be a GET of the agent's message list for the Python replay.)
   function harness(r: string): string {
     const body = cut('watchdog.sh', 'TOKEN=""\n', '\n# ── Dashboard')
-    const h = join(r, 'watchdog-replay.sh')
+    const h = join(r, 'watchdog-redeliver.sh')
     writeFileSync(h, [`INSTALL_DIR="${r}"`, `LOG="${r}/watchdog.log"`, `WEB_PORT=${port()}`,
-      "timestamp() { date '+%Y-%m-%d %H:%M:%S'; }", body, 'replay_unfinished_messages agent-a session-a', 'echo "replay done"'].join('\n') + '\n')
+      "timestamp() { date '+%Y-%m-%d %H:%M:%S'; }", body, 'request_unseen_redelivery agent-a', 'echo "redelivery done"'].join('\n') + '\n')
     return h
   }
 
   it('the server gets the token header; curl\'s argv and environment do not carry it', async () => {
     const r = root('watchdog')
-    reply = () => '[]'
+    reply = () => '{"ok":true,"requeued":0,"ids":[]}'
     const res = await bash(harness(r), {})
     expect(res.code, res.out).toBe(0)
-    expect(res.out).toContain('replay done')
-    expect(seen.map((s) => [s.method, s.url, s.headers.authorization])).toEqual([['GET', '/api/messages?agent=agent-a&limit=200', `Bearer ${TOKEN}`]])
+    expect(res.out).toContain('redelivery done')
+    expect(seen.map((s) => [s.method, s.url, s.headers.authorization, s.body])).toEqual([['POST', '/api/agents/agent-a/redeliver-unseen', `Bearer ${TOKEN}`, '']])
     expectHeaderNotArgv()
   })
 
   it('a TOKEN the caller exported does not carry the dashboard token into curl\'s environment', async () => {
     const r = root('watchdog-env')
-    reply = () => '[]'
+    reply = () => '{"ok":true,"requeued":0,"ids":[]}'
     const res = await bash(harness(r), { TOKEN: 'ambient-foreign-value' })
     expect(res.code, res.out).toBe(0)
     expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
@@ -239,13 +241,14 @@ describe('watchdog.sh: the replay\'s message list', () => {
     expect(logs().env).not.toMatch(/^TOKEN=/m)
   })
 
-  it('unchanged: without a token file the replay sends nothing', async () => {
+  it('without a token file the request sends nothing, and says so in the watchdog log', async () => {
     const r = root('watchdog-none')
     execFileSync('rm', [join(r, 'store', '.dashboard-token')])
     const res = await bash(harness(r), {})
     expect(res.code, res.out).toBe(0)
     expect(seen).toHaveLength(0)
     expect(logs().argv).toBe('')
+    expect(readFileSync(join(r, 'watchdog.log'), 'utf-8')).toContain('agent-a: nincs dashboard token, ujrakezbesites kihagyva')
   })
 })
 

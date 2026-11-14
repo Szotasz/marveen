@@ -117,6 +117,7 @@ export async function sendResumeWithDrain(
       {
         ageMs: Date.now() - row.created_at * 1000,
         newerFromSameSender: countNewerMessagesFromSameSender(row.from_agent, row.to_agent, row.id),
+        redelivered: row.redelivered_at != null,
       },
       { urgent: row.urgent === 1 },
     )
