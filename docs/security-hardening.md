@@ -464,7 +464,7 @@ The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
 
-## The envelope hook (default on WebSearch and WebFetch, opt-in for browser MCP servers)
+## The envelope hook (default on WebSearch, WebFetch and the catalog's mail, calendar, Drive and browser MCP servers)
 
 `scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
 browser / search results in an `<untrusted source="..." fetch-nonce="...">`
@@ -487,7 +487,7 @@ repo-shipped `.claude/settings.json` for the main agent, and by the scaffold
 (`injectWebSearchEnvelope`, with a startup migration for existing agents) for
 every sub-agent. Every agent can call WebSearch: three profiles allow it by
 name, and the permissive ones run with the permission bypass. The hook does
-nothing until WebSearch or WebFetch is called. Its label tells the agent to read and use
+nothing until a tool its matcher names is called. Its label tells the agent to read and use
 the content's facts and to refuse only its imperatives, so an agent does not
 stop on a round whose content was its job (BORITOOLVASAT921).
 
@@ -501,19 +501,26 @@ content's say-so, and that its facts are usable.
 
 There is no per-agent opt-out: the startup migration re-adds a removed WebSearch
 group on the next dashboard start, as it does for the gates. An operator who
-wires the envelope under their own matcher that also covers WebSearch (the
-browser pattern below) keeps theirs, and no second copy is added.
+wires the envelope under their own matcher that also covers WebSearch or
+WebFetch keeps theirs, and no second copy is added; the managed group then adds
+only the built-in tool that group misses, so that group should name the MCP
+servers below itself.
 
-A browser MCP server is still **not wired by default**, because an install with
-no browser gains nothing from it. Operators who run one add its matcher
-themselves, in the project `settings.json` or `settings.local.json`:
+Since MCPUNTRUSTED1114 the same default group also covers the catalog's
+`gmail`, `gmail-v2`, `google-calendar`, `google-drive` and `playwright` MCP
+servers (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__.*`):
+an email, a calendar invite, a shared document or a page is text anyone can
+author, and before this it reached the agent with no envelope and no label. A
+server installed under another name (another browser MCP, `mcp__chrome*`) is
+**not wired by default**; operators who run one add its matcher themselves, in
+the project `settings.json` or `settings.local.json`:
 
 ```json
 {
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__playwright__browser_.*|mcp__chrome.*|WebSearch",
+        "matcher": "mcp__chrome.*",
         "hooks": [
           {
             "type": "command",

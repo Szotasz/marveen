@@ -450,7 +450,7 @@ describe('browser-content-notice (documented scope)', () => {
     expect(source).toContain('2.1.278')
   })
 
-  it('is wired by default on WebSearch and WebFetch only (MARVEENGAPS1020 (c)); browser MCP matchers stay operator-wired', () => {
+  it('is wired by default on WebSearch, WebFetch (MARVEENGAPS1020 (c)) and the catalog mail/calendar/Drive/browser MCP servers (MCPUNTRUSTED1114)', () => {
     // The main agent: the repo-shipped project settings. Sub-agents: the
     // scaffold (agent-scaffold.ts injectWebSearchEnvelope), pinned in
     // websearch-envelope-wiring.test.ts.
@@ -458,8 +458,8 @@ describe('browser-content-notice (documented scope)', () => {
     type Group = { matcher?: string; hooks: Array<{ command: string }> }
     const groups = (settings.hooks.PostToolUse as Group[])
       .filter((g) => g.hooks.some((h) => h.command.includes('browser-content-notice.py')))
-    // exactly one envelope group, and its matcher is WebSearch|WebFetch: no browser MCP matcher
-    expect(groups.map((g) => g.matcher)).toEqual(['WebSearch|WebFetch'])
+    // exactly one envelope group; other MCP servers stay operator-wired
+    expect(groups.map((g) => g.matcher)).toEqual(['WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__.*'])
     // Mid-array, not after the last entry (#2091 review): an appended group would
     // rewrite the old last line (its trailing comma), and a customer's own hook
     // appended at the end then conflicts on update and leaves invalid JSON.

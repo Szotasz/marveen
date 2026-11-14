@@ -2355,10 +2355,16 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // the allowlist gates which host is reached, but an allowlisted host's content
 // is still external text. The hook never fails a tool
 // call (it exits 0 on any error), so it is a plain command, not a fail-closed
-// gate. Browser MCP matchers stay operator-wired (the doc shows how).
+// gate. MCPUNTRUSTED1114: the catalog's mail, calendar, Drive and browser MCP
+// servers return text anyone can author (an email, an invite, a shared doc, a
+// page), so the managed group covers them too; other MCP servers stay
+// operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
 export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
-export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
+export const ENVELOPE_MCP_SERVERS = ['gmail', 'gmail-v2', 'google-calendar', 'google-drive', 'playwright'] as const
+export const WEBSEARCH_ENVELOPE_MATCHER = `${ENVELOPE_TOOLS.join('|')}|mcp__(${ENVELOPE_MCP_SERVERS.join('|')})__.*`
+// The managed matcher before MCPUNTRUSTED1114: still ours, so it is migrated, not kept as an operator group.
+const LEGACY_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
@@ -2379,7 +2385,7 @@ export const LEGACY_ENVELOPE_COMMAND = /^python3 ("(?:\/[^"]*|\$CLAUDE_PROJECT_D
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
 // group -- unless an operator already wired the envelope under a matcher that
-// covers the tool (e.g. the docs' "...|WebSearch" browser pattern), where a
+// covers the tool (e.g. the earlier docs' "...|WebSearch" browser pattern), where a
 // second copy would run the hook twice. Returns whether anything changed.
 function envelopeToolsCovered(matcher: unknown): Set<string> {
   // Claude Code's PostToolUse matching, as the shipped CLI does it: a missing, '' or '*' matcher matches every
@@ -2413,7 +2419,7 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   const kept: G[] = []
   for (const g of prev) {
     const managed = typeof g?.matcher === 'string' && (
-      g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
+      g.matcher === WEBSEARCH_ENVELOPE_MATCHER || g.matcher === LEGACY_ENVELOPE_MATCHER ||
       // a single envelope tool name; this also migrates the old WebSearch-only group
       (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
     if (!managed || !Array.isArray(g.hooks)) {
@@ -2436,7 +2442,10 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   }
   const missing = ENVELOPE_TOOLS.filter((t) => !covered.has(t))
   if (missing.length) {
-    kept.push({ matcher: missing.join('|'), hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+    // shortcut: where an operator's own envelope group already covers a built-in, the managed group adds only the
+    // built-ins it misses, and no MCP server; extend the coverage check to MCP names if such installs need it.
+    const matcher = missing.length === ENVELOPE_TOOLS.length ? WEBSEARCH_ENVELOPE_MATCHER : missing.join('|')
+    kept.push({ matcher, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
   }
   hooks.PostToolUse = kept
   return JSON.stringify(hooks.PostToolUse) !== before

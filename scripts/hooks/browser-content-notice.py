@@ -20,9 +20,11 @@ WHERE IT IS WIRED
 -----------------
 On WebSearch by default (MARVEENGAPS1020): every sub-agent through the
 scaffold, the main agent through the repo-shipped .claude/settings.json.
-Browser MCP servers stay operator-wired: an install without a browser gains
-nothing from it. Operators who run one add its matcher to their PostToolUse
-hooks (see docs/security-hardening.md).
+Since MCPUNTRUSTED1114 the same group also covers the catalog's gmail,
+gmail-v2, google-calendar, google-drive and playwright MCP servers: mail,
+invites, shared docs and pages are text anyone can author. Other MCP servers
+stay operator-wired: operators add their matcher to their PostToolUse hooks
+(see docs/security-hardening.md).
 
 TWO LAYERS, BECAUSE THE STRONGER ONE CAN FAIL SILENTLY
 ------------------------------------------------------
