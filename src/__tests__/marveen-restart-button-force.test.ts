@@ -96,13 +96,13 @@ describe('main-agent restart button', () => {
     const r = await click([{ status: 409, body: { error: 'something else' } }], [true, true])
     expect(r.calls).toHaveLength(1)
     expect(r.asked).toHaveLength(1)
-    expect(r.toasts).toEqual(['Hiba: something else'])
+    expect(r.toasts).toEqual(['common.error: something else'])
   })
 
   it('a failed forced restart is an error toast', async () => {
     const r = await click([{ status: 409, body: { error: 'restart-blocked', reason: 'busy' } }, { status: 500, body: { error: 'Restart failed' } }], [true, true])
     expect(r.calls).toHaveLength(2)
-    expect(r.toasts).toEqual(['Hiba: Restart failed'])
+    expect(r.toasts).toEqual(['common.error: Restart failed'])
   })
 
   it('first confirm declined: no request', async () => {
