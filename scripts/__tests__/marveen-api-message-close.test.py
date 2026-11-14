@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""marveen-api.sh message-close: a --result-file close of an `[Eredmény]` receipt is refused.
+"""marveen-api.sh message-close: a --result-file close of an `[Eredmény]` receipt is refused (unless --no-notify).
 
 Closing a receipt sends nothing back (src/web/routes/messages.ts, the completion-report ping-pong guard), so a
 result written there never reaches the sender: on 2026-11-10 two tasks answered inside a receipt were lost this
@@ -78,6 +78,25 @@ ok(rc == 0 and puts == [('PUT', '/api/messages/42', {'status': 'done', 'result':
 rc, err, puts = run('--no-notify', content='[Eredmény] msg_id:41 status:done')
 ok(rc == 0 and puts == [('PUT', '/api/messages/42', {'status': 'done', 'notify': False})],
    'C3 receipt + --no-notify (no result): closed as before', 'rc=%d puts=%r %s' % (rc, puts, err[:200]))
+
+RECIPE = os.path.join(TMP, 'api-eredmeny.txt')  # a recipe payload name: emptied after a send
+with open(RECIPE, 'w', encoding='utf-8') as f:
+    f.write('az eredmeny')
+rc, err, puts = run('--result-file', RECIPE, '--no-notify', content='[Eredmény] msg_id:41 status:done')
+kept = open(RECIPE, encoding='utf-8').read()
+ok(rc == 0 and puts == [('PUT', '/api/messages/42', {'status': 'done', 'notify': False})] and 'ignored' in err
+   and kept == 'az eredmeny',
+   'C5 receipt + --result-file + --no-notify: closed, the result ignored (stderr says so), its file kept',
+   'rc=%d puts=%r kept=%r %s' % (rc, puts, kept, err[:200]))
+
+with open(RECIPE, 'w', encoding='utf-8') as f:
+    f.write('az eredmeny')
+rc, err, puts = run('--result-file', RECIPE, '--no-notify')
+kept = open(RECIPE, encoding='utf-8').read()
+ok(rc == 0 and puts == [('PUT', '/api/messages/42', {'status': 'done', 'result': 'az eredmeny', 'notify': False})]
+   and 'ignored' not in err and kept == '',
+   'C6 a task + --result-file + --no-notify: closed with the result and notify:false, its recipe file emptied',
+   'rc=%d puts=%r kept=%r %s' % (rc, puts, kept, err[:200]))
 
 rc, err, puts = run('--result-file', RESULT, row_status=404, content='')
 ok(rc == 0 and len(puts) == 1, 'C4 unreadable row: not refused, the close goes out', 'rc=%d puts=%r %s' % (rc, puts, err[:200]))
