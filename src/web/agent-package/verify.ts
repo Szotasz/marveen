@@ -237,6 +237,10 @@ export const REQUIRED_FILES = ['CLAUDE.md', 'SOUL.md'] as const
 /** Sz-4.3: the two values a connector's level may take, letter for letter. */
 export const CONNECTOR_LEVELS = ['required', 'recommended'] as const
 export type ConnectorLevel = (typeof CONNECTOR_LEVELS)[number]
+/** Contract decision (Mira 77967): a connector name has the slug's strict grammar, 2 to 40 characters. */
+export const CONNECTOR_NAME_RE = /^(?=.{2,40}$)[a-z0-9]+(-[a-z0-9]+)*$/
+/** Contract decision (Mira 77967): a model hint has a model id's shape (or it is null or absent, Sz-4.3). */
+export const MODEL_HINT_RE = /^[a-z0-9][a-z0-9.-]{1,63}$/
 
 const AVATAR_CONTENT_TYPES: Readonly<Record<string, string>> = {
   'avatar.png': 'image/png',
@@ -293,16 +297,17 @@ export type VerifyResult =
 
 /**
  * PROVISIONAL (open contract point N21/b): the refusal codes of D10 (manifest
- * texts, avatar metadata blocks) and S18 point 1 (one-line manifest texts) are
- * not decided yet. Until they are, they map to EXISTING codes, here and only
+ * texts, avatar blocks) and S18 point 1 (one-line manifest texts) are not
+ * decided yet. Until they are, they map to EXISTING codes, here and only
  * here: a manifest text breaking a text rule gets the reason that rule gives a
- * file, a line break in a manifest text is bad_text, and a forbidden or
- * truncated avatar block is bad_avatar.
+ * file, a line break in a manifest text is bad_text, and an avatar block that
+ * is not allowed, out of place or truncated is bad_avatar.
  */
 export const N21B_PROVISIONAL_REASONS = Object.freeze({
   manifestText: (fileRuleReason: TextReason): VerifyReason => fileRuleReason,
   manifestLineBreak: 'bad_text' as VerifyReason,
-  avatarMetadataBlock: 'bad_avatar' as VerifyReason,
+  avatarBlockNotAllowed: 'bad_avatar' as VerifyReason,
+  avatarBlockStructure: 'bad_avatar' as VerifyReason,
   avatarTruncatedBlock: 'bad_avatar' as VerifyReason,
 })
 
@@ -360,8 +365,10 @@ let mintVerifiedPackage: (f: VerifiedFields) => VerifiedPackage
  * that no property leads to, the class and its prototype are frozen, and
  * instanceof is true only for an object the constructor built (it asks for
  * the private field, so an object that merely has this prototype fails).
- * Every string on an instance passed a closed pattern or the manifest text
- * rules (D10); the installer reads them from here, never from the raw payload.
+ * Every string on an instance passed a closed pattern (slug, versions, paths,
+ * hashes, connector name and level, model hint) or the manifest text rules
+ * (title, description, display name, connector reason; D10); the installer
+ * reads them from here, never from the raw payload.
  */
 export class VerifiedPackage {
   readonly slug: string
@@ -556,13 +563,16 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
   const agent = payload.agent
   if (!isPlainObject(agent) || typeof agent.display_name !== 'string') return fail(2, 'bad_payload')
   const modelHint = agent.model_hint
-  if (modelHint !== undefined && modelHint !== null && typeof modelHint !== 'string') return fail(2, 'bad_payload')
+  if (modelHint !== undefined && modelHint !== null) {
+    if (typeof modelHint !== 'string' || !MODEL_HINT_RE.test(modelHint)) return fail(2, 'bad_payload')
+  }
   if (!Array.isArray(payload.connectors)) return fail(2, 'bad_payload')
   const connectors: VerifiedConnector[] = []
   for (const c of payload.connectors) {
     if (!isPlainObject(c) || typeof c.name !== 'string' || typeof c.level !== 'string' || typeof c.reason !== 'string') {
       return fail(2, 'bad_payload')
     }
+    if (!CONNECTOR_NAME_RE.test(c.name)) return fail(2, 'bad_payload')
     const level = CONNECTOR_LEVELS.find((l) => l === c.level)
     if (level === undefined) return fail(2, 'bad_payload')
     connectors.push({ name: c.name, level, reason: c.reason })
@@ -631,11 +641,7 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
     ['title', payload.title],
     ['description', payload.description],
     ['agent.display_name', agent.display_name],
-    ...(typeof modelHint === 'string' ? [['agent.model_hint', modelHint] as [string, string]] : []),
-    ...connectors.flatMap((c, i): Array<[string, string]> => [
-      [`connectors[${i}].name`, c.name],
-      [`connectors[${i}].reason`, c.reason],
-    ]),
+    ...connectors.map((c, i): [string, string] => [`connectors[${i}].reason`, c.reason]),
   ]
   for (const [field, text] of manifestTexts) {
     const refusal = scanManifestText(text)
@@ -697,15 +703,27 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
 }
 
 // ---------------------------------------------------------------------------
-// Avatar container checks (step 5): leading bytes, and D10 metadata blocks.
+// Avatar container checks (step 5): leading bytes, and the allowed blocks (D10).
 // Only the block headers are read (type and length); the image is never decoded.
 // ---------------------------------------------------------------------------
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-/** D10: PNG text and EXIF chunks. */
-const PNG_FORBIDDEN_CHUNKS: ReadonlySet<string> = new Set(['tEXt', 'iTXt', 'zTXt', 'eXIf'])
-/** D10: WebP EXIF and XMP chunks. */
-const WEBP_FORBIDDEN_CHUNKS: ReadonlySet<string> = new Set(['EXIF', 'XMP '])
+/**
+ * Contract decision (Mira 77967): an allowlist, not a denylist. A PNG avatar
+ * may carry these chunks only; every other one (text, ICC, private, a
+ * different letter case) is refused.
+ */
+const PNG_ALLOWED_CHUNKS: ReadonlySet<string> = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND'])
+/** The only WebP chunks, and the only orders they may come in (simple lossy, simple lossless, extended). */
+const WEBP_ALLOWED_CHUNKS: ReadonlySet<string> = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH'])
+const WEBP_ALLOWED_LAYOUTS: ReadonlySet<string> = new Set([
+  'VP8 ',
+  'VP8L',
+  'VP8X,VP8 ',
+  'VP8X,VP8L',
+  'VP8X,ALPH,VP8 ',
+  'VP8X,ALPH,VP8L',
+])
 
 const ascii = (b: Uint8Array, start: number, end: number): string => Buffer.from(b.subarray(start, end)).toString('latin1')
 
@@ -716,12 +734,16 @@ function hasMagic(b: Uint8Array, contentType: string | undefined): boolean {
 }
 
 /**
- * Walk every block of the container to the end of the bytes. A forbidden
- * block type, or a block whose header or length runs past the end, is refused.
+ * Walk every block of the container to the end of the bytes. Refused: a block
+ * whose header or length runs past the end, a block type outside the
+ * allowlist, and a block order the contract does not name (PNG: IHDR first
+ * and once, at least one IDAT, IEND last and once; WebP: one of the layouts).
  */
 function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyReason; rule: string } | null {
   const truncated = { reason: N21B_PROVISIONAL_REASONS.avatarTruncatedBlock, rule: 'truncated-block' }
-  const metadata = { reason: N21B_PROVISIONAL_REASONS.avatarMetadataBlock, rule: 'metadata-block' }
+  const notAllowed = { reason: N21B_PROVISIONAL_REASONS.avatarBlockNotAllowed, rule: 'block-not-allowed' }
+  const structure = { reason: N21B_PROVISIONAL_REASONS.avatarBlockStructure, rule: 'block-structure' }
+  const types: string[] = []
   if (contentType === 'image/png') {
     let off = 8
     while (off < b.length) {
@@ -730,9 +752,14 @@ function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyRea
       const type = ascii(b, off + 4, off + 8)
       const end = off + 12 + len
       if (end > b.length) return truncated
-      if (PNG_FORBIDDEN_CHUNKS.has(type)) return metadata
+      if (!PNG_ALLOWED_CHUNKS.has(type)) return notAllowed
+      types.push(type)
       off = end
     }
+    const count = (t: string): number => types.filter((x) => x === t).length
+    if (types[0] !== 'IHDR' || count('IHDR') !== 1) return structure
+    if (count('IDAT') < 1) return structure
+    if (types[types.length - 1] !== 'IEND' || count('IEND') !== 1) return structure
     return null
   }
   // WebP: the RIFF size must not point past the end; then every chunk, padded to an even length.
@@ -744,10 +771,11 @@ function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyRea
     const len = b.readUInt32LE(off + 4)
     const end = off + 8 + len + (len % 2)
     if (end > b.length) return truncated
-    if (WEBP_FORBIDDEN_CHUNKS.has(fourcc)) return metadata
+    if (!WEBP_ALLOWED_CHUNKS.has(fourcc)) return notAllowed
+    types.push(fourcc)
     off = end
   }
-  return null
+  return WEBP_ALLOWED_LAYOUTS.has(types.join(',')) ? null : structure
 }
 
 // ---------------------------------------------------------------------------

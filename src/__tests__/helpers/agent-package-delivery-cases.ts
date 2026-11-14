@@ -147,7 +147,56 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('connector level with a trailing NUL', d({ connectors: [{ name: 'billing', level: 'required\u0000', reason: 'ok' }] }), 2, 'bad_payload'),
     refused('connector level with a trailing line break', d({ connectors: [{ name: 'billing', level: 'recommended\n', reason: 'ok' }] }), 2, 'bad_payload'),
     refused('connector level empty', d({ connectors: [{ name: 'billing', level: '', reason: 'ok' }] }), 2, 'bad_payload'),
-    refused('second connector level outside the enumeration', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b', level: 'requiredrecommended', reason: 'ok' }] }), 2, 'bad_payload'),
+    refused('second connector level outside the enumeration', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'requiredrecommended', reason: 'ok' }] }), 2, 'bad_payload'),
+    // The connector name is a closed pattern (contract decision, Mira 77967): the slug's strict grammar, 2-40 characters.
+    ...([
+      ['with a word-initial at sign and a path', '@notes/secret.md'],
+      ['with a bang and a backtick', 'bill!`ls`'],
+      ['with a bidi override', 'bill‮ing'],
+      ['with a NUL', 'bill\u0000ing'],
+      ['with an LF', 'bill\ning'],
+      ['with a trailing LF', 'billing\n'],
+      ['with a space', 'bill ing'],
+      ['with an uppercase letter', 'Billing'],
+      ['with an underscore', 'bill_ing'],
+      ['with a dot', 'bill.ing'],
+      ['with a leading hyphen', '-billing'],
+      ['with a trailing hyphen', 'billing-'],
+      ['with a double hyphen', 'bill--ing'],
+      ['of one character', 'b'],
+      ['of 41 characters', 'a'.repeat(41)],
+      ['empty', ''],
+    ] as const).map(([what, name]) =>
+      refused(`connector name ${what}`, d({ connectors: [{ name, level: 'required', reason: 'ok' }] }), 2, 'bad_payload')),
+    refused('second connector name outside the pattern', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'b\rc', level: 'recommended', reason: 'ok' }] }), 2, 'bad_payload'),
+    ok('connector names at both length bounds, with digits and hyphens', d({ connectors: [
+      { name: 'ab', level: 'required', reason: 'ok' },
+      { name: 'a'.repeat(40), level: 'recommended', reason: 'ok' },
+      { name: 'google-drive-2', level: 'recommended', reason: 'ok' },
+    ] })),
+    // The model hint is a closed pattern too (a model id shape), or null, or absent.
+    ...([
+      ['with a word-initial at sign', '@notes.md'],
+      ['with a zero-width space', 'claude​-sonnet-5'],
+      ['with a NUL', 'claude-sonnet-5\u0000'],
+      ['with an LF', 'claude-sonnet-5\nx'],
+      ['with a trailing LF', 'claude-sonnet-5\n'],
+      ['with a CR', 'claude-sonnet-5\rx'],
+      ['with a space', 'claude sonnet'],
+      ['with an uppercase letter', 'Claude-sonnet-5'],
+      ['with a slash', 'vendor/model'],
+      ['with a bracket suffix', 'claude-sonnet-5[1m]'],
+      ['starting with a hyphen', '-claude'],
+      ['of one character', 'c'],
+      ['of 65 characters', 'c'.repeat(65)],
+      ['empty', ''],
+    ] as const).map(([what, modelHint]) => refused(`model hint ${what}`, d({ modelHint }), 2, 'bad_payload')),
+    refused('model hint is a number', tamper({ payload: (p) => ({ ...p, agent: { ...(p.agent as Obj), model_hint: 5 } }) }), 2, 'bad_payload'),
+    ok('model hint of two characters', d({ modelHint: 'c5' })),
+    ok('model hint of 64 characters', d({ modelHint: 'c'.repeat(64) })),
+    ok('model hint with a dot and digits', d({ modelHint: 'claude-sonnet-5.5' })),
+    ok('model hint null, with both connector levels', d({ modelHint: null, connectors: [{ name: 'billing', level: 'required', reason: 'ok' }, { name: 'mail', level: 'recommended', reason: 'ok' }] })),
+    ok('model hint key absent', tamper({ payload: (p) => ({ ...p, agent: { display_name: (p.agent as Obj).display_name } }) })),
 
     // ---- step 3: file set
     refused('an outer file the payload does not list', tamper({ document: (doc) => ({ ...doc, files: { ...(doc.files as Obj), 'skills/x/SKILL.md': '# x\n' } }) }), 3, 'file_set_mismatch'),
@@ -208,24 +257,10 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('description with a CR', d({ description: 'Keeps\rthe invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-line-break' }),
     refused('display name with an LF', d({ displayName: 'Invoice\nhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
     refused('display name with a CR', d({ displayName: 'Invoice\rhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
-    refused('connector reason with an LF', d({ connectors: [{ name: 'b', level: 'required', reason: 'a\nb' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
-    refused('second connector reason with a CR', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b', level: 'required', reason: 'a\rb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
-    // The connector name and the model hint are signed strings the installer may
-    // use, so the same manifest text rules run on them (no shape in the contract yet).
-    refused('connector name with a word-initial at sign and a path', d({ connectors: [{ name: '@notes/secret.md', level: 'required', reason: 'ok' }] }), 5, 'forbidden_import_token', { field: 'connectors[0].name' }),
-    refused('connector name with a bidi override', d({ connectors: [{ name: 'bill‮ing', level: 'required', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[0].name' }),
-    refused('connector name with a NUL', d({ connectors: [{ name: 'bill\u0000ing', level: 'required', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[0].name' }),
-    refused('connector name with an LF', d({ connectors: [{ name: 'bill\ning', level: 'required', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[0].name', rule: 'manifest-line-break' }),
-    refused('second connector name with a CR', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b\rc', level: 'recommended', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[1].name', rule: 'manifest-line-break' }),
-    refused('a connector name is refused before the same connector reason', d({ connectors: [{ name: 'a\nb', level: 'required', reason: 'see @x' }] }), 5, 'bad_text', { field: 'connectors[0].name', rule: 'manifest-line-break' }),
-    refused('model hint with a word-initial at sign', d({ modelHint: '@notes.md' }), 5, 'forbidden_import_token', { field: 'agent.model_hint' }),
-    refused('model hint with a zero-width space', d({ modelHint: 'claude​-sonnet-5' }), 5, 'bad_text', { field: 'agent.model_hint' }),
-    refused('model hint with a NUL', d({ modelHint: 'claude-sonnet-5\u0000' }), 5, 'bad_text', { field: 'agent.model_hint' }),
-    refused('model hint with an LF', d({ modelHint: 'claude-sonnet-5\nx' }), 5, 'bad_text', { field: 'agent.model_hint', rule: 'manifest-line-break' }),
-    refused('model hint with a CR', d({ modelHint: 'claude-sonnet-5\rx' }), 5, 'bad_text', { field: 'agent.model_hint', rule: 'manifest-line-break' }),
-    ok('model hint null with both connector levels', d({ modelHint: null, connectors: [{ name: 'billing', level: 'required', reason: 'ok' }, { name: 'mail', level: 'recommended', reason: 'ok' }] })),
+    refused('connector reason with an LF', d({ connectors: [{ name: 'bb', level: 'required', reason: 'a\nb' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
+    refused('second connector reason with a CR', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'a\rb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
     ok('manifest texts with an e-mail shape and a bang at a sentence end', d({
-      title: 'Invoice helper!', description: 'Write to anna1@example.com.', displayName: 'Anna', connectors: [{ name: 'b', level: 'required', reason: 'Reads mail.' }],
+      title: 'Invoice helper!', description: 'Write to anna1@example.com.', displayName: 'Anna', connectors: [{ name: 'bb', level: 'required', reason: 'Reads mail.' }],
     })),
 
     // ---- step 5: avatar
@@ -244,14 +279,54 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('content_type does not match the extension', d({ avatar: { path: 'avatar.png', contentType: 'image/webp', bytes: makePng() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'content-type' }),
     refused('PNG name and type, WebP bytes', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makeWebp() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'content-type' }),
     refused('WebP name and type, PNG bytes', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makePng() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'content-type' }),
-    ...(['tEXt', 'iTXt', 'zTXt', 'eXIf'] as const).map((type) =>
+    // The avatar blocks are an allowlist (contract decision, Mira 77967). The first four PNG types and the first
+    // two WebP types are the old denylist; the rest passed it (measured in the review of d021f7f2b).
+    ...(['tEXt', 'iTXt', 'zTXt', 'eXIf', 'teXt', 'prVt', 'iCCP', 'tIME', 'sPLT', 'zzzz', 'ihdr', 'idat', 'IDAt', 'gAMA', 'pHYs'] as const).map((type) =>
       refused(`PNG with a ${type} block`, d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng([
         pngChunk('IHDR', new Uint8Array(13)), pngChunk(type, new Uint8Array(Buffer.from('k\u0000v'))), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND'),
-      ]) } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'metadata-block' })),
-    ...(['EXIF', 'XMP '] as const).map((fourcc) =>
-      refused(`WebP with an ${fourcc.trim()} block`, d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp([
+      ]) } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'block-not-allowed' })),
+    ...(['EXIF', 'XMP ', 'xmp ', 'ICCP', 'TEXT', 'ANIM', 'ANMF', 'vp8l', 'VP8', 'zzzz'] as const).map((fourcc) =>
+      refused(`WebP with a "${fourcc}" block`, d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp([
         webpChunk('VP8X', new Uint8Array(10)), webpChunk('VP8L', new Uint8Array(6)), webpChunk(fourcc, new Uint8Array(5)),
-      ]) } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'metadata-block' })),
+      ]) } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'block-not-allowed' })),
+    // PNG order: IHDR first and once, at least one IDAT, IEND last and once.
+    ...([
+      ['without IHDR', ['IDAT', 'IEND']],
+      ['without IDAT', ['IHDR', 'IEND']],
+      ['without IEND', ['IHDR', 'IDAT']],
+      ['with no block at all', []],
+      ['with IHDR after another block', ['PLTE', 'IHDR', 'IDAT', 'IEND']],
+      ['with a second IHDR', ['IHDR', 'IDAT', 'IHDR', 'IEND']],
+      ['with a block after IEND', ['IHDR', 'IDAT', 'IEND', 'IDAT']],
+      ['with a second IEND', ['IHDR', 'IDAT', 'IEND', 'IEND']],
+    ] as const).map(([what, types]) =>
+      refused(`PNG ${what}`, d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng(types.map((t) => pngChunk(t, new Uint8Array(t === 'IHDR' ? 13 : t === 'IEND' ? 0 : 4)))) } }),
+        5, 'bad_avatar', { path: 'avatar.png', rule: 'block-structure' })),
+    ok('PNG with a palette, transparency and two IDAT blocks', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng([
+      pngChunk('IHDR', new Uint8Array(13)), pngChunk('PLTE', new Uint8Array(6)), pngChunk('tRNS', new Uint8Array(2)),
+      pngChunk('IDAT', new Uint8Array(4)), pngChunk('IDAT', new Uint8Array(3)), pngChunk('IEND'),
+    ]) } })),
+    // WebP order: one of the six layouts.
+    ...([
+      ['simple lossy', ['VP8 ']],
+      ['extended lossy', ['VP8X', 'VP8 ']],
+      ['extended lossless', ['VP8X', 'VP8L']],
+      ['extended lossy with alpha', ['VP8X', 'ALPH', 'VP8 ']],
+      ['extended lossless with alpha', ['VP8X', 'ALPH', 'VP8L']],
+    ] as const).map(([what, fourccs]) =>
+      ok(`WebP ${what}`, d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp(fourccs.map((f) => webpChunk(f, new Uint8Array(f === 'VP8X' ? 10 : 5)))) } }))),
+    ...([
+      ['with no block at all', []],
+      ['with VP8X alone', ['VP8X']],
+      ['with VP8X and alpha but no image', ['VP8X', 'ALPH']],
+      ['with alpha but no VP8X', ['ALPH', 'VP8 ']],
+      ['with two images', ['VP8L', 'VP8L']],
+      ['with VP8X after the image', ['VP8L', 'VP8X']],
+      ['with alpha after the image', ['VP8X', 'VP8 ', 'ALPH']],
+      ['with a second VP8X', ['VP8X', 'VP8X', 'VP8L']],
+    ] as const).map(([what, fourccs]) =>
+      refused(`WebP ${what}`, d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp(fourccs.map((f) => webpChunk(f, new Uint8Array(f === 'VP8X' ? 10 : 5)))) } }),
+        5, 'bad_avatar', { path: 'avatar.webp', rule: 'block-structure' })),
     refused('PNG block length past the end', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: truncatedPng() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'truncated-block' }),
     refused('PNG with a partial block header at the end', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: Buffer.concat([makePng(), Buffer.from([0, 0, 0])]) } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'truncated-block' }),
     refused('WebP chunk length past the end', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: truncatedWebpChunk() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'truncated-block' }),
