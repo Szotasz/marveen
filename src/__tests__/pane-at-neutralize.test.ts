@@ -147,7 +147,7 @@ describe('system directives: the content is compared word for word, so it carrie
   // HEADER (system-directive.ts) is not content and is the one listed exception.
   const TEMPLATE_MODULES = [
     'context-guard-runner.ts', 'context-restart-gate-runner.ts', 'restart-wake.ts', 'resume-queue-drain.ts',
-    'resume-delivery.ts', 'restart-recovery-brief.ts', 'system-directive.ts',
+    'resume-delivery.ts', 'restart-recovery-brief.ts', 'system-directive.ts', 'channel-monitor.ts',
   ]
   const HEADER_EXCEPTION = /KOTEG-fej vagy Uzenet @\.\.\. boritek/
 
