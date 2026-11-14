@@ -93,6 +93,11 @@ describe('isOnceRunSuccess: a run closed done AND delivered intact, nothing else
     expect(io.isOnceRunSuccess('abandoned', undefined, { remote: true })).toBe(false)
     expect(io.isOnceRunSuccess('lost', undefined, { remote: true })).toBe(false)
   })
+  it('a WORKSOURCE run is a success only when closed done AND acknowledged (work_complete, item in done/)', () => {
+    expect(io.isOnceRunSuccess('done', undefined, { worksourceAcked: true })).toBe(true)
+    expect(io.isOnceRunSuccess('abandoned', undefined, { worksourceAcked: true })).toBe(false)
+    expect(io.isOnceRunSuccess('done', undefined, { worksourceAcked: false })).toBe(false)
+  })
   it('a LOCAL run without a verdict is still "never checked", not a success', () => {
     expect(io.isOnceRunSuccess('done', undefined, { remote: false })).toBe(false)
     expect(io.isOnceRunSuccess('done', undefined, {})).toBe(false)
@@ -137,6 +142,19 @@ describe('settleOnceAfterRun: the sweep\'s done branch, behaviour on a real task
     fixture('local-once-intact', { schedule: '0 5 22 9 *', agent: 'c3po', enabled: true, once: true })
     runner.settleOnceAfterRun('local-once-intact', 'done', 'intact', NOW, false)
     expect(cfgOf('local-once-intact').enabled).toBe(false)
+  })
+  it('a once task queued to WORKSOURCE and acknowledged (item in done/) is switched off', () => {
+    fixture('ws-once-acked', { schedule: '10 18 10 11 *', agent: 'c3po', enabled: true, once: true })
+    runner.settleOnceAfterRun('ws-once-acked', 'done', undefined, NOW, false, true)
+    expect(cfgOf('ws-once-acked').enabled).toBe(false)
+    expect(cfgOf('ws-once-acked').onceDisabledAt).toBe(new Date(NOW).toISOString())
+    expect(onceLogs(warn)).toHaveLength(0)
+  })
+  it('a once task queued to WORKSOURCE but never acknowledged stays on, and says so (fail closed)', () => {
+    fixture('ws-once-unacked', { schedule: '10 18 10 11 *', agent: 'c3po', enabled: true, once: true })
+    runner.settleOnceAfterRun('ws-once-unacked', 'done', undefined, NOW, false, false)
+    expect(cfgOf('ws-once-unacked').enabled).toBe(true)
+    expect(onceLogs(warn)).toHaveLength(1)
   })
   it('a non-once task with a damaged delivery logs nothing about once, and its file is byte-identical', () => {
     fixture('plain-task', { schedule: '*/30 * * * *', agent: 'c3po', enabled: true })
@@ -324,7 +342,8 @@ describe('the runner and the command path call it, and only on success (source l
     expect(at).toBeGreaterThan(-1)
     const branch = RUNNER.slice(at, RUNNER.indexOf('\n        }', at))
     // ...and tells it whether the run went to a remote agent, where no verdict can exist (review on #1806).
-    expect(branch).toContain('settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null)')
+    // ...and whether a worksource-queued item was acknowledged (in done/), where no verdict exists either.
+    expect(branch).toContain("settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null, worksourceStage === 'done')")
   })
   it('the command path switches off only when the command succeeded', () => {
     expect(COMMAND).toMatch(/if \(ok && task\.once\) \{[\s\S]{0,400}disableOnceTask\(task\.name, now\)/)

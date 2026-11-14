@@ -590,14 +590,18 @@ export function writeScheduledTask(
  * 'done' is the success bar -- the same bar a command task meets with exit 0 ('done' already requires
  * sawTurn). The caller says so explicitly with `remote: true`; a missing verdict on a LOCAL run is still
  * "never checked" and still not a success.
+ *
+ * A WORKSOURCE run is the second exception: the prompt goes through the agent's queue, not the keyboard, so no
+ * transcript verdict is taken either. There the proof is the agent's own work_complete acknowledgement,
+ * the item sitting in done/ (`worksourceAcked: true`). Queued but unacknowledged is not a success.
  */
 export function isOnceRunSuccess(
   decision: string,
   deliveryVerdict: string | null | undefined,
-  delivery: { remote?: boolean } = {},
+  delivery: { remote?: boolean; worksourceAcked?: boolean } = {},
 ): boolean {
   if (decision !== 'done') return false
-  if (delivery.remote === true) return true
+  if (delivery.remote === true || delivery.worksourceAcked === true) return true
   return deliveryVerdict === 'intact' || deliveryVerdict === 'intact-queued'
 }
 

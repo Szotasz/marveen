@@ -452,6 +452,8 @@ export function checkTaskDeliveryIntegrity(
 // `remote` is true when the run went to a remote agent (entry.host set): no delivery verdict can exist
 // there, so a closed 'done' is the bar (see isOnceRunSuccess). The early return for a non-once task also
 // keeps the "not verified intact" warning off ordinary tasks with a damaged delivery.
+// `worksourceAcked` is true when the run went through the agent's worksource queue and the item reached done/
+// (the agent's work_complete acknowledgement): that path takes no delivery verdict either.
 // Exported for the behaviour tests (schedule-once.test.ts); the sweep is its only production caller.
 export function settleOnceAfterRun(
   taskName: string,
@@ -459,10 +461,11 @@ export function settleOnceAfterRun(
   deliveryVerdict: DeliveryVerdict | undefined,
   now: number,
   remote = false,
+  worksourceAcked = false,
 ): void {
   try {
     if (!readScheduledTask(taskName)?.once) return
-    if (!isOnceRunSuccess(decision, deliveryVerdict, { remote })) {
+    if (!isOnceRunSuccess(decision, deliveryVerdict, { remote, worksourceAcked })) {
       logger.warn(
         { task: taskName, decision, delivery: deliveryVerdict ?? 'unchecked' },
         'Once-task ran but its delivery was not verified intact -- left enabled, so it stays visible',
@@ -470,7 +473,7 @@ export function settleOnceAfterRun(
       return
     }
     if (rewriteRegisteredTask(taskName, 'server:once-disable', () => disableOnceTask(taskName, now))) {
-      logger.info({ task: taskName, delivery: remote ? 'remote-unchecked' : deliveryVerdict }, 'Once-task switched off after its first successful run')
+      logger.info({ task: taskName, delivery: remote ? 'remote-unchecked' : worksourceAcked ? 'worksource-acknowledged' : deliveryVerdict }, 'Once-task switched off after its first successful run')
     }
   } catch (err) {
     logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
@@ -3533,7 +3536,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // still be silently swallowing prompts.
         if (decision === 'done') {
           lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
-          settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null)
+          settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null, worksourceStage === 'done')
         }
         // The one moment the system knows how the run ended. Before 2026-08-26
         // this branch only deleted the map entry, so the knowledge died here and
