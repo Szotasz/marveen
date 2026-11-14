@@ -26,6 +26,7 @@
  * for a new one).
  */
 import { createHash } from 'node:crypto'
+import { logger } from './logger.js'
 
 /** One Slack Web API call; resolves to Slack's JSON body. A 429 throws SlackRateLimited. */
 export type SlackCall = (method: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -143,6 +144,24 @@ export function tsCompare(a: string, b: string): number {
 
 type Msg = Record<string, unknown>
 
+// A read that silently gives 'none' every 15 s round is logged ONCE per post per distinct reason (never the token, a
+// message text or a user id). shortcut: the seen-set is in memory, cleared at 1000 entries; a restart logs each again.
+const diagSeen = new Set<string>()
+function diag(post: ApprovalSlackPost, reason: string, fields: Record<string, unknown> = {}): void {
+  const key = `${post.approvalId}\u0000${reason}`
+  if (diagSeen.has(key)) return
+  if (diagSeen.size >= 1000) diagSeen.clear()
+  diagSeen.add(key)
+  logger.warn({ approvalId: post.approvalId, reason, ...fields }, 'approval Slack read gave no decision')
+}
+
+/** Logs the owner's messages the owner filter drops for their subtype (e.g. thread_broadcast). */
+function noteOwnerSubtypes(post: ApprovalSlackPost, msgs: Msg[], where: Binding): void {
+  for (const m of msgs) {
+    if (m.user === post.ownerUserId && m.subtype !== undefined) diag(post, `owner_subtype_dropped:${where}:${String(m.subtype)}`, { where, subtype: String(m.subtype) })
+  }
+}
+
 /** A plain message the owner typed: their user id, no subtype, no bot or app behind it. */
 function byOwner(m: Msg, owner: string): boolean {
   return m.user === owner && m.subtype === undefined && m.bot_id === undefined && m.app_id === undefined
@@ -165,10 +184,13 @@ function fromDeciding(d: Msg, post: ApprovalSlackPost, binding: Binding, nowS: n
 async function replySignal(call: SlackCall, post: ApprovalSlackPost, parent: Msg, nowS: number): Promise<Verdict> {
   if (Number(parent.reply_count ?? 0) > 0) {
     const r = await call('conversations.replies', { channel: post.channel, ts: post.ts, limit: 200 })
-    if (r.ok === true && r.has_more !== true) {
+    if (r.ok !== true) diag(post, `replies_not_ok:${String(r.error)}`, { error: String(r.error) })
+    else if (r.has_more === true) diag(post, 'replies_has_more')
+    else {
       const thread = ((r.messages as Msg[] | undefined) ?? [])
         .filter((m) => typeof m.ts === 'string' && tsCompare(m.ts, post.ts) > 0 && m.ts !== post.noticeTs)
         .sort((a, b) => tsCompare(String(a.ts), String(b.ts)))
+      noteOwnerSubtypes(post, thread, 'thread')
       const owners = thread.filter((m) => byOwner(m, post.ownerUserId))
       if (owners.length > 0) {
         const last = owners[owners.length - 1]
@@ -176,12 +198,16 @@ async function replySignal(call: SlackCall, post: ApprovalSlackPost, parent: Msg
         return interjected ? { kind: 'none' } : fromDeciding(last, post, 'thread', nowS)
       }
     }
+  } else if (parent.reply_count === undefined && (parent.thread_ts !== undefined || parent.latest_reply !== undefined)) {
+    diag(post, 'parent_thread_without_reply_count')
   }
   const h = await call('conversations.history', { channel: post.channel, oldest: post.ts, inclusive: false, limit: 100 })
-  if (h.ok !== true || h.has_more === true) return { kind: 'none' }
+  if (h.ok !== true) { diag(post, `history_not_ok:${String(h.error)}`, { error: String(h.error) }); return { kind: 'none' } }
+  if (h.has_more === true) { diag(post, 'history_has_more'); return { kind: 'none' } }
   const after = ((h.messages as Msg[] | undefined) ?? [])
     .filter((m) => typeof m.ts === 'string' && tsCompare(m.ts, post.ts) > 0)
     .sort((a, b) => tsCompare(String(a.ts), String(b.ts)))
+  noteOwnerSubtypes(post, after, 'next_message')
   let run = 0
   while (run < after.length && byOwner(after[run], post.ownerUserId)) run++
   if (run === 0) return { kind: 'none' }
@@ -205,7 +231,7 @@ function reactorsOf(m: Record<string, unknown>): Map<string, string[]> {
  */
 export async function checkPost(call: SlackCall, post: ApprovalSlackPost, nowS: number = Date.now() / 1000): Promise<Verdict> {
   const h = await call('conversations.history', { channel: post.channel, latest: post.ts, oldest: post.ts, inclusive: true, limit: 1 })
-  if (h.ok !== true) return { kind: 'none' }
+  if (h.ok !== true) { diag(post, `post_history_not_ok:${String(h.error)}`, { error: String(h.error) }); return { kind: 'none' } }
   const m = (h.messages as Array<Record<string, unknown>> | undefined)?.[0]
   if (!m || m.ts !== post.ts) return { kind: 'refused', reason: 'message_missing' }
   let reaction: Verdict = { kind: 'none' }
@@ -261,6 +287,8 @@ export async function sweepOnce(call: SlackCall, posts: ApprovalSlackPost[], dec
       if (v.kind !== 'none') decide(post, v)
     } catch (err) {
       if (err instanceof SlackRateLimited) return { checked, waitS: Math.max(1, err.retryAfterS) }
+      const error = (err instanceof Error ? err.message : String(err)).slice(0, 200)
+      diag(post, `check_threw:${error}`, { error })
       markChecked(post)
     }
   }

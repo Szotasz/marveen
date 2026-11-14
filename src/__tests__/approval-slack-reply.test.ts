@@ -2,8 +2,12 @@
 // by the server. A fake Slack API stands in for the Web API, so each rule is shown on its own: which request a reply
 // belongs to (its thread, or the first message after it with nobody in between), the owner's last word after 30 s, the
 // exact words, an edited reply, and the request message itself still being the one the server posted.
-import { describe, it, expect } from 'vitest'
-import { checkPost, replyWord, tsCompare, slackEscape, sha256, REPLY_SETTLE_S, type SlackCall, type ApprovalSlackPost } from '../approval-slack.js'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+const warn = vi.hoisted(() => vi.fn())
+vi.mock('../logger.js', () => ({ logger: { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
+
+import { checkPost, sweepOnce, replyWord, tsCompare, slackEscape, sha256, REPLY_SETTLE_S, type SlackCall, type ApprovalSlackPost } from '../approval-slack.js'
 import { SETTINGS_REGISTRY } from '../config-registry.js'
 
 const OWNER = 'U0OWNER01'
@@ -196,5 +200,99 @@ describe('APPROVAL_SLACK_REPLIES', () => {
     expect(d.loosens!('on', 'off')).toBe(false)
     expect(d.validate!('on')).toBeNull()
     expect(d.validate!('igen')).not.toBeNull()
+  })
+})
+
+// cde47ede: a read that keeps giving 'none' says why, ONCE per post per reason (the sweeper asks every 15 s), and the
+// decision is exactly what it was without the log. Each test uses its own approvalId (the seen-set is per process).
+describe('a silent no-decision is logged once per post per reason', () => {
+  beforeEach(() => warn.mockClear())
+  let n = 0
+  const fresh = (extra: Partial<ApprovalSlackPost> = {}): ApprovalSlackPost => ({ ...post, approvalId: `diag-${++n}`, ...extra })
+  /** The fake above, with single methods answered differently. */
+  const over = (w: World, o: { replies?: Msg; history?: Msg; postHistory?: Msg }): SlackCall => {
+    const base = fake(w)
+    return async (method, body) => {
+      if (method === 'conversations.replies' && o.replies) return o.replies
+      if (method === 'conversations.history' && body.latest === POST_TS && o.postHistory) return o.postHistory
+      if (method === 'conversations.history' && body.latest !== POST_TS && o.history) return o.history
+      return base(method, body)
+    }
+  }
+  /** Three sweeper rounds: every verdict, and the reasons warned. */
+  async function rounds(call: SlackCall, p: ApprovalSlackPost) {
+    const verdicts: unknown[] = []
+    for (let i = 0; i < 3; i++) verdicts.push(await checkPost(call, p, NOW))
+    return { verdicts, reasons: warn.mock.calls.map((c) => (c[0] as { reason: string }).reason) }
+  }
+  const clean = () => {
+    const text = JSON.stringify(warn.mock.calls)
+    expect(text).not.toContain(OWNER)
+    expect(text).not.toContain('mehet')
+  }
+
+  it('conversations.replies ok:false: its error is logged once; the read still falls back to the run after the request', async () => {
+    const p = fresh()
+    const r = await rounds(over({ thread: [owner('mehet', 5)], after: [owner('mehet', 10)], calls: [] }, { replies: { ok: false, error: 'invalid_arguments' } }), p)
+    expect(r.verdicts).toEqual(Array(3).fill({ kind: 'approved', userId: OWNER, via: { binding: 'next_message', ts: at(10) } }))
+    expect(r.reasons).toEqual(['replies_not_ok:invalid_arguments'])
+    expect(warn.mock.calls[0][0]).toEqual({ approvalId: p.approvalId, reason: 'replies_not_ok:invalid_arguments', error: 'invalid_arguments' })
+    clean()
+  })
+
+  it('conversations.replies has_more: logged once, the thread is not used', async () => {
+    const r = await rounds(over({ thread: [owner('mehet', 10)], calls: [] }, { replies: { ok: true, has_more: true, messages: [] } }), fresh())
+    expect(r.verdicts).toEqual(Array(3).fill({ kind: 'none' }))
+    expect(r.reasons).toEqual(['replies_has_more'])
+  })
+
+  it('a parent that shows a thread but no reply_count: logged once, the thread is still not read', async () => {
+    const w: World = { parent: { ts: POST_TS, user: BOT, text: slackEscape(TEXT), thread_ts: POST_TS, latest_reply: at(10) }, calls: [] }
+    const r = await rounds(fake(w), fresh())
+    expect(r.verdicts).toEqual(Array(3).fill({ kind: 'none' }))
+    expect(w.calls).not.toContain('conversations.replies')
+    expect(r.reasons).toEqual(['parent_thread_without_reply_count'])
+  })
+
+  it('an owner message dropped for its subtype: the subtype is logged once, in the thread and after the request', async () => {
+    const p = fresh()
+    const r = await rounds(fake({ thread: [owner('mehet', 10, { subtype: 'thread_broadcast' })], after: [owner('mehet', 10, { subtype: 'thread_broadcast' })], calls: [] }), p)
+    expect(r.verdicts).toEqual(Array(3).fill({ kind: 'none' }))
+    expect(r.reasons).toEqual(['owner_subtype_dropped:thread:thread_broadcast', 'owner_subtype_dropped:next_message:thread_broadcast'])
+    expect(warn.mock.calls[0][0]).toMatchObject({ approvalId: p.approvalId, where: 'thread', subtype: 'thread_broadcast' })
+    clean()
+  })
+
+  it('the run after the request: history ok:false and has_more are logged once each', async () => {
+    const a = await rounds(over({ after: [owner('mehet', 10)], calls: [] }, { history: { ok: false, error: 'missing_scope' } }), fresh())
+    expect(a.verdicts).toEqual(Array(3).fill({ kind: 'none' }))
+    expect(a.reasons).toEqual(['history_not_ok:missing_scope'])
+    warn.mockClear()
+    const b = await rounds(fake({ after: [owner('mehet', 10)], hasMore: true, calls: [] }), fresh())
+    expect(b.verdicts).toEqual(Array(3).fill({ kind: 'none' }))
+    expect(b.reasons).toEqual(['history_has_more'])
+  })
+
+  it('reading the request message itself fails: logged once, no decision', async () => {
+    const r = await rounds(over({ after: [owner('mehet', 10)], calls: [] }, { postHistory: { ok: false, error: 'channel_not_found' } }), fresh())
+    expect(r.verdicts).toEqual(Array(3).fill({ kind: 'none' }))
+    expect(r.reasons).toEqual(['post_history_not_ok:channel_not_found'])
+  })
+
+  it('a check that throws: sweepOnce logs the error once and still marks the post checked, deciding nothing', async () => {
+    const p = fresh()
+    const marked: string[] = []
+    const decided: unknown[] = []
+    const call: SlackCall = async () => { throw new Error('fetch failed') }
+    for (let i = 0; i < 3; i++) expect(await sweepOnce(call, [p], (_p, v) => decided.push(v), (x) => marked.push(x.approvalId))).toEqual({ checked: 0, waitS: 0 })
+    expect(marked).toEqual([p.approvalId, p.approvalId, p.approvalId])
+    expect(decided).toEqual([])
+    expect(warn.mock.calls.map((c) => c[0])).toEqual([{ approvalId: p.approvalId, reason: 'check_threw:fetch failed', error: 'fetch failed' }])
+  })
+
+  it('a clean decision logs nothing', async () => {
+    const r = await rounds(fake({ thread: [owner('mehet', 10)], calls: [] }), fresh())
+    expect(r.verdicts[0]).toMatchObject({ kind: 'approved' })
+    expect(r.reasons).toEqual([])
   })
 })
