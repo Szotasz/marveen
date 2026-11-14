@@ -472,8 +472,12 @@ envelope before the model sees them -- the same framing `wrapUntrustedFetch()`
 gives the `WebFetch` path -- scrubs forged security tags out of the payload,
 names any injection patterns it matched (forged `<untrusted>` /
 `<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
-overrides, credential targets, exfil shapes) and appends the full payload to
-`store/browser-content.log` for reading outside the model's context. The log is
+overrides, credential targets, exfil shapes) and appends a record to
+`store/browser-content.log` for reading outside the model's context. The record
+holds the tool, source, byte count, pattern counts and nonce, plus the payload
+itself, except for the catalog mail, calendar, Drive and playwright servers below,
+whose payload is kept only when a forged frame matched; the log sits in the shared
+`store/`, so every agent running as the same OS user can read it. The log is
 capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
 `browser-content.log.1`, replacing an older one, so at most about twice the cap
 is kept; both files are mode 0600, a symlinked log path or lock file
@@ -512,7 +516,10 @@ servers (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google
 an email, a calendar invite, a shared document or a page is text anyone can
 author, and before this it reached the agent with no envelope and no label. A
 server installed under another name (another browser MCP, `mcp__chrome*`) is
-**not wired by default**; operators who run one add its matcher themselves, in
+**not wired by default**. Three cases an operator should recognise: the same
+service from another MCP package (another Gmail or Calendar server), a
+plugin-provided server (named `mcp__plugin_<plugin>_<server>__...`), and a hosted
+connector. Operators who run one add its matcher themselves, in
 the project `settings.json` or `settings.local.json`:
 
 ```json
@@ -533,6 +540,12 @@ the project `settings.json` or `settings.local.json`:
   }
 }
 ```
+
+Behaviour change for release notes: mail, invites and Drive documents now arrive
+labelled as external content whose imperatives are data, so an install that
+drives agents from a Drive brief or a forwarded mail will see those instructions
+marked that way. The matcher covers every tool of the five servers, write tools
+(send, draft, create-event) included; for those the label is a token cost only.
 
 ### The shape rule, and the silent fallback behind it
 
@@ -565,7 +578,7 @@ first as sufficient:
 
 The label quotes nothing back. Its own text is trusted framing, so echoing a
 matched line there would reopen the channel the hook exists to close. Pattern
-names and counts only; the payload itself goes to the log.
+names and counts only; the payload itself goes to the log (for the private servers above, only when a forged frame matched).
 
 `envelope_attempted` in the log records which shape the hook tried. It says
 "attempted", never "succeeded": the hook cannot observe the harness's decision,
