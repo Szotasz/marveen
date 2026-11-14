@@ -25,7 +25,21 @@
 // EVERY OTHER BYTE STAYS: the file is read and written one byte per character
 // (preserveBytes), so a line of another owner comes back byte for byte even
 // when the file is not valid UTF-8. The support lines themselves are ASCII.
-import { rewriteAuthorizedKeysLocked, type LockedRewriteOptions } from './remote-enroll-fs.js'
+//
+// TWO FILES, ONE OF THEM NEVER WRITTEN. The stock sshd setting on Debian and
+// Ubuntu reads keys from `authorized_keys` AND from `authorized_keys2`. A
+// support line is only ever written into the first. In the second the set of
+// expected lines is ALWAYS empty: every operation here, the grant too, takes
+// every support line out of it, because a copy of a pinned key there would
+// survive a removal that looked at the first file only. This does not depend
+// on what the sshd probe says: when sshd cannot be asked, both files are
+// still cleaned. A missing second file is not an error, and a linked one does
+// not refuse the removal, the same as for the first.
+import {
+  rewriteAuthorizedKeysLocked,
+  type AuthorizedKeysFileName,
+  type LockedRewriteOptions,
+} from './remote-enroll-fs.js'
 import {
   SupportLineError,
   buildSupportGrantLines,
@@ -45,6 +59,33 @@ export interface SupportFsBase extends LockTuning {
   pinnedBlobs: ReadonlySet<string>
 }
 
+/** The file no support line is ever written into, and every operation cleans. */
+const SECOND_FILE: AuthorizedKeysFileName = 'authorized_keys2'
+
+/**
+ * Take every support line out of one of the two files. Reports how many went;
+ * throws when the content it would leave still holds one.
+ */
+async function removeEverySupportLine(
+  base: SupportFsBase,
+  fileName: AuthorizedKeysFileName,
+  operation: string,
+): Promise<{ authorizedKeysPath: string; removed: number; warnings: string[] }> {
+  const { sshDir, pinnedBlobs, ...lock } = base
+  const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
+    const { content, removed } = removeSupportLines(existing, pinnedBlobs)
+    // The count uses the same recogniser the removal used, so it can only
+    // catch a remover that stopped early. The proof that the lines are gone
+    // from the FILE is the read-back inside rewriteAuthorizedKeysLocked.
+    const left = countSupportLines(content, pinnedBlobs)
+    if (left !== 0) {
+      throw new SupportLinesRemainError(`${left} support line(s) would remain in ${fileName} after the removal`)
+    }
+    return { content: removed === 0 ? null : content, result: removed }
+  })
+  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings }
+}
+
 /** Raised when a removal ran and support lines are still in the file. */
 export class SupportLinesRemainError extends Error {
   readonly code = 'SUPPORT_LINES_REMAIN'
@@ -58,6 +99,8 @@ export interface GrantSupportLinesResult {
   authorizedKeysPath: string
   /** Earlier support lines that the grant replaced. */
   replaced: number
+  /** Support lines taken out of authorized_keys2 on the way (nothing ever writes one there). */
+  removedFromSecond: number
   warnings: string[]
 }
 
@@ -66,7 +109,9 @@ export interface GrantSupportLinesResult {
  * Refuses a symlinked authorized_keys. Every key of the grant must be one of
  * `pinnedBlobs`: a key the removal side does not know as pinned gets no line.
  * Throws a SupportLineError, before the file is opened, for a grant the
- * builder refuses.
+ * builder refuses. authorized_keys2 is cleaned FIRST: if that cannot be done
+ * nothing is added (an addition may be refused), and after a grant the lines
+ * on the machine are the grant's and no others.
  */
 export async function grantSupportLines(
   opts: SupportFsBase & { grant: SupportGrantInput },
@@ -76,6 +121,7 @@ export async function grantSupportLines(
     throw new SupportLineError('pins_invalid', 'a key of the grant is not one of the pinned keys')
   }
   const lines = buildSupportGrantLines(grant)
+  const second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, 'remove support access lines from')
   const out = await rewriteAuthorizedKeysLocked(
     { sshDir, operation: 'write support access lines into', createDir: true, refuseSymlink: true, preserveBytes: true, ...lock },
     (existing) => {
@@ -83,38 +129,52 @@ export async function grantSupportLines(
       return { content: merged.content, result: merged.replaced }
     },
   )
-  return { authorizedKeysPath: out.authorizedKeysPath, replaced: out.result, warnings: out.warnings }
+  return {
+    authorizedKeysPath: out.authorizedKeysPath,
+    replaced: out.result,
+    removedFromSecond: second.removed,
+    warnings: [...second.warnings, ...out.warnings],
+  }
 }
 
 export interface RevokeSupportLinesResult {
   authorizedKeysPath: string
+  /** Support lines removed, both files together. */
   removed: number
+  /** Of those, the ones that were in authorized_keys2. */
+  removedFromSecond: number
   /** For instance: the path was a symbolic link, and the link's old target still holds the lines. */
   warnings: string[]
 }
 
 /**
- * Remove every support line. Idempotent: a missing file or no line reports
- * removed 0. Reports success only when the file holds no support line any
- * more; otherwise it throws, and the caller must not tell the owner "revoked".
+ * Remove every support line, from both files. Idempotent: a missing file or
+ * no line reports removed 0. Reports success only when neither file holds a
+ * support line any more; otherwise it throws, and the caller must not tell
+ * the owner "revoked". BOTH files are attempted even when the first one
+ * fails: a removal that stopped at the first error would leave lines in the
+ * other file that it could have taken out. The first error is then thrown.
  */
 export async function revokeSupportLines(opts: SupportFsBase): Promise<RevokeSupportLinesResult> {
-  const { sshDir, pinnedBlobs, ...lock } = opts
-  const out = await rewriteAuthorizedKeysLocked(
-    { sshDir, operation: 'remove support access lines from', preserveBytes: true, ...lock },
-    (existing) => {
-      const { content, removed } = removeSupportLines(existing, pinnedBlobs)
-      // The count uses the same recogniser the removal used, so it can only
-      // catch a remover that stopped early. The proof that the lines are gone
-      // from the FILE is the read-back inside rewriteAuthorizedKeysLocked.
-      const left = countSupportLines(content, pinnedBlobs)
-      if (left !== 0) {
-        throw new SupportLinesRemainError(`${left} support line(s) would remain after the removal`)
-      }
-      return { content: removed === 0 ? null : content, result: removed }
-    },
-  )
-  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings }
+  const operation = 'remove support access lines from'
+  const failures: unknown[] = []
+  const done: Array<{ authorizedKeysPath: string; removed: number; warnings: string[] } | null> = []
+  for (const fileName of ['authorized_keys', SECOND_FILE] as const) {
+    try {
+      done.push(await removeEverySupportLine(opts, fileName, operation))
+    } catch (err) {
+      failures.push(err)
+      done.push(null)
+    }
+  }
+  const [first, second] = done
+  if (first === null || second === null) throw failures[0]
+  return {
+    authorizedKeysPath: first.authorizedKeysPath,
+    removed: first.removed + second.removed,
+    removedFromSecond: second.removed,
+    warnings: [...first.warnings, ...second.warnings],
+  }
 }
 
 /** Why a reconcile expected no line: the builder's own refusal, or a grant that is not even the typed shape. */
@@ -123,7 +183,10 @@ export type SupportReconcileProblem = SupportLineProblem | 'grant_malformed'
 export interface ReconcileSupportLinesResult {
   authorizedKeysPath: string
   kept: number
+  /** Support lines removed, both files together. */
   removed: number
+  /** Of those, the ones that were in authorized_keys2: there no line is expected, whatever the grant says. */
+  removedFromSecond: number
   missing: number
   /** Set when the live grant could not be built into lines: then no line was expected, and every support line went.
    * A refusal of the builder carries the builder's code; anything else (a record that is not the typed shape) is
@@ -162,15 +225,42 @@ export async function reconcileSupportLinesOnDisk(
       unbuildable = err instanceof SupportLineError ? err.code : 'grant_malformed'
     }
   }
-  const out = await rewriteAuthorizedKeysLocked(
-    { sshDir, operation: 'reconcile support access lines in', preserveBytes: true, ...lock },
-    (existing) => {
-      const r = reconcileSupportLines(existing, expected, pinnedBlobs)
-      return {
-        content: r.removed === 0 ? null : r.content,
-        result: { kept: r.kept, removed: r.removed, missing: r.missing },
-      }
-    },
-  )
-  return { authorizedKeysPath: out.authorizedKeysPath, ...out.result, unbuildable, warnings: out.warnings }
+  const operation = 'reconcile support access lines in'
+  // BOTH files are attempted, as in a revoke: an error on one must not leave
+  // the other one unlooked at. The first error is thrown afterwards.
+  const failures: unknown[] = []
+  let first: Awaited<ReturnType<typeof reconcileFirstFile>> | null = null
+  let second: Awaited<ReturnType<typeof removeEverySupportLine>> | null = null
+  try {
+    first = await reconcileFirstFile({ sshDir, pinnedBlobs, ...lock }, expected, operation)
+  } catch (err) {
+    failures.push(err)
+  }
+  try {
+    second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, operation)
+  } catch (err) {
+    failures.push(err)
+  }
+  if (first === null || second === null) throw failures[0]
+  return {
+    authorizedKeysPath: first.authorizedKeysPath,
+    kept: first.result.kept,
+    removed: first.result.removed + second.removed,
+    removedFromSecond: second.removed,
+    missing: first.result.missing,
+    unbuildable,
+    warnings: [...first.warnings, ...second.warnings],
+  }
+}
+
+/** The reconcile of authorized_keys itself: keep the expected lines, remove every other support line. */
+function reconcileFirstFile(base: SupportFsBase, expected: readonly string[], operation: string) {
+  const { sshDir, pinnedBlobs, ...lock } = base
+  return rewriteAuthorizedKeysLocked({ sshDir, operation, preserveBytes: true, ...lock }, (existing) => {
+    const r = reconcileSupportLines(existing, expected, pinnedBlobs)
+    return {
+      content: r.removed === 0 ? null : r.content,
+      result: { kept: r.kept, removed: r.removed, missing: r.missing },
+    }
+  })
 }

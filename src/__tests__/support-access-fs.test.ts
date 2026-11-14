@@ -426,6 +426,191 @@ describe('support access on disk', () => {
     })
   })
 
+  // The stock sshd setting on Debian and Ubuntu reads keys from both files.
+  // No line is ever written into the second, and every operation cleans it.
+  describe('the second stock file, authorized_keys2', () => {
+    const secondPath = (): string => join(sshDir, 'authorized_keys2')
+    const seedSecond = (lines: string[]): void => writeFileSync(secondPath(), lines.join('\n') + '\n', { mode: 0o600 })
+    const readSecond = (): string => readFileSync(secondPath(), 'utf8')
+
+    it('a revoke takes the support lines out of BOTH files and keeps every other line', async () => {
+      seed([PERSONAL, LINE1, LINE2])
+      seedSecond([BRIDGE, LINE1])
+      const res = await revokeSupportLines(base())
+      expect(res).toMatchObject({ removed: 3, removedFromSecond: 1, warnings: [] })
+      expect(read()).toBe(PERSONAL + '\n')
+      expect(readSecond()).toBe(BRIDGE + '\n')
+      expect(statSync(secondPath()).mode & 0o777).toBe(0o600)
+    })
+
+    it('a revoke finds a loosened copy of a pinned key in the second file too', async () => {
+      seed([PERSONAL])
+      seedSecond(['sk-ssh-ed25519@openssh.com ' + TEST_ONLY_BLOB_1 + ' copied-by-hand'])
+      const res = await revokeSupportLines(base())
+      expect(res).toMatchObject({ removed: 1, removedFromSecond: 1 })
+      expect(readSecond()).toBe('')
+    })
+
+    it('a missing second file is not an error, and no operation creates it', async () => {
+      seed([LINE1, BRIDGE])
+      expect(await revokeSupportLines(base())).toMatchObject({ removed: 1, removedFromSecond: 0 })
+      expect(await reconcileSupportLinesOnDisk({ ...base(), grant: grantInput() })).toMatchObject({ removedFromSecond: 0 })
+      expect(await grantSupportLines({ ...base(), grant: grantInput() })).toMatchObject({ removedFromSecond: 0 })
+      expect(readdirSync(sshDir).sort()).toEqual(['authorized_keys'])
+    })
+
+    it('a revoke is NOT refused by a linked second file: afterwards the path sshd reads holds no support line', async () => {
+      seed([BRIDGE])
+      const elsewhere = join(root, 'elsewhere2')
+      writeFileSync(elsewhere, [PERSONAL, LINE2].join('\n') + '\n', { mode: 0o600 })
+      symlinkSync(elsewhere, secondPath())
+      const res = await revokeSupportLines(base())
+      expect(res).toMatchObject({ removed: 1, removedFromSecond: 1 })
+      expect(res.warnings.join(' ')).toMatch(/authorized_keys2 was a symbolic link/)
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(false)
+      expect(readSecond()).toBe(PERSONAL + '\n')
+    })
+
+    it('a revoke still cleans the second file when the first cannot be read, and then reports the failure', async () => {
+      mkdirSync(sshDir, { mode: 0o700 })
+      mkdirSync(authPath)
+      seedSecond([BRIDGE, LINE1])
+      await expect(revokeSupportLines(base())).rejects.toMatchObject({ code: 'EISDIR' })
+      expect(readSecond()).toBe(BRIDGE + '\n')
+    })
+
+    it('a revoke still cleans the first file when the second cannot be read, and then reports the failure', async () => {
+      seed([BRIDGE, LINE1])
+      mkdirSync(secondPath())
+      await expect(revokeSupportLines(base())).rejects.toMatchObject({ code: 'EISDIR' })
+      expect(read()).toBe(BRIDGE + '\n')
+    })
+
+    it('a reconcile expects NO line in the second file, not even a line of the live grant', async () => {
+      seed([BRIDGE, LINE1, LINE2])
+      seedSecond([PERSONAL, LINE1])
+      const res = await reconcileSupportLinesOnDisk({ ...base(), grant: grantInput() })
+      expect(res).toMatchObject({ kept: 2, removed: 1, removedFromSecond: 1, missing: 0, unbuildable: null })
+      expect(read()).toBe([BRIDGE, LINE1, LINE2].join('\n') + '\n')
+      expect(readSecond()).toBe(PERSONAL + '\n')
+    })
+
+    it('a reconcile adds up what it removed from the two files', async () => {
+      seed([BRIDGE, supportLine(0, OTHER_GRANT), LINE2])
+      seedSecond([LINE1, LINE2])
+      const res = await reconcileSupportLinesOnDisk({ ...base(), grant: grantInput() })
+      expect(res).toMatchObject({ kept: 1, removed: 3, removedFromSecond: 2, missing: 1 })
+      expect(readSecond()).toBe('')
+    })
+
+    it('a reconcile still cleans the second file when the first cannot be read, and the other way round', async () => {
+      mkdirSync(sshDir, { mode: 0o700 })
+      mkdirSync(authPath)
+      seedSecond([BRIDGE, LINE1])
+      await expect(reconcileSupportLinesOnDisk({ ...base(), grant: grantInput() })).rejects.toMatchObject({ code: 'EISDIR' })
+      expect(readSecond()).toBe(BRIDGE + '\n')
+    })
+
+    it('a reconcile still cleans the first file when the second cannot be read', async () => {
+      seed([BRIDGE, LINE1])
+      mkdirSync(secondPath())
+      await expect(reconcileSupportLinesOnDisk({ ...base(), grant: null })).rejects.toMatchObject({ code: 'EISDIR' })
+      expect(read()).toBe(BRIDGE + '\n')
+    })
+
+    it('a reconcile reports the link warning of the second file as well', async () => {
+      seed([BRIDGE])
+      const elsewhere = join(root, 'elsewhere2')
+      writeFileSync(elsewhere, LINE1 + '\n', { mode: 0o600 })
+      symlinkSync(elsewhere, secondPath())
+      const res = await reconcileSupportLinesOnDisk({ ...base(), grant: null })
+      expect(res).toMatchObject({ removed: 1, removedFromSecond: 1 })
+      expect(res.warnings.join(' ')).toMatch(/authorized_keys2 was a symbolic link/)
+    })
+
+    it('a grant writes its lines into the first file ONLY, and takes a stale support line out of the second', async () => {
+      seed([BRIDGE])
+      seedSecond([PERSONAL, supportLine(0, OTHER_GRANT)])
+      const res = await grantSupportLines({ ...base(), grant: grantInput() })
+      expect(res).toMatchObject({ replaced: 0, removedFromSecond: 1 })
+      expect(read()).toBe([BRIDGE, LINE1, LINE2].join('\n') + '\n')
+      expect(readSecond()).toBe(PERSONAL + '\n')
+    })
+
+    it('a grant is not refused by a linked second file that holds no support line, and leaves the link alone', async () => {
+      seed([BRIDGE])
+      const elsewhere = join(root, 'elsewhere2')
+      writeFileSync(elsewhere, PERSONAL + '\n', { mode: 0o600 })
+      symlinkSync(elsewhere, secondPath())
+      const res = await grantSupportLines({ ...base(), grant: KEY1_ONLY })
+      expect(res).toMatchObject({ removedFromSecond: 0, warnings: [] })
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
+      expect(read()).toBe([BRIDGE, LINE1].join('\n') + '\n')
+    })
+
+    it('a grant that takes a line out of a LINKED second file passes the warning on', async () => {
+      seed([BRIDGE])
+      const elsewhere = join(root, 'elsewhere2')
+      writeFileSync(elsewhere, [PERSONAL, supportLine(1, OTHER_GRANT)].join('\n') + '\n', { mode: 0o600 })
+      symlinkSync(elsewhere, secondPath())
+      const res = await grantSupportLines({ ...base(), grant: KEY1_ONLY })
+      expect(res).toMatchObject({ removedFromSecond: 1 })
+      expect(res.warnings.join(' ')).toMatch(/authorized_keys2 was a symbolic link/)
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(false)
+      expect(readSecond()).toBe(PERSONAL + '\n')
+      expect(read()).toBe([BRIDGE, LINE1].join('\n') + '\n')
+    })
+
+    it('a grant adds nothing when the second file cannot be cleaned', async () => {
+      seed([BRIDGE])
+      mkdirSync(secondPath())
+      await expect(grantSupportLines({ ...base(), grant: grantInput() })).rejects.toMatchObject({ code: 'EISDIR' })
+      expect(read()).toBe(BRIDGE + '\n')
+    })
+
+    it('the second file keeps its other bytes: a line that is not valid UTF-8 comes back as it was', async () => {
+      mkdirSync(sshDir, { mode: 0o700 })
+      const foreign = Buffer.concat([Buffer.from('command="/usr/local/bin/caf'), Buffer.from([0xe9]), Buffer.from('" ' + PERSONAL + '\n')])
+      writeFileSync(secondPath(), Buffer.concat([foreign, Buffer.from(LINE1 + '\n')]), { mode: 0o600 })
+      await revokeSupportLines(base())
+      expect(readFileSync(secondPath()).equals(foreign)).toBe(true)
+    })
+
+    it('the helper writes the second file under the SAME lock, and no file of any other name', async () => {
+      seed([BRIDGE])
+      const out = await rewriteAuthorizedKeysLocked(
+        { sshDir, fileName: 'authorized_keys2', operation: 'test-write', sleep: noSleep },
+        () => ({ content: 'x\n', result: null }),
+      )
+      expect(out.authorizedKeysPath).toBe(secondPath())
+      expect(readSecond()).toBe('x\n')
+      expect(read()).toBe(BRIDGE + '\n')
+      writeFileSync(join(sshDir, 'authorized_keys.lock'), '')
+      await expect(
+        rewriteAuthorizedKeysLocked(
+          { sshDir, fileName: 'authorized_keys2', operation: 'test-write', sleep: noSleep, lockRetries: 2, staleLockMs: 60_000 },
+          () => ({ content: 'y\n', result: null }),
+        ),
+      ).rejects.toBeInstanceOf(AuthorizedKeysLockError)
+      expect(readSecond()).toBe('x\n')
+    })
+
+    it.each(['authorized_keys3', '../outside', 'authorized_keys2/../x', 'known_hosts', ''])(
+      'the helper refuses the file name %j, before anything is locked or written',
+      async (name) => {
+        seed([BRIDGE])
+        await expect(
+          rewriteAuthorizedKeysLocked(
+            { sshDir, fileName: name as unknown as 'authorized_keys', operation: 'test-write', sleep: noSleep },
+            () => ({ content: 'x\n', result: null }),
+          ),
+        ).rejects.toMatchObject({ code: 'AUTHORIZED_KEYS_FILE_NAME' })
+        expect(readdirSync(root)).toEqual(['.ssh'])
+        expect(readdirSync(sshDir)).toEqual(['authorized_keys'])
+      },
+    )
+  })
+
   describe('the shared lock', () => {
     it('a support writer waits on the SAME lock file the Bridge writer uses', async () => {
       mkdirSync(sshDir, { mode: 0o700 })
