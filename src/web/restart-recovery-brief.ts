@@ -126,13 +126,15 @@ export function briefCardId(raw: string): string {
 // The invariant on the ASSEMBLED brief. Every field is clean on its own, but
 // the brief puts its own characters between the fields (a colon, spaces, line
 // breaks), and those can supply the missing piece of a header or a tag that
-// two fields only add up to. So the text is checked as a whole, in both shapes
-// it has: as built, and as one line (the pane gets it with every line break
-// turned into a space, pane-text.ts). "Settled" means the shared filter finds
-// nothing left to change.
+// two fields only add up to. So the text is checked as a whole, in the shape
+// that reaches the pane: one line, every line break turned into a space
+// (pane-text.ts). "Settled" means the shared filter finds nothing left to
+// change. (For today's filter the text as built gives the same answer, its
+// patterns take a line break for whitespace; a second check on that shape was
+// tried and removed, because no test could tell the two apart.)
 function settlesInFilter(text: string): boolean {
   const typed = paneOneLine(text)
-  return sanitizePromptText(text) === text && sanitizePromptText(typed) === typed
+  return sanitizePromptText(typed) === typed
 }
 
 /** One line of the brief. `fallback` is set on lines that carry an outside-written field. */

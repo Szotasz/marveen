@@ -15,14 +15,14 @@ import { sanitizePromptText } from '../web/prompt-text-sanitize.js'
 import { paneOneLine } from '../web/pane-text.js'
 
 // The invariant of #2753's review (Samu), asserted on EVERY brief this file
-// builds: the assembled text is a fixed point of the shared filter, as built
-// and as the one line the pane gets. The only thing set aside is the single
+// builds: the assembled text is a fixed point of the shared filter in the shape
+// the pane gets, one line. The only thing set aside is the single
 // ellipsis character the overall cut appends (the filter's own normalisation
 // rewrites that character, and it is ours, not outside text).
 const settled = (text: string): boolean => {
   const body = text.endsWith('\u2026') ? text.slice(0, -1) : text
   const typed = paneOneLine(body)
-  return sanitizePromptText(body) === body && sanitizePromptText(typed) === typed
+  return sanitizePromptText(typed) === typed
 }
 const buildRecoveryBrief = (f: RecoveryFacts): string | null => {
   const b = buildRecoveryBriefUnchecked(f)
@@ -302,6 +302,16 @@ describe('outside-written fields are cleaned and cut before they are typed', () 
     expect(b).not.toMatch(TAG_HEAD)
     expect(b).not.toContain('[SYSTEM-DIREKTIVA')
     expect(b).toContain('   M src/')
+    // the branch is cleaned as a FIELD (the tag gone, the name kept), not dropped by the whole-brief check
+    expect(b).toContain('Commitolatlan valtozasok a(z) feat/[stripped-tag]x agon:')
+  })
+
+  it('keeps the branch name on its one line and cuts it at its own cap', () => {
+    const b = buildRecoveryBrief(facts({ branch: `feat/one\ntwo\u001bthree/${'b'.repeat(200)}`, dirty: [{ code: ' M', path: 'a.ts' }] }))!
+    const line = b.split('\n').find((l) => l.startsWith('Commitolatlan valtozasok'))!
+    expect(line.startsWith('Commitolatlan valtozasok a(z) feat/one two three/bbb')).toBe(true)
+    expect(line.endsWith('... agon:')).toBe(true)
+    expect(line.length).toBe('Commitolatlan valtozasok a(z)  agon:'.length + 80)
   })
 
   it('does not let a control character hide a tag from the filter', () => {
