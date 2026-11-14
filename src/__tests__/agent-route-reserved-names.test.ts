@@ -9,7 +9,10 @@
 //   1. the create route refuses each of those names, before anything is created;
 //   2. the reserved list and the source agree: every fixed first segment under
 //      /api/agents/ in the server source is in AGENT_ROUTE_RESERVED_IDS, and nothing
-//      else is (a sixth fixed route added later turns this red until it is listed);
+//      else is (a sixth fixed route added later turns this red until it is listed).
+//      The scan is closed-world: a use of the prefix it cannot read is red too. What NO
+//      source scan can see is a route whose path is put together from a prefix
+//      constant and a segment held elsewhere; the prefix is always written out today;
 //   3. which readers of the reserved list take the route names, and which one
 //      deliberately does not (the voice channel id is a sender, not an API address).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -102,31 +105,51 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
   }
   return acc
 }
-function fixedFirstSegments(): Map<string, string[]> {
-  const found = new Map<string, string[]>()
-  // 'path === "/api/agents/<seg>"' style literals (any quote), and '\/api\/agents\/<seg>' inside a regex literal.
-  const literal = /['"`]\/api\/agents\/([A-Za-z0-9_-]+)(?=['"`/?])/g
-  const inRegex = /\\\/api\\\/agents\\\/([A-Za-z0-9_-]+)/g
+// What may follow the /api/agents/ prefix, in a string or in a regex literal. CLOSED WORLD (review of #2744,
+// Samu): the first version looked for a literal segment only, so two new fixed routes written as a regex
+// alternation, \/api\/agents\/(aaa|bbb), stayed invisible and the guard stayed green. Now every occurrence of
+// the prefix must be one of the shapes below; anything else is red with its file and line.
+//   - the name parameter:  ([^/]+)   [^/]+   :name   ${...}
+//   - a literal segment:   letters, digits, '_' and '-'   -> must be in AGENT_ROUTE_RESERVED_IDS
+type Shape = { kind: 'param' } | { kind: 'literal'; segment: string } | { kind: 'unknown'; rest: string }
+function shapeAfterPrefix(rest: string): Shape {
+  if (rest.startsWith('([^/]+)') || rest.startsWith('[^/]+') || rest.startsWith('${') || /^:[A-Za-z]/.test(rest)) return { kind: 'param' }
+  const lit = /^[A-Za-z0-9_-]+/.exec(rest)
+  if (lit) return { kind: 'literal', segment: lit[0] }
+  return { kind: 'unknown', rest: rest.slice(0, 24) }
+}
+const PREFIX_RX = /\\\/api\\\/agents\\\/|\/api\/agents\//g
+function scanLine(line: string): Shape[] {
+  return [...line.matchAll(PREFIX_RX)].map((m) => shapeAfterPrefix(line.slice(m.index! + m[0].length)))
+}
+function scanSource(): { segments: Map<string, string[]>; unknown: string[] } {
+  const segments = new Map<string, string[]>()
+  const unknown: string[] = []
   for (const file of sourceFiles(join(PROJECT_ROOT, 'src'))) {
     const lines = readFileSync(file, 'utf-8').split('\n')
     lines.forEach((raw, i) => {
       const line = raw.replace(/^\s*(\/\/|\*|\/\*).*$/, '').replace(/\s\/\/\s.*$/, '')
-      for (const rx of [literal, inRegex]) {
-        for (const m of line.matchAll(rx)) {
-          const where = `${file.slice(PROJECT_ROOT.length + 1)}:${i + 1}`
-          found.set(m[1], [...(found.get(m[1]) ?? []), where])
-        }
+      const where = `${file.slice(PROJECT_ROOT.length + 1)}:${i + 1}`
+      for (const shape of scanLine(line)) {
+        if (shape.kind === 'literal') segments.set(shape.segment, [...(segments.get(shape.segment) ?? []), where])
+        else if (shape.kind === 'unknown') unknown.push(`${where}: ${shape.rest}`)
       }
     })
   }
-  return found
+  return { segments, unknown }
 }
 
 describe('the reserved route names and the routes agree', () => {
-  const found = fixedFirstSegments()
+  const { segments: found, unknown } = scanSource()
 
   it('the scan sees the five routes this file was written against', () => {
     for (const seg of FIXED_SEGMENTS) expect([seg, (found.get(seg) ?? []).length > 0]).toEqual([seg, true])
+  })
+
+  it('every use of the /api/agents/ prefix has a known shape', () => {
+    // Red with the file and line: a new way of writing a route must be taught to shapeAfterPrefix first,
+    // so that a fixed segment inside it cannot go unseen.
+    expect(unknown).toEqual([])
   })
 
   it('every fixed first segment under /api/agents/ is reserved, and nothing else is', () => {
@@ -138,6 +161,34 @@ describe('the reserved route names and the routes agree', () => {
 
   it('each reserved route name is a name the create route would otherwise accept', () => {
     for (const seg of AGENT_ROUTE_RESERVED_IDS) expect(sanitizeAgentName(seg)).toBe(seg)
+  })
+
+  it('the scanner itself: which ways of writing a route it reads, and which it refuses to guess at', () => {
+    const one = (line: string) => scanLine(line)
+    // the shapes in the source today
+    expect(one(String.raw`if (path === '/api/agents/status' && method === 'GET') {`)).toEqual([{ kind: 'literal', segment: 'status' }])
+    expect(one(String.raw`const m = path.match(/^\/api\/agents\/([^/]+)\/restart$/)`)).toEqual([{ kind: 'param' }])
+    expect(one(String.raw`if (/^\/api\/agents\/[^/]+\/avatar$/.test(path)) return true`)).toEqual([{ kind: 'param' }])
+    expect(one('new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack)$`)')).toEqual([{ kind: 'param' }])
+    expect(one("logger.warn({ route: '/api/agents/:name/restart' }, 'x')")).toEqual([{ kind: 'param' }])
+    expect(one('const hint = `PUT /api/agents/${name}`')).toEqual([{ kind: 'param' }])
+    // a fixed segment in a regex literal, alone or with more path after it
+    expect(one(String.raw`if (/^\/api\/agents\/zz-sixth$/.test(path)) {`)).toEqual([{ kind: 'literal', segment: 'zz-sixth' }])
+    expect(one(String.raw`if (/^\/api\/agents\/zz-sixth\/x$/.test(path)) {`)).toEqual([{ kind: 'literal', segment: 'zz-sixth' }])
+    expect(one("if (path.startsWith('/api/agents/zz-sixth')) {")).toEqual([{ kind: 'literal', segment: 'zz-sixth' }])
+    // NOT guessed at: an alternation, an optional group, a character class other than the name parameter,
+    // a bare prefix (the segment is concatenated somewhere else)
+    for (const line of [
+      String.raw`if (/^\/api\/agents\/(zz-a|zz-b)$/.test(path)) {`,
+      String.raw`if (/^\/api\/agents\/(?:zz-a|zz-b)$/.test(path)) {`,
+      String.raw`if (/^\/api\/agents\/(zz-a)?$/.test(path)) {`,
+      String.raw`if (/^\/api\/agents\/[a-z]+$/.test(path)) {`,
+      String.raw`if (/^\/api\/agents\/.+$/.test(path)) {`,
+      "if (path.startsWith('/api/agents/')) {",
+      "const p = '/api/agents/' + segment",
+    ]) {
+      expect([line, one(line).map((s) => s.kind)]).toEqual([line, ['unknown']])
+    }
   })
 })
 

@@ -33,7 +33,9 @@ export const MESSAGE_LAYER_RESERVED_AGENT_IDS: readonly string[] =
 // its own address answered by the fixed handler. THE one list of them: a new fixed
 // route under /api/agents/ gets its segment added HERE, and
 // src/__tests__/agent-route-reserved-names.test.ts scans the source and goes red
-// until it is.
+// until it is. The scan reads the prefix written out, as a string or in a regex;
+// a path put together from a prefix constant and a segment kept elsewhere is
+// invisible to it (and to any source scan), so write the full path at the route.
 export const AGENT_ROUTE_RESERVED_IDS: readonly string[] =
   ['activity', 'status', 'model-suggest', 'export-all', 'import']
 
