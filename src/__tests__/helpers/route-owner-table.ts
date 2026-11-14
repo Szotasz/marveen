@@ -17,6 +17,7 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "agents.ts POST <stopMatch>", cls: "agent", why: "agent lifecycle: the main agent stops agents" },
   { key: "agents.ts POST <drainMatch>", cls: "agent", why: "agent lifecycle: drain" },
   { key: "agents.ts POST <restartMatch>", cls: "agent", why: "agent lifecycle: the main agent restarts agents" },
+  { key: "agents.ts POST <modeMatch>", cls: "agent", why: "the main agent applies an owner-defined mode preset enabled for this agent (presets are owner-only via PUT /api/mode-presets); per-agent tokens get 403" },
   { key: "approvals.ts POST <consumeMatch>", cls: "agent", why: "an agent consumes its own approved request (single use, bound to the grantee)" },
   { key: "auth.ts POST /api/auth/login", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },
   { key: "auth.ts POST /api/auth/logout", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },

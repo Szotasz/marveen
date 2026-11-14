@@ -27,6 +27,8 @@ import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import { listCustomProviders, loadCustomProvider } from '../custom-providers.js'
+import { readModePresets } from '../mode-presets.js' // MODEPRESETS1109
+import { logConfigChange } from '../../db.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -67,6 +69,7 @@ import {
   KNOWN_VOICE_MODELS,
   readAgentCustomProvider,
   writeAgentCustomProvider,
+  writeAgentMode,
   type AuthMode,
   readJsonObjectForWrite,
 } from '../agent-config.js'
@@ -155,7 +158,7 @@ import { activityState, type ActivityState } from '../pane-liveness.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS, agentPutOwnerFields } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, mergeContextGuardConfig, previewContextGuardMerge, seedContextGuardForNewAgent } from '../context-guard-store.js'
+import { readContextGuardConfig, mergeContextGuardConfig, previewContextGuardMerge, seedContextGuardForNewAgent, CONTEXT_GUARD_STORE_PATH } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
@@ -197,7 +200,7 @@ import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
-import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { kindAllowed, FORBIDDEN_KIND, bridgeOwner, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED, ownerCookieSession } from './auth.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -2717,6 +2720,116 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
+    return true
+  }
+
+  // MODEPRESETS1109: the owner has approved these exact values for these agents.
+  const modeMatch = path.match(/^\/api\/agents\/([^/]+)\/mode$/)
+  if (modeMatch && method === 'POST') {
+    const name = decodeURIComponent(modeMatch[1])
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found', code: 'mode_agent_unknown' }, 404); return true }
+    if (isMainChannelsAgent(name)) {
+      json(res, { error: 'Mode presets do not support the main agent', code: 'mode_main_agent_unsupported' }, 400)
+      return true
+    }
+    // Belt and braces: AGENT_TOKEN_ALLOWLIST also excludes this path.
+    if (ctx.auth?.tokenAgent) {
+      json(res, { error: 'Per-agent tokens cannot apply modes', code: 'mode_agent_token_forbidden' }, 403)
+      return true
+    }
+    if (!(kindAllowed(ctx.auth, ['token', 'session']) || bridgeOwner(ctx.auth, req))) {
+      json(res, { ...FORBIDDEN_KIND, code: 'mode_credential_forbidden' }, 403)
+      return true
+    }
+    let body: Record<string, unknown>
+    try {
+      const parsed: unknown = JSON.parse((await readBody(req)).toString())
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected an object')
+      body = parsed as Record<string, unknown>
+      if (typeof body.preset !== 'string' || Object.keys(body).some(k => k !== 'preset' && k !== 'fresh')
+        || ('fresh' in body && typeof body.fresh !== 'boolean')) throw new Error('Expected preset and optional boolean fresh')
+    } catch {
+      json(res, { error: 'Expected preset and optional boolean fresh', code: 'mode_invalid_body' }, 400)
+      return true
+    }
+    const presetName = body.preset as string
+    const { presets } = readModePresets()
+    if (!Object.hasOwn(presets, presetName)) {
+      json(res, { error: 'Unknown mode preset', code: 'mode_preset_unknown' }, 404)
+      return true
+    }
+    const preset = presets[presetName]
+    if (!preset.agents.includes(name)) {
+      json(res, { error: 'Preset is not enabled for this agent', code: 'mode_preset_not_allowed' }, 403)
+      return true
+    }
+    if (preset.customProvider && !loadCustomProvider(preset.customProvider)) {
+      json(res, { error: 'Preset provider no longer exists', code: 'mode_preset_provider_missing' }, 409)
+      return true
+    }
+    const cliGate = await refuseIfCliCannotLaunch(preset.model)
+    if (cliGate) {
+      json(res, { ...cliGate, code: 'mode_model_not_launchable' }, 422)
+      return true
+    }
+    const configPath = join(agentDir(name), 'agent-config.json')
+    const guardPath = CONTEXT_GUARD_STORE_PATH
+    const patch = preset.contextGuard ?? {}
+    const guardKeys = Object.keys(patch) as Array<keyof typeof patch>
+    try {
+      const { current, merged } = previewContextGuardMerge(name, patch)
+      // The existing normalizer can clamp values or move an omitted threshold.
+      // Refuse that outcome so applying a preset only writes its approved fields.
+      if (guardKeys.some(k => merged[k] !== patch[k])
+        || (Object.keys(current) as Array<keyof ContextGuardConfig>).some(k => !guardKeys.includes(k as keyof typeof patch) && current[k] !== merged[k])) {
+        json(res, { error: 'Preset context guard cannot be applied exactly to this agent', code: 'mode_preset_context_guard_invalid' }, 400)
+        return true
+      }
+      const config = readJsonObjectForWrite(configPath)
+      const guardBefore = Object.fromEntries(guardKeys.map(k => [k, current[k]]))
+      const guardAfter = Object.fromEntries(guardKeys.map(k => [k, merged[k]]))
+      const before = { customProvider: config.customProvider ?? null, model: config.model ?? null, ...(guardKeys.length ? { contextGuard: guardBefore } : {}) }
+      const after = { customProvider: preset.customProvider, model: preset.model, ...(guardKeys.length ? { contextGuard: guardAfter } : {}) }
+      const guardChanged = guardKeys.some(k => current[k] !== merged[k])
+      if ((config.customProvider ?? '') === preset.customProvider && config.model === preset.model && !guardChanged) {
+        json(res, { ok: true, preset: presetName, changed: false, restarted: false })
+        return true
+      }
+      const configBytes = existsSync(configPath) ? readFileSync(configPath) : null
+      const guardBytes = existsSync(guardPath) ? readFileSync(guardPath) : null
+      const restore = (file: string, bytes: Buffer | null) => {
+        if (bytes === null) rmSync(file, { force: true })
+        else atomicWriteFileSync(file, bytes)
+      }
+      writeAgentMode(name, preset.customProvider, preset.model)
+      try {
+        if (guardChanged) mergeContextGuardConfig(name, patch)
+        const auth = ctx.auth
+        const actor = auth?.kind === 'session' ? `session:${auth.user ?? '?'}` : auth?.kind === 'device' ? `bridge:${ownerCookieSession(req) ?? '?'}` : 'token'
+        logConfigChange('agent-mode:' + name, JSON.stringify(before), JSON.stringify(after), actor)
+      } catch (err) {
+        // Restore exact bytes (or absence), including a writer that fails after writing.
+        try { restore(configPath, configBytes) } finally { restore(guardPath, guardBytes) }
+        throw err
+      }
+    } catch (err) {
+      json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
+      return true
+    }
+    let restarted = false
+    try {
+      const runState = agentRunState(name)
+      // Modes never start a non-running agent, even when the reconciler desires it.
+      if (runState === 'running') {
+        const result = await restartAgentProcess(name, { fresh: body.fresh === true })
+        if (!result.ok) throw new Error(result.error || 'Restart failed')
+        restarted = true
+      }
+    } catch (err) {
+      json(res, { error: err instanceof Error ? err.message : String(err), applied: true }, 502)
+      return true
+    }
+    json(res, { ok: true, preset: presetName, changed: true, restarted })
     return true
   }
 
