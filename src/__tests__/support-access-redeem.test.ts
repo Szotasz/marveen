@@ -13,6 +13,7 @@ import {
   SUPPORT_REDEEM_MAX_BODY_BYTES,
   SUPPORT_REDEEM_PATH,
   SUPPORT_REDEEM_TIMEOUT_MS,
+  SUPPORT_SERVICE_ORIGIN,
   type RedeemRequest,
   type RedeemResponse,
   type RedeemTransport,
@@ -21,7 +22,6 @@ import {
 // TEST ONLY values: the right shape, issued by nobody.
 const CODE = 'msc_' + 'TESTONLY'.repeat(4)
 const TOKEN = 'mst_' + 'TESTONLY'.repeat(5) + '_-0'
-const ORIGIN = 'https://licensing.example'
 
 function recording(answer: RedeemResponse | Error): { transport: RedeemTransport; calls: RedeemRequest[] } {
   const calls: RedeemRequest[] = []
@@ -66,29 +66,46 @@ describe('classifySupportCode', () => {
 })
 
 describe('redeemSupportCode', () => {
-  it('sends ONE request of the frozen shape to the frozen path and returns the token', async () => {
+  it('sends ONE request of the frozen shape to the frozen address and returns the token', async () => {
     const { transport, calls } = recording({ status: 200, body: '{"token":"' + TOKEN + '"}' })
-    expect(await redeemSupportCode(CODE, { origin: ORIGIN, transport })).toEqual({ ok: true, token: TOKEN })
+    expect(await redeemSupportCode(CODE, { transport })).toEqual({ ok: true, token: TOKEN })
     expect(calls).toEqual([
       {
-        origin: ORIGIN,
-        path: '/functions/v1/support-code-redeem-v1',
+        origin: 'https://api.marveen.io',
+        path: '/support/v1/code-redeem',
         body: '{"code":"' + CODE + '","purpose":"support"}',
         timeoutMs: 10_000,
         maxBodyBytes: 1024,
       },
     ])
-    expect(SUPPORT_REDEEM_PATH).toBe('/functions/v1/support-code-redeem-v1')
+    expect(SUPPORT_SERVICE_ORIGIN).toBe('https://api.marveen.io')
+    expect(SUPPORT_REDEEM_PATH).toBe('/support/v1/code-redeem')
+  })
+
+  it('has no way to be pointed at another service: not by the caller, not by the environment', async () => {
+    const saved = { ...process.env }
+    try {
+      for (const name of ['SUPPORT_SERVICE_ORIGIN', 'MARVEEN_SUPPORT_ORIGIN', 'MARVEEN_API_ORIGIN', 'SUPABASE_URL', 'HTTPS_PROXY']) {
+        process.env[name] = 'https://elsewhere.example'
+      }
+      const { transport, calls } = recording({ status: 200, body: '{"token":"' + TOKEN + '"}' })
+      const deps = { transport, origin: 'https://elsewhere.example' } as { transport: RedeemTransport }
+      await redeemSupportCode(CODE, deps)
+      expect(calls.map((c) => c.origin + c.path)).toEqual(['https://api.marveen.io/support/v1/code-redeem'])
+    } finally {
+      for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
+      Object.assign(process.env, saved)
+    }
     expect(SUPPORT_REDEEM_TIMEOUT_MS).toBe(10_000)
     expect(SUPPORT_REDEEM_MAX_BODY_BYTES).toBe(1024)
   })
 
   it('maps 401 to "the code is not good" and 429 to "wait"', async () => {
-    expect(await redeemSupportCode(CODE, { origin: ORIGIN, transport: recording({ status: 401, body: '{"error":"x"}' }).transport })).toEqual({
+    expect(await redeemSupportCode(CODE, { transport: recording({ status: 401, body: '{"error":"x"}' }).transport })).toEqual({
       ok: false,
       problem: 'code_rejected',
     })
-    expect(await redeemSupportCode(CODE, { origin: ORIGIN, transport: recording({ status: 429, body: '' }).transport })).toEqual({
+    expect(await redeemSupportCode(CODE, { transport: recording({ status: 429, body: '' }).transport })).toEqual({
       ok: false,
       problem: 'rate_limited',
     })
@@ -96,7 +113,7 @@ describe('redeemSupportCode', () => {
 
   it.each([0, 201, 204, 301, 302, 307, 400, 403, 404, 500, 503])('treats status %i as "not available", even with a token in the body', async (status) => {
     const { transport } = recording({ status, body: '{"token":"' + TOKEN + '"}' })
-    expect(await redeemSupportCode(CODE, { origin: ORIGIN, transport })).toEqual({ ok: false, problem: 'service_unavailable' })
+    expect(await redeemSupportCode(CODE, { transport })).toEqual({ ok: false, problem: 'service_unavailable' })
   })
 
   it.each([
@@ -112,12 +129,12 @@ describe('redeemSupportCode', () => {
     ['null', 'null'],
   ])('answers "unreadable" for a 200 with %s', async (_label, body) => {
     const { transport } = recording({ status: 200, body })
-    expect(await redeemSupportCode(CODE, { origin: ORIGIN, transport })).toEqual({ ok: false, problem: 'answer_unreadable' })
+    expect(await redeemSupportCode(CODE, { transport })).toEqual({ ok: false, problem: 'answer_unreadable' })
   })
 
   it('answers "not available" when the transport fails, and does NOT retry', async () => {
     const { transport, calls } = recording(new Error('boom with ' + CODE))
-    expect(await redeemSupportCode(CODE, { origin: ORIGIN, transport })).toEqual({ ok: false, problem: 'service_unavailable' })
+    expect(await redeemSupportCode(CODE, { transport })).toEqual({ ok: false, problem: 'service_unavailable' })
     expect(calls.length).toBe(1)
   })
 
@@ -129,7 +146,7 @@ describe('redeemSupportCode', () => {
       recording({ status: 200, body: '{"token":"nope","code":"' + CODE + '"}' }),
     ]
     for (const { transport } of leaky) {
-      const out = await redeemSupportCode(CODE, { origin: ORIGIN, transport })
+      const out = await redeemSupportCode(CODE, { transport })
       expect(out.ok).toBe(false)
       expect(JSON.stringify(out)).not.toContain('TESTONLY')
     }
@@ -140,7 +157,7 @@ describe('redeemSupportCode', () => {
     for (const bad of ['mrv_' + 'SECRETVALUE'.repeat(3), ' ' + CODE, CODE + '\n', '']) {
       let message = 'no error'
       try {
-        await redeemSupportCode(bad, { origin: ORIGIN, transport })
+        await redeemSupportCode(bad, { transport })
       } catch (err) {
         message = String((err as Error).message)
       }

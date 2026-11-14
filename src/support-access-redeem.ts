@@ -4,7 +4,7 @@
 // and types it in on this machine. This module checks the code's shape, sends
 // it once, and reads the answer strictly. The frozen v1 contract:
 //
-//   POST <origin>/functions/v1/support-code-redeem-v1
+//   POST https://api.marveen.io/support/v1/code-redeem
 //   {"code":"msc_<32 chars>","purpose":"support"}
 //   200 {"token":"mst_<43 chars>"}      one key, nothing else
 //   401 the code is not good (unknown, expired, used, wrong purpose: all alike)
@@ -17,14 +17,19 @@
 // - No retry. The code is single use: when the answer is lost, the owner asks
 //   for a new code (the half-made entry is visible and revocable in their
 //   account).
-// - No redirect is followed, TLS verification cannot be switched off from the
-//   environment, and the origin comes from the caller, never from a request.
+// - No redirect is followed, and TLS verification cannot be switched off from
+//   the environment.
+// - WHERE the code goes is a source constant. No environment variable, config
+//   file or request can point this machine at another service: the code is a
+//   credential, and whoever receives it can redeem it.
 import { request } from 'node:https'
 import { isSupportToken } from './support-access-token.js'
 
 /** `msc_` and exactly 32 URL-safe characters. */
 export const SUPPORT_CODE_SHAPE = /^msc_[A-Za-z0-9_-]{32}$/
-export const SUPPORT_REDEEM_PATH = '/functions/v1/support-code-redeem-v1'
+/** The product's own API host. A constant on purpose: see the rules above. */
+export const SUPPORT_SERVICE_ORIGIN = 'https://api.marveen.io'
+export const SUPPORT_REDEEM_PATH = '/support/v1/code-redeem'
 /** A person is waiting at the screen; ten seconds in total, then it is "not available". */
 export const SUPPORT_REDEEM_TIMEOUT_MS = 10_000
 /** The good answer is under 70 bytes. Anything longer than this is not read. */
@@ -96,19 +101,21 @@ function tokenFromBody(body: string): string | null {
 }
 
 /**
- * Redeem a code that classifySupportCode accepted. Sends exactly one request.
- * Never throws for anything the network or the service does; a caller that
- * hands in an unchecked value gets an exception with a fixed message.
+ * Redeem a code that classifySupportCode accepted. Sends exactly one request,
+ * always to SUPPORT_SERVICE_ORIGIN: the caller chooses how it is sent (the
+ * transport), never where. Never throws for anything the network or the
+ * service does; a caller that hands in an unchecked value gets an exception
+ * with a fixed message.
  */
 export async function redeemSupportCode(
   code: string,
-  deps: { readonly origin: string; readonly transport: RedeemTransport },
+  deps: { readonly transport: RedeemTransport },
 ): Promise<RedeemResult> {
   if (!SUPPORT_CODE_SHAPE.test(code)) throw new Error('redeemSupportCode needs a code that classifySupportCode accepted')
   let res: RedeemResponse
   try {
     res = await deps.transport({
-      origin: deps.origin,
+      origin: SUPPORT_SERVICE_ORIGIN,
       path: SUPPORT_REDEEM_PATH,
       body: JSON.stringify({ code, purpose: 'support' }),
       timeoutMs: SUPPORT_REDEEM_TIMEOUT_MS,

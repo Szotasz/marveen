@@ -7,12 +7,27 @@
 //     flag. Measured on OpenSSH 7.6 to 10.0: 9.6 and 10.0 answer `-V` with the
 //     version line, older ones say "unknown option -- V" and print the same
 //     `OpenSSH_<major>.<minor>` line inside the usage text.
-//   - the effective configuration: `sshd -T`. Measured: as a non-root user it
-//     exits with "no hostkeys available" unless it gets a host key of its own
-//     through `-h`; with one it prints the same lines.
+//   - the effective configuration FOR THE CONNECTION a support login would be:
+//     `sshd -T -C user=..,addr=..,host=..,laddr=..,lport=..`, once for every
+//     combination this file plans. Measured: as a non-root user sshd exits with
+//     "no hostkeys available" unless it gets a host key of its own through
+//     `-h`; with one it prints the same lines.
+//
+// WHY NOT THE PLAIN `sshd -T` (measured on OpenSSH 8.9, 9.2, 9.6 and 10.0):
+// it does not apply `Match` blocks. A setting switched on only inside a Match
+// block reads as the global value there, and of the criteria a block can name,
+// sshd complains about a missing one for LocalPort ONLY (exit 255, no output);
+// a block on User, Group, Address, Host or LocalAddress is skipped in silence
+// when the query does not name that criterion. So every criterion is named:
+// the login user, each pinned source address, the same address as the host
+// (true while UseDNS is off, which is therefore required), each address of
+// this machine, each port sshd listens on.
+// NOT COVERED: a block on RDomain. A routing domain cannot be listed from
+// here; a `listenaddress` line that names one is refused as unreadable.
 //
 // EVERY ANSWER FAILS CLOSED. A setting that is not in the text is unknown, and
 // unknown is a refusal: the support line is never written on a guess.
+import { isIP } from 'node:net'
 import { SUPPORT_MIN_SSHD, sshdAtLeast, type SshdVersion } from './support-access-line.js'
 
 /** Why support access cannot be enabled on this sshd. */
@@ -20,9 +35,11 @@ export type SshdProblem =
   | 'sshd_version_unknown'
   | 'sshd_too_old'
   | 'sshd_config_unknown'
+  | 'sshd_usedns_enabled'
   | 'root_login_disabled'
   | 'tunnel_permitted'
   | 'authorized_keys_path_unsupported'
+  | 'other_key_source'
 
 /**
  * The OpenSSH version in what sshd printed, or null. Only a line that STARTS
@@ -42,46 +59,160 @@ export function parseSshdVersion(text: string): SshdVersion | null {
   return found
 }
 
-/** The settings of `sshd -T` that decide whether a support line is safe here. */
+/** The settings of one `sshd -T` answer that decide whether a support line is safe here. */
 export interface SshdEffectiveConfig {
   /** `permitrootlogin`, lower case, as printed (`without-password`, `no`, ...). */
   readonly permitRootLogin: string
   /** `permittunnel`, lower case, as printed (`no`, `yes`, `point-to-point`, `ethernet`). */
   readonly permitTunnel: string
+  /** `usedns`, lower case, as printed. */
+  readonly useDns: string
   /** `authorizedkeysfile` entries, as printed (relative to the home, or absolute, or with tokens). */
   readonly authorizedKeysFiles: readonly string[]
+  /** `authorizedkeyscommand`, the whole value as printed (`none` when there is no command). */
+  readonly authorizedKeysCommand: string
+  /** `trustedusercakeys`, the whole value as printed (`none` when there is no CA file). */
+  readonly trustedUserCaKeys: string
+  /** Every port sshd listens on: the `port` lines and the port of every `listenaddress` line, ascending. */
+  readonly listenPorts: readonly number[]
 }
 
 const SETTING_VALUE = /^[A-Za-z0-9._%/-]+$/
+/** Settings that must appear exactly once. */
+const SINGLE_SETTINGS = [
+  'permitrootlogin',
+  'permittunnel',
+  'usedns',
+  'authorizedkeysfile',
+  'authorizedkeyscommand',
+  'trustedusercakeys',
+] as const
+// `listenaddress 0.0.0.0:22`, `listenaddress [::]:22`: the port is what follows the last colon.
+const LISTEN_ADDRESS = /^(?:\[[0-9A-Fa-f:.]+\]|[0-9A-Za-z.-]+):(\d{1,5})$/
+
+function portOf(text: string): number | null {
+  if (!/^\d{1,5}$/.test(text)) return null
+  const port = Number(text)
+  return port >= 1 && port <= 65535 ? port : null
+}
 
 /**
- * Read the three settings out of `sshd -T` output. Returns null unless each of
- * them appears EXACTLY once with a plain value: a missing line, a repeated line
- * with another value, or a value with unexpected characters means the text is
- * not what sshd prints, and nothing is concluded from it.
+ * Read the settings out of one `sshd -T` answer. Returns null unless each
+ * single setting appears EXACTLY once and at least one port is named: a
+ * missing line, a repeated line, a value with unexpected characters, or a
+ * `listenaddress` line in a form this does not know (one that names a routing
+ * domain, for instance) means the text is not something to conclude from.
  */
 export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | null {
-  const seen = new Map<string, string[]>()
+  const seen = new Map<string, string>()
+  const ports = new Set<number>()
   for (const raw of text.split('\n')) {
     const line = raw.trim()
     const space = line.indexOf(' ')
     if (space <= 0) continue
     const key = line.slice(0, space).toLowerCase()
-    if (key !== 'permitrootlogin' && key !== 'permittunnel' && key !== 'authorizedkeysfile') continue
-    if (seen.has(key)) return null
-    const values = line
-      .slice(space + 1)
-      .split(/\s+/)
-      .filter((v) => v.length > 0)
-    if (values.length === 0 || !values.every((v) => SETTING_VALUE.test(v))) return null
-    seen.set(key, values)
+    const value = line.slice(space + 1).trim()
+    if (key === 'port') {
+      const port = portOf(value)
+      if (port === null) return null
+      ports.add(port)
+    } else if (key === 'listenaddress') {
+      const m = LISTEN_ADDRESS.exec(value)
+      const port = m === null ? null : portOf(m[1])
+      if (port === null) return null
+      ports.add(port)
+    } else if ((SINGLE_SETTINGS as readonly string[]).includes(key)) {
+      if (seen.has(key) || value.length === 0) return null
+      seen.set(key, value)
+    }
   }
-  const root = seen.get('permitrootlogin')
-  const tunnel = seen.get('permittunnel')
-  const files = seen.get('authorizedkeysfile')
-  if (root === undefined || tunnel === undefined || files === undefined) return null
-  if (root.length !== 1 || tunnel.length !== 1) return null
-  return { permitRootLogin: root[0].toLowerCase(), permitTunnel: tunnel[0].toLowerCase(), authorizedKeysFiles: files }
+  if (ports.size === 0 || SINGLE_SETTINGS.some((key) => !seen.has(key))) return null
+  const one = (key: (typeof SINGLE_SETTINGS)[number]): string | null => {
+    const value = seen.get(key) as string
+    return SETTING_VALUE.test(value) ? value.toLowerCase() : null
+  }
+  const permitRootLogin = one('permitrootlogin')
+  const permitTunnel = one('permittunnel')
+  const useDns = one('usedns')
+  const files = (seen.get('authorizedkeysfile') as string).split(/\s+/)
+  if (permitRootLogin === null || permitTunnel === null || useDns === null) return null
+  if (!files.every((f) => SETTING_VALUE.test(f))) return null
+  return {
+    permitRootLogin,
+    permitTunnel,
+    useDns,
+    authorizedKeysFiles: files,
+    authorizedKeysCommand: seen.get('authorizedkeyscommand') as string,
+    trustedUserCaKeys: seen.get('trustedusercakeys') as string,
+    listenPorts: [...ports].sort((a, b) => a - b),
+  }
+}
+
+/** One connection a support login could be, as sshd's `-C` test mode describes it. */
+export interface SshdConnectionSpec {
+  /** The login user: the install user, whose authorized_keys gets the line. */
+  readonly user: string
+  /** A pinned source address, without the prefix length. */
+  readonly addr: string
+  /** An address of this machine the connection could arrive on. */
+  readonly laddr: string
+  /** A port sshd listens on. */
+  readonly lport: number
+}
+
+const LOGIN_USER = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$/
+const PLAIN_ADDRESS = /^[0-9A-Fa-f:.]+$/
+
+/**
+ * The `-C` argument for one connection, or null when a part cannot be carried
+ * in it (the argument is a comma-separated list, and nothing is quoted). The
+ * host is the source address itself: that is what sshd matches `Match Host`
+ * against while UseDNS is off.
+ */
+export function formatSshdConnectionSpec(spec: SshdConnectionSpec): string | null {
+  if (!LOGIN_USER.test(spec.user)) return null
+  // isIP() accepts a zone id (`fe80::1%eth0`); the plain alphabet check keeps it, and a comma, out.
+  if (!PLAIN_ADDRESS.test(spec.addr) || !PLAIN_ADDRESS.test(spec.laddr)) return null
+  if (isIP(spec.addr) === 0 || isIP(spec.laddr) === 0) return null
+  if (!Number.isInteger(spec.lport) || spec.lport < 1 || spec.lport > 65535) return null
+  return 'user=' + spec.user + ',addr=' + spec.addr + ',host=' + spec.addr + ',laddr=' + spec.laddr + ',lport=' + spec.lport
+}
+
+/** The port the first query names, before the answer has told which ports sshd listens on. */
+export const SSHD_DISCOVERY_PORT = 22
+
+export interface SshdProbePlanInput {
+  readonly loginUser: string
+  /** The pinned sources, each an exact host (`a.b.c.d/32` or `x::y/128`). */
+  readonly fromCidrs: readonly string[]
+  /** Every address of this machine a connection could arrive on. */
+  readonly localAddresses: readonly string[]
+  /** The ports from a first answer, or null before there is one. */
+  readonly listenPorts: readonly number[] | null
+}
+
+/**
+ * Which connections have to be asked about. Before the ports are known: one
+ * query, whose answer names them (the port settings are global, no Match block
+ * changes them). After that: EVERY pinned source, on EVERY local address, on
+ * EVERY port. Returns null when a list is empty or a value cannot be carried;
+ * the caller must then refuse, not ask about less.
+ */
+export function planSshdProbes(input: SshdProbePlanInput): SshdConnectionSpec[] | null {
+  const sources = input.fromCidrs.map((cidr) => cidr.replace(/\/(32|128)$/, ''))
+  const ports = input.listenPorts === null ? [SSHD_DISCOVERY_PORT] : input.listenPorts
+  if (sources.length === 0 || input.localAddresses.length === 0 || ports.length === 0) return null
+  const specs: SshdConnectionSpec[] = []
+  for (const addr of sources) {
+    for (const laddr of input.localAddresses) {
+      for (const lport of ports) {
+        const spec = { user: input.loginUser, addr, laddr, lport }
+        if (formatSshdConnectionSpec(spec) === null) return null
+        specs.push(spec)
+      }
+    }
+  }
+  return input.listenPorts === null ? specs.slice(0, 1) : specs
 }
 
 // A key login as root is possible with these; `no` and anything unknown is a refusal.
@@ -89,56 +220,118 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
 const ROOT_LOGIN_BY_KEY = new Set(['yes', 'without-password', 'prohibit-password', 'forced-commands-only'])
 
 /**
- * The spellings under which sshd names the one file the line goes into:
- * relative to the login user's home, or with the home token. An absolute path
- * or a per-user directory elsewhere is not accepted, even if it happens to
- * point at the same file.
+ * The spellings under which sshd names the file the line goes into: relative
+ * to the login user's home, or with the home token.
  */
 export const SUPPORT_AUTHORIZED_KEYS_ENTRIES: readonly string[] = ['.ssh/authorized_keys', '%h/.ssh/authorized_keys']
+/**
+ * The second file of the stock Debian and Ubuntu setting. No line is ever
+ * written into it, but sshd reads it, so a removal has to clean it too.
+ */
+export const SUPPORT_SECOND_KEYS_ENTRIES: readonly string[] = ['.ssh/authorized_keys2', '%h/.ssh/authorized_keys2']
+
+export type SupportKeysFileName = 'authorized_keys' | 'authorized_keys2'
+
+/**
+ * Which files under the login user's `.ssh` sshd reads keys from, or null when
+ * the setting names anything else. `authorized_keys` must be among them (the
+ * line goes there); `authorized_keys2` may be. An absolute path, a per-user
+ * directory elsewhere or a third file is not accepted, even if it happens to
+ * point at the same file: a copy of a pinned key in a file the removal does
+ * not clean would survive the removal.
+ */
+export function supportKeysFiles(entries: readonly string[]): SupportKeysFileName[] | null {
+  const first = entries.some((e) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(e))
+  const second = entries.some((e) => SUPPORT_SECOND_KEYS_ENTRIES.includes(e))
+  const onlyKnown = entries.every((e) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(e) || SUPPORT_SECOND_KEYS_ENTRIES.includes(e))
+  if (!first || !onlyKnown) return null
+  return second ? ['authorized_keys', 'authorized_keys2'] : ['authorized_keys']
+}
+
+/** What sshd answered for one planned connection. */
+export interface SshdProbeAnswer {
+  readonly spec: SshdConnectionSpec
+  /** The standard output of `sshd -T -C <spec>`, or null when it could not be run or did not exit with 0. */
+  readonly text: string | null
+}
 
 export interface SshdAssessmentInput {
   /** Output of the version command, or null when it could not be run. */
   readonly versionText: string | null
-  /** Output of `sshd -T`, or null when it could not be run. */
-  readonly configText: string | null
   /** True when the install user, whose authorized_keys gets the line, is root. */
   readonly loginIsRoot: boolean
+  readonly loginUser: string
+  readonly fromCidrs: readonly string[]
+  readonly localAddresses: readonly string[]
+  /** One answer per planned connection. More than planned is fine; fewer is a refusal. */
+  readonly answers: readonly SshdProbeAnswer[]
 }
 
 export type SshdAssessment =
-  | { readonly ok: true; readonly version: SshdVersion }
+  | { readonly ok: true; readonly version: SshdVersion; readonly keysFiles: readonly SupportKeysFileName[] }
   | { readonly ok: false; readonly problem: SshdProblem; readonly version: SshdVersion | null }
 
 /**
- * May a support line be written for this sshd? The checks run in this order
- * and the first failing one is the answer:
+ * May a support line be written for this sshd? The checks run in this order,
+ * each over EVERY answer, and the first failing one is the result:
  *
  *   version unknown            no line: its options cannot be trusted to mean anything
  *   older than 8.4             no line: verify-required is unknown there and sshd
  *                              drops the whole line (measured)
- *   configuration unknown      no line
+ *   configuration unknown      no line. An answer that is missing, empty or
+ *                              unreadable; answers that disagree about the
+ *                              ports; a planned connection nobody asked about
+ *   UseDNS is on               no line: `Match Host` would then be matched
+ *                              against a name this machine cannot know here
  *   root login by key is off   no line when the login user is root: it would be dead
  *   tunnels are permitted      NO LINE. `restrict` does not refuse a tunnel
  *                              device on every sshd build (measured), no key
  *                              option forbids one, and on a tunnel-only
  *                              connection the bound command never runs. Only
- *                              `permittunnel no` is accepted.
- *   another keys file          no line unless sshd reads `.ssh/authorized_keys`
- *                              of the login user: a line sshd never reads is dead,
- *                              and we do not write into paths we did not plan for
+ *                              the exact `permittunnel no` is accepted, for
+ *                              every planned connection.
+ *   another keys file          no line unless sshd reads keys from the login
+ *                              user's `.ssh/authorized_keys` and from nowhere
+ *                              else but `.ssh/authorized_keys2`
+ *   another key source         no line when a keys command or a user CA file
+ *                              is set: a key granted through those is out of
+ *                              reach of a removal
  */
 export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   const version = input.versionText === null ? null : parseSshdVersion(input.versionText)
   if (version === null) return { ok: false, problem: 'sshd_version_unknown', version }
   if (!sshdAtLeast(version, SUPPORT_MIN_SSHD)) return { ok: false, problem: 'sshd_too_old', version }
-  const config = input.configText === null ? null : parseSshdEffectiveConfig(input.configText)
-  if (config === null) return { ok: false, problem: 'sshd_config_unknown', version }
-  if (input.loginIsRoot && !ROOT_LOGIN_BY_KEY.has(config.permitRootLogin)) {
-    return { ok: false, problem: 'root_login_disabled', version }
+  const refuse = (problem: SshdProblem): SshdAssessment => ({ ok: false, problem, version })
+
+  const configs: SshdEffectiveConfig[] = []
+  for (const answer of input.answers) {
+    const config = answer.text === null ? null : parseSshdEffectiveConfig(answer.text)
+    if (config === null) return refuse('sshd_config_unknown')
+    configs.push(config)
   }
-  if (config.permitTunnel !== 'no') return { ok: false, problem: 'tunnel_permitted', version }
-  if (!config.authorizedKeysFiles.some((f) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(f))) {
-    return { ok: false, problem: 'authorized_keys_path_unsupported', version }
+  if (configs.length === 0) return refuse('sshd_config_unknown')
+  const ports = configs[0].listenPorts
+  if (!configs.every((c) => c.listenPorts.join(',') === ports.join(','))) return refuse('sshd_config_unknown')
+  const planned = planSshdProbes({
+    loginUser: input.loginUser,
+    fromCidrs: input.fromCidrs,
+    localAddresses: input.localAddresses,
+    listenPorts: ports,
+  })
+  if (planned === null) return refuse('sshd_config_unknown')
+  const asked = new Set(input.answers.map((a) => formatSshdConnectionSpec(a.spec)))
+  if (!planned.every((spec) => asked.has(formatSshdConnectionSpec(spec)))) return refuse('sshd_config_unknown')
+
+  if (!configs.every((c) => c.useDns === 'no')) return refuse('sshd_usedns_enabled')
+  if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse('root_login_disabled')
+  if (!configs.every((c) => c.permitTunnel === 'no')) return refuse('tunnel_permitted')
+  const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles)
+  if (keysFiles === null) return refuse('authorized_keys_path_unsupported')
+  if (!configs.every((c) => c.authorizedKeysFiles.join(' ') === configs[0].authorizedKeysFiles.join(' '))) {
+    return refuse('authorized_keys_path_unsupported')
   }
-  return { ok: true, version }
+  if (!configs.every((c) => c.authorizedKeysCommand === 'none' && c.trustedUserCaKeys === 'none')) {
+    return refuse('other_key_source')
+  }
+  return { ok: true, version, keysFiles }
 }
