@@ -1711,7 +1711,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         roles: {},
         spaces: {},
         flatReplies: true,
-      }, null, 2))
+      }, null, 2), { mode: 0o600 })
       let gcRestarted = false
       let gcWasRunning = false
       let gcRestartError: string | undefined
@@ -1848,7 +1848,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       allowFrom: accessAllowFrom ?? [],
       groups: {},
       pending: {},
-    }, null, 2))
+    }, null, 2), { mode: 0o600 })
 
     // Main agent doesn't have an agent-config.json or enabled-plugins entry
     // (the channels session reuses the system claude install), so skip the
@@ -2314,7 +2314,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       access.dmPolicy = 'allowlist'
 
-      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
+      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2), { mode: 0o600 })
 
       const approvedDir = join(chDir, 'approved')
       mkdirSync(approvedDir, { recursive: true })
@@ -2491,7 +2491,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       } else {
         if (access.groups) delete access.groups[id]
       }
-      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
+      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2), { mode: 0o600 })
       logger.info({ name, provider, kind, id }, 'Channel allowlist entry removed')
       json(res, { ok: true })
     } catch (err) {
@@ -2555,7 +2555,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       access.channels[request.channel_id] = channelConfig
 
-      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
+      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2), { mode: 0o600 })
       updateChannelRequestStatus(reqId, 'approved')
       logger.info({ name, channelId: request.channel_id, channelName: request.channel_name }, 'Channel request approved')
       json(res, { ok: true })
