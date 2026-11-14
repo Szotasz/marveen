@@ -263,3 +263,25 @@ jobs:
             echo "== $t"
             python3 "$t"
           done
+
+  # SUPPORTKULCS1109: the support routine ships as ONE self-contained file
+  # (scripts/support-standby.mjs) and states its lowest node in one place
+  # (SUPPORT_ROUTINE_MIN_NODE_MAJOR, 20: the installer accepts 20 and newer, so
+  # machines we installed run it). The main job runs on .nvmrc only, so without
+  # this job "20" would be a number nobody measured. NO `npm ci` on purpose: the
+  # rescue path meets this file on a machine whose node_modules may be broken,
+  # and the check uses nothing but node itself. It gets no secret and touches
+  # no other job.
+  support-standby-node20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: The support routine's self-contained file on node 20
+        run: |
+          set -e
+          node --version | grep -q '^v20\.'
+          node --test tests/support-standby/standalone-check.mjs
