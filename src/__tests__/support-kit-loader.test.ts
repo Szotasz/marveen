@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { KIT_LOADER_EXIT, KIT_LOADER_SOURCE, KIT_RUN_ENV, KIT_RUN_MAX_OUTPUT, kitRunArgs, runKitRoutine } from '../support-kit-loader.js'
+import { KIT_LOADER_EXIT, KIT_LOADER_SOURCE, KIT_RUN_ENV, KIT_RUN_MAX_OUTPUT, kitRunArgs, kitRunOutcome, runKitRoutine } from '../support-kit-loader.js'
 import { installKit, KIT_SOURCE_MAX_BYTES } from '../support-kit-install.js'
 import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
@@ -44,6 +44,28 @@ describe('the loader text', () => {
       'status',
     ])
     expect(KIT_RUN_ENV).toEqual({ PATH: '/usr/bin:/bin', LC_ALL: 'C' })
+  })
+})
+
+describe('what a finished run means', () => {
+  const run = (code: number | null, over: { signal?: NodeJS.Signals | null; tooLong?: boolean; stdout?: string } = {}) =>
+    kitRunOutcome({ code, signal: over.signal ?? null, tooLong: over.tooLong ?? false, stdout: over.stdout ?? 'x\n' })
+
+  it('a hash mismatch of the loader is a kit mismatch; its other codes and anything over 63 a failed run', () => {
+    expect(run(KIT_LOADER_EXIT.mismatch)).toEqual({ ok: false, problem: 'kit_mismatch' })
+    for (const code of [KIT_LOADER_EXIT.usage, KIT_LOADER_EXIT.unreadable, KIT_LOADER_EXIT.failed, 64, 100, 125, 126, 255, -1]) {
+      expect(run(code)).toEqual({ ok: false, problem: 'kit_run_failed' })
+    }
+  })
+
+  it('a routine code from 0 to 63 is an answer; exit 0 with no output, a signal, no code or too much output is not', () => {
+    expect(run(0)).toEqual({ ok: true, code: 0, stdout: 'x\n' })
+    expect(run(2, { stdout: '' })).toEqual({ ok: true, code: 2, stdout: '' })
+    expect(run(63)).toEqual({ ok: true, code: 63, stdout: 'x\n' })
+    expect(run(0, { stdout: '' })).toEqual({ ok: false, problem: 'kit_no_output' })
+    expect(run(null)).toEqual({ ok: false, problem: 'kit_run_failed' })
+    expect(run(0, { signal: 'SIGKILL' })).toEqual({ ok: false, problem: 'kit_run_failed' })
+    expect(run(0, { tooLong: true })).toEqual({ ok: false, problem: 'kit_run_failed' })
   })
 })
 

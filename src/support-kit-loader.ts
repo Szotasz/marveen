@@ -97,6 +97,21 @@ export interface KitRunInput {
   readonly timeoutMs: number
 }
 
+/**
+ * What one finished run means. A killed run, one that printed too much, or an
+ * exit code of the loader itself is a failure (65, the hash did not match, is
+ * a kit mismatch); a routine code is 0 to 63; exit 0 with no output is a
+ * failure too (the routine always answers).
+ */
+export function kitRunOutcome(run: { code: number | null; signal: NodeJS.Signals | null; tooLong: boolean; stdout: string }): KitRunResult {
+  const { code, signal, tooLong, stdout } = run
+  if (tooLong || signal !== null || code === null) return { ok: false, problem: 'kit_run_failed' }
+  if (code === KIT_LOADER_EXIT.mismatch) return { ok: false, problem: 'kit_mismatch' }
+  if (LOADER_CODES.has(code) || code < 0 || code > 63) return { ok: false, problem: 'kit_run_failed' }
+  if (code === 0 && stdout.length === 0) return { ok: false, problem: 'kit_no_output' }
+  return { ok: true, code, stdout }
+}
+
 /** The node arguments of one run: the loader text, then everything that varies after `--`. */
 export function kitRunArgs(expectedSha256: string, routinePath: string, args: readonly string[]): string[] {
   return ['--input-type=module', '-e', KIT_LOADER_SOURCE, '--', expectedSha256, routinePath, ...args]
@@ -142,12 +157,7 @@ export function runKitRoutine(input: KitRunInput): Promise<KitRunResult> {
     })
     child.on('error', () => resolve({ ok: false, problem: 'kit_run_failed' }))
     child.on('close', (code, signal) => {
-      if (tooLong || signal !== null || code === null) return resolve({ ok: false, problem: 'kit_run_failed' })
-      if (code === KIT_LOADER_EXIT.mismatch) return resolve({ ok: false, problem: 'kit_mismatch' })
-      if (LOADER_CODES.has(code) || code > 63) return resolve({ ok: false, problem: 'kit_run_failed' })
-      const stdout = Buffer.concat(chunks).toString('utf8')
-      if (code === 0 && stdout.length === 0) return resolve({ ok: false, problem: 'kit_no_output' })
-      resolve({ ok: true, code, stdout })
+      resolve(kitRunOutcome({ code, signal, tooLong, stdout: Buffer.concat(chunks).toString('utf8') }))
     })
     child.stdin?.on('error', () => {
       /* the routine may exit before it reads; the exit code says what happened */
