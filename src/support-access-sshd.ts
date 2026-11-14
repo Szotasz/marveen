@@ -21,7 +21,10 @@
 // when the query does not name that criterion. So every criterion is named:
 // the login user, each pinned source address, the same address as the host
 // (true while UseDNS is off, which is therefore required), each address of
-// this machine, each port sshd listens on.
+// this machine, each port sshd listens on. "Each address of this machine" is
+// the interface addresses AND the addresses of the `listenaddress` lines: an
+// address sshd is told to listen on may belong to an interface that is down
+// right now and up tomorrow.
 // NOT COVERED: a block on RDomain. A routing domain cannot be listed from
 // here; a `listenaddress` line that names one is refused as unreadable.
 //
@@ -75,6 +78,8 @@ export interface SshdEffectiveConfig {
   readonly trustedUserCaKeys: string
   /** Every port sshd listens on: the `port` lines and the port of every `listenaddress` line, ascending. */
   readonly listenPorts: readonly number[]
+  /** The address of every `listenaddress` line, lower case, without brackets, sorted (the wildcards included). */
+  readonly listenAddresses: readonly string[]
 }
 
 const SETTING_VALUE = /^[A-Za-z0-9._%/-]+$/
@@ -88,7 +93,8 @@ const SINGLE_SETTINGS = [
   'trustedusercakeys',
 ] as const
 // `listenaddress 0.0.0.0:22`, `listenaddress [::]:22`: the port is what follows the last colon.
-const LISTEN_ADDRESS = /^(?:\[[0-9A-Fa-f:.]+\]|[0-9A-Za-z.-]+):(\d{1,5})$/
+// Measured: sshd prints the address as a number, an IPv6 one in brackets.
+const LISTEN_ADDRESS = /^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):(\d{1,5})$/
 
 function portOf(text: string): number | null {
   if (!/^\d{1,5}$/.test(text)) return null
@@ -101,11 +107,13 @@ function portOf(text: string): number | null {
  * single setting appears EXACTLY once and at least one port is named: a
  * missing line, a repeated line, a value with unexpected characters, or a
  * `listenaddress` line in a form this does not know (one that names a routing
- * domain, for instance) means the text is not something to conclude from.
+ * domain, or whose address is not a number) means the text is not something
+ * to conclude from.
  */
 export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | null {
   const seen = new Map<string, string>()
   const ports = new Set<number>()
+  const addresses = new Set<string>()
   for (const raw of text.split('\n')) {
     const line = raw.trim()
     const space = line.indexOf(' ')
@@ -118,9 +126,13 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
       ports.add(port)
     } else if (key === 'listenaddress') {
       const m = LISTEN_ADDRESS.exec(value)
-      const port = m === null ? null : portOf(m[1])
-      if (port === null) return null
+      const port = m === null ? null : portOf(m[3])
+      if (m === null || port === null) return null
+      // In brackets only an IPv6 address, without them only an IPv4 one.
+      const address = (m[1] ?? m[2]).toLowerCase()
+      if (isIP(address) !== (m[1] === undefined ? 4 : 6)) return null
       ports.add(port)
+      addresses.add(address)
     } else if ((SINGLE_SETTINGS as readonly string[]).includes(key)) {
       if (seen.has(key) || value.length === 0) return null
       seen.set(key, value)
@@ -145,7 +157,37 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
     authorizedKeysCommand: seen.get('authorizedkeyscommand') as string,
     trustedUserCaKeys: seen.get('trustedusercakeys') as string,
     listenPorts: [...ports].sort((a, b) => a - b),
+    listenAddresses: [...addresses].sort(),
   }
+}
+
+/**
+ * Can a connection from a pinned source arrive on this address of the machine?
+ * A pinned source is a routable address of another machine, so not on a
+ * loopback or a link-local address, and "every address" (`0.0.0.0`, `::`) is
+ * not an address a connection has. Anything that is not a plain address (a
+ * zone id, a name) is left out as well.
+ */
+export function isArrivalAddress(address: string): boolean {
+  const a = address.toLowerCase()
+  if (!PLAIN_ADDRESS.test(a)) return false
+  const family = isIP(a)
+  if (family === 4) return !(a.startsWith('127.') || a.startsWith('169.254.') || a === '0.0.0.0')
+  if (family === 6) return !(a === '::1' || /^fe[89ab]/.test(a) || /^[0:]+$/.test(a))
+  return false
+}
+
+/**
+ * The local addresses the questions have to name: the interface addresses the
+ * caller found, and every address sshd is told to listen on that a connection
+ * could arrive on. Lower case, sorted, without repeats, so the plan is the
+ * same on every run. The runner and the assessment both call this, so the
+ * assessment recomputes on its own what had to be asked.
+ */
+export function probeLocalAddresses(interfaceAddresses: readonly string[], listenAddresses: readonly string[]): string[] {
+  const out = new Set<string>(interfaceAddresses.map((a) => a.toLowerCase()))
+  for (const address of listenAddresses) if (isArrivalAddress(address)) out.add(address.toLowerCase())
+  return [...out].sort()
 }
 
 /** One connection a support login could be, as sshd's `-C` test mode describes it. */
@@ -219,32 +261,67 @@ export function planSshdProbes(input: SshdProbePlanInput): SshdConnectionSpec[] 
 // `forced-commands-only` is enough because the support line always has a command.
 const ROOT_LOGIN_BY_KEY = new Set(['yes', 'without-password', 'prohibit-password', 'forced-commands-only'])
 
-/**
- * The spellings under which sshd names the file the line goes into: relative
- * to the login user's home, or with the home token.
- */
-export const SUPPORT_AUTHORIZED_KEYS_ENTRIES: readonly string[] = ['.ssh/authorized_keys', '%h/.ssh/authorized_keys']
-/**
- * The second file of the stock Debian and Ubuntu setting. No line is ever
- * written into it, but sshd reads it, so a removal has to clean it too.
- */
-export const SUPPORT_SECOND_KEYS_ENTRIES: readonly string[] = ['.ssh/authorized_keys2', '%h/.ssh/authorized_keys2']
-
 export type SupportKeysFileName = 'authorized_keys' | 'authorized_keys2'
+
+/** The login account as sshd sees it: the name and the home directory from the user database. */
+export interface SshdLoginAccount {
+  readonly user: string
+  readonly home: string
+}
+
+// A home this can build paths from: absolute, plain segments, no `.` or `..`, no slash at the end.
+const ACCOUNT_HOME = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/
+
+/**
+ * One `authorizedkeysfile` entry as the path sshd opens for this account, or
+ * null when it cannot be told. sshd replaces `%h` with the home, `%u` with the
+ * user name and `%%` with a percent sign, and reads a path that is not
+ * absolute relative to the home. Any other token (`%U` too) is unknown here,
+ * and unknown is null. Nothing is tidied up: a path with a `.`, a `..` or a
+ * doubled slash in it comes back as written, and then does not equal the one
+ * spelling the caller compares with.
+ */
+export function expandKeysFileEntry(entry: string, account: SshdLoginAccount): string | null {
+  if (!LOGIN_USER.test(account.user)) return null
+  if (account.home !== '/' && !ACCOUNT_HOME.test(account.home)) return null
+  let out = ''
+  for (let i = 0; i < entry.length; i++) {
+    if (entry[i] !== '%') {
+      out += entry[i]
+      continue
+    }
+    const token = entry[++i]
+    if (token === '%') out += '%'
+    else if (token === 'h') out += account.home
+    else if (token === 'u') out += account.user
+    else return null
+  }
+  if (out.length === 0) return null
+  return out.startsWith('/') ? out : (account.home === '/' ? '' : account.home) + '/' + out
+}
 
 /**
  * Which files under the login user's `.ssh` sshd reads keys from, or null when
- * the setting names anything else. `authorized_keys` must be among them (the
- * line goes there); `authorized_keys2` may be. An absolute path, a per-user
- * directory elsewhere or a third file is not accepted, even if it happens to
- * point at the same file: a copy of a pinned key in a file the removal does
- * not clean would survive the removal.
+ * the setting names anything else. The comparison is on the EXPANDED path, so
+ * the relative, the `%h` and the absolute spelling of the same file are the
+ * same file, and a shared directory keyed by `%u` is a refusal (it expands to
+ * a path outside the home). `authorized_keys` must be among them (the line
+ * goes there); `authorized_keys2` may be (no line is ever written into it,
+ * but sshd reads it, so a removal has to clean it too). A third file is not
+ * accepted: a copy of a pinned key in a file the removal does not clean would
+ * survive the removal.
  */
-export function supportKeysFiles(entries: readonly string[]): SupportKeysFileName[] | null {
-  const first = entries.some((e) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(e))
-  const second = entries.some((e) => SUPPORT_SECOND_KEYS_ENTRIES.includes(e))
-  const onlyKnown = entries.every((e) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(e) || SUPPORT_SECOND_KEYS_ENTRIES.includes(e))
-  if (!first || !onlyKnown) return null
+export function supportKeysFiles(entries: readonly string[], account: SshdLoginAccount): SupportKeysFileName[] | null {
+  const dir = (account.home === '/' ? '' : account.home) + '/.ssh/'
+  let first = false
+  let second = false
+  for (const entry of entries) {
+    const path = expandKeysFileEntry(entry, account)
+    if (path === dir + 'authorized_keys') first = true
+    else if (path === dir + 'authorized_keys2') second = true
+    else return null
+  }
+  if (!first) return null
   return second ? ['authorized_keys', 'authorized_keys2'] : ['authorized_keys']
 }
 
@@ -261,7 +338,10 @@ export interface SshdAssessmentInput {
   /** True when the install user, whose authorized_keys gets the line, is root. */
   readonly loginIsRoot: boolean
   readonly loginUser: string
+  /** The login user's home directory from the user database: what sshd reads `%h` and a relative keys file against. */
+  readonly loginHome: string
   readonly fromCidrs: readonly string[]
+  /** The interface addresses a connection could arrive on. The addresses sshd listens on are added here, from the answers. */
   readonly localAddresses: readonly string[]
   /** One answer per planned connection. More than planned is fine; fewer is a refusal. */
   readonly answers: readonly SshdProbeAnswer[]
@@ -280,7 +360,9 @@ export type SshdAssessment =
  *                              drops the whole line (measured)
  *   configuration unknown      no line. An answer that is missing, empty or
  *                              unreadable; answers that disagree about the
- *                              ports; a planned connection nobody asked about
+ *                              ports or the listen addresses; a planned
+ *                              connection nobody asked about (the plan is
+ *                              recomputed here, with the listen addresses)
  *   UseDNS is on               no line: `Match Host` would then be matched
  *                              against a name this machine cannot know here
  *   root login by key is off   no line when the login user is root: it would be dead
@@ -290,9 +372,11 @@ export type SshdAssessment =
  *                              connection the bound command never runs. Only
  *                              the exact `permittunnel no` is accepted, for
  *                              every planned connection.
- *   another keys file          no line unless sshd reads keys from the login
- *                              user's `.ssh/authorized_keys` and from nowhere
- *                              else but `.ssh/authorized_keys2`
+ *   another keys file          no line unless, for EVERY connection, sshd
+ *                              reads keys from the login user's
+ *                              `.ssh/authorized_keys` and from nowhere else
+ *                              but `.ssh/authorized_keys2`, and the answers
+ *                              agree on which of the two
  *   another key source         no line when a keys command or a user CA file
  *                              is set: a key granted through those is out of
  *                              reach of a removal
@@ -312,10 +396,12 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   if (configs.length === 0) return refuse('sshd_config_unknown')
   const ports = configs[0].listenPorts
   if (!configs.every((c) => c.listenPorts.join(',') === ports.join(','))) return refuse('sshd_config_unknown')
+  const listening = configs[0].listenAddresses
+  if (!configs.every((c) => c.listenAddresses.join(',') === listening.join(','))) return refuse('sshd_config_unknown')
   const planned = planSshdProbes({
     loginUser: input.loginUser,
     fromCidrs: input.fromCidrs,
-    localAddresses: input.localAddresses,
+    localAddresses: probeLocalAddresses(input.localAddresses, listening),
     listenPorts: ports,
   })
   if (planned === null) return refuse('sshd_config_unknown')
@@ -325,10 +411,14 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   if (!configs.every((c) => c.useDns === 'no')) return refuse('sshd_usedns_enabled')
   if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse('root_login_disabled')
   if (!configs.every((c) => c.permitTunnel === 'no')) return refuse('tunnel_permitted')
-  const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles)
+  const account = { user: input.loginUser, home: input.loginHome }
+  const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account)
   if (keysFiles === null) return refuse('authorized_keys_path_unsupported')
-  if (!configs.every((c) => c.authorizedKeysFiles.join(' ') === configs[0].authorizedKeysFiles.join(' '))) {
-    return refuse('authorized_keys_path_unsupported')
+  for (const c of configs) {
+    // Another spelling of the same files under a Match block is the same answer; another set of files is not.
+    if (supportKeysFiles(c.authorizedKeysFiles, account)?.join(' ') !== keysFiles.join(' ')) {
+      return refuse('authorized_keys_path_unsupported')
+    }
   }
   if (!configs.every((c) => c.authorizedKeysCommand === 'none' && c.trustedUserCaKeys === 'none')) {
     return refuse('other_key_source')

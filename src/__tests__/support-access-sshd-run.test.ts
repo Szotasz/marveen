@@ -19,17 +19,18 @@ usage: sshd [-46DdeiqTt] [-C connection_spec] [-c host_cert_file]
 `
 
 /** The lines of a real `sshd -T` answer that matter here (order as sshd prints them). */
-function sshdT(over: { ports?: number[]; tunnel?: string; usedns?: string } = {}): string {
+function sshdT(over: { ports?: number[]; tunnel?: string; usedns?: string; listen?: string[]; keysFile?: string } = {}): string {
   const ports = over.ports ?? [22]
   return (
     ports.map((p) => 'port ' + p + '\n').join('') +
     'addressfamily any\n' +
     ports.map((p) => 'listenaddress [::]:' + p + '\nlistenaddress 0.0.0.0:' + p + '\n').join('') +
+    (over.listen ?? []).map((a) => 'listenaddress ' + a + ':' + ports[0] + '\n').join('') +
     'permitrootlogin without-password\n' +
     'usedns ' + (over.usedns ?? 'no') + '\n' +
     'trustedusercakeys none\n' +
     'authorizedkeyscommand none\n' +
-    'authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n' +
+    'authorizedkeysfile ' + (over.keysFile ?? '.ssh/authorized_keys .ssh/authorized_keys2') + '\n' +
     'permittunnel ' + (over.tunnel ?? 'no') + '\n'
   )
 }
@@ -60,6 +61,7 @@ function part(args: readonly string[], key: string): string | null {
 function fake(
   over: {
     isRoot?: boolean
+    home?: string
     interfaces?: LocalInterfaceAddress[]
     version?: ProgramResult
     keygen?: ProgramResult
@@ -77,7 +79,11 @@ function fake(
       const out = over.answer === undefined ? sshdT() : over.answer(args)
       return typeof out === 'string' ? { code: 0, stdout: out, stderr: '' } : out
     },
-    user: { name: over.isRoot === false ? 'marveen' : 'root', isRoot: over.isRoot !== false },
+    user: {
+      name: over.isRoot === false ? 'marveen' : 'root',
+      isRoot: over.isRoot !== false,
+      home: over.home ?? (over.isRoot === false ? '/home/marveen' : '/root'),
+    },
     interfaceAddresses: () => over.interfaces ?? INTERFACES,
     makePrivateDir: () => {
       const dir = '/scratch/probe-' + (made.length + 1)
@@ -244,6 +250,50 @@ describe('probeSshd', () => {
     // Control: the same machine without the block is accepted.
     const clean = fake({ answer: () => sshdT({ ports: [22, 2222] }) })
     expect(await probeSshd({ fromCidrs: SOURCES }, clean.deps)).toMatchObject({ ok: true })
+  })
+
+  it('asks about an address sshd listens on that no interface has, on top of the interface addresses', async () => {
+    const { deps, calls } = fake({ answer: () => sshdT({ listen: ['198.51.100.5', '127.0.0.1', '[2001:db8::99]'] }) })
+    expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: true })
+    // Two sources, two interface addresses and two listen addresses (the loopback one is not asked about), one port.
+    expect(queries(calls)).toHaveLength(8)
+    expect([...new Set(queries(calls).map((c) => part(c.args, 'laddr')))].sort()).toEqual([
+      '192.0.2.10',
+      '198.51.100.5',
+      '2001:db8::10',
+      '2001:db8::99',
+    ])
+  })
+
+  it('REFUSES when the tunnel is on only under a Match LocalAddress block for such a listen address', async () => {
+    const answer = (args: readonly string[]): string =>
+      sshdT({ listen: ['198.51.100.5'], tunnel: part(args, 'laddr') === '198.51.100.5' ? 'yes' : 'no' })
+    const { deps } = fake({ answer })
+    expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: false, problem: 'tunnel_permitted' })
+  })
+
+  it('counts the listen addresses towards the limit', async () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({ address: '192.0.2.' + (i + 1), internal: false }))
+    // 2 sources x (15 interface + 2 listen addresses) x 2 ports = 68.
+    const over = fake({ interfaces: many, answer: () => sshdT({ ports: [22, 2222], listen: ['198.51.100.5', '198.51.100.6'] }) })
+    expect(await probeSshd({ fromCidrs: SOURCES }, over.deps)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
+    expect(queries(over.calls)).toHaveLength(1)
+  })
+
+  it('reads the keys file setting against the home of the user database, for root and for another user', async () => {
+    const absolute = { answer: () => sshdT({ keysFile: '/home/marveen/.ssh/authorized_keys' }) }
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, ...absolute }).deps)).toMatchObject({
+      ok: true,
+      keysFiles: ['authorized_keys'],
+    })
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ ...absolute }).deps)).toMatchObject({
+      ok: false,
+      problem: 'authorized_keys_path_unsupported',
+    })
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, home: '/srv/marveen', ...absolute }).deps)).toMatchObject({
+      ok: false,
+      problem: 'authorized_keys_path_unsupported',
+    })
   })
 
   it('refuses when the machine has no address a pinned source could reach, and asks nothing', async () => {

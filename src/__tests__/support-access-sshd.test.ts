@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
   assessSshd,
+  expandKeysFileEntry,
   formatSshdConnectionSpec,
+  isArrivalAddress,
   parseSshdEffectiveConfig,
   parseSshdVersion,
   planSshdProbes,
+  probeLocalAddresses,
   supportKeysFiles,
   SSHD_DISCOVERY_PORT,
   type SshdAssessmentInput,
@@ -98,6 +101,7 @@ describe('parseSshdEffectiveConfig', () => {
       authorizedKeysCommand: 'none',
       trustedUserCaKeys: 'none',
       listenPorts: [22],
+      listenAddresses: ['0.0.0.0', '::'],
     })
   })
 
@@ -154,6 +158,13 @@ describe('parseSshdEffectiveConfig', () => {
     expect(parseSshdEffectiveConfig('port 2222\nport 22\n' + withoutListen)?.listenPorts).toEqual([22, 2222])
   })
 
+  it('collects the address of every listenaddress line: lower case, without brackets, once each, sorted', () => {
+    expect(parseSshdEffectiveConfig(LISTEN_MIXED + withoutListen)?.listenAddresses).toEqual(['127.0.0.1', '127.0.0.2'])
+    const three = 'listenaddress [2001:DB8::1]:2022\nlistenaddress 198.51.100.5:22\nlistenaddress 198.51.100.5:2022\n'
+    expect(parseSshdEffectiveConfig(three + withoutListen)?.listenAddresses).toEqual(['198.51.100.5', '2001:db8::1'])
+    expect(parseSshdEffectiveConfig('port 22\n' + withoutListen)?.listenAddresses).toEqual([])
+  })
+
   it.each([
     ['no port and no listenaddress line at all', ''],
     ['a port that is not a number', 'port ssh\n'],
@@ -163,6 +174,11 @@ describe('parseSshdEffectiveConfig', () => {
     ['a listenaddress without a port', 'port 22\nlistenaddress 0.0.0.0\n'],
     ['a listenaddress that names a routing domain', 'port 22\nlistenaddress 0.0.0.0:22 rdomain blue\n'],
     ['a listenaddress with a port above 65535', 'port 22\nlistenaddress 0.0.0.0:70000\n'],
+    ['a listenaddress that is a name', 'port 22\nlistenaddress localhost:22\n'],
+    ['a listenaddress that is not an address', 'port 22\nlistenaddress 300.1.1.1:22\n'],
+    ['an IPv4 listenaddress in brackets', 'port 22\nlistenaddress [192.0.2.1]:22\n'],
+    ['a bracketed listenaddress that is not an address', 'port 22\nlistenaddress [2001:db8::zz]:22\n'],
+    ['a bracketed listenaddress with too many groups', 'port 22\nlistenaddress [1:2:3:4:5:6:7:8:9]:22\n'],
   ])('answers null for %s', (_label, listen) => {
     expect(parseSshdEffectiveConfig(listen + withoutListen)).toBeNull()
   })
@@ -251,37 +267,142 @@ describe('planSshdProbes', () => {
   })
 })
 
+const ROOT = { user: 'root', home: '/root' }
+const MARVEEN = { user: 'marveen', home: '/home/marveen' }
+
+describe('isArrivalAddress and probeLocalAddresses', () => {
+  it.each(['192.0.2.10', '10.0.0.5', '2001:db8::10', '2001:DB8::10', 'fec0::1', '169.25.4.1', '::ffff:192.0.2.1'])(
+    'a connection from outside can arrive on %s',
+    (address) => {
+      expect(isArrivalAddress(address)).toBe(true)
+    },
+  )
+
+  it.each([
+    ['an IPv4 loopback address', '127.0.0.53'],
+    ['the IPv6 loopback address', '::1'],
+    ['an IPv4 link-local address', '169.254.10.20'],
+    ['an IPv6 link-local address', 'fe80::1'],
+    ['an IPv6 link-local address from the upper part of the range', 'FEBF::1'],
+    ['every IPv4 address', '0.0.0.0'],
+    ['every IPv6 address', '::'],
+    ['every IPv6 address, written out', '0:0:0:0:0:0:0:0'],
+    ['an address with a zone id', '2001:db8::1%eth0'],
+    ['a name', 'localhost'],
+    ['digits and dots that are not an address', '300.1.1.1'],
+    ['hex letters that are not an address', 'abc'],
+    ['nothing', ''],
+  ])('not on %s', (_label, address) => {
+    expect(isArrivalAddress(address)).toBe(false)
+  })
+
+  it('adds the addresses sshd listens on to the interface addresses, without the ones nothing can arrive on', () => {
+    expect(probeLocalAddresses(['192.0.2.10', '2001:DB8::10'], ['0.0.0.0', '::', '127.0.0.1', '198.51.100.5', '192.0.2.10'])).toEqual([
+      '192.0.2.10',
+      '198.51.100.5',
+      '2001:db8::10',
+    ])
+    expect(probeLocalAddresses([], ['198.51.100.5'])).toEqual(['198.51.100.5'])
+    expect(probeLocalAddresses(['192.0.2.10'], [])).toEqual(['192.0.2.10'])
+  })
+})
+
+describe('expandKeysFileEntry', () => {
+  it('reads a relative path against the home, and replaces the home, the user and the doubled percent sign', () => {
+    expect(expandKeysFileEntry('.ssh/authorized_keys', ROOT)).toBe('/root/.ssh/authorized_keys')
+    expect(expandKeysFileEntry('%h/.ssh/authorized_keys', MARVEEN)).toBe('/home/marveen/.ssh/authorized_keys')
+    expect(expandKeysFileEntry('/etc/ssh/keys/%u', MARVEEN)).toBe('/etc/ssh/keys/marveen')
+    expect(expandKeysFileEntry('/home/%u/.ssh/authorized_keys', MARVEEN)).toBe('/home/marveen/.ssh/authorized_keys')
+    expect(expandKeysFileEntry('keys%%/x', ROOT)).toBe('/root/keys%/x')
+    expect(expandKeysFileEntry('%%h/.ssh/authorized_keys', ROOT)).toBe('/root/%h/.ssh/authorized_keys')
+    expect(expandKeysFileEntry('.ssh/authorized_keys', { user: 'root', home: '/' })).toBe('/.ssh/authorized_keys')
+  })
+
+  it.each([
+    ['the numeric user id token', '/etc/ssh/keys/%U'],
+    ['an unknown token', '%x/.ssh/authorized_keys'],
+    ['a percent sign at the end', '.ssh/authorized_keys%'],
+    ['nothing', ''],
+  ])('answers null for %s', (_label, entry) => {
+    expect(expandKeysFileEntry(entry, ROOT)).toBeNull()
+  })
+
+  it.each([
+    ['a home that is not absolute', { user: 'root', home: 'root' }],
+    ['a home with a slash at the end', { user: 'root', home: '/root/' }],
+    ['a home with a dot segment', { user: 'root', home: '/home/./root' }],
+    ['a home with a parent segment', { user: 'root', home: '/home/../root' }],
+    ['a home with a doubled slash', { user: 'root', home: '/home//root' }],
+    ['a home with a space', { user: 'root', home: '/home/my user' }],
+    ['a home with a percent sign', { user: 'root', home: '/home/%h' }],
+    ['no home', { user: 'root', home: '' }],
+    ['a user name that cannot be carried', { user: 'a,b', home: '/root' }],
+  ])('answers null for %s', (_label, account) => {
+    expect(expandKeysFileEntry('.ssh/authorized_keys', account)).toBeNull()
+  })
+})
+
 describe('supportKeysFiles', () => {
   it('names the file the line goes into, and the second file when sshd reads it too', () => {
-    expect(supportKeysFiles(['.ssh/authorized_keys'])).toEqual(['authorized_keys'])
-    expect(supportKeysFiles(['%h/.ssh/authorized_keys'])).toEqual(['authorized_keys'])
-    expect(supportKeysFiles(['.ssh/authorized_keys', '.ssh/authorized_keys2'])).toEqual(['authorized_keys', 'authorized_keys2'])
-    expect(supportKeysFiles(['%h/.ssh/authorized_keys2', '.ssh/authorized_keys'])).toEqual(['authorized_keys', 'authorized_keys2'])
+    expect(supportKeysFiles(['.ssh/authorized_keys'], ROOT)).toEqual(['authorized_keys'])
+    expect(supportKeysFiles(['%h/.ssh/authorized_keys'], ROOT)).toEqual(['authorized_keys'])
+    expect(supportKeysFiles(['.ssh/authorized_keys', '.ssh/authorized_keys2'], ROOT)).toEqual(['authorized_keys', 'authorized_keys2'])
+    expect(supportKeysFiles(['%h/.ssh/authorized_keys2', '.ssh/authorized_keys'], ROOT)).toEqual(['authorized_keys', 'authorized_keys2'])
+  })
+
+  // The comparison is on the expanded path: three spellings, one file.
+  it('takes the absolute and the user-token spelling of the SAME file as that file', () => {
+    expect(supportKeysFiles(['/root/.ssh/authorized_keys'], ROOT)).toEqual(['authorized_keys'])
+    expect(supportKeysFiles(['/home/%u/.ssh/authorized_keys', '/home/marveen/.ssh/authorized_keys2'], MARVEEN)).toEqual([
+      'authorized_keys',
+      'authorized_keys2',
+    ])
+    expect(supportKeysFiles(['.ssh/authorized_keys', '%h/.ssh/authorized_keys', '/root/.ssh/authorized_keys'], ROOT)).toEqual([
+      'authorized_keys',
+    ])
+    expect(supportKeysFiles(['.ssh/authorized_keys'], { user: 'root', home: '/' })).toEqual(['authorized_keys'])
   })
 
   it.each([
     ['only the second file', ['.ssh/authorized_keys2']],
-    ['a per-user directory elsewhere', ['/etc/ssh/keys/%u']],
-    ['an absolute path, even to the same file', ['/root/.ssh/authorized_keys']],
+    ['a shared directory keyed by the user name', ['/etc/ssh/keys/%u']],
+    ['the absolute path of ANOTHER user\'s file', ['/home/marveen/.ssh/authorized_keys']],
+    ['a path that only reaches the same file through a dot segment', ['/root/./.ssh/authorized_keys']],
+    ['a path that only reaches the same file through a parent segment', ['/root/.ssh/../.ssh/authorized_keys']],
+    ['a path with a doubled slash', ['/root//.ssh/authorized_keys']],
     ['a name that only ends the same', ['x.ssh/authorized_keys']],
+    ['a file whose name only starts the same', ['.ssh/authorized_keys.bak']],
     ['the right file next to a path elsewhere', ['/etc/ssh/keys/%u', '%h/.ssh/authorized_keys']],
     ['the right file next to a third file', ['.ssh/authorized_keys', '.ssh/authorized_keys3']],
+    ['the right file next to an entry with an unknown token', ['.ssh/authorized_keys', '/etc/ssh/keys/%U']],
+    ['a literal percent-h directory', ['%%h/.ssh/authorized_keys']],
     ['nothing', []],
   ])('answers null for %s', (_label, entries) => {
-    expect(supportKeysFiles(entries)).toBeNull()
+    expect(supportKeysFiles(entries, ROOT)).toBeNull()
+  })
+
+  it('answers null when the account cannot be used to build a path', () => {
+    expect(supportKeysFiles(['.ssh/authorized_keys'], { user: 'root', home: 'root' })).toBeNull()
+    expect(supportKeysFiles(['.ssh/authorized_keys'], { user: 'root', home: '' })).toBeNull()
+    expect(supportKeysFiles(['/root/.ssh/authorized_keys'], { user: 'a b', home: '/root' })).toBeNull()
   })
 })
 
 describe('assessSshd', () => {
   /** One answer per planned connection for port 22; `textFor` decides what sshd said for each. */
-  function answers(textFor: (spec: SshdConnectionSpec) => string | null = () => T_DEFAULT, ports: number[] = [22]): SshdProbeAnswer[] {
-    const plan = planSshdProbes({ loginUser: 'root', fromCidrs: SOURCES, localAddresses: LOCALS, listenPorts: ports }) ?? []
+  function answers(
+    textFor: (spec: SshdConnectionSpec) => string | null = () => T_DEFAULT,
+    ports: number[] = [22],
+    locals: string[] = LOCALS,
+  ): SshdProbeAnswer[] {
+    const plan = planSshdProbes({ loginUser: 'root', fromCidrs: SOURCES, localAddresses: locals, listenPorts: ports }) ?? []
     return plan.map((spec) => ({ spec, text: textFor(spec) }))
   }
   const ok: SshdAssessmentInput = {
     versionText: V_10_0,
     loginIsRoot: true,
     loginUser: 'root',
+    loginHome: '/root',
     fromCidrs: SOURCES,
     localAddresses: LOCALS,
     answers: answers(),
@@ -380,6 +501,46 @@ describe('assessSshd', () => {
     }
   })
 
+  // An address sshd is told to listen on may belong to an interface that is
+  // down right now: the interface list does not have it, a Match LocalAddress
+  // block can still name it.
+  const LISTEN_EXTRA = T_DEFAULT.replace('listenaddress 0.0.0.0:22\n', 'listenaddress 0.0.0.0:22\nlistenaddress 198.51.100.5:22\n')
+
+  it('refuses when sshd listens on an address nobody asked about', () => {
+    expect(assessSshd({ ...ok, answers: answers(() => LISTEN_EXTRA) })).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
+    // Asked about as well, the same machine is accepted.
+    const all = answers(() => LISTEN_EXTRA, [22], [...LOCALS, '198.51.100.5'])
+    expect(all).toHaveLength(6)
+    expect(assessSshd({ ...ok, answers: all })).toMatchObject({ ok: true })
+  })
+
+  it('REFUSES when the tunnel is on only for the listen address that is not an interface address', () => {
+    const all = answers(
+      (spec) => (spec.laddr === '198.51.100.5' ? LISTEN_EXTRA.replace('permittunnel no', 'permittunnel yes') : LISTEN_EXTRA),
+      [22],
+      [...LOCALS, '198.51.100.5'],
+    )
+    expect(assessSshd({ ...ok, answers: all })).toMatchObject({ ok: false, problem: 'tunnel_permitted' })
+  })
+
+  it('does not ask for more because of a listen address nothing can arrive on', () => {
+    const loopback = T_DEFAULT.replace('listenaddress 0.0.0.0:22\n', 'listenaddress 127.0.0.1:22\nlistenaddress [::1]:22\n')
+    expect(assessSshd({ ...ok, answers: answers(() => loopback) })).toMatchObject({ ok: true })
+  })
+
+  it('refuses when the answers disagree about the listen addresses, whichever answer names the extra one', () => {
+    for (const odd of [0, 5]) {
+      const all = answers(() => LISTEN_EXTRA, [22], [...LOCALS, '198.51.100.5']).map((a, i) => (i === odd ? { ...a, text: T_DEFAULT } : a))
+      expect(assessSshd({ ...ok, answers: all })).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
+    }
+    // The other way round: one answer names an address the others do not, and it is one nobody has to ask about.
+    const loopback = T_DEFAULT.replace('listenaddress 0.0.0.0:22\n', 'listenaddress 0.0.0.0:22\nlistenaddress 127.0.0.1:22\n')
+    for (const odd of [0, 3]) {
+      const some = answers().map((a, i) => (i === odd ? { ...a, text: loopback } : a))
+      expect(assessSshd({ ...ok, answers: some })).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
+    }
+  })
+
   it('refuses when UseDNS is on, for every connection or for one', () => {
     expect(assessSshd(every(config({ usedns: 'yes' })))).toMatchObject({ ok: false, problem: 'sshd_usedns_enabled' })
     const one = answers().map((a, i) => (i === 1 ? { ...a, text: config({ usedns: 'yes' }) } : a))
@@ -417,9 +578,10 @@ describe('assessSshd', () => {
     for (const value of [
       '/etc/ssh/keys/%u',
       '.ssh/authorized_keys2',
-      '/root/.ssh/authorized_keys',
+      '/home/marveen/.ssh/authorized_keys',
       'x.ssh/authorized_keys',
       '/etc/ssh/keys/%u %h/.ssh/authorized_keys',
+      '.ssh/authorized_keys /etc/ssh/keys/%U',
     ]) {
       expect(assessSshd(every(config({ authorizedkeysfile: value })))).toMatchObject({
         ok: false,
@@ -428,9 +590,34 @@ describe('assessSshd', () => {
     }
   })
 
-  it('refuses when a Match block names another keys file for ONE connection', () => {
-    const one = answers().map((a, i) => (i === 3 ? { ...a, text: config({ authorizedkeysfile: '.ssh/authorized_keys' }) } : a))
-    expect(assessSshd({ ...ok, answers: one })).toMatchObject({ ok: false, problem: 'authorized_keys_path_unsupported' })
+  it('accepts the absolute spelling of the login user\'s own two files, and reads it against the HOME it was given', () => {
+    const absolute = config({ authorizedkeysfile: '/root/.ssh/authorized_keys /root/.ssh/authorized_keys2' })
+    expect(assessSshd(every(absolute))).toMatchObject({ ok: true, keysFiles: ['authorized_keys', 'authorized_keys2'] })
+    expect(assessSshd({ ...every(absolute), loginHome: '/home/root' })).toMatchObject({
+      ok: false,
+      problem: 'authorized_keys_path_unsupported',
+    })
+    expect(assessSshd({ ...every(T_DEFAULT), loginHome: '' })).toMatchObject({ ok: false, problem: 'authorized_keys_path_unsupported' })
+  })
+
+  // POSITIVE CONTROL for the keys file: a Match block that changes it for one
+  // connection only. The first answer is fine each time, so only a check over
+  // EVERY answer can see it.
+  it.each([
+    ['a third file', '.ssh/authorized_keys .ssh/authorized_keys2 /etc/ssh/extra_keys'],
+    ['a shared directory instead', '/etc/ssh/keys/%u'],
+    ['one of the two files only', '.ssh/authorized_keys'],
+  ])('refuses when a Match block names %s for ONE connection', (_label, value) => {
+    for (const odd of [1, 3]) {
+      const one = answers().map((a, i) => (i === odd ? { ...a, text: config({ authorizedkeysfile: value }) } : a))
+      expect(assessSshd({ ...ok, answers: one })).toMatchObject({ ok: false, problem: 'authorized_keys_path_unsupported' })
+    }
+  })
+
+  it('accepts another SPELLING of the same two files under a Match block', () => {
+    const spelled = config({ authorizedkeysfile: '%h/.ssh/authorized_keys2 /root/.ssh/authorized_keys' })
+    const one = answers().map((a, i) => (i === 3 ? { ...a, text: spelled } : a))
+    expect(assessSshd({ ...ok, answers: one })).toMatchObject({ ok: true, keysFiles: ['authorized_keys', 'authorized_keys2'] })
   })
 
   it('refuses when keys can also come from a command or from a user CA', () => {

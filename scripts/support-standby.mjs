@@ -142,7 +142,6 @@ function validateSupportPins(keys, fromCidrs) {
 // src/support-access-sshd-run.ts
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { isIP as isIP3 } from "node:net";
 import { networkInterfaces, tmpdir, userInfo } from "node:os";
 import { join as join2 } from "node:path";
 
@@ -274,8 +273,8 @@ function countSupportLines(existing, pinnedBlobs) {
 function mergeSupportLines(existing, newLines, pinnedBlobs) {
   if (newLines.length === 0) throw new Error("mergeSupportLines needs at least one line");
   for (const line of newLines) {
-    if (/[\n\r]/.test(line)) {
-      throw new SupportLineError("line_refused", "a line to write holds a line break or a carriage return");
+    if (/[^\x20-\x7e]/.test(line)) {
+      throw new SupportLineError("line_refused", "a line to write holds a character that is not printable ASCII");
     }
     if (!isSupportLine(line, pinnedBlobs)) {
       throw new SupportLineError("line_refused", "a line to write is not recognised as a support line");
@@ -329,7 +328,7 @@ var SINGLE_SETTINGS = [
   "authorizedkeyscommand",
   "trustedusercakeys"
 ];
-var LISTEN_ADDRESS = /^(?:\[[0-9A-Fa-f:.]+\]|[0-9A-Za-z.-]+):(\d{1,5})$/;
+var LISTEN_ADDRESS = /^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):(\d{1,5})$/;
 function portOf(text) {
   if (!/^\d{1,5}$/.test(text)) return null;
   const port = Number(text);
@@ -338,6 +337,7 @@ function portOf(text) {
 function parseSshdEffectiveConfig(text) {
   const seen = /* @__PURE__ */ new Map();
   const ports = /* @__PURE__ */ new Set();
+  const addresses = /* @__PURE__ */ new Set();
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     const space = line.indexOf(" ");
@@ -350,9 +350,12 @@ function parseSshdEffectiveConfig(text) {
       ports.add(port);
     } else if (key === "listenaddress") {
       const m = LISTEN_ADDRESS.exec(value);
-      const port = m === null ? null : portOf(m[1]);
-      if (port === null) return null;
+      const port = m === null ? null : portOf(m[3]);
+      if (m === null || port === null) return null;
+      const address = (m[1] ?? m[2]).toLowerCase();
+      if (isIP2(address) !== (m[1] === void 0 ? 4 : 6)) return null;
       ports.add(port);
+      addresses.add(address);
     } else if (SINGLE_SETTINGS.includes(key)) {
       if (seen.has(key) || value.length === 0) return null;
       seen.set(key, value);
@@ -376,8 +379,22 @@ function parseSshdEffectiveConfig(text) {
     authorizedKeysFiles: files,
     authorizedKeysCommand: seen.get("authorizedkeyscommand"),
     trustedUserCaKeys: seen.get("trustedusercakeys"),
-    listenPorts: [...ports].sort((a, b) => a - b)
+    listenPorts: [...ports].sort((a, b) => a - b),
+    listenAddresses: [...addresses].sort()
   };
+}
+function isArrivalAddress(address) {
+  const a = address.toLowerCase();
+  if (!PLAIN_ADDRESS.test(a)) return false;
+  const family = isIP2(a);
+  if (family === 4) return !(a.startsWith("127.") || a.startsWith("169.254.") || a === "0.0.0.0");
+  if (family === 6) return !(a === "::1" || /^fe[89ab]/.test(a) || /^[0:]+$/.test(a));
+  return false;
+}
+function probeLocalAddresses(interfaceAddresses, listenAddresses) {
+  const out = new Set(interfaceAddresses.map((a) => a.toLowerCase()));
+  for (const address of listenAddresses) if (isArrivalAddress(address)) out.add(address.toLowerCase());
+  return [...out].sort();
 }
 var LOGIN_USER = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$/;
 var PLAIN_ADDRESS = /^[0-9A-Fa-f:.]+$/;
@@ -406,13 +423,36 @@ function planSshdProbes(input) {
   return input.listenPorts === null ? specs.slice(0, 1) : specs;
 }
 var ROOT_LOGIN_BY_KEY = /* @__PURE__ */ new Set(["yes", "without-password", "prohibit-password", "forced-commands-only"]);
-var SUPPORT_AUTHORIZED_KEYS_ENTRIES = [".ssh/authorized_keys", "%h/.ssh/authorized_keys"];
-var SUPPORT_SECOND_KEYS_ENTRIES = [".ssh/authorized_keys2", "%h/.ssh/authorized_keys2"];
-function supportKeysFiles(entries) {
-  const first = entries.some((e) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(e));
-  const second = entries.some((e) => SUPPORT_SECOND_KEYS_ENTRIES.includes(e));
-  const onlyKnown = entries.every((e) => SUPPORT_AUTHORIZED_KEYS_ENTRIES.includes(e) || SUPPORT_SECOND_KEYS_ENTRIES.includes(e));
-  if (!first || !onlyKnown) return null;
+var ACCOUNT_HOME = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
+function expandKeysFileEntry(entry, account) {
+  if (!LOGIN_USER.test(account.user)) return null;
+  if (account.home !== "/" && !ACCOUNT_HOME.test(account.home)) return null;
+  let out = "";
+  for (let i = 0; i < entry.length; i++) {
+    if (entry[i] !== "%") {
+      out += entry[i];
+      continue;
+    }
+    const token = entry[++i];
+    if (token === "%") out += "%";
+    else if (token === "h") out += account.home;
+    else if (token === "u") out += account.user;
+    else return null;
+  }
+  if (out.length === 0) return null;
+  return out.startsWith("/") ? out : (account.home === "/" ? "" : account.home) + "/" + out;
+}
+function supportKeysFiles(entries, account) {
+  const dir = (account.home === "/" ? "" : account.home) + "/.ssh/";
+  let first = false;
+  let second = false;
+  for (const entry of entries) {
+    const path = expandKeysFileEntry(entry, account);
+    if (path === dir + "authorized_keys") first = true;
+    else if (path === dir + "authorized_keys2") second = true;
+    else return null;
+  }
+  if (!first) return null;
   return second ? ["authorized_keys", "authorized_keys2"] : ["authorized_keys"];
 }
 function assessSshd(input) {
@@ -429,10 +469,12 @@ function assessSshd(input) {
   if (configs.length === 0) return refuse("sshd_config_unknown");
   const ports = configs[0].listenPorts;
   if (!configs.every((c) => c.listenPorts.join(",") === ports.join(","))) return refuse("sshd_config_unknown");
+  const listening = configs[0].listenAddresses;
+  if (!configs.every((c) => c.listenAddresses.join(",") === listening.join(","))) return refuse("sshd_config_unknown");
   const planned = planSshdProbes({
     loginUser: input.loginUser,
     fromCidrs: input.fromCidrs,
-    localAddresses: input.localAddresses,
+    localAddresses: probeLocalAddresses(input.localAddresses, listening),
     listenPorts: ports
   });
   if (planned === null) return refuse("sshd_config_unknown");
@@ -441,10 +483,13 @@ function assessSshd(input) {
   if (!configs.every((c) => c.useDns === "no")) return refuse("sshd_usedns_enabled");
   if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
   if (!configs.every((c) => c.permitTunnel === "no")) return refuse("tunnel_permitted");
-  const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles);
+  const account = { user: input.loginUser, home: input.loginHome };
+  const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account);
   if (keysFiles === null) return refuse("authorized_keys_path_unsupported");
-  if (!configs.every((c) => c.authorizedKeysFiles.join(" ") === configs[0].authorizedKeysFiles.join(" "))) {
-    return refuse("authorized_keys_path_unsupported");
+  for (const c of configs) {
+    if (supportKeysFiles(c.authorizedKeysFiles, account)?.join(" ") !== keysFiles.join(" ")) {
+      return refuse("authorized_keys_path_unsupported");
+    }
   }
   if (!configs.every((c) => c.authorizedKeysCommand === "none" && c.trustedUserCaKeys === "none")) {
     return refuse("other_key_source");
@@ -461,12 +506,7 @@ function reachableLocalAddresses(all) {
   const out = /* @__PURE__ */ new Set();
   for (const entry of all) {
     if (entry.internal) continue;
-    const address = entry.address.toLowerCase();
-    const family = isIP3(address);
-    if (family === 0 || address.includes("%")) continue;
-    if (family === 4 && (address.startsWith("169.254.") || address.startsWith("127."))) continue;
-    if (family === 6 && (/^fe[89ab]/.test(address) || address === "::1")) continue;
-    out.add(address);
+    if (isArrivalAddress(entry.address)) out.add(entry.address.toLowerCase());
   }
   return [...out].sort();
 }
@@ -478,6 +518,7 @@ async function probeSshd(input, deps) {
     versionText,
     loginIsRoot: deps.user.isRoot,
     loginUser: deps.user.name,
+    loginHome: deps.user.home,
     fromCidrs: input.fromCidrs,
     localAddresses
   };
@@ -504,7 +545,11 @@ async function probeSshd(input, deps) {
     const first = await ask(discovery[0]);
     const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text);
     if (firstConfig === null) return refused([first]);
-    const plan = planSshdProbes({ ...base, listenPorts: firstConfig.listenPorts });
+    const plan = planSshdProbes({
+      ...base,
+      localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
+      listenPorts: firstConfig.listenPorts
+    });
     if (plan === null || plan.length > SSHD_PROBE_MAX_QUERIES) return refused([]);
     const answers = [];
     for (const spec of plan) {
@@ -533,7 +578,7 @@ function createSshdProbeDeps() {
         }
       );
     }),
-    user: { name: userInfo().username, isRoot: process.getuid?.() === 0 },
+    user: { name: userInfo().username, isRoot: process.getuid?.() === 0, home: userInfo().homedir },
     interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
     makePrivateDir: () => mkdtempSync(join2(tmpdir(), "marveen-sshd-probe-")),
     removeDir: (path) => {
@@ -745,7 +790,6 @@ function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
 }
 async function rewriteAuthorizedKeysLocked(opts, transform) {
   const {
-    sshDir,
     operation,
     createDir = false,
     refuseSymlink = false,
@@ -755,6 +799,7 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
     staleLockMs = 15e3,
     sleep = defaultSleep
   } = opts;
+  const sshDir = resolve(opts.sshDir);
   assertSafeSshDir(sshDir, operation);
   const warnings = [];
   const authPath = join3(sshDir, AUTH_KEYS_NAME);
@@ -887,8 +932,7 @@ async function reconcileSupportLinesOnDisk(opts) {
     try {
       expected = buildSupportGrantLines(grant);
     } catch (err) {
-      if (!(err instanceof SupportLineError)) throw err;
-      unbuildable = err.code;
+      unbuildable = err instanceof SupportLineError ? err.code : "grant_malformed";
     }
   }
   const out = await rewriteAuthorizedKeysLocked(

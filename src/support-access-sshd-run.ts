@@ -18,14 +18,15 @@
 //   "configuration unknown" in the assessment.
 import { execFile } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { isIP } from 'node:net'
 import { networkInterfaces, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import {
   assessSshd,
   formatSshdConnectionSpec,
+  isArrivalAddress,
   parseSshdEffectiveConfig,
   planSshdProbes,
+  probeLocalAddresses,
   type SshdAssessment,
   type SshdConnectionSpec,
   type SshdProbeAnswer,
@@ -54,8 +55,9 @@ export interface LocalInterfaceAddress {
 export interface SshdProbeDeps {
   /** Start a program without a shell. Never rejects: a failure is a result with code null. */
   readonly run: (file: string, args: readonly string[], timeoutMs: number) => Promise<ProgramResult>
-  /** The login user of this process: the user whose authorized_keys gets the line. */
-  readonly user: { readonly name: string; readonly isRoot: boolean }
+  /** The login user of this process: the user whose authorized_keys gets the line. The home is the one in the
+   * user database (what sshd uses), not the HOME of the environment. */
+  readonly user: { readonly name: string; readonly isRoot: boolean; readonly home: string }
   /** Every address of every network interface of this machine. */
   readonly interfaceAddresses: () => readonly LocalInterfaceAddress[]
   /** Make a new private directory (0700) and return its path. */
@@ -65,22 +67,16 @@ export interface SshdProbeDeps {
 }
 
 /**
- * The addresses a connection from a pinned source could arrive on: every
- * interface address except loopback and link-local ones. A pinned source is a
- * routable address of another machine; a packet from it cannot have a loopback
- * or a link-local destination. Sorted and without repeats, so the plan is the
- * same on every run.
+ * The interface addresses a connection from a pinned source could arrive on:
+ * every address of every interface that is not a loopback interface and that
+ * isArrivalAddress accepts (no loopback, link-local or zoned address). Sorted
+ * and without repeats, so the plan is the same on every run.
  */
 export function reachableLocalAddresses(all: readonly LocalInterfaceAddress[]): string[] {
   const out = new Set<string>()
   for (const entry of all) {
     if (entry.internal) continue
-    const address = entry.address.toLowerCase()
-    const family = isIP(address)
-    if (family === 0 || address.includes('%')) continue
-    if (family === 4 && (address.startsWith('169.254.') || address.startsWith('127.'))) continue
-    if (family === 6 && (/^fe[89ab]/.test(address) || address === '::1')) continue
-    out.add(address)
+    if (isArrivalAddress(entry.address)) out.add(entry.address.toLowerCase())
   }
   return [...out].sort()
 }
@@ -99,6 +95,7 @@ export async function probeSshd(input: { readonly fromCidrs: readonly string[] }
     versionText,
     loginIsRoot: deps.user.isRoot,
     loginUser: deps.user.name,
+    loginHome: deps.user.home,
     fromCidrs: input.fromCidrs,
     localAddresses,
   }
@@ -129,7 +126,12 @@ export async function probeSshd(input: { readonly fromCidrs: readonly string[] }
     const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text)
     if (firstConfig === null) return refused([first])
 
-    const plan = planSshdProbes({ ...base, listenPorts: firstConfig.listenPorts })
+    // The addresses sshd is told to listen on are asked about too; the assessment adds them the same way.
+    const plan = planSshdProbes({
+      ...base,
+      localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
+      listenPorts: firstConfig.listenPorts,
+    })
     if (plan === null || plan.length > SSHD_PROBE_MAX_QUERIES) return refused([])
     const answers: SshdProbeAnswer[] = []
     for (const spec of plan) {
@@ -165,7 +167,7 @@ export function createSshdProbeDeps(): SshdProbeDeps {
           },
         )
       }),
-    user: { name: userInfo().username, isRoot: process.getuid?.() === 0 },
+    user: { name: userInfo().username, isRoot: process.getuid?.() === 0, home: userInfo().homedir },
     interfaceAddresses: () =>
       Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
     makePrivateDir: () => mkdtempSync(join(tmpdir(), 'marveen-sshd-probe-')),
