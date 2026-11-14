@@ -89,6 +89,15 @@ ok(rc == 0 and puts == [('PUT', '/api/messages/42', {'status': 'done', 'notify':
    'C5 receipt + --result-file + --no-notify: closed, the result ignored (stderr says so), its file kept',
    'rc=%d puts=%r kept=%r %s' % (rc, puts, kept, err[:200]))
 
+with open(RECIPE, 'w', encoding='utf-8') as f:
+    f.write('az eredmeny')
+rc, err, puts = run('--result-file', RECIPE, '--no-notify')
+kept = open(RECIPE, encoding='utf-8').read()
+ok(rc == 0 and puts == [('PUT', '/api/messages/42', {'status': 'done', 'result': 'az eredmeny', 'notify': False})]
+   and 'ignored' not in err and kept == '',
+   'C6 a task + --result-file + --no-notify: closed with the result and notify:false, its recipe file emptied',
+   'rc=%d puts=%r kept=%r %s' % (rc, puts, kept, err[:200]))
+
 rc, err, puts = run('--result-file', RESULT, row_status=404, content='')
 ok(rc == 0 and len(puts) == 1, 'C4 unreadable row: not refused, the close goes out', 'rc=%d puts=%r %s' % (rc, puts, err[:200]))
 
