@@ -295,8 +295,9 @@ export async function sweepOnce(call: SlackCall, posts: ApprovalSlackPost[], dec
   return { checked, waitS: 0 }
 }
 
-// Slack ignores a JSON body on methods whose docs do not list application/json (conversations.replies, users.info),
-// so their arguments never arrive; the read methods go form-encoded, which all three list.
+// Hypothesis, not measured live: Slack ignores a JSON body on methods whose docs do not list application/json
+// (conversations.replies, users.info), so their arguments never arrive; those go form-encoded, which their docs list.
+// conversations.history accepts JSON by the same docs and was not shown broken: it moves only so all reads encode alike.
 const FORM_METHODS = new Set(['conversations.replies', 'conversations.history', 'users.info'])
 
 /** The Slack Web API over fetch with a bot token; a 429 throws SlackRateLimited with its Retry-After. */
@@ -309,7 +310,8 @@ export function slackCaller(token: string, f: typeof fetch = fetch): SlackCall {
         'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8',
         Authorization: `Bearer ${token}`,
       },
-      body: form ? new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(body),
+      // undefined/null are skipped, as JSON.stringify drops undefined, so an optional field never goes out as "undefined".
+      body: form ? new URLSearchParams(Object.entries(body).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(body),
     })
     if (resp.status === 429) throw new SlackRateLimited(Number(resp.headers.get('retry-after') ?? '30') || 30)
     if (!resp.ok) return { ok: false, error: `http_${resp.status}` }

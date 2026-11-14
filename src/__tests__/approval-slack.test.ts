@@ -202,6 +202,12 @@ describe('slackCaller request encoding', () => {
     expect(Object.fromEntries(new URLSearchParams(sent[2].init.body as string))).toEqual({ user: OWNER })
   })
 
+  it('skips undefined and null in the form body, as JSON drops undefined', async () => {
+    const { sent, call } = capture()
+    await call('conversations.replies', { channel: 'D0DMCHAN1', ts: '1700000000.000100', cursor: undefined, latest: null })
+    expect(sent[0].init.body).toBe('channel=D0DMCHAN1&ts=1700000000.000100')
+  })
+
   it('keeps the write methods on JSON', async () => {
     const { sent, call } = capture()
     await call('chat.postMessage', { channel: 'D0DMCHAN1', text: 'x', unfurl_links: false })
