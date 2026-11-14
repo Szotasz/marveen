@@ -3,7 +3,7 @@
 // Source: src/support-standby-cli.ts. Rebuild: node scripts/build-support-standby.mjs
 
 // src/support-standby-cli.ts
-import { accessSync as accessSync2, constants as constants3, readFileSync as readFileSync3, realpathSync as realpathSync2 } from "node:fs";
+import { accessSync as accessSync2, constants as constants3, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
 import { join as join6 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1026,7 +1026,7 @@ async function installKit(input) {
 }
 
 // src/support-access-fs.ts
-import { lstatSync as lstatSync4, statSync as statSync4 } from "node:fs";
+import { lstatSync as lstatSync4, readFileSync as readFileSync3, statSync as statSync4 } from "node:fs";
 import { join as join5 } from "node:path";
 
 // src/remote-enroll-fs.ts
@@ -1327,26 +1327,54 @@ function statOrNull(path) {
   }
 }
 function keysFileLayout(sshDir) {
-  const firstPath = join5(sshDir, "authorized_keys");
-  const secondPath = join5(sshDir, SECOND_FILE);
-  const second = lstatOrNull3(secondPath);
+  const second = lstatOrNull3(join5(sshDir, SECOND_FILE));
   if (second === null) return "separate";
-  const first = lstatOrNull3(firstPath);
+  const first = lstatOrNull3(join5(sshDir, "authorized_keys"));
+  const sameAsFirst = (st) => first !== null && first.isFile() && st.dev === first.dev && st.ino === first.ino;
   if (second.isSymbolicLink()) {
-    const target = statOrNull(secondPath);
-    if (target === null) return "second-skipped";
-    if (first !== null && first.isFile() && target.dev === first.dev && target.ino === first.ino) return "second-skipped";
-    throw new SupportKeysLayoutError(`${secondPath} is a symbolic link to another file than ${firstPath}; nothing was written`);
+    const target = statOrNull(join5(sshDir, SECOND_FILE));
+    if (target === null) return "link-to-nothing";
+    return sameAsFirst(target) ? "link-to-first" : "link-elsewhere";
   }
-  if (first !== null && first.isFile() && second.dev === first.dev && second.ino === first.ino) {
-    throw new SupportKeysLayoutError(`${secondPath} is a hard link of ${firstPath}; nothing was written`);
-  }
-  return "separate";
+  return second.isFile() && sameAsFirst(second) ? "hard-link" : "separate";
+}
+function assertLayoutForGrant(sshDir) {
+  const layout = keysFileLayout(sshDir);
+  const second = join5(sshDir, SECOND_FILE);
+  if (layout === "link-elsewhere") throw new SupportKeysLayoutError(`${second} is a symbolic link to another file than authorized_keys; nothing was written`);
+  if (layout === "hard-link") throw new SupportKeysLayoutError(`${second} is a hard link of authorized_keys; nothing was written`);
+}
+function splitWarning(sshDir, before) {
+  if (before !== "hard-link" || keysFileLayout(sshDir) === "hard-link") return [];
+  return [
+    `${join5(sshDir, "authorized_keys")} and ${join5(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
+  ];
 }
 async function removeEverySupportLine(base, fileName, operation) {
   const { sshDir, pinnedBlobs, ...lock } = base;
-  if (fileName === SECOND_FILE && keysFileLayout(sshDir) === "second-skipped") {
-    return { authorizedKeysPath: join5(sshDir, SECOND_FILE), removed: 0, warnings: [`${join5(sshDir, SECOND_FILE)} is a link to authorized_keys (or to nothing); it was cleaned through that file`] };
+  if (fileName === SECOND_FILE) {
+    const secondPath = join5(sshDir, SECOND_FILE);
+    const layout = keysFileLayout(sshDir);
+    if (layout === "link-to-first" || layout === "link-to-nothing") {
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a link to authorized_keys (or to nothing); it was cleaned through that file`] };
+    }
+    if (layout === "hard-link") {
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [] };
+    }
+    if (layout === "link-elsewhere") {
+      let held = 0;
+      try {
+        held = countSupportLines(readFileSync3(secondPath, "latin1"), pinnedBlobs);
+      } catch {
+        throw new SupportKeysLayoutError(`${secondPath} is a symbolic link to a file that cannot be read; it was not written`);
+      }
+      if (held > 0) {
+        throw new SupportKeysLayoutError(
+          `${secondPath} is a symbolic link to another file that holds ${held} support line(s); it was not written. Remove the line(s) from that file by hand`
+        );
+      }
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a symbolic link to another file; it holds no support line and was not written`] };
+    }
   }
   const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
     const { content, removed } = removeSupportLines(existing, pinnedBlobs);
@@ -1371,7 +1399,7 @@ async function grantSupportLines(opts) {
     throw new SupportLineError("pins_invalid", "a key of the grant is not one of the pinned keys");
   }
   const lines = buildSupportGrantLines(grant);
-  keysFileLayout(sshDir);
+  assertLayoutForGrant(sshDir);
   const second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, "remove support access lines from");
   const out = await rewriteAuthorizedKeysLocked(
     { sshDir, operation: "write support access lines into", createDir: true, refuseSymlink: true, preserveBytes: true, ...lock },
@@ -1389,7 +1417,7 @@ async function grantSupportLines(opts) {
 }
 async function revokeSupportLines(opts) {
   const operation = "remove support access lines from";
-  keysFileLayout(opts.sshDir);
+  const layoutBefore = keysFileLayout(opts.sshDir);
   const failures = [];
   const done = [];
   for (const fileName of ["authorized_keys", SECOND_FILE]) {
@@ -1406,7 +1434,7 @@ async function revokeSupportLines(opts) {
     authorizedKeysPath: first.authorizedKeysPath,
     removed: first.removed + second.removed,
     removedFromSecond: second.removed,
-    warnings: [...first.warnings, ...second.warnings]
+    warnings: [...first.warnings, ...second.warnings, ...splitWarning(opts.sshDir, layoutBefore)]
   };
 }
 async function reconcileSupportLinesOnDisk(opts) {
@@ -1421,7 +1449,7 @@ async function reconcileSupportLinesOnDisk(opts) {
     }
   }
   const operation = "reconcile support access lines in";
-  keysFileLayout(sshDir);
+  const layoutBefore = keysFileLayout(sshDir);
   const failures = [];
   let first = null;
   let second = null;
@@ -1444,7 +1472,7 @@ async function reconcileSupportLinesOnDisk(opts) {
     missing: first.result.missing,
     lineEndOnly: first.result.lineEndOnly,
     unbuildable,
-    warnings: [...first.warnings, ...second.warnings]
+    warnings: [...first.warnings, ...second.warnings, ...splitWarning(sshDir, layoutBefore)]
   };
 }
 function reconcileFirstFile(base, expected, operation) {
@@ -1494,7 +1522,7 @@ function createStatusDeps(account = currentLoginUser()) {
     },
     readKeysFile: (name) => {
       try {
-        return readFileSync3(join6(sshDir, name), "latin1");
+        return readFileSync4(join6(sshDir, name), "latin1");
       } catch (err) {
         return err.code === "ENOENT" ? null : "unreadable";
       }

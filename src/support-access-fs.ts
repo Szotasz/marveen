@@ -35,20 +35,26 @@
 // on what the sshd probe says: when sshd cannot be asked, both files are
 // still cleaned. A missing second file is not an error.
 //
-// HOW THE TWO FILES MAY RELATE (Dani's review of #2768, S1). An old, common
-// setup makes authorized_keys2 a symbolic link to authorized_keys. Cleaning it
-// as a file of its own would replace the link with a regular file: a frozen
-// copy of the owner's lines, so a key the owner later takes out of
-// authorized_keys would still open through the copy. So:
-//   - a link to authorized_keys (or a link to nothing): the second file is
-//     skipped; the first file's rewrite replaces the path the link points at,
-//     so the link stays right;
-//   - a link anywhere else: every operation refuses before it writes;
-//   - a hard link (the same inode under both names): every operation refuses
-//     before it writes. Skipping would not do here: the first file's rewrite
-//     (a rename) breaks the hard link and leaves the OLD inode, with every
-//     line it had, under the name authorized_keys2.
-import { lstatSync, statSync, type Stats } from 'node:fs'
+// HOW THE TWO FILES MAY RELATE (Dani's review of #2768, S1, and 78313). An
+// old, common setup makes authorized_keys2 a symbolic link to authorized_keys.
+// Cleaning it as a file of its own would replace the link with a regular file:
+// a frozen copy of the owner's lines, so a key the owner later takes out of
+// authorized_keys would still open through the copy. A GRANT (it adds access)
+// refuses, before it writes, every layout it cannot keep right; a REMOVAL
+// (revoke, reconcile) never fails on a layout, because taking access out must
+// not depend on anything:
+//   - a link to authorized_keys, or to nothing: skipped by every operation;
+//     the first file's rewrite replaces the path the link points at, so the
+//     link stays right;
+//   - a link to another file: a grant refuses; a removal does not write the
+//     target and goes on when the target holds no support line, and fails
+//     loudly when it does (the owner has to see that and remove it by hand);
+//   - a hard link (one inode under both names): a grant refuses; a removal
+//     cleans authorized_keys first (its rename splits the hard link) and then
+//     the now separate authorized_keys2, and says that the two were split. A
+//     plain skip would not do: the old inode, with every line it had, stays
+//     under the name authorized_keys2.
+import { lstatSync, readFileSync, statSync, type Stats } from 'node:fs'
 import { join } from 'node:path'
 import {
   rewriteAuthorizedKeysLocked,
@@ -102,28 +108,38 @@ function statOrNull(path: string): Stats | null {
   }
 }
 
-/**
- * How authorized_keys2 relates to authorized_keys: `separate` (a file of its
- * own, or none), or `second-skipped` (a link to authorized_keys, or a link to
- * nothing). Throws SupportKeysLayoutError for a link to another file and for
- * a hard link of authorized_keys.
- */
-export function keysFileLayout(sshDir: string): 'separate' | 'second-skipped' {
-  const firstPath = join(sshDir, 'authorized_keys')
-  const secondPath = join(sshDir, SECOND_FILE)
-  const second = lstatOrNull(secondPath)
+export type KeysFileLayout = 'separate' | 'link-to-first' | 'link-to-nothing' | 'link-elsewhere' | 'hard-link'
+
+/** How authorized_keys2 relates to authorized_keys, as it is right now. */
+export function keysFileLayout(sshDir: string): KeysFileLayout {
+  const second = lstatOrNull(join(sshDir, SECOND_FILE))
   if (second === null) return 'separate'
-  const first = lstatOrNull(firstPath)
+  const first = lstatOrNull(join(sshDir, 'authorized_keys'))
+  const sameAsFirst = (st: Stats): boolean => first !== null && first.isFile() && st.dev === first.dev && st.ino === first.ino
   if (second.isSymbolicLink()) {
-    const target = statOrNull(secondPath)
-    if (target === null) return 'second-skipped'
-    if (first !== null && first.isFile() && target.dev === first.dev && target.ino === first.ino) return 'second-skipped'
-    throw new SupportKeysLayoutError(`${secondPath} is a symbolic link to another file than ${firstPath}; nothing was written`)
+    const target = statOrNull(join(sshDir, SECOND_FILE))
+    if (target === null) return 'link-to-nothing'
+    return sameAsFirst(target) ? 'link-to-first' : 'link-elsewhere'
   }
-  if (first !== null && first.isFile() && second.dev === first.dev && second.ino === first.ino) {
-    throw new SupportKeysLayoutError(`${secondPath} is a hard link of ${firstPath}; nothing was written`)
-  }
-  return 'separate'
+  return second.isFile() && sameAsFirst(second) ? 'hard-link' : 'separate'
+}
+
+/** A grant adds access: it refuses, before anything is written, a layout it could not keep right. */
+function assertLayoutForGrant(sshDir: string): void {
+  const layout = keysFileLayout(sshDir)
+  const second = join(sshDir, SECOND_FILE)
+  if (layout === 'link-elsewhere') throw new SupportKeysLayoutError(`${second} is a symbolic link to another file than authorized_keys; nothing was written`)
+  if (layout === 'hard-link') throw new SupportKeysLayoutError(`${second} is a hard link of authorized_keys; nothing was written`)
+}
+
+/** The warning a removal gives when it found authorized_keys2 hard-linked before and split it. */
+function splitWarning(sshDir: string, before: KeysFileLayout): string[] {
+  if (before !== 'hard-link' || keysFileLayout(sshDir) === 'hard-link') return []
+  return [
+    `${join(sshDir, 'authorized_keys')} and ${join(sshDir, SECOND_FILE)} were one file under two names; taking the ` +
+      'support lines out split them into two files. Both hold the other lines as they were, but an edit of one no ' +
+      'longer shows in the other',
+  ]
 }
 
 /**
@@ -136,8 +152,32 @@ async function removeEverySupportLine(
   operation: string,
 ): Promise<{ authorizedKeysPath: string; removed: number; warnings: string[] }> {
   const { sshDir, pinnedBlobs, ...lock } = base
-  if (fileName === SECOND_FILE && keysFileLayout(sshDir) === 'second-skipped') {
-    return { authorizedKeysPath: join(sshDir, SECOND_FILE), removed: 0, warnings: [`${join(sshDir, SECOND_FILE)} is a link to authorized_keys (or to nothing); it was cleaned through that file`] }
+  if (fileName === SECOND_FILE) {
+    const secondPath = join(sshDir, SECOND_FILE)
+    const layout = keysFileLayout(sshDir)
+    if (layout === 'link-to-first' || layout === 'link-to-nothing') {
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a link to authorized_keys (or to nothing); it was cleaned through that file`] }
+    }
+    if (layout === 'hard-link') {
+      // Still one inode: authorized_keys was not rewritten (it held no support line), so neither name holds one.
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [] }
+    }
+    if (layout === 'link-elsewhere') {
+      // The target is not ours to rewrite. Nothing to do when it holds no support line; otherwise fail loudly.
+      let held = 0
+      try {
+        held = countSupportLines(readFileSync(secondPath, 'latin1'), pinnedBlobs)
+      } catch {
+        throw new SupportKeysLayoutError(`${secondPath} is a symbolic link to a file that cannot be read; it was not written`)
+      }
+      if (held > 0) {
+        throw new SupportKeysLayoutError(
+          `${secondPath} is a symbolic link to another file that holds ${held} support line(s); it was not written. ` +
+            'Remove the line(s) from that file by hand',
+        )
+      }
+      return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a symbolic link to another file; it holds no support line and was not written`] }
+    }
   }
   const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
     const { content, removed } = removeSupportLines(existing, pinnedBlobs)
@@ -188,7 +228,7 @@ export async function grantSupportLines(
     throw new SupportLineError('pins_invalid', 'a key of the grant is not one of the pinned keys')
   }
   const lines = buildSupportGrantLines(grant)
-  keysFileLayout(sshDir) // refuses a layout this cannot clean, before anything is written
+  assertLayoutForGrant(sshDir)
   const second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, 'remove support access lines from')
   const out = await rewriteAuthorizedKeysLocked(
     { sshDir, operation: 'write support access lines into', createDir: true, refuseSymlink: true, preserveBytes: true, ...lock },
@@ -225,9 +265,9 @@ export interface RevokeSupportLinesResult {
  */
 export async function revokeSupportLines(opts: SupportFsBase): Promise<RevokeSupportLinesResult> {
   const operation = 'remove support access lines from'
-  // A layout this cannot clean is refused before either file is touched: removing the lines from one name of a
-  // hard-linked file would leave them under the other.
-  keysFileLayout(opts.sshDir)
+  // The FIRST file goes first: for a hard link, its rename splits the two names, and the second (now separate)
+  // is cleaned after it. No layout stops a removal.
+  const layoutBefore = keysFileLayout(opts.sshDir)
   const failures: unknown[] = []
   const done: Array<{ authorizedKeysPath: string; removed: number; warnings: string[] } | null> = []
   for (const fileName of ['authorized_keys', SECOND_FILE] as const) {
@@ -244,7 +284,7 @@ export async function revokeSupportLines(opts: SupportFsBase): Promise<RevokeSup
     authorizedKeysPath: first.authorizedKeysPath,
     removed: first.removed + second.removed,
     removedFromSecond: second.removed,
-    warnings: [...first.warnings, ...second.warnings],
+    warnings: [...first.warnings, ...second.warnings, ...splitWarning(opts.sshDir, layoutBefore)],
   }
 }
 
@@ -300,7 +340,7 @@ export async function reconcileSupportLinesOnDisk(
     }
   }
   const operation = 'reconcile support access lines in'
-  keysFileLayout(sshDir)
+  const layoutBefore = keysFileLayout(sshDir)
   // BOTH files are attempted, as in a revoke: an error on one must not leave
   // the other one unlooked at. The first error is thrown afterwards.
   const failures: unknown[] = []
@@ -325,7 +365,7 @@ export async function reconcileSupportLinesOnDisk(
     missing: first.result.missing,
     lineEndOnly: first.result.lineEndOnly,
     unbuildable,
-    warnings: [...first.warnings, ...second.warnings],
+    warnings: [...first.warnings, ...second.warnings, ...splitWarning(sshDir, layoutBefore)],
   }
 }
 
