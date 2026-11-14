@@ -93,7 +93,8 @@ describe('persona write guard: hand-edited files are never overwritten', () => {
 describe('POST /api/agents routes both personality writes through the guard', () => {
   const code = readFileSync(join(import.meta.dirname, '..', 'web/routes/agents.ts'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-  const start = code.indexOf('scaffoldAgentDir(name)')
+  // The base writes (the scaffold among them) are one call since MIOAGENTINSTALL1114 PR-I0: writeAgentBase, agent-create.ts.
+  const start = code.indexOf('writeAgentBase(name')
   const body = code.slice(start, code.indexOf('json(res, { ok: true, name })', start))
 
   it('no unguarded write of CLAUDE.md / SOUL.md in the create handler', () => {

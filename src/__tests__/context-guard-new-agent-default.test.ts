@@ -88,12 +88,18 @@ describe('the creation path actually calls it', () => {
     // template. Seeding after it would leave a usable-but-unguarded agent on
     // that path -- exactly the outcome the no-destructive-rollback fix was
     // careful to make survivable.
-    const scaffold = routeSrc.indexOf('scaffoldAgentDir(name)')
-    const seed = routeSrc.indexOf('seedContextGuardForNewAgent(name)')
-    const generate = routeSrc.indexOf("'Generating agent CLAUDE.md and SOUL.md...'")
+    // The seed is one of the base writes, and those are one call since MIOAGENTINSTALL1114 PR-I0 (writeAgentBase,
+    // agent-create.ts): the seed is in it after the scaffold, and the route calls it before generation.
+    const createSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'agent-create.ts'), 'utf8')
+    const base = createSrc.slice(createSrc.indexOf('export function writeAgentBase('))
+    const scaffold = base.indexOf('scaffoldAgentDir(name)')
+    const seed = base.indexOf('seedContextGuardForNewAgent(name)')
     expect(scaffold, 'scaffoldAgentDir call not found').toBeGreaterThan(-1)
     expect(seed, 'guard seed call not found').toBeGreaterThan(scaffold)
-    expect(generate, 'personality generation log not found').toBeGreaterThan(seed)
+    const write = routeSrc.indexOf('writeAgentBase(name, {')
+    const generate = routeSrc.indexOf("'Generating agent CLAUDE.md and SOUL.md...'")
+    expect(write, 'writeAgentBase call not found').toBeGreaterThan(-1)
+    expect(generate, 'personality generation log not found').toBeGreaterThan(write)
   })
 
   it('the import paths seed it too -- an imported agent is new to this machine', () => {
