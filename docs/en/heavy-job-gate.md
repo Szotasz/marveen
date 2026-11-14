@@ -147,6 +147,13 @@ A flag wins over its environment variable.
 - **Short lane (`--max-sec N`, N <= 300):** short jobs go before long ones in the
   same fairness class; at most 3 in a row may pass a waiting long job. `--max-sec`
   makes the claim honest: a "short" job that runs longer is stopped (76).
+- **Side lane (`--max-mem` <= 1G):** one small capped job may run beside the main
+  one, holding a second lock (`store/.heavy-job.lock.side`), in arrival order among
+  such calls, and only if `MemAvailable >= max(--min-mb, its cap + the main job's
+  headroom + 1000)`, the headroom being the main scope's `memory.max - (memory.current
+  - file)`. Anything unreadable admits nothing. While it runs, the main lane's floor
+  adds its headroom (1024 when unmeasurable). Calls with a larger cap (the default
+  2G) never use it. Its start line carries `side_lane: true` and `beside`.
 
 ### Nested calls
 

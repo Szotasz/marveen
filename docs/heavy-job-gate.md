@@ -124,6 +124,12 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
 - **Sorrend a FIFO felett:** `--agent` (méltányosság: ugyanaz az ügynök nem veheti el
   kétszer egymás után a zárat, amíg más vár) és `--max-sec N`, N <= 300 (rövid sáv: a
   rövid feladat előzhet, de legfeljebb három egymás után egy várakozó hosszút).
+- **Mellék-sáv (`--max-mem` <= 1G):** egy kis, keretes feladat futhat a fő feladat
+  mellett, egy második záron (`store/.heavy-job.lock.side`), az ilyen hívások
+  érkezési sorrendjében, és csak ha `MemAvailable >= max(--min-mb, a saját keret + a
+  fő feladat tartaléka + 1000)`. Ami nem olvasható, az nem enged be senkit; amíg fut,
+  a fő sáv padlója a tartalékával nő. A nagyobb keretű (alapértelmezett 2G) hívások
+  nem használják.
 - **Beágyazott hívás:** egy kapu alatt futó feladat, amely maga is a kaput hívja,
   második zár nélkül fut, de csak ha ez ellenőrizhető (a zár tényleg foglalt, a rekord
   a feladat tokenjét hordozza, és a hívó cgroupja a rögzített scope-on belül van).
