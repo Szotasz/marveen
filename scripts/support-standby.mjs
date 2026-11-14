@@ -3,8 +3,8 @@
 // Source: src/support-standby-cli.ts. Rebuild: node scripts/build-support-standby.mjs
 
 // src/support-standby-cli.ts
-import { accessSync, constants, readFileSync as readFileSync2, realpathSync as realpathSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { accessSync, constants as constants2, readFileSync as readFileSync2, realpathSync as realpathSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/support-access-pins.ts
@@ -113,7 +113,119 @@ function validateSupportPins(keys, fromCidrs) {
 
 // src/support-access-sshd-run.ts
 import { execFile } from "node:child_process";
-import { networkInterfaces, userInfo } from "node:os";
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync } from "node:fs";
+import { networkInterfaces, tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
+
+// src/support-access-sshd-nonroot.ts
+import { posix } from "node:path";
+var SSHD_LISTENER_PROGRAM = "/usr/sbin/sshd";
+var SSHD_MAIN_CONFIG = "/etc/ssh/sshd_config";
+var SSHD_CONFIG_DIR = "/etc/ssh";
+var NONROOT_MAX_DEPTH = 16;
+var NONROOT_MAX_FILES = 256;
+var NONROOT_MAX_FILE_BYTES = 256 * 1024;
+var UNPARSED_CHARS = /["'\\~%$#]/;
+var GLOB_CHARS = /[*?[\]{}]/;
+function includeArguments(text) {
+  const out = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "").trim();
+    if (line.length === 0 || line.startsWith("#")) continue;
+    const m = /^([A-Za-z]+)(?:\s*=\s*|\s+|$)(.*)$/.exec(line);
+    if (m === null || m[1].toLowerCase() !== "include") continue;
+    const value = m[2].trim();
+    if (value.length === 0 || UNPARSED_CHARS.test(value)) return null;
+    out.push(...value.split(/\s+/));
+  }
+  return out;
+}
+function includeTarget(arg) {
+  if (arg.length === 0 || UNPARSED_CHARS.test(arg)) return null;
+  const full = arg.startsWith("/") ? arg : SSHD_CONFIG_DIR + "/" + arg;
+  if (posix.normalize(full) !== full || full.endsWith("/")) return null;
+  const dir = posix.dirname(full);
+  const pattern = posix.basename(full);
+  if (GLOB_CHARS.test(dir) || /[[\]{}]/.test(pattern) || pattern.length === 0) return null;
+  return { dir, pattern };
+}
+function patternMatches(pattern, name) {
+  const re = "^" + pattern.replace(/[.+^$()|\\/]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+  return new RegExp(re).test(name);
+}
+function walkIncludes(fs, main = SSHD_MAIN_CONFIG) {
+  const files = [];
+  const mainDir = posix.dirname(main);
+  const mainDirTime = fs.ctimeNs(mainDir);
+  if (mainDirTime === null) return { ok: false, problem: "sshd_config_unknown" };
+  files.push({ path: mainDir, ctimeNs: mainDirTime });
+  const listedDirs = /* @__PURE__ */ new Set([mainDir]);
+  const seen = /* @__PURE__ */ new Set();
+  const visit = (path, depth) => {
+    if (depth > NONROOT_MAX_DEPTH || files.length >= NONROOT_MAX_FILES) return "sshd_config_include_unparsed";
+    if (seen.has(path)) return null;
+    seen.add(path);
+    const read = fs.readText(path, NONROOT_MAX_FILE_BYTES);
+    if (read.kind === "missing") return depth === 0 ? "sshd_config_unknown" : null;
+    if (read.kind === "unreadable") return "sshd_config_unknown";
+    files.push({ path, ctimeNs: read.ctimeNs });
+    const args = includeArguments(read.text);
+    if (args === null) return "sshd_config_include_unparsed";
+    for (const arg of args) {
+      const target = includeTarget(arg);
+      if (target === null) return "sshd_config_include_unparsed";
+      const listed = fs.listDir(target.dir);
+      if (listed.kind === "unlistable") return "sshd_config_include_unlistable";
+      if (listed.kind === "missing") continue;
+      if (!listedDirs.has(target.dir)) {
+        listedDirs.add(target.dir);
+        files.push({ path: target.dir, ctimeNs: listed.ctimeNs });
+      }
+      for (const name of [...listed.names].sort()) {
+        if (!patternMatches(target.pattern, name)) continue;
+        const problem2 = visit(target.dir + "/" + name, depth + 1);
+        if (problem2 !== null) return problem2;
+      }
+    }
+    return null;
+  };
+  const problem = visit(main, 0);
+  return problem === null ? { ok: true, files } : { ok: false, problem };
+}
+var LISTENER_PREFIX = "sshd: " + SSHD_LISTENER_PROGRAM + " ";
+var LISTENER_FLAGS = /^((?:-[De] )*)\[listener\] /;
+function listenerTitleProblem(cmdline) {
+  const title = cmdline.replace(/\0/g, " ").trim() + " ";
+  if (!title.startsWith(LISTENER_PREFIX)) return "sshd_daemon_unknown";
+  const rest = title.slice(LISTENER_PREFIX.length);
+  if (LISTENER_FLAGS.test(rest)) return null;
+  return /\[listener\] /.test(rest) ? "sshd_daemon_options" : "sshd_daemon_unknown";
+}
+function pidfileOf(sshdT) {
+  let found = null;
+  for (const raw of sshdT.split("\n")) {
+    const m = /^pidfile (.*)$/i.exec(raw.trim());
+    if (m === null) continue;
+    if (found !== null) return null;
+    found = m[1];
+  }
+  return found !== null && /^\/[A-Za-z0-9._/-]+$/.test(found) ? found : null;
+}
+function checkDaemon(fs, pidfile, walked) {
+  if (pidfile === null) return { ok: false, problem: "sshd_daemon_unknown" };
+  const pidText = fs.readText(pidfile, 64);
+  if (pidText.kind !== "ok" || !/^[1-9][0-9]{0,9}\n?$/.test(pidText.text)) return { ok: false, problem: "sshd_daemon_unknown" };
+  const pidTime = pidText.ctimeNs;
+  const pid = pidText.text.trim();
+  const comm = fs.readText("/proc/" + pid + "/comm", 64);
+  if (comm.kind !== "ok" || comm.text !== "sshd\n") return { ok: false, problem: "sshd_daemon_unknown" };
+  const cmdline = fs.readText("/proc/" + pid + "/cmdline", 4096);
+  if (cmdline.kind !== "ok") return { ok: false, problem: "sshd_daemon_unknown" };
+  const title = listenerTitleProblem(cmdline.text);
+  if (title !== null) return { ok: false, problem: title };
+  if (walked.some((f) => f.ctimeNs > pidTime)) return { ok: false, problem: "sshd_reload_pending" };
+  return { ok: true };
+}
 
 // src/support-access-sshd.ts
 import { isIP as isIP2 } from "node:net";
@@ -441,7 +553,10 @@ function assessSshd(input) {
   if (version === null) return { ok: false, problem: "sshd_version_unknown", version };
   if (!sshdAtLeast(version, SUPPORT_MIN_SSHD)) return { ok: false, problem: "sshd_too_old", version };
   const refuse = (problem) => ({ ok: false, problem, version });
-  if (!input.loginIsRoot) return refuse("sshd_config_not_fully_readable");
+  if (!input.loginIsRoot) {
+    if (input.nonRootProof === void 0) return refuse("sshd_config_not_fully_readable");
+    if (!input.nonRootProof.ok) return refuse(input.nonRootProof.problem);
+  }
   const configs = [];
   for (const answer of input.answers) {
     const config = answer.text === null ? null : parseSshdEffectiveConfig(answer.text);
@@ -463,7 +578,7 @@ function assessSshd(input) {
   const asked = new Set(input.answers.map((a) => formatSshdConnectionSpec(a.spec)));
   if (!planned.every((spec) => asked.has(formatSshdConnectionSpec(spec)))) return refuse("sshd_config_unknown");
   if (!configs.every((c) => c.useDns === "no")) return refuse("sshd_usedns_enabled");
-  if (!configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
+  if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
   if (!configs.every((c) => c.permitTunnel === "no")) return refuse("tunnel_permitted");
   const account = { user: input.loginUser, home: input.loginHome };
   const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account);
@@ -483,6 +598,7 @@ function assessSshd(input) {
 
 // src/support-access-sshd-run.ts
 var SSHD_PROGRAM = "/usr/sbin/sshd";
+var SSH_KEYGEN_PROGRAM = "/usr/bin/ssh-keygen";
 var SSHD_PROBE_TIMEOUT_MS = 5e3;
 var SSHD_PROBE_MAX_QUERIES = 64;
 function reachableLocalAddresses(all) {
@@ -510,13 +626,27 @@ async function askSshd(input, deps) {
     loginHome: deps.user.home,
     fromCidrs: input.fromCidrs
   };
-  if (versionText === null || !deps.user.isRoot) return assessSshd({ ...base, localAddresses: [], answers: [] });
+  if (versionText === null) return assessSshd({ ...base, localAddresses: [], answers: [] });
+  if (deps.user.isRoot) return askAll(base, [], deps, null);
+  let keyDir = null;
+  try {
+    keyDir = deps.makePrivateDir();
+    const keyPath = join(keyDir, "probe_host_key");
+    const made = await deps.run(SSH_KEYGEN_PROGRAM, ["-q", "-t", "ed25519", "-N", "", "-f", keyPath], SSHD_PROBE_TIMEOUT_MS);
+    if (made.code !== 0) return assessSshd({ ...base, localAddresses: [], answers: [], nonRootProof: { ok: false, problem: "sshd_config_unknown" } });
+    return await askAll(base, ["-h", keyPath], deps, keyPath);
+  } finally {
+    if (keyDir !== null) deps.removeDir(keyDir);
+  }
+}
+async function askAll(base, hostKeyArgs, deps, keyPath) {
   const localAddresses = reachableLocalAddresses(deps.interfaceAddresses());
-  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2 });
-  const ask = async (spec) => {
+  let nonRootProof;
+  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2, nonRootProof });
+  const ask = async (spec, extra = []) => {
     const connection = formatSshdConnectionSpec(spec);
     if (connection === null) return { spec, text: null };
-    const out = await deps.run(SSHD_PROGRAM, ["-T", "-C", connection], SSHD_PROBE_TIMEOUT_MS);
+    const out = await deps.run(SSHD_PROGRAM, ["-T", ...hostKeyArgs, ...extra, "-C", connection], SSHD_PROBE_TIMEOUT_MS);
     return { spec, text: out.code === 0 ? out.stdout : null };
   };
   const discovery = planSshdProbes({ ...base, localAddresses, listenPorts: null });
@@ -524,6 +654,17 @@ async function askSshd(input, deps) {
   const first = await ask(discovery[0]);
   const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text);
   if (firstConfig === null) return refused([first]);
+  if (keyPath !== null) {
+    const named = await ask(discovery[0], ["-f", SSHD_MAIN_CONFIG]);
+    if (named.text !== first.text) {
+      nonRootProof = { ok: false, problem: "sshd_config_unknown" };
+      return refused([]);
+    }
+    const walk = walkIncludes(deps.fs);
+    const daemon = !walk.ok ? walk : deps.platform === "linux" ? checkDaemon(deps.fs, pidfileOf(first.text), walk.files) : { ok: false, problem: "sshd_daemon_unknown" };
+    nonRootProof = daemon.ok ? { ok: true } : { ok: false, problem: daemon.problem };
+    if (!nonRootProof.ok) return refused([]);
+  }
   const plan = planSshdProbes({
     ...base,
     localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
@@ -540,6 +681,49 @@ function currentLoginUser() {
   const info = userInfo();
   return { name: info.username, isRoot: process.getuid?.() === 0, home: info.homedir };
 }
+function readCapped(path, max) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch (err) {
+    return err.code === "ENOENT" ? { kind: "missing" } : { kind: "unreadable" };
+  }
+  try {
+    const st = fstatSync(fd, { bigint: true });
+    if (!st.isFile()) return { kind: "unreadable" };
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (; ; ) {
+      const got = readSync(fd, buf, n, buf.length - n, n);
+      if (got === 0) break;
+      n += got;
+      if (n > max) return { kind: "unreadable" };
+    }
+    return { kind: "ok", text: buf.subarray(0, n).toString("latin1"), ctimeNs: st.ctimeNs };
+  } catch {
+    return { kind: "unreadable" };
+  } finally {
+    closeSync(fd);
+  }
+}
+var realNonRootFs = {
+  readText: readCapped,
+  listDir: (path) => {
+    try {
+      const names = readdirSync(path);
+      return { kind: "ok", names, ctimeNs: statSync(path, { bigint: true }).ctimeNs };
+    } catch (err) {
+      return err.code === "ENOENT" ? { kind: "missing" } : { kind: "unlistable" };
+    }
+  },
+  ctimeNs: (path) => {
+    try {
+      return statSync(path, { bigint: true }).ctimeNs;
+    } catch {
+      return null;
+    }
+  }
+};
 function createSshdProbeDeps(user = currentLoginUser()) {
   return {
     run: (file, args, timeoutMs) => new Promise((resolve2) => {
@@ -559,7 +743,16 @@ function createSshdProbeDeps(user = currentLoginUser()) {
       );
     }),
     user,
-    interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal })))
+    interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
+    makePrivateDir: () => mkdtempSync(join(tmpdir(), "marveen-sshd-probe-")),
+    removeDir: (path) => {
+      try {
+        rmSync(path, { recursive: true, force: true });
+      } catch {
+      }
+    },
+    fs: realNonRootFs,
+    platform: process.platform
   };
 }
 
@@ -618,21 +811,21 @@ function formatSupportStatus(report) {
 
 // src/remote-enroll-fs.ts
 import {
-  openSync,
-  closeSync,
+  openSync as openSync2,
+  closeSync as closeSync2,
   writeSync,
   fsyncSync,
   readFileSync,
   renameSync,
   unlinkSync,
   mkdirSync,
-  statSync,
+  statSync as statSync2,
   lstatSync,
   existsSync,
   chmodSync,
   realpathSync
 } from "node:fs";
-import { join as join2, resolve } from "node:path";
+import { join as join3, resolve } from "node:path";
 
 // src/remote-enroll-core.ts
 var REMOTE_PORT = 3420;
@@ -650,7 +843,7 @@ function isTestRun() {
 
 // src/ssh-dir.ts
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 var SSH_DIR_GUARD_CODE = "ENROLL813";
 var SshDirGuardError = class extends Error {
   code = SSH_DIR_GUARD_CODE;
@@ -660,7 +853,7 @@ var SshDirGuardError = class extends Error {
   }
 };
 function realSshDir() {
-  return join(homedir(), ".ssh");
+  return join2(homedir(), ".ssh");
 }
 function describeTestRunSignal() {
   const signals = [];
@@ -719,7 +912,7 @@ function ensureSshDir(sshDir, warnings) {
     chmodSync(sshDir, SSH_DIR_MODE);
     return;
   }
-  const st = statSync(sshDir);
+  const st = statSync2(sshDir);
   if (!st.isDirectory()) {
     throw new Error(`${sshDir} exists but is not a directory`);
   }
@@ -732,7 +925,7 @@ function ensureSshDir(sshDir, warnings) {
 async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const fd = openSync(lockPath, "wx", AUTH_KEYS_MODE);
+      const fd = openSync2(lockPath, "wx", AUTH_KEYS_MODE);
       try {
         writeSync(fd, `${process.pid}
 `);
@@ -742,7 +935,7 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       try {
-        const st = statSync(lockPath);
+        const st = statSync2(lockPath);
         if (Date.now() - st.mtimeMs > staleMs) {
           unlinkSync(lockPath);
           continue;
@@ -759,7 +952,7 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
 }
 function releaseLock(fd, lockPath) {
   try {
-    closeSync(fd);
+    closeSync2(fd);
   } catch {
   }
   try {
@@ -768,13 +961,13 @@ function releaseLock(fd, lockPath) {
   }
 }
 function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
-  const tmpPath = join2(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
-  const tfd = openSync(tmpPath, "wx", AUTH_KEYS_MODE);
+  const tmpPath = join3(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
+  const tfd = openSync2(tmpPath, "wx", AUTH_KEYS_MODE);
   try {
     writeSync(tfd, content, null, encoding);
     fsyncSync(tfd);
   } finally {
-    closeSync(tfd);
+    closeSync2(tfd);
   }
   chmodSync(tmpPath, AUTH_KEYS_MODE);
   try {
@@ -801,8 +994,8 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
   const sshDir = resolve(opts.sshDir);
   assertSafeSshDir(sshDir, operation);
   const warnings = [];
-  const authPath = join2(sshDir, AUTH_KEYS_NAME);
-  const lockPath = join2(sshDir, LOCK_NAME);
+  const authPath = join3(sshDir, AUTH_KEYS_NAME);
+  const lockPath = join3(sshDir, LOCK_NAME);
   const encoding = preserveBytes ? "latin1" : "utf8";
   if (refuseSymlink && lstatOrNull(sshDir)?.isSymbolicLink()) {
     throw new AuthorizedKeysRewriteError(
@@ -831,7 +1024,7 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
         );
       }
       if (existsSync(authPath)) {
-        const st = statSync(authPath);
+        const st = statSync2(authPath);
         if (looserThan(st.mode, AUTH_KEYS_MODE)) {
           warnings.push(
             `${authPath} permissions were ${fmtMode(st.mode)} (looser than 0600); the rewritten file is 0600`
@@ -950,14 +1143,14 @@ async function reconcileSupportLinesOnDisk(opts) {
 // src/support-standby-cli.ts
 var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n";
 function createStatusDeps(account = currentLoginUser()) {
-  const sshDir = join3(account.home, ".ssh");
+  const sshDir = join4(account.home, ".ssh");
   return {
     nodeVersion: process.version,
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
-        accessSync(path, constants.X_OK);
+        accessSync(path, constants2.X_OK);
         return true;
       } catch {
         return false;
@@ -965,7 +1158,7 @@ function createStatusDeps(account = currentLoginUser()) {
     },
     readKeysFile: (name) => {
       try {
-        return readFileSync2(join3(sshDir, name), "latin1");
+        return readFileSync2(join4(sshDir, name), "latin1");
       } catch (err) {
         return err.code === "ENOENT" ? null : "unreadable";
       }

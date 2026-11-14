@@ -227,13 +227,12 @@ describe('createStatusDeps', () => {
   })
 
   // The probe asks about the SAME account the keys files are read for. A made-up root account makes the real
-  // probe ask sshd as root, which a non-root test run cannot get an answer to; the process's own account
-  // would be refused before that, for not being root.
+  // probe ask sshd as root, without a host key of its own, which a non-root test run cannot get an answer to
+  // ("no hostkeys available", measured). The process's own account would take the non-root path (with a host
+  // key and the proof), whose outcome depends on the machine, so it is not asserted here.
   it.skipIf(!existsSync('/usr/sbin/sshd') || process.getuid?.() === 0)('hands its account to the probe', async () => {
     const made = createStatusDeps({ name: 'support-test-root', isRoot: true, home: '/nonexistent-home' })
     expect(await made.probeSshd(TEST_ONLY_FROM)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
-    const own = createStatusDeps({ ...currentLoginUser() })
-    expect(await own.probeSshd(TEST_ONLY_FROM)).toMatchObject({ ok: false, problem: 'sshd_config_not_fully_readable' })
   })
 
   // S1 of Dani's review: the default account is the one in the user database, whatever HOME says.
