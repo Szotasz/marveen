@@ -227,7 +227,11 @@ DIRECTIVE_SENDER = "system"
 # Python's \s differs (it has U+001C..U+001F and U+0085, and lacks U+FEFF), and the
 # two sides must escape exactly the same at-signs or a verified directive reads as forged.
 JS_SPACE = "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
-AT_AFTER_SPACE_RX = re.compile("(^|[" + JS_SPACE + "])@")
+# After review of #2743: a semicolon counts like whitespace (the chunker that types the text appends a space
+# to a chunk ending in ';'), and control characters never reach the pane (C0 without TAB, DEL, C1 are deleted,
+# a lone CR becomes a space), BEFORE the at-sign step. Same rules, same order as src/web/pane-text.ts.
+AT_AFTER_BREAK_RX = re.compile("(^|[" + JS_SPACE + ";])@")
+PANE_CONTROL_RX = re.compile("[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]")
 
 
 def pane_shape(text):
@@ -240,9 +244,11 @@ def pane_shape(text):
     ENVATLEAK1114: the mapping has a second step, `neutralizeAtMentions` -- a
     backslash before every at-sign at the start of the text or after whitespace
     (JavaScript's whitespace class, spelled out in JS_SPACE above because
-    Python's own whitespace class is a different set). Same order as
-    paneTyped(): line breaks first, then the at-signs."""
-    return AT_AFTER_SPACE_RX.sub(lambda m: m.group(1) + "\\@", re.sub(r"\r?\n", " ", text or ""))
+    Python's own whitespace class is a different set) or after a semicolon.
+    Same order as paneTyped(): line breaks, then the control characters, then
+    the at-signs."""
+    one_line = re.sub(r"\r?\n", " ", text or "").replace("\r", " ")
+    return AT_AFTER_BREAK_RX.sub(lambda m: m.group(1) + "\\@", PANE_CONTROL_RX.sub("", one_line))
 
 
 # The THIRD known shape (c5d83ffe, 2026-10-08): the Claude Code harness wraps a

@@ -11,14 +11,15 @@
 // message, a card or a PR description.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { neutralizeAtMentions, paneOneLine, paneTyped } from '../web/pane-text.js'
+import { neutralizeAtMentions, paneOneLine, paneTyped, stripPaneControls } from '../web/pane-text.js'
 import { findSeenMsgIds } from '../web/message-seen-sweep.js'
 import { wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
 import { sanitizePromptText } from '../web/custom-commands.js'
 import { TRANSCRIPT_PATTERNS } from '../security/secret-gate.js'
-import { identitySlashCommands } from '../web/agent-process.js'
+import { identitySlashCommands, paneTypedChunks, PANE_CHUNK, TMUX_CHUNK_MAX_SLIDE } from '../web/agent-process.js'
 import { isSafeMcpServerName } from '../web/mcp-inline-command.js'
 
 const ROOT = join(__dirname, '..', '..')
@@ -27,32 +28,55 @@ const VECTORS: { name: string; in: string; out: string }[] = JSON.parse(readFile
 const AT = String.fromCharCode(64)
 // "an at-sign Claude Code would expand": at the start, or after JavaScript whitespace
 const EXPANDABLE = /(^|\s)@/
+// what the mapping must leave nowhere: an at-sign at the start, after whitespace, or after a semicolon
+const UNMAPPED = /(^|[\s;])@/
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F]/
 
-describe('the rule: a backslash before every at-sign at the start or after whitespace', () => {
+describe('the rule: one line, no control character, a backslash before every at-sign at the start, after whitespace or after a semicolon', () => {
   it('the vector file is not empty and covers both directions', () => {
-    expect(VECTORS.length).toBeGreaterThanOrEqual(30)
+    expect(VECTORS.length).toBeGreaterThanOrEqual(45)
     expect(VECTORS.some((v) => v.in !== v.out)).toBe(true)
     expect(VECTORS.some((v) => v.in === v.out && v.in.includes(AT))).toBe(true)
   })
 
   for (const v of VECTORS) {
     it(`TypeScript: ${v.name}`, () => {
-      expect(neutralizeAtMentions(v.in)).toBe(v.out)
+      expect(paneTyped(v.in)).toBe(v.out)
     })
   }
 
-  it('after the mapping no expandable at-sign is left, and a second pass changes nothing', () => {
+  it('after the mapping no at-sign is left unmapped, no control character remains, and a second pass changes nothing', () => {
     for (const v of VECTORS) {
-      const once = neutralizeAtMentions(v.in)
-      expect(EXPANDABLE.test(once), v.name).toBe(false)
-      expect(neutralizeAtMentions(once), v.name).toBe(once)
+      const once = paneTyped(v.in)
+      expect(UNMAPPED.test(once), v.name).toBe(false)
+      expect(CONTROL.test(once), v.name).toBe(false)
+      expect(paneTyped(once), v.name).toBe(once)
     }
   })
 
-  it('paneTyped is the line-break mapping followed by the at-sign mapping', () => {
-    for (const v of VECTORS) expect(paneTyped(v.in), v.name).toBe(neutralizeAtMentions(paneOneLine(v.in)))
+  it('paneTyped is the line-break mapping, then the control filter, then the at-sign mapping, in that order', () => {
+    for (const v of VECTORS) expect(paneTyped(v.in), v.name).toBe(neutralizeAtMentions(stripPaneControls(paneOneLine(v.in))))
     expect(paneTyped(`elso sor\n${AT}cel.md`)).toBe(`elso sor \\${AT}cel.md`)
     expect(EXPANDABLE.test(paneTyped(`a\r\n${AT}b\n\n${AT}c`))).toBe(false)
+    // The order is the point: with the at-sign step first, the DEL hides the at-sign from it, and the
+    // filter then leaves a bare at-sign after the space.
+    const del = `x \u007f${AT}cel.md`
+    expect(EXPANDABLE.test(paneTyped(del))).toBe(false)
+    expect(EXPANDABLE.test(stripPaneControls(neutralizeAtMentions(paneOneLine(del))))).toBe(true)
+  })
+
+  it('the control filter: TAB stays, a lone CR is a space, C0, DEL and C1 are deleted, everything else is untouched', () => {
+    expect(stripPaneControls('a\tb')).toBe('a\tb')
+    expect(stripPaneControls('a\rb')).toBe('a b')
+    for (let cp = 0; cp <= 0x9f; cp++) {
+      const ch = String.fromCharCode(cp)
+      const kept = cp === 0x09 || (cp >= 0x20 && cp <= 0x7e)
+      const expected = cp === 0x0d ? 'a b' : kept ? `a${ch}b` : 'ab'
+      if (cp === 0x0a) continue // a line feed is paneOneLine's job; stripPaneControls sees none in paneTyped
+      expect(stripPaneControls(`a${ch}b`), `U+${cp.toString(16)}`).toBe(expected)
+    }
+    expect(stripPaneControls('a bé c')).toBe('a bé c')
   })
 
   it('Python, scripts/watchdog-replay.py: the same vectors, through the script itself', () => {
@@ -71,10 +95,120 @@ describe('the rule: a backslash before every at-sign at the start or after white
     expect(JSON.parse(out)).toEqual(VECTORS.map((v) => paneTyped(v.in)))
   })
 
-  it('the watchdog replay types the mapped text, not the raw one', () => {
+  it('the watchdog replay types the mapped text through its own safe chunker, not raw slices', () => {
     const src = readFileSync(join(ROOT, 'scripts', 'watchdog-replay.py'), 'utf-8')
-    expect(src).toMatch(/full_msg = neutralize_at_mentions\(f"/)
+    expect(src).toMatch(/full_msg = pane_typed\(f"/)
     expect(src).not.toMatch(/^\s*full_msg = f"/m)
+    expect(src).toMatch(/for chunk in typed_chunks\(full_msg\):/)
+    expect(src).not.toMatch(/full_msg\[i:i \+ chunk_size\]/)
+  })
+})
+
+// What the pane RECEIVES is the chunks joined, not the mapped line: the chunker inserts a space after a chunk
+// that still ends in ';' and before one that starts with '-'. Review of #2743 (Dani): nothing looked at this
+// stream, and nine semicolons before an at-sign, aligned to a chunk boundary, reached the pane as "; " + at-sign.
+describe('the typed stream: the chunks joined carry no at-sign at the start or after whitespace', () => {
+  const stream = (text: string, size = PANE_CHUNK) => paneTypedChunks(paneTyped(text), size).join('')
+  const UNITS = [
+    ...[0, 1, 2, 7, 8, 9, 10, 12, 20].map((n) => `${';'.repeat(n)}${AT}cel.md`),
+    ...[1, 7, 8, 9, 12].map((n) => `${'-'.repeat(n)}${AT}cel.md`),
+    ...[1, 8, 9].map((n) => `${';'.repeat(n)} ${AT}cel.md`),
+    `;-;-;-;-;-${AT}cel.md`, `-;-;-;-;-;${AT}cel.md`, `;;;;;;;;-${AT}cel.md`, `--------;${AT}cel.md`,
+    `;;;;;;;;;\\${AT}cel.md`, `x;;;;;;;;; ;;;;;;;;;${AT}cel.md`,
+  ]
+
+  it('every unit at every offset around two chunk boundaries', () => {
+    let checked = 0
+    for (const unit of UNITS) {
+      for (let off = 0; off <= 2 * PANE_CHUNK + TMUX_CHUNK_MAX_SLIDE + 2; off++) {
+        const text = 'x'.repeat(off) + unit + ' vege'
+        const typed = stream(text)
+        expect(EXPANDABLE.test(typed), `unit ${UNITS.indexOf(unit)} at offset ${off}`).toBe(false)
+        checked++
+      }
+    }
+    expect(checked).toBeGreaterThan(3000)
+  })
+
+  it('the same units repeated back to back, so some boundary always falls inside a run (the offset-blind payload)', () => {
+    for (const unit of UNITS) {
+      for (const pad of [0, 1, 37, 60, 70, 78, 79, 80, 81]) {
+        const text = Array.from({ length: 40 }, () => unit + 'y'.repeat(pad)).join('')
+        expect(EXPANDABLE.test(stream(text)), `unit ${UNITS.indexOf(unit)} pad ${pad}`).toBe(false)
+      }
+    }
+  })
+
+  it('seeded random text over the characters that matter, several chunk sizes', () => {
+    const alphabet = [';', ';', '-', ' ', AT, AT, 'a', '\\', '\n', '\u007f', '\t']
+    let seed = 20261114
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 2 ** 32 }
+    for (let n = 0; n < 4000; n++) {
+      const len = 1 + Math.floor(rnd() * 260)
+      let text = ''
+      for (let i = 0; i < len; i++) text += alphabet[Math.floor(rnd() * alphabet.length)]
+      for (const size of [PANE_CHUNK, 16, 9]) {
+        const typed = stream(text, size)
+        if (EXPANDABLE.test(typed)) throw new Error(`bare at-sign in the typed stream, chunk size ${size}, text ${JSON.stringify(text)}`)
+      }
+    }
+  })
+
+  it('positive control: WITHOUT the semicolon rule the same check finds the bypass (so the check can see it)', () => {
+    const oldMapping = (t: string) => paneOneLine(t).replace(/(^|\s)@/g, '$1\\@')
+    let hits = 0
+    for (let off = 0; off <= 2 * PANE_CHUNK; off++) {
+      const text = 'x'.repeat(off) + `${';'.repeat(9)}${AT}cel.md vege`
+      if (EXPANDABLE.test(paneTypedChunks(oldMapping(text)).join(''))) hits++
+    }
+    expect(hits).toBeGreaterThan(0)
+  })
+
+  it('where the stream differs from the mapped line: a space after a chunk-final ";" and before a chunk-initial "-", nothing else', () => {
+    // 20 semicolons across the boundary: the slide (8) is used up inside the run, the chunk still ends in ';'.
+    const semi = paneTyped('x'.repeat(71) + ';'.repeat(20) + `${AT}a`)
+    expect(semi).toBe('x'.repeat(71) + ';'.repeat(20) + `\\${AT}a`)
+    expect(paneTypedChunks(semi)).toEqual(['x'.repeat(71) + ';'.repeat(17) + ' ', ';;;' + `\\${AT}a`])
+    // 12 dashes at the boundary: 8 are folded into the first chunk, the next one still starts with '-'.
+    const dash = paneTyped('x'.repeat(80) + '-'.repeat(12) + 'z')
+    expect(paneTypedChunks(dash)).toEqual(['x'.repeat(80) + '-'.repeat(8), ' ' + '-'.repeat(4) + 'z'])
+    // an ordinary line is typed exactly as mapped
+    const plain = paneTyped('szo '.repeat(60) + `${AT}cel.md`)
+    expect(paneTypedChunks(plain).join('')).toBe(plain)
+  })
+
+  it('sendPromptToSession types exactly these chunks: the send loop is fed by paneTypedChunks(paneTyped(text))', () => {
+    const src = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+    const at = src.indexOf('const sendChunks = async')
+    expect(at).toBeGreaterThan(-1)
+    const body = src.slice(at, at + 500)
+    expect(body).toContain('const chunks = paneTypedChunks(oneLine, CHUNK)')
+    expect(body).toMatch(/'-l', chunks\[c\]\]/)
+    expect(src).toContain('const oneLine = paneTyped(text)')
+    expect(src).toContain('const CHUNK = PANE_CHUNK')
+  })
+
+  it('Python, scripts/watchdog-replay.py: its own chunker gives the same stream property', () => {
+    const texts = UNITS.flatMap((unit) => [0, 7, 15, 16, 17, 31, 33].map((off) => 'x'.repeat(off) + unit + ' vege'))
+    const dir = mkdtempSync(join(tmpdir(), 'pane-chunks-'))
+    try {
+      const f = join(dir, 'texts.json')
+      writeFileSync(f, JSON.stringify(texts))
+      for (const size of ['16', '9', '990']) {
+        const out: string[][] = JSON.parse(execFileSync('python3', [join(ROOT, 'scripts', 'watchdog-replay.py'), '--typed-chunks', f, size], { encoding: 'utf-8' }))
+        out.forEach((chunks, i) => {
+          expect(EXPANDABLE.test(chunks.join('')), `size ${size} text ${i}`).toBe(false)
+          for (const c of chunks) {
+            expect(c.startsWith('-'), `size ${size} text ${i}: a chunk starts with a dash`).toBe(false)
+            expect(c.endsWith(';'), `size ${size} text ${i}: a chunk ends with a semicolon`).toBe(false)
+          }
+          // the same chunks as the TypeScript chunker for the same mapped line and size
+          expect(chunks).toEqual(paneTypedChunks(paneTyped(texts[i]), Number(size)))
+        })
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

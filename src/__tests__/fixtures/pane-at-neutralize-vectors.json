@@ -15,14 +15,14 @@
   "out": "lasd\t\\@cel.md"
  },
  {
-  "name": "after a line feed",
+  "name": "after a line feed: the break becomes a space",
   "in": "sor\n@cel.md",
-  "out": "sor\n\\@cel.md"
+  "out": "sor \\@cel.md"
  },
  {
-  "name": "after a lone carriage return",
+  "name": "after a lone carriage return: it becomes a space",
   "in": "sor\r@cel.md",
-  "out": "sor\r\\@cel.md"
+  "out": "sor \\@cel.md"
  },
  {
   "name": "after U+00A0",
@@ -55,14 +55,14 @@
   "out": "x\u200b@cel.md"
  },
  {
-  "name": "after U+0085: Python-only whitespace, untouched",
+  "name": "U+0085 (C1) is deleted: the at-sign then follows a letter",
   "in": "x\u0085@cel.md",
-  "out": "x\u0085@cel.md"
+  "out": "x@cel.md"
  },
  {
-  "name": "after U+001C: Python-only whitespace, untouched",
+  "name": "U+001C (C0) is deleted: the at-sign then follows a letter",
   "in": "x\u001c@cel.md",
-  "out": "x\u001c@cel.md"
+  "out": "x@cel.md"
  },
  {
   "name": "email-like, untouched",
@@ -97,7 +97,7 @@
  {
   "name": "fenced block",
   "in": "pelda:\n```\n@cel.md\n```",
-  "out": "pelda:\n```\n\\@cel.md\n```"
+  "out": "pelda: ``` \\@cel.md ```"
  },
  {
   "name": "absolute path",
@@ -167,7 +167,7 @@
  {
   "name": "no at-sign at all",
   "in": "semmi kulonos\nket sorban",
-  "out": "semmi kulonos\nket sorban"
+  "out": "semmi kulonos ket sorban"
  },
  {
   "name": "empty",
@@ -178,5 +178,70 @@
   "name": "lone at-sign",
   "in": "irj @",
   "out": "irj \\@"
+ },
+ {
+  "name": "after a semicolon",
+  "in": "a;@cel.md",
+  "out": "a;\\@cel.md"
+ },
+ {
+  "name": "nine semicolons before the at-sign (the chunker's inserted space)",
+  "in": ";;;;;;;;;@cel.md",
+  "out": ";;;;;;;;;\\@cel.md"
+ },
+ {
+  "name": "semicolon then space: only the at-sign after the space is touched once",
+  "in": "a; @cel.md",
+  "out": "a; \\@cel.md"
+ },
+ {
+  "name": "DEL between a space and the at-sign: deleted FIRST, then the at-sign follows the space",
+  "in": "x \u007f@cel.md",
+  "out": "x \\@cel.md"
+ },
+ {
+  "name": "backspace between a letter and the at-sign: deleted, nothing to escape",
+  "in": "x\b@cel.md",
+  "out": "x@cel.md"
+ },
+ {
+  "name": "backspace after a space-letter pair: the typed text keeps the letter",
+  "in": "a b\b@cel.md",
+  "out": "a b@cel.md"
+ },
+ {
+  "name": "ESC sequence before the at-sign: the ESC byte is deleted",
+  "in": "x \u001b[D@cel.md",
+  "out": "x [D@cel.md"
+ },
+ {
+  "name": "NUL is deleted",
+  "in": "a\u0000 @b",
+  "out": "a \\@b"
+ },
+ {
+  "name": "C1 CSI (U+009B) between a space and the at-sign",
+  "in": "x \u009b@cel.md",
+  "out": "x \\@cel.md"
+ },
+ {
+  "name": "vertical tab is deleted: the at-sign then follows a letter",
+  "in": "x\u000b@cel.md",
+  "out": "x@cel.md"
+ },
+ {
+  "name": "CRLF is one space",
+  "in": "a\r\n@b",
+  "out": "a \\@b"
+ },
+ {
+  "name": "a lone CR between words is a space, no early submit",
+  "in": "elso\rmasodik",
+  "out": "elso masodik"
+ },
+ {
+  "name": "Ctrl-U and Ctrl-W are deleted",
+  "in": "a\u0015b\u0017 @c",
+  "out": "ab \\@c"
  }
 ]

@@ -18,6 +18,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listDeliveredUnseen, markMessagesSeen } from '../db.js'
 import { logger } from '../logger.js'
 import { whileNotFrozen } from './fleet-freeze.js'
+import { sanitizeAgentIdent } from '../prompt-safety.js'
 
 export const SEEN_WINDOW_SEC = 24 * 60 * 60
 export const SEEN_SWEEP_INTERVAL_MS = 60_000
@@ -73,9 +74,12 @@ export function sweepSeenMessages(nowSec: number, readTail: TailReader = default
   if (!rows.length) return 0
   const byAgent = new Map<string, Map<number, string>>()
   for (const r of rows) {
+    // The header carries the SANITIZED sender (ENVATLEAK1114), so the map must hold the same form: with the raw
+    // name a sender whose id the sanitizer changes would never be matched, and its message never marked seen.
+    const sender = sanitizeAgentIdent(r.from_agent)
     const ids = byAgent.get(r.to_agent)
-    if (ids) ids.set(r.id, r.from_agent)
-    else byAgent.set(r.to_agent, new Map([[r.id, r.from_agent]]))
+    if (ids) ids.set(r.id, sender)
+    else byAgent.set(r.to_agent, new Map([[r.id, sender]]))
   }
   let n = 0
   for (const [agent, ids] of byAgent) {

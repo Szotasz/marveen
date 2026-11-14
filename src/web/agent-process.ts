@@ -4486,6 +4486,22 @@ export function computeTmuxChunk(
   return { chunk, end }
 }
 
+// The literal chunks sendPromptToSession types for an already mapped line, in order. Kept as a pure function so a
+// test can assert on the stream the pane RECEIVES (the chunks joined), which differs from `oneLine` wherever
+// computeTmuxChunk inserts a space (ENVATLEAK1114: the mapping ran before the chunking, and nothing looked at
+// the chunked stream).
+export const PANE_CHUNK = 80
+export function paneTypedChunks(oneLine: string, chunkSize: number = PANE_CHUNK): string[] {
+  const chunks: string[] = []
+  let i = 0
+  while (i < oneLine.length) {
+    const { chunk, end } = computeTmuxChunk(oneLine, i, chunkSize, TMUX_CHUNK_MAX_SLIDE)
+    chunks.push(chunk)
+    i = end
+  }
+  return chunks
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
@@ -4675,7 +4691,7 @@ export async function sendPromptToSession(
   // instead of guessing from a lossy screen scrape. Recorded before the send so
   // a delivery that parks mid-stream is recoverable too.
   recordInjectedPrompt(session, oneLine)
-  const CHUNK = 80
+  const CHUNK = PANE_CHUNK
   // #2144: what is left of PRE_ENTER_WAIT_BUDGET_MS, the ONE budget for every echo and settle
   // wait of this call (the first send and every clear-and-resend). Only waited time counts, so it
   // starts after the first send's typing and does not depend on the prompt's length. Before, each
@@ -4696,12 +4712,10 @@ export async function sendPromptToSession(
   // stream after a Ctrl-C, rather than duplicating the boundary logic
   // (see computeTmuxChunk for the two chunk-boundary dodges it applies).
   const sendChunks = async (): Promise<'sent' | 'aborted-guard-typed'> => {
-    let i = 0
-    while (i < oneLine.length) {
-      const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '-l', chunk], { timeout: 5000 })
-      i = end
-      if (i < oneLine.length) await delay(30)
+    const chunks = paneTypedChunks(oneLine, CHUNK)
+    for (let c = 0; c < chunks.length; c++) {
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '-l', chunks[c]], { timeout: 5000 })
+      if (c < chunks.length - 1) await delay(30)
     }
     // The settle wait below cannot tell a TUI that finished drawing from one
     // that stopped READING its input (both give identical captures), so first

@@ -37,18 +37,51 @@ export function paneOneLine(text: string): string {
 // idempotent: after it no at-sign follows whitespace, so re-typed pane text
 // (stuck-input replay, parked input) is not escaped twice.
 //
+// TWO additions after review (Dani, #2743), both because what reaches the pane is
+// not exactly the mapped text:
+//
+//   - A SEMICOLON counts like whitespace. The chunker that types the text
+//     (computeTmuxChunk in agent-process.ts) appends a space to a chunk that
+//     still ends in ';' after its slide is used up, because tmux drops a
+//     trailing ';'. Nine semicolons right before an at-sign, aligned to a chunk
+//     boundary, therefore reached the pane as `; ` + at-sign with no backslash
+//     (measured on the pure functions: 2 of 200 offsets, and 40 of 40 deliveries
+//     of a payload built for it). With the backslash after ';' too, the inserted
+//     space is followed by a backslash. This is the ONLY place where the typed
+//     stream gains a character before an at-sign: the chunker's other insertion
+//     is a space before a chunk that starts with '-', and that space is followed
+//     by the dash. src/__tests__/pane-at-neutralize.test.ts asserts the rule on
+//     the concatenated CHUNKS, not on this function's output.
+//   - Control characters never reach the pane (stripPaneControls, applied BEFORE
+//     the at-sign step). A backspace or DEL typed before an at-sign could erase
+//     the character in front of it and so turn it into an at-sign after
+//     whitespace; a lone CR could submit the prompt early. Whether the TUI acts
+//     on these today was NOT measured: none of them belongs in a message, so
+//     they are removed rather than measured. The order matters: the at-sign step
+//     runs on the text as it will be typed, so an at-sign that only FOLLOWS
+//     whitespace once a control character is gone still gets its backslash.
+//
 // The queue row keeps the ORIGINAL text; only what is typed changes.
-const AT_AFTER_SPACE_RX = /(^|\s)@/g
+const AT_AFTER_BREAK_RX = /(^|[\s;])@/g
 
 export function neutralizeAtMentions(text: string): string {
-  return text.replace(AT_AFTER_SPACE_RX, '$1\\@')
+  return text.replace(AT_AFTER_BREAK_RX, '$1\\@')
 }
 
-// What sendPromptToSession() actually types: one line, with no expandable
-// at-sign. Every reader that compares a pane-delivered text with its source
-// (scripts/hooks/provenance-gate.py `pane_shape`, the delivery-integrity
-// `sentText`) must apply THIS function, not paneOneLine alone, or the typed and
-// the compared shape drift apart again (see DIREKTIVASORTORES920 above).
+// C0 without TAB (LF is gone by then, see paneOneLine), DEL, and C1. A lone CR
+// becomes a space, like the line break it is; everything else is deleted.
+const PANE_CONTROL_RX = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g
+
+export function stripPaneControls(text: string): string {
+  return text.replace(/\r/g, ' ').replace(PANE_CONTROL_RX, '')
+}
+
+// What sendPromptToSession() actually types: one line, no control character,
+// no expandable at-sign, in THAT order. Every reader that compares a
+// pane-delivered text with its source (scripts/hooks/provenance-gate.py
+// `pane_shape`, the delivery-integrity `sentText`) must apply THIS function,
+// not paneOneLine alone, or the typed and the compared shape drift apart again
+// (see DIREKTIVASORTORES920 above).
 export function paneTyped(text: string): string {
-  return neutralizeAtMentions(paneOneLine(text))
+  return neutralizeAtMentions(stripPaneControls(paneOneLine(text)))
 }
