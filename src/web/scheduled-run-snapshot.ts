@@ -111,14 +111,20 @@ function buildSnapshotHeader(taskName: string, firedAt: Date, skillSource: Skill
 
 const SNAPSHOT_WRITE_MAX_ATTEMPTS = 5
 
-// Write the fire-time snapshot: header + the same scrubbed body that would
-// otherwise have gone inline through tmux. Immutable, atomic (tmp + rename),
-// 0600. Returns null (and logs) on any failure -- the caller's job is to fall
-// back to the inline path, never to drop the task (test 11).
+// Text the runner puts around the scrubbed body. Runner-generated (notice,
+// result routing, block tags), so it is NOT scrubbed; it gets the final file
+// path because the notice's check command names it (NUDGESHORT1031).
+export type SnapshotFrame = (filePath: string) => { before: string; after: string }
+
+// Write the fire-time snapshot: header + frame.before + the same scrubbed body
+// that would otherwise have gone inline through tmux + frame.after. Immutable,
+// atomic (tmp + rename), 0600. sha256/chars cover everything after the header.
+// Returns null (and logs) on any failure -- the caller's job is to fall back to
+// the inline path, never to drop the task (test 11).
 export function writeScheduledRunSnapshot(
   taskName: string,
   body: string,
-  opts: { firedAt?: Date; skillPath?: string; dir?: string } = {},
+  opts: { firedAt?: Date; skillPath?: string; dir?: string; frame?: SnapshotFrame } = {},
 ): ScheduledRunSnapshot | null {
   const dir = opts.dir ?? SCHEDULED_RUNS_DIR
   const firedAt = opts.firedAt ?? new Date()
@@ -130,14 +136,17 @@ export function writeScheduledRunSnapshot(
   }
   const skillSource = opts.skillPath ? readSkillSourceInfo(opts.skillPath) : null
   const scrubbedBody = scrubSecurityTags(body)
-  const content = buildSnapshotHeader(taskName, firedAt, skillSource) + scrubbedBody
-  const sha256 = createHash('sha256').update(scrubbedBody).digest('hex')
+  const header = buildSnapshotHeader(taskName, firedAt, skillSource)
 
   for (let attempt = 0; attempt < SNAPSHOT_WRITE_MAX_ATTEMPTS; attempt++) {
     const rand4 = randomBytes(2).toString('hex')
     const filename = buildSnapshotFilename(taskName, firedAt, rand4)
     const target = join(dir, filename)
     if (existsSync(target)) continue // same-second rand4 collision -- retry with a new one
+    const framed = opts.frame ? opts.frame(target) : { before: '', after: '' }
+    const text = framed.before + scrubbedBody + framed.after
+    const content = header + text
+    const sha256 = createHash('sha256').update(text).digest('hex')
     const tmp = `${target}.${process.pid}.${rand4}.tmp`
     try {
       writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' })
@@ -152,7 +161,7 @@ export function writeScheduledRunSnapshot(
       // Code points, not UTF-16 units: the agent checks with Python len(), and
       // a JS .length counts an emoji twice (measured live: a "7 character"
       // mismatch on an emoji-bearing task).
-      return { filePath: target, sha256, chars: [...scrubbedBody].length }
+      return { filePath: target, sha256, chars: [...text].length }
     } catch (err) {
       try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* best-effort cleanup */ }
       logger.warn({ err, taskName, attempt }, 'scheduled-run-snapshot: write attempt failed')

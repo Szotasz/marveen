@@ -54,6 +54,7 @@ export default defineConfig({
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/default-ssh-dir-seam.ts',
+      './src/__tests__/setup/scheduled-runs-tmp-seam.ts',
     ],
   },
 })
