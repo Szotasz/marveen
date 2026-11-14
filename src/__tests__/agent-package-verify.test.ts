@@ -79,7 +79,7 @@ describe('verifyDelivery: a refusal never carries file content', () => {
   const MARKER = 'ZEBRAQUOKKA'
   const leaky: Array<[string, Record<string, string>]> = [
     ['S10', { ...DEFAULT_FILES, 'SOUL.md': `ok\n@${MARKER}\n` }],
-    ['S11', { ...DEFAULT_FILES, 'SOUL.md': `${MARKER}​\n` }],
+    ['S11', { ...DEFAULT_FILES, 'SOUL.md': `${MARKER}\u200b\n` }],
     ['S17 exec', { ...DEFAULT_FILES, 'CLAUDE.md': `!\`${MARKER}\`\n` }],
     ['S17 frontmatter', { ...DEFAULT_FILES, 'skills/a/SKILL.md': `---\n${MARKER}: x\n---\n` }],
   ]
@@ -145,13 +145,13 @@ describe('hasEdgeWhiteSpace: the set is the Unicode White_Space property (Mira, 
     expect('\u0085x\u0085'.trim()).toBe('\u0085x\u0085')
     expect(hasEdgeWhiteSpace('\u0085x')).toBe(true)
     expect(hasEdgeWhiteSpace('x\u0085')).toBe(true)
-    expect('﻿x﻿'.trim()).toBe('x')
-    expect(hasEdgeWhiteSpace('﻿x')).toBe(false)
-    expect(hasEdgeWhiteSpace('x﻿')).toBe(false)
+    expect('\ufeffx\ufeff'.trim()).toBe('x')
+    expect(hasEdgeWhiteSpace('\ufeffx')).toBe(false)
+    expect(hasEdgeWhiteSpace('x\ufeff')).toBe(false)
   })
 
   it('looks at the two ends only, and an empty text has none', () => {
-    expect(hasEdgeWhiteSpace('a b c　d\te')).toBe(false)
+    expect(hasEdgeWhiteSpace('a b\u00a0c\u3000d\te')).toBe(false)
     expect(hasEdgeWhiteSpace('')).toBe(false)
     expect(hasEdgeWhiteSpace(' ')).toBe(true)
     // Without the m flag the end is the end of the text, not the end of a line.
@@ -300,7 +300,7 @@ describe('VerifiedPackage', () => {
         privateKey: signer.privateKey,
         slug: 'invoice-helper',
         modelHint: '@a\nb',
-        connectors: [{ name: '@notes/x.md ‮', level: 'required\u0000', reason: 'ok' }],
+        connectors: [{ name: '@notes/x.md \u202e', level: 'required\u0000', reason: 'ok' }],
       }),
       'invoice-helper',
       keys,

@@ -152,7 +152,7 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     ...([
       ['with a word-initial at sign and a path', '@notes/secret.md'],
       ['with a bang and a backtick', 'bill!`ls`'],
-      ['with a bidi override', 'bill‮ing'],
+      ['with a bidi override', 'bill\u202eing'],
       ['with a NUL', 'bill\u0000ing'],
       ['with an LF', 'bill\ning'],
       ['with a trailing LF', 'billing\n'],
@@ -177,7 +177,7 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     // The model hint is a closed pattern too (a model id shape), or null, or absent.
     ...([
       ['with a word-initial at sign', '@notes.md'],
-      ['with a zero-width space', 'claude​-sonnet-5'],
+      ['with a zero-width space', 'claude\u200b-sonnet-5'],
       ['with a NUL', 'claude-sonnet-5\u0000'],
       ['with an LF', 'claude-sonnet-5\nx'],
       ['with a trailing LF', 'claude-sonnet-5\n'],
@@ -234,10 +234,10 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     // ---- step 5: content
     refused('file content differs, same length', tamper({ document: (doc) => ({ ...doc, files: { ...(doc.files as Obj), 'SOUL.md': 'Calm, precise, BRIEF.\n' } }) }), 5, 'hash_mismatch', { path: 'SOUL.md' }),
     refused('payload size differs from the content', tamper({ payload: (p) => ({ ...p, files: filesOf(p).map((f) => (f.path === 'SOUL.md' ? { ...f, size: Number(f.size) + 1 } : f)) }) }), 5, 'size_mismatch', { path: 'SOUL.md' }),
-    refused('a leading BOM', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '﻿# Agent\n' } }), 5, 'bad_text', { path: 'CLAUDE.md', line: 1 }),
+    refused('a leading BOM', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '\ufeff# Agent\n' } }), 5, 'bad_text', { path: 'CLAUDE.md', line: 1 }),
     refused('a NUL', d({ files: { ...DEFAULT_FILES, 'SOUL.md': 'a\nb\u0000\n' } }), 5, 'bad_text', { path: 'SOUL.md', line: 2 }),
     refused('a CR', d({ files: { ...DEFAULT_FILES, 'SOUL.md': 'a\r\nb\n' } }), 5, 'bad_text', { path: 'SOUL.md', line: 1 }),
-    refused('S11: a zero-width space in a reference', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n', 'skills/b/references/r.md': 'x\n\ny​z\n' } }), 5, 'bad_text', { path: 'skills/b/references/r.md', line: 3 }),
+    refused('S11: a zero-width space in a reference', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n', 'skills/b/references/r.md': 'x\n\ny\u200bz\n' } }), 5, 'bad_text', { path: 'skills/b/references/r.md', line: 3 }),
     refused('S10: an at sign at a line start in a skill', d({ files: { ...DEFAULT_FILES, 'skills/b/SKILL.md': '# b\n@notes.md\n' } }), 5, 'forbidden_import_token', { path: 'skills/b/SKILL.md', line: 2 }),
     refused('S10: an at sign at a line start in SOUL.md', d({ files: { ...DEFAULT_FILES, 'SOUL.md': 'ok\nok\n@x\n' } }), 5, 'forbidden_import_token', { path: 'SOUL.md', line: 3 }),
     refused('S17: an inline pre-run shape in CLAUDE.md', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '# A\n!`ls`\n' } }), 5, 'forbidden_exec_token', { path: 'CLAUDE.md', line: 2 }),
@@ -247,11 +247,11 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
 
     // ---- step 5: manifest free texts (D10, S18 point 1; provisional codes, N21/b)
     refused('title with a word-initial at sign', d({ title: 'Help @x' }), 5, 'forbidden_import_token', { field: 'title' }),
-    refused('description with a zero-width joiner', d({ description: 'Keeps‍ invoices' }), 5, 'bad_text', { field: 'description' }),
+    refused('description with a zero-width joiner', d({ description: 'Keeps\u200d invoices' }), 5, 'bad_text', { field: 'description' }),
     refused('display name with a word-initial at sign', d({ displayName: '@helper' }), 5, 'forbidden_import_token', { field: 'agent.display_name' }),
-    refused('display name with a bidi override', d({ displayName: 'help‮er' }), 5, 'bad_text', { field: 'agent.display_name' }),
+    refused('display name with a bidi override', d({ displayName: 'help\u202eer' }), 5, 'bad_text', { field: 'agent.display_name' }),
     refused('connector reason with a word-initial at sign', d({ connectors: [{ name: 'billing', level: 'required', reason: 'see @x' }] }), 5, 'forbidden_import_token', { field: 'connectors[0].reason' }),
-    refused('connector reason with a full-width at sign', d({ connectors: [{ name: 'billing', level: 'required', reason: 'see ＠x' }] }), 5, 'bad_text', { field: 'connectors[0].reason' }),
+    refused('connector reason with a full-width at sign', d({ connectors: [{ name: 'billing', level: 'required', reason: 'see \uff20x' }] }), 5, 'bad_text', { field: 'connectors[0].reason' }),
     refused('title with an LF', d({ title: 'Invoice\nhelper' }), 5, 'bad_text', { field: 'title', rule: 'manifest-line-break' }),
     refused('description with an LF', d({ description: 'Keeps\nthe invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-line-break' }),
     refused('description with a CR', d({ description: 'Keeps\rthe invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-line-break' }),
@@ -259,6 +259,15 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('display name with a CR', d({ displayName: 'Invoice\rhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
     refused('connector reason with an LF', d({ connectors: [{ name: 'bb', level: 'required', reason: 'a\nb' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
     refused('second connector reason with a CR', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'a\rb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
+    // Contract decision (card comment 32021): a tab is refused by the same rule, anywhere in the text.
+    refused('title with a tab inside', d({ title: 'Invoice\thelper' }), 5, 'bad_text', { field: 'title', rule: 'manifest-line-break' }),
+    refused('description with a tab inside', d({ description: 'Keeps\tthe invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-line-break' }),
+    refused('display name starting with a tab', d({ displayName: '\tAnna' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
+    refused('display name with a tab inside', d({ displayName: 'Anna\tB' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
+    refused('connector reason ending with a tab', d({ connectors: [{ name: 'bb', level: 'required', reason: 'Reads mail.\t' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
+    refused('second connector reason with a tab inside', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'a\tb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
+    // The one-line rule runs before the text rules: this title would be forbidden_import_token otherwise.
+    refused('title with a tab and a word-initial at sign', d({ title: 'Help\t@x' }), 5, 'bad_text', { field: 'title', rule: 'manifest-line-break' }),
     // A lone surrogate reaches a manifest text through a JSON escape, in payload bytes that are well formed
     // (parity review of 8e1f906a6; the reference scanner's invalid-utf16 rule).
     refused('title with a lone high surrogate', d({ title: 'Invoice \ud800 helper' }), 5, 'bad_text', { field: 'title', rule: 'invalid-utf16' }),
@@ -282,23 +291,23 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('a title starting with a space', d({ title: ' Invoice helper' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
     refused('a title ending with a space', d({ title: 'Invoice helper ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
     refused('a title of spaces only', d({ title: '   ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
-    refused('a description starting with a no-break space', d({ description: ' Keeps the invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-edge-whitespace' }),
-    refused('a description ending with an ideographic space', d({ description: 'Keeps the invoices　' }), 5, 'bad_text', { field: 'description', rule: 'manifest-edge-whitespace' }),
-    refused('a display name starting with a tab', d({ displayName: '\tAnna' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
-    refused('a display name ending with a narrow no-break space', d({ displayName: 'Anna ' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
-    refused('a display name of one ideographic space', d({ displayName: '　' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
-    refused('a connector reason starting with an en quad', d({ connectors: [{ name: 'bb', level: 'required', reason: ' Reads mail.' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-edge-whitespace' }),
-    refused('a second connector reason ending with a medium mathematical space', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'Reads mail. ' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-edge-whitespace' }),
+    refused('a description starting with a no-break space', d({ description: '\u00a0Keeps the invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-edge-whitespace' }),
+    refused('a description ending with an ideographic space', d({ description: 'Keeps the invoices\u3000' }), 5, 'bad_text', { field: 'description', rule: 'manifest-edge-whitespace' }),
+    refused('a display name starting with an em space', d({ displayName: '\u2003Anna' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
+    refused('a display name ending with a narrow no-break space', d({ displayName: 'Anna\u202f' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
+    refused('a display name of one ideographic space', d({ displayName: '\u3000' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
+    refused('a connector reason starting with an en quad', d({ connectors: [{ name: 'bb', level: 'required', reason: '\u2000Reads mail.' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-edge-whitespace' }),
+    refused('a second connector reason ending with a medium mathematical space', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'Reads mail.\u205f' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-edge-whitespace' }),
     // An end that an earlier rule refuses anywhere in the text keeps that rule: these cases pin which one.
-    refused('a title ending with a line separator: S11 refuses it anywhere', d({ title: 'Invoice helper ' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
+    refused('a title ending with a line separator: S11 refuses it anywhere', d({ title: 'Invoice helper\u2028' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
     refused('a title starting with U+0085, white space by the property: S11 refuses it anywhere', d({ title: '\u0085Invoice helper' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
-    refused('a title ending with U+FEFF, not white space by the property: S11 refuses it anywhere', d({ title: 'Invoice helper﻿' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
+    refused('a title ending with U+FEFF, not white space by the property: S11 refuses it anywhere', d({ title: 'Invoice helper\ufeff' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
     refused('a title ending with an LF', d({ title: 'Invoice helper\n' }), 5, 'bad_text', { field: 'title', rule: 'manifest-line-break' }),
     // The length is counted on the text as it stands, and before the two ends are looked at.
     refused('a title of 121 characters, the last one a space', d({ title: 't'.repeat(120) + ' ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-text-length' }),
     refused('a title of 120 characters, the last one a space', d({ title: 't'.repeat(119) + ' ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
     ok('manifest texts with white space inside, none at an end', d({
-      title: 'Invoice helper', description: 'Keeps　the\tinvoices', displayName: 'Anna B', connectors: [{ name: 'bb', level: 'required', reason: 'Reads the  mail.' }],
+      title: 'Invoice\u00a0helper', description: 'Keeps\u3000the invoices', displayName: 'Anna\u202fB', connectors: [{ name: 'bb', level: 'required', reason: 'Reads\u2009the  mail.' }],
     })),
     ok('manifest texts of one character each', d({ title: 't', description: 'd', displayName: 'n', connectors: [{ name: 'bb', level: 'required', reason: 'r' }] })),
     ok('manifest texts at their upper bounds', d({
@@ -409,8 +418,8 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     // ---- the first failure stops
     refused('slug mismatch AND a scripts/ path: step 2 wins', d({ slug: 'other-agent', files: { ...DEFAULT_FILES, 'scripts/x.sh': 'x\n' } }), 2, 'slug_mismatch'),
     refused('missing SOUL.md AND a bad path: step 3 wins', d({ files: { 'CLAUDE.md': '# a\n', 'scripts/x.sh': 'x\n' } }), 3, 'missing_required_file', { path: 'SOUL.md' }),
-    refused('a bad path AND a BOM: step 4 wins', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '﻿x\n', 'scripts/x.sh': 'x\n' } }), 4, 'path_not_allowed'),
-    refused('a BOM AND 65 files: step 5 wins', d({ files: { ...manyFiles(65), 'CLAUDE.md': '﻿x\n' } }), 5, 'bad_text', { path: 'CLAUDE.md', line: 1 }),
+    refused('a bad path AND a BOM: step 4 wins', d({ files: { ...DEFAULT_FILES, 'CLAUDE.md': '\ufeffx\n', 'scripts/x.sh': 'x\n' } }), 4, 'path_not_allowed'),
+    refused('a BOM AND 65 files: step 5 wins', d({ files: { ...manyFiles(65), 'CLAUDE.md': '\ufeffx\n' } }), 5, 'bad_text', { path: 'CLAUDE.md', line: 1 }),
   ]
   return { keys, signer, cases }
 }

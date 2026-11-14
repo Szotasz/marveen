@@ -229,6 +229,14 @@ export function hasEdgeWhiteSpace(text: string): boolean {
 }
 
 /**
+ * S18 point 1, the one-line rule of a manifest free text: no LF, no CR, and
+ * (contract decision, card comment 32021) no tab, anywhere in the text. These
+ * texts are shown in one row of a list, and a tab has no fixed width there.
+ * The tab rule of the package files and of the frontmatter is not this one.
+ */
+const ONE_LINE_BREAKER_RE = /[\n\r\t]/
+
+/**
  * D10 and S18 point 1 over one manifest free text: one line only, then the S11
  * and S10 rules (not the exec or frontmatter rules: the plan names S10 and S11
  * for manifest texts), then the length of the text as it stands, then the
@@ -236,7 +244,7 @@ export function hasEdgeWhiteSpace(text: string): boolean {
  * it existed keeps its rule. Returns the refusal, or null when the text passes.
  */
 export function scanManifestText(text: string, maxChars: number): { reason: VerifyReason; rule: string } | null {
-  if (/[\n\r]/.test(text)) {
+  if (ONE_LINE_BREAKER_RE.test(text)) {
     return { reason: N21B_PROVISIONAL_REASONS.manifestLineBreak, rule: 'manifest-line-break' }
   }
   const f = firstFinding(charAndImportFindings(text, () => 1))
@@ -343,7 +351,7 @@ export type VerifyResult =
  * texts, avatar blocks) and S18 point 1 (one-line manifest texts) are not
  * decided yet. Until they are, they map to EXISTING codes, here and only
  * here: a manifest text breaking a text rule gets the reason that rule gives a
- * file, a line break in a manifest text is bad_text, a manifest text that is
+ * file, a line break or a tab in a manifest text is bad_text, a manifest text that is
  * empty or over its length is bad_text, a manifest text with white space at
  * either end is bad_text, and an avatar block that is not allowed, out of
  * place, of a wrong length or truncated is bad_avatar.
