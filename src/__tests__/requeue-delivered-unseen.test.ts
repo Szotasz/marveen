@@ -112,6 +112,18 @@ describe('requeueDeliveredUnseenForAgent: which rows go back', () => {
     }
   })
 
+  // A normally closed row is 'done' or 'failed', so the status condition already keeps it out. This is the
+  // completed_at condition on its own: a row that still says 'delivered' but carries a close time is closed.
+  it('a delivered row that carries a completed_at is not put back; control: without it, it is', () => {
+    const id = deliveredUnseen('alice')
+    setCols(id, { completed_at: NOW - 30 })
+    expect(row(id).status).toBe('delivered')
+    expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([])
+    expect(row(id).requeued_at).toBeNull()
+    setCols(id, { completed_at: null })
+    expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([id])
+  })
+
   it('a system row is never put back; control: the same row from a named sender is', () => {
     const sys = deliveredUnseen('alice', 600, 'system', 'a directive')
     expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([])
