@@ -141,6 +141,13 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('payload avatar key missing', tamper({ payload: ({ avatar: _a, ...rest }) => rest }), 2, 'bad_payload'),
     refused('display name is not a string', tamper({ payload: (p) => ({ ...p, agent: { display_name: 5, model_hint: null } }) }), 2, 'bad_payload'),
     refused('connectors is not an array', tamper({ payload: (p) => ({ ...p, connectors: null }) }), 2, 'bad_payload'),
+    // The level is the contract's enumeration (Sz-4.3), letter for letter.
+    refused('connector level outside the enumeration', d({ connectors: [{ name: 'billing', level: 'optional', reason: 'ok' }] }), 2, 'bad_payload'),
+    refused('connector level in another letter case', d({ connectors: [{ name: 'billing', level: 'Required', reason: 'ok' }] }), 2, 'bad_payload'),
+    refused('connector level with a trailing NUL', d({ connectors: [{ name: 'billing', level: 'required\u0000', reason: 'ok' }] }), 2, 'bad_payload'),
+    refused('connector level with a trailing line break', d({ connectors: [{ name: 'billing', level: 'recommended\n', reason: 'ok' }] }), 2, 'bad_payload'),
+    refused('connector level empty', d({ connectors: [{ name: 'billing', level: '', reason: 'ok' }] }), 2, 'bad_payload'),
+    refused('second connector level outside the enumeration', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b', level: 'requiredrecommended', reason: 'ok' }] }), 2, 'bad_payload'),
 
     // ---- step 3: file set
     refused('an outer file the payload does not list', tamper({ document: (doc) => ({ ...doc, files: { ...(doc.files as Obj), 'skills/x/SKILL.md': '# x\n' } }) }), 3, 'file_set_mismatch'),
@@ -203,6 +210,20 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('display name with a CR', d({ displayName: 'Invoice\rhelper' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-line-break' }),
     refused('connector reason with an LF', d({ connectors: [{ name: 'b', level: 'required', reason: 'a\nb' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-line-break' }),
     refused('second connector reason with a CR', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b', level: 'required', reason: 'a\rb' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-line-break' }),
+    // The connector name and the model hint are signed strings the installer may
+    // use, so the same manifest text rules run on them (no shape in the contract yet).
+    refused('connector name with a word-initial at sign and a path', d({ connectors: [{ name: '@notes/secret.md', level: 'required', reason: 'ok' }] }), 5, 'forbidden_import_token', { field: 'connectors[0].name' }),
+    refused('connector name with a bidi override', d({ connectors: [{ name: 'bill‮ing', level: 'required', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[0].name' }),
+    refused('connector name with a NUL', d({ connectors: [{ name: 'bill\u0000ing', level: 'required', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[0].name' }),
+    refused('connector name with an LF', d({ connectors: [{ name: 'bill\ning', level: 'required', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[0].name', rule: 'manifest-line-break' }),
+    refused('second connector name with a CR', d({ connectors: [{ name: 'a', level: 'required', reason: 'ok' }, { name: 'b\rc', level: 'recommended', reason: 'ok' }] }), 5, 'bad_text', { field: 'connectors[1].name', rule: 'manifest-line-break' }),
+    refused('a connector name is refused before the same connector reason', d({ connectors: [{ name: 'a\nb', level: 'required', reason: 'see @x' }] }), 5, 'bad_text', { field: 'connectors[0].name', rule: 'manifest-line-break' }),
+    refused('model hint with a word-initial at sign', d({ modelHint: '@notes.md' }), 5, 'forbidden_import_token', { field: 'agent.model_hint' }),
+    refused('model hint with a zero-width space', d({ modelHint: 'claude​-sonnet-5' }), 5, 'bad_text', { field: 'agent.model_hint' }),
+    refused('model hint with a NUL', d({ modelHint: 'claude-sonnet-5\u0000' }), 5, 'bad_text', { field: 'agent.model_hint' }),
+    refused('model hint with an LF', d({ modelHint: 'claude-sonnet-5\nx' }), 5, 'bad_text', { field: 'agent.model_hint', rule: 'manifest-line-break' }),
+    refused('model hint with a CR', d({ modelHint: 'claude-sonnet-5\rx' }), 5, 'bad_text', { field: 'agent.model_hint', rule: 'manifest-line-break' }),
+    ok('model hint null with both connector levels', d({ modelHint: null, connectors: [{ name: 'billing', level: 'required', reason: 'ok' }, { name: 'mail', level: 'recommended', reason: 'ok' }] })),
     ok('manifest texts with an e-mail shape and a bang at a sentence end', d({
       title: 'Invoice helper!', description: 'Write to anna1@example.com.', displayName: 'Anna', connectors: [{ name: 'b', level: 'required', reason: 'Reads mail.' }],
     })),

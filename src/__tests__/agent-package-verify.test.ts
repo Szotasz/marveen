@@ -101,6 +101,20 @@ describe('verifyDelivery: a refusal never carries file content', () => {
     expect(got.ok).toBe(false)
     expect(JSON.stringify(got)).not.toContain(MARKER)
   })
+
+  it.each([
+    ['connector name', { connectors: [{ name: `@${MARKER}`, level: 'required', reason: 'ok' }] }],
+    ['connector level', { connectors: [{ name: 'billing', level: MARKER, reason: 'ok' }] }],
+    ['model hint', { modelHint: `@${MARKER}` }],
+  ])('manifest %s', (_name, over) => {
+    const got = verifyDelivery(
+      makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: 'invoice-helper', ...over }),
+      'invoice-helper',
+      keys,
+    )
+    expect(got.ok).toBe(false)
+    expect(JSON.stringify(got)).not.toContain(MARKER)
+  })
 })
 
 describe('VerifiedPackage', () => {
@@ -154,6 +168,87 @@ describe('VerifiedPackage', () => {
   it('cannot be constructed outside verifyDelivery', () => {
     expect(() => Reflect.construct(VerifiedPackage, [Symbol('forged'), {}])).toThrow(TypeError)
     expect(() => Reflect.construct(VerifiedPackage, [])).toThrow(TypeError)
+    // A symbol with the same description is not the module's token.
+    expect(() => Reflect.construct(VerifiedPackage, [Symbol('VerifiedPackage.mint'), {}])).toThrow(TypeError)
+  })
+
+  // Hand-made fields a forger would want on an "instance".
+  const forgedFields = {
+    slug: 'x',
+    version: '1.0.0',
+    minMarveenVersion: '1.0.0',
+    kid: 'k',
+    payloadSha256: 'a'.repeat(64),
+    payloadText: '{}',
+    title: 't',
+    description: 'd',
+    displayName: 'n',
+    modelHint: null,
+    connectors: [],
+    files: [{ path: '../../x', sha256: 'a'.repeat(64), size: 1, text: 'x' }],
+    avatar: null,
+    avatarBytes: null,
+  }
+  const isInstance = (v: unknown): boolean => v instanceof VerifiedPackage
+
+  it('no own property of the class, string or symbol, creates an instance', () => {
+    const keys = Reflect.ownKeys(VerifiedPackage)
+    // The only symbol-keyed own property is the instanceof hook; the mint is not a property.
+    expect(keys.filter((k) => typeof k === 'symbol')).toEqual([Symbol.hasInstance])
+    for (const key of keys) {
+      const member = (VerifiedPackage as unknown as Record<PropertyKey, unknown>)[key]
+      if (typeof member !== 'function') continue
+      let made: unknown
+      try {
+        made = (member as (...a: unknown[]) => unknown).call(VerifiedPackage, forgedFields)
+      } catch {
+        made = undefined
+      }
+      expect(isInstance(made), String(key)).toBe(false)
+    }
+    for (const sym of Object.getOwnPropertySymbols(VerifiedPackage)) {
+      expect(() => Reflect.construct(VerifiedPackage, [sym, forgedFields])).toThrow(TypeError)
+    }
+  })
+
+  it('an object that only has the prototype is not an instance', () => {
+    if (!result.ok) throw new Error('expected ok')
+    expect(isInstance(result.pkg)).toBe(true)
+    // defineProperties, not assign: the frozen prototype's avatarBytes method makes a plain assignment throw.
+    const bare = Object.create(VerifiedPackage.prototype, Object.getOwnPropertyDescriptors(forgedFields)) as { files: Array<{ path: string }> }
+    expect(bare.files[0].path).toBe('../../x')
+    expect(isInstance(bare)).toBe(false)
+    expect(isInstance(Reflect.construct(Object, [], VerifiedPackage))).toBe(false)
+    expect(isInstance({ ...result.pkg })).toBe(false)
+    expect(isInstance(null)).toBe(false)
+    expect(isInstance('x')).toBe(false)
+    class Sub extends (VerifiedPackage as unknown as new (...a: unknown[]) => object) {}
+    expect(() => new Sub(forgedFields)).toThrow(TypeError)
+  })
+
+  it('the class and its prototype are frozen, so the instanceof hook and the methods cannot be replaced', () => {
+    expect(Object.isFrozen(VerifiedPackage)).toBe(true)
+    expect(Object.isFrozen(VerifiedPackage.prototype)).toBe(true)
+    expect(() => Object.defineProperty(VerifiedPackage, Symbol.hasInstance, { value: () => true })).toThrow(TypeError)
+    expect(isInstance(Object.create(VerifiedPackage.prototype))).toBe(false)
+  })
+
+  it('every string field of an instance passed a closed pattern or the manifest text rules', () => {
+    // The fields the earlier head let through unchecked (review of d021f7f2b).
+    const hostile = verifyDelivery(
+      makeSignedDelivery({
+        kid: signer.kid,
+        privateKey: signer.privateKey,
+        slug: 'invoice-helper',
+        modelHint: '@a\nb',
+        connectors: [{ name: '@notes/x.md ‮', level: 'required\u0000', reason: 'ok' }],
+      }),
+      'invoice-helper',
+      keys,
+    )
+    expect(hostile.ok).toBe(false)
+    if (!result.ok) throw new Error('expected ok')
+    for (const c of result.pkg.connectors) expect(['required', 'recommended']).toContain(c.level)
   })
 
   it('a raw document is not a VerifiedPackage (type level, enforced by npm run typecheck)', () => {

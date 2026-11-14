@@ -234,6 +234,9 @@ export const JWS_ALG = 'EdDSA'
 export const JWS_TYP = 'mio-agent-package+jws'
 /** Both are required (Mira 77384, S15); missing either is missing_required_file with the path. */
 export const REQUIRED_FILES = ['CLAUDE.md', 'SOUL.md'] as const
+/** Sz-4.3: the two values a connector's level may take, letter for letter. */
+export const CONNECTOR_LEVELS = ['required', 'recommended'] as const
+export type ConnectorLevel = (typeof CONNECTOR_LEVELS)[number]
 
 const AVATAR_CONTENT_TYPES: Readonly<Record<string, string>> = {
   'avatar.png': 'image/png',
@@ -324,7 +327,7 @@ export interface VerifiedAvatar {
 
 export interface VerifiedConnector {
   readonly name: string
-  readonly level: string
+  readonly level: ConnectorLevel
   readonly reason: string
 }
 
@@ -345,14 +348,20 @@ interface VerifiedFields {
   avatarBytes: Uint8Array | null
 }
 
-const MINT: unique symbol = Symbol('VerifiedPackage.mint')
+/** Module-private: not exported, and not a property of the class or of anything else. */
+const MINT_TOKEN: unique symbol = Symbol('VerifiedPackage.mint')
+/** Assigned from the class's static initialisation block; the only way to an instance. */
+let mintVerifiedPackage: (f: VerifiedFields) => VerifiedPackage
 
 /**
  * A delivery that passed steps 1-6. The code that writes to disk accepts only
- * this class: the constructor is private and also checks a module-private
- * token, so a raw document is a type error (npm run typecheck) and a forged
- * instance throws at run time. Every text the installer may use (manifest free
- * texts included, D10) is read from here, never from the raw payload.
+ * this class. At type level the constructor is private, so a raw document is a
+ * type error (npm run typecheck). At run time the constructor checks a token
+ * that no property leads to, the class and its prototype are frozen, and
+ * instanceof is true only for an object the constructor built (it asks for
+ * the private field, so an object that merely has this prototype fails).
+ * Every string on an instance passed a closed pattern or the manifest text
+ * rules (D10); the installer reads them from here, never from the raw payload.
  */
 export class VerifiedPackage {
   readonly slug: string
@@ -373,8 +382,8 @@ export class VerifiedPackage {
   readonly avatar: VerifiedAvatar | null
   readonly #avatarBytes: Uint8Array | null
 
-  private constructor(token: typeof MINT, f: VerifiedFields) {
-    if (token !== MINT) throw new TypeError('VerifiedPackage is created by verifyDelivery only')
+  private constructor(token: typeof MINT_TOKEN, f: VerifiedFields) {
+    if (token !== MINT_TOKEN) throw new TypeError('VerifiedPackage is created by verifyDelivery only')
     this.slug = f.slug
     this.version = f.version
     this.minMarveenVersion = f.minMarveenVersion
@@ -392,8 +401,14 @@ export class VerifiedPackage {
     Object.freeze(this)
   }
 
-  static [MINT](f: VerifiedFields): VerifiedPackage {
-    return new VerifiedPackage(MINT, f)
+  static [Symbol.hasInstance](value: unknown): boolean {
+    return typeof value === 'object' && value !== null && #avatarBytes in value
+  }
+
+  static {
+    mintVerifiedPackage = (f) => new VerifiedPackage(MINT_TOKEN, f)
+    Object.freeze(VerifiedPackage.prototype)
+    Object.freeze(VerifiedPackage)
   }
 
   /** A copy of the verified avatar bytes, or null. */
@@ -524,7 +539,8 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
   }
   if (!signatureOk) return fail(1, 'bad_signature')
 
-  // ---- Step 2: the signed payload.
+  // ---- Step 2: the signed payload. Unknown payload keys pass on purpose (a
+  // later contract version may add fields); the header, by S13, may have none.
   const decoded = decodeJsonSegment(payloadSeg)
   if (decoded === null) return fail(2, 'bad_payload')
   const payload = decoded.obj
@@ -547,7 +563,9 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
     if (!isPlainObject(c) || typeof c.name !== 'string' || typeof c.level !== 'string' || typeof c.reason !== 'string') {
       return fail(2, 'bad_payload')
     }
-    connectors.push({ name: c.name, level: c.level, reason: c.reason })
+    const level = CONNECTOR_LEVELS.find((l) => l === c.level)
+    if (level === undefined) return fail(2, 'bad_payload')
+    connectors.push({ name: c.name, level, reason: c.reason })
   }
   if (!Array.isArray(payload.files)) return fail(2, 'bad_payload')
   const files: PayloadFile[] = []
@@ -613,7 +631,11 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
     ['title', payload.title],
     ['description', payload.description],
     ['agent.display_name', agent.display_name],
-    ...connectors.map((c, i): [string, string] => [`connectors[${i}].reason`, c.reason]),
+    ...(typeof modelHint === 'string' ? [['agent.model_hint', modelHint] as [string, string]] : []),
+    ...connectors.flatMap((c, i): Array<[string, string]> => [
+      [`connectors[${i}].name`, c.name],
+      [`connectors[${i}].reason`, c.reason],
+    ]),
   ]
   for (const [field, text] of manifestTexts) {
     const refusal = scanManifestText(text)
@@ -647,7 +669,7 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
 
   return {
     ok: true,
-    pkg: VerifiedPackage[MINT]({
+    pkg: mintVerifiedPackage({
       slug: payload.slug,
       version: payload.version,
       minMarveenVersion: payload.min_marveen_version,
