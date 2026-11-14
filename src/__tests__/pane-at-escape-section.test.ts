@@ -72,7 +72,8 @@ describe('pane-at-escape section: what it says (ENVATLEAK1114)', () => {
 
   it('the heading, and the delivery layer puts the backslash at the text start or after whitespace', () => {
     expect(body.split('\n')[0]).toBe('## Fordított perjel a kukac előtt a kapott szövegben')
-    expect(body).toMatch(/paneledbe gépel[\s\S]{0,120}fordított perjelet[\s\S]{0,40}szöveg elején vagy térköz/)
+    expect(body).toMatch(/paneledbe gépel[\s\S]{0,120}fordított perjelet[\s\S]{0,40}szöveg elején, térköz \(szóköz, sortörés\) vagy pontosvessző után/)
+    expect(body).toMatch(/a vezérlőkaraktereket pedig kiszűri/)
   })
 
   it('why: Claude Code would attach the file with no tool call, measured', () => {
@@ -118,7 +119,7 @@ describe('pane-at-escape section: no at-sign in either language', () => {
     const en = buildPaneAtEscapeBody()
     setLang(null)
     expect(en.split('\n')[0]).toBe('## A backslash before an at-sign in the text you receive')
-    expect(en).toMatch(/start of the text or after whitespace/)
+    expect(en).toMatch(/start of the text, after whitespace \(space, line break\) or after a semicolon, and removes control characters/)
     expect(en).toMatch(/with no tool call \(measured 2026-11-14\)/)
     expect(en).toMatch(/NOT part of the original text/)
     expect(en).toMatch(/drop the backslash that stands before the at-sign/)

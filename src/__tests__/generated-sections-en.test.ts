@@ -507,7 +507,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
   'message-close': '835ee6c92d6e0a7a',
-  'pane-at-escape': '80e0b1440a30a62c',
+  'pane-at-escape': '9c49452f3804a26b',
   'skills-path-trap': '76b7632b730c8120',
   'strict-api': 'e619c666af284fec',
   'system-directive-auth': '5f72174ed4de6b5d',
