@@ -172,7 +172,7 @@ export function readSupportToken(dir: string): SupportTokenRead {
     const uid = effectiveUid()
     if (uid !== null && st.uid !== uid) return { kind: 'invalid', reason: 'owner' }
     if ((st.mode & 0o077) !== 0) return { kind: 'invalid', reason: 'mode' }
-    if (st.size > TOKEN_READ_CAP) return { kind: 'invalid', reason: 'size' }
+    // One byte more than the cap is asked for: getting it means the file is too large, whatever its size said.
     const buf = Buffer.alloc(TOKEN_READ_CAP + 1)
     const n = readSync(fd, buf, 0, buf.length, 0)
     if (n > TOKEN_READ_CAP) return { kind: 'invalid', reason: 'size' }
