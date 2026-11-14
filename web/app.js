@@ -6793,20 +6793,20 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Kapcsolodasi hiba')
+      throw new Error(err.error || t('channel.toast.connect_error'))
     }
     const result = await res.json()
     // #1878 (6): on the main agent the save restarts the channels session; a failed
     // restart must not read as "connected".
     if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
-    else showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
+    else showToast(t('channel.toast.connected', { provider: getProviderLabel() }))
     // Refresh detail
     // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
     if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -6839,7 +6839,7 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
         : exp.state === 'soon' ? ' ' + t('channel.toast.teams_secret_expiry_soon', { date: exp.date, days: exp.daysLeft })
         : exp.state === 'expired' ? ' ' + t('channel.toast.teams_secret_expiry_expired', { date: exp.date })
         : ''
-      showToast('Kapcsolat rendben!' + suffix, suffix ? 8000 : undefined)
+      showToast(t('channel.toast.test_ok') + suffix, suffix ? 8000 : undefined)
     }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
@@ -6856,13 +6856,13 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/reconnect`, { method: 'POST' })
     const data = await res.json()
     if (data.ok) {
-      showToast('Channel-MCP reconnect sikeres')
+      showToast(t('channel.toast.reconnect_ok'))
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || 'Reconnect sikertelen', 8000)
+      showToast(data.message || t('channel.toast.reconnect_failed'), 8000)
     }
   } catch {
-    showToast('Reconnect hiba', 8000)
+    showToast(t('channel.toast.reconnect_error'), 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -6879,12 +6879,12 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', 8000)
+      showToast(data.error || t('channel.smoke_test.failed'), 8000)
       return
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast('Smoke-test hiba', 8000)
+    showToast(t('channel.smoke_test.error'), 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -6955,7 +6955,7 @@ async function approvePairing(code) {
     refreshPendingPairings()
     refreshAllowedList()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -7023,7 +7023,7 @@ async function removeAllowed(kind, id) {
     showToast(t('common.toast.removed'))
     refreshAllowedList()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -7087,7 +7087,7 @@ async function generateInvite() {
     const res = await fetch(`${channelApiBase()}/invites`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Sikertelen')
+      throw new Error(err.error || t('common.unknown'))
     }
     const data = await res.json()
     if (data.deepLink) {
@@ -7098,7 +7098,7 @@ async function generateInvite() {
     }
     refreshInvites()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.textContent = t('channel.btn.invite_new')
@@ -7118,12 +7118,12 @@ async function revokeInviteToken(token) {
     const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Sikertelen')
+      throw new Error(err.error || t('common.unknown'))
     }
     showToast(t('channel.toast.invite_revoked'))
     refreshInvites()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -7205,14 +7205,14 @@ async function submitApproveModal() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requireMention, allowFromAll }),
     })
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || t('common.unknown'))
     document.getElementById('chApproveModalOverlay').hidden = true
     const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     confirmBtn.querySelector('.btn-text').hidden = false
     confirmBtn.querySelector('.btn-loading').hidden = true
@@ -7226,11 +7226,11 @@ async function denyChannelRequest(id, itemEl) {
   if (itemEl) itemEl.remove()
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
-    if (!res.ok) throw new Error('Hiba')
+    if (!res.ok) throw new Error(t('common.unknown'))
     showToast(t('channel.toast.denied'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
     refreshChannelRequests()
   }
 }
