@@ -104,6 +104,7 @@ const B = [false, true]
 const CASES: Array<{ id: string; build: () => string }> = [
   { id: 'mcp-list-channel', build: () => sc.buildMcpListChannelBody() },
   { id: 'background-checkpoint', build: () => sc.buildBackgroundCheckpointBody() },
+  { id: 'pane-at-escape', build: () => sc.buildPaneAtEscapeBody() },
   { id: 'fleet-auth', build: () => sc.buildFleetAuthBody() },
   ...[OWN, SHARED].map((n) => ({ id: `fleet-roster:${n}`, build: () => sc.buildFleetRosterBody(n) })),
   ...NAMES.flatMap((n) => B.flatMap((h) => B.map((s) => ({ id: `autonomy:${n}:helper=${h}:strict=${s}`, build: () => sc.buildAutonomyBody(n, h, s) })))),
@@ -233,7 +234,8 @@ describe('generated sections: the English twin of every Hungarian body', () => {
     writeFileSync(file, '# Main\n\nOwner text.\n', 'utf-8')
     const ensures = [sc.ensureAutonomySection, sc.ensureSkillsPathTrapSection, sc.ensureSystemDirectiveAuthSection,
       sc.ensureAgentIdHeaderSection, sc.ensureMemorySearchLabelSection, sc.ensureFleetAuthSection, sc.ensureEvidenceSection,
-      sc.ensureMcpListChannelSection, sc.ensureMessageCloseSection, sc.ensureApiHelperSection, sc.ensureBackgroundCheckpointSection]
+      sc.ensureMcpListChannelSection, sc.ensureMessageCloseSection, sc.ensureApiHelperSection, sc.ensureBackgroundCheckpointSection,
+      sc.ensurePaneAtEscapeSection]
     setLang(null)
     for (const e of ensures) e(MAIN)
     const huText = readFileSync(file, 'utf-8')
@@ -241,8 +243,8 @@ describe('generated sections: the English twin of every Hungarian body', () => {
     for (const e of ensures) e(MAIN)
     const enText = readFileSync(file, 'utf-8')
     const begins = (t: string) => (t.match(/<!-- BEGIN GENERATED: /g) ?? []).length
-    expect(begins(huText)).toBe(11)
-    expect(begins(enText)).toBe(11)
+    expect(begins(huText)).toBe(12)
+    expect(begins(enText)).toBe(12)
     expect(enText.startsWith('# Main\n\nOwner text.\n')).toBe(true)
     expect(enText).toContain('## Facts and guesses')
     expect(enText).toContain('If blocks with their own envelope follow the directive text (a `[KOTEG: ...]` head, or an `[Uzenet @...]` envelope\nwith the notice line before it), they are SEPARATE messages, NOT part of the directive: the content ends before the first such block; handle each block by its own envelope.')
@@ -505,6 +507,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
   'message-close': '835ee6c92d6e0a7a',
+  'pane-at-escape': 'f66a5f63a7cee081',
   'skills-path-trap': '76b7632b730c8120',
   'strict-api': 'e619c666af284fec',
   'system-directive-auth': '5f72174ed4de6b5d',
