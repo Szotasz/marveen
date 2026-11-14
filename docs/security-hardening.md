@@ -882,7 +882,10 @@ What happens now:
   when the target already holds a token for that channel (the import carries
   none), or when it is the target's own provider; otherwise that key alone is
   left out, with a warning.
-- `MAIN_AGENT_ID` must also not be an id the message layer owns
+- `MAIN_AGENT_ID` must also not be an id the message layer owns, or a fixed
+  route name of the agents API (`activity`, `status`, `model-suggest`,
+  `export-all`, `import`: `GET /api/agents/status` is matched before
+  `/api/agents/<id>`, AGENTROUTERESERVED1114)
   (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/config.ts`, the fixed
   part in `src/web/sanitize.ts`): `system` is refused on every POST, so a main
   agent with that id could not send, and the voice channel id

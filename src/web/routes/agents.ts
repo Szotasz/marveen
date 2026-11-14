@@ -1346,7 +1346,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
     // An id the message layer owns (FLEETRESERVEDNAME1021, with the configured
     // voice channel id, VOICECHANNELID1022): a sub-agent under it could not
-    // send, or would be framed as something it is not.
+    // send, or would be framed as something it is not. And a fixed first path
+    // segment of this API (AGENTROUTERESERVED1114: activity, status, ...): the
+    // fixed handler would answer the agent's own /api/agents/<name> address.
     if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 

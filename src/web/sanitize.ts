@@ -23,13 +23,28 @@ export function sanitizeAgentName(raw: string): string {
 // 403'd on every POST lane; 'telegram-coordinator' is 403'd too; 'heartbeat'
 // and 'channel-coordinator' are hidden as chat threads. A main agent with one
 // of these ids could not send, or would speak as something it is not.
-// Literals, not imports: the shell migration script keeps the same list, and a
-// test pins both to the source constants. This is only the FIXED part: the
+export const MESSAGE_LAYER_RESERVED_AGENT_IDS: readonly string[] =
+  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator']
+
+// First path segments the agents API serves itself (AGENTROUTERESERVED1114):
+// GET /api/agents/activity, GET /api/agents/status, POST /api/agents/model-suggest,
+// GET /api/agents/export-all, POST /api/agents/import. They are matched before the
+// generic /api/agents/:name routes, so an agent with one of these names would have
+// its own address answered by the fixed handler. THE one list of them: a new fixed
+// route under /api/agents/ gets its segment added HERE, and
+// src/__tests__/agent-route-reserved-names.test.ts scans the source and goes red
+// until it is.
+export const AGENT_ROUTE_RESERVED_IDS: readonly string[] =
+  ['activity', 'status', 'model-suggest', 'export-all', 'import']
+
+// The fixed reserved ids: no main agent and no sub-agent may take one.
+// Literals, not imports: the shell migration script keeps the same two lists, and
+// a test pins both to the source constants. This is only the FIXED part: the
 // voice channel id is configurable (VOICECHANNELID1022), so the full list,
 // RESERVED_AGENT_IDS, is built in config.ts. Kept here so this module stays a
 // leaf with no load-time .env read.
 export const FIXED_RESERVED_AGENT_IDS: readonly string[] =
-  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator']
+  [...MESSAGE_LAYER_RESERVED_AGENT_IDS, ...AGENT_ROUTE_RESERVED_IDS]
 
 // Same rules as sanitizeAgentName -- used for skill names to prevent path traversal.
 export function sanitizeSkillName(raw: string): string {

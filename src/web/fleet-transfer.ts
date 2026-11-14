@@ -157,7 +157,7 @@ export function planIdentityTakeover(fleet: Pick<FleetJson, 'mainAgent' | 'agent
     return refuse('nem slug alakú (kisbetű, számjegy, egyszeres kötőjel, legfeljebb 50 karakter, ahogy a telepítő képzi)')
   }
   if (RESERVED_AGENT_IDS.includes(sourceAgentId)) {
-    return refuse('a rendszer fenntartott azonosítója (az üzenetkezelő saját feladója)')
+    return refuse('a rendszer fenntartott azonosítója (az üzenetkezelő saját feladója vagy az ügynök-API rögzített útszakasza)')
   }
   // The target's own MAIN_AGENT_ID is never a sub-agent there: the main agent lives in
   // PROJECT_ROOT, and the agent API refuses that name. A directory with it is a stray
