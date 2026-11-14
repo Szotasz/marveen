@@ -302,7 +302,7 @@ export function buildPaneAtEscapeBodyEn(): string {
     '## A backslash before an at-sign in the text you receive',
     '',
     '- The delivery layer, in everything it types into your pane (inter-agent message, scheduled prompt, system directive), puts a backslash',
-    '  before an at-sign that stands at the start of the text, after whitespace (space, line break) or after a semicolon, and removes control characters. Without it Claude Code would attach the named file with no tool call (measured 2026-11-14).',
+    '  before an at-sign that stands at the start of the text, after whitespace (space, line break) or after a semicolon, and replaces each control character with a replacement mark (U+FFFD). Without it Claude Code would attach the named file with no tool call (measured 2026-11-14).',
     '- The backslash is NOT part of the original text. When you copy a package name, handle, id or command onward from received text, drop the backslash that stands before the at-sign.',
     '- For an inter-agent message and a system directive the original text is in the queue row: the same row the `directive-verify` recipe reads.',
   ].join('\n')

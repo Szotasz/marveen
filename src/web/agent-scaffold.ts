@@ -4073,7 +4073,7 @@ export function ensureBackgroundCheckpointSection(name: string): void {
 // no tool call, so no hook sees it (measured 2026-11-14). The delivery layer
 // therefore puts a backslash before every at-sign that stands at the start of
 // the text, after whitespace or after a semicolon, in everything it types into
-// an agent's pane (and removes control characters);
+// an agent's pane (and replaces control characters with U+FFFD);
 // the queue row keeps the original. The reader sees the backslash before
 // package scopes, handles and Matrix ids, and copying it onward into a command
 // can break the command, so the rule ships as a section. The body itself must
@@ -4090,7 +4090,7 @@ export function buildPaneAtEscapeBody(): string {
     '## Fordított perjel a kukac előtt a kapott szövegben',
     '',
     '- A kézbesítő mindenbe, amit a paneledbe gépel (inter-agent üzenet, ütemezett prompt, rendszer-direktíva), fordított perjelet',
-    '  tesz a szöveg elején, térköz (szóköz, sortörés) vagy pontosvessző után álló kukac elé, a vezérlőkaraktereket pedig kiszűri. Enélkül a Claude Code a megnevezett fájlt eszközhívás nélkül csatolná (mérve 2026-11-14).',
+    '  tesz a szöveg elején, térköz (szóköz, sortörés) vagy pontosvessző után álló kukac elé, a vezérlőkaraktereket pedig helyettesítő jelre (U+FFFD) cseréli. Enélkül a Claude Code a megnevezett fájlt eszközhívás nélkül csatolná (mérve 2026-11-14).',
     '- A fordított perjel NEM része az eredeti szövegnek. Ha a kapott szövegből csomagnevet, kezelőnevet, azonosítót vagy parancsot másolsz tovább, a kukac előtti fordított perjelet hagyd el.',
     '- Inter-agent üzenetnél és rendszer-direktívánál az eredeti szöveg az üzenetsor sorában áll: ugyanaz a sor, amit a `directive-verify` recept olvas.',
   ].join('\n')
