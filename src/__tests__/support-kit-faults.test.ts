@@ -14,6 +14,8 @@ const fault = vi.hoisted(() => ({
   corruptReadsUnder: '',
   /** These exact paths are reported as owned by another user. */
   foreignOwned: [] as string[],
+  /** Every path readFileSync was asked for. */
+  reads: [] as string[],
 }))
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -26,6 +28,7 @@ vi.mock('node:fs', async (importOriginal) => {
       real.renameSync(from, to)
     },
     readFileSync: ((path: unknown, ...rest: unknown[]) => {
+      fault.reads.push(String(path))
       const out = (real.readFileSync as (...a: unknown[]) => string | Buffer)(path, ...rest)
       if (fault.corruptReadsUnder === '' || !String(path).includes(fault.corruptReadsUnder)) return out
       return typeof out === 'string' ? out + 'x' : Buffer.concat([out, Buffer.from('x')])
@@ -40,7 +43,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const realFs = await vi.importActual<typeof import('node:fs')>('node:fs')
 const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, realpathSync } = realFs
-const { writeKit, verifyKit, sha256Hex, KitError, KIT_SUBFOLDER, KIT_MANIFEST_NAME } = await import('../support-kit.js')
+const { writeKit, verifyKit, sha256Hex, KitError, KIT_SUBFOLDER, KIT_MANIFEST_NAME, KIT_MANIFEST_MAX_BYTES } = await import('../support-kit.js')
 type KitFileSource = import('../support-kit.js').KitFileSource
 
 const noSleep = async (): Promise<void> => {}
@@ -83,6 +86,7 @@ describe('the kit on disk, when something goes wrong', () => {
     fault.renames = 0
     fault.corruptReadsUnder = ''
     fault.foreignOwned = []
+    fault.reads = []
   }
 
   beforeEach(() => {
@@ -153,6 +157,20 @@ describe('the kit on disk, when something goes wrong', () => {
   })
 
   // K6, the owner half. The process uid is the default: no test passes one in.
+  // A manifest larger than the cap is refused UNREAD: a huge file in its place must not be pulled into memory.
+  it('does not even read a manifest larger than the cap', async () => {
+    await write(FILES_1)
+    const manifestPath = join(kitDir, KIT_MANIFEST_NAME)
+    writeFileSync(manifestPath, 'x'.repeat(KIT_MANIFEST_MAX_BYTES + 1))
+    fault.reads = []
+    expect(verifyKit({ supportDir })).toMatchObject({ ok: false, problem: 'kit_manifest_unreadable' })
+    expect(fault.reads.filter((p) => p === manifestPath)).toEqual([])
+    // Control: a manifest within the cap is read.
+    writeFileSync(manifestPath, 'x'.repeat(KIT_MANIFEST_MAX_BYTES))
+    verifyKit({ supportDir })
+    expect(fault.reads.filter((p) => p === manifestPath)).toEqual([manifestPath])
+  })
+
   describe('a kit that belongs to another user', () => {
     beforeEach(async () => {
       await write(FILES_1)

@@ -135,6 +135,10 @@
       "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/$HOME/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
     },
     {
+      "label": "a node path with a space",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/my node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
       "label": "a node path with a quote",
       "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/\"node\"\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
     },

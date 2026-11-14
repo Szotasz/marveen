@@ -190,6 +190,7 @@ describe('runSupportCli', () => {
     [['install-kit']],
     [['install-kit', ...ROOT_ARGS.slice(0, 4)]],
     [['install-kit', ...ROOT_ARGS, '--force']],
+    [['install-kit', ...ROOT_ARGS, '--release', 'def5678']],
     [['install-kit', '--install-root', '/a', '--install-root', '/b', '--release', 'abc1234']],
     [['install-kit', '--install-root', '', '--node', '/usr/bin/node', '--release', 'abc1234']],
     [['install-kit', '--install-root=/opt/marveen', '--node', '/usr/bin/node', '--release', 'abc1234', 'x']],

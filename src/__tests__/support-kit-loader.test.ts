@@ -94,6 +94,19 @@ describe('running the kit copy of the routine', () => {
     expect(await runKitRoutine({ supportDir, args: ['bogus'], timeoutMs: 30_000 })).toEqual({ ok: true, code: 2, stdout: '' })
   })
 
+  // Samu 78224: the node path may hold an at sign (a versioned Homebrew node). A run through such a path, also on
+  // Linux CI where the real node has none; and no manifest value comes back in what the run prints.
+  it('runs through a node reached at a path with an at sign, and prints no manifest value', async () => {
+    const atDir = join(root, 'opt', 'node@22', 'bin')
+    mkdirSync(atDir, { recursive: true })
+    symlinkSync(NODE, join(atDir, 'node'))
+    await installKit({ installRoot: REPO, nodePath: join(atDir, 'node'), release: RELEASE, supportDir, sleep: noSleep })
+    const out = await runKitRoutine({ supportDir, args: ['status'], timeoutMs: 30_000 })
+    expect(out).toMatchObject({ ok: true, code: 0 })
+    const text = out.ok ? out.stdout : ''
+    for (const value of [join(atDir, 'node'), REPO, RELEASE, supportDir, '@']) expect(text).not.toContain(value)
+  })
+
   it('runs the bytes from a data: URL, hands over the arguments and the standard input, and keeps the exit code', async () => {
     await kitWithRoutine(
       'export async function main(args) {\n' +
