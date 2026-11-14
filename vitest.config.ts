@@ -33,11 +33,13 @@ export default defineConfig({
     // run with `claude plugin test plugins/<mod>` (MODSTERMEK1005).
     exclude: [...configDefaults.exclude, 'dist/**', 'tests/smoke/**', 'tests/browser/**', 'vendor/**', 'plugins/*/tests/**'],
     // vitest 4 enforces the 5s default testTimeout on tests that vitest 2 let
-    // run long. Three subprocess-spawning tests (send-honesty-final,
-    // send-honesty-round2) legitimately take 15-30s: they shell out to
-    // watchdog-replay.py and wait for it. Measured 2026-09-04 on the v2->v4
-    // bump: without this line those three red out as timeouts, with it the
-    // suite is green. This is a timeout budget, not a behavioural change.
+    // run long. Measured 2026-09-04 on the v2->v4 bump: three subprocess-spawning
+    // tests (send-honesty-final, send-honesty-round2) took 15-30s, because they
+    // shell out to the watchdog's Python replay script and waited for it; without
+    // this line they red out as timeouts. That script and those three tests are
+    // gone (REPLAYNOENVELOPE1114), but the budget stays: tests added since may
+    // rely on it, and only a full suite run alone can show it is safe to lower.
+    // This is a timeout budget, not a behavioural change.
     testTimeout: 60000,
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that

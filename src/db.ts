@@ -1218,6 +1218,11 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
+  // REPLAYNOENVELOPE1114: set (together with requeued_at) only by requeueDeliveredOpenForAgent, when a row that
+  // was delivered before is put back to pending after the recipient's session was restarted. The envelope reads it
+  // to say "this is a redelivery". It is the explicit flag on purpose: delivered_at cannot tell, because the pull
+  // path (claimPendingForAgent) overwrites delivered_at before it wraps. NULL for every other row.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN redelivered_at INTEGER') } catch { /* exists */ }
   // UNBLOCKS925: the one named case besides STOP/urgent that may reach a busy pane. NULL for every older row and for
   // every row whose sender did not ask; the only stored value is 'unblocks' (src/web/unblocks-interrupt.ts). Unlike
   // urgent, the flag is the main agent's own explicit field on POST /api/messages, never inferred from the text.
@@ -5041,6 +5046,9 @@ export interface AgentMessage {
   // UNBLOCKS925: 'unblocks' when the main agent flagged the row as releasing a blocker of the recipient's current
   // work; null or absent otherwise. Optional in the type for the same reason as urgent.
   affects_current_work?: string | null
+  // REPLAYNOENVELOPE1114: when requeueDeliveredOpenForAgent put this delivered row back to pending (see the
+  // migration). Optional in the type for the same reason as urgent; null on every row it did not touch.
+  redelivered_at?: number | null
 }
 
 export function createAgentMessage(
@@ -5079,6 +5087,7 @@ export function createAgentMessage(
     priority,
     remote_ref: remoteRef,
     affects_current_work: affectsCurrentWork,
+    redelivered_at: null,
   }
 }
 
@@ -5444,7 +5453,7 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
          ORDER BY ${rank.sql} DESC, created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized`,
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized, redelivered_at`,
   ).all(now, now, toAgent, ...rank.params, limit) as AgentMessage[]
   // RETURNING row order is unspecified; restore the delivery order (card ad771121: high first, then
   // FIFO with id as the tiebreaker for same-second inserts).
@@ -5488,6 +5497,11 @@ export function cardAnchors(content: string | null | undefined): string[] {
   return anchors
 }
 
+// REPLAYNOENVELOPE1114: the SQL guard both requeue selectors share. A stop or an urgent message only means
+// something at the time it was sent, so neither selector ever puts one back. Unqualified on purpose: it is used in
+// the selectors' outer WHERE (one table there, so the columns are the row's own) and in their guarded UPDATEs.
+export const REQUEUE_NEVER_STOP_OR_URGENT_SQL = 'stop_authorized = 0 AND urgent = 0'
+
 // Put an agent's messages that were abandoned while its session was down back
 // in its queue. Each row is revived at most once (requeued_at), so a row that
 // is abandoned again stays failed and does not re-notify. A row carrying a
@@ -5505,24 +5519,20 @@ export function cardAnchors(content: string | null | undefined): string[] {
 // The rows themselves go back to 'pending' (not copies), so delivery shows
 // their real age. Returns the requeued ids, oldest first.
 export function requeueAbandonedForAgent(agent: string, opts: RequeueAbandonedOpts = {}): number[] {
-  const maxAgeSec = opts.maxAgeSec ?? 24 * 3600
-  const cap = opts.cap ?? 20
-  const now = opts.now ?? Math.floor(Date.now() / 1000)
-  if (cap <= 0 || maxAgeSec <= 0) return []
-  return db.transaction(() => {
+  type AbandonedRow = { id: number; from_agent: string; content: string | null; since_ts: number }
+  return requeueWithCap<AbandonedRow>(agent, opts, 24 * 3600, 'abandoned messages over the requeue cap stay failed', (now, since) => {
     const rows = db.prepare(
       `SELECT m.id, m.from_agent, m.content, COALESCE(m.completed_at, m.created_at) AS since_ts FROM agent_messages m
        WHERE m.to_agent = ? AND m.status = 'failed' AND m.result = ? AND m.created_at >= ?
          AND m.requeued_at IS NULL AND m.requeue_skipped_at IS NULL AND m.delivered_at IS NULL
-         -- a stop or an urgent message only means something at the time it was sent, so it is never revived
-         AND m.stop_authorized = 0 AND m.urgent = 0
+         AND ${REQUEUE_NEVER_STOP_OR_URGENT_SQL}
          AND NOT EXISTS (
            SELECT 1 FROM agent_messages n
            WHERE n.from_agent = m.from_agent AND n.to_agent = m.to_agent
              AND n.id > m.id AND n.created_at >= COALESCE(m.completed_at, m.created_at)
          )
        ORDER BY m.created_at DESC, m.id DESC`
-    ).all(agent, ABANDONED_SESSION_ABSENT, now - maxAgeSec) as { id: number; from_agent: string; content: string | null; since_ts: number }[]
+    ).all(agent, ABANDONED_SESSION_ABSENT, since) as AbandonedRow[]
     // The card-anchor half of "moved on". instr, not LIKE: LIKE is
     // case-insensitive for ASCII in SQLite, and [abcdef1234] is a different
     // card from [ABCDEF1234].
@@ -5535,22 +5545,109 @@ export function requeueAbandonedForAgent(agent: string, opts: RequeueAbandonedOp
     const skip = db.prepare(
       "UPDATE agent_messages SET requeue_skipped_at = ? WHERE id = ? AND status = 'failed' AND result = ? AND requeued_at IS NULL AND requeue_skipped_at IS NULL AND delivered_at IS NULL"
     )
-    const kept: number[] = []
-    const skipped: number[] = []
-    for (const m of rows) {
+    return {
+      rows,
       // an anchor-blocked row is neither revived nor marked: the cap must
       // count only rows the sender has NOT moved on from
-      if (cardAnchors(m.content).some(a => anchorSentOn.get(m.from_agent, m.id, m.since_ts, a))) continue
+      exclude: (m) => cardAnchors(m.content).some(a => anchorSentOn.get(m.from_agent, m.id, m.since_ts, a)),
+      revive: (m) => revive.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1,
+      skip: (m) => skip.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1,
+    }
+  })
+}
+
+// What a selector hands the shared cap loop: its base set NEWEST FIRST, an optional per-row exclusion (a row
+// excluded is neither revived nor marked, and does not count against the cap), and its two guarded writes, each
+// returning true only when it changed the row.
+interface RequeuePlan<R extends { id: number }> {
+  rows: R[]
+  exclude?: (row: R) => boolean
+  revive: (row: R) => boolean
+  skip: (row: R) => boolean
+}
+
+// The part requeueAbandonedForAgent and requeueDeliveredOpenForAgent share: the options defaulting and guard
+// (nothing at all for cap <= 0 or maxAgeSec <= 0), one transaction, and the cap loop: of the selected rows the newest
+// `cap` are revived, every remaining one is marked skipped (requeue_skipped_at) for good, one info line names the
+// skipped ids, and the revived ids come back OLDEST first. `build` gets `now` and the window start (now - maxAgeSec)
+// and runs inside the transaction.
+function requeueWithCap<R extends { id: number }>(
+  agent: string,
+  opts: RequeueAbandonedOpts,
+  defaultMaxAgeSec: number,
+  skippedLogMsg: string,
+  build: (now: number, since: number) => RequeuePlan<R>,
+): number[] {
+  const maxAgeSec = opts.maxAgeSec ?? defaultMaxAgeSec
+  const cap = opts.cap ?? 20
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  if (cap <= 0 || maxAgeSec <= 0) return []
+  return db.transaction(() => {
+    const plan = build(now, now - maxAgeSec)
+    const kept: number[] = []
+    const skipped: number[] = []
+    for (const m of plan.rows) {
+      if (plan.exclude?.(m)) continue
       if (kept.length < cap) {
-        if (revive.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1) kept.push(m.id)
-      } else if (skip.run(now, m.id, ABANDONED_SESSION_ABSENT).changes === 1) {
+        if (plan.revive(m)) kept.push(m.id)
+      } else if (plan.skip(m)) {
         skipped.push(m.id)
       }
     }
-    if (skipped.length) logger.info({ agent, skipped: skipped.length, ids: skipped }, 'abandoned messages over the requeue cap stay failed')
+    if (skipped.length) logger.info({ agent, skipped: skipped.length, ids: skipped }, skippedLogMsg)
     // Selected newest first by created_at; hand them back oldest first.
     return kept.reverse()
   })()
+}
+
+export type RequeueDeliveredOpenOpts = RequeueAbandonedOpts
+
+// REPLAYNOENVELOPE1114: after a sub-agent's session was restarted (scripts/watchdog.sh, through
+// POST /api/agents/:name/redeliver-open), put the rows the old session was handed and did not close back in the
+// queue, so the router delivers them again through its normal envelope. The row set:
+// delivered, not completed, created inside the window (2 hours by default, the old replay script's window), not
+// from `system` (an old directive must never reach a fresh session again), never put back before by either
+// selector (requeued_at, requeue_skipped_at), and not a stop or urgent row.
+// seen_at is NOT looked at, on purpose (review of #2755): the watchdog starts a FRESH session, with no
+// conversation to continue, so a seen mark only says the row reached a transcript that is gone. A row the old
+// session saw and was still working on is exactly the one that must come back; with a seen filter the usual case
+// would put nothing back (measured on the live queue that day: the open delivered rows of two hours were all
+// seen). The row keeps its old seen_at (it is set once), so after this the mark refers to the previous session.
+// The contract: every row put back is flagged (redelivered_at, shown in the envelope), goes back at most once,
+// and a closed row is never touched.
+// Of these the newest `cap` (20 by default) go back to 'pending' with requeued_at and redelivered_at set to now;
+// delivered_at stays as it was (the router overwrites it when it delivers). Each UPDATE repeats the guards, so a row
+// that changed in the meantime is left alone. The rest are marked requeue_skipped_at. Once per row: a second call
+// puts nothing back. Returns the ids put back, oldest first.
+//
+// DELIBERATE DIFFERENCE from requeueAbandonedForAgent: the "sender has moved on" exclusion (a newer message from
+// the same sender to the same recipient, or a newer message carrying the row's card anchor) is NOT applied here.
+// In the abandoned case the sender was told the handoff failed, so a newer message means it re-sent. Here the
+// sender was told nothing; a newer message is just the next message of the conversation, and dropping the earlier
+// one would lose it silently. Supersession is shown to the reader by the existing freshness note instead.
+export function requeueDeliveredOpenForAgent(agent: string, opts: RequeueDeliveredOpenOpts = {}): number[] {
+  return requeueWithCap(agent, opts, 2 * 3600, 'delivered open messages over the redelivery cap are not put back', (now, since) => {
+    const rows = db.prepare(
+      `SELECT m.id FROM agent_messages m
+       WHERE m.to_agent = ? AND m.status = 'delivered' AND m.completed_at IS NULL
+         AND m.created_at >= ? AND m.from_agent != 'system'
+         AND m.requeued_at IS NULL AND m.requeue_skipped_at IS NULL
+         AND ${REQUEUE_NEVER_STOP_OR_URGENT_SQL}
+       ORDER BY m.created_at DESC, m.id DESC`
+    ).all(agent, since) as { id: number }[]
+    const guards = `status = 'delivered' AND completed_at IS NULL AND from_agent != 'system' AND requeued_at IS NULL AND requeue_skipped_at IS NULL AND ${REQUEUE_NEVER_STOP_OR_URGENT_SQL}`
+    const revive = db.prepare(
+      `UPDATE agent_messages SET status = 'pending', requeued_at = ?, redelivered_at = ? WHERE id = ? AND ${guards}`
+    )
+    const skip = db.prepare(
+      `UPDATE agent_messages SET requeue_skipped_at = ? WHERE id = ? AND ${guards}`
+    )
+    return {
+      rows,
+      revive: (m) => revive.run(now, now, m.id).changes === 1,
+      skip: (m) => skip.run(now, m.id).changes === 1,
+    }
+  })
 }
 
 // Close a message that is still OPEN (pending or delivered), atomically: the

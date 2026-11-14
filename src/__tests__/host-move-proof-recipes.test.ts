@@ -185,7 +185,9 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
   })
 
   it('agent-process.ts re-anchors CLAUDE.md on respawn next to the fleet-roster refresh', () => {
-    expect(AGENT_PROCESS).toContain('    ensureFleetRosterSection(name)\n    ensureProjectRootInClaudeMd(name)\n')
+    // Two spaces: the pair stands in rewriteAgentClaudeMdOnStart, which every start calls (MIOAGENTINSTALL1114).
+    expect(AGENT_PROCESS).toContain('\n  ensureFleetRosterSection(name)\n  ensureProjectRootInClaudeMd(name)\n')
+    expect(AGENT_PROCESS).toContain('    rewriteAgentClaudeMdOnStart(name, profile)\n')
   })
 
   it('keeps the absolute token path (the relative form is the measured 401)', () => {

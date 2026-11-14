@@ -80,12 +80,17 @@ function formatAge(ageMs: number): string {
 // delivery time (see db.countNewerMessagesFromSameSender).
 //
 // Injection-safe by construction: this string is built EXCLUSIVELY from numbers
-// -- a COUNT(*) integer and formatAge's computed age string -- never from agent-
-// or user-controlled text. It lands OUTSIDE the <untrusted> wrapper, in the
+// -- a COUNT(*) integer and formatAge's computed age string -- and, when
+// `redelivered` is true, the fixed REDELIVERY_NOTE constant below; never from
+// agent- or user-controlled text. It lands OUTSIDE the <untrusted> wrapper, in the
 // trusted framing prompt-safety.ts warns a raw value could break out of to forge
 // a fake `[Uzenet @owner-tol -- trusted team member]:` line; that risk does not
 // apply here because nothing here is attacker-influenced.
-export function formatFreshnessSuffix(ageMs?: number, newerFromSameSender?: number): string {
+export function formatFreshnessSuffix(ageMs?: number, newerFromSameSender?: number, redelivered?: boolean): string {
+  return freshnessNote(ageMs, newerFromSameSender) + (redelivered === true ? REDELIVERY_NOTE : '')
+}
+
+function freshnessNote(ageMs?: number, newerFromSameSender?: number): string {
   const newer = newerFromSameSender ?? 0
   if (newer > 0) {
     const ageStr = ageMs != null ? ` (${formatAge(ageMs)} regi)` : ''
@@ -97,6 +102,14 @@ export function formatFreshnessSuffix(ageMs?: number, newerFromSameSender?: numb
   }
   return ''
 }
+
+// REPLAYNOENVELOPE1114: the note on a row that requeueDeliveredOpenForAgent (db.ts) put back after the
+// recipient's session was restarted. The reader is a FRESH session with no memory of the row; the previous session
+// was handed it once, and may have seen it, started on it, or even finished it without closing it. So the note
+// says where to look before doing it again. A fixed constant, ASCII, no at-sign, no angle bracket, no closing
+// square bracket inside: like the freshness note it sits OUTSIDE the wrapper, in the trusted framing, so nothing
+// sender-controlled may enter it. It comes after the freshness note when both apply.
+export const REDELIVERY_NOTE = ' [ujrakezbesites: a munkameneted ujraindult, ez egy friss session; ezt az uzenetet az elozo munkameneted egyszer mar megkapta, es el is kezdhette -- mielott ujra elvegzed, ellenorizd a kanban tablat, a munkafat es a mar elkuldott uzeneteidet]'
 
 // D3(a): an untrusted or federated message that matches a known prompt-injection shape gets a
 // heads-up in its sender line. It names the matched rules only, never the matched text (that
@@ -216,7 +229,7 @@ export function wrapAgentMessageForDelivery(
   content: string,
   msgId?: number,
   originNote?: string | null,
-  freshness?: { ageMs?: number; newerFromSameSender?: number },
+  freshness?: { ageMs?: number; newerFromSameSender?: number; redelivered?: boolean },
   opts?: { urgent?: boolean },
 ): { prefix: string; wrapped: string } {
   if (category === 'channel-inbound') {
@@ -238,7 +251,8 @@ export function wrapAgentMessageForDelivery(
   // detector anchors to the START of the line (pane-state MACHINE_ORIGIN_PREFIXES
   // /^\[Uzenet @/), and nothing else parses this prefix. Empty for normal fast
   // traffic.
-  const freshSuffix = formatFreshnessSuffix(freshness?.ageMs, freshness?.newerFromSameSender)
+  // REPLAYNOENVELOPE1114: `redelivered` appends the fixed redelivery note after the freshness note.
+  const freshSuffix = formatFreshnessSuffix(freshness?.ageMs, freshness?.newerFromSameSender, freshness?.redelivered)
   // Card 06f062e4: surface the self-declared origin_note (if the sender set
   // one) so a recipient reading multiple messages from the same from_agent
   // has a chance to tell apart which sub-session sent which -- purely a

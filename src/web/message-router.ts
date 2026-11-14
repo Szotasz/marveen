@@ -1336,9 +1336,10 @@ export async function runMessageRouterTick(): Promise<void> {
         // Freshness/supersession signal: only meaningful for inter-agent
         // messages (channel-inbound are user messages with no sender-supersede
         // concept). Skip the DB count for channel-inbound to avoid needless work.
+        // REPLAYNOENVELOPE1114: a row put back by requeueDeliveredOpenForAgent says it is a redelivery.
         const freshness = isChannelInbound
           ? undefined
-          : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id) }
+          : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id), redelivered: msg.redelivered_at != null }
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness, { urgent: msg.urgent === 1 })
         // What the recipient inherits as trace context after this delivery:
         // the head's, unless a multi-envelope batch below ends on a later row.
@@ -1548,7 +1549,7 @@ function collectBatchMates(
     const effective = m.trace_id && m.span_id
       ? { trace_id: m.trace_id, span_id: m.span_id }
       : stampTraceOnMessage(m, now)
-    const freshness = { ageMs: now - m.created_at * 1000, newerFromSameSender: countNewerMessagesFromSameSender(m.from_agent, m.to_agent, m.id) }
+    const freshness = { ageMs: now - m.created_at * 1000, newerFromSameSender: countNewerMessagesFromSameSender(m.from_agent, m.to_agent, m.id), redelivered: m.redelivered_at != null }
     const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, m.from_agent, m.content, m.id, m.origin_note, freshness)
     items.push({ prefix, wrapped })
     rows.push(m)

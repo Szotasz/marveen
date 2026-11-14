@@ -104,7 +104,7 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { isSingleLineEnvValue, readEnvFile } from '../env.js'
-import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
+import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
@@ -2386,6 +2386,55 @@ export function shouldBriefAfterStart(
   return result.ok && opts.ownsResume !== true
 }
 
+/**
+ * The start-time rewrite of a sub-agent's CLAUDE.md: the token sync, then every generated section in its
+ * fixed order, and the project-root replacer. startAgentProcess runs it on every start; it stands alone so
+ * that another caller (the agent package installer, MIOAGENTINSTALL1114) can run the very same sequence
+ * against an agent directory. The order is pinned by agent-start-claudemd-writers.test.ts: a new writer
+ * goes in here AND in that list.
+ */
+export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTemplate): void {
+  // AGENT_TOKENS (agent-tokens.ts): on -> provision the agent's own dashboard
+  // token (0600, idempotent) and point its CLAUDE.md at it; off -> point it
+  // back at the shared token. BEFORE the generated sections are re-rendered,
+  // so the hand-kept body and the generated blocks converge on one path.
+  // Best-effort: a failure leaves the agent on the shared token (the old
+  // behaviour), never without one.
+  try {
+    syncAgentTokenOnStart(name)
+  } catch (err) {
+    logger.warn({ err, name }, 'per-agent dashboard token sync failed (agent keeps the shared token)')
+  }
+  ensureFleetRosterSection(name)
+  ensureProjectRootInClaudeMd(name)
+  ensureAutonomySection(name)
+  ensureSkillsPathTrapSection(name)
+  ensureSkillSectionCurrent(name)
+  ensureSystemDirectiveAuthSection(name)
+  ensureAgentIdHeaderSection(name)
+  // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
+  // fleet's reporting standard -- how a specialist hands a result to its
+  // coordinator -- not a property of the software. Injecting it into every
+  // downstream install's agent CLAUDE.md would be shipping our process as if
+  // it were a feature. No shipped profile sets the flag, so a fresh install
+  // gets nothing; the fleet that wrote it opts in on its own profiles.
+  // Turning the flag off does not remove a section an agent already carries:
+  // ensureThinChiefHandoffSection only appends, and nothing here deletes.
+  if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
+  ensureMemorySearchLabelSection(name)
+  ensureFleetAuthSection(name)
+  ensureEvidenceSection(name)
+  ensureMcpListChannelSection(name)
+  ensureMessageCloseSection(name)
+  // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
+  ensureStrictApiSection(name)
+  // VOICETOKENLEAK1101 PR-A2: every other agent on the helper gets the same recipes, overriding its body curl.
+  ensureApiHelperSection(name)
+  ensureBackgroundCheckpointSection(name)
+  // ENVATLEAK1114: the backslash the delivery layer puts before an at-sign, explained to the reader.
+  ensurePaneAtEscapeSection(name)
+}
+
 export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -2679,45 +2728,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // without hardcoding agent names.
     const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
-    // AGENT_TOKENS (agent-tokens.ts): on -> provision the agent's own dashboard
-    // token (0600, idempotent) and point its CLAUDE.md at it; off -> point it
-    // back at the shared token. BEFORE the generated sections are re-rendered,
-    // so the hand-kept body and the generated blocks converge on one path.
-    // Best-effort: a failure leaves the agent on the shared token (the old
-    // behaviour), never without one.
-    try {
-      syncAgentTokenOnStart(name)
-    } catch (err) {
-      logger.warn({ err, name }, 'per-agent dashboard token sync failed (agent keeps the shared token)')
-    }
-    ensureFleetRosterSection(name)
-    ensureProjectRootInClaudeMd(name)
-    ensureAutonomySection(name)
-    ensureSkillsPathTrapSection(name)
-    ensureSkillSectionCurrent(name)
-    ensureSystemDirectiveAuthSection(name)
-    ensureAgentIdHeaderSection(name)
-    // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
-    // fleet's reporting standard -- how a specialist hands a result to its
-    // coordinator -- not a property of the software. Injecting it into every
-    // downstream install's agent CLAUDE.md would be shipping our process as if
-    // it were a feature. No shipped profile sets the flag, so a fresh install
-    // gets nothing; the fleet that wrote it opts in on its own profiles.
-    // Turning the flag off does not remove a section an agent already carries:
-    // ensureThinChiefHandoffSection only appends, and nothing here deletes.
-    if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
-    ensureMemorySearchLabelSection(name)
-    ensureFleetAuthSection(name)
-    ensureEvidenceSection(name)
-    ensureMcpListChannelSection(name)
-    ensureMessageCloseSection(name)
-    // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
-    ensureStrictApiSection(name)
-    // VOICETOKENLEAK1101 PR-A2: every other agent on the helper gets the same recipes, overriding its body curl.
-    ensureApiHelperSection(name)
-    ensureBackgroundCheckpointSection(name)
-    // ENVATLEAK1114: the backslash the delivery layer puts before an at-sign, explained to the reader.
-    ensurePaneAtEscapeSection(name)
+    rewriteAgentClaudeMdOnStart(name, profile)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot

@@ -10,9 +10,9 @@ import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
-import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
-  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards, requeueDeliveredOpenForAgent } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
@@ -22,7 +22,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { launchableInstallDefault } from '../default-model-guard.js'
-import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
+import { claudeSupportForCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
@@ -42,7 +42,6 @@ import {
   readAgentDisplayName,
   readAgentTagline,
   writeAgentTagline,
-  writeAgentDisplayName,
   readAgentSecurityProfile,
   writeAgentSecurityProfile,
   listAgentNames,
@@ -114,7 +113,6 @@ import {
 } from '../../channel-provider.js'
 import {
   writeAgentSettingsFromProfile,
-  scaffoldAgentDir,
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
@@ -173,6 +171,8 @@ import {
   resolveProfilePlaceholders,
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
+import { AGENT_NAME_RE } from '../../config-registry.js'
+import { checkAgentCreatable, writeAgentBase, refuseIfCliCannotLaunch } from '../agent-create.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, readBodyOrRefuse, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
@@ -882,24 +882,9 @@ function paneActivityLabel(running: boolean, pane: string | null, paneCommand: s
   return activityState({ running, pane, paneCommand })
 }
 
-/**
- * PICKERCLIKAPU923: refuse a Claude model the INSTALLED CLI is measured not to
- * launch. Returns the 422 body, or null when the write may proceed. Fail-OPEN:
- * an unmeasured version refuses nothing. The probe is fresh (cache bypassed)
- * so an operator who just upgraded the CLI is not blocked by a stale reading.
- */
-export async function refuseIfCliCannotLaunch(model: string): Promise<Record<string, unknown> | null> {
-  const cli = await measureClaudeCliVersion({ fresh: true })
-  if (!isModelUnsupportedByCli(model, cli.version)) return null
-  const req = CLAUDE_MODEL_MIN_CLI[model.replace(/\[[^\]]*\]$/, '')]
-  return {
-    error: 'model not launchable by the installed Claude Code CLI',
-    model,
-    installedCli: cli.version,
-    minCli: req?.minCli ?? null,
-    message: `A telepített Claude Code ${cli.version} nem futtatja a(z) ${model} modellt (legalább ${req?.minCli ?? '?'} kell; mérve: ${req?.measured ?? 'n/a'}). Frissítsd a CLI-t, vagy válassz olyan modellt, amit ez a verzió ismer.`,
-  }
-}
+// PICKERCLIKAPU923: the CLI launch gate of the model writers. It lives in agent-create.ts since the create
+// checks moved there (they call it); re-exported so its importers keep this address.
+export { refuseIfCliCannotLaunch }
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -1328,44 +1313,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
     const profileId = (rawProfile || 'default').trim() || 'default'
 
-    if (!name) { json(res, { error: 'Name is required' }, 400); return true }
-    // SECSZIVEK1007: the model id is checked BEFORE anything is created;
-    // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
-    // malformed id left a half-created agent dir behind.
-    if (!isValidModelId(model)) { json(res, { error: new InvalidModelIdError(model).message }, 400); return true }
-    // Checked before anything is created, like the model: an agent on a missing provider would not start.
-    if (customProvider && !loadCustomProvider(customProvider)) { json(res, { error: `Unknown custom provider: ${customProvider}` }, 400); return true }
-    // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
-    // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
-    const cliGate = await refuseIfCliCannotLaunch(model)
-    if (cliGate) { json(res, cliGate, 422); return true }
-    if (!description) { json(res, { error: 'Description is required' }, 400); return true }
-    // The main agent lives in PROJECT_ROOT, not under agents/, so the existsSync
-    // below never sees it: without this, a sub-agent named like the main one
-    // is created and shares its id in messages, kanban and memories.
-    if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
-    // An id the message layer owns (FLEETRESERVEDNAME1021, with the configured
-    // voice channel id, VOICECHANNELID1022): a sub-agent under it could not
-    // send, or would be framed as something it is not. And a fixed first path
-    // segment of this API (AGENTROUTERESERVED1114: activity, status, ...): the
-    // fixed handler would answer the agent's own /api/agents/<name> address.
-    if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
-    if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
+    // Every refusal (name, model id, custom provider, the CLI gate, description, the main agent's id, a
+    // reserved id, an existing directory), in that order and before anything is created: agent-create.ts.
+    const refusal = await checkAgentCreatable(name, model, customProvider, { requireDescription: true, description })
+    if (refusal) { json(res, refusal.body, refusal.status); return true }
 
-    scaffoldAgentDir(name)
-    writeAgentModel(name, model)
-    if (customProvider) writeAgentCustomProvider(name, customProvider)
-    writeAgentSecurityProfile(name, profileId)
-    writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
-    // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
-    // Written as an explicit store row rather than by moving
-    // DEFAULT_CONTEXT_GUARD: the default is also what hidden technical workers
-    // and never-configured existing agents fall back to, and both are
-    // deliberately proactive-tier-off. Placed here, before personality
-    // generation, so the LLM step -- the one that can fail and fall back to a
-    // template -- cannot leave an agent unguarded.
-    seedContextGuardForNewAgent(name)
-    if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
+    // The synchronous base writes (scaffold, model, provider, security profile and settings, the armed
+    // context guard, display name). They come before the personality generation below, the one step
+    // that can fail and fall back to a template.
+    writeAgentBase(name, { model, profileId, customProvider, displayName: rawName })
 
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
     // Set when the personality fell back to a template. The response is deferred
@@ -1520,7 +1476,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const avatarUploadMatch = path.match(/^\/api\/agents\/([^/]+)\/avatar$/)
   if (avatarUploadMatch && method === 'POST') {
     const name = decodeURIComponent(avatarUploadMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // A name agentDir()'s safeJoin would throw on (traversal) is a plain 404, not a 500 + error log.
+    if (!AGENT_NAME_RE.test(name) || !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
@@ -1558,7 +1515,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (avatarUploadMatch && method === 'GET') {
     const name = decodeURIComponent(avatarUploadMatch[1])
-    const avatarPath = findAvatarForAgent(name)
+    // Public route: a traversal name gets the plain 404 below, not a thrown 500 from agentDir().
+    const avatarPath = AGENT_NAME_RE.test(name) ? findAvatarForAgent(name) : null
     // 1h client cache: see /api/marveen/avatar for the staleness trade-off.
     if (avatarPath) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
@@ -2714,11 +2672,45 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const freshness = {
         ageMs: Date.now() - msg.created_at * 1000,
         newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
+        redelivered: msg.redelivered_at != null,
       }
       const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
+    return true
+  }
+
+  // REPLAYNOENVELOPE1114: after scripts/watchdog.sh restarted a sub-agent's session, it asks HERE for the rows the
+  // old session was handed and did not close. The caller names the agent and nothing else: no row id, no
+  // filter, no content. The server chooses the rows (requeueDeliveredOpenForAgent: delivered, open, inside
+  // the window, never from `system`, each at most once) and puts them back to pending; the router's normal tick
+  // delivers them through the usual envelope, which says it is a redelivery. Nothing is delivered from here.
+  // Refused with 400: any query string, and any request body at all (not even `{}` or whitespace), so a selector can
+  // never ride in. The main agent is refused too: its delivery path is the inbox drain, and the watchdog's replay
+  // never ran for it. Auth is the global /api bearer gate (the watchdog uses the fleet token, as before).
+  const redeliverMatch = path.match(/^\/api\/agents\/([^/]+)\/redeliver-open$/)
+  if (redeliverMatch && method === 'POST') {
+    if (url.search !== '' || (req.url ?? '').includes('?')) {
+      json(res, { error: 'redeliver-open takes no query string: the server chooses the rows' }, 400)
+      return true
+    }
+    const redeliverBody = await readBodyOrRefuse(req, res)
+    if (!redeliverBody) return true
+    if (redeliverBody.length > 0) {
+      json(res, { error: 'redeliver-open takes no request body: the server chooses the rows' }, 400)
+      return true
+    }
+    let name: string
+    try { name = decodeURIComponent(redeliverMatch[1]) } catch { json(res, { error: 'Agent not found' }, 404); return true }
+    if (isMainChannelsAgent(name)) {
+      json(res, { error: 'redeliver-open is for sub-agents (the main agent drains its own inbox)' }, 400)
+      return true
+    }
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    const ids = requeueDeliveredOpenForAgent(name)
+    logger.info({ agent: name, ids }, 'redeliver-open: delivered, open rows put back to pending for the router')
+    json(res, { ok: true, requeued: ids.length, ids })
     return true
   }
 

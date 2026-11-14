@@ -10,6 +10,17 @@
 // row's own sender; a cut wrapper hides what it would have enclosed. So a body
 // that quotes another message's header, tool output and assistant text never
 // mark anything seen; every message of a batch injection is recognised.
+//
+// Two kinds of row never get a mark, by construction (measured 2026-11-14,
+// SEENGAP1114: every unmarked closed row of a day fell into one of them):
+//   - a row the recipient closed while it was still pending. The recipient read
+//     it from the queue, nothing was ever typed, and the close backfills
+//     delivered_at, so the row looks delivered and stays a candidate here;
+//   - a system directive. It is typed with the directive header, not with the
+//     router's header, which is the only one the pattern below knows.
+// Nothing decides anything on seen_at today. Whatever does so later has to
+// handle these two first: for them a missing mark is not "the agent did not
+// see it".
 
 import { readTranscriptTailFromProjectDir } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
