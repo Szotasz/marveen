@@ -39,7 +39,7 @@ import { logger } from '../logger.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
 import { exactTmuxTarget } from '../tmux-target.js'
-import { stripAllAnsi, stripGhostSuggestion, idleConsideringDimGhost } from '../pane-state.js'
+import { stripAllAnsi, stripGhostSuggestion, idleConsideringDimGhost, liveFooterLine } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -150,18 +150,29 @@ function isSessionReadyForUnlock(session: string): boolean {
       timeout: 3000,
       encoding: 'utf-8',
     })
-    // Idle footer: claude renders this footer line once the TUI is ready
-    // for input. Matches the empirical signature used by detectPaneState
-    // for the 'idle' state.
-    if (!/bypass permissions on/.test(pane)) return false
-    // Refuse if any modal is visible.
-    if (/Resume from summary/.test(pane)) return false
-    if (/Open System Settings/.test(pane)) return false
-    return true
+    return unlockPaneReady(pane)
   } catch (err) {
     logger.warn({ err, session }, 'channel-plugin-unlock: capture-pane failed')
     return false
   }
+}
+
+/**
+ * The readiness rule of isSessionReadyForUnlock over a plain capture, pure so
+ * it is testable. Idle footer: claude renders it once the TUI is ready for
+ * input. PANEFOOTEROUTSIDE1114: read on the LIVE footer line only
+ * (liveFooterLine, the anchor detectPaneState uses). Searching the whole pane
+ * let a line that merely quoted the footer -- in a message, or in an open
+ * permission dialog's command -- mark a dialog as ready, and the unlock then
+ * typed `/mcp` and Enter into it.
+ */
+export function unlockPaneReady(pane: string): boolean {
+  const footer = liveFooterLine(pane)
+  if (footer === null || !/bypass permissions on/.test(footer)) return false
+  // Refuse if any modal is visible.
+  if (/Resume from summary/.test(pane)) return false
+  if (/Open System Settings/.test(pane)) return false
+  return true
 }
 
 // Same verdict as channels.sh probe_pane_input_state == "idle": a COLOURED

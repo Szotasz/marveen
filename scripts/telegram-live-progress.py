@@ -51,23 +51,73 @@ SPINNER = "✻✽✢✳✶✴✵✷⏺●○◐◓◑◒*"
 STATUS_RE = re.compile(rf"^[{SPINNER}]\s+(.+)$")
 
 # Idle footer that still carries background work. Claude Code puts the counters
-# of running background shells / a monitor / sub-agent tasks into the
-# bypass-permissions footer when no turn is in flight:
+# of running background shells / a monitor / sub-agent tasks into the footer
+# when no turn is in flight:
 #   "⏵⏵ bypass permissions on · 2 shells · ctrl+t to hide tasks · ↓ to manage"
 #   "⏵⏵ bypass permissions on (shift+tab to cycle) · 1 monitor · ↓ to manage"
-# The prefix ALONE is not enough of an anchor: scrollback can quote
-# "bypass permissions on · 1 shell" verbatim (an echoed log line, a pasted
-# message), and reading that as running work parks a message in the chat that
-# never disappears. Two acceptable anchors, either one is enough:
-#   - the line STARTS with the mode glyphs, which only the real footer does
-#     (and unlike a tail marker this survives a capture truncated on the right,
-#     which is how a narrow pane renders); or
-#   - one of Claude Code's real tail actions follows, same test as
-#     IDLE_FOOTER_RX in src/pane-state.ts.
-BG_FOOTER_RE = re.compile(
-    r"^\s*⏵⏵ bypass permissions on|bypass permissions on[^\n]*?(?:ctrl\+t|↓ to manage)")
-# Read the counters out of the matched footer only, never the whole pane.
+# PANEFOOTEROUTSIDE1114: the footer is the LIVE footer line, found where the UI
+# draws it (live_footer_line below, a port of liveFooterLine in
+# src/pane-state.ts). The earlier pattern searched every line and its second
+# branch was not tied to the line start, so a line in the output that quoted a
+# footer with a tail ("bypass permissions on · 1 shell · ↓ to manage") read as
+# running work and parked a message in the chat that never disappeared
+# (measured on Claude Code 2.1.325 captures, every mode but bypass). Any mode
+# counts now, not only bypass.
+_WS = r"[ \t\r\f\v]"
+_WORD = r"[A-Za-z][A-Za-z0-9_-]*"
+_GLYPH = r"(?:⏵⏵|⏵⏸|⏸⏵|⏸⏸|⏵|⏸)"
+_COUNT = r"[0-9]+ (?:shells|shell|monitors|monitor)"
+_FOOTER_WORDS_RE = re.compile(
+    _WORD + r" on(?: \(shift\+tab to cycle\)| · .*(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts")
+_FOOTER_START_RE = re.compile(r"^" + _WS + r"*(?:" + _GLYPH + r" |\? for shortcuts)")
+_FOOTER_CLIPPED_RE = re.compile(_WORD + r" on · .*·.*…" + _WS + r"*$")
+_FOOTER_SHELL_TAIL_RE = re.compile(
+    r"^" + _WS + r"*" + _GLYPH + r" " + _WORD + r" (?:" + _WORD + r" )?(?:" + _WORD + r" )?on"
+    r"(?: \(shift\+tab to cycle\))? · " + _COUNT + r"(?:(?: ·|,) " + _COUNT + r")*" + _WS + r"*$")
+_BOX_RULE_RE = re.compile(r"^──────────")
+_BLANK_RE = re.compile(r"^" + _WS + r"*$")
+_CSI_RE = re.compile(r"\x1b\[[^@-~]*[@-~]")
+_CSI_OPEN_RE = re.compile(r"\x1b\[[^@-~]*$")
+# Read the counters out of the live footer only, never the whole pane.
 BG_COUNTER_RE = re.compile(r"\d+ (?:shells?|tasks?|monitors?)")
+
+
+def _strip_ansi(line):
+    return _CSI_OPEN_RE.sub("", _CSI_RE.sub("", line)).replace("\x1b", "")
+
+
+def _live_footer_shape(line):
+    return bool(_FOOTER_WORDS_RE.search(line)) and bool(_FOOTER_START_RE.search(_strip_ansi(line)))
+
+
+def live_footer_line(out):
+    """The live idle footer line of a plain capture, or None.
+
+    The same rule as liveFooterLine / idleFooterIndex in src/pane-state.ts and
+    live_footer_line in scripts/stuck-modal-guard.sh; a parity test
+    (src/__tests__/pane-footer-port-parity.test.ts) runs all three over one
+    corpus. Whitespace and word characters are ASCII, as in the shell port.
+    """
+    if not out:
+        return None
+    lines = out.split("\n")
+    last = len(lines) - 1
+    while last >= 0 and _BLANK_RE.match(lines[last]):
+        last -= 1
+    if last < 0:
+        return None
+    sep = last
+    while sep >= 0 and not _BOX_RULE_RE.match(lines[sep]):
+        sep -= 1
+    if sep >= 0:
+        for i in range(sep + 1, last + 1):
+            if _live_footer_shape(lines[i]):
+                return lines[i]
+    elif _live_footer_shape(lines[last]):
+        return lines[last]
+    if _FOOTER_CLIPPED_RE.search(lines[last]) or _FOOTER_SHELL_TAIL_RE.search(lines[last]):
+        return lines[last]
+    return None
 
 
 def log(msg):
@@ -240,12 +290,11 @@ def classify_pane(out):
     # that case: the indicator had already been deleted at the end of the
     # turn that STARTED the background work, so a build running for ten
     # minutes was indistinguishable from an idle machine.
-    for line in reversed(out.splitlines()):
-        if not BG_FOOTER_RE.search(line):
-            continue
-        counters = BG_COUNTER_RE.findall(line)
-        return ("background", f"háttérfolyamat fut ({', '.join(counters)})") if counters else None
-    return None
+    line = live_footer_line(out)
+    if line is None:
+        return None
+    counters = BG_COUNTER_RE.findall(line)
+    return ("background", f"háttérfolyamat fut ({', '.join(counters)})") if counters else None
 
 
 def status_line(agent):

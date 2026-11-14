@@ -15,6 +15,8 @@ import {
   detectsHeldPeerMessage,
   detectsPermissionDialog,
   detectsThinkingBlockError,
+  footerWordsOffAnchor,
+  liveFooterLine,
   parkedInputText,
 } from '../pane-state.js'
 
@@ -169,11 +171,11 @@ describe('where the footer may sit', () => {
 
 describe('the six measured mode footers (Claude Code 2.1.325)', () => {
   const MODES: Array<[string, string, string | null]> = [
-    ['manual', '  ⏸ manual mode on · ? for shortcuts', 'default'],
+    ['manual', '  ⏸ manual mode on · ? for shortcuts', 'manual mode'],
     ['plan', '  ⏸ plan mode on (shift+tab to cycle)', 'plan mode'],
     ['accept edits', '  ⏵⏵ accept edits on (shift+tab to cycle)', 'accept edits'],
     ['auto', '  ⏵⏵ auto mode on (shift+tab to cycle)', 'auto mode'],
-    ["don't ask", "  ⏵⏵ don't ask on (shift+tab to cycle)", 't ask'],
+    ["don't ask", "  ⏵⏵ don't ask on (shift+tab to cycle)", "don't ask"],
     ['bypass', FOOTER, 'bypass permissions'],
   ]
 
@@ -188,16 +190,46 @@ describe('the six measured mode footers (Claude Code 2.1.325)', () => {
   })
 
   it.each(MODES)('%s: the mode read from the live footer', (_mode, footer, mode) => {
-    // Two of these are what the reader returns TODAY, pinned so a change is a
-    // decision: manual mode reads as "default" (its footer ends in the
-    // shortcuts hint), and the apostrophe cuts "don't ask" to "t ask".
+    // PANEFOOTEROUTSIDE1114: manual mode used to read as "default" (its footer
+    // ends in the shortcuts hint) and the apostrophe cut "don't ask" to
+    // "t ask". Both read as the words the footer shows now. The only reader is
+    // the dashboard's mode chip, which shows the value as text.
     expect(detectPermissionMode(P(['⏺ Done.', '', SEP, EMPTY_BOX, SEP, footer]))).toBe(mode)
+  })
+
+  it.each(MODES)('%s: liveFooterLine returns that footer, and no quote is off the anchor', (_mode, footer) => {
+    const pane = P(['⏺ Done.', '', SEP, EMPTY_BOX, SEP, footer])
+    expect(liveFooterLine(pane)).toBe(footer)
+    expect(footerWordsOffAnchor(pane)).toBe(false)
+    // A quote of another mode's footer in the output does not move it.
+    const quoted = P(['⏺ Done.', '  ⎿  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage', '', SEP, EMPTY_BOX, SEP, footer])
+    expect(liveFooterLine(quoted)).toBe(footer)
+    expect(footerWordsOffAnchor(quoted)).toBe(false)
   })
 
   it('the bare shortcuts footer of older builds still counts', () => {
     const pane = P(['⏺ Done.', '', SEP, EMPTY_BOX, SEP, '  ? for shortcuts'])
     expect(detectPaneState(pane)).toBe('idle')
     expect(detectPermissionMode(pane)).toBe('default')
+  })
+})
+
+describe('PANEFOOTEROUTSIDE1114: footerWordsOffAnchor names the quoted-footer case', () => {
+  const DIALOG = [' Bash command', '   echo hi', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No']
+  it('true when only a quote carries the footer words and no live footer is drawn', () => {
+    const pane = P(['⏺ Done.', '  ⎿  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage', '', ...DIALOG])
+    expect(liveFooterLine(pane)).toBeNull()
+    expect(footerWordsOffAnchor(pane)).toBe(true)
+    expect(footerWordsOffAnchor(P(['the log said: ? for shortcuts', ...DIALOG]))).toBe(true)
+  })
+  it('false for a dialog with no footer words at all, an empty pane, and a live footer', () => {
+    expect(footerWordsOffAnchor(P(DIALOG))).toBe(false)
+    expect(footerWordsOffAnchor('')).toBe(false)
+    expect(footerWordsOffAnchor(null)).toBe(false)
+    expect(footerWordsOffAnchor(P(['⏺ Done.', '', SEP, EMPTY_BOX, SEP, FOOTER]))).toBe(false)
+  })
+  it('true for the words in an input-box rule frame without the live start', () => {
+    expect(footerWordsOffAnchor(P(['⏺ Done.', '', SEP, EMPTY_BOX, SEP, 'bypass permissions on (shift+tab to cycle)']))).toBe(true)
   })
 })
 

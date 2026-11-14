@@ -171,6 +171,13 @@ jobs:
       # block runs against a throwaway HOME with npm and claude stubbed on PATH.
       - run: bash scripts/__tests__/channels-native-install-no-npm.test.sh
       - run: bash scripts/__tests__/channels-native-autoupdate.test.sh
+      # PANEFOOTEROUTSIDE1114: the stuck-modal guard and the live-progress mirror
+      # carry ports of the footer anchor; their own suites had no CI wiring. Both
+      # hermetic (piped pane text, a tmux stub for the state-dir case, no store
+      # writes). The parity test in the vitest run compares the ports to the
+      # TypeScript rule.
+      - run: bash scripts/__tests__/stuck-modal-guard.test.sh
+      - run: python3 -I scripts/__tests__/telegram-live-progress.test.py
       # INSTSTDERRTMP1104: the installers' stderr copy leaves with the process, the
       # raw error tail is masked, and the token URL is printed only to a terminal.
       # Hermetic: throwaway TMPDIR, the blocks are cut from the real scripts.
