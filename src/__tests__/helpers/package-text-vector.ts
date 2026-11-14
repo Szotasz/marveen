@@ -1,6 +1,6 @@
 // The shared package text vector (MIOAGENTINSTALL1114, plan 10.1), copied from
 // marveen-io (supabase/functions/_shared/package-text-vector.json, PR 371 head
-// ba64679c). Swapping in the next vector is ONE edit here: the file name and
+// 4d9b9e99). Swapping in the next vector is ONE edit here: the file name and
 // its sha256 below. The test pins the copy to this hash, so a changed file
 // without a changed hash is red.
 import { readFileSync } from 'node:fs'
@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const PACKAGE_TEXT_VECTOR_FILE = 'package-text-vector.json'
-export const PACKAGE_TEXT_VECTOR_SHA256 = 'fbfb67a336f685c7e49b31cb400c553f093b77a72027ae963d01a619eed0c810'
+export const PACKAGE_TEXT_VECTOR_SHA256 = '0cc2d07bf48d82b89562e996970e207c7f2056d5a01fd324092b75544c258c5c'
 
 export interface TextVectorCase {
   name: string

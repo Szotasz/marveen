@@ -4,7 +4,7 @@
 // of the contract's B-side check (Sz-4.4) in order, and the first failure
 // stops it. The patterns and limits are the contract's, letter for letter
 // (Sz-3.1, Sz-4.5). The text rules are copied from the reference scanner of
-// the publishing side (marveen-io PR 371, head ba64679c, package-scan.ts), and
+// the publishing side (marveen-io PR 371, head 4d9b9e99, package-scan.ts), and
 // the shared text vector pins both sides to the same bytes: a text rule exists
 // here only if the plan names it AND that vector has cases for it.
 //
