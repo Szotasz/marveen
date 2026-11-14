@@ -240,6 +240,40 @@ describe('POST /api/auth/password', () => {
     expect(login.res.statusCode).toBe(200)
   })
 
+  // PWCHANGETHROTTLE1114: a stolen session cookie must not buy unlimited guesses at the current password. The
+  // password change checks it under the SAME per-username throttle as the login, so the two count together.
+  const changePw = (current: string, next = 'brand-new-pass') =>
+    call('POST', '/api/auth/password', { auth: { kind: 'session', user: 'alice' }, body: { current_password: current, new_password: next } })
+
+  it('PWCHANGETHROTTLE1114: wrong current passwords trip the lock; then even the right one gets 429 and changes nothing', async () => {
+    await seedUser('alice')
+    for (let i = 0; i < 5; i++) expect((await changePw('wrong-' + i)).res.statusCode).toBe(401)
+    const locked = await changePw(GOOD_PW)
+    expect(locked.res.statusCode).toBe(429)
+    expect(locked.json().retry_after_s).toBeGreaterThan(0)
+    expect(locked.res.headers['Retry-After']).toBeTruthy()
+    // The password did not change: after the lock the old one still logs in.
+    _resetThrottleForTest()
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })).res.statusCode).toBe(200)
+  })
+
+  it('PWCHANGETHROTTLE1114: the login and the password change share one counter, both ways', async () => {
+    await seedUser('alice')
+    for (let i = 0; i < 5; i++) await changePw('wrong-' + i)
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })).res.statusCode).toBe(429)
+    _resetThrottleForTest()
+    for (let i = 0; i < 5; i++) await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'wrong-' + i } })
+    expect((await changePw(GOOD_PW)).res.statusCode).toBe(429)
+  })
+
+  it('PWCHANGETHROTTLE1114: a right current password clears the counter', async () => {
+    await seedUser('alice')
+    for (let i = 0; i < 4; i++) await changePw('wrong-' + i)
+    expect((await changePw(GOOD_PW, 'second-new-pass')).res.statusCode).toBe(200)
+    for (let i = 0; i < 4; i++) expect((await changePw('wrong-again-' + i)).res.statusCode).toBe(401)
+    expect((await changePw('second-new-pass', 'third-new-pass')).res.statusCode).toBe(200)
+  })
+
   it('the token cannot reset a password: 403, and the old password still works (recovery is the CLI)', async () => {
     await seedUser('alice')
     const r = await call('POST', '/api/auth/password', {

@@ -412,12 +412,25 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'User not found' }, 404)
         return true
       }
-      // Session callers must prove knowledge of the current password.
+      // Session callers must prove knowledge of the current password. PWCHANGETHROTTLE1114: under the SAME
+      // per-username throttle as the login, checked before the KDF, so a stolen session cookie does not buy
+      // unlimited guesses at it (a hit would change the password and revoke the owner's other sessions). The two
+      // routes count together: guesses here lock the login, and the other way round.
+      const usernameLc = auth.user.toLowerCase()
+      const throttle = checkThrottle(usernameLc)
+      if (throttle.locked) {
+        if (throttle.global) logger.warn('password change: global failure cap reached -- all logins throttled')
+        res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(throttle.retryAfterS), 'Cache-Control': 'private, no-store' })
+        res.end(JSON.stringify({ error: 'Too many attempts', retry_after_s: throttle.retryAfterS }))
+        return true
+      }
       const current = str(body.current_password)
       if (!(await verifyPassword(current, user.password_hash))) {
+        recordFailure(usernameLc)
         json(res, INVALID_CREDENTIALS, 401)
         return true
       }
+      recordSuccess(usernameLc)
     } else if (auth?.kind === 'token') {
       // The token cannot reset a password: it cannot tell the owner apart from
       // anything else that holds it. Recovery is the machine-local CLI.
