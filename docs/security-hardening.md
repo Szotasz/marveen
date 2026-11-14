@@ -464,7 +464,7 @@ The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
 
-## The envelope hook (default on WebSearch and WebFetch, opt-in for browser MCP servers)
+## The envelope hook (default on WebSearch, WebFetch and the catalog's mail, calendar, Drive and browser MCP servers)
 
 `scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
 browser / search results in an `<untrusted source="..." fetch-nonce="...">`
@@ -472,8 +472,12 @@ envelope before the model sees them -- the same framing `wrapUntrustedFetch()`
 gives the `WebFetch` path -- scrubs forged security tags out of the payload,
 names any injection patterns it matched (forged `<untrusted>` /
 `<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
-overrides, credential targets, exfil shapes) and appends the full payload to
-`store/browser-content.log` for reading outside the model's context. The log is
+overrides, credential targets, exfil shapes) and appends a record to
+`store/browser-content.log` for reading outside the model's context. The record
+holds the tool, source, byte count, pattern counts and nonce, plus the payload
+itself, except for the catalog mail, calendar, Drive and playwright servers below,
+whose payload is kept only when a forged frame matched; the log sits in the shared
+`store/`, so every agent running as the same OS user can read it. The log is
 capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
 `browser-content.log.1`, replacing an older one, so at most about twice the cap
 is kept; both files are mode 0600, a symlinked log path or lock file
@@ -487,7 +491,7 @@ repo-shipped `.claude/settings.json` for the main agent, and by the scaffold
 (`injectWebSearchEnvelope`, with a startup migration for existing agents) for
 every sub-agent. Every agent can call WebSearch: three profiles allow it by
 name, and the permissive ones run with the permission bypass. The hook does
-nothing until WebSearch or WebFetch is called. Its label tells the agent to read and use
+nothing until a tool its matcher names is called. Its label tells the agent to read and use
 the content's facts and to refuse only its imperatives, so an agent does not
 stop on a round whose content was its job (BORITOOLVASAT921).
 
@@ -501,19 +505,29 @@ content's say-so, and that its facts are usable.
 
 There is no per-agent opt-out: the startup migration re-adds a removed WebSearch
 group on the next dashboard start, as it does for the gates. An operator who
-wires the envelope under their own matcher that also covers WebSearch (the
-browser pattern below) keeps theirs, and no second copy is added.
+wires the envelope under their own matcher that also covers WebSearch or
+WebFetch keeps theirs, and no second copy is added; the managed group then adds
+only the built-in tool that group misses, so that group should name the MCP
+servers below itself.
 
-A browser MCP server is still **not wired by default**, because an install with
-no browser gains nothing from it. Operators who run one add its matcher
-themselves, in the project `settings.json` or `settings.local.json`:
+Since MCPUNTRUSTED1114 the same default group also covers the catalog's
+`gmail`, `gmail-v2`, `google-calendar`, `google-drive` and `playwright` MCP
+servers (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__.*`):
+an email, a calendar invite, a shared document or a page is text anyone can
+author, and before this it reached the agent with no envelope and no label. A
+server installed under another name (another browser MCP, `mcp__chrome*`) is
+**not wired by default**. Three cases an operator should recognise: the same
+service from another MCP package (another Gmail or Calendar server), a
+plugin-provided server (named `mcp__plugin_<plugin>_<server>__...`), and a hosted
+connector. Operators who run one add its matcher themselves, in
+the project `settings.json` or `settings.local.json`:
 
 ```json
 {
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__playwright__browser_.*|mcp__chrome.*|WebSearch",
+        "matcher": "mcp__chrome.*",
         "hooks": [
           {
             "type": "command",
@@ -526,6 +540,12 @@ themselves, in the project `settings.json` or `settings.local.json`:
   }
 }
 ```
+
+Behaviour change for release notes: mail, invites and Drive documents now arrive
+labelled as external content whose imperatives are data, so an install that
+drives agents from a Drive brief or a forwarded mail will see those instructions
+marked that way. The matcher covers every tool of the five servers, write tools
+(send, draft, create-event) included; for those the label is a token cost only.
 
 ### The shape rule, and the silent fallback behind it
 
@@ -558,7 +578,7 @@ first as sufficient:
 
 The label quotes nothing back. Its own text is trusted framing, so echoing a
 matched line there would reopen the channel the hook exists to close. Pattern
-names and counts only; the payload itself goes to the log.
+names and counts only; the payload itself goes to the log (for the private servers above, only when a forged frame matched).
 
 `envelope_attempted` in the log records which shape the hook tried. It says
 "attempted", never "succeeded": the hook cannot observe the harness's decision,
