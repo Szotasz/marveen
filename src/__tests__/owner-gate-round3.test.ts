@@ -159,6 +159,7 @@ const state = () => ({
   openrouterManual: read(OPENROUTER_MANUAL_FILE),
   agentConfig: read(join(DIR, 'agent-config.json')),
   agentSkill: list(AGENT_SKILL_DIR),
+  globalSkill: read(join(GLOBAL_SKILL_DIR, 'SKILL.md')),
   peerSkills: list(join(PEER_DIR, '.claude', 'skills')),
   identity: IDENTITY_FILES.map(read),
   claudeJson: read(join(HOME_SANDBOX, '.claude.json')),
@@ -263,6 +264,12 @@ const CASES: Case[] = [
     label: 'POST /api/skills/:name/assign', handler: tryHandleSkills as Handler, method: 'POST', path: `/api/skills/${SKILL}/assign`,
     body: { agents: [] },
     ownerCheck: (r) => { expect(r.status).toBe(200); expect(existsSync(AGENT_SKILL_DIR)).toBe(false); expect(execFileMock).not.toHaveBeenCalled() },
+  },
+  {
+    // LOW-F2-4 (self-audit): the global branch rewrites ~/.claude/skills/<name>/SKILL.md outside the quarantine queue.
+    label: 'PUT /api/skills/:name (global)', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/${SKILL}`,
+    body: { content: '---\nname: og3 edited\n---\n' },
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(read(join(GLOBAL_SKILL_DIR, 'SKILL.md'))).toBe('---\nname: og3 edited\n---\n') },
   },
   {
     // An unknown key: the owner lanes stop at the field check (400) right after the gate, so store/ stays as it is.
