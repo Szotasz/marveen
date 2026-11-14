@@ -13,7 +13,11 @@
 const WRAPPER_TAG_RX = /<\s*\/?\s*(channel|scheduled-task|trusted-peer|untrusted|system-reminder|task-notification|command-name|local-command-stdout)\b[^>]*>/gi
 // Anywhere in a line, not only at its start: a mid-line `[SYSTEM-DIREKTIVA
 // msg_id:5]` reads just as authoritative (#1530 review, point 3).
-const WRAPPER_PREFIX_RX = /\[\s*(Uzenet \\?@|Uzenet a tavoli \\?@|Üzenet \\?@|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
+// Between the words of a message header ANY whitespace counts, not one literal
+// space: the text is typed into the pane on one line, where a line break or a
+// lone CR becomes a space (pane-text.ts), so a header written across a line
+// break was no header here and became one in the pane (review of #2753).
+const WRAPPER_PREFIX_RX = /\[\s*(Uzenet\s+\\?@|Uzenet\s+a\s+tavoli\s+\\?@|Üzenet\s+\\?@|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
 const ZERO_WIDTH_RX = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g
 
 // What the model will effectively read, so the deny-list below matches it:
