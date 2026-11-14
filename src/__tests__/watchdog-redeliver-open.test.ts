@@ -1,7 +1,7 @@
 // REPLAYNOENVELOPE1114: what scripts/watchdog.sh does after it restarted a sub-agent's session. It used to call
 // scripts/watchdog-replay.py, which typed the raw content of every delivered, not completed message into the pane:
 // no envelope, no sender, no id, system directives and seen rows too. Now it types nothing. It sends ONE request
-// that carries only the agent's name (POST /api/agents/<id>/redeliver-unseen, no body, no query), the server chooses
+// that carries only the agent's name (POST /api/agents/<id>/redeliver-open, no body, no query), the server chooses
 // the rows and the router delivers them. Pinned here:
 //   - the replay script is gone and watchdog.sh neither calls it nor types into a pane;
 //   - the request: one POST, the agent name in the path, nothing else from the caller;
@@ -78,7 +78,7 @@ async function run(opts: { token?: boolean; webPort?: number } = {}): Promise<{ 
   const body = cut('TOKEN=""\n', '\n# ── Dashboard')
   const h = join(r, 'harness.sh')
   writeFileSync(h, [`INSTALL_DIR="${r}"`, `LOG="${r}/watchdog.log"`, `WEB_PORT=${opts.webPort ?? port()}`,
-    "timestamp() { echo 'TS'; }", body, 'request_unseen_redelivery agent-a', 'echo "harness done"'].join('\n') + '\n')
+    "timestamp() { echo 'TS'; }", body, 'request_open_redelivery agent-a', 'echo "harness done"'].join('\n') + '\n')
   const res = await new Promise<{ code: number; out: string }>((resolve) => {
     execFile('bash', [h], { env: { PATH }, timeout: 30_000 },
       (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, out: stdout + stderr }))
@@ -106,17 +106,17 @@ describe('watchdog.sh types nothing into a pane any more', () => {
     const at = WATCHDOG.indexOf('$AGENT_ID restarted OK')
     expect(at).toBeGreaterThan(0)
     expect(WATCHDOG.indexOf('$AGENT_ID restarted OK', at + 1)).toBe(-1)
-    expect(WATCHDOG.slice(at, at + 200)).toMatch(/\n\s*request_unseen_redelivery "\$AGENT_ID"\n/)
-    expect(WATCHDOG.match(/^\s*request_unseen_redelivery .*$/gm)).toEqual(['    request_unseen_redelivery "$AGENT_ID"'])
+    expect(WATCHDOG.slice(at, at + 200)).toMatch(/\n\s*request_open_redelivery "\$AGENT_ID"\n/)
+    expect(WATCHDOG.match(/^\s*request_open_redelivery .*$/gm)).toEqual(['    request_open_redelivery "$AGENT_ID"'])
   })
 })
 
 describe('the request: one POST that carries only the agent name', () => {
-  it('POST to the agent\'s redeliver-unseen path, no body, no query, and tmux is never called', async () => {
+  it('POST to the agent\'s redeliver-open path, no body, no query, and tmux is never called', async () => {
     const r = await run()
     expect(r.code, r.out).toBe(0)
     expect(r.out).toContain('harness done')
-    expect(seen.map((s) => [s.method, s.url, s.body])).toEqual([['POST', '/api/agents/agent-a/redeliver-unseen', '']])
+    expect(seen.map((s) => [s.method, s.url, s.body])).toEqual([['POST', '/api/agents/agent-a/redeliver-open', '']])
     // curl sends no Content-Length (or a zero one) for a POST without data: nothing rides in the body
     expect(['0', undefined]).toContain(seen[0].contentLength)
     expect(readFileSync(tmuxLog, 'utf-8')).toBe('')
@@ -133,7 +133,7 @@ describe('the request: one POST that carries only the agent name', () => {
     answer = { status: 200, body: '{"ok":true,"requeued":3,"ids":[11,12,13]}' }
     const r = await run()
     expect(r.code, r.out).toBe(0)
-    expect(r.log).toBe('TS [watchdog] agent-a: 3 uzenet visszateve ujrakezbesitesre (redeliver-unseen)\n')
+    expect(r.log).toBe('TS [watchdog] agent-a: 3 uzenet visszateve ujrakezbesitesre (redeliver-open)\n')
     expect(readFileSync(tmuxLog, 'utf-8')).toBe('')
   })
 })
@@ -164,13 +164,13 @@ describe('no redelivery is a line in the watchdog log, never silent', () => {
     const r = await run()
     expect(r.code, r.out).toBe(0)
     expect(seen).toHaveLength(1)
-    expect(r.log).toBe(`TS [watchdog] agent-a: redeliver-unseen HTTP ${status}, ujrakezbesites kihagyva\n`)
+    expect(r.log).toBe(`TS [watchdog] agent-a: redeliver-open HTTP ${status}, ujrakezbesites kihagyva\n`)
   })
 
   it('a 200 whose body has no count: the log says so instead of claiming a redelivery', async () => {
     answer = { status: 200, body: '<html>proxy page</html>' }
     const r = await run()
     expect(r.code, r.out).toBe(0)
-    expect(r.log).toBe('TS [watchdog] agent-a: redeliver-unseen HTTP 200, de a valaszban nincs requeued szam\n')
+    expect(r.log).toBe('TS [watchdog] agent-a: redeliver-open HTTP 200, de a valaszban nincs requeued szam\n')
   })
 })

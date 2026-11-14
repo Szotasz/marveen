@@ -211,13 +211,13 @@ describe('migrate.sh: every import call', () => {
 })
 
 describe('watchdog.sh: the post-restart redelivery request', () => {
-  // From the token's read to the end of request_unseen_redelivery in the real file, then one request.
+  // From the token's read to the end of request_open_redelivery in the real file, then one request.
   // (REPLAYNOENVELOPE1114: this used to be a GET of the agent's message list for the Python replay.)
   function harness(r: string): string {
     const body = cut('watchdog.sh', 'TOKEN=""\n', '\n# ── Dashboard')
     const h = join(r, 'watchdog-redeliver.sh')
     writeFileSync(h, [`INSTALL_DIR="${r}"`, `LOG="${r}/watchdog.log"`, `WEB_PORT=${port()}`,
-      "timestamp() { date '+%Y-%m-%d %H:%M:%S'; }", body, 'request_unseen_redelivery agent-a', 'echo "redelivery done"'].join('\n') + '\n')
+      "timestamp() { date '+%Y-%m-%d %H:%M:%S'; }", body, 'request_open_redelivery agent-a', 'echo "redelivery done"'].join('\n') + '\n')
     return h
   }
 
@@ -227,7 +227,7 @@ describe('watchdog.sh: the post-restart redelivery request', () => {
     const res = await bash(harness(r), {})
     expect(res.code, res.out).toBe(0)
     expect(res.out).toContain('redelivery done')
-    expect(seen.map((s) => [s.method, s.url, s.headers.authorization, s.body])).toEqual([['POST', '/api/agents/agent-a/redeliver-unseen', `Bearer ${TOKEN}`, '']])
+    expect(seen.map((s) => [s.method, s.url, s.headers.authorization, s.body])).toEqual([['POST', '/api/agents/agent-a/redeliver-open', `Bearer ${TOKEN}`, '']])
     expectHeaderNotArgv()
   })
 

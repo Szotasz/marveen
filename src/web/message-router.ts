@@ -1336,7 +1336,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // Freshness/supersession signal: only meaningful for inter-agent
         // messages (channel-inbound are user messages with no sender-supersede
         // concept). Skip the DB count for channel-inbound to avoid needless work.
-        // REPLAYNOENVELOPE1114: a row put back by requeueDeliveredUnseenForAgent says it is a redelivery.
+        // REPLAYNOENVELOPE1114: a row put back by requeueDeliveredOpenForAgent says it is a redelivery.
         const freshness = isChannelInbound
           ? undefined
           : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id), redelivered: msg.redelivered_at != null }

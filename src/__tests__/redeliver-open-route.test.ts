@@ -1,6 +1,6 @@
-// REPLAYNOENVELOPE1114: POST /api/agents/:name/redeliver-unseen. The watchdog calls it after it restarted a
+// REPLAYNOENVELOPE1114: POST /api/agents/:name/redeliver-open. The watchdog calls it after it restarted a
 // sub-agent's session; the caller passes ONLY the agent name. The server chooses the rows
-// (requeueDeliveredUnseenForAgent) and the router delivers them. Pinned: 200 with the ids; unknown agent 404; the
+// (requeueDeliveredOpenForAgent) and the router delivers them. Pinned: 200 with the ids; unknown agent 404; the
 // main agent 400; any body (ids, `{}`, whitespace) 400 and nothing put back; any query string 400 and nothing put
 // back; called twice in a row, the second answers requeued 0. The database is the real one, in memory; nothing is
 // delivered or typed by this route.
@@ -40,24 +40,24 @@ async function post(pathAndQuery: string, body: string | null = null) {
   return { handled, ...out }
 }
 
-function deliveredUnseen(to: string, from = 'carol'): number {
+function deliveredOpen(to: string, from = 'carol'): number {
   const id = createAgentMessage(from, to, `task for ${to}`).id
   markMessageDelivered(id)
   return id
 }
 const status = (id: number) => (getDb().prepare('SELECT status FROM agent_messages WHERE id = ?').get(id) as { status: string }).status
 
-const PATH = `/api/agents/${KNOWN}/redeliver-unseen`
+const PATH = `/api/agents/${KNOWN}/redeliver-open`
 
 beforeEach(() => {
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
 })
 
-describe('POST /api/agents/:name/redeliver-unseen', () => {
+describe('POST /api/agents/:name/redeliver-open', () => {
   it('200 with the ids the server chose; the rows are pending again', async () => {
-    const a = deliveredUnseen(KNOWN, 'carol')
-    const b = deliveredUnseen(KNOWN, 'dave')
+    const a = deliveredOpen(KNOWN, 'carol')
+    const b = deliveredOpen(KNOWN, 'dave')
     const r = await post(PATH)
     expect(r.handled).toBe(true)
     expect(r.status).toBe(200)
@@ -66,27 +66,27 @@ describe('POST /api/agents/:name/redeliver-unseen', () => {
   })
 
   it('called twice in a row, the second answers requeued 0', async () => {
-    const a = deliveredUnseen(KNOWN)
+    const a = deliveredOpen(KNOWN)
     expect((await post(PATH)).body).toEqual({ ok: true, requeued: 1, ids: [a] })
     expect((await post(PATH)).body).toEqual({ ok: true, requeued: 0, ids: [] })
   })
 
   it('an unknown agent is 404, and nothing is put back', async () => {
-    const a = deliveredUnseen('zz-redeliver-unknown')
-    const r = await post('/api/agents/zz-redeliver-unknown/redeliver-unseen')
+    const a = deliveredOpen('zz-redeliver-unknown')
+    const r = await post('/api/agents/zz-redeliver-unknown/redeliver-open')
     expect(r.status).toBe(404)
     expect(status(a)).toBe('delivered')
   })
 
   it('the main agent is 400, and nothing is put back', async () => {
-    const a = deliveredUnseen(MAIN_AGENT_ID)
-    const r = await post(`/api/agents/${MAIN_AGENT_ID}/redeliver-unseen`)
+    const a = deliveredOpen(MAIN_AGENT_ID)
+    const r = await post(`/api/agents/${MAIN_AGENT_ID}/redeliver-open`)
     expect(r.status).toBe(400)
     expect(status(a)).toBe('delivered')
   })
 
   it('a body is 400 and nothing is put back: ids, an id, a filter, an empty object, whitespace, anything', async () => {
-    const a = deliveredUnseen(KNOWN)
+    const a = deliveredOpen(KNOWN)
     for (const body of [JSON.stringify({ ids: [a] }), JSON.stringify({ id: a }), JSON.stringify({ from: 'carol' }), '{}', ' ', '\n', String(a)]) {
       const r = await post(PATH, body)
       expect([JSON.stringify(body), r.status]).toEqual([JSON.stringify(body), 400])
@@ -97,7 +97,7 @@ describe('POST /api/agents/:name/redeliver-unseen', () => {
   })
 
   it('a query string is 400 and nothing is put back', async () => {
-    const a = deliveredUnseen(KNOWN)
+    const a = deliveredOpen(KNOWN)
     for (const q of [`?id=${a}`, `?ids=${a}`, '?maxAgeSec=999999', '?x', '?']) {
       const r = await post(PATH + q)
       expect([q, r.status]).toEqual([q, 400])
@@ -106,7 +106,7 @@ describe('POST /api/agents/:name/redeliver-unseen', () => {
   })
 
   it('a system row is not put back through the route either', async () => {
-    const sys = deliveredUnseen(KNOWN, 'system')
+    const sys = deliveredOpen(KNOWN, 'system')
     expect((await post(PATH)).body).toEqual({ ok: true, requeued: 0, ids: [] })
     expect(status(sys)).toBe('delivered')
   })

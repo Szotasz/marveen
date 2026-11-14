@@ -31,7 +31,7 @@ function stubBin(): string {
 
 // The watchdog-replay marker block that stood here went away with scripts/watchdog-replay.py
 // (REPLAYNOENVELOPE1114): the watchdog no longer types messages into a pane, it asks the server to put them back
-// for the router. Its failure lines in $LOG are pinned in watchdog-redeliver-unseen.test.ts.
+// for the router. Its failure lines in $LOG are pinned in watchdog-redeliver-open.test.ts.
 
 describe('generated prod-tree post-checkout hook: honest alert delivery', () => {
   const setupRepoWithHook = (): { hook: string; repo: string } => {

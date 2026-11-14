@@ -1,4 +1,4 @@
-// REPLAYNOENVELOPE1114, router level: a row requeueDeliveredUnseenForAgent put back is delivered by the REAL router
+// REPLAYNOENVELOPE1114, router level: a row requeueDeliveredOpenForAgent put back is delivered by the REAL router
 // tick through the REAL envelope (agent-message-wrap is not mocked): sender line, msg_id, the wrapper, and the
 // redelivery note. A plain pending row in the same tick gets the normal envelope without the note. The row store
 // is the real database (in memory); only the session side (tmux) is faked, nothing is typed anywhere.
@@ -54,7 +54,7 @@ vi.mock('../web/telegram-inbox-wake.js', () => ({
   maybeWakeSubAgentsForTelegram: vi.fn(),
 }))
 
-import { initDatabase, getDb, createAgentMessage, markMessageDelivered, requeueDeliveredUnseenForAgent } from '../db.js'
+import { initDatabase, getDb, createAgentMessage, markMessageDelivered, requeueDeliveredOpenForAgent } from '../db.js'
 import { REDELIVERY_NOTE } from '../web/agent-message-wrap.js'
 import { UNTRUSTED_PREAMBLE } from '../prompt-safety.js'
 import { runMessageRouterTick } from '../web/message-router.js'
@@ -71,14 +71,14 @@ beforeEach(() => {
   sent.calls.length = 0
 })
 
-describe('a row put back by requeueDeliveredUnseenForAgent goes out through the normal envelope, marked as a redelivery', () => {
+describe('a row put back by requeueDeliveredOpenForAgent goes out through the normal envelope, marked as a redelivery', () => {
   it('the router delivers it with sender, msg_id, wrapper and the note; a plain row gets no note', async () => {
     const nowSec = Math.floor(Date.now() / 1000)
     // delivered to the old session 5 minutes ago, never seen
     const back = createAgentMessage('carol', 'dex', 'please finish the report').id
     markMessageDelivered(back)
     getDb().prepare('UPDATE agent_messages SET created_at = ?, delivered_at = ? WHERE id = ?').run(nowSec - 300, nowSec - 295, back)
-    expect(requeueDeliveredUnseenForAgent('dex')).toEqual([back])
+    expect(requeueDeliveredOpenForAgent('dex')).toEqual([back])
     expect(row(back).status).toBe('pending')
     // a plain new row from another sender, never delivered before
     const plain = createAgentMessage('erin', 'dex', 'a fresh question').id

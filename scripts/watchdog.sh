@@ -127,13 +127,13 @@ fi
 export -n TOKEN
 
 # REPLAYNOENVELOPE1114: after a confirmed restart, ask the dashboard to put this agent's delivered, not closed
-# messages back in its queue (POST /api/agents/<id>/redeliver-unseen). The message router then delivers them again
+# messages back in its queue (POST /api/agents/<id>/redeliver-open). The message router then delivers them again
 # through its normal path: envelope with sender and msg_id, a note that it is a redelivery, the pane mapping, the
 # chunker, the delivery trace, the seen sweep. This script types NOTHING into the pane any more (the Python replay
 # it used to call typed raw content with no envelope), and the call carries only the agent name: the server
 # chooses the rows (never a system directive, each row at most once). No token, no dashboard or a non-200 answer
 # means no redelivery, and each of those is a line in $LOG, never silent.
-request_unseen_redelivery() {
+request_open_redelivery() {
   local AGENT_ID="$1"
   local RESPONSE HTTP_CODE BODY COUNT
 
@@ -148,24 +148,24 @@ request_unseen_redelivery() {
   if ! RESPONSE=$(curl -s -m 5 -X POST \
     -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
     -w '\n%{http_code}' \
-    "http://localhost:${WEB_PORT}/api/agents/${AGENT_ID}/redeliver-unseen" 2>/dev/null); then
+    "http://localhost:${WEB_PORT}/api/agents/${AGENT_ID}/redeliver-open" 2>/dev/null); then
     echo "$(timestamp) [watchdog] $AGENT_ID: dashboard nem erheto el, ujrakezbesites kihagyva" >> "$LOG"
     return
   fi
   HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
   BODY=$(printf '%s' "$RESPONSE" | sed '$d')
   if [ "$HTTP_CODE" != "200" ]; then
-    echo "$(timestamp) [watchdog] $AGENT_ID: redeliver-unseen HTTP $HTTP_CODE, ujrakezbesites kihagyva" >> "$LOG"
+    echo "$(timestamp) [watchdog] $AGENT_ID: redeliver-open HTTP $HTTP_CODE, ujrakezbesites kihagyva" >> "$LOG"
     return
   fi
   COUNT=$(printf '%s' "$BODY" | sed -n 's/.*"requeued":\([0-9][0-9]*\).*/\1/p' | head -n1)
   if [ -z "$COUNT" ]; then
-    echo "$(timestamp) [watchdog] $AGENT_ID: redeliver-unseen HTTP 200, de a valaszban nincs requeued szam" >> "$LOG"
+    echo "$(timestamp) [watchdog] $AGENT_ID: redeliver-open HTTP 200, de a valaszban nincs requeued szam" >> "$LOG"
     return
   fi
   # Quiet on zero: a restart with nothing to put back is the normal case.
   if [ "$COUNT" -gt 0 ]; then
-    echo "$(timestamp) [watchdog] $AGENT_ID: $COUNT uzenet visszateve ujrakezbesitesre (redeliver-unseen)" >> "$LOG"
+    echo "$(timestamp) [watchdog] $AGENT_ID: $COUNT uzenet visszateve ujrakezbesitesre (redeliver-open)" >> "$LOG"
   fi
 }
 
@@ -258,7 +258,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   if tmux has-session -t "=$SESSION_NAME:" 2>/dev/null; then
     echo "$(timestamp) [watchdog] $AGENT_ID restarted OK" >> "$LOG"
-    request_unseen_redelivery "$AGENT_ID"
+    request_open_redelivery "$AGENT_ID"
   else
     echo "$(timestamp) [watchdog] $AGENT_ID restart FAILED" >> "$LOG"
   fi

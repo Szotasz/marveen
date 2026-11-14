@@ -1218,7 +1218,7 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
-  // REPLAYNOENVELOPE1114: set (together with requeued_at) only by requeueDeliveredUnseenForAgent, when a row that
+  // REPLAYNOENVELOPE1114: set (together with requeued_at) only by requeueDeliveredOpenForAgent, when a row that
   // was delivered before is put back to pending after the recipient's session was restarted. The envelope reads it
   // to say "this is a redelivery". It is the explicit flag on purpose: delivered_at cannot tell, because the pull
   // path (claimPendingForAgent) overwrites delivered_at before it wraps. NULL for every other row.
@@ -5046,7 +5046,7 @@ export interface AgentMessage {
   // UNBLOCKS925: 'unblocks' when the main agent flagged the row as releasing a blocker of the recipient's current
   // work; null or absent otherwise. Optional in the type for the same reason as urgent.
   affects_current_work?: string | null
-  // REPLAYNOENVELOPE1114: when requeueDeliveredUnseenForAgent put this delivered row back to pending (see the
+  // REPLAYNOENVELOPE1114: when requeueDeliveredOpenForAgent put this delivered row back to pending (see the
   // migration). Optional in the type for the same reason as urgent; null on every row it did not touch.
   redelivered_at?: number | null
 }
@@ -5566,7 +5566,7 @@ interface RequeuePlan<R extends { id: number }> {
   skip: (row: R) => boolean
 }
 
-// The part requeueAbandonedForAgent and requeueDeliveredUnseenForAgent share: the options defaulting and guard
+// The part requeueAbandonedForAgent and requeueDeliveredOpenForAgent share: the options defaulting and guard
 // (nothing at all for cap <= 0 or maxAgeSec <= 0), one transaction, and the cap loop: of the selected rows the newest
 // `cap` are revived, every remaining one is marked skipped (requeue_skipped_at) for good, one info line names the
 // skipped ids, and the revived ids come back OLDEST first. `build` gets `now` and the window start (now - maxAgeSec)
@@ -5600,10 +5600,10 @@ function requeueWithCap<R extends { id: number }>(
   })()
 }
 
-export type RequeueDeliveredUnseenOpts = RequeueAbandonedOpts
+export type RequeueDeliveredOpenOpts = RequeueAbandonedOpts
 
 // REPLAYNOENVELOPE1114: after a sub-agent's session was restarted (scripts/watchdog.sh, through
-// POST /api/agents/:name/redeliver-unseen), put the rows the old session was handed and did not close back in the
+// POST /api/agents/:name/redeliver-open), put the rows the old session was handed and did not close back in the
 // queue, so the router delivers them again through its normal envelope. The row set:
 // delivered, not completed, created inside the window (2 hours by default, the old replay script's window), not
 // from `system` (an old directive must never reach a fresh session again), never put back before by either
@@ -5625,7 +5625,7 @@ export type RequeueDeliveredUnseenOpts = RequeueAbandonedOpts
 // In the abandoned case the sender was told the handoff failed, so a newer message means it re-sent. Here the
 // sender was told nothing; a newer message is just the next message of the conversation, and dropping the earlier
 // one would lose it silently. Supersession is shown to the reader by the existing freshness note instead.
-export function requeueDeliveredUnseenForAgent(agent: string, opts: RequeueDeliveredUnseenOpts = {}): number[] {
+export function requeueDeliveredOpenForAgent(agent: string, opts: RequeueDeliveredOpenOpts = {}): number[] {
   return requeueWithCap(agent, opts, 2 * 3600, 'delivered open messages over the redelivery cap are not put back', (now, since) => {
     const rows = db.prepare(
       `SELECT m.id FROM agent_messages m

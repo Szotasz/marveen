@@ -1,4 +1,4 @@
-// REPLAYNOENVELOPE1114: a row requeueDeliveredUnseenForAgent put back after a session restart is delivered again
+// REPLAYNOENVELOPE1114: a row requeueDeliveredOpenForAgent put back after a session restart is delivered again
 // through the normal envelope, and the envelope says it is a redelivery: the reader is a fresh session, and the
 // previous one may have seen the row and started on it. The note is a fixed constant in the trusted framing (outside the wrapper), so nothing a
 // sender controls may enter it. This file pins the note, its place after the freshness note, the categories that

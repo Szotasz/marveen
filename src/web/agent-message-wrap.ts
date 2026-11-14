@@ -103,7 +103,7 @@ function freshnessNote(ageMs?: number, newerFromSameSender?: number): string {
   return ''
 }
 
-// REPLAYNOENVELOPE1114: the note on a row that requeueDeliveredUnseenForAgent (db.ts) put back after the
+// REPLAYNOENVELOPE1114: the note on a row that requeueDeliveredOpenForAgent (db.ts) put back after the
 // recipient's session was restarted. The reader is a FRESH session with no memory of the row; the previous session
 // was handed it once, and may have seen it, started on it, or even finished it without closing it. So the note
 // says where to look before doing it again. A fixed constant, ASCII, no at-sign, no angle bracket, no closing
