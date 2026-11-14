@@ -1812,12 +1812,33 @@ export function bashEgressDeny(ytIngestOnly: boolean = ytDlpIngestOnly()): strin
 // The HOME placeholder is resolved through resolveProfilePlaceholders like any
 // profile rule, which also rewrites a single leading '/' to '//': a single-slash
 // absolute Read rule is PROJECT-RELATIVE and silently never matches (TMPLPERM908).
+//
+// The secrets-file rule comes in TWO forms, and both stay (ENVATLEAK1114,
+// measured 2026-11-14 headless on Claude Code 2.1.323 with canary files):
+//   Read(**/.env) is relative to the session's working directory, so it only
+//     covers the cwd SUBTREE. A sub-agent runs in agents/<name>, which puts the
+//     install's own secrets file two levels ABOVE its cwd: with only this form
+//     in the project settings, the Read tool returned the canary from a file
+//     two levels above the cwd (the no-rule control returned it too). The same
+//     gap holds for the prompt file-mention attachment, which runs no tool and
+//     therefore no PreToolUse hook either.
+//   Read(//**/.env) is anchored at the filesystem root, so it matches a file of
+//     that name anywhere. Measured on 2.1.323: the Read tool was refused on the
+//     file two levels above the cwd (rule in project settings, and separately in
+//     user settings) and on the file inside the cwd, and the file-mention
+//     attachment of a file two levels above the cwd did not reach the context.
+//   resolveProfilePlaceholders leaves a rule that already starts with '//' as it
+//   is, so the root form reaches settings.json with exactly two slashes.
+//   The cwd-relative form is KEPT: older CLI versions were NOT measured, and on
+//   one where the root form did not match, the single form is still the partial
+//   cover it always was (the cwd subtree).
 export const FLEET_BASELINE_DENY = [
   'Read(${HOME}/.ssh/**)',
   'Read(${HOME}/.aws/**)',
   'Read(${HOME}/.gnupg/**)',
   'Read(${HOME}/.env)',
   'Read(**/.env)',
+  'Read(//**/.env)',
   'Bash(sudo:*)',
   'Bash(*/sudo *)',
   'Bash(rm -rf ${HOME}:*)',
