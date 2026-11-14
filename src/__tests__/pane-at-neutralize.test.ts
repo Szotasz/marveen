@@ -406,16 +406,29 @@ describe('typing without the mapping: no at-sign can be typed there', () => {
     expect(isSafeMcpServerName('srv x')).toBe(false)
   })
 
-  it('the boot /rename (library and fallback) refuses a name with an at-sign before typing', () => {
+  it('the boot /rename refuses a name with an at-sign before typing; without the library nothing is typed', () => {
     const lib = readFileSync(join(ROOT, 'scripts', 'lib', 'main-rename.sh'), 'utf-8')
     const guardAt = lib.indexOf('*@*)')
     expect(guardAt).toBeGreaterThan(0)
     expect(guardAt).toBeLessThan(lib.indexOf('send-keys -t "$target" -l "$cmd"'))
     const out = execFileSync('bash', ['-c', `. "$1"; main_rename_send /usr/bin/false target "bot ${AT}x"; echo "rc=$?"`, 'x', join(ROOT, 'scripts', 'lib', 'main-rename.sh')], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     expect(out.trim()).toBe('rc=4')
+    // TYPINGPATHS1114: the fallback used to type the name itself (no `-l`, at-sign check only). Now
+    // channels.sh types the name nowhere: the else branch is one log line, and the only place the
+    // name variable is passed on is the library call.
     const ch = readFileSync(join(ROOT, 'scripts', 'channels.sh'), 'utf-8')
-    const fb = ch.indexOf('one-shot /rename')
-    expect(ch.slice(fb, fb + 600)).toMatch(/case "\$_bot_name" in\s+\*@\*\)/)
+    const call = ch.indexOf('main_rename_send "$TMUX" "=$SESSION:" "$_bot_name" || true\nelse\n')
+    expect(call).toBeGreaterThan(0)
+    const elseBranch = ch.slice(call).split('\nelse\n')[1].split('\nfi\n')[0]
+    expect(elseBranch.split('\n').length).toBe(1)
+    expect(elseBranch).toMatch(/^ {2}echo ".*could not be loaded -- boot \/rename NOT typed.*\(TYPINGPATHS1114\)" >&2$/)
+    expect(ch).not.toMatch(/send-keys[^\n]*\/rename/)
+    const nameUses = ch.split('\n').filter((l) => !/^\s*#/.test(l) && l.includes('_bot_name'))
+    expect(nameUses).toEqual([
+      '_bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"',
+      '  main_rename_send "$TMUX" "=$SESSION:" "$_bot_name" || true',
+      'unset _bot_name',
+    ])
   })
 })
 
@@ -429,7 +442,7 @@ describe('tmux typing lives only in the listed files', () => {
     'src/web/agent-process.ts': 'A: sendPromptToSession types paneTyped(text); the identity /rename refuses an at-sign',
     'src/web/routes/agent-terminal.ts': 'A, DELIBERATELY unmapped: the owner types into the dashboard terminal on purpose',
     'scripts/lib/main-rename.sh': 'A: /rename <name>, refuses an at-sign',
-    'scripts/channels.sh': 'A (fallback /rename, refuses an at-sign) + B/C',
+    'scripts/channels.sh': 'B/C: the boot /rename is typed by the library only; if it cannot be loaded, nothing is typed',
     'src/web/context-restart-gate-runner.ts': 'B: /clear, /model <validated id>, /effort <fixed level>',
     'src/web/channel-mcp-reconnect.ts': 'B: /mcp <action> <isSafeMcpServerName>',
     'src/web/channel-plugin-unlock.ts': 'B/C',
