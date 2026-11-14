@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import {
   formatSupportStatus,
@@ -13,6 +13,7 @@ import {
 import { createStatusDeps, runSupportCli, SUPPORT_CLI_USAGE } from '../support-standby-cli.js'
 import { buildSupportGrantLines } from '../support-access-line.js'
 import type { SshdAssessment } from '../support-access-sshd.js'
+import { currentLoginUser } from '../support-access-sshd-run.js'
 import { TEST_ONLY_KEYS, TEST_ONLY_FROM } from './helpers/sk-test-keys.js'
 
 const LINES = buildSupportGrantLines({
@@ -205,22 +206,35 @@ describe('createStatusDeps', () => {
     root = null
   })
 
-  it('reads the keys files of the login user, byte for byte, and no variable moves the directory', () => {
+  it('reads the keys files under the home of the account it was given, byte for byte; no variable moves the directory', () => {
     root = mkdtempSync(join(tmpdir(), 'support-standby-deps-'))
     const elsewhere = join(root, 'elsewhere')
-    mkdirSync(join(root, '.ssh'))
-    mkdirSync(elsewhere)
-    writeFileSync(join(root, '.ssh', 'authorized_keys'), Buffer.from([0x61, 0xe9, 0x0a]))
+    const home = join(root, 'home')
+    mkdirSync(join(home, '.ssh'), { recursive: true })
+    mkdirSync(join(elsewhere, '.ssh'), { recursive: true })
+    writeFileSync(join(home, '.ssh', 'authorized_keys'), Buffer.from([0x61, 0xe9, 0x0a]))
     writeFileSync(join(elsewhere, 'authorized_keys'), 'not this one\n')
-    mkdirSync(join(root, '.ssh', 'authorized_keys2'))
-    process.env['HOME'] = root
+    writeFileSync(join(elsewhere, '.ssh', 'authorized_keys'), 'not this one either\n')
+    mkdirSync(join(home, '.ssh', 'authorized_keys2'))
+    process.env['HOME'] = elsewhere
     process.env['MARVEEN_SSH_DIR'] = elsewhere
-    const real = createStatusDeps()
+    const real = createStatusDeps({ name: 'marveen', isRoot: false, home })
     expect(real.readKeysFile('authorized_keys')).toBe('aé\n')
     // A directory in the file's place exists and cannot be read as a file.
     expect(real.readKeysFile('authorized_keys2')).toBe('unreadable')
-    rmSync(join(root, '.ssh', 'authorized_keys2'), { recursive: true })
+    rmSync(join(home, '.ssh', 'authorized_keys2'), { recursive: true })
     expect(real.readKeysFile('authorized_keys2')).toBeNull()
+  })
+
+  // S1 of Dani's review: the default account is the one in the user database, whatever HOME says.
+  it('takes the login account from the user database, not from HOME', () => {
+    root = mkdtempSync(join(tmpdir(), 'support-standby-deps-'))
+    process.env['HOME'] = root
+    const account = currentLoginUser()
+    expect(account.home).toBe(userInfo().homedir)
+    expect(account.home).not.toBe(root)
+    expect(account.name).toBe(userInfo().username)
+    expect(account.isRoot).toBe(process.getuid?.() === 0)
   })
 
   it('tells an executable file from one that is not, and from a missing one', () => {

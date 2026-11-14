@@ -30,7 +30,8 @@ usage: sshd [-46DdeiqTt] [-C connection_spec] [-c host_cert_file]
 `
 const V_10_0 = 'OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026\n'
 
-// Lines of `sshd -T` on OpenSSH 10.0p2 (Debian 13 defaults), verbatim, in the order sshd printed them.
+// Lines of `sshd -T` on OpenSSH 10.0p2 (Debian 13 defaults), verbatim, in the order sshd printed them. The
+// forcecommand line was added later, at the place 9.6 prints it (measured, meres/b1s3).
 const T_DEFAULT = `port 22
 addressfamily any
 listenaddress [::]:22
@@ -47,6 +48,7 @@ authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2
 hostkey /etc/ssh/ssh_host_rsa_key
 hostkey /etc/ssh/ssh_host_ecdsa_key
 hostkey /etc/ssh/ssh_host_ed25519_key
+forcecommand none
 acceptenv LANG
 acceptenv LC_*
 subsystem sftp /usr/lib/openssh/sftp-server
@@ -100,12 +102,21 @@ describe('parseSshdEffectiveConfig', () => {
       authorizedKeysFiles: ['.ssh/authorized_keys', '.ssh/authorized_keys2'],
       authorizedKeysCommand: 'none',
       trustedUserCaKeys: 'none',
+      forceCommand: 'none',
+      acceptEnv: ['LANG', 'LC_*'],
       listenPorts: [22],
       listenAddresses: ['0.0.0.0', '::'],
     })
   })
 
-  it.each(['permitrootlogin', 'permittunnel', 'usedns', 'authorizedkeysfile', 'authorizedkeyscommand', 'trustedusercakeys'])(
+  it('takes a forced command with its arguments as one value, and every acceptenv pattern, also two on one line', () => {
+    const text = config({ forcecommand: '/bin/echo FORCED here' }).replace(/^acceptenv .*\n/gm, '') + 'acceptenv LANG\nacceptenv BASH_ENV *\n'
+    expect(parseSshdEffectiveConfig(text)).toMatchObject({ forceCommand: '/bin/echo FORCED here', acceptEnv: ['LANG', 'BASH_ENV', '*'] })
+    // No acceptenv line at all is what sshd prints when nothing is accepted (measured, 9.6).
+    expect(parseSshdEffectiveConfig(T_DEFAULT.replace(/^acceptenv .*\n/gm, ''))).toMatchObject({ acceptEnv: [] })
+  })
+
+  it.each(['permitrootlogin', 'permittunnel', 'usedns', 'authorizedkeysfile', 'authorizedkeyscommand', 'trustedusercakeys', 'forcecommand'])(
     'answers null when the %s line is missing',
     (key) => {
       expect(parseSshdEffectiveConfig(config({ [key]: '' }))).toBeNull()
@@ -549,10 +560,10 @@ describe('assessSshd', () => {
 
   it.each(['yes', 'point-to-point', 'ethernet', 'maybe'])('REFUSES when tunnels are permitted (permittunnel %s)', (value) => {
     expect(assessSshd(every(config({ permittunnel: value })))).toMatchObject({ ok: false, problem: 'tunnel_permitted' })
-    // The login user does not change this: the refusal is not a root-only rule.
+    // Not asked as root: that rule comes first, and it is a refusal too.
     expect(assessSshd({ ...every(config({ permittunnel: value })), loginIsRoot: false })).toMatchObject({
       ok: false,
-      problem: 'tunnel_permitted',
+      problem: 'sshd_config_not_fully_readable',
     })
   })
 
@@ -570,8 +581,15 @@ describe('assessSshd', () => {
     },
   )
 
-  it('does not look at the root login setting when the login user is not root', () => {
-    expect(assessSshd({ ...every(config({ permitrootlogin: 'no' })), loginIsRoot: false })).toMatchObject({ ok: true })
+  // B2 of Dani's review (measured, 9.6): a non-root sshd -T can miss a drop-in the daemon applies.
+  it('refuses every install whose user is not root, whatever the answers say, with its own reason', () => {
+    for (const input of [ok, every(config({ permitrootlogin: 'no' })), every(null), { ...ok, answers: [] }]) {
+      expect(assessSshd({ ...input, loginIsRoot: false, loginUser: 'marveen', loginHome: '/home/marveen' })).toEqual({
+        ok: false,
+        problem: 'sshd_config_not_fully_readable',
+        version: { major: 10, minor: 0 },
+      })
+    }
   })
 
   it('refuses when sshd reads keys from anywhere but the two files under the login user\'s .ssh', () => {
@@ -633,6 +651,35 @@ describe('assessSshd', () => {
     expect(assessSshd({ ...ok, answers: one })).toMatchObject({ ok: false, problem: 'other_key_source' })
   })
 
+  // B1 of Dani's review (measured, 9.6): sshd runs a ForceCommand INSTEAD of the line's bound command.
+  it('refuses when a forced command is set, for every connection or only for one', () => {
+    for (const value of ['/bin/echo FORCED', 'internal-sftp', 'None ']) {
+      expect(assessSshd(every(config({ forcecommand: value })))).toMatchObject({ ok: false, problem: 'force_command_set' })
+    }
+    const one = answers().map((a, i) => (i === 2 ? { ...a, text: config({ forcecommand: '/bin/echo FORCED' }) } : a))
+    expect(assessSshd({ ...ok, answers: one })).toMatchObject({ ok: false, problem: 'force_command_set' })
+    // A missing line is not "none": the text is not something to conclude from.
+    expect(assessSshd(every(config({ forcecommand: '' })))).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
+  })
+
+  // S3 of Dani's review: what a client may set before the login shell starts the dispatcher.
+  it.each(['*', 'BASH_ENV', 'LC_*X', 'L*', 'LANG?', 'ENV', 'LD_PRELOAD', 'PATH', 'lang', 'LC_'])(
+    'refuses when a client may send %s',
+    (pattern) => {
+      const text = config({ acceptenv: '' }) + 'acceptenv LANG\nacceptenv ' + pattern + '\n'
+      expect(assessSshd(every(text))).toMatchObject({ ok: false, problem: 'accept_env_too_wide' })
+      const one = answers().map((a, i) => (i === 1 ? { ...a, text } : a))
+      expect(assessSshd({ ...ok, answers: one })).toMatchObject({ ok: false, problem: 'accept_env_too_wide' })
+    },
+  )
+
+  it('accepts the stock Debian and Ubuntu environment names, and none at all', () => {
+    for (const names of [['LANG', 'LC_*'], ['LANG', 'LC_*', 'COLORTERM', 'NO_COLOR'], ['LANGUAGE', 'LC_ALL', 'COLORFGBG'], []]) {
+      const text = T_DEFAULT.replace(/^acceptenv .*\n/gm, '') + names.map((n) => 'acceptenv ' + n + '\n').join('')
+      expect(assessSshd(every(text))).toMatchObject({ ok: true })
+    }
+  })
+
   it('names the FIRST failing check', () => {
     expect(assessSshd({ ...every(config({ permittunnel: 'yes' })), versionText: V_7_6 })).toMatchObject({
       ok: false,
@@ -644,5 +691,10 @@ describe('assessSshd', () => {
       problem: 'tunnel_permitted',
     })
     expect(assessSshd(every(config({ usedns: 'yes', permittunnel: 'yes' })))).toMatchObject({ ok: false, problem: 'sshd_usedns_enabled' })
+    expect(assessSshd(every(config({ trustedusercakeys: '/etc/ca', forcecommand: '/x' })))).toMatchObject({ problem: 'other_key_source' })
+    expect(assessSshd(every(config({ forcecommand: '/x', acceptenv: '*' })))).toMatchObject({ problem: 'force_command_set' })
+    expect(assessSshd({ ...every(config({ permittunnel: 'yes' })), loginIsRoot: false, versionText: V_7_6 })).toMatchObject({
+      problem: 'sshd_too_old',
+    })
   })
 })

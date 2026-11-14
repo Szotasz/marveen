@@ -12,9 +12,8 @@
 import { accessSync, constants, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { realSshDir } from './ssh-dir.js'
 import { SUPPORT_FROM_CIDRS, SUPPORT_KEYS } from './support-access-pins.js'
-import { createSshdProbeDeps, probeSshd } from './support-access-sshd-run.js'
+import { createSshdProbeDeps, currentLoginUser, probeSshd } from './support-access-sshd-run.js'
 import { formatSupportStatus, supportStatus, type SupportStatusDeps } from './support-standby.js'
 
 // What the dashboard and the tests use from the same file the command line runs.
@@ -24,13 +23,18 @@ export { SUPPORT_ROUTINE_MIN_NODE_MAJOR, formatSupportStatus, supportStatus } fr
 
 export const SUPPORT_CLI_USAGE = 'usage: support-standby.mjs status\n'
 
-/** The real dependencies of `status` on this machine. The `.ssh` directory is the login user's; no variable moves it. */
-export function createStatusDeps(): SupportStatusDeps {
-  const sshDir = realSshDir()
+/**
+ * The real dependencies of `status` on this machine. The probe and the keys
+ * files use ONE account, the login user from the user database, so the report
+ * never describes two homes. HOME does not move it, and neither does the test
+ * seam of the write paths. `account` is for tests.
+ */
+export function createStatusDeps(account = currentLoginUser()): SupportStatusDeps {
+  const sshDir = join(account.home, '.ssh')
   return {
     nodeVersion: process.version,
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
-    probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps()),
+    probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
         accessSync(path, constants.X_OK)

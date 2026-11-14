@@ -5,7 +5,6 @@ import {
   SSHD_PROBE_MAX_QUERIES,
   SSHD_PROBE_TIMEOUT_MS,
   SSHD_PROGRAM,
-  SSH_KEYGEN_PROGRAM,
   type LocalInterfaceAddress,
   type ProgramResult,
   type SshdProbeDeps,
@@ -19,7 +18,9 @@ usage: sshd [-46DdeiqTt] [-C connection_spec] [-c host_cert_file]
 `
 
 /** The lines of a real `sshd -T` answer that matter here (order as sshd prints them). */
-function sshdT(over: { ports?: number[]; tunnel?: string; usedns?: string; listen?: string[]; keysFile?: string } = {}): string {
+function sshdT(
+  over: { ports?: number[]; tunnel?: string; usedns?: string; listen?: string[]; keysFile?: string; force?: string; acceptEnv?: string[] } = {},
+): string {
   const ports = over.ports ?? [22]
   return (
     ports.map((p) => 'port ' + p + '\n').join('') +
@@ -31,7 +32,10 @@ function sshdT(over: { ports?: number[]; tunnel?: string; usedns?: string; liste
     'trustedusercakeys none\n' +
     'authorizedkeyscommand none\n' +
     'authorizedkeysfile ' + (over.keysFile ?? '.ssh/authorized_keys .ssh/authorized_keys2') + '\n' +
-    'permittunnel ' + (over.tunnel ?? 'no') + '\n'
+    'permittunnel ' + (over.tunnel ?? 'no') + '\n' +
+    'forcecommand ' + (over.force ?? 'none') + '\n' +
+    // The stock Debian line, as 9.6 prints it: one line per pattern (measured).
+    (over.acceptEnv ?? ['LANG', 'LC_*']).map((p) => 'acceptenv ' + p + '\n').join('')
   )
 }
 
@@ -64,17 +68,14 @@ function fake(
     home?: string
     interfaces?: LocalInterfaceAddress[]
     version?: ProgramResult
-    keygen?: ProgramResult
     answer?: (args: readonly string[]) => ProgramResult | string
+    interfacesThrow?: boolean
   } = {},
-): { deps: SshdProbeDeps; calls: Call[]; made: string[]; removed: string[] } {
+): { deps: SshdProbeDeps; calls: Call[] } {
   const calls: Call[] = []
-  const made: string[] = []
-  const removed: string[] = []
   const deps: SshdProbeDeps = {
     run: async (file, args, timeoutMs) => {
       calls.push({ file, args: [...args], timeoutMs })
-      if (file === SSH_KEYGEN_PROGRAM) return over.keygen ?? { code: 0, stdout: '', stderr: '' }
       if (args[0] === '-V') return over.version ?? { code: 0, stdout: V_10_0, stderr: '' }
       const out = over.answer === undefined ? sshdT() : over.answer(args)
       return typeof out === 'string' ? { code: 0, stdout: out, stderr: '' } : out
@@ -84,17 +85,12 @@ function fake(
       isRoot: over.isRoot !== false,
       home: over.home ?? (over.isRoot === false ? '/home/marveen' : '/root'),
     },
-    interfaceAddresses: () => over.interfaces ?? INTERFACES,
-    makePrivateDir: () => {
-      const dir = '/scratch/probe-' + (made.length + 1)
-      made.push(dir)
-      return dir
-    },
-    removeDir: (path) => {
-      removed.push(path)
+    interfaceAddresses: () => {
+      if (over.interfacesThrow === true) throw new Error('interface list exploded')
+      return over.interfaces ?? INTERFACES
     },
   }
-  return { deps, calls, made, removed }
+  return { deps, calls }
 }
 
 const queries = (calls: Call[]): Call[] => calls.filter((c) => c.file === SSHD_PROGRAM && c.args[0] === '-T')
@@ -134,7 +130,7 @@ describe('reachableLocalAddresses', () => {
 
 describe('probeSshd', () => {
   it('as root: asks the version, then about every connection, by absolute path, with fixed arguments and no host key', async () => {
-    const { deps, calls, made } = fake()
+    const { deps, calls } = fake()
     expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toEqual({
       ok: true,
       version: { major: 10, minor: 0 },
@@ -149,7 +145,6 @@ describe('probeSshd', () => {
       ['-T', '-C', 'user=root,addr=2001:db8::7,host=2001:db8::7,laddr=192.0.2.10,lport=22'],
       ['-T', '-C', 'user=root,addr=2001:db8::7,host=2001:db8::7,laddr=2001:db8::10,lport=22'],
     ])
-    expect(made).toEqual([])
   })
 
   it('reads the version from the usage text an older sshd prints with exit code 1', async () => {
@@ -157,22 +152,23 @@ describe('probeSshd', () => {
     expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: true, version: { major: 8, minor: 9 } })
   })
 
-  it('as another user: makes a throwaway host key, passes it to every query, and removes its directory', async () => {
-    const { deps, calls, made, removed } = fake({ isRoot: false })
-    expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: true })
-    expect(SSH_KEYGEN_PROGRAM).toBe('/usr/bin/ssh-keygen')
-    expect(calls[1]).toEqual({
-      file: '/usr/bin/ssh-keygen',
-      args: ['-q', '-t', 'ed25519', '-N', '', '-f', '/scratch/probe-1/probe_host_key'],
-      timeoutMs: 5000,
+  // B2 of Dani's review: a non-root sshd -T can miss a drop-in the daemon applies.
+  it('as another user: asks the version only, starts nothing else, and refuses with its own reason', async () => {
+    const { deps, calls } = fake({ isRoot: false })
+    expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toEqual({
+      ok: false,
+      problem: 'sshd_config_not_fully_readable',
+      version: { major: 10, minor: 0 },
     })
-    expect(queries(calls)).toHaveLength(4)
-    for (const q of queries(calls)) {
-      expect(q.args.slice(0, 4)).toEqual(['-T', '-h', '/scratch/probe-1/probe_host_key', '-C'])
-      expect(part(q.args, 'user')).toBe('marveen')
-    }
-    expect(made).toEqual(['/scratch/probe-1'])
-    expect(removed).toEqual(['/scratch/probe-1'])
+    expect(calls).toEqual([{ file: '/usr/sbin/sshd', args: ['-V'], timeoutMs: 5000 }])
+  })
+
+  it('as another user: a version that cannot be read or is too old is still named first', async () => {
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, version: { code: null, stdout: '', stderr: '' } }).deps)).toMatchObject({
+      problem: 'sshd_version_unknown',
+    })
+    const old = { code: 0, stdout: 'OpenSSH_8.3p1 Debian-1\n', stderr: '' }
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, version: old }).deps)).toMatchObject({ problem: 'sshd_too_old' })
   })
 
   it('refuses, and starts nothing else, when sshd cannot be run', async () => {
@@ -180,34 +176,52 @@ describe('probeSshd', () => {
       { code: null, stdout: '', stderr: '' },
       { code: null, stdout: V_10_0, stderr: '' },
     ]) {
-      const { deps, calls, made } = fake({ isRoot: false, version })
+      const { deps, calls } = fake({ version })
       expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: false, problem: 'sshd_version_unknown' })
       expect(calls).toHaveLength(1)
-      expect(made).toEqual([])
     }
   })
 
-  it('refuses when the host key cannot be made, asks nothing, and still removes the directory', async () => {
-    for (const keygen of [
-      { code: 1, stdout: '', stderr: 'x' },
-      { code: null, stdout: '', stderr: '' },
-    ]) {
-      const { deps, calls, removed } = fake({ isRoot: false, keygen })
-      expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
-      expect(queries(calls)).toHaveLength(0)
-      expect(removed).toEqual(['/scratch/probe-1'])
-    }
-  })
-
-  it('removes the directory when a program fails in a way the contract does not allow', async () => {
-    const { deps, removed } = fake({
-      isRoot: false,
+  // S5 of Dani's review: the contract is a refusal, never a rejection.
+  it('resolves with a refusal when a dependency throws, wherever it throws', async () => {
+    const exploding = fake({
       answer: () => {
         throw new Error('spawn exploded')
       },
     })
-    await expect(probeSshd({ fromCidrs: SOURCES }, deps)).rejects.toThrow('spawn exploded')
-    expect(removed).toEqual(['/scratch/probe-1'])
+    expect(await probeSshd({ fromCidrs: SOURCES }, exploding.deps)).toEqual({ ok: false, problem: 'sshd_config_unknown', version: null })
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ interfacesThrow: true }).deps)).toEqual({
+      ok: false,
+      problem: 'sshd_config_unknown',
+      version: null,
+    })
+    const versionThrows: SshdProbeDeps = {
+      ...fake().deps,
+      run: async () => {
+        throw new Error('no fork')
+      },
+    }
+    expect(await probeSshd({ fromCidrs: SOURCES }, versionThrows)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
+  })
+
+  // B1 of Dani's review, end to end: a ForceCommand replaces the bound command of the line.
+  it.each<[string, string | null, string | null]>([
+    ['global', null, null],
+    ['Match User root', 'user', 'root'],
+    ['Match Address 2001:db8::7', 'addr', '2001:db8::7'],
+  ])('REFUSES when a ForceCommand is set (%s)', async (_label, key, value) => {
+    const answer = (args: readonly string[]): string =>
+      sshdT({ force: key === null || part(args, key) === value ? '/bin/echo FORCED here' : 'none' })
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ answer }).deps)).toMatchObject({ ok: false, problem: 'force_command_set' })
+  })
+
+  it('REFUSES when a client may send an environment name that can run code before the dispatcher', async () => {
+    const wide = fake({ answer: () => sshdT({ acceptEnv: ['LANG', 'LC_*', '*'] }) })
+    expect(await probeSshd({ fromCidrs: SOURCES }, wide.deps)).toMatchObject({ ok: false, problem: 'accept_env_too_wide' })
+    const ubuntu = fake({ answer: () => sshdT({ acceptEnv: ['LANG', 'LC_*', 'COLORTERM', 'NO_COLOR'] }) })
+    expect(await probeSshd({ fromCidrs: SOURCES }, ubuntu.deps)).toMatchObject({ ok: true })
+    const none = fake({ answer: () => sshdT({ acceptEnv: [] }) })
+    expect(await probeSshd({ fromCidrs: SOURCES }, none.deps)).toMatchObject({ ok: true })
   })
 
   it('refuses when the first answer cannot be read, and asks nothing more', async () => {
@@ -280,17 +294,15 @@ describe('probeSshd', () => {
     expect(queries(over.calls)).toHaveLength(1)
   })
 
-  it('reads the keys file setting against the home of the user database, for root and for another user', async () => {
-    const absolute = { answer: () => sshdT({ keysFile: '/home/marveen/.ssh/authorized_keys' }) }
-    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, ...absolute }).deps)).toMatchObject({
-      ok: true,
-      keysFiles: ['authorized_keys'],
-    })
-    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ ...absolute }).deps)).toMatchObject({
+  it('reads the keys file setting against the home of the user database', async () => {
+    const own = { answer: () => sshdT({ keysFile: '/root/.ssh/authorized_keys' }) }
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ ...own }).deps)).toMatchObject({ ok: true, keysFiles: ['authorized_keys'] })
+    const other = { answer: () => sshdT({ keysFile: '/home/marveen/.ssh/authorized_keys' }) }
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ ...other }).deps)).toMatchObject({
       ok: false,
       problem: 'authorized_keys_path_unsupported',
     })
-    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, home: '/srv/marveen', ...absolute }).deps)).toMatchObject({
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ home: '/srv/root', ...own }).deps)).toMatchObject({
       ok: false,
       problem: 'authorized_keys_path_unsupported',
     })

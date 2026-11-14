@@ -3,7 +3,7 @@
 // build gives today, and it behaves exactly like the source the dashboard uses.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -105,7 +105,21 @@ describe('scripts/support-standby.mjs', () => {
     const lines = run.stdout.trimEnd().split('\n')
     expect(lines.slice(0, 1)).toEqual(['node=ok'])
     expect(lines.slice(2, 6)).toEqual(['node_minimum=20', 'pins=support_keys_unset', 'sshd=not_asked', 'sshd_version=unknown'])
-    expect(lines.slice(7)).toEqual(['support_lines=absent', 'support_lines_second_file=absent'])
+    // The keys files are the login user's from the user database, so on a developer or CI machine they may exist
+    // (count 0) or not; HOME does not move them (Dani's review of #2765, S1): another HOME gives the same answer.
+    expect(lines[7]).toMatch(/^support_lines=(?:absent|0)$/)
+    expect(lines[8]).toMatch(/^support_lines_second_file=(?:absent|0)$/)
+    expect(lines).toHaveLength(9)
+    const other = mkdtempSync(join(tmpdir(), 'support-standby-other-home-'))
+    try {
+      mkdirSync(join(other, '.ssh'))
+      writeFileSync(join(other, '.ssh', 'authorized_keys'), 'ssh-ed25519 AAAA x\n'.repeat(3))
+      const again = spawnSync(process.execPath, [FILE, 'status'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: other }, timeout: 30_000 })
+      expect(again.status).toBe(0)
+      expect(again.stdout).toBe(run.stdout)
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
     expect(readdirSync(home)).toEqual([])
   })
 

@@ -9,9 +9,16 @@
 //     `OpenSSH_<major>.<minor>` line inside the usage text.
 //   - the effective configuration FOR THE CONNECTION a support login would be:
 //     `sshd -T -C user=..,addr=..,host=..,laddr=..,lport=..`, once for every
-//     combination this file plans. Measured: as a non-root user sshd exits with
-//     "no hostkeys available" unless it gets a host key of its own through
-//     `-h`; with one it prints the same lines.
+//     combination this file plans.
+//
+// ONLY ROOT CAN SEE THE WHOLE CONFIGURATION (measured on OpenSSH 9.6, Dani's
+// review of #2765): with the stock `Include /etc/ssh/sshd_config.d/*.conf`
+// and that directory at 0700 or 0711, a non-root `sshd -T` exits with 0 and
+// prints the configuration WITHOUT the drop-ins, while the daemon applies them
+// (`permittunnel no` for the user, `yes` for root). A glob in a directory the
+// user cannot list matches nothing, in silence. So an answer asked as another
+// user than root is never enough for a line: the assessment refuses it with
+// its own reason before it reads anything.
 //
 // WHY NOT THE PLAIN `sshd -T` (measured on OpenSSH 8.9, 9.2, 9.6 and 10.0):
 // it does not apply `Match` blocks. A setting switched on only inside a Match
@@ -43,6 +50,9 @@ export type SshdProblem =
   | 'tunnel_permitted'
   | 'authorized_keys_path_unsupported'
   | 'other_key_source'
+  | 'force_command_set'
+  | 'accept_env_too_wide'
+  | 'sshd_config_not_fully_readable'
 
 /**
  * The OpenSSH version in what sshd printed, or null. Only a line that STARTS
@@ -76,6 +86,10 @@ export interface SshdEffectiveConfig {
   readonly authorizedKeysCommand: string
   /** `trustedusercakeys`, the whole value as printed (`none` when there is no CA file). */
   readonly trustedUserCaKeys: string
+  /** `forcecommand`, the whole value as printed (`none` when there is no forced command). */
+  readonly forceCommand: string
+  /** Every `acceptenv` pattern, in the order printed. sshd prints one line per pattern and no line at all for none (measured, 9.6). */
+  readonly acceptEnv: readonly string[]
   /** Every port sshd listens on: the `port` lines and the port of every `listenaddress` line, ascending. */
   readonly listenPorts: readonly number[]
   /** The address of every `listenaddress` line, lower case, without brackets, sorted (the wildcards included). */
@@ -91,6 +105,7 @@ const SINGLE_SETTINGS = [
   'authorizedkeysfile',
   'authorizedkeyscommand',
   'trustedusercakeys',
+  'forcecommand',
 ] as const
 // `listenaddress 0.0.0.0:22`, `listenaddress [::]:22`: the port is what follows the last colon.
 // Measured: sshd prints the address as a number, an IPv6 one in brackets.
@@ -114,6 +129,7 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
   const seen = new Map<string, string>()
   const ports = new Set<number>()
   const addresses = new Set<string>()
+  const acceptEnv: string[] = []
   for (const raw of text.split('\n')) {
     const line = raw.trim()
     const space = line.indexOf(' ')
@@ -133,6 +149,10 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
       if (isIP(address) !== (m[1] === undefined ? 4 : 6)) return null
       ports.add(port)
       addresses.add(address)
+    } else if (key === 'acceptenv') {
+      // One pattern per line as printed; a line with more is split, so no pattern is overlooked.
+      if (value.length === 0) return null
+      acceptEnv.push(...value.split(/\s+/))
     } else if ((SINGLE_SETTINGS as readonly string[]).includes(key)) {
       if (seen.has(key) || value.length === 0) return null
       seen.set(key, value)
@@ -156,6 +176,8 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
     authorizedKeysFiles: files,
     authorizedKeysCommand: seen.get('authorizedkeyscommand') as string,
     trustedUserCaKeys: seen.get('trustedusercakeys') as string,
+    forceCommand: seen.get('forcecommand') as string,
+    acceptEnv,
     listenPorts: [...ports].sort((a, b) => a - b),
     listenAddresses: [...addresses].sort(),
   }
@@ -261,6 +283,18 @@ export function planSshdProbes(input: SshdProbePlanInput): SshdConnectionSpec[] 
 // `forced-commands-only` is enough because the support line always has a command.
 const ROOT_LOGIN_BY_KEY = new Set(['yes', 'without-password', 'prohibit-password', 'forced-commands-only'])
 
+// The environment names a client may send that cannot change what runs before
+// the bound command: the locale, and how the terminal shows colour. The stock
+// lines are `AcceptEnv LANG LC_*` (Debian) and `... COLORTERM NO_COLOR` (Ubuntu).
+// Anything else, and any other wildcard, is a refusal: with bash as the login
+// shell a client-chosen BASH_ENV (or a `*` that lets it through) runs code
+// before the dispatcher (Dani's review of #2765, S3; by reading, not measured).
+const HARMLESS_ENV = /^(?:LANG|LANGUAGE|LC_\*|LC_[A-Z]+|COLORTERM|COLORFGBG|NO_COLOR)$/
+
+export function acceptEnvPatternIsHarmless(pattern: string): boolean {
+  return HARMLESS_ENV.test(pattern)
+}
+
 export type SupportKeysFileName = 'authorized_keys' | 'authorized_keys2'
 
 /** The login account as sshd sees it: the name and the home directory from the user database. */
@@ -335,7 +369,8 @@ export interface SshdProbeAnswer {
 export interface SshdAssessmentInput {
   /** Output of the version command, or null when it could not be run. */
   readonly versionText: string | null
-  /** True when the install user, whose authorized_keys gets the line, is root. */
+  /** True when the install user, whose authorized_keys gets the line, is root. The probe runs as that user, so this is
+   * also whether the answers could see the whole configuration. */
   readonly loginIsRoot: boolean
   readonly loginUser: string
   /** The login user's home directory from the user database: what sshd reads `%h` and a relative keys file against. */
@@ -358,6 +393,9 @@ export type SshdAssessment =
  *   version unknown            no line: its options cannot be trusted to mean anything
  *   older than 8.4             no line: verify-required is unknown there and sshd
  *                              drops the whole line (measured)
+ *   not asked as root          no line: a non-root `sshd -T` can miss a drop-in
+ *                              the daemon applies (measured), so nothing it says
+ *                              is enough; no answer is read
  *   configuration unknown      no line. An answer that is missing, empty or
  *                              unreadable; answers that disagree about the
  *                              ports or the listen addresses; a planned
@@ -365,7 +403,7 @@ export type SshdAssessment =
  *                              recomputed here, with the listen addresses)
  *   UseDNS is on               no line: `Match Host` would then be matched
  *                              against a name this machine cannot know here
- *   root login by key is off   no line when the login user is root: it would be dead
+ *   root login by key is off   no line: the login user is root (see above), and the line would be dead
  *   tunnels are permitted      NO LINE. `restrict` does not refuse a tunnel
  *                              device on every sshd build (measured), no key
  *                              option forbids one, and on a tunnel-only
@@ -380,12 +418,19 @@ export type SshdAssessment =
  *   another key source         no line when a keys command or a user CA file
  *                              is set: a key granted through those is out of
  *                              reach of a removal
+ *   a forced command           no line unless `forcecommand none` for EVERY
+ *                              connection: sshd runs a ForceCommand INSTEAD of
+ *                              the line's bound command (measured, 9.6), so the
+ *                              dispatcher and its question would be skipped
+ *   client environment         no line when an `acceptenv` pattern is not one
+ *                              of the harmless names above
  */
 export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   const version = input.versionText === null ? null : parseSshdVersion(input.versionText)
   if (version === null) return { ok: false, problem: 'sshd_version_unknown', version }
   if (!sshdAtLeast(version, SUPPORT_MIN_SSHD)) return { ok: false, problem: 'sshd_too_old', version }
   const refuse = (problem: SshdProblem): SshdAssessment => ({ ok: false, problem, version })
+  if (!input.loginIsRoot) return refuse('sshd_config_not_fully_readable')
 
   const configs: SshdEffectiveConfig[] = []
   for (const answer of input.answers) {
@@ -409,7 +454,7 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   if (!planned.every((spec) => asked.has(formatSshdConnectionSpec(spec)))) return refuse('sshd_config_unknown')
 
   if (!configs.every((c) => c.useDns === 'no')) return refuse('sshd_usedns_enabled')
-  if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse('root_login_disabled')
+  if (!configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse('root_login_disabled')
   if (!configs.every((c) => c.permitTunnel === 'no')) return refuse('tunnel_permitted')
   const account = { user: input.loginUser, home: input.loginHome }
   const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account)
@@ -423,5 +468,7 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   if (!configs.every((c) => c.authorizedKeysCommand === 'none' && c.trustedUserCaKeys === 'none')) {
     return refuse('other_key_source')
   }
+  if (!configs.every((c) => c.forceCommand === 'none')) return refuse('force_command_set')
+  if (!configs.every((c) => c.acceptEnv.every(acceptEnvPatternIsHarmless))) return refuse('accept_env_too_wide')
   return { ok: true, version, keysFiles }
 }
