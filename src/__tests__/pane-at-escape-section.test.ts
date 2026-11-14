@@ -70,10 +70,14 @@ describe('pane-at-escape section: what it says (ENVATLEAK1114)', () => {
   setLang(null)
   const body = buildPaneAtEscapeBody()
 
-  it('the heading, and the delivery layer puts the backslash at the text start or after whitespace', () => {
+  it('the heading, and the four places the delivery layer puts the backslash (the replacement mark is the fourth)', () => {
     expect(body.split('\n')[0]).toBe('## Fordított perjel a kukac előtt a kapott szövegben')
-    expect(body).toMatch(/paneledbe gépel[\s\S]{0,120}fordított perjelet[\s\S]{0,40}szöveg elején, térköz \(szóköz, sortörés\) vagy pontosvessző után/)
-    expect(body).toMatch(/a vezérlőkaraktereket pedig helyettesítő jelre \(U\+FFFD\) cseréli/)
+    expect(body).toMatch(/paneledbe gépel[\s\S]{0,120}fordított perjelet[\s\S]{0,40}szöveg elején, térköz \(szóköz, sortörés\) után, pontosvessző után vagy a helyettesítő jel után álló kukac elé/)
+  })
+
+  it('control characters: a line break and a lone CR become a space, a tab stays, the rest becomes the mark', () => {
+    expect(body).toMatch(/A sortörésből és a magányos kocsivissza jelből szóköz lesz, a tabulátor marad, a többi vezérlőkarakterből helyettesítő jel \(U\+FFFD\)\./)
+    expect(body).not.toMatch(/a vezérlőkaraktereket/)
   })
 
   it('why: Claude Code would attach the file with no tool call, measured', () => {
@@ -87,6 +91,7 @@ describe('pane-at-escape section: what it says (ENVATLEAK1114)', () => {
 
   it('the original is in the queue row the directive-verify recipe reads', () => {
     expect(body).toMatch(/Inter-agent üzenetnél és rendszer-direktívánál az eredeti szöveg az üzenetsor sorában áll[\s\S]{0,60}`directive-verify`/)
+    expect(body).toMatch(/A gépelt másolat a fordított perjelben és a helyettesítő jelben eltérhet a sortól\./)
   })
 
   it('scope: the section explains the backslash and carries no further rule (four lines after the heading)', () => {
@@ -119,7 +124,10 @@ describe('pane-at-escape section: no at-sign in either language', () => {
     const en = buildPaneAtEscapeBody()
     setLang(null)
     expect(en.split('\n')[0]).toBe('## A backslash before an at-sign in the text you receive')
-    expect(en).toMatch(/start of the text, after whitespace \(space, line break\) or after a semicolon, and replaces each control character with a replacement mark \(U\+FFFD\)/)
+    expect(en).toMatch(/start of the text, after whitespace \(space, line break\), after a semicolon or after the replacement mark: without it/)
+    expect(en).toMatch(/A line break and a lone carriage return become a space, a tab stays, and every other control character becomes a replacement mark \(U\+FFFD\)\./)
+    expect(en).not.toMatch(/each control character/)
+    expect(en).toMatch(/The typed copy can differ from the row in the backslash and in the replacement mark\./)
     expect(en).toMatch(/with no tool call \(measured 2026-11-14\)/)
     expect(en).toMatch(/NOT part of the original text/)
     expect(en).toMatch(/drop the backslash that stands before the at-sign/)
