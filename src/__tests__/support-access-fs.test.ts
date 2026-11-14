@@ -350,6 +350,17 @@ describe('support access on disk', () => {
       expect(read()).toBe([BRIDGE, LINE2].join('\n') + '\n')
     })
 
+    it('a file saved with CR LF line ends: the lines go, the result says it was the line end, the other line keeps its bytes', async () => {
+      mkdirSync(sshDir, { mode: 0o700 })
+      writeFileSync(authPath, [BRIDGE, LINE1, LINE2].join('\r\n') + '\r\n', { mode: 0o600 })
+      const res = await reconcileSupportLinesOnDisk({ ...base(), grant: grantInput() })
+      expect(res).toMatchObject({ kept: 0, removed: 2, missing: 2, lineEndOnly: 2, unbuildable: null })
+      expect(read()).toBe(BRIDGE + '\r\n')
+      // A tampered line is not a line-end case.
+      writeFileSync(authPath, [BRIDGE, LINE1.replace(',verify-required', ''), LINE2].join('\n') + '\n', { mode: 0o600 })
+      expect(await reconcileSupportLinesOnDisk({ ...base(), grant: grantInput() })).toMatchObject({ removed: 1, lineEndOnly: 0 })
+    })
+
     it('with no live grant removes every support line', async () => {
       seed([LINE1, BRIDGE, LINE2])
       const res = await reconcileSupportLinesOnDisk({ ...base(), grant: null })

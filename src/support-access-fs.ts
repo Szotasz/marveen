@@ -188,6 +188,9 @@ export interface ReconcileSupportLinesResult {
   /** Of those, the ones that were in authorized_keys2: there no line is expected, whatever the grant says. */
   removedFromSecond: number
   missing: number
+  /** Of the removed lines of authorized_keys, those that were an expected line with a CR LF line end and no other
+   * change (see ReconcileSupportResult.lineEndOnly). */
+  lineEndOnly: number
   /** Set when the live grant could not be built into lines: then no line was expected, and every support line went.
    * A refusal of the builder carries the builder's code; anything else (a record that is not the typed shape) is
    * `grant_malformed`. */
@@ -248,6 +251,7 @@ export async function reconcileSupportLinesOnDisk(
     removed: first.result.removed + second.removed,
     removedFromSecond: second.removed,
     missing: first.result.missing,
+    lineEndOnly: first.result.lineEndOnly,
     unbuildable,
     warnings: [...first.warnings, ...second.warnings],
   }
@@ -260,7 +264,7 @@ function reconcileFirstFile(base: SupportFsBase, expected: readonly string[], op
     const r = reconcileSupportLines(existing, expected, pinnedBlobs)
     return {
       content: r.removed === 0 ? null : r.content,
-      result: { kept: r.kept, removed: r.removed, missing: r.missing },
+      result: { kept: r.kept, removed: r.removed, missing: r.missing, lineEndOnly: r.lineEndOnly },
     }
   })
 }

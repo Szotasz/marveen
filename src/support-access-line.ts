@@ -377,6 +377,14 @@ export interface ReconcileSupportResult {
   readonly removed: number
   /** Expected lines that are not in the file. They are NOT created. */
   readonly missing: number
+  /**
+   * Of the removed lines, those that are an expected line with one carriage
+   * return after it and nothing else: the file was saved with CR LF line ends
+   * (an editor does that), nobody changed the line. They are removed all the
+   * same, because only a line that is byte for byte the built one stays; the
+   * count is there so the notice can say what happened instead of "tampered".
+   */
+  readonly lineEndOnly: number
 }
 
 /**
@@ -394,6 +402,7 @@ export function reconcileSupportLines(
   const wanted = new Set(expected)
   const seen = new Set<string>()
   let removed = 0
+  let lineEndOnly = 0
   const kept = splitLines(existing).filter((line) => {
     if (wanted.has(line) && !seen.has(line)) {
       seen.add(line)
@@ -401,6 +410,7 @@ export function reconcileSupportLines(
     }
     if (wanted.has(line) || isSupportLine(line, pinnedBlobs)) {
       removed++
+      if (line.endsWith('\r') && wanted.has(line.slice(0, -1))) lineEndOnly++
       return false
     }
     return true
@@ -410,5 +420,6 @@ export function reconcileSupportLines(
     kept: seen.size,
     removed,
     missing: wanted.size - seen.size,
+    lineEndOnly,
   }
 }

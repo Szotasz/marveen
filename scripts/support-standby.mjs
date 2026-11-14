@@ -301,6 +301,7 @@ function reconcileSupportLines(existing, expected, pinnedBlobs) {
   const wanted = new Set(expected);
   const seen = /* @__PURE__ */ new Set();
   let removed = 0;
+  let lineEndOnly = 0;
   const kept = splitLines(existing).filter((line) => {
     if (wanted.has(line) && !seen.has(line)) {
       seen.add(line);
@@ -308,6 +309,7 @@ function reconcileSupportLines(existing, expected, pinnedBlobs) {
     }
     if (wanted.has(line) || isSupportLine(line, pinnedBlobs)) {
       removed++;
+      if (line.endsWith("\r") && wanted.has(line.slice(0, -1))) lineEndOnly++;
       return false;
     }
     return true;
@@ -316,7 +318,8 @@ function reconcileSupportLines(existing, expected, pinnedBlobs) {
     content: removed === 0 ? existing : joinLines(kept),
     kept: seen.size,
     removed,
-    missing: wanted.size - seen.size
+    missing: wanted.size - seen.size,
+    lineEndOnly
   };
 }
 
@@ -999,6 +1002,7 @@ async function reconcileSupportLinesOnDisk(opts) {
     removed: first.result.removed + second.removed,
     removedFromSecond: second.removed,
     missing: first.result.missing,
+    lineEndOnly: first.result.lineEndOnly,
     unbuildable,
     warnings: [...first.warnings, ...second.warnings]
   };
@@ -1009,7 +1013,7 @@ function reconcileFirstFile(base, expected, operation) {
     const r = reconcileSupportLines(existing, expected, pinnedBlobs);
     return {
       content: r.removed === 0 ? null : r.content,
-      result: { kept: r.kept, removed: r.removed, missing: r.missing }
+      result: { kept: r.kept, removed: r.removed, missing: r.missing, lineEndOnly: r.lineEndOnly }
     };
   });
 }

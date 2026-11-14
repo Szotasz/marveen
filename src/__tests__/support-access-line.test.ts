@@ -532,6 +532,7 @@ describe('reconcileSupportLines', () => {
       kept: 2,
       removed: 0,
       missing: 0,
+      lineEndOnly: 0,
     })
   })
 
@@ -556,12 +557,51 @@ describe('reconcileSupportLines', () => {
 
   it('removes a second copy of an expected line', () => {
     const out = reconcileSupportLines([LINE1, LINE1].join('\n') + '\n', [LINE1], TEST_ONLY_BLOBS)
-    expect(out).toEqual({ content: LINE1 + '\n', kept: 1, removed: 1, missing: 0 })
+    expect(out).toEqual({ content: LINE1 + '\n', kept: 1, removed: 1, missing: 0, lineEndOnly: 0 })
   })
 
   it('with no live grant removes every support line and never adds one', () => {
     const out = reconcileSupportLines([LINE1, BRIDGE_LINE, LINE2].join('\n') + '\n', [], TEST_ONLY_BLOBS)
-    expect(out).toEqual({ content: BRIDGE_LINE + '\n', kept: 0, removed: 2, missing: 0 })
+    expect(out).toEqual({ content: BRIDGE_LINE + '\n', kept: 0, removed: 2, missing: 0, lineEndOnly: 0 })
+  })
+
+  // An editor that saves the file with CR LF line ends changes every line by
+  // one byte. The lines still go (only the byte-for-byte built line stays),
+  // but the result says that this, and nothing else, is what happened.
+  it('a file saved with CR LF line ends: the lines go, and the count says it was the line end only', () => {
+    const file = [PERSONAL_LINE, LINE1, LINE2].join('\r\n') + '\r\n'
+    const out = reconcileSupportLines(file, [LINE1, LINE2], TEST_ONLY_BLOBS)
+    expect(out).toMatchObject({ kept: 0, removed: 2, missing: 2, lineEndOnly: 2 })
+    expect(out.content).toBe(PERSONAL_LINE + '\r\n')
+  })
+
+  it('counts a line as "line end only" for exactly one carriage return after an expected line, nothing else', () => {
+    const loosened = LINE2.replace(',verify-required', '')
+    const cases: Array<[string, number]> = [
+      [LINE1 + '\r', 1],
+      [LINE1 + '\r\r', 0],
+      [LINE1 + ' \r', 0],
+      [LINE1 + ' ', 0],
+      [loosened + '\r', 0],
+      [buildSupportLine(input({ grantId: OTHER_GRANT })) + '\r', 0],
+    ]
+    for (const [line, expected] of cases) {
+      const out = reconcileSupportLines(line + '\n', [LINE1, LINE2], TEST_ONLY_BLOBS)
+      expect([line, out.removed, out.lineEndOnly]).toEqual([line, 1, expected])
+    }
+    expect(reconcileSupportLines([LINE1, LINE2].join('\n') + '\n', [LINE1, LINE2], TEST_ONLY_BLOBS)).toMatchObject({
+      kept: 2,
+      removed: 0,
+      lineEndOnly: 0,
+    })
+    // An intact line next to a CR LF copy of itself: the intact one stays, the copy goes as a line-end case.
+    expect(reconcileSupportLines([LINE1, LINE1 + '\r'].join('\n') + '\n', [LINE1], TEST_ONLY_BLOBS)).toMatchObject({
+      kept: 1,
+      removed: 1,
+      lineEndOnly: 1,
+    })
+    // With no live grant nothing is expected, so nothing is "the line end only".
+    expect(reconcileSupportLines(LINE1 + '\r\n', [], TEST_ONLY_BLOBS)).toMatchObject({ removed: 1, lineEndOnly: 0 })
   })
 
   it('reports a missing expected line and does NOT create it', () => {
@@ -571,6 +611,7 @@ describe('reconcileSupportLines', () => {
       kept: 0,
       removed: 0,
       missing: 1,
+      lineEndOnly: 0,
     })
   })
 })
