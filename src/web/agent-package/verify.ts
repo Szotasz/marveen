@@ -202,16 +202,34 @@ export function scanPackageText(bytes: Uint8Array): TextFinding | null {
 }
 
 /**
+ * Contract decision (Mira 78043): each manifest free text is 1 to this many
+ * characters long, on both sides. Counted in code points, as a database
+ * `char_length` counts them; a lone surrogate is refused before the count.
+ */
+export const MANIFEST_TEXT_MAX_CHARS = Object.freeze({
+  title: 120,
+  description: 2000,
+  displayName: 60,
+  connectorReason: 200,
+})
+
+/**
  * D10 and S18 point 1 over one manifest free text: one line only, then the S11
  * and S10 rules (not the exec or frontmatter rules: the plan names S10 and S11
- * for manifest texts). Returns the refusal, or null when the text passes.
+ * for manifest texts), then the length. Returns the refusal, or null when the
+ * text passes.
  */
-export function scanManifestText(text: string): { reason: VerifyReason; rule: string } | null {
+export function scanManifestText(text: string, maxChars: number): { reason: VerifyReason; rule: string } | null {
   if (/[\n\r]/.test(text)) {
     return { reason: N21B_PROVISIONAL_REASONS.manifestLineBreak, rule: 'manifest-line-break' }
   }
   const f = firstFinding(charAndImportFindings(text, () => 1))
-  return f === null ? null : { reason: N21B_PROVISIONAL_REASONS.manifestText(f.reason), rule: f.rule }
+  if (f !== null) return { reason: N21B_PROVISIONAL_REASONS.manifestText(f.reason), rule: f.rule }
+  const chars = Array.from(text).length
+  if (chars < 1 || chars > maxChars) {
+    return { reason: N21B_PROVISIONAL_REASONS.manifestTextLength, rule: 'manifest-text-length' }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -306,12 +324,14 @@ export type VerifyResult =
  * texts, avatar blocks) and S18 point 1 (one-line manifest texts) are not
  * decided yet. Until they are, they map to EXISTING codes, here and only
  * here: a manifest text breaking a text rule gets the reason that rule gives a
- * file, a line break in a manifest text is bad_text, and an avatar block that
- * is not allowed, out of place or truncated is bad_avatar.
+ * file, a line break in a manifest text is bad_text, a manifest text that is
+ * empty or over its length is bad_text, and an avatar block that is not
+ * allowed, out of place, of a wrong length or truncated is bad_avatar.
  */
 export const N21B_PROVISIONAL_REASONS = Object.freeze({
   manifestText: (fileRuleReason: TextReason): VerifyReason => fileRuleReason,
   manifestLineBreak: 'bad_text' as VerifyReason,
+  manifestTextLength: 'bad_text' as VerifyReason,
   avatarBlockNotAllowed: 'bad_avatar' as VerifyReason,
   avatarBlockStructure: 'bad_avatar' as VerifyReason,
   avatarTruncatedBlock: 'bad_avatar' as VerifyReason,
@@ -657,14 +677,14 @@ export function verifyDelivery(bytes: Uint8Array, requestedSlug: string, keys: r
     verifiedFiles.push({ path: f.path, sha256: f.sha256, size: f.size, text: strictUtf8().decode(fileBytes) })
   }
 
-  const manifestTexts: Array<[string, string]> = [
-    ['title', payload.title],
-    ['description', payload.description],
-    ['agent.display_name', agent.display_name],
-    ...connectors.map((c, i): [string, string] => [`connectors[${i}].reason`, c.reason]),
+  const manifestTexts: Array<[string, string, number]> = [
+    ['title', payload.title, MANIFEST_TEXT_MAX_CHARS.title],
+    ['description', payload.description, MANIFEST_TEXT_MAX_CHARS.description],
+    ['agent.display_name', agent.display_name, MANIFEST_TEXT_MAX_CHARS.displayName],
+    ...connectors.map((c, i): [string, string, number] => [`connectors[${i}].reason`, c.reason, MANIFEST_TEXT_MAX_CHARS.connectorReason]),
   ]
-  for (const [field, text] of manifestTexts) {
-    const refusal = scanManifestText(text)
+  for (const [field, text, maxChars] of manifestTexts) {
+    const refusal = scanManifestText(text, maxChars)
     if (refusal !== null) return fail(5, refusal.reason, { field, rule: refusal.rule })
   }
 
@@ -757,8 +777,10 @@ function hasMagic(b: Uint8Array, contentType: string | undefined): boolean {
  * Walk every block of the container to the end of the bytes. Refused: a block
  * whose header or length runs past the end, a block type outside the
  * allowlist, and a block order the contract does not name (PNG: IHDR first
- * and once, at least one IDAT, IEND last and once, PLTE and tRNS at most
- * once; WebP: one of the layouts, so ALPH at most once and one image).
+ * of 13 bytes and once, at least one IDAT, an empty IEND last and once, PLTE
+ * and tRNS at most once and before the first IDAT; WebP: the RIFF size equal
+ * to the byte length, and one of the layouts, so ALPH at most once and one
+ * image).
  */
 function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyReason; rule: string } | null {
   const truncated = { reason: N21B_PROVISIONAL_REASONS.avatarTruncatedBlock, rule: 'truncated-block' }
@@ -774,6 +796,9 @@ function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyRea
       const end = off + 12 + len
       if (end > b.length) return truncated
       if (!PNG_ALLOWED_CHUNKS.has(type)) return notAllowed
+      // Contract decision (Mira 78043): the header block is 13 bytes, the end block carries nothing.
+      if (type === 'IHDR' && len !== 13) return structure
+      if (type === 'IEND' && len !== 0) return structure
       types.push(type)
       off = end
     }
@@ -783,10 +808,16 @@ function avatarBlockRefusal(b: Buffer, contentType: string): { reason: VerifyRea
     if (types[types.length - 1] !== 'IEND' || count('IEND') !== 1) return structure
     // Contract decision (Mira 78020): the palette and the transparency block at most once.
     if (count('PLTE') > 1 || count('tRNS') > 1) return structure
+    // Contract decision (Mira 78043): and both before the first image data block.
+    const firstIdat = types.indexOf('IDAT')
+    if (types.lastIndexOf('PLTE') > firstIdat || types.lastIndexOf('tRNS') > firstIdat) return structure
     return null
   }
-  // WebP: the RIFF size must not point past the end; then every chunk, padded to an even length.
-  if (8 + b.readUInt32LE(4) > b.length) return truncated
+  // WebP: the RIFF size is exactly the byte length minus the 8-byte RIFF header
+  // (contract decision, Mira 78043); then every chunk, padded to an even length.
+  const riffEnd = 8 + b.readUInt32LE(4)
+  if (riffEnd > b.length) return truncated
+  if (riffEnd !== b.length) return structure
   let off = 12
   while (off < b.length) {
     if (off + 8 > b.length) return truncated

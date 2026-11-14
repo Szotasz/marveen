@@ -265,6 +265,23 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('description with a lone low surrogate', d({ description: 'Keeps \udc00 invoices' }), 5, 'bad_text', { field: 'description', rule: 'invalid-utf16' }),
     refused('display name ending in a lone high surrogate', d({ displayName: 'Anna\udbff' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'invalid-utf16' }),
     refused('second connector reason with a reversed surrogate pair', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'a\udc00\ud800b' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'invalid-utf16' }),
+    // Contract decision (Mira 78043): 1 to N characters, counted in code points.
+    refused('an empty title', d({ title: '' }), 5, 'bad_text', { field: 'title', rule: 'manifest-text-length' }),
+    refused('a title of 121 characters', d({ title: 't'.repeat(121) }), 5, 'bad_text', { field: 'title', rule: 'manifest-text-length' }),
+    refused('an empty description', d({ description: '' }), 5, 'bad_text', { field: 'description', rule: 'manifest-text-length' }),
+    refused('a description of 2001 characters', d({ description: 'd'.repeat(2001) }), 5, 'bad_text', { field: 'description', rule: 'manifest-text-length' }),
+    refused('an empty display name', d({ displayName: '' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-text-length' }),
+    refused('a display name of 61 characters', d({ displayName: 'n'.repeat(61) }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-text-length' }),
+    refused('an empty connector reason', d({ connectors: [{ name: 'bb', level: 'required', reason: '' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-text-length' }),
+    refused('a second connector reason of 201 characters', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'r'.repeat(201) }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-text-length' }),
+    refused('a title of 121 astral characters', d({ title: '\ud83d\ude00'.repeat(121) }), 5, 'bad_text', { field: 'title', rule: 'manifest-text-length' }),
+    // The text rules come before the count, so the count never runs on a text that is not well formed.
+    refused('a title over its length that also holds a lone surrogate', d({ title: 't'.repeat(121) + '\ud800' }), 5, 'bad_text', { field: 'title', rule: 'invalid-utf16' }),
+    ok('manifest texts of one character each', d({ title: 't', description: 'd', displayName: 'n', connectors: [{ name: 'bb', level: 'required', reason: 'r' }] })),
+    ok('manifest texts at their upper bounds', d({
+      title: 't'.repeat(120), description: 'd'.repeat(2000), displayName: 'n'.repeat(60), connectors: [{ name: 'bb', level: 'required', reason: 'r'.repeat(200) }],
+    })),
+    ok('a title of 120 astral characters (240 UTF-16 units)', d({ title: '\ud83d\ude00'.repeat(120) })),
     ok('manifest texts with a well-formed surrogate pair', d({
       title: 'Invoice helper 😀', description: 'Keeps 😀 invoices', displayName: 'Anna 😀', connectors: [{ name: 'bb', level: 'required', reason: 'Reads 😀 mail.' }],
     })),
@@ -310,7 +327,11 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
       ['with a second IEND', ['IHDR', 'IDAT', 'IEND', 'IEND']],
       // Contract decision (Mira 78020): PLTE and tRNS at most once.
       ['with a second PLTE', ['IHDR', 'PLTE', 'PLTE', 'IDAT', 'IEND']],
-      ['with a second tRNS', ['IHDR', 'PLTE', 'tRNS', 'IDAT', 'tRNS', 'IEND']],
+      ['with a second tRNS', ['IHDR', 'PLTE', 'tRNS', 'tRNS', 'IDAT', 'IEND']],
+      // Contract decision (Mira 78043): PLTE and tRNS before the first IDAT.
+      ['with PLTE after the first IDAT', ['IHDR', 'IDAT', 'PLTE', 'IEND']],
+      ['with tRNS after the first IDAT', ['IHDR', 'PLTE', 'IDAT', 'tRNS', 'IEND']],
+      ['with PLTE between two IDAT blocks', ['IHDR', 'IDAT', 'PLTE', 'IDAT', 'IEND']],
     ] as const).map(([what, types]) =>
       refused(`PNG ${what}`, d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng(types.map((t) => pngChunk(t, new Uint8Array(t === 'IHDR' ? 13 : t === 'IEND' ? 0 : 4)))) } }),
         5, 'bad_avatar', { path: 'avatar.png', rule: 'block-structure' })),
@@ -339,6 +360,18 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     ] as const).map(([what, fourccs]) =>
       refused(`WebP ${what}`, d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: makeWebp(fourccs.map((f) => webpChunk(f, new Uint8Array(f === 'VP8X' ? 10 : 5)))) } }),
         5, 'bad_avatar', { path: 'avatar.webp', rule: 'block-structure' })),
+    // Contract decision (Mira 78043): IHDR is 13 bytes, IEND is empty, the RIFF size is the byte length minus 8.
+    ...([
+      ['an IHDR of 12 bytes', [pngChunk('IHDR', new Uint8Array(12)), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND')]],
+      ['an IHDR of 14 bytes', [pngChunk('IHDR', new Uint8Array(14)), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND')]],
+      ['an IHDR of 0 bytes', [pngChunk('IHDR'), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND')]],
+      ['an IEND that carries one byte', [pngChunk('IHDR', new Uint8Array(13)), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND', new Uint8Array(1))]],
+      ['an IEND that carries a text', [pngChunk('IHDR', new Uint8Array(13)), pngChunk('IDAT', new Uint8Array(4)), pngChunk('IEND', new Uint8Array(Buffer.from('hidden note')))]],
+    ] as Array<[string, Buffer[]]>).map(([what, chunks]) =>
+      refused(`PNG with ${what}`, d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: makePng(chunks) } }),
+        5, 'bad_avatar', { path: 'avatar.png', rule: 'block-structure' })),
+    refused('WebP RIFF size two bytes short of the end', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: riffSizeShort(2) } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'block-structure' }),
+    refused('WebP with a whole allowed chunk after the RIFF end', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: chunkAfterRiffEnd() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'block-structure' }),
     refused('PNG block length past the end', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: truncatedPng() } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'truncated-block' }),
     refused('PNG with a partial block header at the end', d({ avatar: { path: 'avatar.png', contentType: 'image/png', bytes: Buffer.concat([makePng(), Buffer.from([0, 0, 0])]) } }), 5, 'bad_avatar', { path: 'avatar.png', rule: 'truncated-block' }),
     refused('WebP chunk length past the end', d({ avatar: { path: 'avatar.webp', contentType: 'image/webp', bytes: truncatedWebpChunk() } }), 5, 'bad_avatar', { path: 'avatar.webp', rule: 'truncated-block' }),
@@ -388,6 +421,21 @@ function truncatedWebpChunk(): Buffer {
   const chunk = webpChunk('VP8L', new Uint8Array(6))
   chunk.writeUInt32LE(600, 4)
   return makeWebp([chunk])
+}
+
+/** A valid one-chunk WebP whose RIFF size field says `by` bytes fewer than there are. */
+function riffSizeShort(by: number): Buffer {
+  const b = makeWebp()
+  b.writeUInt32LE(b.length - 8 - by, 4)
+  return b
+}
+
+/** VP8X inside the RIFF size, and the image chunk after it: every chunk allowed, the layout allowed, the size not the length. */
+function chunkAfterRiffEnd(): Buffer {
+  const first = webpChunk('VP8X', new Uint8Array(10))
+  const b = makeWebp([first, webpChunk('VP8L', new Uint8Array(6))])
+  b.writeUInt32LE(4 + first.length, 4)
+  return b
 }
 
 function riffSizePastEnd(): Buffer {
