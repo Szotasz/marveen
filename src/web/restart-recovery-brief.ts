@@ -25,6 +25,7 @@ import { logger } from '../logger.js'
 import { listKanbanCards } from '../db.js'
 import { agentDir } from './agent-config.js'
 import { deliverWhenReady, RESUME_DELIVERY_OPTIONS, type DeliverDeps, type DeliverOptions } from './resume-delivery.js'
+import { sanitizePromptText } from './prompt-text-sanitize.js'
 
 /** A file the agent left modified in its working directory. */
 export interface DirtyFile {
@@ -48,6 +49,64 @@ export interface RecoveryFacts {
 /** Longest brief we are willing to type into a fresh prompt. */
 export const RECOVERY_BRIEF_MAX_CHARS = 1200
 
+// RECOVERYBRIEFSCRUB1114. The brief is typed into a fresh prompt with no
+// envelope around it, and four of its fields are not written by this module: a
+// kanban card id and title (anyone holding the shared token can write them, and
+// titles carry outside text such as an external PR's title), the branch name and
+// the file paths. Measured before this change: a forged wrapper tag and a forged
+// message header in a card title reached the pane unchanged. The scheduled-task
+// path scrubs the same source; this one did not.
+//
+// Per-field caps, so one long field cannot crowd the others out of the brief.
+export const RECOVERY_BRIEF_MAX_ID_CHARS = 40
+export const RECOVERY_BRIEF_MAX_TITLE_CHARS = 120
+export const RECOVERY_BRIEF_MAX_BRANCH_CHARS = 80
+export const RECOVERY_BRIEF_MAX_PATH_CHARS = 160
+
+// Control characters and every whitespace run, as one space: a lone CR typed
+// into a pane submits the prompt early, and a control character between `<` and
+// a tag name would hide the tag from the deny-list and then vanish.
+const BRIEF_FLATTEN_RX = /[\u0000-\u001f\u007f-\u009f\s]+/g
+const BRIEF_FIELD_MAX_PASSES = 8
+/** Stands in for a field that would not settle (see briefField). */
+export const BRIEF_FIELD_UNSETTLED = '(nem megjelenitheto mezo)'
+
+// The shared filter only matches a tag that is closed. A field that ENDS inside
+// one (`<trusted-peer source=...` with no `>`) would stay, and the next field
+// could supply the `>`. So the field is filtered with a `>` appended: if the
+// filter consumed it, a tag head was open at the end, and it goes with it. Same
+// deny-list, no second pattern.
+function stripWrappers(flat: string): string {
+  const closed = sanitizePromptText(flat + '>')
+  return closed.endsWith('>') ? closed.slice(0, -1) : closed
+}
+
+/**
+ * One outside-written field, made safe to stand in the brief: a single line,
+ * wrapper tags and message headers neutralised by the shared filter
+ * (prompt-text-sanitize.ts), then cut to `max`.
+ *
+ * Repeated until nothing changes, because the two steps feed each other: the
+ * filter decodes entities (which can produce a control character), and
+ * flattening a control character can complete a tag the filter then has to see.
+ * What comes out is therefore a fixed point of "flatten, then filter". A field
+ * that has not settled after BRIEF_FIELD_MAX_PASSES rounds (entities nested
+ * dozens deep) is not shown at all. The cut comes LAST: cutting first could
+ * leave the head of a tag behind.
+ */
+export function briefField(raw: string, max: number): string {
+  let out = String(raw)
+  let settled = false
+  for (let i = 0; i < BRIEF_FIELD_MAX_PASSES; i++) {
+    const next = stripWrappers(out.replace(BRIEF_FLATTEN_RX, ' '))
+    if (next === out) { settled = true; break }
+    out = next
+  }
+  if (!settled) return BRIEF_FIELD_UNSETTLED
+  out = out.trim()
+  return out.length > max ? out.slice(0, max - 3).trimEnd() + '...' : out
+}
+
 /**
  * Build the recovery brief, or null when there is nothing to say.
  *
@@ -68,14 +127,18 @@ export function buildRecoveryBrief(facts: RecoveryFacts): string | null {
   if (hasCards) {
     lines.push('')
     lines.push(facts.inProgress.length === 1 ? 'Folyamatban levo kartyad:' : 'Folyamatban levo kartyaid:')
-    for (const c of facts.inProgress) lines.push(`  - ${c.id}: ${c.title}`)
+    for (const c of facts.inProgress) {
+      lines.push(`  - ${briefField(c.id, RECOVERY_BRIEF_MAX_ID_CHARS)}: ${briefField(c.title, RECOVERY_BRIEF_MAX_TITLE_CHARS)}`)
+    }
   }
 
   if (hasDirty) {
     lines.push('')
-    const where = facts.branch ? `a(z) ${facts.branch} agon` : 'a munkakonyvtaradban'
+    const branch = facts.branch ? briefField(facts.branch, RECOVERY_BRIEF_MAX_BRANCH_CHARS) : ''
+    const where = branch ? `a(z) ${branch} agon` : 'a munkakonyvtaradban'
     lines.push(`Commitolatlan valtozasok ${where}:`)
-    for (const f of facts.dirty) lines.push(`  ${f.code} ${f.path}`)
+    // The two-column code is git's own and stays verbatim (' M' and 'M ' differ).
+    for (const f of facts.dirty) lines.push(`  ${f.code} ${briefField(f.path, RECOVERY_BRIEF_MAX_PATH_CHARS)}`)
     if (facts.dirtyTruncated) lines.push('  ... (a lista levagva)')
   }
 
