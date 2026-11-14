@@ -23,7 +23,7 @@ import { agentTextLang, type AgentTextLang } from './agent-text-lang.js'
 import { seedSourceFor } from './seed-lang.js'
 import {
   type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
-  buildBackgroundCheckpointBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
+  buildBackgroundCheckpointBodyEn, buildPaneAtEscapeBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
   buildMemorySearchLabelBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
   type PromptRecipes, strictPromptRecipesEn, SKILL_SECTION_HEADING_EN, buildSkillSectionEn, buildClaudeMdPromptEn,
   buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL,
@@ -4061,6 +4061,62 @@ export function ensureBackgroundCheckpointSection(name: string): void {
 
   const updated = BGCHECKPOINT_BLOCK_RE.test(existing)
     ? existing.replace(BGCHECKPOINT_BLOCK_RE, () => block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// ---- Backslash before an at-sign in delivered text (ENVATLEAK1114) ----
+//
+// Claude Code expands an at-sign followed by a path into a file attachment with
+// no tool call, so no hook sees it (measured 2026-11-14). The delivery layer
+// therefore puts a backslash before every at-sign that stands at the start of
+// the text, after whitespace, after a semicolon or after the replacement mark,
+// in everything it types into an agent's pane (a line break and a lone CR become
+// a space, a tab stays, every other control character becomes U+FFFD);
+// the queue row keeps the original. The reader sees the backslash before
+// package scopes, handles and Matrix ids, and copying it onward into a command
+// can break the command, so the rule ships as a section. The body itself must
+// carry no at-sign at all: a CLAUDE.md reads an at-sign plus path as an import.
+const PANEATESC_BEGIN = '<!-- BEGIN GENERATED: pane-at-escape (auto-generated, do not edit by hand) -->'
+const PANEATESC_END = '<!-- END GENERATED: pane-at-escape -->'
+const PANEATESC_BLOCK_RE = new RegExp(
+  `${PANEATESC_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${PANEATESC_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildPaneAtEscapeBody(): string {
+  if (agentTextLang() === 'en') return buildPaneAtEscapeBodyEn()
+  return [
+    '## Fordított perjel a kukac előtt a kapott szövegben',
+    '',
+    '- A kézbesítő mindenbe, amit a paneledbe gépel (inter-agent üzenet, ütemezett prompt, rendszer-direktíva), fordított perjelet',
+    '  tesz a szöveg elején, térköz (szóköz, sortörés) után, pontosvessző után vagy a helyettesítő jel után álló kukac elé: enélkül a Claude Code a megnevezett fájlt eszközhívás nélkül csatolná (mérve 2026-11-14). A sortörésből és a magányos kocsivissza jelből szóköz lesz, a tabulátor marad, a többi vezérlőkarakterből helyettesítő jel (U+FFFD).',
+    '- A fordított perjel NEM része az eredeti szövegnek. Ha a kapott szövegből csomagnevet, kezelőnevet, azonosítót vagy parancsot másolsz tovább, a kukac előtti fordított perjelet hagyd el.',
+    '- Inter-agent üzenetnél és rendszer-direktívánál az eredeti szöveg az üzenetsor sorában áll: ugyanaz a sor, amit a `directive-verify` recept olvas. A gépelt másolat a fordított perjelben és a helyettesítő jelben eltérhet a sortól.',
+  ].join('\n')
+}
+
+// Idempotently ensures the pane-at-escape block is present and current in the
+// agent's CLAUDE.md; same contract as ensureMessageCloseSection, called from
+// the same two surfaces (web.ts for the main agent, agent-process.ts for the rest).
+export function ensurePaneAtEscapeSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${PANEATESC_BEGIN}\n${buildPaneAtEscapeBody()}\n${PANEATESC_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = PANEATESC_BLOCK_RE.test(existing)
+    ? existing.replace(PANEATESC_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return

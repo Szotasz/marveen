@@ -295,6 +295,19 @@ export function buildBackgroundCheckpointBodyEn(): string {
   ].join('\n')
 }
 
+// ---- pane-at-escape ----
+// No at-sign anywhere in this body: a CLAUDE.md reads an at-sign plus path as an import.
+export function buildPaneAtEscapeBodyEn(): string {
+  return [
+    '## A backslash before an at-sign in the text you receive',
+    '',
+    '- The delivery layer, in everything it types into your pane (inter-agent message, scheduled prompt, system directive), puts a backslash',
+    '  before an at-sign that stands at the start of the text, after whitespace (space, line break), after a semicolon or after the replacement mark: without it Claude Code would attach the named file with no tool call (measured 2026-11-14). A line break and a lone carriage return become a space, a tab stays, and every other control character becomes a replacement mark (U+FFFD).',
+    '- The backslash is NOT part of the original text. When you copy a package name, handle, id or command onward from received text, drop the backslash that stands before the at-sign.',
+    '- For an inter-agent message and a system directive the original text is in the queue row: the same row the `directive-verify` recipe reads. The typed copy can differ from the row in the backslash and in the replacement mark.',
+  ].join('\n')
+}
+
 // ---- skills-path-trap ----
 // The heading is the one templates/en/CLAUDE.md.template refers to ("Skill path trap"); the test pins this.
 export const SKILLS_TRAP_HEADING_EN = '## Skill path trap (MUST READ before writing a skill)'
