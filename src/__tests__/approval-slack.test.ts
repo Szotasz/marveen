@@ -2,7 +2,7 @@
 // check is shown on its own: only the snapshot owner's ✅/❌ counts, a bot or app user never does, an edited or changed
 // message or both reactions are a refusal, a rate limit stops the round with its Retry-After.
 import { describe, it, expect } from 'vitest'
-import { postApprovalPrompt, checkPost, sweepOnce, slackEscape, sha256, unwrapSlackLinks, SlackRateLimited, SWEEP_MAX_PER_ROUND, type SlackCall, type ApprovalSlackPost } from '../approval-slack.js'
+import { postApprovalPrompt, checkPost, sweepOnce, slackCaller, slackEscape, sha256, unwrapSlackLinks, SlackRateLimited, SWEEP_MAX_PER_ROUND, type SlackCall, type ApprovalSlackPost } from '../approval-slack.js'
 
 const OWNER = 'U0OWNER01'
 const BOT = 'U0BOTUSR1'
@@ -173,5 +173,47 @@ describe('sweepOnce', () => {
     const r = await postApprovalPrompt(fake(w), OWNER, TEXT, 'D0C74N9SAF6')
     expect(r.ok && r.post.channel).toBe('D0C74N9SAF6')
     expect(w.calls).toEqual(['auth.test', 'chat.postMessage'])
+  })
+})
+
+describe('slackCaller request encoding', () => {
+  function capture() {
+    const sent: { url: string; init: RequestInit }[] = []
+    const f = (async (url: string, init: RequestInit) => {
+      sent.push({ url, init })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }) as unknown as typeof fetch
+    return { sent, call: slackCaller('xoxb-test', f) }
+  }
+  const header = (init: RequestInit, name: string) => (init.headers as Record<string, string>)[name]
+
+  it('sends the read methods form-encoded, booleans and numbers as strings', async () => {
+    const { sent, call } = capture()
+    await call('conversations.replies', { channel: 'D0DMCHAN1', ts: '1700000000.000100', limit: 200 })
+    await call('conversations.history', { channel: 'D0DMCHAN1', oldest: '1700000000.000100', inclusive: false, limit: 100 })
+    await call('users.info', { user: OWNER })
+    expect(sent.map(s => s.url)).toEqual(['conversations.replies', 'conversations.history', 'users.info'].map(m => `https://slack.com/api/${m}`))
+    for (const s of sent) {
+      expect(header(s.init, 'Content-Type')).toBe('application/x-www-form-urlencoded')
+      expect(header(s.init, 'Authorization')).toBe('Bearer xoxb-test')
+    }
+    expect(Object.fromEntries(new URLSearchParams(sent[0].init.body as string))).toEqual({ channel: 'D0DMCHAN1', ts: '1700000000.000100', limit: '200' })
+    expect(Object.fromEntries(new URLSearchParams(sent[1].init.body as string))).toEqual({ channel: 'D0DMCHAN1', oldest: '1700000000.000100', inclusive: 'false', limit: '100' })
+    expect(Object.fromEntries(new URLSearchParams(sent[2].init.body as string))).toEqual({ user: OWNER })
+  })
+
+  it('skips undefined and null in the form body, as JSON drops undefined', async () => {
+    const { sent, call } = capture()
+    await call('conversations.replies', { channel: 'D0DMCHAN1', ts: '1700000000.000100', cursor: undefined, latest: null })
+    expect(sent[0].init.body).toBe('channel=D0DMCHAN1&ts=1700000000.000100')
+  })
+
+  it('keeps the write methods on JSON', async () => {
+    const { sent, call } = capture()
+    await call('chat.postMessage', { channel: 'D0DMCHAN1', text: 'x', unfurl_links: false })
+    await call('conversations.open', { users: OWNER })
+    await call('auth.test', {})
+    for (const s of sent) expect(header(s.init, 'Content-Type')).toBe('application/json; charset=utf-8')
+    expect(JSON.parse(sent[0].init.body as string)).toEqual({ channel: 'D0DMCHAN1', text: 'x', unfurl_links: false })
   })
 })
