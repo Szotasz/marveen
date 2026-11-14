@@ -240,15 +240,28 @@ function splitAuthorizedKeysLine(line) {
   if (blob === null) return null;
   return { options, keyType: type.value, blob: blob.value, comment: trimmed.slice(blob.next).trim() };
 }
+var pinnedBytesCache = /* @__PURE__ */ new WeakMap();
+function pinnedBytesOf(pinnedBlobs) {
+  let bytes = pinnedBytesCache.get(pinnedBlobs);
+  if (bytes === void 0) {
+    bytes = [...pinnedBlobs].map((blob) => Buffer.from(blob, "base64")).filter((b) => b.length > 0);
+    pinnedBytesCache.set(pinnedBlobs, bytes);
+  }
+  return bytes;
+}
+function holdsPinnedKey(word, pinnedBlobs) {
+  const decoded = Buffer.from(word, "base64");
+  return pinnedBytesOf(pinnedBlobs).some((pinned) => decoded.subarray(0, pinned.length).equals(pinned));
+}
 function isSupportLine(line, pinnedBlobs) {
   const trimmed = line.trim();
   if (trimmed.length === 0 || trimmed.startsWith("#")) return false;
   const fields = splitAuthorizedKeysLine(trimmed);
   if (fields === null) {
     const words = trimmed.split(/\s+/);
-    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || pinnedBlobs.has(w));
+    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || holdsPinnedKey(w, pinnedBlobs));
   }
-  if (pinnedBlobs.has(fields.blob)) return true;
+  if (holdsPinnedKey(fields.blob, pinnedBlobs)) return true;
   return fields.comment.split(/\s+/).some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX));
 }
 function splitLines(existing) {
@@ -691,6 +704,7 @@ function canonical(p) {
 var SSH_DIR_MODE = 448;
 var AUTH_KEYS_MODE = 384;
 var AUTH_KEYS_NAME = "authorized_keys";
+var SECOND_KEYS_NAME = "authorized_keys2";
 var LOCK_NAME = "authorized_keys.lock";
 var AuthorizedKeysLockError = class extends Error {
   code = "AUTHORIZED_KEYS_LOCKED";
@@ -791,6 +805,7 @@ function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
 async function rewriteAuthorizedKeysLocked(opts, transform) {
   const {
     operation,
+    fileName = AUTH_KEYS_NAME,
     createDir = false,
     refuseSymlink = false,
     preserveBytes = false,
@@ -801,8 +816,11 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
   } = opts;
   const sshDir = resolve(opts.sshDir);
   assertSafeSshDir(sshDir, operation);
+  if (fileName !== AUTH_KEYS_NAME && fileName !== SECOND_KEYS_NAME) {
+    throw new AuthorizedKeysRewriteError("AUTHORIZED_KEYS_FILE_NAME", "only authorized_keys and authorized_keys2 can be rewritten");
+  }
   const warnings = [];
-  const authPath = join3(sshDir, AUTH_KEYS_NAME);
+  const authPath = join3(sshDir, fileName);
   const lockPath = join3(sshDir, LOCK_NAME);
   const encoding = preserveBytes ? "latin1" : "utf8";
   if (refuseSymlink && lstatOrNull(sshDir)?.isSymbolicLink()) {
@@ -887,6 +905,19 @@ function assertSyncTransform(out) {
 }
 
 // src/support-access-fs.ts
+var SECOND_FILE = "authorized_keys2";
+async function removeEverySupportLine(base, fileName, operation) {
+  const { sshDir, pinnedBlobs, ...lock } = base;
+  const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
+    const { content, removed } = removeSupportLines(existing, pinnedBlobs);
+    const left = countSupportLines(content, pinnedBlobs);
+    if (left !== 0) {
+      throw new SupportLinesRemainError(`${left} support line(s) would remain in ${fileName} after the removal`);
+    }
+    return { content: removed === 0 ? null : content, result: removed };
+  });
+  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings };
+}
 var SupportLinesRemainError = class extends Error {
   code = "SUPPORT_LINES_REMAIN";
   constructor(message) {
@@ -900,6 +931,7 @@ async function grantSupportLines(opts) {
     throw new SupportLineError("pins_invalid", "a key of the grant is not one of the pinned keys");
   }
   const lines = buildSupportGrantLines(grant);
+  const second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, "remove support access lines from");
   const out = await rewriteAuthorizedKeysLocked(
     { sshDir, operation: "write support access lines into", createDir: true, refuseSymlink: true, preserveBytes: true, ...lock },
     (existing) => {
@@ -907,22 +939,33 @@ async function grantSupportLines(opts) {
       return { content: merged.content, result: merged.replaced };
     }
   );
-  return { authorizedKeysPath: out.authorizedKeysPath, replaced: out.result, warnings: out.warnings };
+  return {
+    authorizedKeysPath: out.authorizedKeysPath,
+    replaced: out.result,
+    removedFromSecond: second.removed,
+    warnings: [...second.warnings, ...out.warnings]
+  };
 }
 async function revokeSupportLines(opts) {
-  const { sshDir, pinnedBlobs, ...lock } = opts;
-  const out = await rewriteAuthorizedKeysLocked(
-    { sshDir, operation: "remove support access lines from", preserveBytes: true, ...lock },
-    (existing) => {
-      const { content, removed } = removeSupportLines(existing, pinnedBlobs);
-      const left = countSupportLines(content, pinnedBlobs);
-      if (left !== 0) {
-        throw new SupportLinesRemainError(`${left} support line(s) would remain after the removal`);
-      }
-      return { content: removed === 0 ? null : content, result: removed };
+  const operation = "remove support access lines from";
+  const failures = [];
+  const done = [];
+  for (const fileName of ["authorized_keys", SECOND_FILE]) {
+    try {
+      done.push(await removeEverySupportLine(opts, fileName, operation));
+    } catch (err) {
+      failures.push(err);
+      done.push(null);
     }
-  );
-  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings };
+  }
+  const [first, second] = done;
+  if (first === null || second === null) throw failures[0];
+  return {
+    authorizedKeysPath: first.authorizedKeysPath,
+    removed: first.removed + second.removed,
+    removedFromSecond: second.removed,
+    warnings: [...first.warnings, ...second.warnings]
+  };
 }
 async function reconcileSupportLinesOnDisk(opts) {
   const { sshDir, pinnedBlobs, grant, ...lock } = opts;
@@ -935,17 +978,40 @@ async function reconcileSupportLinesOnDisk(opts) {
       unbuildable = err instanceof SupportLineError ? err.code : "grant_malformed";
     }
   }
-  const out = await rewriteAuthorizedKeysLocked(
-    { sshDir, operation: "reconcile support access lines in", preserveBytes: true, ...lock },
-    (existing) => {
-      const r = reconcileSupportLines(existing, expected, pinnedBlobs);
-      return {
-        content: r.removed === 0 ? null : r.content,
-        result: { kept: r.kept, removed: r.removed, missing: r.missing }
-      };
-    }
-  );
-  return { authorizedKeysPath: out.authorizedKeysPath, ...out.result, unbuildable, warnings: out.warnings };
+  const operation = "reconcile support access lines in";
+  const failures = [];
+  let first = null;
+  let second = null;
+  try {
+    first = await reconcileFirstFile({ sshDir, pinnedBlobs, ...lock }, expected, operation);
+  } catch (err) {
+    failures.push(err);
+  }
+  try {
+    second = await removeEverySupportLine({ sshDir, pinnedBlobs, ...lock }, SECOND_FILE, operation);
+  } catch (err) {
+    failures.push(err);
+  }
+  if (first === null || second === null) throw failures[0];
+  return {
+    authorizedKeysPath: first.authorizedKeysPath,
+    kept: first.result.kept,
+    removed: first.result.removed + second.removed,
+    removedFromSecond: second.removed,
+    missing: first.result.missing,
+    unbuildable,
+    warnings: [...first.warnings, ...second.warnings]
+  };
+}
+function reconcileFirstFile(base, expected, operation) {
+  const { sshDir, pinnedBlobs, ...lock } = base;
+  return rewriteAuthorizedKeysLocked({ sshDir, operation, preserveBytes: true, ...lock }, (existing) => {
+    const r = reconcileSupportLines(existing, expected, pinnedBlobs);
+    return {
+      content: r.removed === 0 ? null : r.content,
+      result: { kept: r.kept, removed: r.removed, missing: r.missing }
+    };
+  });
 }
 
 // src/support-standby-cli.ts

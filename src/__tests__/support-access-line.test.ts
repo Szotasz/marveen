@@ -4,6 +4,7 @@ import {
   buildSupportGrantLines,
   splitAuthorizedKeysLine,
   isSupportLine,
+  holdsPinnedKey,
   removeSupportLines,
   countSupportLines,
   mergeSupportLines,
@@ -305,6 +306,81 @@ describe('isSupportLine', () => {
     expect(isSupportLine(PERSONAL_LINE, TEST_ONLY_BLOBS)).toBe(false)
     expect(isSupportLine('', TEST_ONLY_BLOBS)).toBe(false)
     expect(isSupportLine('# ' + LINE1, TEST_ONLY_BLOBS)).toBe(false)
+  })
+})
+
+// The same key bytes, written differently. A removal must not depend on
+// whether some sshd reads such a spelling as the key.
+describe('a pinned key is recognised by its bytes, not by its spelling', () => {
+  const noPadding = TEST_ONLY_BLOB_1.replace(/=+$/, '')
+  const lastChar = noPadding[noPadding.length - 1]
+  const spareBits = noPadding.slice(0, -1) + String.fromCharCode(lastChar.charCodeAt(0) + 1) + '='
+  const spelled: Array<[string, string]> = [
+    ['without the padding', noPadding],
+    ['with the spare bits of the last character set', spareBits],
+    ['with more text after the padding', TEST_ONLY_BLOB_1 + 'QUJD'],
+    ['with a second padding sign', TEST_ONLY_BLOB_1 + '='],
+    ['with a character that is not base64 inside', TEST_ONLY_BLOB_1.slice(0, 20) + '.' + TEST_ONLY_BLOB_1.slice(20)],
+    ['with extra bytes appended', noPadding + 'AAAA'],
+  ]
+
+  it('the fixtures really are other spellings of the same bytes', () => {
+    expect(TEST_ONLY_BLOB_1.endsWith('=')).toBe(true)
+    const bytes = Buffer.from(TEST_ONLY_BLOB_1, 'base64')
+    for (const [, text] of spelled) {
+      expect(text).not.toBe(TEST_ONLY_BLOB_1)
+      expect(TEST_ONLY_BLOBS.has(text)).toBe(false)
+      expect(Buffer.from(text, 'base64').subarray(0, bytes.length).equals(bytes)).toBe(true)
+    }
+  })
+
+  it.each(spelled)('a copy %s is a support line, under a neutral comment', (_label, text) => {
+    expect(holdsPinnedKey(text, TEST_ONLY_BLOBS)).toBe(true)
+    const line = 'sk-ssh-ed25519@openssh.com ' + text + ' innocent'
+    expect(isSupportLine(line, TEST_ONLY_BLOBS)).toBe(true)
+    expect(removeSupportLines([PERSONAL_LINE, line].join('\n') + '\n', TEST_ONLY_BLOBS)).toEqual({ content: PERSONAL_LINE + '\n', removed: 1 })
+    expect(reconcileSupportLines([line, LINE1].join('\n') + '\n', [LINE1], TEST_ONLY_BLOBS)).toMatchObject({ kept: 1, removed: 1 })
+  })
+
+  it.each(spelled)('a copy %s is found in a line that no longer parses, too', (_label, text) => {
+    expect(isSupportLine('command="oops sk-ssh-ed25519@openssh.com ' + text + ' x', TEST_ONLY_BLOBS)).toBe(true)
+  })
+
+  it('the second pinned key is recognised the same way, not only the first', () => {
+    const second = TEST_ONLY_KEYS[1].pub.replace(/=+$/, '')
+    expect(second).not.toBe(TEST_ONLY_KEYS[1].pub)
+    expect(isSupportLine('sk-ssh-ed25519@openssh.com ' + second + ' innocent', TEST_ONLY_BLOBS)).toBe(true)
+  })
+
+  it('a key that differs in one byte, a shorter one and a key that only CONTAINS ours later are not ours', () => {
+    const bytes = Buffer.from(TEST_ONLY_BLOB_1, 'base64')
+    const oneOff = Buffer.from(bytes)
+    oneOff[40] ^= 1
+    const cut = bytes.subarray(0, bytes.length - 1)
+    const later = Buffer.concat([Buffer.from([0]), bytes])
+    for (const other of [oneOff, cut, later]) {
+      const text = other.toString('base64')
+      expect(holdsPinnedKey(text, TEST_ONLY_BLOBS)).toBe(false)
+      expect(isSupportLine('sk-ssh-ed25519@openssh.com ' + text + ' innocent', TEST_ONLY_BLOBS)).toBe(false)
+    }
+    expect(holdsPinnedKey('', TEST_ONLY_BLOBS)).toBe(false)
+    expect(holdsPinnedKey('innocent', TEST_ONLY_BLOBS)).toBe(false)
+  })
+
+  // An empty pin decodes to no bytes, and every key "starts with" no bytes:
+  // such a pin must recognise nothing, or every line of the file would go.
+  it('with no pinned key, or with an empty one, nothing is recognised by its bytes', () => {
+    expect(holdsPinnedKey(TEST_ONLY_BLOB_1, new Set())).toBe(false)
+    expect(holdsPinnedKey(TEST_ONLY_BLOB_1, new Set(['']))).toBe(false)
+    expect(holdsPinnedKey('innocent', new Set(['', '====']))).toBe(false)
+    expect(isSupportLine(PERSONAL_LINE, new Set(['']))).toBe(false)
+    expect(removeSupportLines(PERSONAL_LINE + '\n' + BRIDGE_LINE + '\n', new Set([''])).removed).toBe(0)
+  })
+
+  it('the merge takes a respelled copy out when it puts the grant in', () => {
+    const copy = 'sk-ssh-ed25519@openssh.com ' + noPadding + ' handy'
+    const out = mergeSupportLines([PERSONAL_LINE, copy].join('\n') + '\n', [LINE1], TEST_ONLY_BLOBS)
+    expect(out).toEqual({ content: [PERSONAL_LINE, LINE1].join('\n') + '\n', replaced: 1 })
   })
 })
 

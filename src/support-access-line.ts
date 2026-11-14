@@ -241,12 +241,40 @@ export function splitAuthorizedKeysLine(line: string): AuthorizedKeysFields | nu
   return { options, keyType: type.value, blob: blob.value, comment: trimmed.slice(blob.next).trim() }
 }
 
+const pinnedBytesCache = new WeakMap<ReadonlySet<string>, readonly Buffer[]>()
+
+function pinnedBytesOf(pinnedBlobs: ReadonlySet<string>): readonly Buffer[] {
+  let bytes = pinnedBytesCache.get(pinnedBlobs)
+  if (bytes === undefined) {
+    bytes = [...pinnedBlobs].map((blob) => Buffer.from(blob, 'base64')).filter((b) => b.length > 0)
+    pinnedBytesCache.set(pinnedBlobs, bytes)
+  }
+  return bytes
+}
+
+/**
+ * Does this word hold a pinned key? The comparison is on the DECODED BYTES,
+ * not on the base64 text: the same key can be written without the padding,
+ * with the spare bits of the last character set, or in the other base64
+ * alphabet, and whether some sshd reads such a spelling as the key is not
+ * something a removal may depend on. The decoder used here is the lenient one
+ * (it skips what is not base64 and stops at the padding), so it reads at least
+ * what a stricter reader would. A word whose bytes only START with a pinned
+ * key counts too: nothing but our key begins with our key.
+ */
+export function holdsPinnedKey(word: string, pinnedBlobs: ReadonlySet<string>): boolean {
+  const decoded = Buffer.from(word, 'base64')
+  return pinnedBytesOf(pinnedBlobs).some((pinned) => decoded.subarray(0, pinned.length).equals(pinned))
+}
+
 /**
  * Is this line support access? Yes when its comment carries the support prefix
- * OR it holds one of the pinned key blobs, whatever the rest says. The second
- * half matters: a copy of a pinned key with looser options and another comment
- * is still our key on the customer's machine, and must go when support goes.
- * A blank line or a `#` comment is never a support line (sshd ignores it).
+ * OR it holds one of the pinned keys, whatever the rest says. The second half
+ * matters: a copy of a pinned key with looser options and another comment is
+ * still our key on the customer's machine, and must go when support goes. The
+ * key is recognised by its bytes (holdsPinnedKey), so another spelling of it
+ * does not hide a copy. A blank line or a `#` comment is never a support line
+ * (sshd ignores it).
  */
 export function isSupportLine(line: string, pinnedBlobs: ReadonlySet<string>): boolean {
   const trimmed = line.trim()
@@ -256,9 +284,9 @@ export function isSupportLine(line: string, pinnedBlobs: ReadonlySet<string>): b
     // Unreadable (for instance an unbalanced quote). Fall back to plain words so
     // a mangled copy of our line does not survive by being mangled.
     const words = trimmed.split(/\s+/)
-    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || pinnedBlobs.has(w))
+    return words.some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX) || holdsPinnedKey(w, pinnedBlobs))
   }
-  if (pinnedBlobs.has(fields.blob)) return true
+  if (holdsPinnedKey(fields.blob, pinnedBlobs)) return true
   return fields.comment.split(/\s+/).some((w) => w.startsWith(SUPPORT_COMMENT_PREFIX))
 }
 
