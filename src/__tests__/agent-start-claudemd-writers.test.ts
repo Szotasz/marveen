@@ -67,6 +67,21 @@ describe('the start-time writers of an agent CLAUDE.md', () => {
     }
   })
 
+  it('the sequence lives in rewriteAgentClaudeMdOnStart, and startAgentProcess reaches it through one call', () => {
+    const head = 'export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTemplate): void {\n'
+    const start = PROCESS.indexOf(head)
+    expect(start).toBeGreaterThan(-1)
+    const end = PROCESS.indexOf('\n}\n', start)
+    const body = PROCESS.slice(start + head.length, end)
+    const outside = PROCESS.slice(0, start) + PROCESS.slice(end)
+    // Every call is inside the function, none is left behind in the start path or anywhere else.
+    expect([...body.matchAll(CALL_RX)].map((m) => `${m[1]}(${m[2]})`)).toEqual(SEQUENCE)
+    expect([...outside.matchAll(CALL_RX)]).toEqual([])
+    // One caller in this file, right after the settings are written from the same profile.
+    expect(outside.match(/\brewriteAgentClaudeMdOnStart\(/g)).toHaveLength(1)
+    expect(outside).toMatch(/^ {4}writeAgentSettingsFromProfile\(name, profile\)\n {4}rewriteAgentClaudeMdOnStart\(name, profile\)$/m)
+  })
+
   it('closed world: every section writer agent-scaffold.ts exports is in the sequence', () => {
     // A section writer added to the scaffold and not called at start is red here, with its name; so is one
     // called at start under a name this file does not know (the first test).

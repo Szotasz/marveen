@@ -573,9 +573,14 @@ describe('the wiring', () => {
 
   it('the agent start writes the strict-api block, after the profile settings', () => {
     const src = readFileSync(join(REPO, 'src', 'web', 'agent-process.ts'), 'utf-8')
+    // The CLAUDE.md writers live in rewriteAgentClaudeMdOnStart (MIOAGENTINSTALL1114); the start calls it
+    // after the settings are written, and the strict-api writer is one of the calls in it.
     const settingsAt = src.indexOf('writeAgentSettingsFromProfile(name, profile)')
-    const strictAt = src.indexOf('ensureStrictApiSection(name)')
+    const rewriteAt = src.indexOf('rewriteAgentClaudeMdOnStart(name, profile)', settingsAt)
     expect(settingsAt).toBeGreaterThan(0)
-    expect(strictAt).toBeGreaterThan(settingsAt)
+    expect(rewriteAt).toBeGreaterThan(settingsAt)
+    const fnAt = src.indexOf('export function rewriteAgentClaudeMdOnStart(')
+    expect(fnAt).toBeGreaterThan(0)
+    expect(src.slice(fnAt, src.indexOf('\n}\n', fnAt))).toContain('ensureStrictApiSection(name)')
   })
 })
