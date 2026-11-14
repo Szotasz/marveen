@@ -62,12 +62,21 @@ describe('the wizard sends a custom provider apart from the model id', () => {
 
 describe('POST /api/agents stores the custom provider', () => {
   it('the provider is checked before anything is created, and written right after the model', () => {
-    const check = POST.indexOf('if (customProvider && !loadCustomProvider(customProvider))')
-    const scaffold = POST.indexOf('scaffoldAgentDir(name)')
-    const writeModel = POST.indexOf('writeAgentModel(name, model)')
-    const writeProvider = POST.indexOf('if (customProvider) writeAgentCustomProvider(name, customProvider)')
-    expect(check).toBeGreaterThan(-1)
-    expect(scaffold).toBeGreaterThan(check)
+    // The refusals and the base writes live in agent-create.ts since MIOAGENTINSTALL1114 PR-I0; the route calls the
+    // checks, answers a refusal, and only then writes. (The order of the refusals and of the writes is pinned
+    // by behaviour in agent-create-characterization.test.ts.)
+    const CREATE = readFileSync(new URL('../web/agent-create.ts', import.meta.url), 'utf-8')
+    const checks = between(CREATE, 'export async function checkAgentCreatable(', 'export interface AgentBase')
+    const writes = CREATE.slice(CREATE.indexOf('export function writeAgentBase('))
+    expect(checks).toContain('if (customProvider && !loadCustomProvider(customProvider)) return { status: 400,')
+    const callCheck = POST.indexOf('await checkAgentCreatable(name, model, customProvider,')
+    const callWrite = POST.indexOf('writeAgentBase(name, {')
+    expect(callCheck).toBeGreaterThan(-1)
+    expect(callWrite).toBeGreaterThan(callCheck)
+    expect(POST.slice(callCheck, callWrite)).toContain('if (refusal) { json(res, refusal.body, refusal.status); return true }')
+    const writeModel = writes.indexOf('writeAgentModel(name, base.model)')
+    const writeProvider = writes.indexOf('if (base.customProvider) writeAgentCustomProvider(name, base.customProvider)')
+    expect(writeModel).toBeGreaterThan(-1)
     expect(writeProvider).toBeGreaterThan(writeModel)
   })
 

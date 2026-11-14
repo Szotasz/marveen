@@ -48,20 +48,28 @@ describe('POST /api/agents refuses the main agent id', () => {
   // awaits real CLI calls and writes the live agents dir. The main agent is in
   // PROJECT_ROOT, so existsSync(agentDir(name)) never sees it -- the reserved
   // check has to exist and run before scaffolding.
+  // Since MIOAGENTINSTALL1114 PR-I0 the refusals live in checkAgentCreatable and the scaffold call in writeAgentBase
+  // (both agent-create.ts); the route runs the first, answers a refusal, and only then calls the second.
   const src = readFileSync(join(import.meta.dirname, '..', 'web/routes/agents.ts'), 'utf8')
+  const create = readFileSync(join(import.meta.dirname, '..', 'web/agent-create.ts'), 'utf8')
+  const checks = create.slice(create.indexOf('export async function checkAgentCreatable('), create.indexOf('export interface AgentBase'))
+  const routeRunsChecksBeforeWrites = () => {
+    const post = src.indexOf("path === '/api/agents' && method === 'POST'")
+    const callCheck = src.indexOf('await checkAgentCreatable(name, model, customProvider,', post)
+    const callWrite = src.indexOf('writeAgentBase(name, {', post)
+    expect(post).toBeGreaterThan(-1)
+    expect(callCheck).toBeGreaterThan(post)
+    expect(callWrite).toBeGreaterThan(callCheck)
+    expect(src.slice(callCheck, callWrite)).toContain('if (refusal) { json(res, refusal.body, refusal.status); return true }')
+    expect(checks).not.toContain('scaffoldAgentDir(')
+  }
   it('checks name === MAIN_AGENT_ID before scaffoldAgentDir', () => {
-    const guard = src.indexOf("if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409)")
-    const scaffold = src.indexOf('scaffoldAgentDir(name)')
-    expect(guard).toBeGreaterThan(-1)
-    expect(scaffold).toBeGreaterThan(guard)
-    expect(src.lastIndexOf("path === '/api/agents' && method === 'POST'", guard)).toBeGreaterThan(-1)
+    expect(checks).toContain("if (name === MAIN_AGENT_ID) return { status: 409, body: { error: 'Name is reserved for the main agent' } }")
+    routeRunsChecksBeforeWrites()
   })
 
   it('refuses a reserved id (FLEETRESERVEDNAME1021, VOICECHANNELID1022) with 409 before scaffoldAgentDir', () => {
-    const guard = src.indexOf("if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409)")
-    const scaffold = src.indexOf('scaffoldAgentDir(name)')
-    expect(guard).toBeGreaterThan(-1)
-    expect(scaffold).toBeGreaterThan(guard)
-    expect(src.lastIndexOf("path === '/api/agents' && method === 'POST'", guard)).toBeGreaterThan(-1)
+    expect(checks).toContain("if (RESERVED_AGENT_IDS.includes(name)) return { status: 409, body: { error: 'Name is reserved by the system' } }")
+    routeRunsChecksBeforeWrites()
   })
 })
