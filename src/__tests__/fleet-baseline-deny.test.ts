@@ -142,6 +142,41 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
   })
 })
 
+// ENVATLEAK1114 (measured 2026-11-14, Claude Code 2.1.323): Read(**/.env) is
+// relative to the session cwd and only covers that subtree; a sub-agent's cwd is
+// agents/<name>, so the install's secrets file sits ABOVE it, uncovered for both
+// the Read tool and the prompt file-mention attachment. The root-anchored
+// Read(//**/.env) stopped both, inside and outside the cwd.
+const ROOT_ENV_RULE = 'Read(//**/.env)'
+const CWD_ENV_RULE = 'Read(**/.env)'
+const isEnvReadRule = (r: string) => /^Read\(.*\/\.env\)$/.test(r)
+
+describe('the secrets-file Read deny carries the root-anchored form (ENVATLEAK1114)', () => {
+  const profiles = listProfileTemplates()
+
+  it('the baseline carries BOTH forms: the root form, and the cwd form kept for unmeasured CLI versions', () => {
+    expect(FLEET_BASELINE_DENY).toContain(ROOT_ENV_RULE)
+    expect(FLEET_BASELINE_DENY).toContain(CWD_ENV_RULE)
+  })
+
+  it('every shipped profile that denies a secrets-file Read itself also carries the root form', () => {
+    const withEnvDeny = profiles.filter(p => p.filesystem.deny.some(isEnvReadRule))
+    // scope check: marketer and researcher declare it today; an empty set would pass vacuously
+    expect(withEnvDeny.map(p => p.id).sort()).toEqual(expect.arrayContaining(['marketer', 'researcher']))
+    for (const p of withEnvDeny) expect(p.filesystem.deny, p.id).toContain(ROOT_ENV_RULE)
+  })
+
+  for (const profile of profiles) {
+    it(`profile "${profile.id}": the written settings.json carries the root form once, with exactly two leading slashes`, () => {
+      writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
+      const deny = readDeny()
+      // Any slash count before the glob: '///' or a collapsed '/' would show up here.
+      expect(deny.filter(r => /^Read\(\/+\*\*\/\.env\)$/.test(r))).toEqual([ROOT_ENV_RULE])
+      expect(deny).toContain(CWD_ENV_RULE)
+    })
+  }
+})
+
 describe('(B) the main agent gets the baseline from the repo project settings', () => {
   // The scaffold refuses to write the main agent's settings (#1305), so the
   // main agent's floor cannot come from (A). It ships in the repo instead.
