@@ -48,6 +48,7 @@ Configuration (environment; a command-line flag wins over its variable):
   HEAVY_JOB_AGENT       default --agent (fairness tag, see below)
   HEAVY_JOB_OLLAMA_UNLOAD=1  unload idle ollama models once when memory is
                         short at admission (off by default, see below)
+  HEAVY_JOB_SIDE_LANE=1 turn the side lane on (off by default, see below)
 An invalid value is a usage error (64), like the same value as a flag.
 
 The lock fd is NOT inherited by the job: only the gate process holds the lock,
@@ -141,13 +142,15 @@ that passed long tickets carries "passed" (their labels) and "short_streak".
 The queue reads the lock record strictly: one that exists but cannot be read
 is a queue_io_error (74); a malformed counter closes the lane (plain order).
 
-Side lane: ONE extra job may run beside the main one. Only a capped call with
---max-mem <= SIDE_MAX_MB (1024) is a candidate (its ticket carries "side": 1);
-every other call, including the default 2G, is exactly as before. A candidate
-waits in the same FIFO queue and still takes the main lock in its turn; in
-every round in which it cannot, and no OLDER candidate is queued (the side
-lane is plain arrival order), it tries the side lock (<lock>.side, LOCK_NB)
-and keeps it only if
+Side lane (OFF unless HEAVY_JOB_SIDE_LANE=1; unset or any other value: no
+candidate, no side lock opened, no "side" ticket field, and the main floor does
+not read the side lock): ONE extra job may run beside the main one, so it is
+NOT exclusive with it. Only a capped call with --max-mem <= SIDE_MAX_MB (1024)
+is a candidate (its ticket carries "side": 1); every other call, including the
+default 2G, is exactly as before. A candidate waits in the same FIFO queue and
+still takes the main lock in its turn; in every round in which it cannot, and
+no OLDER candidate is queued (the side lane is plain arrival order), it tries
+the side lock (<lock>.side, LOCK_NB) and keeps it only if
   MemAvailable >= max(--min-mb, its cap + the main job's headroom + side reserve)
 where the main job is the scope the lock record names, its headroom is
 memory.max - (memory.current - memory.stat file) (page cache is already in
@@ -319,6 +322,11 @@ def open_lock_file(path):
 
 def side_lock_path():
     return lock_path() + ".side"
+
+
+def side_lane_on():
+    """The side lane is opt-in: HEAVY_JOB_SIDE_LANE=1, nothing else."""
+    return os.environ.get("HEAVY_JOB_SIDE_LANE") == "1"
 
 
 def log_path():
@@ -794,8 +802,8 @@ def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, m
     QueueIOError if the queue or the lock record cannot be used any more (fail
     closed). side = (side lock fd, cap_mb, min_mb, reserve_mb) for a side-lane
     candidate: while it cannot take the main lock, and no older candidate waits,
-    it tries side_admit every round; on success scan["side"] holds the admission
-    fields and the side lock (not the main one) is held."""
+    it tries side_admit every round; scan["side"] is set only on admission (the
+    admission fields), and then the side lock (not the main one) is held."""
     scan = {} if scan is None else scan
     waited = False
     ahead = []
@@ -818,8 +826,9 @@ def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, m
             except BlockingIOError:
                 pass
         if side and not scan.get("side_ahead"):
-            scan["side"] = side_admit(side[0], rec, *side[1:])
-            if scan["side"]:
+            admitted = side_admit(side[0], rec, *side[1:])
+            if admitted:
+                scan["side"] = admitted
                 return True, []
         if not waited:
             on_first_wait(ahead)
@@ -1376,7 +1385,7 @@ def main(argv=None):
     # descendants): the lock must be held and carry our token.
     if os.environ.get("HEAVY_JOB_ACTIVE") == "1":
         ok, why = nested_check(lock_path())
-        if not ok and nested_check(side_lock_path())[0]:
+        if not ok and side_lane_on() and nested_check(side_lock_path())[0]:
             ok = True  # the outer job runs in the side lane
         if ok:
             log({"event": "nested", "label": label, "cmd": cmd_text})
@@ -1427,7 +1436,7 @@ def main(argv=None):
              "error": str(e)[:200], "exit": EXIT_LOCK_IO})
         return EXIT_LOCK_IO
     side_fd = None  # side lane: only an explicitly small, capped job is a candidate
-    if scoped and cap_mb <= SIDE_MAX_MB:
+    if side_lane_on() and scoped and cap_mb <= SIDE_MAX_MB:
         try:
             side_fd = open_lock_file(side_lock_path())
         except OSError:
@@ -1563,10 +1572,13 @@ def main(argv=None):
     # 2. memory floor (SIGTERM/SIGINT/SIGHUP during this wait: refuse line, 128 + signo).
     # Main lane: also the unused cap of a job in the side lane. Side lane:
     # side_admit already checked its floor while holding the side lock.
+    side_hr = {"mb": 0}  # the side job's headroom in the last main-lane floor
+
     def floor_now():
         if side:
             return side["need_mb"]
-        return max(opts["min_mb"], cap_mb + reserve + side_headroom_mb())
+        side_hr["mb"] = side_headroom_mb() if side_lane_on() else 0
+        return max(opts["min_mb"], cap_mb + reserve + side_hr["mb"])
 
     mstate = {"done": False, "pending": None}
 
@@ -1609,9 +1621,9 @@ def main(argv=None):
         return EXIT_MEM_TIMEOUT
     if avail < floor_mb:
         say("REFUSED: MemAvailable %d MB stayed below the required %d MB for %ds "
-            "(cap %d MB + %d MB reserve + a side-lane job's headroom, or --min-mb). Not started. "
-            "Free memory or retry later."
-            % (avail, floor_mb, wait_sec, cap_mb, reserve))
+            "(cap %d MB + %d MB reserve%s, or --min-mb). Not started. Free memory or retry later."
+            % (avail, floor_mb, wait_sec, cap_mb, reserve,
+               (" + %d MB side-lane headroom" % side_hr["mb"]) if side_hr["mb"] else ""))
         log({"event": "refuse", "reason": "memory_timeout", "label": label, "cmd": cmd_text,
              "mem_avail_mb": avail, "need_mb": floor_mb,
              "waited_sec": round(time.monotonic() - t0, 1), "exit": EXIT_MEM_TIMEOUT})

@@ -11,7 +11,8 @@
 ## 🎯 What it does / why it matters
 
 - **One heavy job at a time**, host-wide, in arrival order (a FIFO queue in front
-  of a global lock). A late arrival never barges in.
+  of a global lock). A late arrival never barges in. (The opt-in side lane, off by
+  default, lets one small job run beside it: see "Side lane" below.)
 - **Memory floor:** a job starts only when `MemAvailable` is at least
   `max(--min-mb, cap + reserve)`, so even its worst case (its whole cap) leaves the
   reserve for everything else. It waits for that up to `--wait-sec`.
@@ -135,6 +136,7 @@ are system errors: report them to the main agent.
 | `--agent NAME` | `HEAVY_JOB_AGENT` | none | fairness tag (below) |
 | `--allow-uncapped` | | off | run without the cap if no scope can be created (logged, warned) |
 | | `HEAVY_JOB_STORE` | `<install root>/store` | directory of the lock, the queue and the log |
+| | `HEAVY_JOB_SIDE_LANE=1` | off | the side lane (below); any other value: off |
 | | `HEAVY_JOB_OLLAMA_UNLOAD=1` | off | when memory is short, unload idle ollama models once (`keep_alive=0`) at `HEAVY_JOB_OLLAMA_URL`, else `OLLAMA_URL`. Leave it off if an agent runs on a local ollama model. |
 
 A flag wins over its environment variable.
@@ -147,13 +149,19 @@ A flag wins over its environment variable.
 - **Short lane (`--max-sec N`, N <= 300):** short jobs go before long ones in the
   same fairness class; at most 3 in a row may pass a waiting long job. `--max-sec`
   makes the claim honest: a "short" job that runs longer is stopped (76).
-- **Side lane (`--max-mem` <= 1G):** one small capped job may run beside the main
-  one, holding a second lock (`store/.heavy-job.lock.side`), in arrival order among
-  such calls, and only if `MemAvailable >= max(--min-mb, its cap + the main job's
+- **Side lane (`--max-mem` <= 1G), off by default:** only with `HEAVY_JOB_SIDE_LANE=1`
+  (unset or any other value: off, the gate behaves as without it). A side-lane job
+  is **not exclusive** with the main job: both run at once, and the gate measures
+  only memory (not CPU, ports, profile or build directories). One small capped job
+  may run beside the main one, holding a second lock (`store/.heavy-job.lock.side`),
+  in arrival order among such calls, and only if `MemAvailable >= max(--min-mb, its cap + the main job's
   headroom + 1000)`, the headroom being the main scope's `memory.max - (memory.current
   - file)`. Anything unreadable admits nothing. While it runs, the main lane's floor
   adds its headroom (1024 when unmeasurable). Calls with a larger cap (the default
-  2G) never use it. Its start line carries `side_lane: true` and `beside`.
+  2G) never use it. Its start line carries `side_lane: true` and `beside`. Set the
+  switch for every gate caller on the host, and turn it on only when no older gate
+  process is still queued: a gate without the switch (or an older version) does not
+  count a side job's headroom in its floor.
 
 ### Nested calls
 
