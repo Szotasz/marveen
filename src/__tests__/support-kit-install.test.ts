@@ -20,6 +20,7 @@ import { installKit, KIT_SOURCE_MAX_BYTES, SUPPORT_DIR_IN_HOME, type InstallKitI
 import { KitError, KIT_MANIFEST_NAME, parseKitManifest, verifyKit } from '../support-kit.js'
 import { KIT_HASHES_FILE, KIT_SOURCES } from '../support-kit-sources.js'
 import { createInstallKit } from '../support-standby-cli.js'
+import { SUPPORT_ROUTINE_MIN_NODE_MAJOR } from '../support-standby.js'
 
 const REPO = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 const RELEASE = '8cb46ad83c88f73cfaff252fae3e78bb595af1ab'
@@ -84,6 +85,7 @@ describe('installKit', () => {
       files: { 'support-dispatch.sh': sha(RELEASE_1['support-dispatch.sh']), 'support-standby.mjs': sha(RELEASE_1['support-standby.mjs']) },
       installRoot: tree,
       nodePath: NODE,
+      nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR,
       release: RELEASE,
     })
     expect(verifyKit({ supportDir })).toMatchObject({ ok: true })

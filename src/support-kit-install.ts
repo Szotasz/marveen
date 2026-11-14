@@ -12,6 +12,7 @@ import { accessSync, constants, closeSync, fstatSync, lstatSync, openSync, readS
 import { join } from 'node:path'
 import { KitError, SAFE_NODE_PATH, writeKit, type KitFileSource, type KitLockTuning, type WriteKitResult } from './support-kit.js'
 import { KIT_HASHES_FILE, KIT_SOURCES, parseKitHashes } from './support-kit-sources.js'
+import { SUPPORT_ROUTINE_MIN_NODE_MAJOR } from './support-standby.js'
 
 /** Where the support folder is, relative to the login user's home (a working name until the M3 measurement). */
 export const SUPPORT_DIR_IN_HOME = '.marveen/support'
@@ -97,5 +98,6 @@ export async function installKit(input: InstallKitInput): Promise<WriteKitResult
     files.push({ name: source.name, content, sha256: stored.get(source.name) as string, executable: source.executable })
   }
   // writeKit measures every file against its stored hash before it writes anything.
-  return writeKit({ supportDir, files, installRoot, nodePath, release, ...tuning })
+  // The node minimum comes from the routine's own constant: one source, written into the manifest for the launcher.
+  return writeKit({ supportDir, files, installRoot, nodePath, nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR, release, ...tuning })
 }

@@ -52,6 +52,9 @@ export const KIT_SUBFOLDER = 'kit'
 export const KIT_MANIFEST_NAME = 'manifest'
 export const KIT_LOCK_NAME = 'kit.lock'
 const KIT_MANIFEST_HEADER = 'marveen-support-kit 1'
+/** A manifest is never larger than this, and never names more files: the launcher refuses a larger one unread. */
+export const KIT_MANIFEST_MAX_BYTES = 4096
+export const KIT_MAX_FILES = 16
 
 export type KitProblem =
   | 'kit_input_invalid'
@@ -82,6 +85,8 @@ export interface KitManifest {
   readonly installRoot: string
   /** The node that runs the service: the launcher starts the routine with it. */
   readonly nodePath: string
+  /** The lowest node major the routine runs on; the launcher checks the node against it before it starts anything. */
+  readonly nodeMin: number
   /** The commit of the release the files are from. */
   readonly release: string
 }
@@ -105,6 +110,7 @@ export function sha256Hex(bytes: Uint8Array): string {
 function manifestProblem(m: KitManifest): string | null {
   const names = Object.keys(m.files)
   if (names.length === 0) return 'the kit has no file'
+  if (names.length > KIT_MAX_FILES) return 'the kit has more files than a manifest may name'
   for (const name of names) {
     if (!FILE_NAME.test(name) || name === KIT_MANIFEST_NAME) return 'a file name is not a plain lower case name'
     if (!SHA256_HEX.test(m.files[name])) return 'a hash is not 64 lower case hex digits'
@@ -112,6 +118,7 @@ function manifestProblem(m: KitManifest): string | null {
   if (!SAFE_ABSOLUTE_PATH.test(m.installRoot)) return 'the install root is not a plain absolute path'
   if (!SAFE_NODE_PATH.test(m.nodePath)) return 'the node path is not a plain absolute path'
   if (!RELEASE.test(m.release)) return 'the release is not a commit id'
+  if (!Number.isInteger(m.nodeMin) || m.nodeMin < 1 || m.nodeMin > 999) return 'the node minimum is not a major version'
   return null
 }
 
@@ -126,8 +133,10 @@ export function formatKitManifest(m: KitManifest): string {
   if (problem !== null) throw new KitError('kit_input_invalid', problem)
   const lines = [KIT_MANIFEST_HEADER]
   for (const name of Object.keys(m.files).sort()) lines.push('file ' + name + ' ' + m.files[name])
-  lines.push('install-root ' + m.installRoot, 'node ' + m.nodePath, 'release ' + m.release)
-  return lines.join('\n') + '\n'
+  lines.push('install-root ' + m.installRoot, 'node ' + m.nodePath, 'node-min ' + m.nodeMin, 'release ' + m.release)
+  const text = lines.join('\n') + '\n'
+  if (text.length > KIT_MANIFEST_MAX_BYTES) throw new KitError('kit_input_invalid', 'the manifest would be larger than a manifest may be')
+  return text
 }
 
 /**
@@ -137,7 +146,7 @@ export function formatKitManifest(m: KitManifest): string {
  * be lenient with: what it says decides which file is run.
  */
 export function parseKitManifest(text: string): KitManifest | null {
-  if (!text.endsWith('\n')) return null
+  if (text.length > KIT_MANIFEST_MAX_BYTES || !text.endsWith('\n')) return null
   const lines = text.slice(0, -1).split('\n')
   if (lines[0] !== KIT_MANIFEST_HEADER) return null
   const files: Record<string, string> = {}
@@ -147,7 +156,7 @@ export function parseKitManifest(text: string): KitManifest | null {
     if (parts[0] === 'file' && parts.length === 3) {
       if (Object.prototype.hasOwnProperty.call(files, parts[1])) return null
       files[parts[1]] = parts[2]
-    } else if ((parts[0] === 'install-root' || parts[0] === 'node' || parts[0] === 'release') && parts.length === 2) {
+    } else if ((parts[0] === 'install-root' || parts[0] === 'node' || parts[0] === 'node-min' || parts[0] === 'release') && parts.length === 2) {
       if (single.has(parts[0])) return null
       single.set(parts[0], parts[1])
     } else return null
@@ -156,6 +165,8 @@ export function parseKitManifest(text: string): KitManifest | null {
     files,
     installRoot: single.get('install-root') ?? '',
     nodePath: single.get('node') ?? '',
+    // Only digits are a number here; the canonical-text check below refuses a leading zero or a sign.
+    nodeMin: /^[0-9]{1,3}$/.test(single.get('node-min') ?? '') ? Number(single.get('node-min')) : NaN,
     release: single.get('release') ?? '',
   }
   if (manifestProblem(manifest) !== null) return null
@@ -224,6 +235,9 @@ export function verifyKit(opts: { supportDir: string; uid?: number | null }): Ki
   const manifestFinding = fileFinding(manifestPath, uid)
   if (manifestFinding !== null) {
     return refuse(manifestFinding.problem === 'kit_file_missing' ? { problem: 'kit_manifest_unreadable', detail: manifestFinding.detail } : manifestFinding)
+  }
+  if (lstatSync(manifestPath).size > KIT_MANIFEST_MAX_BYTES) {
+    return refuse({ problem: 'kit_manifest_unreadable', detail: manifestPath + ' is larger than a manifest may be' })
   }
   const manifest = parseKitManifest(readFileSync(manifestPath, 'latin1'))
   if (manifest === null) return refuse({ problem: 'kit_manifest_unreadable', detail: manifestPath + ' is not a manifest' })
@@ -320,6 +334,7 @@ export interface WriteKitOptions extends KitLockTuning {
   files: readonly KitFileSource[]
   installRoot: string
   nodePath: string
+  nodeMin: number
   release: string
 }
 
@@ -368,7 +383,7 @@ function syncFolder(path: string): void {
  * given up.
  */
 export async function writeKit(opts: WriteKitOptions): Promise<WriteKitResult> {
-  const { files, installRoot, nodePath, release, ...tuning } = opts
+  const { files, installRoot, nodePath, nodeMin, release, ...tuning } = opts
   const supportDir = resolve(opts.supportDir)
   if (!SAFE_ABSOLUTE_PATH.test(supportDir)) {
     throw new KitError('kit_input_invalid', 'the support folder is not a plain absolute path')
@@ -378,7 +393,7 @@ export async function writeKit(opts: WriteKitOptions): Promise<WriteKitResult> {
     if (Object.prototype.hasOwnProperty.call(hashes, file.name)) throw new KitError('kit_input_invalid', 'a file name is given twice')
     hashes[file.name] = file.sha256
   }
-  const manifest: KitManifest = { files: hashes, installRoot, nodePath, release }
+  const manifest: KitManifest = { files: hashes, installRoot, nodePath, nodeMin, release }
   const manifestText = formatKitManifest(manifest) // throws kit_input_invalid
   for (const file of files) {
     if (sha256Hex(file.content) !== file.sha256) {

@@ -24,10 +24,17 @@ export interface KitSource {
   readonly executable: boolean
 }
 
-/** Every file of the kit but the manifest, in name order. The launcher joins when it exists. */
+// The names in the kit of the three files that are run, in ONE place: the
+// launcher picks its own, the dispatcher and the routine out of the manifest by
+// these names, and its tests use the same constants. Working names until M3.
+export const KIT_LAUNCHER_NAME = 'support-access'
+export const KIT_DISPATCHER_NAME = 'support-dispatch.sh'
+export const KIT_ROUTINE_NAME = 'support-standby.mjs'
+
+/** Every file of the kit but the manifest, in name order. The launcher (KIT_LAUNCHER_NAME, 0700) joins when it exists. */
 export const KIT_SOURCES: readonly KitSource[] = [
-  { name: 'support-dispatch.sh', treePath: 'scripts/support-dispatch.sh', executable: false },
-  { name: 'support-standby.mjs', treePath: 'scripts/support-standby.mjs', executable: false },
+  { name: KIT_DISPATCHER_NAME, treePath: 'scripts/support-dispatch.sh', executable: false },
+  { name: KIT_ROUTINE_NAME, treePath: 'scripts/support-standby.mjs', executable: false },
 ]
 
 const HASH_LINE = /^([0-9a-f]{64}) {2}([a-z0-9][a-z0-9._-]{0,63})$/

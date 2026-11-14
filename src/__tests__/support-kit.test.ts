@@ -13,8 +13,9 @@ import {
   realpathSync,
   utimesSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import {
   formatKitManifest,
   parseKitManifest,
@@ -26,10 +27,13 @@ import {
   KIT_LOCK_NAME,
   KIT_MANIFEST_NAME,
   KIT_SUBFOLDER,
+  KIT_MANIFEST_MAX_BYTES,
+  KIT_MAX_FILES,
   type KitFileSource,
   type KitManifest,
   type WriteKitOptions,
 } from '../support-kit.js'
+import { KIT_DISPATCHER_NAME, KIT_LAUNCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 
 const noSleep = async (): Promise<void> => {}
 const RELEASE = '1ca1f0944891436a4a8ae0643bc6b7d3c0693f58'
@@ -56,6 +60,7 @@ const MANIFEST: KitManifest = {
   files: { 'support-standby.mjs': HASH_B, 'support-access': HASH_A },
   installRoot: '/opt/marveen',
   nodePath: '/usr/bin/node',
+  nodeMin: 20,
   release: RELEASE,
 }
 const MANIFEST_TEXT =
@@ -64,6 +69,7 @@ const MANIFEST_TEXT =
   'file support-standby.mjs ' + HASH_B + '\n' +
   'install-root /opt/marveen\n' +
   'node /usr/bin/node\n' +
+  'node-min 20\n' +
   'release ' + RELEASE + '\n'
 
 describe('the kit manifest', () => {
@@ -73,6 +79,7 @@ describe('the kit manifest', () => {
       files: { 'support-access': HASH_A, 'support-standby.mjs': HASH_B },
       installRoot: '/opt/marveen',
       nodePath: '/usr/bin/node',
+      nodeMin: 20,
       release: RELEASE,
     })
   })
@@ -142,6 +149,43 @@ describe('the kit manifest', () => {
   })
 })
 
+// The cases every manifest reader must agree on; the sh launcher runs the same file (Geri, SUPPORTMENTOUT1114).
+describe('the shared manifest cases (tests/support-kit/manifest-cases.json)', () => {
+  const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const cases = JSON.parse(readFileSync(join(REPO, 'tests', 'support-kit', 'manifest-cases.json'), 'utf8')) as {
+    good: string
+    bad: { label: string; text: string }[]
+  }
+
+  it('reads the good one, and writes it back byte for byte', () => {
+    const parsed = parseKitManifest(cases.good)
+    expect(parsed).toMatchObject({ nodePath: '/opt/homebrew/opt/node@22/bin/node', nodeMin: 20 })
+    expect(formatKitManifest(parsed as KitManifest)).toBe(cases.good)
+    expect(Object.keys((parsed as KitManifest).files)).toEqual([KIT_LAUNCHER_NAME, KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME])
+  })
+
+  it('has a good number of bad ones', () => {
+    expect(cases.bad.length).toBeGreaterThanOrEqual(40)
+  })
+
+  for (const c of cases.bad) {
+    it('refuses ' + c.label, () => {
+      expect(parseKitManifest(c.text)).toBeNull()
+    })
+  }
+
+  it('refuses to WRITE a manifest larger than the cap or with more than 16 files', () => {
+    const many = Object.fromEntries(Array.from({ length: KIT_MAX_FILES + 1 }, (_, i) => ['f' + i, HASH_A]))
+    expect(() => formatKitManifest({ ...MANIFEST, files: many })).toThrow(KitError)
+    const sixteen = Object.fromEntries(Array.from({ length: KIT_MAX_FILES }, (_, i) => ['f' + String(i).padStart(2, '0'), HASH_A]))
+    expect(parseKitManifest(formatKitManifest({ ...MANIFEST, files: sixteen }))).not.toBeNull()
+    expect(() => formatKitManifest({ ...MANIFEST, installRoot: '/' + 'x'.repeat(KIT_MANIFEST_MAX_BYTES) })).toThrow(KitError)
+    for (const nodeMin of [0, -1, 1000, 20.5, Number.NaN]) {
+      expect(() => formatKitManifest({ ...MANIFEST, nodeMin })).toThrow(KitError)
+    }
+  })
+})
+
 describe('the kit on disk', () => {
   let root: string
   let supportDir: string
@@ -162,6 +206,7 @@ describe('the kit on disk', () => {
     files: FILES_1,
     installRoot: '/opt/marveen',
     nodePath: '/usr/bin/node',
+    nodeMin: 20,
     release: RELEASE,
     sleep: noSleep,
     ...over,
@@ -197,6 +242,7 @@ describe('the kit on disk', () => {
         },
         installRoot: '/opt/marveen',
         nodePath: '/usr/bin/node',
+        nodeMin: 20,
         release: RELEASE,
       })
       expect(verifyKit({ supportDir })).toMatchObject({ ok: true, kitDir })
@@ -422,6 +468,12 @@ describe('the kit on disk', () => {
       rmSync(join(kitDir, 'support-access'))
       mkdirSync(join(kitDir, 'support-access'))
       expect(verifyKit({ supportDir })).toMatchObject({ ok: false, problem: 'kit_mismatch' })
+    })
+
+    it('does not read a manifest larger than the cap', () => {
+      const manifestPath = join(kitDir, KIT_MANIFEST_NAME)
+      writeFileSync(manifestPath, readFileSync(manifestPath, 'utf8') + 'x'.repeat(KIT_MANIFEST_MAX_BYTES))
+      expect(verifyKit({ supportDir })).toMatchObject({ ok: false, problem: 'kit_manifest_unreadable' })
     })
 
     it('says the manifest is unreadable when it is gone, garbled, a link or names nothing', () => {

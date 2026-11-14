@@ -653,6 +653,8 @@ var KIT_SUBFOLDER = "kit";
 var KIT_MANIFEST_NAME = "manifest";
 var KIT_LOCK_NAME = "kit.lock";
 var KIT_MANIFEST_HEADER = "marveen-support-kit 1";
+var KIT_MANIFEST_MAX_BYTES = 4096;
+var KIT_MAX_FILES = 16;
 var KitError = class extends Error {
   code;
   constructor(code, message) {
@@ -673,6 +675,7 @@ function sha256Hex(bytes) {
 function manifestProblem(m) {
   const names = Object.keys(m.files);
   if (names.length === 0) return "the kit has no file";
+  if (names.length > KIT_MAX_FILES) return "the kit has more files than a manifest may name";
   for (const name of names) {
     if (!FILE_NAME.test(name) || name === KIT_MANIFEST_NAME) return "a file name is not a plain lower case name";
     if (!SHA256_HEX.test(m.files[name])) return "a hash is not 64 lower case hex digits";
@@ -680,6 +683,7 @@ function manifestProblem(m) {
   if (!SAFE_ABSOLUTE_PATH2.test(m.installRoot)) return "the install root is not a plain absolute path";
   if (!SAFE_NODE_PATH.test(m.nodePath)) return "the node path is not a plain absolute path";
   if (!RELEASE.test(m.release)) return "the release is not a commit id";
+  if (!Number.isInteger(m.nodeMin) || m.nodeMin < 1 || m.nodeMin > 999) return "the node minimum is not a major version";
   return null;
 }
 function formatKitManifest(m) {
@@ -687,11 +691,13 @@ function formatKitManifest(m) {
   if (problem !== null) throw new KitError("kit_input_invalid", problem);
   const lines = [KIT_MANIFEST_HEADER];
   for (const name of Object.keys(m.files).sort()) lines.push("file " + name + " " + m.files[name]);
-  lines.push("install-root " + m.installRoot, "node " + m.nodePath, "release " + m.release);
-  return lines.join("\n") + "\n";
+  lines.push("install-root " + m.installRoot, "node " + m.nodePath, "node-min " + m.nodeMin, "release " + m.release);
+  const text = lines.join("\n") + "\n";
+  if (text.length > KIT_MANIFEST_MAX_BYTES) throw new KitError("kit_input_invalid", "the manifest would be larger than a manifest may be");
+  return text;
 }
 function parseKitManifest(text) {
-  if (!text.endsWith("\n")) return null;
+  if (text.length > KIT_MANIFEST_MAX_BYTES || !text.endsWith("\n")) return null;
   const lines = text.slice(0, -1).split("\n");
   if (lines[0] !== KIT_MANIFEST_HEADER) return null;
   const files = {};
@@ -701,7 +707,7 @@ function parseKitManifest(text) {
     if (parts[0] === "file" && parts.length === 3) {
       if (Object.prototype.hasOwnProperty.call(files, parts[1])) return null;
       files[parts[1]] = parts[2];
-    } else if ((parts[0] === "install-root" || parts[0] === "node" || parts[0] === "release") && parts.length === 2) {
+    } else if ((parts[0] === "install-root" || parts[0] === "node" || parts[0] === "node-min" || parts[0] === "release") && parts.length === 2) {
       if (single.has(parts[0])) return null;
       single.set(parts[0], parts[1]);
     } else return null;
@@ -710,6 +716,8 @@ function parseKitManifest(text) {
     files,
     installRoot: single.get("install-root") ?? "",
     nodePath: single.get("node") ?? "",
+    // Only digits are a number here; the canonical-text check below refuses a leading zero or a sign.
+    nodeMin: /^[0-9]{1,3}$/.test(single.get("node-min") ?? "") ? Number(single.get("node-min")) : NaN,
     release: single.get("release") ?? ""
   };
   if (manifestProblem(manifest) !== null) return null;
@@ -755,6 +763,9 @@ function verifyKit(opts) {
   const manifestFinding = fileFinding(manifestPath, uid);
   if (manifestFinding !== null) {
     return refuse(manifestFinding.problem === "kit_file_missing" ? { problem: "kit_manifest_unreadable", detail: manifestFinding.detail } : manifestFinding);
+  }
+  if (lstatSync(manifestPath).size > KIT_MANIFEST_MAX_BYTES) {
+    return refuse({ problem: "kit_manifest_unreadable", detail: manifestPath + " is larger than a manifest may be" });
   }
   const manifest = parseKitManifest(readFileSync(manifestPath, "latin1"));
   if (manifest === null) return refuse({ problem: "kit_manifest_unreadable", detail: manifestPath + " is not a manifest" });
@@ -835,7 +846,7 @@ function syncFolder(path) {
   }
 }
 async function writeKit(opts) {
-  const { files, installRoot, nodePath, release, ...tuning } = opts;
+  const { files, installRoot, nodePath, nodeMin, release, ...tuning } = opts;
   const supportDir = resolve(opts.supportDir);
   if (!SAFE_ABSOLUTE_PATH2.test(supportDir)) {
     throw new KitError("kit_input_invalid", "the support folder is not a plain absolute path");
@@ -845,7 +856,7 @@ async function writeKit(opts) {
     if (Object.prototype.hasOwnProperty.call(hashes, file.name)) throw new KitError("kit_input_invalid", "a file name is given twice");
     hashes[file.name] = file.sha256;
   }
-  const manifest = { files: hashes, installRoot, nodePath, release };
+  const manifest = { files: hashes, installRoot, nodePath, nodeMin, release };
   const manifestText = formatKitManifest(manifest);
   for (const file of files) {
     if (sha256Hex(file.content) !== file.sha256) {
@@ -909,9 +920,11 @@ import { join as join2 } from "node:path";
 
 // src/support-kit-sources.ts
 var KIT_HASHES_FILE = "scripts/support-kit.sha256";
+var KIT_DISPATCHER_NAME = "support-dispatch.sh";
+var KIT_ROUTINE_NAME = "support-standby.mjs";
 var KIT_SOURCES = [
-  { name: "support-dispatch.sh", treePath: "scripts/support-dispatch.sh", executable: false },
-  { name: "support-standby.mjs", treePath: "scripts/support-standby.mjs", executable: false }
+  { name: KIT_DISPATCHER_NAME, treePath: "scripts/support-dispatch.sh", executable: false },
+  { name: KIT_ROUTINE_NAME, treePath: "scripts/support-standby.mjs", executable: false }
 ];
 var HASH_LINE = /^([0-9a-f]{64}) {2}([a-z0-9][a-z0-9._-]{0,63})$/;
 function parseKitHashes(text) {
@@ -985,7 +998,7 @@ async function installKit(input) {
     }
     files.push({ name: source.name, content, sha256: stored.get(source.name), executable: source.executable });
   }
-  return writeKit({ supportDir, files, installRoot, nodePath, release, ...tuning });
+  return writeKit({ supportDir, files, installRoot, nodePath, nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR, release, ...tuning });
 }
 
 // src/remote-enroll-fs.ts

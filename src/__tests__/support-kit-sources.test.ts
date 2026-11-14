@@ -4,7 +4,15 @@ import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { KIT_HASHES_FILE, KIT_SOURCES, formatKitHashes, parseKitHashes } from '../support-kit-sources.js'
+import {
+  KIT_DISPATCHER_NAME,
+  KIT_HASHES_FILE,
+  KIT_LAUNCHER_NAME,
+  KIT_ROUTINE_NAME,
+  KIT_SOURCES,
+  formatKitHashes,
+  parseKitHashes,
+} from '../support-kit-sources.js'
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 const sha = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
@@ -29,6 +37,11 @@ describe('the stored kit hashes', () => {
     }
     expect(build.SUPPORT_KIT_FILES).toEqual(KIT_SOURCES.map((s) => [s.name, s.treePath]))
     expect(build.SUPPORT_KIT_HASHES_FILE).toBe(KIT_HASHES_FILE)
+  })
+
+  it('builds the list from the three run-file names, which are exported in one place', () => {
+    expect([KIT_LAUNCHER_NAME, KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME]).toEqual(['support-access', 'support-dispatch.sh', 'support-standby.mjs'])
+    expect(KIT_SOURCES.map((s) => s.name)).toEqual([KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME])
   })
 
   it('names the kit files in name order, none executable but what the user starts directly', () => {
