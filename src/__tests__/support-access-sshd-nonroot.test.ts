@@ -152,6 +152,11 @@ describe('walkIncludes', () => {
     })
   })
 
+  it('refuses when the change time of the main file\'s folder cannot be read', () => {
+    const fs = fsOf({ '/etc/ssh/sshd_config': 'Port 22\n' })
+    expect(walkIncludes({ ...fs, ctimeNs: () => null })).toEqual({ ok: false, problem: 'sshd_config_unknown' })
+  })
+
   it('reads a file that two Includes name once, does not loop, and stops at the depth limit', () => {
     const looping = fsOf({ '/etc/ssh/sshd_config': 'Include /etc/ssh/sshd_config\nInclude /etc/ssh/sshd_config\n' }, { '/etc/ssh': ['sshd_config'] })
     expect(walkIncludes(looping)).toEqual({
@@ -263,7 +268,12 @@ describe('realNonRootFs, on a real folder', () => {
   it.skipIf(process.getuid?.() === 0)('tells a folder it cannot list from a missing one, and a file it cannot read', () => {
     mkdirSync(join(root, 'open'))
     writeFileSync(join(root, 'open', 'x.conf'), 'X\n')
-    expect(realNonRootFs.listDir(join(root, 'open'))).toMatchObject({ kind: 'ok', names: ['x.conf'] })
+    const before = BigInt(Date.now() - 5000) * 1_000_000n
+    utimesSync(join(root, 'open'), 1000, 1000)
+    const listed = realNonRootFs.listDir(join(root, 'open'))
+    expect(listed).toMatchObject({ kind: 'ok', names: ['x.conf'] })
+    // The folder's CHANGE time, which an old mtime does not hide.
+    expect(listed.kind === 'ok' && listed.ctimeNs > before).toBe(true)
     expect(realNonRootFs.listDir(join(root, 'none'))).toEqual({ kind: 'missing' })
     mkdirSync(join(root, 'closed'))
     // Searchable, not listable for this user: the case that hides drop-ins from a non-root sshd -T (measured on a
