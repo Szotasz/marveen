@@ -229,7 +229,7 @@ describe('github-pr-monitor.sh: failed alert keeps the snapshot for retry', () =
 
 // The watchdog-replay.py marker block that stood here went away with the script (REPLAYNOENVELOPE1114): the
 // record-less injection path it put a marker on no longer exists. After a restart the watchdog asks the server to
-// put the delivered but unseen rows back, and the router delivers them with the normal envelope and delivery trace.
+// put the delivered, not closed rows back, and the router delivers them with the normal envelope and delivery trace.
 
 describe('stuck-modal-guard.sh: static conversion checks (live run needs a stuck session)', () => {
   const src = readFileSync(join(ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')

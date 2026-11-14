@@ -1,6 +1,6 @@
 // REPLAYNOENVELOPE1114: a row requeueDeliveredUnseenForAgent put back after a session restart is delivered again
-// through the normal envelope, and the envelope says it is a redelivery: "not seen" does not prove the old session
-// did not see or act on it. The note is a fixed constant in the trusted framing (outside the wrapper), so nothing a
+// through the normal envelope, and the envelope says it is a redelivery: the reader is a fresh session, and the
+// previous one may have seen the row and started on it. The note is a fixed constant in the trusted framing (outside the wrapper), so nothing a
 // sender controls may enter it. This file pins the note, its place after the freshness note, the categories that
 // carry it, and that every wrap site passes it from the row.
 import { describe, it, expect } from 'vitest'
@@ -19,7 +19,11 @@ const HOUR_MS = 60 * 60 * 1000
 
 describe('the redelivery note itself', () => {
   it('is the fixed text, ASCII only, with no at-sign, no angle bracket and no em or en dash', () => {
-    expect(REDELIVERY_NOTE).toBe(' [ujrakezbesites: ez az uzenet egyszer mar kezbesitve volt, a munkameneted ujraindulasa utan megy ki ujra -- ha mar lattad vagy elintezted, ne vegezd el ketszer]')
+    expect(REDELIVERY_NOTE).toBe(' [ujrakezbesites: a munkameneted ujraindult, ez egy friss session; ezt az uzenetet az elozo munkameneted egyszer mar megkapta, es el is kezdhette -- mielott ujra elvegzed, ellenorizd a kanban tablat, a munkafat es a mar elkuldott uzeneteidet]')
+    // one bracket: it opens once and closes once, at the very end (a reader that cuts at the first closing
+    // bracket after the sender bracket must get the whole note)
+    expect(REDELIVERY_NOTE.match(/\[/g)).toHaveLength(1)
+    expect(REDELIVERY_NOTE.indexOf(']')).toBe(REDELIVERY_NOTE.length - 1)
     // eslint-disable-next-line no-control-regex
     expect(/^[\x20-\x7e]+$/.test(REDELIVERY_NOTE)).toBe(true)
     expect(REDELIVERY_NOTE).not.toContain(AT)

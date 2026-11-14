@@ -5603,11 +5603,18 @@ function requeueWithCap<R extends { id: number }>(
 export type RequeueDeliveredUnseenOpts = RequeueAbandonedOpts
 
 // REPLAYNOENVELOPE1114: after a sub-agent's session was restarted (scripts/watchdog.sh, through
-// POST /api/agents/:name/redeliver-unseen), put the rows the old session was handed but never showed it had seen
-// back in the queue, so the router delivers them again through its normal envelope. The row set:
-// delivered, not completed, never seen (seen_at IS NULL), created inside the window (2 hours by default, the old
-// replay script's window), not from `system` (an old directive must never reach a fresh session again), never put
-// back before by either selector (requeued_at, requeue_skipped_at), and not a stop or urgent row.
+// POST /api/agents/:name/redeliver-unseen), put the rows the old session was handed and did not close back in the
+// queue, so the router delivers them again through its normal envelope. The row set:
+// delivered, not completed, created inside the window (2 hours by default, the old replay script's window), not
+// from `system` (an old directive must never reach a fresh session again), never put back before by either
+// selector (requeued_at, requeue_skipped_at), and not a stop or urgent row.
+// seen_at is NOT looked at, on purpose (review of #2755): the watchdog starts a FRESH session, with no
+// conversation to continue, so a seen mark only says the row reached a transcript that is gone. A row the old
+// session saw and was still working on is exactly the one that must come back; with a seen filter the usual case
+// would put nothing back (measured on the live queue that day: the open delivered rows of two hours were all
+// seen). The row keeps its old seen_at (it is set once), so after this the mark refers to the previous session.
+// The contract: every row put back is flagged (redelivered_at, shown in the envelope), goes back at most once,
+// and a closed row is never touched.
 // Of these the newest `cap` (20 by default) go back to 'pending' with requeued_at and redelivered_at set to now;
 // delivered_at stays as it was (the router overwrites it when it delivers). Each UPDATE repeats the guards, so a row
 // that changed in the meantime is left alone. The rest are marked requeue_skipped_at. Once per row: a second call
@@ -5619,16 +5626,16 @@ export type RequeueDeliveredUnseenOpts = RequeueAbandonedOpts
 // sender was told nothing; a newer message is just the next message of the conversation, and dropping the earlier
 // one would lose it silently. Supersession is shown to the reader by the existing freshness note instead.
 export function requeueDeliveredUnseenForAgent(agent: string, opts: RequeueDeliveredUnseenOpts = {}): number[] {
-  return requeueWithCap(agent, opts, 2 * 3600, 'delivered unseen messages over the redelivery cap are not put back', (now, since) => {
+  return requeueWithCap(agent, opts, 2 * 3600, 'delivered open messages over the redelivery cap are not put back', (now, since) => {
     const rows = db.prepare(
       `SELECT m.id FROM agent_messages m
-       WHERE m.to_agent = ? AND m.status = 'delivered' AND m.completed_at IS NULL AND m.seen_at IS NULL
+       WHERE m.to_agent = ? AND m.status = 'delivered' AND m.completed_at IS NULL
          AND m.created_at >= ? AND m.from_agent != 'system'
          AND m.requeued_at IS NULL AND m.requeue_skipped_at IS NULL
          AND ${REQUEUE_NEVER_STOP_OR_URGENT_SQL}
        ORDER BY m.created_at DESC, m.id DESC`
     ).all(agent, since) as { id: number }[]
-    const guards = `status = 'delivered' AND completed_at IS NULL AND seen_at IS NULL AND from_agent != 'system' AND requeued_at IS NULL AND requeue_skipped_at IS NULL AND ${REQUEUE_NEVER_STOP_OR_URGENT_SQL}`
+    const guards = `status = 'delivered' AND completed_at IS NULL AND from_agent != 'system' AND requeued_at IS NULL AND requeue_skipped_at IS NULL AND ${REQUEUE_NEVER_STOP_OR_URGENT_SQL}`
     const revive = db.prepare(
       `UPDATE agent_messages SET status = 'pending', requeued_at = ?, redelivered_at = ? WHERE id = ? AND ${guards}`
     )

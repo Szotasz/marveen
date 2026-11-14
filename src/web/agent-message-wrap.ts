@@ -104,11 +104,12 @@ function freshnessNote(ageMs?: number, newerFromSameSender?: number): string {
 }
 
 // REPLAYNOENVELOPE1114: the note on a row that requeueDeliveredUnseenForAgent (db.ts) put back after the
-// recipient's session was restarted. The row was delivered once and never showed up as seen, but "not seen" does
-// not prove the old session did not act on it, so the reader is told. A fixed constant, ASCII, no at-sign, no angle
-// bracket: like the freshness note it sits OUTSIDE the wrapper, in the trusted framing, so nothing sender-controlled
-// may enter it. It comes after the freshness note when both apply.
-export const REDELIVERY_NOTE = ' [ujrakezbesites: ez az uzenet egyszer mar kezbesitve volt, a munkameneted ujraindulasa utan megy ki ujra -- ha mar lattad vagy elintezted, ne vegezd el ketszer]'
+// recipient's session was restarted. The reader is a FRESH session with no memory of the row; the previous session
+// was handed it once, and may have seen it, started on it, or even finished it without closing it. So the note
+// says where to look before doing it again. A fixed constant, ASCII, no at-sign, no angle bracket, no closing
+// square bracket inside: like the freshness note it sits OUTSIDE the wrapper, in the trusted framing, so nothing
+// sender-controlled may enter it. It comes after the freshness note when both apply.
+export const REDELIVERY_NOTE = ' [ujrakezbesites: a munkameneted ujraindult, ez egy friss session; ezt az uzenetet az elozo munkameneted egyszer mar megkapta, es el is kezdhette -- mielott ujra elvegzed, ellenorizd a kanban tablat, a munkafat es a mar elkuldott uzeneteidet]'
 
 // D3(a): an untrusted or federated message that matches a known prompt-injection shape gets a
 // heads-up in its sender line. It names the matched rules only, never the matched text (that

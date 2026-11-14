@@ -126,7 +126,7 @@ fi
 # substitution).
 export -n TOKEN
 
-# REPLAYNOENVELOPE1114: after a confirmed restart, ask the dashboard to put this agent's delivered but unseen
+# REPLAYNOENVELOPE1114: after a confirmed restart, ask the dashboard to put this agent's delivered, not closed
 # messages back in its queue (POST /api/agents/<id>/redeliver-unseen). The message router then delivers them again
 # through its normal path: envelope with sender and msg_id, a note that it is a redelivery, the pane mapping, the
 # chunker, the delivery trace, the seen sweep. This script types NOTHING into the pane any more (the Python replay

@@ -2724,8 +2724,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   // REPLAYNOENVELOPE1114: after scripts/watchdog.sh restarted a sub-agent's session, it asks HERE for the rows the
-  // old session was handed but never showed it had seen. The caller names the agent and nothing else: no row id, no
-  // filter, no content. The server chooses the rows (requeueDeliveredUnseenForAgent: delivered, open, unseen, inside
+  // old session was handed and did not close. The caller names the agent and nothing else: no row id, no
+  // filter, no content. The server chooses the rows (requeueDeliveredUnseenForAgent: delivered, open, inside
   // the window, never from `system`, each at most once) and puts them back to pending; the router's normal tick
   // delivers them through the usual envelope, which says it is a redelivery. Nothing is delivered from here.
   // Refused with 400: any query string, and any request body at all (not even `{}` or whitespace), so a selector can
@@ -2751,7 +2751,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     const ids = requeueDeliveredUnseenForAgent(name)
-    logger.info({ agent: name, ids }, 'redeliver-unseen: delivered but unseen rows put back to pending for the router')
+    logger.info({ agent: name, ids }, 'redeliver-unseen: delivered, open rows put back to pending for the router')
     json(res, { ok: true, requeued: ids.length, ids })
     return true
   }

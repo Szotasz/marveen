@@ -16,7 +16,7 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "agents.ts POST <startMatch>", cls: "agent", why: "agent lifecycle: the main agent starts agents" },
   { key: "agents.ts POST <stopMatch>", cls: "agent", why: "agent lifecycle: the main agent stops agents" },
   { key: "agents.ts POST <drainMatch>", cls: "agent", why: "agent lifecycle: drain" },
-  { key: "agents.ts POST <redeliverMatch>", cls: "agent", why: "agent lifecycle: the watchdog asks the server to put a restarted sub-agent's delivered but unseen rows back for the router; takes only the name" },
+  { key: "agents.ts POST <redeliverMatch>", cls: "agent", why: "agent lifecycle: the watchdog asks the server to put a restarted sub-agent's delivered, not closed rows back for the router; takes only the name" },
   { key: "agents.ts POST <restartMatch>", cls: "agent", why: "agent lifecycle: the main agent restarts agents" },
   { key: "approvals.ts POST <consumeMatch>", cls: "agent", why: "an agent consumes its own approved request (single use, bound to the grantee)" },
   { key: "auth.ts POST /api/auth/login", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },

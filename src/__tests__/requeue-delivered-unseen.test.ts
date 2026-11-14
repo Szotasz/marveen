@@ -1,10 +1,12 @@
 // REPLAYNOENVELOPE1114: the second requeue selector. After the watchdog restarts a sub-agent's session it asks the
-// server (POST /api/agents/:name/redeliver-unseen) to put the rows the old session was handed but never showed it
-// had seen back to pending, so the router delivers them again through its normal envelope. The old path typed the
-// raw content into the pane with no envelope, no sender and no id, system directives and seen rows included.
+// server (POST /api/agents/:name/redeliver-unseen) to put the rows the old session was handed and did not close
+// back to pending, so the router delivers them again through its normal envelope. The old path typed the raw
+// content into the pane with no envelope, no sender and no id, system directives included.
 //
-// Pinned here: exactly which rows go back (delivered, open, unseen, inside the window, not from system, not stop,
-// not urgent, never put back before), once per row, a second call changes nothing, the cap and requeue_skipped_at,
+// Pinned here: exactly which rows go back (delivered, open, inside the window, not from system, not stop, not
+// urgent, never put back before; SEEN OR NOT, because the restarted session is a fresh one and a seen mark only
+// says the row reached a transcript that is gone), once per row, a second call changes nothing, the cap and
+// requeue_skipped_at,
 // the deliberate difference from the abandoned selector (a newer message from the same sender does NOT block), and
 // that the abandoned selector's set and this one's are disjoint.
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -49,7 +51,7 @@ function setCols(id: number, cols: Record<string, number | string | null>): void
   const keys = Object.keys(cols)
   getDb().prepare(`UPDATE agent_messages SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => cols[k]), id)
 }
-/** A row delivered to `to` at NOW - ageSec, never seen, never closed: the set the selector is for. */
+/** A row delivered to `to` at NOW - ageSec, never seen, never closed: in the set the selector is for. */
 function deliveredUnseen(to: string, ageSec = 600, from = 'carol', content = 'task for ' + to): number {
   const id = createAgentMessage(from, to, content).id
   markMessageDelivered(id)
@@ -77,8 +79,6 @@ describe('requeueDeliveredUnseenForAgent: which rows go back', () => {
 
   it('picks exactly the eligible rows and leaves every excluded kind untouched', () => {
     const good = deliveredUnseen('alice', 600, 'carol')
-    const seen = deliveredUnseen('alice', 600, 'dave')
-    setCols(seen, { seen_at: NOW - 100 })
     const completed = deliveredUnseen('alice', 600, 'erin')
     markMessageDone(completed, 'finished')
     const old = deliveredUnseen('alice', 2 * HOUR + 60, 'frank')
@@ -94,22 +94,56 @@ describe('requeueDeliveredUnseenForAgent: which rows go back', () => {
     markMessageFailed(failed, 'some failure')
     setCols(failed, { created_at: NOW - 600 })
 
-    const excluded = [seen, completed, old, otherRecipient, fromSystem, stop, urgent, pending, failed]
+    const excluded = [completed, old, otherRecipient, fromSystem, stop, urgent, pending, failed]
     const snaps = excluded.map(row)
     expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([good])
     expect(row(good).status).toBe('pending')
     excluded.forEach((id, i) => expect(row(id), `row ${id}`).toEqual(snaps[i]))
   })
 
-  it('controls: a seen, stop or urgent row with that one field cleared IS put back', () => {
-    for (const [col, val] of [['seen_at', NOW - 100], ['stop_authorized', 1], ['urgent', 1]] as const) {
+  it('controls: a stop or urgent row with that one field cleared IS put back', () => {
+    for (const col of ['stop_authorized', 'urgent'] as const) {
       initDatabase(':memory:')
       const id = deliveredUnseen('alice')
-      setCols(id, { [col]: val })
+      setCols(id, { [col]: 1 })
       expect(requeueDeliveredUnseenForAgent('alice', { now: NOW }), col).toEqual([])
-      setCols(id, { [col]: col === 'seen_at' ? null : 0 })
+      setCols(id, { [col]: 0 })
       expect(requeueDeliveredUnseenForAgent('alice', { now: NOW }), col).toEqual([id])
     }
+  })
+
+  // Review of #2755: the watchdog starts a fresh session, so "the old session saw it" is no reason to keep a row
+  // out. It is the row most likely to be work in progress.
+  it('a row the old session had SEEN is put back like an unseen one, and keeps its old seen_at', () => {
+    const unseen = deliveredUnseen('alice', 900, 'carol')
+    const seen = deliveredUnseen('alice', 600, 'dave')
+    setCols(seen, { seen_at: NOW - 100 })
+    expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([unseen, seen])
+    const r = row(seen)
+    expect(r.status).toBe('pending')
+    expect(r.requeued_at).toBe(NOW)
+    expect(r.redelivered_at).toBe(NOW)
+    expect(r.seen_at).toBe(NOW - 100)
+  })
+
+  it('a row delivered on the pull path (marked seen by the drain itself) is put back too', () => {
+    const id = createAgentMessage('carol', 'alice', 'pulled task').id
+    const claimed = claimPendingForAgent('alice', 10)
+    expect(claimed.map((m) => m.id)).toEqual([id])
+    expect(row(id).status).toBe('delivered')
+    expect(row(id).seen_at).not.toBeNull()
+    const nowSec = Math.floor(Date.now() / 1000)
+    expect(requeueDeliveredUnseenForAgent('alice', { now: nowSec + 60 })).toEqual([id])
+    expect(row(id).status).toBe('pending')
+  })
+
+  it('a seen row that is closed stays closed (a closed row is never touched)', () => {
+    const id = deliveredUnseen('alice')
+    setCols(id, { seen_at: NOW - 100 })
+    markMessageDone(id, 'finished')
+    const snap = row(id)
+    expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([])
+    expect(row(id)).toEqual(snap)
   })
 
   // A normally closed row is 'done' or 'failed', so the status condition already keeps it out. This is the
@@ -167,13 +201,14 @@ describe('requeueDeliveredUnseenForAgent: once per row, and repeatable', () => {
     expect([row(a), row(b)]).toEqual(snaps)
   })
 
-  it('a row put back, delivered again and still unseen is not put back a second time', () => {
+  it('a row put back and delivered again is not put back a second time (seen or not)', () => {
     const id = deliveredUnseen('alice')
     expect(requeueDeliveredUnseenForAgent('alice', { now: NOW })).toEqual([id])
     markMessageDelivered(id) // the router delivered it again
     expect(row(id).status).toBe('delivered')
-    expect(row(id).seen_at).toBeNull()
     expect(requeueDeliveredUnseenForAgent('alice', { now: NOW + 60 })).toEqual([])
+    setCols(id, { seen_at: NOW + 30 })
+    expect(requeueDeliveredUnseenForAgent('alice', { now: NOW + 90 })).toEqual([])
     expect(row(id).status).toBe('delivered')
   })
 
