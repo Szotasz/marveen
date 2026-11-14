@@ -76,7 +76,7 @@ describe('pane-at-escape section: what it says (ENVATLEAK1114)', () => {
   })
 
   it('why: Claude Code would attach the file with no tool call, measured', () => {
-    expect(body).toMatch(/tool-hívás nélkül csatolná \(mérve 2026-11-14\)/)
+    expect(body).toMatch(/eszközhívás nélkül csatolná \(mérve 2026-11-14\)/)
   })
 
   it('the backslash is not part of the original, drop it when copying onward', () => {
@@ -85,12 +85,12 @@ describe('pane-at-escape section: what it says (ENVATLEAK1114)', () => {
   })
 
   it('the original is in the queue row the directive-verify recipe reads', () => {
-    expect(body).toMatch(/üzenetsor-sorban[\s\S]{0,60}`directive-verify`/)
+    expect(body).toMatch(/Inter-agent üzenetnél és rendszer-direktívánál az eredeti szöveg az üzenetsor sorában áll[\s\S]{0,60}`directive-verify`/)
   })
 
-  it('the standing rule: never an at-sign plus path in a message, a close result or a card', () => {
-    expect(body).toMatch(/inter-agent üzenetbe, üzenet-lezárás eredményébe és kártyára SOHA/)
-    expect(body).toMatch(/fájlt szavakkal írd le/)
+  it('scope: the section explains the backslash and carries no further rule (four lines after the heading)', () => {
+    expect(body.split('\n').filter((l) => l.startsWith('- ')).length).toBe(3)
+    expect(body).not.toMatch(/SOHA/)
   })
 
   it('short, one heading, no em or en dash', () => {
@@ -122,8 +122,8 @@ describe('pane-at-escape section: no at-sign in either language', () => {
     expect(en).toMatch(/with no tool call \(measured 2026-11-14\)/)
     expect(en).toMatch(/NOT part of the original text/)
     expect(en).toMatch(/drop the backslash that stands before the at-sign/)
-    expect(en).toMatch(/queue row[\s\S]{0,60}`directive-verify`/)
-    expect(en).toMatch(/NEVER write an at-sign followed by a path or file name/)
+    expect(en).toMatch(/For an inter-agent message and a system directive the original text is in the queue row[\s\S]{0,60}`directive-verify`/)
+    expect(en.split('\n').filter((l) => l.startsWith('- ')).length).toBe(3)
     expect(en).not.toMatch(/[\u2013\u2014]/)
   })
 

@@ -4088,11 +4088,10 @@ export function buildPaneAtEscapeBody(): string {
   return [
     '## Fordított perjel a kukac előtt a kapott szövegben',
     '',
-    '- A kézbesítő réteg mindenbe, amit a paneledbe gépel (inter-agent üzenet, ütemezett prompt, rendszer-direktíva), fordított perjelet',
-    '  tesz a szöveg elején vagy térköz (szóköz, sortörés) után álló kukac elé. Enélkül a Claude Code a megnevezett fájlt tool-hívás nélkül csatolná (mérve 2026-11-14).',
-    '- A fordított perjel NEM része az eredeti szövegnek. Ha a kapott szövegből csomagnevet, handle-t, azonosítót vagy parancsot másolsz tovább, a kukac előtti fordított perjelet hagyd el.',
-    '- Az eredeti szöveg az üzenetsor-sorban van: ugyanaz a sor, amit a `directive-verify` recept olvas.',
-    '- Állandó szabály: inter-agent üzenetbe, üzenet-lezárás eredményébe és kártyára SOHA ne írj kukacot, amit út vagy fájlnév követ; a fájlt szavakkal írd le.',
+    '- A kézbesítő mindenbe, amit a paneledbe gépel (inter-agent üzenet, ütemezett prompt, rendszer-direktíva), fordított perjelet',
+    '  tesz a szöveg elején vagy térköz (szóköz, sortörés) után álló kukac elé. Enélkül a Claude Code a megnevezett fájlt eszközhívás nélkül csatolná (mérve 2026-11-14).',
+    '- A fordított perjel NEM része az eredeti szövegnek. Ha a kapott szövegből csomagnevet, kezelőnevet, azonosítót vagy parancsot másolsz tovább, a kukac előtti fordított perjelet hagyd el.',
+    '- Inter-agent üzenetnél és rendszer-direktívánál az eredeti szöveg az üzenetsor sorában áll: ugyanaz a sor, amit a `directive-verify` recept olvas.',
   ].join('\n')
 }
 
