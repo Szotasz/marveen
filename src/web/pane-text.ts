@@ -53,7 +53,16 @@ export function paneOneLine(text: string): string {
 //     by the dash. src/__tests__/pane-at-neutralize.test.ts asserts the rule on
 //     the concatenated CHUNKS, not on this function's output.
 //   - Control characters never reach the pane (stripPaneControls, applied BEFORE
-//     the at-sign step). A backspace or DEL typed before an at-sign could erase
+//     the at-sign step). They are REPLACED by U+FFFD, not deleted and not turned
+//     into a space (second review round, measured on the real envelope): the
+//     envelope scrubs its own tags from the RAW content before this mapping
+//     runs, so a tag broken in two by a control character is no tag to the
+//     scrubber. Deleting the character joined the halves again after the scrub
+//     (three forged tags in the typed text); a space did the same wherever the
+//     character stood right after '<' or '</', because the scrubber's pattern
+//     itself tolerates whitespace there. A visible non-whitespace mark joins
+//     nothing and forms no whitespace-tolerant tag. The at-sign step treats the
+//     mark like whitespace, so nobody has to measure whether the TUI does. A backspace or DEL typed before an at-sign could erase
 //     the character in front of it and so turn it into an at-sign after
 //     whitespace; a lone CR could submit the prompt early. Whether the TUI acts
 //     on these today was NOT measured: none of them belongs in a message, so
@@ -62,18 +71,21 @@ export function paneOneLine(text: string): string {
 //     whitespace once a control character is gone still gets its backslash.
 //
 // The queue row keeps the ORIGINAL text; only what is typed changes.
-const AT_AFTER_BREAK_RX = /(^|[\s;])@/g
+const AT_AFTER_BREAK_RX = /(^|[\s;\uFFFD])@/g
 
 export function neutralizeAtMentions(text: string): string {
   return text.replace(AT_AFTER_BREAK_RX, '$1\\@')
 }
 
 // C0 without TAB (LF is gone by then, see paneOneLine), DEL, and C1. A lone CR
-// becomes a space, like the line break it is; everything else is deleted.
+// becomes a space, like the line break it is; every other one becomes U+FFFD
+// (see above for why it is neither deleted nor a space).
 const PANE_CONTROL_RX = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g
 
+export const PANE_CONTROL_MARK = '\uFFFD'
+
 export function stripPaneControls(text: string): string {
-  return text.replace(/\r/g, ' ').replace(PANE_CONTROL_RX, '')
+  return text.replace(/\r/g, ' ').replace(PANE_CONTROL_RX, PANE_CONTROL_MARK)
 }
 
 // What sendPromptToSession() actually types: one line, no control character,

@@ -20,22 +20,22 @@ import time
 
 # ENVATLEAK1114: the SAME mapping as src/web/pane-text.ts `paneTyped` (and
 # scripts/hooks/provenance-gate.py `pane_shape`), in the same order: every line
-# break becomes a space, control characters are removed (C0 without TAB, DEL and
-# C1 deleted, a lone CR becomes a space), and a backslash goes before every
-# at-sign at the start of the text, after whitespace or after a semicolon.
+# break becomes a space, control characters never reach the pane (C0 without TAB, DEL
+# and C1 become U+FFFD, a lone CR becomes a space; never deleted), and a backslash goes before every
+# at-sign at the start of the text, after whitespace, after a semicolon or after U+FFFD.
 # Claude Code expands an at-sign token into a file attachment with no tool call,
 # and this script types message content straight into a pane. JS_SPACE is
 # JavaScript's whitespace class spelled out, because Python's own class is a
 # different set; src/__tests__/fixtures/pane-at-neutralize-vectors.json holds
 # the shared cases.
 JS_SPACE = "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
-AT_AFTER_BREAK_RX = re.compile("(^|[" + JS_SPACE + ";])@")
+AT_AFTER_BREAK_RX = re.compile("(^|[" + JS_SPACE + ";\ufffd])@")
 PANE_CONTROL_RX = re.compile("[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]")
 
 
 def pane_typed(text):
     one_line = re.sub(r"\r?\n", " ", text or "").replace("\r", " ")
-    return AT_AFTER_BREAK_RX.sub(lambda m: m.group(1) + "\\@", PANE_CONTROL_RX.sub("", one_line))
+    return AT_AFTER_BREAK_RX.sub(lambda m: m.group(1) + "\\@", PANE_CONTROL_RX.sub("\ufffd", one_line))
 
 
 # The chunks typed for an already mapped line: the same two boundary rules as

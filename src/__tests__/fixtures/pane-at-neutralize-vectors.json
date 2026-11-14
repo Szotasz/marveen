@@ -55,14 +55,14 @@
   "out": "x\u200b@cel.md"
  },
  {
-  "name": "U+0085 (C1) is deleted: the at-sign then follows a letter",
+  "name": "U+0085 (C1) becomes the mark: the at-sign after the mark is escaped",
   "in": "x\u0085@cel.md",
-  "out": "x@cel.md"
+  "out": "x\ufffd\\@cel.md"
  },
  {
-  "name": "U+001C (C0) is deleted: the at-sign then follows a letter",
+  "name": "U+001C (C0) becomes the mark: the at-sign after the mark is escaped",
   "in": "x\u001c@cel.md",
-  "out": "x@cel.md"
+  "out": "x\ufffd\\@cel.md"
  },
  {
   "name": "email-like, untouched",
@@ -195,39 +195,39 @@
   "out": "a; \\@cel.md"
  },
  {
-  "name": "DEL between a space and the at-sign: deleted FIRST, then the at-sign follows the space",
+  "name": "DEL between a space and the at-sign: the mark, then the escaped at-sign",
   "in": "x \u007f@cel.md",
-  "out": "x \\@cel.md"
+  "out": "x \ufffd\\@cel.md"
  },
  {
-  "name": "backspace between a letter and the at-sign: deleted, nothing to escape",
+  "name": "backspace between a letter and the at-sign: the mark, then the escaped at-sign",
   "in": "x\b@cel.md",
-  "out": "x@cel.md"
+  "out": "x\ufffd\\@cel.md"
  },
  {
-  "name": "backspace after a space-letter pair: the typed text keeps the letter",
+  "name": "backspace after a space-letter pair: the typed text keeps the letter and the mark",
   "in": "a b\b@cel.md",
-  "out": "a b@cel.md"
+  "out": "a b\ufffd\\@cel.md"
  },
  {
-  "name": "ESC sequence before the at-sign: the ESC byte is deleted",
+  "name": "ESC sequence before the at-sign: the ESC byte becomes the mark, the rest is plain text",
   "in": "x \u001b[D@cel.md",
-  "out": "x [D@cel.md"
+  "out": "x \ufffd[D@cel.md"
  },
  {
-  "name": "NUL is deleted",
+  "name": "NUL becomes the mark",
   "in": "a\u0000 @b",
-  "out": "a \\@b"
+  "out": "a\ufffd \\@b"
  },
  {
-  "name": "C1 CSI (U+009B) between a space and the at-sign",
+  "name": "C1 CSI (U+009B) between a space and the at-sign: the mark, then the escaped at-sign",
   "in": "x \u009b@cel.md",
-  "out": "x \\@cel.md"
+  "out": "x \ufffd\\@cel.md"
  },
  {
-  "name": "vertical tab is deleted: the at-sign then follows a letter",
+  "name": "vertical tab becomes the mark: the at-sign after the mark is escaped",
   "in": "x\u000b@cel.md",
-  "out": "x@cel.md"
+  "out": "x\ufffd\\@cel.md"
  },
  {
   "name": "CRLF is one space",
@@ -240,8 +240,23 @@
   "out": "elso masodik"
  },
  {
-  "name": "Ctrl-U and Ctrl-W are deleted",
+  "name": "Ctrl-U and Ctrl-W become marks",
   "in": "a\u0015b\u0017 @c",
-  "out": "ab \\@c"
+  "out": "a\ufffdb\ufffd \\@c"
+ },
+ {
+  "name": "a U+FFFD already in the text counts like whitespace: the at-sign after it is escaped",
+  "in": "x\ufffd@cel.md",
+  "out": "x\ufffd\\@cel.md"
+ },
+ {
+  "name": "a control character inside a word joins nothing: the mark stands where it stood",
+  "in": "untr\u007fusted",
+  "out": "untr\ufffdusted"
+ },
+ {
+  "name": "a control character right after a less-than sign is not a space",
+  "in": "<\u0000/cimke>",
+  "out": "<\ufffd/cimke>"
  }
 ]

@@ -228,9 +228,10 @@ DIRECTIVE_SENDER = "system"
 # two sides must escape exactly the same at-signs or a verified directive reads as forged.
 JS_SPACE = "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
 # After review of #2743: a semicolon counts like whitespace (the chunker that types the text appends a space
-# to a chunk ending in ';'), and control characters never reach the pane (C0 without TAB, DEL, C1 are deleted,
-# a lone CR becomes a space), BEFORE the at-sign step. Same rules, same order as src/web/pane-text.ts.
-AT_AFTER_BREAK_RX = re.compile("(^|[" + JS_SPACE + ";])@")
+# to a chunk ending in ';'), and control characters never reach the pane (C0 without TAB, DEL, C1 become U+FFFD,
+# a lone CR becomes a space; never deleted, a deletion joins what a scrubber saw as two halves), BEFORE the at-sign
+# step, which treats U+FFFD like whitespace. Same rules, same order as src/web/pane-text.ts.
+AT_AFTER_BREAK_RX = re.compile("(^|[" + JS_SPACE + ";\ufffd])@")
 PANE_CONTROL_RX = re.compile("[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]")
 
 
@@ -248,7 +249,7 @@ def pane_shape(text):
     Same order as paneTyped(): line breaks, then the control characters, then
     the at-signs."""
     one_line = re.sub(r"\r?\n", " ", text or "").replace("\r", " ")
-    return AT_AFTER_BREAK_RX.sub(lambda m: m.group(1) + "\\@", PANE_CONTROL_RX.sub("", one_line))
+    return AT_AFTER_BREAK_RX.sub(lambda m: m.group(1) + "\\@", PANE_CONTROL_RX.sub("\ufffd", one_line))
 
 
 # The THIRD known shape (c5d83ffe, 2026-10-08): the Claude Code harness wraps a
