@@ -10,14 +10,14 @@
 // whole: a half-finished update must not end up as a kit.
 import { accessSync, constants, closeSync, fstatSync, lstatSync, openSync, readSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { KitError, SAFE_NODE_PATH, writeKit, type KitFileSource, type KitLockTuning, type WriteKitResult } from './support-kit.js'
+import { KIT_FILE_MAX_BYTES, KitError, SAFE_NODE_PATH, writeKit, type KitFileSource, type KitLockTuning, type WriteKitResult } from './support-kit.js'
 import { KIT_HASHES_FILE, KIT_SOURCES, parseKitHashes } from './support-kit-sources.js'
 import { SUPPORT_ROUTINE_MIN_NODE_MAJOR } from './support-standby.js'
 
 /** Where the support folder is, relative to the login user's home (a working name until the M3 measurement). */
 export const SUPPORT_DIR_IN_HOME = '.marveen/support'
-/** No kit file is larger than this; a larger one is not read. */
-export const KIT_SOURCE_MAX_BYTES = 4 * 1024 * 1024
+/** No kit file is larger than this; a larger one is not read (the same cap verifyKit reads with). */
+export const KIT_SOURCE_MAX_BYTES = KIT_FILE_MAX_BYTES
 const HASHES_MAX_BYTES = 4096
 const SAFE_ABSOLUTE_PATH = /^\/[A-Za-z0-9._/-]+$/
 

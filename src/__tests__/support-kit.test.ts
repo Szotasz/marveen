@@ -5,6 +5,7 @@ import {
   existsSync,
   writeFileSync,
   mkdirSync,
+  chmodSync,
   readFileSync,
   statSync,
   lstatSync,
@@ -444,6 +445,23 @@ describe('the kit on disk', () => {
 
     it('accepts the same kit through another spelling of the folder', () => {
       expect(verifyKit({ supportDir: supportDir + '/./' })).toMatchObject({ ok: true, kitDir })
+    })
+
+    // Dani's review of #2768, S4: the dispatcher is started by path, so nothing may let another user rewrite it.
+    it('refuses a kit that group or others could write: either folder, the manifest, or a file', () => {
+      for (const [path, mode, back] of [
+        [supportDir, 0o770, 0o700],
+        [kitDir, 0o707, 0o700],
+        [join(kitDir, KIT_MANIFEST_NAME), 0o620, 0o600],
+        [join(kitDir, 'support-dispatch.sh'), 0o602, 0o600],
+      ] as [string, number, number][]) {
+        chmodSync(path, mode)
+        expect(verifyKit({ supportDir })).toMatchObject({ ok: false, problem: 'kit_writable_by_others' })
+        chmodSync(path, back)
+      }
+      // Readable by others is not the point here; a 0644 file still verifies.
+      chmodSync(join(kitDir, 'support-standby.mjs'), 0o644)
+      expect(verifyKit({ supportDir })).toMatchObject({ ok: true })
     })
 
     it.each(['support-access', 'support-dispatch.sh', 'support-standby.mjs'])('names a mismatch when %s was changed', (name) => {

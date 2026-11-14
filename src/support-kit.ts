@@ -33,11 +33,14 @@
 import { createHash, randomBytes } from 'node:crypto'
 import {
   closeSync,
+  constants,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -67,6 +70,7 @@ export type KitProblem =
   | 'kit_manifest_unreadable'
   | 'kit_file_missing'
   | 'kit_mismatch'
+  | 'kit_writable_by_others'
 
 /** Raised when the kit cannot be written, or is not what its manifest says. */
 export class KitError extends Error {
@@ -197,17 +201,48 @@ function folderFinding(path: string, uid: number | null): Finding {
   if (st.isSymbolicLink()) return { problem: 'kit_link', detail: path + ' is a symbolic link' }
   if (!st.isDirectory()) return { problem: 'kit_not_a_folder', detail: path + ' is not a folder' }
   if (uid !== null && st.uid !== uid) return { problem: 'kit_foreign_owner', detail: path + ' belongs to another user' }
+  if ((st.mode & 0o022) !== 0) return { problem: 'kit_writable_by_others', detail: path + ' can be written by group or others' }
   return null
 }
 
-/** A file of the kit must be a regular file (no link) that belongs to the user. */
-function fileFinding(path: string, uid: number | null): Finding {
-  const st = lstatOrNull(path)
-  if (st === null) return { problem: 'kit_file_missing', detail: path + ' does not exist' }
-  if (st.isSymbolicLink()) return { problem: 'kit_link', detail: path + ' is a symbolic link' }
-  if (!st.isFile()) return { problem: 'kit_mismatch', detail: path + ' is not a regular file' }
-  if (uid !== null && st.uid !== uid) return { problem: 'kit_foreign_owner', detail: path + ' belongs to another user' }
-  return null
+/** No kit file is larger than this; a larger one is not read past this many bytes. */
+export const KIT_FILE_MAX_BYTES = 4 * 1024 * 1024
+
+type KitFileRead = { readonly ok: true; readonly bytes: Buffer } | { readonly ok: false; readonly finding: NonNullable<Finding>; readonly tooLarge: boolean }
+
+/**
+ * A file of the kit, opened ONCE without following a link, every check made
+ * on that descriptor (Dani's review of #2768, S6): a regular file of this
+ * user that group and others cannot write, read up to `max` bytes.
+ */
+function readKitFile(path: string, uid: number | null, max: number): KitFileRead {
+  const no = (problem: KitProblem, detail: string, tooLarge = false): KitFileRead => ({ ok: false, finding: { problem, detail: path + detail }, tooLarge })
+  let fd: number
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return no('kit_file_missing', ' does not exist')
+    if (code === 'ELOOP') return no('kit_link', ' is a symbolic link')
+    return no('kit_mismatch', ' cannot be opened')
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) return no('kit_mismatch', ' is not a regular file')
+    if (uid !== null && st.uid !== uid) return no('kit_foreign_owner', ' belongs to another user')
+    if ((st.mode & 0o022) !== 0) return no('kit_writable_by_others', ' can be written by group or others')
+    const buf = Buffer.alloc(max + 1)
+    let n = 0
+    for (;;) {
+      const got = readSync(fd, buf, n, buf.length - n, n)
+      if (got === 0) break
+      n += got
+      if (n > max) return no('kit_mismatch', ' is larger than a kit file may be', true)
+    }
+    return { ok: true, bytes: buf.subarray(0, n) }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 export type KitVerdict =
@@ -232,20 +267,18 @@ export function verifyKit(opts: { supportDir: string; uid?: number | null }): Ki
     if (finding !== null) return refuse(finding)
   }
   const manifestPath = join(kitDir, KIT_MANIFEST_NAME)
-  const manifestFinding = fileFinding(manifestPath, uid)
-  if (manifestFinding !== null) {
-    return refuse(manifestFinding.problem === 'kit_file_missing' ? { problem: 'kit_manifest_unreadable', detail: manifestFinding.detail } : manifestFinding)
+  const manifestRead = readKitFile(manifestPath, uid, KIT_MANIFEST_MAX_BYTES)
+  if (!manifestRead.ok) {
+    const missingOrLarge = manifestRead.finding.problem === 'kit_file_missing' || manifestRead.tooLarge
+    return refuse(missingOrLarge ? { problem: 'kit_manifest_unreadable', detail: manifestRead.finding.detail } : manifestRead.finding)
   }
-  if (lstatSync(manifestPath).size > KIT_MANIFEST_MAX_BYTES) {
-    return refuse({ problem: 'kit_manifest_unreadable', detail: manifestPath + ' is larger than a manifest may be' })
-  }
-  const manifest = parseKitManifest(readFileSync(manifestPath, 'latin1'))
+  const manifest = parseKitManifest(manifestRead.bytes.toString('latin1'))
   if (manifest === null) return refuse({ problem: 'kit_manifest_unreadable', detail: manifestPath + ' is not a manifest' })
   for (const name of Object.keys(manifest.files).sort()) {
     const path = join(kitDir, name)
-    const finding = fileFinding(path, uid)
-    if (finding !== null) return refuse(finding)
-    if (sha256Hex(readFileSync(path)) !== manifest.files[name]) {
+    const read = readKitFile(path, uid, KIT_FILE_MAX_BYTES)
+    if (!read.ok) return refuse(read.finding)
+    if (sha256Hex(read.bytes) !== manifest.files[name]) {
       return refuse({ problem: 'kit_mismatch', detail: path + ' is not the file the manifest names' })
     }
   }
@@ -268,6 +301,14 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTim
  * two renames. `work` must be synchronous for the same reason the keys file
  * transform must be: a lock older than `staleLockMs` is taken to be left over
  * by a dead process and is removed.
+ *
+ * Stated residual (Dani's review of #2768, S5): when two processes find the
+ * same stale lock at once, both remove it by path, and the second removal can
+ * take away the lock the first one has just made; for that moment the two can
+ * work at the same time. Each write still goes to its own new folder and the
+ * swap is two renames, so a kit is never mixed from two writes; the later swap
+ * wins. It needs a lock left by a dead process AND two writers within the same
+ * moment.
  */
 export async function withKitLock<T>(supportDir: string, tuning: KitLockTuning, work: () => T): Promise<T> {
   const { lockRetries = 20, lockRetryDelayMs = 100, staleLockMs = 15000, sleep = defaultSleep } = tuning

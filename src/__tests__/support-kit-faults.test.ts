@@ -16,6 +16,9 @@ const fault = vi.hoisted(() => ({
   foreignOwned: [] as string[],
   /** Every path readFileSync was asked for. */
   reads: [] as string[],
+  /** The path each open descriptor belongs to, and the bytes read through descriptors, per path. */
+  fdPaths: new Map<number, string>(),
+  bytesRead: new Map<string, number>(),
 }))
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -33,6 +36,27 @@ vi.mock('node:fs', async (importOriginal) => {
       if (fault.corruptReadsUnder === '' || !String(path).includes(fault.corruptReadsUnder)) return out
       return typeof out === 'string' ? out + 'x' : Buffer.concat([out, Buffer.from('x')])
     }) as typeof real.readFileSync,
+    openSync: ((path: unknown, ...rest: unknown[]) => {
+      const fd = (real.openSync as (...a: unknown[]) => number)(path, ...rest)
+      fault.fdPaths.set(fd, String(path))
+      return fd
+    }) as typeof real.openSync,
+    readSync: ((fd: number, ...rest: unknown[]) => {
+      const n = (real.readSync as (...a: unknown[]) => number)(fd, ...rest)
+      const path = fault.fdPaths.get(fd) ?? '?'
+      if (n > 0 && fault.corruptReadsUnder !== '' && path.includes(fault.corruptReadsUnder)) {
+        const buf = rest[0] as Buffer
+        const offset = rest[1] as number
+        buf[offset] = buf[offset] ^ 1
+      }
+      fault.bytesRead.set(path, (fault.bytesRead.get(path) ?? 0) + n)
+      return n
+    }) as typeof real.readSync,
+    fstatSync: ((fd: number, ...rest: unknown[]) => {
+      const st = (real.fstatSync as (...a: unknown[]) => import('node:fs').Stats)(fd, ...rest)
+      if (!fault.foreignOwned.includes(fault.fdPaths.get(fd) ?? '')) return st
+      return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: st.uid + 1 })
+    }) as typeof real.fstatSync,
     lstatSync: ((path: unknown, ...rest: unknown[]) => {
       const st = (real.lstatSync as (...a: unknown[]) => import('node:fs').Stats)(path, ...rest)
       if (!fault.foreignOwned.includes(String(path))) return st
@@ -43,7 +67,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const realFs = await vi.importActual<typeof import('node:fs')>('node:fs')
 const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, realpathSync } = realFs
-const { writeKit, verifyKit, sha256Hex, KitError, KIT_SUBFOLDER, KIT_MANIFEST_NAME, KIT_MANIFEST_MAX_BYTES } = await import('../support-kit.js')
+const { writeKit, verifyKit, sha256Hex, KitError, KIT_SUBFOLDER, KIT_MANIFEST_NAME, KIT_MANIFEST_MAX_BYTES, KIT_FILE_MAX_BYTES } = await import('../support-kit.js')
 type KitFileSource = import('../support-kit.js').KitFileSource
 
 const noSleep = async (): Promise<void> => {}
@@ -87,6 +111,8 @@ describe('the kit on disk, when something goes wrong', () => {
     fault.corruptReadsUnder = ''
     fault.foreignOwned = []
     fault.reads = []
+    fault.fdPaths = new Map()
+    fault.bytesRead = new Map()
   }
 
   beforeEach(() => {
@@ -157,18 +183,23 @@ describe('the kit on disk, when something goes wrong', () => {
   })
 
   // K6, the owner half. The process uid is the default: no test passes one in.
-  // A manifest larger than the cap is refused UNREAD: a huge file in its place must not be pulled into memory.
-  it('does not even read a manifest larger than the cap', async () => {
+  // A manifest or a kit file larger than its cap is not pulled into memory: one open, at most cap + 1 bytes read
+  // (Dani's review of #2768, S6), and nothing read by path.
+  it('reads a manifest or a kit file only up to its cap, through one descriptor', async () => {
     await write(FILES_1)
     const manifestPath = join(kitDir, KIT_MANIFEST_NAME)
-    writeFileSync(manifestPath, 'x'.repeat(KIT_MANIFEST_MAX_BYTES + 1))
+    writeFileSync(manifestPath, 'x'.repeat(10 * KIT_MANIFEST_MAX_BYTES))
     fault.reads = []
+    fault.bytesRead = new Map()
     expect(verifyKit({ supportDir })).toMatchObject({ ok: false, problem: 'kit_manifest_unreadable' })
-    expect(fault.reads.filter((p) => p === manifestPath)).toEqual([])
-    // Control: a manifest within the cap is read.
-    writeFileSync(manifestPath, 'x'.repeat(KIT_MANIFEST_MAX_BYTES))
-    verifyKit({ supportDir })
-    expect(fault.reads.filter((p) => p === manifestPath)).toEqual([manifestPath])
+    expect(fault.bytesRead.get(manifestPath) ?? 0).toBeLessThanOrEqual(KIT_MANIFEST_MAX_BYTES + 1)
+    expect(fault.reads).toEqual([])
+    await write(FILES_1)
+    const routinePath = join(kitDir, 'support-standby.mjs')
+    writeFileSync(routinePath, 'x'.repeat(KIT_FILE_MAX_BYTES + 100))
+    fault.bytesRead = new Map()
+    expect(verifyKit({ supportDir })).toMatchObject({ ok: false, problem: 'kit_mismatch' })
+    expect(fault.bytesRead.get(routinePath) ?? 0).toBeLessThanOrEqual(KIT_FILE_MAX_BYTES + 1)
   })
 
   describe('a kit that belongs to another user', () => {

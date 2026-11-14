@@ -246,7 +246,10 @@ const pinnedBytesCache = new WeakMap<ReadonlySet<string>, readonly Buffer[]>()
 function pinnedBytesOf(pinnedBlobs: ReadonlySet<string>): readonly Buffer[] {
   let bytes = pinnedBytesCache.get(pinnedBlobs)
   if (bytes === undefined) {
-    bytes = [...pinnedBlobs].map((blob) => Buffer.from(blob, 'base64')).filter((b) => b.length > 0)
+    // Only a pin that is a whole sk-ssh-ed25519 key counts (Dani's review of #2768, S2): every OpenSSH key blob
+    // starts with a length field of zero bytes, so a short pin would be a prefix of EVERY key, and a removal
+    // that matched on it would take out all of the owner's keys.
+    bytes = [...pinnedBlobs].filter((blob) => parseSkEd25519Blob(blob).ok).map((blob) => Buffer.from(blob, 'base64'))
     pinnedBytesCache.set(pinnedBlobs, bytes)
   }
   return bytes

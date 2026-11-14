@@ -26,8 +26,13 @@ import { verifyKit, type KitProblem } from './support-kit.js'
 import { KIT_ROUTINE_NAME } from './support-kit-sources.js'
 import { KIT_SOURCE_MAX_BYTES } from './support-kit-install.js'
 
-/** Exit codes of the loader itself; anything else is the routine's own. */
+/**
+ * Exit codes of the loader itself. The routine's own codes stay below 64 (a
+ * routine that returns more is a failure), so a code of the loader can never
+ * pass for an answer of the routine (Dani's review of #2768, S3).
+ */
 export const KIT_LOADER_EXIT = { usage: 64, mismatch: 65, unreadable: 66, failed: 70 } as const
+const LOADER_CODES = new Set<number>(Object.values(KIT_LOADER_EXIT))
 
 export const KIT_LOADER_SOURCE = String.raw`import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -70,7 +75,7 @@ let code = null;
 try {
   code = await main(args);
 } catch {}
-if (!Number.isInteger(code) || code < 0 || code > 125) stop(70);
+if (!Number.isInteger(code) || code < 0 || code > 63) stop(70);
 process.exitCode = code;
 `
 
@@ -138,6 +143,8 @@ export function runKitRoutine(input: KitRunInput): Promise<KitRunResult> {
     child.on('error', () => resolve({ ok: false, problem: 'kit_run_failed' }))
     child.on('close', (code, signal) => {
       if (tooLong || signal !== null || code === null) return resolve({ ok: false, problem: 'kit_run_failed' })
+      if (code === KIT_LOADER_EXIT.mismatch) return resolve({ ok: false, problem: 'kit_mismatch' })
+      if (LOADER_CODES.has(code) || code > 63) return resolve({ ok: false, problem: 'kit_run_failed' })
       const stdout = Buffer.concat(chunks).toString('utf8')
       if (code === 0 && stdout.length === 0) return resolve({ ok: false, problem: 'kit_no_output' })
       resolve({ ok: true, code, stdout })

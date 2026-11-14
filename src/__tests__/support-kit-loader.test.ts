@@ -153,16 +153,25 @@ describe('running the kit copy of the routine', () => {
     expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_no_output' })
     rmSync(supportDir, { recursive: true })
     await kitWithRoutine('export const notMain = 1\n')
-    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: KIT_LOADER_EXIT.failed, stdout: '' })
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_run_failed' })
     rmSync(supportDir, { recursive: true })
     await kitWithRoutine('export async function main() { throw new Error("boom") }\n')
-    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: KIT_LOADER_EXIT.failed, stdout: '' })
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_run_failed' })
     rmSync(supportDir, { recursive: true })
     await kitWithRoutine('export async function main() { return "0" }\n')
-    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: KIT_LOADER_EXIT.failed, stdout: '' })
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_run_failed' })
     rmSync(supportDir, { recursive: true })
     await kitWithRoutine('export async function main() { process.stdout.write("x\\n"); return 300 }\n')
-    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: KIT_LOADER_EXIT.failed, stdout: 'x\n' })
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_run_failed' })
+    // Dani's review of #2768, S3: the routine's own codes stay below 64, so no code of the loader passes for an answer.
+    for (const code of [64, 65, 66, 70]) {
+      rmSync(supportDir, { recursive: true })
+      await kitWithRoutine('export async function main() { process.stdout.write("x\\n"); return ' + code + ' }\n')
+      expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_run_failed' })
+    }
+    rmSync(supportDir, { recursive: true })
+    await kitWithRoutine('export async function main() { process.stdout.write("x\\n"); return 63 }\n')
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: 63, stdout: 'x\n' })
   })
 
   it('stops a routine that prints too much, or that does not finish in time', async () => {

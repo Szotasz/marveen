@@ -615,3 +615,27 @@ describe('reconcileSupportLines', () => {
     })
   })
 })
+
+// Dani's review of #2768, S2: every OpenSSH key blob starts with a length field of zero bytes, so a short pin is a
+// prefix of EVERY key. Only a pin that is a whole sk-ssh-ed25519 key may recognise a line.
+describe('a pin that is not a whole support key', () => {
+  it.each([
+    ['four base64 characters (three zero bytes)', 'AAAA'],
+    ['the length field and the type of an ssh-ed25519 key', 'AAAAC3NzaC1lZDI1NTE5'],
+    ['a whole ssh-ed25519 key (not the support type)', 'AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH'],
+    ['a support key cut short', [...TEST_ONLY_BLOBS][0].slice(0, 40)],
+  ])('recognises no key: %s', (_label, pin) => {
+    const pins = new Set([pin])
+    expect(holdsPinnedKey(PERSONAL_LINE.split(' ')[1], pins)).toBe(false)
+    expect(isSupportLine(PERSONAL_LINE, pins)).toBe(false)
+    expect(isSupportLine(BRIDGE_LINE, pins)).toBe(false)
+    const file = [PERSONAL_LINE, BRIDGE_LINE].join('\n') + '\n'
+    expect(removeSupportLines(file, pins)).toEqual({ content: file, removed: 0 })
+  })
+
+  it('a whole support key among bad pins still recognises its own key, and only that', () => {
+    const pins = new Set(['AAAA', ...TEST_ONLY_BLOBS])
+    expect(holdsPinnedKey(PERSONAL_LINE.split(' ')[1], pins)).toBe(false)
+    expect(holdsPinnedKey([...TEST_ONLY_BLOBS][0], pins)).toBe(true)
+  })
+})

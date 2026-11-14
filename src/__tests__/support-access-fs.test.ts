@@ -10,6 +10,7 @@ import {
   lstatSync,
   symlinkSync,
   readdirSync,
+  linkSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -470,16 +471,60 @@ describe('support access on disk', () => {
       expect(readdirSync(sshDir).sort()).toEqual(['authorized_keys'])
     })
 
-    it('a revoke is NOT refused by a linked second file: afterwards the path sshd reads holds no support line', async () => {
-      seed([BRIDGE])
+    // Dani's review of #2768, S1: replacing such a link with a regular file would freeze a copy of the owner's lines.
+    it('a revoke REFUSES a second file that links elsewhere, before either file is touched', async () => {
+      seed([BRIDGE, LINE1])
       const elsewhere = join(root, 'elsewhere2')
       writeFileSync(elsewhere, [PERSONAL, LINE2].join('\n') + '\n', { mode: 0o600 })
       symlinkSync(elsewhere, secondPath())
-      const res = await revokeSupportLines(base())
-      expect(res).toMatchObject({ removed: 1, removedFromSecond: 1 })
-      expect(res.warnings.join(' ')).toMatch(/authorized_keys2 was a symbolic link/)
-      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(false)
+      await expect(revokeSupportLines(base())).rejects.toMatchObject({ code: 'SUPPORT_KEYS_LAYOUT', name: 'SupportKeysLayoutError' })
+      expect(read()).toBe([BRIDGE, LINE1].join('\n') + '\n')
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
+      expect(readFileSync(elsewhere, 'utf8')).toBe([PERSONAL, LINE2].join('\n') + '\n')
+    })
+
+    it('a second file that links to authorized_keys is cleaned through it, and stays a link', async () => {
+      seed([PERSONAL])
+      symlinkSync('authorized_keys', secondPath())
+      const granted = await grantSupportLines({ ...base(), grant: grantInput() })
+      expect(granted).toMatchObject({ removedFromSecond: 0 })
+      expect(granted.warnings.join(' ')).toMatch(/is a link to authorized_keys/)
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
+      expect(readSecond()).toBe([PERSONAL, LINE1, LINE2].join('\n') + '\n')
+      const revoked = await revokeSupportLines(base())
+      expect(revoked).toMatchObject({ removed: 2, removedFromSecond: 0 })
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
       expect(readSecond()).toBe(PERSONAL + '\n')
+      // The owner's later edit of authorized_keys is what sshd reads under both names: nothing is frozen.
+      writeFileSync(authPath, '', { mode: 0o600 })
+      expect(readSecond()).toBe('')
+      expect(await reconcileSupportLinesOnDisk({ ...base(), grant: null })).toMatchObject({ removedFromSecond: 0 })
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
+    })
+
+    it('a second file that links to nothing is left as it is', async () => {
+      seed([BRIDGE])
+      symlinkSync(join(root, 'gone'), secondPath())
+      expect(await grantSupportLines({ ...base(), grant: KEY1_ONLY })).toMatchObject({ removedFromSecond: 0 })
+      expect(await revokeSupportLines(base())).toMatchObject({ removed: 1, removedFromSecond: 0 })
+      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
+      expect(existsSync(join(root, 'gone'))).toBe(false)
+    })
+
+    // A rewrite of authorized_keys is a rename: it would break a hard link and leave the OLD inode, with its support
+    // lines, under the name authorized_keys2. So every operation refuses before it writes anything.
+    it('a hard-linked second file is refused by every operation, before anything is written', async () => {
+      seed([PERSONAL, LINE1])
+      linkSync(authPath, secondPath())
+      for (const run of [
+        () => grantSupportLines({ ...base(), grant: grantInput() }),
+        () => revokeSupportLines(base()),
+        () => reconcileSupportLinesOnDisk({ ...base(), grant: null }),
+      ]) {
+        await expect(run()).rejects.toMatchObject({ code: 'SUPPORT_KEYS_LAYOUT' })
+        expect(read()).toBe([PERSONAL, LINE1].join('\n') + '\n')
+        expect(statSync(secondPath()).ino).toBe(statSync(authPath).ino)
+      }
     })
 
     it('a revoke still cleans the second file when the first cannot be read, and then reports the failure', async () => {
@@ -529,14 +574,14 @@ describe('support access on disk', () => {
       expect(read()).toBe(BRIDGE + '\n')
     })
 
-    it('a reconcile reports the link warning of the second file as well', async () => {
-      seed([BRIDGE])
+    it('a reconcile refuses a second file that links elsewhere, before either file is touched', async () => {
+      seed([BRIDGE, LINE1])
       const elsewhere = join(root, 'elsewhere2')
       writeFileSync(elsewhere, LINE1 + '\n', { mode: 0o600 })
       symlinkSync(elsewhere, secondPath())
-      const res = await reconcileSupportLinesOnDisk({ ...base(), grant: null })
-      expect(res).toMatchObject({ removed: 1, removedFromSecond: 1 })
-      expect(res.warnings.join(' ')).toMatch(/authorized_keys2 was a symbolic link/)
+      await expect(reconcileSupportLinesOnDisk({ ...base(), grant: null })).rejects.toMatchObject({ code: 'SUPPORT_KEYS_LAYOUT' })
+      expect(read()).toBe([BRIDGE, LINE1].join('\n') + '\n')
+      expect(readFileSync(elsewhere, 'utf8')).toBe(LINE1 + '\n')
     })
 
     it('a grant writes its lines into the first file ONLY, and takes a stale support line out of the second', async () => {
@@ -548,28 +593,18 @@ describe('support access on disk', () => {
       expect(readSecond()).toBe(PERSONAL + '\n')
     })
 
-    it('a grant is not refused by a linked second file that holds no support line, and leaves the link alone', async () => {
+    it('a grant adds nothing when the second file links elsewhere, whatever it holds', async () => {
       seed([BRIDGE])
       const elsewhere = join(root, 'elsewhere2')
-      writeFileSync(elsewhere, PERSONAL + '\n', { mode: 0o600 })
-      symlinkSync(elsewhere, secondPath())
-      const res = await grantSupportLines({ ...base(), grant: KEY1_ONLY })
-      expect(res).toMatchObject({ removedFromSecond: 0, warnings: [] })
-      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
-      expect(read()).toBe([BRIDGE, LINE1].join('\n') + '\n')
-    })
-
-    it('a grant that takes a line out of a LINKED second file passes the warning on', async () => {
-      seed([BRIDGE])
-      const elsewhere = join(root, 'elsewhere2')
-      writeFileSync(elsewhere, [PERSONAL, supportLine(1, OTHER_GRANT)].join('\n') + '\n', { mode: 0o600 })
-      symlinkSync(elsewhere, secondPath())
-      const res = await grantSupportLines({ ...base(), grant: KEY1_ONLY })
-      expect(res).toMatchObject({ removedFromSecond: 1 })
-      expect(res.warnings.join(' ')).toMatch(/authorized_keys2 was a symbolic link/)
-      expect(lstatSync(secondPath()).isSymbolicLink()).toBe(false)
-      expect(readSecond()).toBe(PERSONAL + '\n')
-      expect(read()).toBe([BRIDGE, LINE1].join('\n') + '\n')
+      for (const content of [PERSONAL + '\n', [PERSONAL, supportLine(1, OTHER_GRANT)].join('\n') + '\n']) {
+        writeFileSync(elsewhere, content, { mode: 0o600 })
+        rmSync(secondPath(), { force: true })
+        symlinkSync(elsewhere, secondPath())
+        await expect(grantSupportLines({ ...base(), grant: KEY1_ONLY })).rejects.toMatchObject({ code: 'SUPPORT_KEYS_LAYOUT' })
+        expect(read()).toBe(BRIDGE + '\n')
+        expect(lstatSync(secondPath()).isSymbolicLink()).toBe(true)
+        expect(readFileSync(elsewhere, 'utf8')).toBe(content)
+      }
     })
 
     it('a grant adds nothing when the second file cannot be cleaned', async () => {
