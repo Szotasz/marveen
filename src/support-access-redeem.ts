@@ -137,8 +137,10 @@ export async function redeemSupportCode(
  * The real transport: one HTTPS POST. `https:` only; the certificate is always
  * verified (the explicit option wins over NODE_TLS_REJECT_UNAUTHORIZED); a
  * redirect is an answer like any other, it is not followed; the body is cut
- * off at the limit and the whole exchange at the deadline. `extraCa` only ADDS
- * a trusted root and exists for the test that runs a local TLS server.
+ * off at the limit and the whole exchange at the deadline. `extraCa` REPLACES
+ * the trusted roots with that one certificate (it is node's `ca` option, which
+ * does not add to the default list); it exists only for the test that runs a
+ * local TLS server, and no product path passes it.
  */
 export function createHttpsRedeemTransport(opts: { readonly extraCa?: string } = {}): RedeemTransport {
   return (req) =>

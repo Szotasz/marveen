@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { userInfo } from 'node:os'
 import {
+  createSshdProbeDeps,
+  currentLoginUser,
   probeSshd,
   reachableLocalAddresses,
   SSHD_PROBE_MAX_QUERIES,
@@ -94,6 +97,34 @@ function fake(
 }
 
 const queries = (calls: Call[]): Call[] => calls.filter((c) => c.file === SSHD_PROGRAM && c.args[0] === '-T')
+
+// The real dependencies, against real programs (Dani's review of #2765: nothing imported them before).
+describe('createSshdProbeDeps', () => {
+  const deps = createSshdProbeDeps()
+
+  it('starts a program without a shell of its own, with a fixed PATH and the C locale, and hands back its exit code', async () => {
+    const out = await deps.run('/bin/sh', ['-c', 'printf "%s|%s|%s" "$PATH" "$LC_ALL" "${HOME-unset}"; exit 3'], 5000)
+    expect(out).toEqual({ code: 3, stdout: '/usr/sbin:/usr/bin:/sbin:/bin|C|unset', stderr: '' })
+    expect(await deps.run('/bin/sh', ['-c', 'echo "$1"', 'x', 'a;b $(c)'], 5000)).toMatchObject({ code: 0, stdout: 'a;b $(c)\n' })
+  })
+
+  it('gives code null for a program that cannot be started, that runs out of time, or that prints more than 1 MiB', async () => {
+    expect((await deps.run('/nonexistent/program', [], 5000)).code).toBeNull()
+    const started = Date.now()
+    expect((await deps.run('/bin/sh', ['-c', 'sleep 5'], 200)).code).toBeNull()
+    expect(Date.now() - started).toBeLessThan(4000)
+    expect((await deps.run('/bin/sh', ['-c', 'head -c 1100000 /dev/zero'], 5000)).code).toBeNull()
+    expect((await deps.run('/bin/sh', ['-c', 'head -c 1000000 /dev/zero'], 5000)).code).toBe(0)
+  })
+
+  it('takes the user from the user database, and lists the interface addresses', () => {
+    expect(deps.user).toEqual(currentLoginUser())
+    expect(deps.user.name).toBe(userInfo().username)
+    const all = deps.interfaceAddresses()
+    expect(all.some((a) => a.internal)).toBe(true)
+    expect(all.every((a) => typeof a.address === 'string' && typeof a.internal === 'boolean')).toBe(true)
+  })
+})
 
 describe('reachableLocalAddresses', () => {
   it('keeps the routable addresses, sorted, once each', () => {
