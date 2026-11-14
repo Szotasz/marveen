@@ -357,6 +357,21 @@ describe('SKILLPUTSCOPE1114: a skill folder or SKILL.md that is a link', () => {
     expect((await put(sub('zz-own'))).status).toBe(200)
     expect(readFileSync(join(OWN_TARGET, 'SKILL.md'), 'utf-8')).toBe('EDITED\n')
   })
+  it('main agent: a skill linked out of its .claude/skills is refused, even into the project root (the store is there)', async () => {
+    const mainSkills = join(PROJECT_ROOT, '.claude', 'skills')
+    mkdirSync(mainSkills, { recursive: true })
+    symlinkSync(PROBE_DIR, join(mainSkills, 'zz-main-out'))
+    try {
+      const main = `/api/skills/zz-main-out?agent=${encodeURIComponent(MAIN_AGENT_ID)}`
+      const out = await get(main)
+      expect(out.status).toBe(404)
+      expect(JSON.stringify(out.body)).not.toContain('PROBE-FILE')
+      expect((await put(main)).status).toBe(400)
+      expect(readFileSync(PROBE_MD, 'utf-8')).toBe(PROBE_TEXT)
+    } finally {
+      rmSync(join(mainSkills, 'zz-main-out'), { force: true })
+    }
+  })
   it('global: a sibling link under the root reads and writes; a link out of the root does neither', async () => {
     expect((await get('/api/skills/zz-sibling')).body.description).toBe('sibling linked')
     const out = await get('/api/skills/zz-global-out')
