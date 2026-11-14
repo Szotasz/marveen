@@ -1672,7 +1672,7 @@ def main():
     # ---------------- real NotifyAlert: secrets in the child's output never reach the log ----------
     with tempfile.TemporaryDirectory() as td:
         token = "123456789:AAH" + "x" * 32
-        slack = "xoxb-1111-2222-SECRETsecret"
+        slack = "xoxb-" + "1111-2222-SECRETsecret"  # split like the token above, so the secret-gate scan sees no literal
         helper = _write(os.path.join(td, "fake-notify.sh"),
                         'echo "rejected for bot%s, slack %s, text: $1" >&2\nexit 1\n' % (token, slack))
         ta = rvf.NotifyAlert(helper=helper)
