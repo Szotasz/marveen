@@ -427,6 +427,40 @@ describe('script parity with the store', () => {
   })
 
 
+  // DCEXT1111: patch-discord-plugin.py reads DISCORD_PLUGIN_EXT and DISCORD_OWNER_USER_ID (both overrides-only) and
+  // the plain DISCORD_BACKFILL flag: each must be what the store answers, never a loosening .env line.
+  it('the patch-discord-plugin.py mirror (DISCORD_PLUGIN_EXT / DISCORD_OWNER_USER_ID / DISCORD_BACKFILL)', () => {
+    const script = join(ROOT, 'scripts', 'patch-discord-plugin.py')
+    const py = [
+      'import importlib.util, json, sys',
+      'spec = importlib.util.spec_from_file_location("pdp", sys.argv[1])',
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'on, ext = m.settings(sys.argv[2])',
+      'print(json.dumps([on, ext["ownerUserId"], ext["backfill"]]))',
+    ].join('\n')
+    const on = (v: string) => ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
+    const SNOW = /^[1-9][0-9]{16,19}$/
+    const vals = ['1', '0', 'true', 'off', '', '290903699524550656', ' 290903699524550656 ', '-5', 'zoli']
+    const states: Array<Record<string, string> | 'unreadable' | null> = [null, 'unreadable', ...vals.map(v => ({ v }))]
+    const envs: Array<Record<string, string>> = [{}, ...['0', '1', '111111111111111111'].map(v => ({ v }))]
+    for (const ov of states) {
+      for (const env of envs) {
+        const keyed = (k: string) => [sub(ov, k), Object.fromEntries(Object.entries(env).map(([, v]) => [k, v]))] as const
+        const [oe, ee] = keyed('DISCORD_PLUGIN_EXT')
+        const [oo, eo] = keyed('DISCORD_OWNER_USER_ID')
+        const [ob, eb] = keyed('DISCORD_BACKFILL')
+        const owner = storeView('DISCORD_OWNER_USER_ID', oo, eo).trim()
+        const want = [on(storeView('DISCORD_PLUGIN_EXT', oe, ee)), SNOW.test(owner) ? owner : '', on(storeView('DISCORD_BACKFILL', ob, eb))]
+        const got = [0, 1, 2].map(i => {
+          const [o, e] = [[oe, ee], [oo, eo], [ob, eb]][i]
+          const root = install(o as Record<string, string> | 'unreadable' | null, e as Record<string, string>)
+          return JSON.parse(execFileSync('python3', ['-c', py, script, root], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }))[i]
+        })
+        expect(got, JSON.stringify([ov, env])).toEqual(want)
+      }
+    }
+  })
+
   it('ledger-capture keeps the .env for ALLOWED_CHAT_ID (no registry key)', () => {
     const hook = join(ROOT, 'scripts', 'hooks', 'ledger-capture.py')
     const py = [
@@ -451,6 +485,7 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/lib/owner-chat.sh', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
     'scripts/lib/owner_chat.py', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
     'scripts/hooks/marveen-commands.py', // TELEGRAM_OWNER_USER_ID mirror, parity-tested above
+    'scripts/patch-discord-plugin.py', // DISCORD_PLUGIN_EXT / DISCORD_OWNER_USER_ID mirror, parity-tested above
   ])
   // file -> pinned mention count (comments and messages only, measured 2026-11-04)
   const MENTION_ONLY: Record<string, number> = {

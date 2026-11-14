@@ -1199,6 +1199,42 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    // DCEXT1111: Marveen's version of the Discord plugin (vendor/discord-plugin) over the official one. Off puts the
+    // official file back, and with it the official permission relay that asks EVERY paired DM: a loosening.
+    key: 'DISCORD_PLUGIN_EXT',
+    type: 'boolean',
+    default: '1',
+    description: 'A Marveen Discord-kiegészítései (vendor/discord-plugin): válasz-gombok, eszköz-jóváhagyás csak a gazdától (DISCORD_OWNER_USER_ID), a párosított DM-ek újraindítás után is elérhetők, hangüzenet-jelölés, kiesett üzenetek pótlása (DISCORD_BACKFILL), szál nyitása és lapozás a régebbi üzenetek között. Bekapcsolva a csatorna-indítás a Discord plugin forrását a Marveen-változatra cseréli, de csak akkor, ha a telepített plugin pontosan az ismert verzió; egy plugin-frissítés után a hivatalos plugin fut, és a napló egy sorban jelzi. Kikapcsolva a csatorna következő indításakor a hivatalos plugin áll vissza változatlanul. Alapértelmezés: bekapcsolva. A kikapcsoláshoz a gazda kell.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+    loosens: (oldValue: string, newValue: string) => ['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && !['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
+  },
+  {
+    // DCEXT1111: the twin of TELEGRAM_OWNER_USER_ID for the Discord permission relay. Never the first of several DMs.
+    key: 'DISCORD_OWNER_USER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Discord-felhasználói azonosítója (17-20 jegyű szám, a bejövő üzenetek user_id mezője): csak ő kapja meg Discordon az eszköz-jóváhagyás kérését, és csak az ő gombja vagy "yes <kód>" válasza dönt. Üresen a fő bot egyetlen párosított DM-je a gazda; ha több DM van párosítva, a rendszer nem találgat: a jóváhagyás-kérés nem megy ki Discordra (a terminálban marad), amíg ezt be nem állítod. A csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+    validate: (v: string) => (v.trim() === '' || /^[1-9][0-9]{16,19}$/.test(v.trim())
+      ? null
+      : 'Discord-felhasználói azonosító kell (17-20 jegyű szám). / A Discord user id is required (a 17-20 digit number).'),
+    // who approves a tool from Discord: ANY change needs the owner's session, as TELEGRAM_OWNER_USER_ID
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
+    key: 'DISCORD_BACKFILL',
+    type: 'boolean',
+    default: '1',
+    description: 'Kiesett Discord-üzenetek pótlása (csak DISCORD_PLUGIN_EXT mellett): ha a Discord plugin állt (újraindulás, kiesés), induláskor a párosított DM-ekből és az engedélyezett csatornákból behozza az azóta jött üzeneteket, csatornánként legfeljebb 50-et és legfeljebb 24 órára visszamenőleg, ugyanazzal a hozzáférés-ellenőrzéssel, "pótolt" jelöléssel. Legfeljebb 10 percenként egyszer fut, így egy újraindulás-hurok sem terheli a Discordot. Alapértelmezés: bekapcsolva. A csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'TELEGRAM_INBOUND_REPLAY_ENABLED',
     type: 'boolean',
     default: '0',
