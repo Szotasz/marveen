@@ -104,7 +104,7 @@ vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(async () => {}), notifyTel
 import { sendPromptToSession, TYPED_ECHO_MAX_MS } from '../web/agent-process.js'
 import { DEFAULT_DELIVER_WAIT_BUDGET_MS, __resetSessionSendLocks } from '../web/session-send-lock.js'
 import { getInjectedPrompt } from '../web/injected-prompt-registry.js'
-import { paneOneLine as paneOneLineOf } from '../web/pane-text.js'
+import { paneTyped as paneOneLineOf } from '../web/pane-text.js'
 import { urgentEmitRefusal, formatUrgentHoldNotice } from '../web/message-router.js'
 import { logger } from '../logger.js'
 

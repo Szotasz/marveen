@@ -2169,7 +2169,8 @@ const MACHINE_ORIGIN_PREFIXES = [
   /^SCHEDULED TASK NOTICE/,
   /^<scheduled-task[\s>]/,
   /^TEAM MEMBER NOTICE/,
-  /^\[Uzenet @/,
+  // `\\?`: the typed header carries a backslash before the at-sign (ENVATLEAK1114, pane-text.ts).
+  /^\[Uzenet \\?@/,
   /^<channel\s+source="plugin:/,
 ] as const
 

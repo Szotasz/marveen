@@ -158,6 +158,15 @@ describe('db helpers', () => {
 })
 
 describe('sweepSeenMessages', () => {
+  it('a sender whose stored id the sanitizer changes is still matched: the header carries the sanitized name (ENVATLEAK1114)', () => {
+    const now = Math.floor(Date.now() / 1000)
+    const m = createAgentMessage('s~x', 'r-raw', 'x')
+    markMessageDelivered(m.id)
+    const reader = (agent: string) => agent === 'r-raw' ? userLine(`[Uzenet \\@sx-tol -- x, msg_id:${m.id}]: hi`) : null
+    expect(sweepSeenMessages(now, reader)).toBe(1)
+    expect(seenAt(m.id)).toBe(now)
+  })
+
   it('marks only messages found in the transcript; errors do not stop other agents', () => {
     const now = Math.floor(Date.now() / 1000)
     const a = pushed('r1'), b = pushed('r1'), c = pushed('r2')

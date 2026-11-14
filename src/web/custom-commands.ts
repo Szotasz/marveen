@@ -153,7 +153,7 @@ export function definitionBody(def: CommandDefinition): string {
 const WRAPPER_TAG_RX = /<\s*\/?\s*(channel|scheduled-task|trusted-peer|untrusted|system-reminder|task-notification|command-name|local-command-stdout)\b[^>]*>/gi
 // Anywhere in a line, not only at its start: a mid-line `[SYSTEM-DIREKTIVA
 // msg_id:5]` reads just as authoritative (#1530 review, point 3).
-const WRAPPER_PREFIX_RX = /\[\s*(Uzenet @|Uzenet a tavoli @|Üzenet @|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
+const WRAPPER_PREFIX_RX = /\[\s*(Uzenet \\?@|Uzenet a tavoli \\?@|Üzenet \\?@|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
 const ZERO_WIDTH_RX = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g
 
 // What the model will effectively read, so the deny-list below matches it:

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { paneOneLine } from '../web/pane-text.js'
+import { paneTyped } from '../web/pane-text.js'
 
 const dbMock = vi.hoisted(() => ({
   getPendingMessages: vi.fn(),
@@ -138,7 +138,7 @@ for (const mode of ['batch', 'single'] as const) {
       expect(dbMock.getPendingMessages).toHaveBeenCalledWith('testagent')
       expect(dbMock.createAgentMessage).toHaveBeenCalledExactlyOnceWith('system', 'testagent', BODY)
       expect(processMock.sendPromptToSession).toHaveBeenCalledTimes(1)
-      const paneText = paneOneLine(processMock.sendPromptToSession.mock.calls[0][1])
+      const paneText = paneTyped(processMock.sendPromptToSession.mock.calls[0][1])
       expect(dbMock.markMessageDelivered.mock.calls).toEqual(mode === 'batch'
         ? [[4242], [4101], [4102]]
         : [[4242], [4101]])
