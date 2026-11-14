@@ -63,7 +63,7 @@ const INTENDED: ReadonlyArray<readonly [string, string, string, number?]> = [
 // What stays Hungarian in the English template ON PURPOSE, and why: code or the server writes or matches these words.
 const PROTOCOL_HU: ReadonlyArray<readonly [string, string]> = [
   ['[Hang átirat]:', 'the voice-transcript prefix the message router writes (src/web/message-router.ts)'],
-  ['[Üzenet @{{MAIN_AGENT_ID}}-tól]', 'the inter-agent delivery frame; src/web/custom-commands.ts WRAPPER_PREFIX_RX matches it'],
+  ['[Üzenet @{{MAIN_AGENT_ID}}-tól]', 'the inter-agent delivery frame; src/web/prompt-text-sanitize.ts WRAPPER_PREFIX_RX matches it'],
   ["Ismeretlen sender [ID] jelezett első üzenettel: '...'. Ki ez, mit válaszoljak?", "the sub-agents' unknown-sender ping, word for word as their CLAUDE.md sends it"],
 ]
 const restored = (en: string, E: string) =>
