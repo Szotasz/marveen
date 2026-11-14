@@ -1449,6 +1449,18 @@ async function runSupportCli(argv, io, deps) {
   io.err(SUPPORT_CLI_USAGE);
   return 2;
 }
+async function main(argv) {
+  try {
+    return await runSupportCli(
+      argv,
+      { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
+      { status: createStatusDeps, installKit: createInstallKit() }
+    );
+  } catch {
+    process.stderr.write("support-standby: stopped on an unexpected error\n");
+    return 1;
+  }
+}
 function startedDirectly() {
   try {
     return realpathSync2(process.argv[1] ?? "") === realpathSync2(fileURLToPath(import.meta.url));
@@ -1457,19 +1469,9 @@ function startedDirectly() {
   }
 }
 if (startedDirectly()) {
-  runSupportCli(
-    process.argv.slice(2),
-    { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-    { status: createStatusDeps, installKit: createInstallKit() }
-  ).then(
-    (code) => {
-      process.exitCode = code;
-    },
-    () => {
-      process.stderr.write("support-standby: stopped on an unexpected error\n");
-      process.exitCode = 1;
-    }
-  );
+  void main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }
 export {
   SUPPORT_CLI_USAGE,
@@ -1480,6 +1482,7 @@ export {
   createStatusDeps,
   formatSupportStatus,
   grantSupportLines,
+  main,
   parseInstallKitArgs,
   reconcileSupportLinesOnDisk,
   revokeSupportLines,

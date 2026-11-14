@@ -129,6 +129,25 @@ export async function runSupportCli(argv: readonly string[], io: CliIo, deps: Cl
   return 2
 }
 
+/**
+ * The ONE entry of the routine. The kit's loader imports the file from a
+ * data: URL and calls this (its own path check below cannot fire there,
+ * measured); a direct start calls it too. Never rejects: an unexpected error is
+ * one fixed line and exit code 1, because a message can quote what was typed in.
+ */
+export async function main(argv: readonly string[]): Promise<number> {
+  try {
+    return await runSupportCli(
+      argv,
+      { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
+      { status: createStatusDeps, installKit: createInstallKit() },
+    )
+  } catch {
+    process.stderr.write('support-standby: stopped on an unexpected error\n')
+    return 1
+  }
+}
+
 function startedDirectly(): boolean {
   try {
     return realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))
@@ -138,18 +157,7 @@ function startedDirectly(): boolean {
 }
 
 if (startedDirectly()) {
-  runSupportCli(
-    process.argv.slice(2),
-    { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-    { status: createStatusDeps, installKit: createInstallKit() },
-  ).then(
-    (code) => {
-      process.exitCode = code
-    },
-    () => {
-      // Nothing an error holds is printed: a message can quote what was typed in.
-      process.stderr.write('support-standby: stopped on an unexpected error\n')
-      process.exitCode = 1
-    },
-  )
+  void main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code
+  })
 }
