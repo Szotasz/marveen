@@ -124,7 +124,11 @@ export class AuthorizedKeysLockError extends Error {
 
 /** A guarded rewrite refused to write, or could not prove what it wrote. */
 export class AuthorizedKeysRewriteError extends Error {
-  readonly code: 'AUTHORIZED_KEYS_SYMLINK' | 'AUTHORIZED_KEYS_READBACK' | 'AUTHORIZED_KEYS_ASYNC_TRANSFORM'
+  readonly code:
+    | 'AUTHORIZED_KEYS_SYMLINK'
+    | 'AUTHORIZED_KEYS_READBACK'
+    | 'AUTHORIZED_KEYS_ASYNC_TRANSFORM'
+    | 'AUTHORIZED_KEYS_NOT_BYTES'
   constructor(code: AuthorizedKeysRewriteError['code'], message: string) {
     super(message)
     this.name = 'AuthorizedKeysRewriteError'
@@ -269,11 +273,16 @@ export async function enrollAuthorizedKey(opts: EnrollOptions): Promise<EnrollRe
 
 /** Atomic write: temp file in the same directory (same filesystem), 0600,
  * fsync, then rename over the target. */
-function writeAtomic(sshDir: string, authPath: string, content: string): void {
+function writeAtomic(
+  sshDir: string,
+  authPath: string,
+  content: string,
+  encoding: 'utf8' | 'latin1' = 'utf8',
+): void {
   const tmpPath = join(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`)
   const tfd = openSync(tmpPath, 'wx', AUTH_KEYS_MODE)
   try {
-    writeSync(tfd, content)
+    writeSync(tfd, content, null, encoding)
     fsyncSync(tfd)
   } finally {
     closeSync(tfd)
@@ -402,9 +411,16 @@ export interface LockedRewriteOptions {
   operation: string
   /** Create the .ssh directory (0700) when it is missing. A removal leaves this off. */
   createDir?: boolean
-  /** Refuse when authorized_keys is a symbolic link. For ADDING access only: a
-   * removal must never be refused, because a refused removal leaves the key in. */
+  /** Refuse when authorized_keys, or the .ssh directory itself, is a symbolic
+   * link. For ADDING access only: a removal must never be refused, because a
+   * refused removal leaves the key in. */
   refuseSymlink?: boolean
+  /** Read and write the file one byte per character, so every byte the
+   * transform does not touch comes back as it was, whatever encoding the file
+   * is in. Without it the file is read as UTF-8, and a byte that is not valid
+   * UTF-8 is replaced. The new content may then hold only characters up to
+   * U+00FF; anything else is refused before the write. */
+  preserveBytes?: boolean
   lockRetries?: number
   lockRetryDelayMs?: number
   staleLockMs?: number
@@ -442,6 +458,7 @@ export async function rewriteAuthorizedKeysLocked<T>(
     operation,
     createDir = false,
     refuseSymlink = false,
+    preserveBytes = false,
     lockRetries = 20,
     lockRetryDelayMs = 100,
     staleLockMs = 15000,
@@ -451,7 +468,16 @@ export async function rewriteAuthorizedKeysLocked<T>(
   const warnings: string[] = []
   const authPath = join(sshDir, AUTH_KEYS_NAME)
   const lockPath = join(sshDir, LOCK_NAME)
+  const encoding = preserveBytes ? 'latin1' : 'utf8'
 
+  // Before the directory is created or locked: nothing may be written through
+  // a linked directory by an operation that adds access.
+  if (refuseSymlink && lstatOrNull(sshDir)?.isSymbolicLink()) {
+    throw new AuthorizedKeysRewriteError(
+      'AUTHORIZED_KEYS_SYMLINK',
+      `${sshDir} is a symbolic link; refusing to add access through it`,
+    )
+  }
   if (createDir) ensureSshDir(sshDir, warnings)
   else if (!existsSync(sshDir)) {
     // Nothing to read and nowhere to lock: the file cannot exist either.
@@ -481,7 +507,7 @@ export async function rewriteAuthorizedKeysLocked<T>(
             `${authPath} permissions were ${fmtMode(st.mode)} (looser than 0600); the rewritten file is 0600`,
           )
         }
-        existing = readFileSync(authPath, 'utf8')
+        existing = readFileSync(authPath, encoding)
       }
     }
     const out = transform(existing)
@@ -489,11 +515,25 @@ export async function rewriteAuthorizedKeysLocked<T>(
     if (out.content === null || out.content === existing) {
       return { result: out.result, wrote: false, authorizedKeysPath: authPath, warnings }
     }
-    writeAtomic(sshDir, authPath, out.content)
-    if (readFileSync(authPath, 'utf8') !== out.content) {
+    if (preserveBytes && /[^\u0000-\u00ff]/.test(out.content)) {
+      throw new AuthorizedKeysRewriteError(
+        'AUTHORIZED_KEYS_NOT_BYTES',
+        `the new content of ${authPath} holds a character that is not one byte; nothing was written`,
+      )
+    }
+    writeAtomic(sshDir, authPath, out.content, encoding)
+    if (readFileSync(authPath, encoding) !== out.content) {
       throw new AuthorizedKeysRewriteError(
         'AUTHORIZED_KEYS_READBACK',
         `${authPath} does not hold what was just written`,
+      )
+    }
+    if (link !== null && link.isSymbolicLink()) {
+      // The rename replaced the LINK. sshd now reads the new regular file; the
+      // file the link pointed at was not opened for writing and is as it was.
+      warnings.push(
+        `${authPath} was a symbolic link; it is now a regular file. The file the link pointed at was not ` +
+          'changed and still holds its old lines: linking it back would bring them back',
       )
     }
     return { result: out.result, wrote: true, authorizedKeysPath: authPath, warnings }

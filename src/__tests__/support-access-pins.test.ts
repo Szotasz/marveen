@@ -123,6 +123,32 @@ describe('isExactHostCidr', () => {
   ])('refuses %s', (_label, value) => {
     expect(isExactHostCidr(value)).toBe(false)
   })
+
+  // An address that names no machine, or names one in a second spelling,
+  // would make a line that never matches: refused like any other dead line.
+  it.each([
+    ['the unspecified IPv4 address', '0.0.0.0/32'],
+    ['the unspecified IPv6 address', '::/128'],
+    ['the unspecified IPv6 address written out', '0:0:0:0:0:0:0:0/128'],
+    ['an IPv4 address written as IPv6', '::ffff:203.0.113.7/128'],
+    ['the same in upper case', '::FFFF:203.0.113.7/128'],
+    ['the same in hexadecimal groups', '::ffff:cb00:7107/128'],
+    ['the same written out', '0:0:0:0:0:ffff:cb00:7107/128'],
+  ])('refuses %s', (_label, value) => {
+    expect(isExactHostCidr(value)).toBe(false)
+  })
+
+  it.each([
+    ['an address with ffff in the sixth group and a non-zero start', '2001:db8::ffff:cb00:7107/128'],
+    ['an address with a dotted tail that is not a mapped one', '64:ff9b::203.0.113.7/128'],
+    ['an address that is zero up to the sixth group', '::fffe:cb00:7107/128'],
+    ['an address that is zero except its last group', '::7/128'],
+    ['an address with a gap in the middle', '2001:db8::1:0:7/128'],
+    ['an address with no gap', '2001:db8:0:0:0:0:0:7/128'],
+    ['an address that ends in a gap', '2001:db8:7::/128'],
+  ])('still accepts %s', (_label, value) => {
+    expect(isExactHostCidr(value)).toBe(true)
+  })
 })
 
 describe('validateSupportPins', () => {

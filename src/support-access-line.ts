@@ -5,6 +5,12 @@
 // here reads a file, the clock or the environment, so every rule below is a
 // unit test away from being proven.
 //
+// THE CLOSED LIST HOLDS WHERE THE BYTES ARE ASSEMBLED, not only in the builder:
+// the on-disk writers (support-access-fs.ts) take a grant's INPUTS and build
+// the lines here, so no caller can hand them a string; and mergeSupportLines,
+// which does take strings, refuses anything that is not one single physical
+// line recognised as a support line.
+//
 // THE LINE (one per pinned key, all sharing one grant id):
 //
 //   restrict,command="/bin/sh <dispatcher> --key <name> --fp <fingerprint>
@@ -53,6 +59,7 @@ import {
   fingerprintOfBlob,
   isExactHostCidr,
   parseSkEd25519Blob,
+  validateSupportPins,
   type SupportKeyPin,
 } from './support-access-pins.js'
 
@@ -74,6 +81,8 @@ export type SupportLineProblem =
   | 'install_path_unsupported'
   | 'from_invalid'
   | 'sshd_too_old'
+  | 'pins_invalid'
+  | 'line_refused'
 
 /** Raised when the builder is asked for a line it must never emit. */
 export class SupportLineError extends Error {
@@ -144,6 +153,39 @@ export function buildSupportLine(input: SupportLineInput): string {
     '/bin/sh ' + dispatchPath + ' --key ' + key.name + ' --fp ' + fingerprint + ' --grant ' + grantId + ' --consent ' + consentVersion
   const options = 'restrict,command="' + command + '",from="' + fromCidrs.join(',') + '",verify-required'
   return options + ' ' + SUPPORT_KEY_TYPE + ' ' + key.pub + ' ' + supportLineComment(grantId, key.name)
+}
+
+/** What one grant is made of: the pinned keys and sources, and the consent record. */
+export interface SupportGrantInput {
+  /** The pinned keys; the grant gets one line for each. */
+  readonly keys: readonly SupportKeyPin[]
+  readonly fromCidrs: readonly string[]
+  readonly grantId: string
+  readonly consentVersion: number
+  readonly dispatchPath: string
+  readonly sshd: SshdVersion
+}
+
+/**
+ * Build every line of one grant, one per key. The keys and sources must pass
+ * the same check as the pinned lists as a whole (count, distinct names and
+ * keys, a fingerprint that belongs to its key): a set the pins check would
+ * refuse gets no line. This is what the on-disk writers call; they never see
+ * a line made anywhere else.
+ */
+export function buildSupportGrantLines(grant: SupportGrantInput): string[] {
+  const pins = validateSupportPins(grant.keys, grant.fromCidrs)
+  if (!pins.ok) throw new SupportLineError('pins_invalid', 'the keys and sources do not pass the pins check: ' + pins.reason)
+  return grant.keys.map((key) =>
+    buildSupportLine({
+      key,
+      grantId: grant.grantId,
+      consentVersion: grant.consentVersion,
+      dispatchPath: grant.dispatchPath,
+      fromCidrs: grant.fromCidrs,
+      sshd: grant.sshd,
+    }),
+  )
 }
 
 export interface AuthorizedKeysFields {
@@ -263,6 +305,11 @@ export interface MergeSupportResult {
  * machine), then the new lines are appended. There is no "key already present"
  * case left to refuse, because any line that holds a pinned key IS a support
  * line and is replaced by the canonical one.
+ *
+ * A new line is refused, and nothing is merged, when it holds a line break or
+ * a carriage return (it would reach the file as more than one line, and the
+ * extra one could be any key) or when it is not recognised as a support line
+ * (no later removal or reconcile would ever take it out again).
  */
 export function mergeSupportLines(
   existing: string,
@@ -270,6 +317,14 @@ export function mergeSupportLines(
   pinnedBlobs: ReadonlySet<string>,
 ): MergeSupportResult {
   if (newLines.length === 0) throw new Error('mergeSupportLines needs at least one line')
+  for (const line of newLines) {
+    if (/[\n\r]/.test(line)) {
+      throw new SupportLineError('line_refused', 'a line to write holds a line break or a carriage return')
+    }
+    if (!isSupportLine(line, pinnedBlobs)) {
+      throw new SupportLineError('line_refused', 'a line to write is not recognised as a support line')
+    }
+  }
   const kept = splitLines(existing).filter((line) => !isSupportLine(line, pinnedBlobs))
   const replaced = splitLines(existing).length - kept.length
   return { content: joinLines([...kept, ...newLines]), replaced }

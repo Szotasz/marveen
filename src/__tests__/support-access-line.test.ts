@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildSupportLine,
+  buildSupportGrantLines,
   splitAuthorizedKeysLine,
   isSupportLine,
   removeSupportLines,
@@ -12,9 +13,18 @@ import {
   SupportLineError,
   SUPPORT_COMMENT_PREFIX,
   SUPPORT_MIN_SSHD,
+  type SupportGrantInput,
   type SupportLineInput,
 } from '../support-access-line.js'
-import { TEST_ONLY_KEYS, TEST_ONLY_BLOBS, TEST_ONLY_BLOB_1, TEST_ONLY_FROM, TEST_ONLY_FROM_V6 } from './helpers/sk-test-keys.js'
+import { fingerprintOfBlob } from '../support-access-pins.js'
+import {
+  skBlob,
+  TEST_ONLY_KEYS,
+  TEST_ONLY_BLOBS,
+  TEST_ONLY_BLOB_1,
+  TEST_ONLY_FROM,
+  TEST_ONLY_FROM_V6,
+} from './helpers/sk-test-keys.js'
 
 const GRANT = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
 const OTHER_GRANT = '9b2e7c1a-5d44-4e0b-8f3a-6c1d2e3f4a5b'
@@ -27,6 +37,20 @@ function input(over: Partial<SupportLineInput> = {}): SupportLineInput {
     consentVersion: 1,
     dispatchPath: DISPATCH,
     fromCidrs: TEST_ONLY_FROM,
+    sshd: { major: 9, minor: 6 },
+    ...over,
+  }
+}
+
+const FOREIGN_TAIL = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ intruder'
+
+function grantInput(over: Partial<SupportGrantInput> = {}): SupportGrantInput {
+  return {
+    keys: TEST_ONLY_KEYS,
+    fromCidrs: TEST_ONLY_FROM,
+    grantId: GRANT,
+    consentVersion: 1,
+    dispatchPath: DISPATCH,
     sshd: { major: 9, minor: 6 },
     ...over,
   }
@@ -332,6 +356,74 @@ describe('mergeSupportLines', () => {
 
   it('refuses an empty grant', () => {
     expect(() => mergeSupportLines('', [], TEST_ONLY_BLOBS)).toThrow()
+  })
+
+  // What reaches the file is decided here, so the closed list must hold here
+  // too: a "line" that is two lines, or a line nothing would ever remove.
+  const FOREIGN_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ intruder'
+
+  it.each([
+    ['a line feed', '\n'],
+    ['a carriage return', '\r'],
+    ['a carriage return and a line feed', '\r\n'],
+  ])('refuses a built line that carries a second key behind %s', (_label, separator) => {
+    expect(codeOf(() => mergeSupportLines(PERSONAL_LINE + '\n', [LINE1 + separator + FOREIGN_KEY], TEST_ONLY_BLOBS))).toBe(
+      'line_refused',
+    )
+  })
+
+  it('refuses a built line with a trailing line break', () => {
+    expect(codeOf(() => mergeSupportLines('', [LINE1 + '\n'], TEST_ONLY_BLOBS))).toBe('line_refused')
+  })
+
+  it('refuses a plain foreign key handed in as a line', () => {
+    expect(codeOf(() => mergeSupportLines(PERSONAL_LINE + '\n', [FOREIGN_KEY], TEST_ONLY_BLOBS))).toBe('line_refused')
+  })
+
+  it('refuses the whole grant when only its last line is not a support line', () => {
+    expect(codeOf(() => mergeSupportLines('', [LINE1, LINE2, FOREIGN_KEY], TEST_ONLY_BLOBS))).toBe('line_refused')
+  })
+
+  it('refuses a comment line and a blank line: sshd would ignore them, and so would every removal', () => {
+    expect(codeOf(() => mergeSupportLines('', ['# marveen-support:note'], TEST_ONLY_BLOBS))).toBe('line_refused')
+    expect(codeOf(() => mergeSupportLines('', [''], TEST_ONLY_BLOBS))).toBe('line_refused')
+  })
+})
+
+describe('buildSupportGrantLines', () => {
+  it('builds one line per key, each exactly what buildSupportLine makes', () => {
+    expect(buildSupportGrantLines(grantInput())).toEqual([LINE1, LINE2])
+    expect(buildSupportGrantLines(grantInput({ keys: [TEST_ONLY_KEYS[1]] }))).toEqual([LINE2])
+  })
+
+  it('every line it builds passes the merge', () => {
+    const lines = buildSupportGrantLines(grantInput({ fromCidrs: [TEST_ONLY_FROM[0], TEST_ONLY_FROM_V6] }))
+    expect(mergeSupportLines('', lines, TEST_ONLY_BLOBS).content).toBe(lines.join('\n') + '\n')
+  })
+
+  const key1 = TEST_ONLY_KEYS[0]
+  const thirdBlob = skBlob({ key: Buffer.alloc(32, 0x07) })
+  it.each([
+    ['no key', grantInput({ keys: [] })],
+    ['no source', grantInput({ fromCidrs: [] })],
+    ['the same key twice', grantInput({ keys: [key1, { ...key1, name: 'other' }] })],
+    ['the same name twice', grantInput({ keys: [key1, { ...TEST_ONLY_KEYS[1], name: key1.name }] })],
+    [
+      'a third key',
+      grantInput({ keys: [...TEST_ONLY_KEYS, { name: 'key3', pub: thirdBlob, fingerprint: fingerprintOfBlob(thirdBlob) }] }),
+    ],
+    ['a fingerprint that belongs to another key', grantInput({ keys: [{ ...key1, fingerprint: TEST_ONLY_KEYS[1].fingerprint }] })],
+    ['the same source twice', grantInput({ fromCidrs: [TEST_ONLY_FROM[0], TEST_ONLY_FROM[0]] })],
+  ])('refuses %s, as the pins check does', (_label, grant) => {
+    expect(codeOf(() => buildSupportGrantLines(grant))).toBe('pins_invalid')
+  })
+
+  it('refuses what the line builder refuses, with the builder\'s own code', () => {
+    expect(codeOf(() => buildSupportGrantLines(grantInput({ sshd: { major: 8, minor: 2 } })))).toBe('sshd_too_old')
+    expect(codeOf(() => buildSupportGrantLines(grantInput({ grantId: 'not-a-uuid' })))).toBe('grant_id_invalid')
+    expect(codeOf(() => buildSupportGrantLines(grantInput({ dispatchPath: DISPATCH + '\n' + FOREIGN_TAIL })))).toBe(
+      'install_path_unsupported',
+    )
   })
 })
 

@@ -84,7 +84,18 @@ describe('support access on disk, when something else goes wrong', () => {
     writeFileSync(authPath, PERSONAL + '\n', { mode: 0o600 })
     fault.corruptReadBack = true
     await expect(
-      grantSupportLines({ sshDir, pinnedBlobs: TEST_ONLY_BLOBS, lines: [supportLine(0)] }),
+      grantSupportLines({
+        sshDir,
+        pinnedBlobs: TEST_ONLY_BLOBS,
+        grant: {
+          keys: [TEST_ONLY_KEYS[0]],
+          fromCidrs: TEST_ONLY_FROM,
+          grantId: GRANT,
+          consentVersion: 1,
+          dispatchPath: '/opt/marveen/scripts/support-dispatch.sh',
+          sshd: { major: 9, minor: 6 },
+        },
+      }),
     ).rejects.toMatchObject({ code: 'AUTHORIZED_KEYS_READBACK' })
     expect(existsSync(join(sshDir, 'authorized_keys.lock'))).toBe(false)
   })

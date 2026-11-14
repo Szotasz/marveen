@@ -99,17 +99,47 @@ export function fingerprintOfBlob(base64: string): string {
   return 'SHA256:' + digest.replace(/=+$/, '')
 }
 
+/** The eight 16-bit groups of a textual IPv6 address that isIP() already accepted. */
+function ipv6Groups(address: string): number[] {
+  let text = address
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text)
+  if (dotted !== null) {
+    const [a, b, c, d] = dotted.slice(1).map(Number)
+    text = text.slice(0, dotted.index) + ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16)
+  }
+  const halves = text.split('::')
+  const head = halves[0] === '' ? [] : halves[0].split(':')
+  const tail = halves.length < 2 || halves[1] === '' ? [] : halves[1].split(':')
+  const gap = halves.length < 2 ? 0 : 8 - head.length - tail.length
+  return [...head, ...Array.from({ length: gap }, () => '0'), ...tail].map((group) => parseInt(group, 16))
+}
+
 /**
  * True for one exact host in CIDR form: a canonical IPv4 with `/32` or an IPv6
  * with `/128`. A range, a wildcard, a negation, a host name, a quote or a space
  * never passes: `from=` must name the one machine support connects from.
+ *
+ * Two kinds of address name no such machine and are refused as well: the
+ * unspecified address (`0.0.0.0`, `::`), and an IPv4 address written as IPv6
+ * (`::ffff:a.b.c.d`). The second has a plain IPv4 spelling, which is the one
+ * accepted; whether sshd would match the mapped spelling was not measured, and
+ * a line that never matches is a silently dead line.
  */
 export function isExactHostCidr(value: string): boolean {
   const m = /^([0-9A-Fa-f:.]{2,45})\/(32|128)$/.exec(value)
   if (m === null) return false
   const family = isIP(m[1])
-  if (family === 4) return m[2] === '32' && m[1].split('.').every((part) => String(Number(part)) === part)
-  if (family === 6) return m[2] === '128'
+  if (family === 4) {
+    if (m[2] !== '32' || !m[1].split('.').every((part) => String(Number(part)) === part)) return false
+    return m[1] !== '0.0.0.0'
+  }
+  if (family === 6) {
+    if (m[2] !== '128') return false
+    const groups = ipv6Groups(m[1])
+    if (groups.every((group) => group === 0)) return false
+    const mappedV4 = groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff
+    return !mappedV4
+  }
   return false
 }
 
