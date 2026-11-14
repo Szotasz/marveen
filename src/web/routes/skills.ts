@@ -598,6 +598,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'Skill not found' }, 404)
         return true
       }
+      // The main agent's folder is PROJECT_ROOT, the ancestor of every sub-agent's, so its .claude/skills is loaded
+      // fleet-wide: owner-only, like the assign route (OWNERGATE3-1104). A sub-agent's own folder stays as it is.
+      if (agentPutParam === MAIN_AGENT_ID && !mayActAsOwner(ctx.auth, req)) {
+        refuseOwner(res, 'Editing a main-agent skill (every sub-agent loads it) needs the dashboard login (an owner session).')
+        return true
+      }
       const agentSkillsRoot = agentPutParam === MAIN_AGENT_ID
         ? join(PROJECT_ROOT, '.claude', 'skills')
         : join(agentDir(agentPutParam), '.claude', 'skills')

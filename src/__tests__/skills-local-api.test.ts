@@ -50,7 +50,7 @@ function fakeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { stat
   return { ctx, out }
 }
 
-function fakeCtxWithBody(path: string, method: string, bodyObj: object): { ctx: RouteContext; out: { status: number; body: any } } {
+function fakeCtxWithBody(path: string, method: string, bodyObj: object, auth?: RouteContext['auth']): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -66,9 +66,11 @@ function fakeCtxWithBody(path: string, method: string, bodyObj: object): { ctx: 
     destroy() {},
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url } as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, auth } as RouteContext
   return { ctx, out }
 }
+// The dashboard's skill editor runs in the owner's session; a main-agent skill edit is owner-only (LOW-F2-5).
+const OWNER: RouteContext['auth'] = { kind: 'session' }
 
 // Temp skill dirs created during the test
 const MAIN_SKILL_DIR  = join(PROJECT_ROOT, '.claude', 'skills', 'zz-test-main-local-skill')
@@ -218,6 +220,7 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
       `/api/skills/zz-test-main-local-skill?agent=${encodeURIComponent(MAIN_AGENT_ID)}`,
       'PUT',
       { content: newContent },
+      OWNER,
     )
     const handled = await tryHandleSkills(ctx)
     expect(handled).toBe(true)
@@ -248,6 +251,7 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
       `/api/skills/no-such-skill?agent=${encodeURIComponent(MAIN_AGENT_ID)}`,
       'PUT',
       { content: '# x' },
+      OWNER,
     )
     await tryHandleSkills(ctx)
     expect(out.status).toBe(404)
@@ -258,6 +262,7 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
       `/api/skills/${encodeURIComponent('../../../etc/passwd')}?agent=${encodeURIComponent(MAIN_AGENT_ID)}`,
       'PUT',
       { content: 'evil' },
+      OWNER,
     )
     await tryHandleSkills(ctx)
     expect(out.status).toBe(400)

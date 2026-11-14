@@ -74,7 +74,7 @@ const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 const { tryHandleOnboarding } = await import('../web/routes/onboarding.js')
 const { tryHandleSkills } = await import('../web/routes/skills.js')
 const { agentDir } = await import('../web/agent-config.js')
-const { PROJECT_ROOT } = await import('../config.js')
+const { PROJECT_ROOT, MAIN_AGENT_ID } = await import('../config.js')
 const { readTerminalInputEnabled, writeTerminalInputEnabled } = await import('../web/terminal-input-store.js')
 const { OPENROUTER_MANUAL_FILE } = await import('../web/openrouter-models.js')
 
@@ -85,6 +85,10 @@ const PEER_DIR = agentDir(PEER)
 const SKILL = '__og3-skill'
 const GLOBAL_SKILL_DIR = join(HOME_SANDBOX, '.claude', 'skills', SKILL)
 const AGENT_SKILL_DIR = join(DIR, '.claude', 'skills', SKILL)
+// The main agent's local skills live in the checkout's own .claude/skills (every sub-agent's ancestor folder).
+const MAIN_SKILLS_ROOT = join(PROJECT_ROOT, '.claude', 'skills')
+const mainSkillsRootExisted = existsSync(MAIN_SKILLS_ROOT)
+const MAIN_SKILL_DIR = join(MAIN_SKILLS_ROOT, SKILL)
 
 type Auth = { kind: 'token' | 'session' | 'device'; scope?: 'full' | 'operator'; device?: string; tokenAgent?: string } | undefined
 type Handler = (ctx: any, webDir: string) => Promise<boolean>
@@ -150,6 +154,9 @@ function seed() {
   rmSync(GLOBAL_SKILL_DIR, { recursive: true, force: true })
   mkdirSync(GLOBAL_SKILL_DIR, { recursive: true })
   writeFileSync(join(GLOBAL_SKILL_DIR, 'SKILL.md'), '---\nname: og3 global\n---\n')
+  rmSync(MAIN_SKILL_DIR, { recursive: true, force: true })
+  mkdirSync(MAIN_SKILL_DIR, { recursive: true })
+  writeFileSync(join(MAIN_SKILL_DIR, 'SKILL.md'), '---\nname: og3 main\n---\n')
 }
 const state = () => ({
   terminalInput: read(TERMINAL_INPUT_FILE),
@@ -160,6 +167,7 @@ const state = () => ({
   agentConfig: read(join(DIR, 'agent-config.json')),
   agentSkill: list(AGENT_SKILL_DIR),
   globalSkill: read(join(GLOBAL_SKILL_DIR, 'SKILL.md')),
+  mainSkill: read(join(MAIN_SKILL_DIR, 'SKILL.md')),
   peerSkills: list(join(PEER_DIR, '.claude', 'skills')),
   identity: IDENTITY_FILES.map(read),
   claudeJson: read(join(HOME_SANDBOX, '.claude.json')),
@@ -191,7 +199,8 @@ beforeEach(() => {
   for (const m of [execFileMock, spawnMock, sendPromptToSession, capturePane, hardRestartMarveenChannels]) m.mockClear()
 })
 afterAll(() => {
-  for (const d of [DIR, PEER_DIR]) rmSync(d, { recursive: true, force: true })
+  for (const d of [DIR, PEER_DIR, MAIN_SKILL_DIR]) rmSync(d, { recursive: true, force: true })
+  if (!mainSkillsRootExisted && existsSync(MAIN_SKILLS_ROOT) && readdirSync(MAIN_SKILLS_ROOT).length === 0) rmSync(MAIN_SKILLS_ROOT, { recursive: true })
   for (const [p, v] of saved) { if (v !== null) writeFileSync(p, v); else rmSync(p, { force: true }) }
   if (!agentsRootExisted && existsSync(AGENTS_ROOT) && readdirSync(AGENTS_ROOT).length === 0) rmSync(AGENTS_ROOT, { recursive: true })
   if (!storeRootExisted && existsSync(STORE_ROOT) && readdirSync(STORE_ROOT).length === 0) rmSync(STORE_ROOT, { recursive: true })
@@ -270,6 +279,12 @@ const CASES: Case[] = [
     label: 'PUT /api/skills/:name (global)', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/${SKILL}`,
     body: { content: '---\nname: og3 edited\n---\n' },
     ownerCheck: (r) => { expect(r.status).toBe(200); expect(read(join(GLOBAL_SKILL_DIR, 'SKILL.md'))).toBe('---\nname: og3 edited\n---\n') },
+  },
+  {
+    // LOW-F2-5 (self-audit): ?agent=<main agent> rewrites PROJECT_ROOT/.claude/skills, which every sub-agent loads.
+    label: 'PUT /api/skills/:name?agent=<main agent>', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/${SKILL}?agent=${MAIN_AGENT_ID}`,
+    body: { content: '---\nname: og3 main edited\n---\n' },
+    ownerCheck: (r) => { expect(r.status).toBe(200); expect(read(join(MAIN_SKILL_DIR, 'SKILL.md'))).toBe('---\nname: og3 main edited\n---\n') },
   },
   {
     // An unknown key: the owner lanes stop at the field check (400) right after the gate, so store/ stays as it is.
