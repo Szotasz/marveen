@@ -214,10 +214,26 @@ export const MANIFEST_TEXT_MAX_CHARS = Object.freeze({
 })
 
 /**
+ * Contract decision (Mira, card comment 32004): a manifest free text that
+ * starts or ends with a white space character is refused, on both sides.
+ * Nothing is trimmed, so the checked text and the signed text stay the same
+ * bytes. The set is the Unicode White_Space property, NOT `\s` or `trim()`:
+ * those two differ from the property on exactly two code points, U+0085 (in
+ * the property, not in `\s`) and U+FEFF (in `\s`, not in the property).
+ */
+const EDGE_WHITE_SPACE_RE = /^\p{White_Space}|\p{White_Space}$/u
+
+/** True when the text starts or ends with a White_Space code point. */
+export function hasEdgeWhiteSpace(text: string): boolean {
+  return EDGE_WHITE_SPACE_RE.test(text)
+}
+
+/**
  * D10 and S18 point 1 over one manifest free text: one line only, then the S11
  * and S10 rules (not the exec or frontmatter rules: the plan names S10 and S11
- * for manifest texts), then the length. Returns the refusal, or null when the
- * text passes.
+ * for manifest texts), then the length of the text as it stands, then the
+ * white space at its two ends. The new rule is last, so a text refused before
+ * it existed keeps its rule. Returns the refusal, or null when the text passes.
  */
 export function scanManifestText(text: string, maxChars: number): { reason: VerifyReason; rule: string } | null {
   if (/[\n\r]/.test(text)) {
@@ -228,6 +244,9 @@ export function scanManifestText(text: string, maxChars: number): { reason: Veri
   const chars = Array.from(text).length
   if (chars < 1 || chars > maxChars) {
     return { reason: N21B_PROVISIONAL_REASONS.manifestTextLength, rule: 'manifest-text-length' }
+  }
+  if (hasEdgeWhiteSpace(text)) {
+    return { reason: N21B_PROVISIONAL_REASONS.manifestEdgeWhiteSpace, rule: 'manifest-edge-whitespace' }
   }
   return null
 }
@@ -325,13 +344,15 @@ export type VerifyResult =
  * decided yet. Until they are, they map to EXISTING codes, here and only
  * here: a manifest text breaking a text rule gets the reason that rule gives a
  * file, a line break in a manifest text is bad_text, a manifest text that is
- * empty or over its length is bad_text, and an avatar block that is not
- * allowed, out of place, of a wrong length or truncated is bad_avatar.
+ * empty or over its length is bad_text, a manifest text with white space at
+ * either end is bad_text, and an avatar block that is not allowed, out of
+ * place, of a wrong length or truncated is bad_avatar.
  */
 export const N21B_PROVISIONAL_REASONS = Object.freeze({
   manifestText: (fileRuleReason: TextReason): VerifyReason => fileRuleReason,
   manifestLineBreak: 'bad_text' as VerifyReason,
   manifestTextLength: 'bad_text' as VerifyReason,
+  manifestEdgeWhiteSpace: 'bad_text' as VerifyReason,
   avatarBlockNotAllowed: 'bad_avatar' as VerifyReason,
   avatarBlockStructure: 'bad_avatar' as VerifyReason,
   avatarTruncatedBlock: 'bad_avatar' as VerifyReason,

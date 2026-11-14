@@ -277,6 +277,29 @@ export function makeDeliveryCases(): { keys: Jwk[]; signer: TestKeyPair; cases: 
     refused('a title of 121 astral characters', d({ title: '\ud83d\ude00'.repeat(121) }), 5, 'bad_text', { field: 'title', rule: 'manifest-text-length' }),
     // The text rules come before the count, so the count never runs on a text that is not well formed.
     refused('a title over its length that also holds a lone surrogate', d({ title: 't'.repeat(121) + '\ud800' }), 5, 'bad_text', { field: 'title', rule: 'invalid-utf16' }),
+    // Contract decision (Mira, card comment 32004): white space at either end of a manifest text is refused,
+    // nothing is trimmed, and the length counts the text as it stands. The set is the Unicode White_Space property.
+    refused('a title starting with a space', d({ title: ' Invoice helper' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
+    refused('a title ending with a space', d({ title: 'Invoice helper ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
+    refused('a title of spaces only', d({ title: '   ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
+    refused('a description starting with a no-break space', d({ description: ' Keeps the invoices' }), 5, 'bad_text', { field: 'description', rule: 'manifest-edge-whitespace' }),
+    refused('a description ending with an ideographic space', d({ description: 'Keeps the invoices　' }), 5, 'bad_text', { field: 'description', rule: 'manifest-edge-whitespace' }),
+    refused('a display name starting with a tab', d({ displayName: '\tAnna' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
+    refused('a display name ending with a narrow no-break space', d({ displayName: 'Anna ' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
+    refused('a display name of one ideographic space', d({ displayName: '　' }), 5, 'bad_text', { field: 'agent.display_name', rule: 'manifest-edge-whitespace' }),
+    refused('a connector reason starting with an en quad', d({ connectors: [{ name: 'bb', level: 'required', reason: ' Reads mail.' }] }), 5, 'bad_text', { field: 'connectors[0].reason', rule: 'manifest-edge-whitespace' }),
+    refused('a second connector reason ending with a medium mathematical space', d({ connectors: [{ name: 'aa', level: 'required', reason: 'ok' }, { name: 'bb', level: 'required', reason: 'Reads mail. ' }] }), 5, 'bad_text', { field: 'connectors[1].reason', rule: 'manifest-edge-whitespace' }),
+    // An end that an earlier rule refuses anywhere in the text keeps that rule: these cases pin which one.
+    refused('a title ending with a line separator: S11 refuses it anywhere', d({ title: 'Invoice helper ' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
+    refused('a title starting with U+0085, white space by the property: S11 refuses it anywhere', d({ title: '\u0085Invoice helper' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
+    refused('a title ending with U+FEFF, not white space by the property: S11 refuses it anywhere', d({ title: 'Invoice helper﻿' }), 5, 'bad_text', { field: 'title', rule: 'forbidden-char' }),
+    refused('a title ending with an LF', d({ title: 'Invoice helper\n' }), 5, 'bad_text', { field: 'title', rule: 'manifest-line-break' }),
+    // The length is counted on the text as it stands, and before the two ends are looked at.
+    refused('a title of 121 characters, the last one a space', d({ title: 't'.repeat(120) + ' ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-text-length' }),
+    refused('a title of 120 characters, the last one a space', d({ title: 't'.repeat(119) + ' ' }), 5, 'bad_text', { field: 'title', rule: 'manifest-edge-whitespace' }),
+    ok('manifest texts with white space inside, none at an end', d({
+      title: 'Invoice helper', description: 'Keeps　the\tinvoices', displayName: 'Anna B', connectors: [{ name: 'bb', level: 'required', reason: 'Reads the  mail.' }],
+    })),
     ok('manifest texts of one character each', d({ title: 't', description: 'd', displayName: 'n', connectors: [{ name: 'bb', level: 'required', reason: 'r' }] })),
     ok('manifest texts at their upper bounds', d({
       title: 't'.repeat(120), description: 'd'.repeat(2000), displayName: 'n'.repeat(60), connectors: [{ name: 'bb', level: 'required', reason: 'r'.repeat(200) }],

@@ -4,6 +4,7 @@ import {
   VerifiedPackage,
   classifyVersion,
   compareVersions,
+  hasEdgeWhiteSpace,
   meetsMinMarveenVersion,
   verifyDelivery,
   type Jwk,
@@ -114,6 +115,48 @@ describe('verifyDelivery: a refusal never carries file content', () => {
     )
     expect(got.ok).toBe(false)
     expect(JSON.stringify(got)).not.toContain(MARKER)
+  })
+})
+
+describe('hasEdgeWhiteSpace: the set is the Unicode White_Space property (Mira, card comment 32004)', () => {
+  // The 25 code points of the property, written out, so the test does not ask the engine what the engine says.
+  const WHITE_SPACE = new Set<number>([
+    0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020, 0x0085, 0x00a0, 0x1680,
+    0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+    0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+  ])
+  const u = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`
+
+  it('decides every code point by that list, at the start and at the end of a text', () => {
+    expect(WHITE_SPACE.size).toBe(25)
+    const wrong: string[] = []
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue
+      const ch = String.fromCodePoint(cp)
+      const want = WHITE_SPACE.has(cp)
+      if (hasEdgeWhiteSpace(`${ch}x`) !== want) wrong.push(`start ${u(cp)}`)
+      if (hasEdgeWhiteSpace(`x${ch}`) !== want) wrong.push(`end ${u(cp)}`)
+    }
+    expect(wrong).toEqual([])
+  })
+
+  it('is not the built-in white space: U+0085 counts, U+FEFF does not', () => {
+    // The two code points where `\s` and trim() differ from the property (measured by the reviewer, card comment 32005).
+    expect('\u0085x\u0085'.trim()).toBe('\u0085x\u0085')
+    expect(hasEdgeWhiteSpace('\u0085x')).toBe(true)
+    expect(hasEdgeWhiteSpace('x\u0085')).toBe(true)
+    expect('﻿x﻿'.trim()).toBe('x')
+    expect(hasEdgeWhiteSpace('﻿x')).toBe(false)
+    expect(hasEdgeWhiteSpace('x﻿')).toBe(false)
+  })
+
+  it('looks at the two ends only, and an empty text has none', () => {
+    expect(hasEdgeWhiteSpace('a b c　d\te')).toBe(false)
+    expect(hasEdgeWhiteSpace('')).toBe(false)
+    expect(hasEdgeWhiteSpace(' ')).toBe(true)
+    // Without the m flag the end is the end of the text, not the end of a line.
+    expect(hasEdgeWhiteSpace('a \nb')).toBe(false)
+    expect(hasEdgeWhiteSpace('a\n b')).toBe(false)
   })
 })
 
