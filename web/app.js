@@ -3808,7 +3808,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
 
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      throw new Error(err.error || t('common.unknown'))
     }
 
     const result = await res.json()
@@ -3861,7 +3861,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       updateWizardUI()
     }, 600)
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
     wizardStep = 1
     updateWizardUI()
   }
@@ -3896,11 +3896,11 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      throw new Error(err.error || t('common.unknown'))
     }
 
     closeModal(agentWizardOverlay)
-    showToast('Ugynok letrehozva. Kosd be a csatornat a parosatashoz.')
+    showToast(t('agents.wizard.created'))
     await loadAgents()
     // Drop the operator straight into the Telegram tab of the new agent so
     // the pairing step is in front of them -- easy to miss otherwise.
@@ -3909,7 +3909,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
       switchAgentTab('channel')
     } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     createBtn.disabled = false
     createBtn.querySelector('.btn-text').hidden = false
@@ -4965,7 +4965,7 @@ async function openAgentDetail(agentName) {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || 'Hiba az exportálás során')
+        showToast(data.error || t('agents.export.error'))
         return
       }
       const blob = await res.blob()
@@ -4977,9 +4977,9 @@ async function openAgentDetail(agentName) {
       a.click()
       a.remove()
       URL.revokeObjectURL(objectUrl)
-      showToast(`Ügynök exportálva${withSecrets ? ' (titkokkal)' : ''}`)
+      showToast(t(withSecrets ? 'agents.export.done_secrets' : 'agents.export.done'))
     } catch {
-      showToast('Hiba az exportálás során')
+      showToast(t('agents.export.error'))
     }
   }
 
@@ -5342,7 +5342,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   try {
     if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
   }
@@ -5370,7 +5370,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -5402,7 +5402,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 })
 
@@ -6060,7 +6060,7 @@ if (exportAllAgentsBtn) {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || 'Hiba az exportálás során')
+        showToast(data.error || t('agents.export.error'))
         return
       }
       const blob = await res.blob()
@@ -6072,9 +6072,9 @@ if (exportAllAgentsBtn) {
       a.click()
       a.remove()
       URL.revokeObjectURL(objectUrl)
-      showToast(`Flotta exportálva${withSecrets ? ' (titkokkal)' : ''}`)
+      showToast(t(withSecrets ? 'agents.export_all.done_secrets' : 'agents.export_all.done'))
     } catch {
-      showToast('Hiba az exportálás során')
+      showToast(t('agents.export.error'))
     }
   })
 }
@@ -6131,18 +6131,22 @@ if (importAgentBtn && importAgentFile) {
         }
         ;({ res, data } = await upload(true))
       }
-      if (!res.ok) { showToast(data.error || 'Hiba az importálás során'); return }
-      const note = data.includedSecrets ? ' (titkokkal)' : ''
+      if (!res.ok) { showToast(data.error || t('agents.import.error')); return }
+      const parts = []
       if (data.kind === 'fleet') {
-        const n = (data.imported || []).length
         const skipped = (data.skipped || []).length
-        showToast(`Flotta importálva: ${n} ügynök${note}${skipped ? ` (${skipped} kihagyva)` : ''}`)
+        parts.push(t('agents.import.fleet_done', { n: (data.imported || []).length }))
+        if (data.includedSecrets) parts.push(t('agents.import.note_secrets'))
+        if (skipped) parts.push(t('agents.import.note_skipped', { n: skipped }))
       } else {
-        showToast(`Ügynök importálva: ${data.name}${note}${data.overwritten ? ' (felülírva)' : ''}`)
+        parts.push(t('agents.import.done', { name: data.name }))
+        if (data.includedSecrets) parts.push(t('agents.import.note_secrets'))
+        if (data.overwritten) parts.push(t('agents.import.note_overwritten'))
       }
+      showToast(parts.join(' '))
       loadAgents()
     } catch {
-      showToast('Hiba az importálás során')
+      showToast(t('agents.import.error'))
     } finally {
       importAgentFile.value = ''
     }
