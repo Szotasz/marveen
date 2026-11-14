@@ -14,9 +14,11 @@ import {
   unlinkSync,
   mkdirSync,
   statSync,
+  lstatSync,
   existsSync,
   chmodSync,
   realpathSync,
+  type Stats,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { mergeAuthorizedKeys, removeAuthorizedKey, rewriteServicePorts, type MergeAction } from './remote-enroll-core.js'
@@ -110,6 +112,30 @@ export interface EnrollResult {
   warnings: string[]
 }
 
+/** The lock could not be taken: another writer holds it. A caller can tell this
+ * apart from an I/O error without reading the message (the message is unchanged). */
+export class AuthorizedKeysLockError extends Error {
+  readonly code = 'AUTHORIZED_KEYS_LOCKED'
+  constructor(message: string) {
+    super(message)
+    this.name = 'AuthorizedKeysLockError'
+  }
+}
+
+/** A guarded rewrite refused to write, or could not prove what it wrote. */
+export class AuthorizedKeysRewriteError extends Error {
+  readonly code:
+    | 'AUTHORIZED_KEYS_SYMLINK'
+    | 'AUTHORIZED_KEYS_READBACK'
+    | 'AUTHORIZED_KEYS_ASYNC_TRANSFORM'
+    | 'AUTHORIZED_KEYS_NOT_BYTES'
+  constructor(code: AuthorizedKeysRewriteError['code'], message: string) {
+    super(message)
+    this.name = 'AuthorizedKeysRewriteError'
+    this.code = code
+  }
+}
+
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -182,7 +208,7 @@ async function acquireLock(
       await sleep(delayMs)
     }
   }
-  throw new Error(
+  throw new AuthorizedKeysLockError(
     `could not acquire ${lockPath} after ${retries} attempts; another enrollment may be running`,
   )
 }
@@ -247,11 +273,16 @@ export async function enrollAuthorizedKey(opts: EnrollOptions): Promise<EnrollRe
 
 /** Atomic write: temp file in the same directory (same filesystem), 0600,
  * fsync, then rename over the target. */
-function writeAtomic(sshDir: string, authPath: string, content: string): void {
+function writeAtomic(
+  sshDir: string,
+  authPath: string,
+  content: string,
+  encoding: 'utf8' | 'latin1' = 'utf8',
+): void {
   const tmpPath = join(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`)
   const tfd = openSync(tmpPath, 'wx', AUTH_KEYS_MODE)
   try {
-    writeSync(tfd, content)
+    writeSync(tfd, content, null, encoding)
     fsyncSync(tfd)
   } finally {
     closeSync(tfd)
@@ -371,5 +402,168 @@ export async function removeEnrolledKey(opts: RemoveEnrolledOptions): Promise<Re
     return { removed, authorizedKeysPath: authPath }
   } finally {
     releaseLock(fd, lockPath)
+  }
+}
+
+export interface LockedRewriteOptions {
+  sshDir: string
+  /** Words for the ENROLL813 refusal message, e.g. "write a support line into". */
+  operation: string
+  /** Create the .ssh directory (0700) when it is missing. A removal leaves this off. */
+  createDir?: boolean
+  /** Refuse when authorized_keys, or the .ssh directory itself, is a symbolic
+   * link. For ADDING access only: a removal must never be refused, because a
+   * refused removal leaves the key in. */
+  refuseSymlink?: boolean
+  /** Read and write the file one byte per character, so every byte the
+   * transform does not touch comes back as it was, whatever encoding the file
+   * is in. Without it the file is read as UTF-8, and a byte that is not valid
+   * UTF-8 is replaced. The new content may then hold only characters up to
+   * U+00FF; anything else is refused before the write. */
+  preserveBytes?: boolean
+  lockRetries?: number
+  lockRetryDelayMs?: number
+  staleLockMs?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
+export interface LockedRewriteOutcome<T> {
+  result: T
+  /** True when the file content changed and was replaced. */
+  wrote: boolean
+  authorizedKeysPath: string
+  warnings: string[]
+}
+
+/**
+ * The shared read-transform-write of <sshDir>/authorized_keys for writers that
+ * are not the Bridge's own three: the SAME lock file, the same ENROLL813 guard
+ * and the same atomic replace, so two kinds of writer can never interleave.
+ *
+ * `transform` gets the current content ('' when the file does not exist) and
+ * returns the new content, or null to leave the file alone. It must be
+ * SYNCHRONOUS: the lock is given up after 20 x 100 ms by default and treated as
+ * stale after 15 s, so anything slow (measuring sshd, a network call) belongs
+ * BEFORE this call, never inside it. A transform that returns a promise is
+ * refused before anything is written.
+ *
+ * After the replace the file is read back and must equal what was written.
+ */
+export async function rewriteAuthorizedKeysLocked<T>(
+  opts: LockedRewriteOptions,
+  transform: (existing: string) => { content: string | null; result: T },
+): Promise<LockedRewriteOutcome<T>> {
+  const {
+    operation,
+    createDir = false,
+    refuseSymlink = false,
+    preserveBytes = false,
+    lockRetries = 20,
+    lockRetryDelayMs = 100,
+    staleLockMs = 15000,
+    sleep = defaultSleep,
+  } = opts
+  // ONE spelling of the directory for the link check, the lock and the file.
+  // resolve() is lexical: it drops a trailing slash and a `.` segment and does
+  // not follow a link. lstat on `<dir>/.ssh/` or `<dir>/.ssh/.` FOLLOWS the
+  // link and reports a directory, so without this the refusal below would
+  // depend on how the caller happened to write the path.
+  const sshDir = resolve(opts.sshDir)
+  assertSafeSshDir(sshDir, operation)
+  const warnings: string[] = []
+  const authPath = join(sshDir, AUTH_KEYS_NAME)
+  const lockPath = join(sshDir, LOCK_NAME)
+  const encoding = preserveBytes ? 'latin1' : 'utf8'
+
+  // Before the directory is created or locked: nothing may be written through
+  // a linked directory by an operation that adds access.
+  if (refuseSymlink && lstatOrNull(sshDir)?.isSymbolicLink()) {
+    throw new AuthorizedKeysRewriteError(
+      'AUTHORIZED_KEYS_SYMLINK',
+      `${sshDir} is a symbolic link; refusing to add access through it`,
+    )
+  }
+  if (createDir) ensureSshDir(sshDir, warnings)
+  else if (!existsSync(sshDir)) {
+    // Nothing to read and nowhere to lock: the file cannot exist either.
+    const out = transform('')
+    assertSyncTransform(out)
+    if (out.content !== null && out.content !== '') {
+      throw new Error(`${sshDir} does not exist; refusing to create it for this operation`)
+    }
+    return { result: out.result, wrote: false, authorizedKeysPath: authPath, warnings }
+  }
+
+  const fd = await acquireLock(lockPath, lockRetries, lockRetryDelayMs, staleLockMs, sleep)
+  try {
+    let existing = ''
+    const link = lstatOrNull(authPath)
+    if (link !== null) {
+      if (link.isSymbolicLink() && refuseSymlink) {
+        throw new AuthorizedKeysRewriteError(
+          'AUTHORIZED_KEYS_SYMLINK',
+          `${authPath} is a symbolic link; refusing to add access through it`,
+        )
+      }
+      if (existsSync(authPath)) {
+        const st = statSync(authPath)
+        if (looserThan(st.mode, AUTH_KEYS_MODE)) {
+          warnings.push(
+            `${authPath} permissions were ${fmtMode(st.mode)} (looser than 0600); the rewritten file is 0600`,
+          )
+        }
+        existing = readFileSync(authPath, encoding)
+      }
+    }
+    const out = transform(existing)
+    assertSyncTransform(out)
+    if (out.content === null || out.content === existing) {
+      return { result: out.result, wrote: false, authorizedKeysPath: authPath, warnings }
+    }
+    // Only an ADDITION can trip this: a removal's content is the decoded file
+    // minus some lines, and every character of that is already one byte. So
+    // this refusal never stands in the way of taking access out.
+    if (preserveBytes && /[^\u0000-\u00ff]/.test(out.content)) {
+      throw new AuthorizedKeysRewriteError(
+        'AUTHORIZED_KEYS_NOT_BYTES',
+        `the new content of ${authPath} holds a character that is not one byte; nothing was written`,
+      )
+    }
+    writeAtomic(sshDir, authPath, out.content, encoding)
+    if (readFileSync(authPath, encoding) !== out.content) {
+      throw new AuthorizedKeysRewriteError(
+        'AUTHORIZED_KEYS_READBACK',
+        `${authPath} does not hold what was just written`,
+      )
+    }
+    if (link !== null && link.isSymbolicLink()) {
+      // The rename replaced the LINK. sshd now reads the new regular file; the
+      // file the link pointed at was not opened for writing and is as it was.
+      warnings.push(
+        `${authPath} was a symbolic link; it is now a regular file. The file the link pointed at was not ` +
+          'changed and still holds its old lines: linking it back would bring them back',
+      )
+    }
+    return { result: out.result, wrote: true, authorizedKeysPath: authPath, warnings }
+  } finally {
+    releaseLock(fd, lockPath)
+  }
+}
+
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+function assertSyncTransform(out: unknown): void {
+  if (out !== null && typeof out === 'object' && typeof (out as { then?: unknown }).then === 'function') {
+    throw new AuthorizedKeysRewriteError(
+      'AUTHORIZED_KEYS_ASYNC_TRANSFORM',
+      'the transform returned a promise; nothing slow may run while the lock is held',
+    )
   }
 }
