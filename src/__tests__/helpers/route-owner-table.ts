@@ -114,7 +114,6 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "skills.ts POST /api/skills/propose", cls: "agent", why: "the fleet proposes skills; the quarantine switch decides live or pending" },
   { key: "skills.ts POST /api/skills", cls: "pending", why: "global skill creation" },
   { key: "skills.ts POST /api/skills/import", cls: "pending", why: "global skill import" },
-  { key: "skills.ts PUT <globalSkillPutMatch>", cls: "pending", why: "global skill edit" },
   { key: "spans.ts POST /api/spans", cls: "agent", why: "trace spans from the agents" },
   { key: "token-usage.ts POST /api/token-usage/collect", cls: "agent", why: "token-usage collection" },
   { key: "tool-log.ts POST /api/tool-log", cls: "agent", why: "tool-log capture hook and its retention prune" },
