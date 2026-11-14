@@ -247,6 +247,8 @@ describe('the principle: a filter that ran on the raw text sees nothing new afte
     wrapChannelInbound: (t) => wrapChannelInbound(t),
     'the router envelope (untrusted)': (t) => { const e = wrapAgentMessageForDelivery('untrusted', 'kulso', 'kulso', t, 7); return e.prefix + e.wrapped },
     'the router envelope (trusted-peer)': (t) => { const e = wrapAgentMessageForDelivery('trusted-peer', 'kulso', 'kulso', t, 7); return e.prefix + e.wrapped },
+    'the router envelope (federated)': (t) => { const e = wrapAgentMessageForDelivery('federated', 'kulso', 'kulso', t, 7); return e.prefix + e.wrapped },
+    'the router envelope (channel-inbound)': (t) => { const e = wrapAgentMessageForDelivery('channel-inbound', 'kulso', 'kulso', t, 7); return e.prefix + e.wrapped },
   }
   // a small seeded generator, so a failure names a reproducible text
   const rng = (seed: number) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0x100000000 }

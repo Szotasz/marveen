@@ -62,13 +62,14 @@ export function paneOneLine(text: string): string {
 //     character stood right after '<' or '</', because the scrubber's pattern
 //     itself tolerates whitespace there. A visible non-whitespace mark joins
 //     nothing and forms no whitespace-tolerant tag. The at-sign step treats the
-//     mark like whitespace, so nobody has to measure whether the TUI does. A backspace or DEL typed before an at-sign could erase
-//     the character in front of it and so turn it into an at-sign after
-//     whitespace; a lone CR could submit the prompt early. Whether the TUI acts
-//     on these today was NOT measured: none of them belongs in a message, so
-//     they are removed rather than measured. The order matters: the at-sign step
-//     runs on the text as it will be typed, so an at-sign that only FOLLOWS
-//     whitespace once a control character is gone still gets its backslash.
+//     mark like whitespace, so nobody has to measure whether the TUI does. A
+//     backspace or DEL typed before an at-sign could erase the character in
+//     front of it and so turn it into an at-sign after whitespace; a lone CR
+//     could submit the prompt early. Whether the TUI acts on these today was
+//     NOT measured: none of them belongs in a message, so they are removed
+//     rather than measured. The order matters: the at-sign step runs on the
+//     text as it will be typed, so an at-sign that only FOLLOWS whitespace once
+//     a control character is gone still gets its backslash.
 //
 // The queue row keeps the ORIGINAL text; only what is typed changes.
 const AT_AFTER_BREAK_RX = /(^|[\s;\uFFFD])@/g
