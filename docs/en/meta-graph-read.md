@@ -17,7 +17,8 @@ publish once the verb is hidden (`-XPOST`, `method=post`, a `batch=` body, a per
   query string), and the answer's final URL must still be that host;
 - the path is plain (`[A-Za-z0-9_/-]` after an optional `vNN.N/`): no host, no dot, no `?`, no `..`;
 - query parameters only as `key=value` arguments, and only from an allowlist (`fields`, `limit`, `after`,
-  `before`, `since`, `until`, `metadata`, `summary`, `date_preset`, `period`, `metric`, `breakdowns`);
+  `before`, `since`, `until`, `metadata`, `summary`, `date_preset`, `period`, `metric`, `breakdowns`, and
+  `audio_type`, `user_id`, `search_query`, added for `ig_audio`, accepted on any read path);
   write markers (`message=`, `method=`, `batch=`, `published=` ...) are refused before any network call, and so
   is a `fields=` value that names `access_token` or uses a `.as()` alias;
 - the token comes from `store/.meta-token` (with `--page <id>` the page token is derived from it via
