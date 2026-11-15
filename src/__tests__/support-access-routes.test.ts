@@ -251,6 +251,16 @@ describe('/api/support-access', () => {
     expect(runs).toEqual([])
   })
 
+  // Dani's review of #2781, F1: measured before the fix, 30 parallel wrong passwords gave 30 checked 401s.
+  it('a burst of parallel wrong passwords is checked one at a time: five 401s, the rest the lock', async () => {
+    const answers = await Promise.all(Array.from({ length: 30 }, (_, i) => enable('wrong-' + i)))
+    const codes = answers.map((a) => a.res.statusCode)
+    expect(codes.filter((c) => c === 401)).toHaveLength(5)
+    expect(codes.filter((c) => c === 429)).toHaveLength(25)
+    expect((await enable(GOOD_PW)).res.statusCode).toBe(429)
+    expect(runs).toEqual([])
+  })
+
   it('a right password clears the wrong ones before it', async () => {
     for (let i = 0; i < 4; i++) expect((await enable('wrong-' + i)).res.statusCode).toBe(401)
     expect((await enable(GOOD_PW)).res.statusCode).toBe(200)
@@ -353,6 +363,12 @@ describe('/api/support-access', () => {
     expect(r.res.statusCode).toBe(500)
     expect(r.json()).toEqual({ error: 'disable_incomplete', problem: 'lines_remain', removed_lines: 0 })
     expect(listSupportConsents().map((row) => row.revoked_via)).toEqual([null])
+  })
+
+  it('GET is the owner\'s too: the shared token alone is refused (Dani\'s review of #2781, N1)', async () => {
+    const r = await call('GET', '/api/support-access', { auth: { kind: 'token' } })
+    expect(r.res.statusCode).toBe(403)
+    expect(r.json().error).not.toBe('Forbidden for this credential type')
   })
 
   it('GET only reports: the status lines and whether enable is offered, nothing written', async () => {

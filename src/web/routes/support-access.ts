@@ -85,6 +85,14 @@ function statusObject(text: string): Record<string, string> {
   return out
 }
 
+/** The password checks of this process, one after the other (a promise chain; a failure does not break it). */
+let passwordQueue: Promise<unknown> = Promise.resolve()
+function onePasswordCheckAtATime<T>(step: () => Promise<T>): Promise<T> {
+  const run = passwordQueue.then(step, step)
+  passwordQueue = run.catch(() => undefined)
+  return run
+}
+
 function tooMany(res: http.ServerResponse, retryAfterS: number | null): void {
   const headers: Record<string, string> = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' }
   if (retryAfterS !== null) headers['Retry-After'] = String(retryAfterS)
@@ -135,20 +143,31 @@ async function handleEnable(ctx: RouteContext, deps: SupportAccessDeps): Promise
   }
 
   // The password: its own bucket, checked BEFORE the KDF; while locked the answer is the same, right or wrong.
-  const gate = deps.passwordGate()
-  const verdict = gate.check()
-  if (verdict.locked) {
-    tooMany(res, verdict.retryAfterS)
+  // ONE password check at a time on this machine (Dani's review of #2781, F1): the check of the bucket, the KDF
+  // and the recording run as one step, so a burst of parallel attempts cannot all pass the check before the first
+  // failure is recorded. The others wait their turn and then see the lock.
+  const owner = ownerName(ctx)
+  const verdict = await onePasswordCheckAtATime(async (): Promise<'locked' | 'wrong' | 'right'> => {
+    const gate = deps.passwordGate()
+    const before = gate.check()
+    if (before.locked) return 'locked'
+    const user = owner === null ? undefined : getDashboardUser(owner)
+    if (user === undefined || user.disabled || !(await verifyPassword(password, user.password_hash))) {
+      gate.recordFailure()
+      return 'wrong'
+    }
+    gate.recordSuccess()
+    return 'right'
+  })
+  if (verdict === 'locked') {
+    const now = deps.passwordGate().check()
+    tooMany(res, now.locked ? now.retryAfterS : null)
     return
   }
-  const owner = ownerName(ctx)
-  const user = owner === null ? undefined : getDashboardUser(owner)
-  if (user === undefined || user.disabled || !(await verifyPassword(password, user.password_hash))) {
-    gate.recordFailure()
+  if (verdict === 'wrong') {
     json(res, { error: 'invalid_password' }, 401)
     return
   }
-  gate.recordSuccess()
 
   let supportDir: string
   try {
@@ -225,6 +244,12 @@ export async function handleSupportAccess(ctx: RouteContext, deps: SupportAccess
     return true
   }
   if (path === '/api/support-access' && method === 'GET') {
+    // The owner's view (Dani's review of #2781, N1): the shared token alone, which every sub-agent can read, is not
+    // the owner.
+    if (!mayActAsOwner(auth, req)) {
+      refuseOwner(res, 'Support access is the owner\'s to look at (the dashboard login).')
+      return true
+    }
     let report
     try {
       report = await supportStatus(deps.statusDeps())

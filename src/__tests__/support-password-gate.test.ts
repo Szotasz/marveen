@@ -53,6 +53,20 @@ describe('the support password bucket (Dani 78357, Q4)', () => {
     expect(gate().check()).toMatchObject({ locked: true })
   })
 
+  // Dani's review of #2781, N2: a burst under a lock must not build the next lock.
+  it('wrong passwords while it is locked do not count, towards a lock or the hard lock', () => {
+    fail(5)
+    fail(20)
+    expect(state.locks).toHaveLength(1)
+    t += 15 * MIN
+    fail(4)
+    expect(gate().check()).toEqual({ locked: false })
+    fail(1)
+    fail(20)
+    expect(state.locks).toHaveLength(2)
+    expect(alerts).toBe(0)
+  })
+
   it('a right password clears the wrong ones before it', () => {
     fail(4)
     gate().recordSuccess()

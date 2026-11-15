@@ -70,6 +70,8 @@ export function createSupportPasswordGate(deps: {
     const s = store.load()
     if (s.hardLocked) return
     const t = now()
+    // A failure while locked does not count (Dani's review of #2781, N2): a burst must not build the next lock.
+    if (s.lockedUntil > t) return
     const failures = [...s.failures.filter((f) => f > t - SUPPORT_PASSWORD_WINDOW_MS), t]
     if (failures.length < SUPPORT_PASSWORD_MAX_FAILURES) {
       store.save({ ...s, failures })
