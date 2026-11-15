@@ -15,7 +15,8 @@ vi.mock('../notify.js', () => ({
 }))
 
 import { getDb, initDatabase, listSupportConsents } from '../db.js'
-import { _clearSessionCacheForTest } from '../web/auth-sessions.js'
+import { _clearSessionCacheForTest, resolveSession } from '../web/auth-sessions.js'
+import { parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import {
@@ -26,6 +27,7 @@ import {
 } from '../web/routes/support-access.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { supportPasswordGate } from '../web/support-password.js'
+import { runSupportReconcile, takeSupportAccessDown } from '../web/support-standby-runtime.js'
 import type { KitRunResult } from '../support-kit-loader.js'
 import { writeGroupRecord } from '../support-group-record.js'
 import type { StandbyDeps } from '../support-standby-enable.js'
@@ -345,6 +347,96 @@ describe('/api/support-access', () => {
     expect(r.res.statusCode).toBe(status)
     expect(r.json()).toEqual({ error })
     expect(listSupportConsents()).toEqual([])
+  })
+
+  // Dani's review of #2786, R1: one standby change at a time in this process.
+  it('a security teardown waits for an enable that is running, and runs after it', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const order: string[] = []
+    const enabling = call('POST', '/api/support-access/enable', { body: { consentVersion: 1, password: GOOD_PW, code: CODE } }, {
+      runKit: async () => {
+        order.push('enable started')
+        await gate
+        order.push('enable done')
+        return { ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' }
+      },
+    })
+    while (!order.includes('enable started')) await new Promise((r) => setTimeout(r, 5))
+    const teardown = takeSupportAccessDown('password_change').then(() => order.push('teardown'))
+    try {
+      await new Promise((r) => setTimeout(r, 50))
+      expect(order).toEqual(['enable started'])
+    } finally {
+      release()
+    }
+    await enabling
+    await teardown
+    expect(order).toEqual(['enable started', 'enable done', 'teardown'])
+  })
+
+  it('the reconcile waits for an enable that is running, too', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const order: string[] = []
+    const enabling = call('POST', '/api/support-access/enable', { body: { consentVersion: 1, password: GOOD_PW, code: CODE } }, {
+      runKit: async () => {
+        order.push('enable started')
+        await gate
+        order.push('enable done')
+        return { ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' }
+      },
+    })
+    while (!order.includes('enable started')) await new Promise((r) => setTimeout(r, 5))
+    const reconciling = runSupportReconcile({ standby: standbyDeps(), transport: async () => ({ status: 200, body: '' }) }).then((o) => order.push('reconcile ' + o))
+    try {
+      await new Promise((r) => setTimeout(r, 50))
+      expect(order).toEqual(['enable started'])
+    } finally {
+      release()
+    }
+    await enabling
+    await reconciling
+    expect(order).toEqual(['enable started', 'enable done', 'reconcile off'])
+  })
+
+  // Samu's review of #2786, N1: the old sessions go BEFORE the teardown, which may wait for the lock.
+  it('a password change revokes the other sessions at once, even while the support lock is held', async () => {
+    const other = await callWith(tryHandleAuth, 'POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
+    const otherToken = parseCookies(String(other.res.headers['Set-Cookie']).split(';')[0])[SESSION_COOKIE_NAME] ?? ''
+    expect(resolveSession(otherToken)).not.toBeNull()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    let started = false
+    const enabling = call('POST', '/api/support-access/enable', { body: { consentVersion: 1, password: GOOD_PW, code: CODE } }, {
+      runKit: async () => {
+        started = true
+        await gate
+        return { ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' }
+      },
+    })
+    while (!started) await new Promise((r) => setTimeout(r, 5))
+    let changed = false
+    const change = callWith(tryHandleAuth, 'POST', '/api/auth/password', {
+      auth: { kind: 'session', user: 'alice' },
+      body: { current_password: GOOD_PW, new_password: 'brand-new-pass-1' },
+    }).then((r) => {
+      changed = true
+      return r
+    })
+    try {
+      // The password change runs the KDF first: on a slow runner that alone takes far more than a moment. Wait for the
+      // revoke itself (bounded), then check that the answer is still held by the support lock.
+      const until = Date.now() + 20_000
+      while (resolveSession(otherToken) !== null && Date.now() < until) await new Promise((r) => setTimeout(r, 10))
+      expect(resolveSession(otherToken)).toBeNull()
+      expect(changed).toBe(false)
+    } finally {
+      // Always let the enable finish: a lock left held would stall every later test of this file.
+      release()
+    }
+    await enabling
+    expect((await change).res.statusCode).toBe(200)
   })
 
   it('disables without a password and closes the open rows', async () => {

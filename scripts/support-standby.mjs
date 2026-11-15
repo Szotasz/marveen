@@ -1216,7 +1216,7 @@ function splitWarning(sshDir, before) {
     `${join4(sshDir, "authorized_keys")} and ${join4(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
   ];
 }
-async function removeEverySupportLine(base, fileName, operation) {
+async function removeEverySupportLine(base, fileName, operation, guard) {
   const { sshDir, pinnedBlobs, ...lock } = base;
   if (fileName === SECOND_FILE) {
     const secondPath = join4(sshDir, SECOND_FILE);
@@ -1242,7 +1242,12 @@ async function removeEverySupportLine(base, fileName, operation) {
       return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a symbolic link to another file; it holds no support line and was not written`] };
     }
   }
+  let skipped = false;
   const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
+    if (guard !== void 0 && !guard()) {
+      skipped = true;
+      return { content: null, result: 0 };
+    }
     const { content, removed } = removeSupportLines(existing, pinnedBlobs);
     const left = countSupportLines(content, pinnedBlobs);
     if (left !== 0) {
@@ -1250,7 +1255,7 @@ async function removeEverySupportLine(base, fileName, operation) {
     }
     return { content: removed === 0 ? null : content, result: removed };
   });
-  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings };
+  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings, ...skipped ? { skipped: true } : {} };
 }
 var SupportLinesRemainError = class extends Error {
   code = "SUPPORT_LINES_REMAIN";
@@ -1558,7 +1563,11 @@ function createHttpsRedeemTransport(opts = {}) {
       url,
       {
         method: "POST",
-        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(req.body) },
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(req.body),
+          ...req.bearer === void 0 ? {} : { authorization: "Bearer " + req.bearer }
+        },
         rejectUnauthorized: true,
         ...opts.extraCa === void 0 ? {} : { ca: opts.extraCa }
       },
