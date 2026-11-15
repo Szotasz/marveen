@@ -55,7 +55,10 @@ esac
 `
 const FAKE_GETENT = '#!/bin/sh\ncat "$(dirname "$0")/pwline"\n'
 const FAKE_ID = '#!/bin/sh\ncase $1 in -P) cat "$(dirname "$0")/pwline" ;; *) exec /usr/bin/id "$@" ;; esac\n'
-const FAKE_OD = '#!/bin/sh\ncase "$*" in *urandom*) [ -f "$(dirname "$0")/no_random" ] && exit 1 ;; esac\nexec /usr/bin/od "$@"\n'
+// for /dev/urandom: fails (no_random), or gives 32 characters of the right length that are not hex (bad_random)
+const FAKE_OD =
+  '#!/bin/sh\ncase "$*" in *urandom*)\n  [ -f "$(dirname "$0")/no_random" ] && exit 1\n' +
+  '  [ -f "$(dirname "$0")/bad_random" ] && { echo " zz zz zz zz zz zz zz zz zz zz zz zz zz zz zz zz"; exit 0; } ;;\nesac\nexec /usr/bin/od "$@"\n'
 // A login shell whose profile talks, sets a PATH, and prints a marker-like line of its own BEFORE the dispatcher's.
 const FAKE_LOGIN_SH = `#!/bin/sh
 echo login >> "$(dirname "$0")/login.calls"
@@ -285,6 +288,12 @@ describe('run <text>: refused before anything runs', () => {
     expect(reason(r.stderr)).toBe('connection_too_old')
     expect(existsSync(marker())).toBe(false)
   })
+  it('when the random event id has the right length but is not hex', () => {
+    writeFileSync(join(bin, 'bad_random'), '')
+    const r = run("touch '" + marker() + "'")
+    expect(reason(r.stderr)).toBe('no_event_id')
+    expect(existsSync(marker())).toBe(false)
+  })
   it('when no random event id can be read', () => {
     writeFileSync(join(bin, 'no_random'), '')
     const r = run("touch '" + marker() + "'")
@@ -337,17 +346,42 @@ describe('run <text>: the logged text is redacted, then escaped, then cut', () =
 })
 
 describe('run <text>: stopped at the cap, by a disable, by a revoke; the whole group goes', () => {
-  it('the cap is what is left of the 60 minutes; the group (a grandchild too) is killed; the end event says -1', async () => {
+  // A grandchild in the background, left to init when its parent dies: only a stop of the whole process group
+  // reaches it (the fake pgrep sees no children). One ignores TERM, so only the group KILL ends it; the other leaves
+  // a marker on TERM and exits, which shows the group TERM comes first (Dani's review of #2800).
+  const pidFile = () => join(home, 'grandchild.pid')
+  const termMarker = () => join(home, 'grandchild.term')
+  const ignoresTerm = () => "sh -c 'echo $$ > " + pidFile() + "; trap \"\" TERM; while :; do sleep 1; done' & sleep 60"
+  const leavesOnTerm = () => "sh -c 'echo $$ > " + pidFile() + '; trap "touch ' + termMarker() + "; exit 0\" TERM; while :; do sleep 1; done' & sleep 60"
+
+  it('the cap is what is left of the 60 minutes; a grandchild that ignores TERM is killed with the group; the end event says -1', async () => {
     writeFileSync(join(bin, 'etime'), '59:57\n')
-    const pidFile = join(home, 'grandchild.pid')
-    const { done } = runAsync("sh -c 'echo $$ > \"" + pidFile + "\"; exec sleep 60' & sleep 60")
+    const { done } = runAsync(ignoresTerm())
     const r = await done
     expect(r.status).toBe(1)
     expect(reason(r.stderr)).toBe('time_cap')
     expect(r.ms).toBeLessThan(20_000)
-    const pid = Number(readFileSync(pidFile, 'utf8'))
+    const pid = Number(readFileSync(pidFile(), 'utf8'))
     await waitFor('the grandchild to be gone', () => !alive(pid), 5_000)
     expect(runEvents()[0]).toMatchObject({ exit: '-1', reason: 'time_cap' })
+  }, 60_000)
+
+  it('the group gets TERM before KILL: a grandchild that exits on TERM leaves its marker', async () => {
+    writeFileSync(join(bin, 'etime'), '59:57\n')
+    const { done } = runAsync(leavesOnTerm())
+    expect(reason((await done).stderr)).toBe('time_cap')
+    const pid = Number(readFileSync(pidFile(), 'utf8'))
+    await waitFor('the grandchild to be gone', () => !alive(pid), 5_000)
+    expect(existsSync(termMarker())).toBe(true)
+  }, 60_000)
+
+  it('a disable stops the whole group too (a grandchild that ignores TERM)', async () => {
+    const { done } = runAsync(ignoresTerm())
+    await waitFor('the grandchild to run', () => existsSync(pidFile()) && readFileSync(pidFile(), 'utf8').trim() !== '')
+    const pid = Number(readFileSync(pidFile(), 'utf8'))
+    expect(stopRunningDispatchers(supportDir)).toBe(1)
+    expect(reason((await done).stderr)).toBe('disabled')
+    await waitFor('the grandchild to be gone', () => !alive(pid), 5_000)
   }, 60_000)
 
   // The command itself writes the marker, so the stop below always hits a command that is running (past the gate).
