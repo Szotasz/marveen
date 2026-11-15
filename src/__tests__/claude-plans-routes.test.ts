@@ -82,7 +82,7 @@ vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
   runFleetLeg: (p: { id: string }) => runFleetLeg(p),
 }))
 
-const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
+const { tryHandleClaudePlans, rotatePlan } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH, readClaudePlans } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
 
@@ -581,6 +581,51 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'pro' })
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
+  })
+})
+
+// PLANROTATEDEADLOCK1115 PR1 (P2): the route's body is rotatePlan(); called directly it answers what the route sends.
+describe('rotatePlan(): the route body as a function (PLANROTATEDEADLOCK1115 P2)', () => {
+  const agentsDir = join(tmpRoot, 'agents')
+  beforeEach(() => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    if (existsSync(agentsDir)) rmSync(agentsDir, { recursive: true, force: true })
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
+    fleetEnabled = false
+  })
+  const seed = async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro', label: 'Personal PRO' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+  }
+
+  it('the happy path: the same 200 body as the route, the same one restart', async () => {
+    await seed()
+    const r = await rotatePlan({ agentId: 'agent-a', targetPlanId: 'team', continue: false })
+    expect(r).toEqual({ status: 200, payload: { ok: true, agentId: 'agent-a', activePlanId: 'team', fleet: 'off' } })
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+  })
+
+  it('each refusal: the same status as the route, nothing restarted', async () => {
+    await seed()
+    for (const [label, setupFn, input, status] of [
+      ['rotation off', () => { rotationEnabled = '0' }, { targetPlanId: 'team' }, 409],
+      ['unknown target', () => {}, { targetPlanId: 'nope' }, 400],
+      ['main not isolated', () => { mainIsolated = '0' }, { targetPlanId: 'team' }, 409],
+    ] as const) {
+      rotationEnabled = '1'
+      mainIsolated = '1'
+      ;(setupFn as () => void)()
+      const direct = await rotatePlan({ agentId: 'agent-a', targetPlanId: input.targetPlanId, continue: false })
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', input)
+      await tryHandleClaudePlans(ctx)
+      expect([label, direct.status], label).toEqual([label, status])
+      expect(out.status, label).toBe(direct.status)
+      expect(out.body, label).toEqual(direct.payload)
+    }
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
   })
 })
 
