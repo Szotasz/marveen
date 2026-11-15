@@ -41,6 +41,22 @@ export interface SupportStatusReport {
   /** The curl the dispatcher would find, or null. */
   readonly curl: string | null
   readonly keysFiles: Readonly<Record<SupportKeysFileName, KeysFileState>>
+  /**
+   * Whether support standby is switched on here, and with which keys, from the
+   * token and the group record. Only what they MEAN: never the record's text
+   * (the consent and the source addresses can be customer data, Geri 78368).
+   *   off      neither the token nor the record is there
+   *   on       both are there and readable
+   *   partial  one of them is there (an enable or a disable that did not finish)
+   *   invalid  something stands at one of the paths that is not ours to use
+   */
+  readonly standby: { readonly state: 'off' | 'on' | 'partial' | 'invalid'; readonly keys: readonly string[] }
+}
+
+/** What the token and the group record files are: their kind only, for the status. */
+export interface StandbyFiles {
+  readonly token: 'ok' | 'missing' | 'invalid'
+  readonly record: { readonly kind: 'ok'; readonly keys: readonly string[] } | { readonly kind: 'missing' } | { readonly kind: 'invalid' }
 }
 
 export interface SupportStatusDeps {
@@ -55,6 +71,16 @@ export interface SupportStatusDeps {
    * byte; null when it does not exist; 'unreadable' when it exists and cannot be read.
    */
   readonly readKeysFile: (name: SupportKeysFileName) => string | null | 'unreadable'
+  /** The kinds of the token and the group record file (support-access-token.ts, support-group-record.ts). */
+  readonly readStandbyFiles: () => StandbyFiles
+}
+
+function standbyOf(files: StandbyFiles): SupportStatusReport['standby'] {
+  const { token, record } = files
+  if (token === 'invalid' || record.kind === 'invalid') return { state: 'invalid', keys: [] }
+  if (token === 'missing' && record.kind === 'missing') return { state: 'off', keys: [] }
+  if (token === 'ok' && record.kind === 'ok') return { state: 'on', keys: record.keys }
+  return { state: 'partial', keys: [] }
 }
 
 /** The major version in a `process.version` text, or null. */
@@ -92,6 +118,7 @@ export async function supportStatus(deps: SupportStatusDeps): Promise<SupportSta
       authorized_keys: keysFileState(deps.readKeysFile('authorized_keys'), pinnedBlobs),
       authorized_keys2: keysFileState(deps.readKeysFile('authorized_keys2'), pinnedBlobs),
     },
+    standby: standbyOf(deps.readStandbyFiles()),
   }
 }
 
@@ -116,6 +143,8 @@ export function formatSupportStatus(report: SupportStatusReport): string {
       'curl=' + (report.curl === null ? 'missing' : 'present'),
       'support_lines=' + keysFileText(report.keysFiles.authorized_keys),
       'support_lines_second_file=' + keysFileText(report.keysFiles.authorized_keys2),
+      'standby=' + report.standby.state,
+      'standby_keys=' + (report.standby.keys.length === 0 ? 'none' : report.standby.keys.join(',')),
     ].join('\n') + '\n'
   )
 }
