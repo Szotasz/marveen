@@ -47,7 +47,8 @@ const writes = (rel: string) => [`echo x > ${rel}`, `rm -f ${rel}`, `cp /tmp/a $
 
 describe('a relative path from an ancestor directory reaches a protected home path', () => {
   for (const rel of ['.gitconfig', '.config/git/config']) {
-    it.each(HOME_SPELLINGS)(`after "%s", every write of ${rel} is denied`, (cd) => {
+    // the test names carry the class only, the spelling is in the assertion message
+    it.each(HOME_SPELLINGS.map((c, i) => [i + 1, c] as const))(`ancestor spelling %i: every write of a protected home path is denied`, (_n, cd) => {
       for (const w of writes(rel)) expect(bash(`${fill(cd)} && ${w}`), `${cd} && ${w}`).toEqual(DENY)
     })
   }
