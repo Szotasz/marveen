@@ -26,8 +26,16 @@ vi.mock('../web/vault.js', () => ({ getSecret: (id: string) => `token-for-${id}`
 // SUBPLANTOKEN1110: the token plans a sub-agent runs on (claude-plans.ts subAgentTokenPlanIds), set per test.
 let reserved = new Set<string>()
 const reservedCalls: ClaudePlan[][] = []
+// PLANROTATEDEADLOCK1115 PR1: readClaudePlans throws from its Nth call on (0 = never), to reach the step after a
+// line was already emitted.
+let readPlansThrowFrom = 0
+let readPlansCalls = 0
 vi.mock('../web/claude-plans.js', () => ({
-  readClaudePlans: () => plans,
+  readClaudePlans: () => {
+    readPlansCalls++
+    if (readPlansThrowFrom > 0 && readPlansCalls >= readPlansThrowFrom) throw new Error('plans unreadable')
+    return plans
+  },
   subAgentTokenPlanIds: (p: ClaudePlan[]) => { reservedCalls.push(p); return reserved },
 }))
 // SUBPLANTOKEN1110 2nd PR: the sub-agent stage's wiring (its logic: claude-plan-subagent-rotation.test.ts).
@@ -80,7 +88,7 @@ function activeUsage(fivePct: number, sevenPct?: number): string {
   })
 }
 
-const { runRotateCheck } = await import('../claude-plan-rotate-check-run.js')
+const { runRotateCheck, rotateCheckOnce, rotationActionFromLine } = await import('../claude-plan-rotate-check-run.js')
 const { IDLE_PROBE_GATE, ROTATION_GATE } = await import('../claude-plan-rotation.js')
 const { getSettingDefinition } = await import('../config-registry.js')
 
@@ -89,6 +97,8 @@ function tokenPlan(id: string): ClaudePlan {
 }
 
 beforeEach(() => {
+  readPlansThrowFrom = 0
+  readPlansCalls = 0
   reserved = new Set<string>()
   reservedCalls.length = 0
   subStageLines = []
@@ -438,3 +448,67 @@ describe('SUBPLANTOKEN1110 2nd PR: the sub-agent stage in the tick', () => {
     expect(subStage).not.toHaveBeenCalled()
   })
 })
+
+// PLANROTATEDEADLOCK1115 PR1 (P1): the check returns actions; the script prints exactly the same lines, in the same
+// order, at the same moment (the tests above, unchanged, pin the lines themselves on every branch).
+describe('rotateCheckOnce: the same lines as actions (PLANROTATEDEADLOCK1115 P1)', () => {
+  async function bothWays(setup: () => void) {
+    setup()
+    const snapshot = JSON.stringify(state)
+    const logs = captureLogs()
+    await runRotateCheck()
+    const printed = [...logs]
+    state = JSON.parse(snapshot)
+    setup()
+    const streamed: string[] = []
+    const actions = await rotateCheckOnce({ onAction: (a) => streamed.push(a.line) })
+    return { printed, lines: actions.map((a) => a.line), streamed, actions }
+  }
+
+  it('sub-agent lines then a main ROTATE: printed lines == action lines == streamed lines, same order', async () => {
+    const r = await bothWays(() => {
+      rotationOn()
+      plans = [tokenPlan('a'), tokenPlan('b'), tokenPlan('c')]
+      state = { activePlanByAgent: { marveen: 'a' }, plans: {} } as ClaudePlansState
+      reserved = new Set(['b'])
+      subStageLines = ['SUBAGENT_ROTATE agent=iris target=x targetLabel=x currentLabel=b currentPct=95 resetsInMin=10 trigger=5h']
+      probeReturns({ a: ROTATION_GATE.switchAtPercent + 5, b: 2, c: 40 })
+    })
+    expect(r.printed.length).toBe(2)
+    expect(r.lines).toEqual(r.printed)
+    expect(r.streamed).toEqual(r.printed)
+    expect(r.actions.map((a) => a.kind)).toEqual(['SUBAGENT_ROTATE', 'ROTATE'])
+    expect(r.actions[1].fields).toMatchObject({ agent: 'marveen', target: 'c' })
+  })
+
+  it('a quiet tick: no line printed, no action', async () => {
+    const r = await bothWays(() => {
+      rotationOn()
+      plans = [tokenPlan('a'), tokenPlan('b')]
+      probeReturns({ a: 0, b: 0 })
+    })
+    expect(r.printed).toEqual([])
+    expect(r.lines).toEqual([])
+  })
+
+  it('a line emitted before a later step throws is still printed (as when it was printed in place)', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    reserved = new Set(['b'])
+    subStageLines = ['SUBAGENT_NO_ALTERNATIVE agent=iris currentLabel=b currentPct=99 resetsInMin=10 trigger=5h']
+    // Call 1 is the sub-agent stage's own read; the main agent's read (call 2) throws, outside any try.
+    readPlansThrowFrom = 2
+    const logs = captureLogs()
+    await expect(runRotateCheck()).rejects.toThrow('plans unreadable')
+    expect(logs).toEqual(['SUBAGENT_NO_ALTERNATIVE agent=iris currentLabel=b currentPct=99 resetsInMin=10 trigger=5h'])
+  })
+
+  it('rotationActionFromLine: kind is the first word, fields the key=value pairs, line unchanged', () => {
+    const line = 'ROTATE agent=marveen target=b targetLabel=b currentLabel=a currentPct=97 resetsInMin=30 trigger=5h'
+    const a = rotationActionFromLine(line)
+    expect(a.kind).toBe('ROTATE')
+    expect(a.line).toBe(line)
+    expect(a.fields).toMatchObject({ agent: 'marveen', target: 'b', trigger: '5h', currentPct: '97' })
+  })
+})
+
