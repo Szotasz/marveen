@@ -2187,7 +2187,6 @@ var SUPPORT_CONSENT_TEXTS = {
   1: null
 };
 function supportConsentText(version) {
-  if (!Number.isInteger(version) || version < 1 || version > SUPPORT_CONSENT_VERSION) return { ok: false, problem: "consent_invalid" };
   const text = Object.prototype.hasOwnProperty.call(SUPPORT_CONSENT_TEXTS, version) ? SUPPORT_CONSENT_TEXTS[version] : void 0;
   if (text === void 0) return { ok: false, problem: "consent_invalid" };
   if (text === null || text.length === 0) return { ok: false, problem: "consent_text_unset" };
