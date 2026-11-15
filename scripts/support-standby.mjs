@@ -1137,9 +1137,11 @@ import { join as join3 } from "node:path";
 
 // src/support-kit-sources.ts
 var KIT_HASHES_FILE = "scripts/support-kit.sha256";
+var KIT_LAUNCHER_NAME = "support-access";
 var KIT_DISPATCHER_NAME = "support-dispatch.sh";
 var KIT_ROUTINE_NAME = "support-standby.mjs";
 var KIT_SOURCES = [
+  { name: KIT_LAUNCHER_NAME, treePath: "scripts/support-access", executable: true },
   { name: KIT_DISPATCHER_NAME, treePath: "scripts/support-dispatch.sh", executable: false },
   { name: KIT_ROUTINE_NAME, treePath: "scripts/support-standby.mjs", executable: false }
 ];
@@ -1680,7 +1682,7 @@ function reconcileFirstFile(base, expected, operation) {
 }
 
 // src/support-standby-cli.ts
-var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n";
+var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs verify-kit\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n";
 var INSTALL_KIT_FLAGS = {
   "--install-root": "installRoot",
   "--node": "nodePath",
@@ -1722,9 +1724,17 @@ function createStatusDeps(account = currentLoginUser()) {
     }
   };
 }
+function createVerifyKit(account = currentLoginUser()) {
+  return () => verifyKit({ supportDir: join7(account.home, SUPPORT_DIR_IN_HOME) });
+}
 async function runSupportCli(argv, io, deps) {
   if (argv.length === 1 && argv[0] === "status") {
     io.out(formatSupportStatus(await supportStatus(deps.status())));
+    return 0;
+  }
+  if (argv.length === 1 && argv[0] === "verify-kit" && deps.verifyKit !== void 0) {
+    const verdict = deps.verifyKit();
+    io.out("kit=" + (verdict.ok ? "ok" : verdict.problem) + "\n");
     return 0;
   }
   const installArgs = argv[0] === "install-kit" ? parseInstallKitArgs(argv.slice(1)) : null;
@@ -1747,7 +1757,7 @@ async function main(argv) {
     return await runSupportCli(
       argv,
       { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-      { status: createStatusDeps, installKit: createInstallKit() }
+      { status: createStatusDeps, installKit: createInstallKit(), verifyKit: createVerifyKit() }
     );
   } catch {
     process.stderr.write("support-standby: stopped on an unexpected error\n");
@@ -1773,6 +1783,7 @@ export {
   buildSupportLine,
   createInstallKit,
   createStatusDeps,
+  createVerifyKit,
   formatSupportStatus,
   grantSupportLines,
   main,

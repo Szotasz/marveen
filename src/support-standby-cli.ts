@@ -8,7 +8,9 @@
 // node_modules: only node's own modules. The dashboard imports the same
 // source modules directly; a test proves both give byte-identical lines.
 //
-// Subcommands so far: `status` (looks, never writes, needs no code) and
+// Subcommands so far: `status` (looks, never writes, needs no code),
+// `verify-kit` (is the kit on this machine what its manifest says; looks,
+// never writes; the sh launcher asks it before anything else) and
 // `install-kit` (writes the kit of this release from the install tree; the
 // installer and the updater call it, the dashboard never does).
 import { accessSync, constants, readFileSync, realpathSync } from 'node:fs'
@@ -17,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { SUPPORT_FROM_CIDRS, SUPPORT_KEYS } from './support-access-pins.js'
 import { createSshdProbeDeps, currentLoginUser, probeSshd } from './support-access-sshd-run.js'
 import { formatSupportStatus, supportStatus, type SupportStatusDeps } from './support-standby.js'
-import { KitError, type WriteKitResult } from './support-kit.js'
+import { KitError, verifyKit, type KitVerdict, type WriteKitResult } from './support-kit.js'
 import { installKit, SUPPORT_DIR_IN_HOME } from './support-kit-install.js'
 
 // What the dashboard and the tests use from the same file the command line runs.
@@ -27,6 +29,7 @@ export { SUPPORT_ROUTINE_MIN_NODE_MAJOR, formatSupportStatus, supportStatus } fr
 
 export const SUPPORT_CLI_USAGE =
   'usage: support-standby.mjs status\n' +
+  '       support-standby.mjs verify-kit\n' +
   '       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n'
 
 export interface InstallKitArgs {
@@ -101,6 +104,16 @@ export interface CliIo {
 export interface CliDeps {
   readonly status: () => SupportStatusDeps
   readonly installKit: (args: InstallKitArgs) => Promise<WriteKitResult>
+  /** The verdict on the kit of the login user (SUPPORTMENTOUT1114: the launcher's first question). Absent: `verify-kit` is not offered. */
+  readonly verifyKit?: () => KitVerdict
+}
+
+/**
+ * The real `verify-kit`: the support folder of the login user from the user
+ * database, as install-kit writes it; no variable moves it. `account` is for tests.
+ */
+export function createVerifyKit(account = currentLoginUser()): () => KitVerdict {
+  return () => verifyKit({ supportDir: join(account.home, SUPPORT_DIR_IN_HOME) })
 }
 
 /**
@@ -111,6 +124,12 @@ export interface CliDeps {
 export async function runSupportCli(argv: readonly string[], io: CliIo, deps: CliDeps): Promise<number> {
   if (argv.length === 1 && argv[0] === 'status') {
     io.out(formatSupportStatus(await supportStatus(deps.status())))
+    return 0
+  }
+  if (argv.length === 1 && argv[0] === 'verify-kit' && deps.verifyKit !== undefined) {
+    // One line, the verdict as a code: never a path, so nothing of the machine is quoted back.
+    const verdict = deps.verifyKit()
+    io.out('kit=' + (verdict.ok ? 'ok' : verdict.problem) + '\n')
     return 0
   }
   const installArgs = argv[0] === 'install-kit' ? parseInstallKitArgs(argv.slice(1)) : null
@@ -140,7 +159,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     return await runSupportCli(
       argv,
       { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-      { status: createStatusDeps, installKit: createInstallKit() },
+      { status: createStatusDeps, installKit: createInstallKit(), verifyKit: createVerifyKit() },
     )
   } catch {
     process.stderr.write('support-standby: stopped on an unexpected error\n')

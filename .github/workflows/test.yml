@@ -178,6 +178,12 @@ jobs:
       # TypeScript rule.
       - run: bash scripts/__tests__/stuck-modal-guard.test.sh
       - run: python3 -I scripts/__tests__/telegram-live-progress.test.py
+      # SUPPORTMENTOUT1114: the kit's sh launcher end to end against a real kit (install-kit,
+      # status, the refusals). It writes ~/.marveen/support of the runner user, which is why
+      # it runs only where CI=true or in a container; dash is the runner's /bin/sh.
+      - run: sh scripts/__tests__/support-access-launcher.test.sh
+        env:
+          CI: 'true'
       # INSTSTDERRTMP1104: the installers' stderr copy leaves with the process, the
       # raw error tail is masked, and the token URL is printed only to a terminal.
       # Hermetic: throwaway TMPDIR, the blocks are cut from the real scripts.

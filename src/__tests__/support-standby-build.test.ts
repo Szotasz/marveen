@@ -128,7 +128,7 @@ describe('scripts/support-standby.mjs', () => {
     expect(run.status).toBe(2)
     expect(run.stdout).toBe('')
     expect(run.stderr).toBe(
-      'usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n',
+      'usage: support-standby.mjs status\n       support-standby.mjs verify-kit\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n',
     )
     expect(readdirSync(home)).toEqual([])
   })

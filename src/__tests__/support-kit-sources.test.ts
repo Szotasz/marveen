@@ -18,7 +18,8 @@ const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 const sha = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
 const H1 = '1'.repeat(64)
 const H2 = '2'.repeat(64)
-const GOOD = H1 + '  support-dispatch.sh\n' + H2 + '  support-standby.mjs\n'
+const H0 = '0'.repeat(64)
+const GOOD = H0 + '  support-access\n' + H1 + '  support-dispatch.sh\n' + H2 + '  support-standby.mjs\n'
 
 describe('the stored kit hashes', () => {
   // The guard the whole idea rests on: the committed values ARE the files in the tree.
@@ -41,19 +42,21 @@ describe('the stored kit hashes', () => {
 
   it('builds the list from the three run-file names, which are exported in one place', () => {
     expect([KIT_LAUNCHER_NAME, KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME]).toEqual(['support-access', 'support-dispatch.sh', 'support-standby.mjs'])
-    expect(KIT_SOURCES.map((s) => s.name)).toEqual([KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME])
+    expect(KIT_SOURCES.map((s) => s.name)).toEqual([KIT_LAUNCHER_NAME, KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME])
   })
 
   it('names the kit files in name order, none executable but what the user starts directly', () => {
     const names = KIT_SOURCES.map((s) => s.name)
     expect(names).toEqual([...names].sort())
     // The dispatcher is started as `/bin/sh <path>`, the routine by node: neither needs the bit.
-    expect(KIT_SOURCES.filter((s) => s.executable)).toEqual([])
+    // The launcher is the one file the user starts by its path (SUPPORTMENTOUT1114).
+    expect(KIT_SOURCES.filter((s) => s.executable).map((s) => s.name)).toEqual([KIT_LAUNCHER_NAME])
   })
 
   it('reads the exact format and writes it back', () => {
     const parsed = parseKitHashes(GOOD)
     expect(parsed === null ? null : [...parsed.entries()]).toEqual([
+      ['support-access', H0],
       ['support-dispatch.sh', H1],
       ['support-standby.mjs', H2],
     ])
@@ -69,18 +72,18 @@ describe('the stored kit hashes', () => {
     ['the binary marker of sha256sum', GOOD.replace(H1 + '  ', H1 + ' *')],
     ['a hash in upper case', GOOD.replace(H1, H1.toUpperCase().replace(/1/g, 'A'))],
     ['a short hash', GOOD.replace(H1, H1.slice(1))],
-    ['a missing kit file', H2 + '  support-standby.mjs\n'],
+    ['a missing kit file', H0 + '  support-access\n' + H2 + '  support-standby.mjs\n'],
     ['an extra file', GOOD + H1 + '  support-extra\n'],
     ['the same file twice', GOOD + H2 + '  support-standby.mjs\n'],
-    ['the files out of name order', H2 + '  support-standby.mjs\n' + H1 + '  support-dispatch.sh\n'],
+    ['the files out of name order', H0 + '  support-access\n' + H2 + '  support-standby.mjs\n' + H1 + '  support-dispatch.sh\n'],
     ['a path instead of a name', GOOD.replace('  support-dispatch.sh', '  scripts/support-dispatch.sh')],
   ])('does not read %s', (_label, text) => {
     expect(parseKitHashes(text)).toBeNull()
   })
 
   it('refuses to write a file without a value for every kit file', () => {
-    expect(() => formatKitHashes(new Map([['support-standby.mjs', H2]]))).toThrow('support-dispatch.sh')
-    expect(() => formatKitHashes(new Map([['support-dispatch.sh', 'x'], ['support-standby.mjs', H2]]))).toThrow()
+    expect(() => formatKitHashes(new Map([['support-access', H0], ['support-standby.mjs', H2]]))).toThrow('support-dispatch.sh')
+    expect(() => formatKitHashes(new Map([['support-access', H0], ['support-dispatch.sh', 'x'], ['support-standby.mjs', H2]]))).toThrow()
   })
 })
 
