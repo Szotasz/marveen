@@ -238,9 +238,59 @@ for c in json.load(sys.stdin):
    (a future time temporarily written into any card's title), otherwise a pattern error looks like zero.
 
 
-7. **Only write on Telegram if**:
-   - there are 3+ stuck tasks (critical)
-   - New blocker (waiting > 48h)
+7. **Only write on Telegram if** (the first two conditions are COUNTED by their own block, do not decide them in your
+   head; both measure against the previous `last_audit_at`, so run them BEFORE the state write of step 5):
+   - **there are 3+ stuck tasks that COUNT (critical).** Not every stuck card counts. Step 4 never pings the main
+     agent ({{MAIN_AGENT_ID}}) about its own stuck card, and such a card typically waits on the owner: if it counted,
+     the condition would fire on the same list in every round, and nobody would read the alert. A stuck card goes
+     into the count if it is NOT the main agent's, OR it became stuck since the previous audit (new). The main
+     agent's old stuck cards go only into the report; the main agent decides about them itself in this same round
+     (see the Pitfalls).
+     ```bash
+     curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban/stuck?planned_days=7&active_days=3" | python3 -c "
+import json,sys
+PLANNED_DAYS,ACTIVE_DAYS=7,3  # the same two numbers as in the URL (and in step 3)
+GRACE=900  # the state is written at the END of the run, the measurement runs earlier: a change in between would never be new
+MAIN='{{MAIN_AGENT_ID}}'.strip().lower()
+try: last=int(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get('last_audit_at') or 0)
+except Exception: last=0
+d=json.load(sys.stdin)
+counted=[]; own_old=[]
+for c in d['stuck']:
+    limit=(ACTIVE_DAYS if c['status'] in ('in_progress','testing') else PLANNED_DAYS)*86400
+    new=last>0 and c['last_activity']+limit>=last-GRACE  # it was not stuck yet at the previous audit
+    own=(c.get('assignee') or '').strip().lower()==MAIN
+    (own_old if own and not new else counted).append(c)
+print(f\"Stuck alert: examined={d['examined']}, stuck={len(d['stuck'])}, counted={len(counted)}, main agent old={len(own_old)}\" + ('' if d['examined'] else ' (could not measure)') + ('' if last else ' (first run: no previous audit, new cannot be measured)'))
+for c in own_old:
+    print('  report only:', c['id'], '|', c['status'], '|', c['idle_days'], 'days |', c['title'])
+print('TELEGRAM: YES (3+ counted stuck)' if len(counted)>=3 else 'TELEGRAM: no')
+"
+     ```
+   - **NEW blocker (waiting > 48h).** "New" is the point, not the 48 hours: `waiting` cards stand for a long time
+     (they wait on the owner, on an outside person, on hardware), so the bare "waiting older than 48 hours" condition
+     would report the same cards in every round. Only a card that CROSSED the 48 hours since the PREVIOUS audit
+     counts; this way every card speaks once, and in the other rounds only the number goes into the report. Measure
+     the age from `last_status_at` (how long it has been in this column), not from `updated_at`: a comment bumps
+     that one too (see the Pitfalls).
+     ```bash
+     curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban?status=waiting" | python3 -c "
+import json,sys,time
+H48=48*3600
+GRACE=900  # as above: a crossing between the measurement and the state write must not be lost (rather twice than never)
+try: last=int(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get('last_audit_at') or 0)
+except Exception: last=0
+now=int(time.time())
+w=[c for c in json.load(sys.stdin) if c.get('status')=='waiting' and not c.get('archived_at')]
+since=lambda c: c.get('last_status_at') or c.get('updated_at') or 0
+old=[c for c in w if now-since(c)>H48]
+new=[c for c in old if last>0 and since(c)+H48>=last-GRACE]  # it was still within 48 hours at the previous audit
+print(f'Waiting > 48h: examined={len(w)}, over 48h={len(old)}, new={len(new)}' + ('' if w else ' (could not measure)') + ('' if last else ' (first run: no previous audit, new cannot be measured)'))
+for c in new:
+    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-since(c))/3600.0,1), 'h |', c['title'])
+print('TELEGRAM: YES (new blocker)' if new else 'TELEGRAM: no')
+"
+     ```
    - Card with a status no detector covers (6a): at most once a day about the same card, in the other rounds only in the report
    - **A HARD BLOCKER WAITING ON THE OWNER, regardless of status and age.**
      The two thresholds above are narrow, because both look at STATE or AGE, but
