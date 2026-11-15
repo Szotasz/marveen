@@ -778,13 +778,15 @@ run_main() {
     mkfifo "$RDIR/$_f" 2>/dev/null || refuse bad_path
   done
   run_identity
-  run_login_path
   RUN_LOGGED=$(printf '%s' "$RUN_TEXT" | log_text "$RUN_TEXT_MAX_BYTES")
+  # the snapshot and the start event come BEFORE the login shell runs the user's profile, so
+  # whatever the profile itself leaves behind is in the diff too (Samu's review of #2800)
   persist_snapshot > "$RDIR/persist.before" 2>/dev/null
   RUN_T0=$(date +%s)
   RUN_MS0=$(ms_now)
   # in the log before it starts; a run that cannot be logged does not start
   log_run run_start started -1 || refuse spool_unwritable
+  run_login_path
 
   # byte counters, then the relays (tee passes the bytes on and gives a copy to wc), then the command
   wc -c < "$RDIR/cin" > "$RDIR/in.n" 2> /dev/null 3<&- 4>&- &

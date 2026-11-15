@@ -151,6 +151,14 @@ function events(): Event[] {
 const runEvents = (kind = 'run') => events().filter((e) => e.event === kind)
 const reason = (stderr: string) => /\(([a-z_]+)\)/.exec(stderr)?.[1] ?? ''
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms))
+// Wait for an observable state, never for a fixed time (a loaded machine is slow: Samu's review of #2800, as on #2786).
+async function waitFor(what: string, ok: () => boolean, limitMs = 20_000): Promise<void> {
+  const until = Date.now() + limitMs
+  while (!ok()) {
+    if (Date.now() > until) throw new Error('timed out waiting for: ' + what)
+    await sleepMs(50)
+  }
+}
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
@@ -336,39 +344,45 @@ describe('run <text>: stopped at the cap, by a disable, by a revoke; the whole g
     const r = await done
     expect(r.status).toBe(1)
     expect(reason(r.stderr)).toBe('time_cap')
-    expect(r.ms).toBeLessThan(15_000)
+    expect(r.ms).toBeLessThan(20_000)
     const pid = Number(readFileSync(pidFile, 'utf8'))
-    await sleepMs(300)
-    expect(alive(pid)).toBe(false)
+    await waitFor('the grandchild to be gone', () => !alive(pid), 5_000)
     expect(runEvents()[0]).toMatchObject({ exit: '-1', reason: 'time_cap' })
-  }, 30_000)
+  }, 60_000)
+
+  // The command itself writes the marker, so the stop below always hits a command that is running (past the gate).
+  const running = () => join(home, 'running')
+  const startedCommand = (rest: string) => "touch '" + running() + "'; " + rest
 
   it('a disable (the run file goes) stops a running run at once', async () => {
-    const { done } = runAsync('sleep 30')
-    await sleepMs(1500)
+    const { done } = runAsync(startedCommand('sleep 30'))
+    await waitFor('the command to run', () => existsSync(running()))
+    const triggered = Date.now()
     expect(stopRunningDispatchers(supportDir)).toBe(1)
     const r = await done
     expect(reason(r.stderr)).toBe('disabled')
-    expect(r.ms).toBeLessThan(10_000)
+    expect(Date.now() - triggered).toBeLessThan(10_000)
     expect(runEvents()[0]).toMatchObject({ exit: '-1', reason: 'disabled' })
-  }, 30_000)
+  }, 60_000)
 
   it('the token going stops a running run at once', async () => {
-    const { done } = runAsync('sleep 30')
-    await sleepMs(1500)
+    const { done } = runAsync(startedCommand('sleep 30'))
+    await waitFor('the command to run', () => existsSync(running()))
+    const triggered = Date.now()
     rmSync(join(supportDir, SUPPORT_TOKEN_FILE))
     const r = await done
     expect(reason(r.stderr)).toBe('disabled')
-    expect(r.ms).toBeLessThan(10_000)
-  }, 30_000)
+    expect(Date.now() - triggered).toBeLessThan(10_000)
+  }, 60_000)
 
   it('marveen.io saying no at the minute recheck stops a running run (R4)', async () => {
-    const { done } = runAsync('sleep 120')
-    await sleepMs(2000)
+    const { done } = runAsync(startedCommand('sleep 120'))
+    await waitFor('the command to run', () => existsSync(running()))
+    const triggered = Date.now()
     writeFileSync(join(bin, 'body'), allowBody('deny'))
     const r = await done
     expect(reason(r.stderr)).toBe('revoked')
-    expect(r.ms).toBeLessThan(70_000)
+    expect(Date.now() - triggered).toBeLessThan(70_000)
     expect(readFileSync(join(bin, 'checks'), 'utf8').trim().split('\n')).toHaveLength(2)
     expect(runEvents()[0]).toMatchObject({ exit: '-1', reason: 'revoked' })
   }, 90_000)
@@ -378,6 +392,11 @@ describe('run <text>: persistence points before and after (R3)', () => {
   it('a new user unit shows up in the end event', () => {
     run('mkdir -p "$HOME/.config/systemd/user" && echo x > "$HOME/.config/systemd/user/evil.service"')
     expect(runEvents()[0].persistence).toContain('+~/.config/systemd/user/evil.service')
+  })
+  it('a point the login profile itself writes is in the diff too (the snapshot is taken before the login shell)', () => {
+    writeExe(join(bin, 'loginsh'), '#!/bin/sh\nmkdir -p "$HOME/.config/systemd/user"\necho x > "$HOME/.config/systemd/user/profile.service"\nexec /bin/sh -c "$2"\n')
+    run('true')
+    expect(runEvents()[0].persistence).toContain('+~/.config/systemd/user/profile.service')
   })
   it('nothing changed: empty', () => {
     run('true')
@@ -402,19 +421,21 @@ describe('a fixed subcommand stops at once on a disable too', () => {
   it('restart (a slow stop.sh) stops when the token goes', async () => {
     const scripts = join(home, 'install', 'scripts')
     mkdirSync(scripts, { recursive: true })
-    writeFileSync(join(scripts, 'stop.sh'), 'sleep 30\n')
-    const started = Date.now()
+    const marker = join(home, 'stopping')
+    // stop.sh says it is running before it waits, so the token goes only after the gate let the subcommand start
+    writeFileSync(join(scripts, 'stop.sh'), "touch '" + marker + "'\nsleep 30\n")
     const child = spawn('/bin/sh', args(), { env: ENV({ SSH_ORIGINAL_COMMAND: 'restart' }), stdio: ['ignore', 'pipe', 'pipe'] })
     const err: Buffer[] = []
     child.stderr.on('data', (d: Buffer) => err.push(d))
     const done = new Promise<number | null>((resolve) => child.on('close', resolve))
-    await sleepMs(1500)
+    await waitFor('stop.sh to run', () => existsSync(marker))
+    const triggered = Date.now()
     rmSync(join(supportDir, SUPPORT_TOKEN_FILE))
     expect(await done).toBe(1)
     expect(reason(Buffer.concat(err).toString())).toBe('disabled')
-    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(Date.now() - triggered).toBeLessThan(10_000)
     expect(events().some((e) => e.event === 'stopped' && e.reason === 'disabled')).toBe(true)
-  }, 30_000)
+  }, 60_000)
 })
 
 describe('status prints the last runs from the spool (D5)', () => {
