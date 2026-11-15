@@ -35,7 +35,7 @@ vi.mock('../env.js', async (importOriginal) => {
   }
 })
 
-import { writeAgentSettingsFromProfile, agentSettingsPath } from '../web/agent-scaffold.js'
+import { writeAgentSettingsFromProfile, agentSettingsPath, rootRulesLostBy, ROOT_ONLY_RULE_GROUPS } from '../web/agent-scaffold.js'
 import { agentDir, agentExcludesRootClaudeMd } from '../web/agent-config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -66,9 +66,20 @@ it(`${KEY}: listed sub-agent gets the root CLAUDE.md excluded, an unlisted one d
   spawn(OTHER)
   expect(settingsOf(NAME).claudeMdExcludes).toEqual([ROOT_MD])
   expect(settingsOf(OTHER)).not.toHaveProperty('claudeMdExcludes')
-  // One dashboard-log line per listed agent, none for the unlisted one.
+  // One dashboard-log line per listed agent, none for the unlisted one; it names the root-only rule groups it loses.
   const lines = info.mock.calls.filter((c) => String(c[1]).includes(KEY))
-  expect(lines).toEqual([[{ agent: NAME }, `root CLAUDE.md excluded for this agent (${KEY})`]])
+  expect(lines).toHaveLength(1)
+  expect(lines[0][0]).toEqual({ agent: NAME, lost: [...ROOT_ONLY_RULE_GROUPS, 'facts-vs-guesses rule'] })
+  for (const g of [...ROOT_ONLY_RULE_GROUPS, 'facts-vs-guesses rule']) expect(String(lines[0][1])).toContain(g)
+})
+
+it(`${KEY}: the facts-vs-guesses rule is named as lost only when the agent's own CLAUDE.md lacks the evidence-rule block`, () => {
+  writeFileSync(join(agentDir(NAME), 'CLAUDE.md'), '# x\n<!-- BEGIN GENERATED: evidence-rule (auto-generated, do not edit by hand) -->\nbody\n<!-- END GENERATED: evidence-rule -->\n')
+  expect(rootRulesLostBy(NAME)).toEqual(ROOT_ONLY_RULE_GROUPS)
+  writeFileSync(join(agentDir(NAME), 'CLAUDE.md'), '# x, no evidence block\n')
+  expect(rootRulesLostBy(NAME)).toEqual([...ROOT_ONLY_RULE_GROUPS, 'facts-vs-guesses rule'])
+  expect(rootRulesLostBy(OTHER)).toContain('facts-vs-guesses rule')   // no own CLAUDE.md at all
+  expect(ROOT_ONLY_RULE_GROUPS.join(' ')).not.toMatch(/facts/)
 })
 
 it(`${KEY}: '*' covers every sub-agent, also one not named anywhere, but never the main agent`, () => {

@@ -1226,6 +1226,16 @@ export function enforceStrictPermissionMode(
 
 // `extraHooksPath` is a test seam (the install-local extras file); production
 // callers pass nothing and get store/extra-hooks.json.
+// Rule groups that live ONLY in the root CLAUDE.md (measured in the #2797 review): an agent excluded by
+// ROOT_CLAUDEMD_EXCLUDE_AGENTS no longer gets them. The facts-vs-guesses rule is a generated block in the agent's own
+// CLAUDE.md (ensureEvidenceSection, written earlier in the same spawn), so it is lost only where that block is missing.
+export const ROOT_ONLY_RULE_GROUPS = ['kanban-write rule (card tool, not raw SQL)', 'federation policy', 'mail rules (CC, signature)']
+export function rootRulesLostBy(name: string): string[] {
+  let own = ''
+  try { own = readFileSync(join(agentDir(name), 'CLAUDE.md'), 'utf-8') } catch { /* no own CLAUDE.md: it gets none of them */ }
+  return own.includes(EVIDENCE_BEGIN) ? [...ROOT_ONLY_RULE_GROUPS] : [...ROOT_ONLY_RULE_GROUPS, 'facts-vs-guesses rule']
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate, extraHooksPath?: string): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -1348,7 +1358,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // and neither is settings.local.json: a claudeMdExcludes there is the operator's manual override and applies regardless.
   if (agentExcludesRootClaudeMd(name)) {
     existing.claudeMdExcludes = [join(PROJECT_ROOT, 'CLAUDE.md')]
-    logger.info({ agent: name }, 'root CLAUDE.md excluded for this agent (ROOT_CLAUDEMD_EXCLUDE_AGENTS)')
+    const lost = rootRulesLostBy(name)
+    logger.info({ agent: name, lost }, `root CLAUDE.md excluded for this agent (ROOT_CLAUDEMD_EXCLUDE_AGENTS); it no longer gets: ${lost.join('; ')}`)
   } else if (name !== MAIN_AGENT_ID) delete existing.claudeMdExcludes
   // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
   // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
