@@ -202,6 +202,8 @@ describe('the own line: exactly one line binding THIS command', () => {
     ['verify-required dropped', (l) => l.replace(',verify-required', '')],
     ['another comment', (l) => l.replace('marveen-support:', 'marveen-supporx:')],
     ['another key type', (l) => l.replace('sk-ssh-ed25519@openssh.com', 'ssh-ed25519')],
+    // Options, key type and blob cut out, leaving a "from" text that would pass both character checks on its own.
+    ['the option tail and the key cut out', (l) => l.replace(/from="[^"]*",verify-required sk-ssh-ed25519@openssh\.com [A-Za-z0-9+/=]+/, 'from="abcd')],
   ]
   it.each(variants)('%s: refused', (_name, change, extra) => {
     const good = lineFor()
@@ -259,14 +261,18 @@ describe('logs go through the redactor', () => {
         'mail owner@example.com phone +36 30 123 4567',
         'hex ' + 'a1'.repeat(20),
         'esc \u001b]0;title\u0007 and \u001b[31mred',
+        'link \u001b]8;;http://x\u001b\\here\u001b]8;;\u001b\\ bold \u001b[1;33;40mx\u001b[0m\u001b[K end',
         'plain 2026-11-15 07:12:33 ok',
       ].join('\n') + '\n',
     )
     const r = run('logs dashboard 20')
     expect(r.status).toBe(0)
-    for (const leak of ['mst_BBB', 'mrv_CCC', 'sk-ant-', SLACK_SHAPE.slice(0, 9), 'abc.def.ghi', 'owner@example.com', '123 4567', 'a1a1a1a1a1a1', '\u001b', '\u0007']) {
+    for (const leak of ['mst_BBB', 'mrv_CCC', 'sk-ant-', SLACK_SHAPE.slice(0, 9), 'abc.def.ghi', 'owner@example.com', '123 4567', 'a1a1a1a1a1a1', '\u001b', '\u0007', '[31m', '[0m', '[K', ']0;', ']8;;', 'title']) {
       expect(r.stdout).not.toContain(leak)
     }
+    // Whole sequences go, the text around them stays.
+    expect(r.stdout).toContain('esc  and red')
+    expect(r.stdout).toContain('link here bold x end')
     expect(r.stdout).toContain('plain 2026-11-15 07:12:33 ok')
   })
 })
@@ -285,7 +291,7 @@ describe('the self-probe never opens anything', () => {
 
 describe('restart is limited', () => {
   it('a restart already done on this connection: refused before anything runs', () => {
-    const spool = join(home, '.marveen', 'support', 'spool')
+    const spool = join(home, '.marveen', 'support', 'support-access.spool')
     mkdirSync(spool, { recursive: true })
     writeFileSync(join(spool, '1.1.0.evt'), 'time=' + Math.floor(Date.now() / 1000) + '\nevent=restart\nreason=conn-424242\n')
     const r = run('restart')
@@ -293,14 +299,14 @@ describe('restart is limited', () => {
     expect(reason(r.stderr)).toBe('restart_limit')
   })
   it('three restarts in the last day from other connections: refused', () => {
-    const spool = join(home, '.marveen', 'support', 'spool')
+    const spool = join(home, '.marveen', 'support', 'support-access.spool')
     mkdirSync(spool, { recursive: true })
     const now = Math.floor(Date.now() / 1000)
     for (let i = 0; i < 3; i++) writeFileSync(join(spool, now + '.' + i + '.0.evt'), 'time=' + (now - 600 * i) + '\nevent=restart\nreason=conn-' + (1000 + i) + '\n')
     expect(reason(run('restart').stderr)).toBe('restart_limit')
   })
   it('restarts older than a day do not count; a spool time with a leading zero is ignored', () => {
-    const spool = join(home, '.marveen', 'support', 'spool')
+    const spool = join(home, '.marveen', 'support', 'support-access.spool')
     mkdirSync(spool, { recursive: true })
     const now = Math.floor(Date.now() / 1000)
     for (let i = 0; i < 3; i++) writeFileSync(join(spool, 'old.' + i + '.evt'), 'time=' + (now - 90000 - i) + '\nevent=restart\nreason=conn-' + (2000 + i) + '\n')
@@ -315,7 +321,7 @@ describe('restart is limited', () => {
 describe('events in the spool carry only enumerated values', () => {
   it('a refusal leaves one event with its reason and no client text', () => {
     run('status; cat /etc/passwd')
-    const spool = join(home, '.marveen', 'support', 'spool')
+    const spool = join(home, '.marveen', 'support', 'support-access.spool')
     const files = readdirSync(spool)
     expect(files.length).toBeGreaterThan(0)
     const text = files.map((f) => readFileSync(join(spool, f), 'utf8')).join('')

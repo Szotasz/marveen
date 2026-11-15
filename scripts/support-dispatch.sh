@@ -102,6 +102,13 @@ etime_seconds() {
 
 # Mask secrets and personal data in diagnostic output, and strip terminal control bytes.
 redact() {
+  # Whole terminal sequences go first, so no "[33m" is left behind once tr takes the ESC byte:
+  # OSC (ESC ] ... BEL or ESC \), then CSI (ESC [ params intermediates final), then two-byte ESC forms.
+  _esc=$(printf '\033'); _bel=$(printf '\007')
+  sed -E \
+    -e "s#${_esc}\\][^${_bel}${_esc}]*(${_bel}|${_esc}\\\\)##g" \
+    -e "s#${_esc}\\[[0-?]*[ -/]*[@-~]##g" \
+    -e "s#${_esc}[@-_]##g" |
   tr -d '\000-\010\013-\037\177' | sed -E \
     -e 's/(mst|mrv|msc)_[A-Za-z0-9_-]{8,}/[redacted-token]/g' \
     -e 's/sk-ant-[A-Za-z0-9_-]+/[redacted-token]/g' \
@@ -147,8 +154,8 @@ case $HOME_DIR in
   *) refuse bad_path ;;
 esac
 [ "$HOME_DIR/.marveen/support" = "$SUPPORT_DIR" ] || refuse bad_path
-SPOOL=$SUPPORT_DIR/spool
-RUN_DIR=$SUPPORT_DIR/run
+SPOOL=$SUPPORT_DIR/support-access.spool
+RUN_DIR=$SUPPORT_DIR/support-access.run
 for _d in "$SUPPORT_DIR" "$KIT_DIR"; do
   [ -d "$_d" ] && [ ! -L "$_d" ] || refuse kit_missing
 done
