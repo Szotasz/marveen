@@ -262,6 +262,24 @@ describe('runDeliveryTurnCheck: codex rollouts as second evidence source', () =>
     expect(d.notify).not.toHaveBeenCalled()
   })
 
+  it('mixed ids: one hook-blocked, one absent, rollout carries BOTH tags => the block still alerts (S2, per-id final)', async () => {
+    // R2-D72B-1530 blocker red case: the scan runs for the absent id, and the
+    // merge must not let a rollout 'seen' mask the OTHER id's hook block.
+    writeClaudeTranscript('a.jsonl', [
+      JSON.stringify({
+        type: 'system', level: 'warning', timestamp: iso(SENT + 300),
+        content: `UserPromptSubmit operation blocked by hook:\nOriginal prompt: ${envelope(128563)}`,
+      }),
+    ])
+    writeRollout([rolloutLine(128563), rolloutLine(128564)])
+    const d = deps()
+    expect(await runDeliveryTurnCheck(req([128563, 128564]), 60, 30 * 60_000, d)).toBe('alerted')
+    const text = String(d.notify.mock.calls[0][0])
+    expect(text).toContain('msg_id 128563')
+    expect(text).toContain('blocked by a UserPromptSubmit hook')
+    expect(text).not.toContain('msg_id 128564') // 128564 was rescued by its rollout 'seen'
+  })
+
   it('no codex dirs resolvable (Claude-Code agent) => exactly today’s behaviour', async () => {
     writeClaudeTranscript('a.jsonl', [
       JSON.stringify({ type: 'assistant', timestamp: iso(SENT + 300), message: { content: [{ type: 'text', text: 'working' }] } }),

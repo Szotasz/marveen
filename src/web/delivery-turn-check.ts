@@ -312,6 +312,14 @@ function mergeTurnEvidence(
   const out = new Map<number, TurnEvidence>()
   for (const id of msgIds) {
     const c = claude?.get(id)
+    // R2-D72B-1530 blocker fix: a hook block is final PER ID. In a mixed
+    // request (one id hook-blocked, another absent) the scan legitimately
+    // runs for the absent id -- a rollout 'seen' must still not mask the
+    // blocked id's verdict.
+    if (c === 'blocked-by-hook') {
+      out.set(id, c)
+      continue
+    }
     if (codex.get(id) === 'seen' || c === 'seen') out.set(id, 'seen')
     else if (c !== undefined) out.set(id, c)
   }
