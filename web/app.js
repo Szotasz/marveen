@@ -2528,7 +2528,7 @@ function openNewCardModal(status) {
 
 function populateAssigneeSelect(selectId, selected) {
   const sel = document.getElementById(selectId)
-  sel.innerHTML = '<option value="">-- Nincs --</option>'
+  sel.innerHTML = `<option value="">${escapeHtml(t('kanban.meta.none'))}</option>`
   for (const a of kanbanAssignees) {
     const opt = document.createElement('option')
     opt.value = a.name
@@ -2632,7 +2632,8 @@ async function renderCardLabelsSection(card) {
   }
 
   const attachedIds = new Set(attached.map((l) => l.id))
-  addSelect.innerHTML = `<option value="">-- ${t('kanban.label.add_placeholder')} --</option>`
+  // The key already carries its dashes (index.html shows it as is), so none are added here.
+  addSelect.innerHTML = `<option value="">${escapeHtml(t('kanban.label.add_placeholder'))}</option>`
   for (const label of kanbanAllLabels) {
     if (attachedIds.has(label.id)) continue
     const opt = document.createElement('option')
@@ -2890,7 +2891,7 @@ async function showCardDetail(card) {
   const assignee = rawDetailAssignee
     ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
     : null
-  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
+  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || t('kanban.meta.none'))
   const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
   const statusLabels = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting'), done: t('kanban.status.done') }
 
@@ -2987,7 +2988,7 @@ async function showCardDetail(card) {
     const current = card.assignee || ''
     const sel = document.createElement('select')
     sel.style.cssText = 'padding:2px 6px; border-radius:4px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:inherit'
-    sel.innerHTML = '<option value="">-- Nincs --</option>'
+    sel.innerHTML = `<option value="">${escapeHtml(t('kanban.meta.none'))}</option>`
     for (const a of kanbanAssignees) {
       const opt = document.createElement('option')
       opt.value = a.name
@@ -3001,7 +3002,7 @@ async function showCardDetail(card) {
     const save = async () => {
       const newVal = sel.value || null
       if (newVal === current || (newVal === null && !current)) {
-        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
         return
       }
       try {
@@ -3015,7 +3016,7 @@ async function showCardDetail(card) {
         if (r.status === 409) {
           const e = await r.json().catch(() => ({}))
           if (e.conflict === 'stale_version') {
-            assigneeValueEl.textContent = current ? current : '-- nincs --'
+            assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
             showToast(t('kanban.toast.stale_version'), 6000)
             loadKanban && loadKanban()
             return
@@ -3027,18 +3028,18 @@ async function showCardDetail(card) {
         const saved = await r.json().catch(() => ({}))
         if (Number.isInteger(saved.version)) card.version = saved.version
         card.assignee = newVal
-        assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
+        assigneeValueEl.textContent = newVal ? newVal : t('kanban.meta.none')
         showToast(t('kanban.toast.assignee_updated'))
         loadKanban && loadKanban()
       } catch {
-        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
         showToast(t('kanban.toast.save_error'))
       }
     }
     sel.addEventListener('change', save)
     sel.addEventListener('blur', () => {
       if (assigneeValueEl.querySelector('select')) {
-        assigneeValueEl.textContent = card.assignee ? card.assignee : '-- nincs --'
+        assigneeValueEl.textContent = card.assignee ? card.assignee : t('kanban.meta.none')
       }
     })
   })
@@ -3128,7 +3129,7 @@ async function showCardDetail(card) {
   // Author select for new comment. Default to the bot assignee resolved by
   // type (never a hard-coded display name -- BOT_NAME differs per deployment),
   // falling back to the first assignee. The old literal 'Marveen' never matched
-  // on non-Marveen installs, so the select stayed on "-- Nincs --" and the
+  // on non-Marveen installs, so the select stayed on "-- nincs --" and the
   // comment submit silently no-opped (addCommentBtn returns when !author).
   // (Resolution of the #254/#241 overlap: keep #241's type-resolved default
   // over #254's hard-coded "Gábor" -- same deployment-agnostic reasoning.)
