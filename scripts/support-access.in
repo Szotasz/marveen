@@ -289,7 +289,22 @@ case "$rc" in
 esac
 printf '%s\n' "$CT"
 printf '%s' "Írd be a marveen.io Profil oldalán a „Kód kérése” gombbal kapott egyszeri kódot, és nyomj Entert: "
+# Dani S1 (78485): the code is not shown while it is typed. On a terminal the echo goes off, and a
+# trap puts the terminal back whatever way the launcher ends (Enter, Ctrl+C, a signal).
+SAVED_TTY=
+if [ -t 0 ]; then
+  SAVED_TTY=$(stty -g 2>/dev/null) || SAVED_TTY=
+  if [ -n "$SAVED_TTY" ]; then
+    trap 'stty "$SAVED_TTY" 2>/dev/null' EXIT
+    trap 'stty "$SAVED_TTY" 2>/dev/null; exit 130' INT TERM HUP
+    stty -echo 2>/dev/null
+  fi
+fi
 IFS= read -r CODE || stop "Nem kaptam kódot."
+if [ -n "$SAVED_TTY" ]; then
+  stty "$SAVED_TTY" 2>/dev/null
+  printf '\n'
+fi
 case "$CODE" in
   @@CODE_GLOB@@) ;;
   *) stop "Ez nem a várt alakú kód. Másold be pontosan, ahogy a Profil oldal mutatja." ;;

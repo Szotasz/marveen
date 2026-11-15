@@ -67,6 +67,16 @@ describe('the committed launcher', () => {
     expect(LAUNCHER).not.toMatch(/run_kit[^\n]*"\$CODE"/)
   })
 
+  it('does not echo the code on a terminal, and always puts the terminal back (Dani S1, 78485)', () => {
+    const before = LAUNCHER.indexOf('IFS= read -r CODE')
+    const head = LAUNCHER.slice(0, before)
+    expect(head).toContain('stty -echo')
+    expect(head).toContain(`trap 'stty "$SAVED_TTY" 2>/dev/null' EXIT`)
+    expect(head).toContain(`trap 'stty "$SAVED_TTY" 2>/dev/null; exit 130' INT TERM HUP`)
+    expect(head.lastIndexOf('stty -echo')).toBeGreaterThan(head.lastIndexOf('trap '))
+    expect(LAUNCHER.slice(before, before + 200)).toContain('stty "$SAVED_TTY"')
+  })
+
   it('takes the consent version from the routine status, never from a number of its own (Samu 78474)', () => {
     expect(LAUNCHER).toContain('consent_version=*) CV=${line#consent_version=} ;;')
     expect(LAUNCHER).toContain('run_kit consent-text --consent "$CV"')
