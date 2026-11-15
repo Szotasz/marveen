@@ -84,6 +84,8 @@ function fake(
     makeDirThrows?: boolean
     /** macOS: what plutil, launchctl and netstat print (each null = the program failed). */
     darwin?: Partial<Record<'plist' | 'disabled' | 'job' | 'netstat', string | null>>
+    /** macOS: these programs print their usual text and still exit with 1. */
+    darwinExit1?: readonly ('plist' | 'disabled' | 'job' | 'netstat')[]
   } = {},
 ): { deps: SshdProbeDeps; calls: Call[]; made: string[]; removed: string[] } {
   const calls: Call[] = []
@@ -96,7 +98,8 @@ function fake(
       if (file === SSH_KEYGEN_PROGRAM) return over.keygen ?? { code: 0, stdout: '', stderr: '' }
       const darwinOut = (key: 'plist' | 'disabled' | 'job' | 'netstat'): ProgramResult => {
         const text = over.darwin !== undefined && key in over.darwin ? over.darwin[key] : MAC[key]
-        return text === null || text === undefined ? { code: 1, stdout: '', stderr: 'x' } : { code: 0, stdout: text, stderr: '' }
+        if (text === null || text === undefined) return { code: 1, stdout: '', stderr: 'x' }
+        return { code: over.darwinExit1?.includes(key) === true ? 1 : 0, stdout: text, stderr: '' }
       }
       if (file === PLUTIL_PROGRAM) return darwinOut('plist')
       if (file === LAUNCHCTL_PROGRAM) return darwinOut(args[0] === 'print-disabled' ? 'disabled' : 'job')
@@ -377,6 +380,10 @@ describe('probeSshd', () => {
     ['a second sshd on 22, bound to one address', { darwin: { netstat: MAC.netstat + 'tcp4 0 0 127.0.0.1.22 *.* LISTEN\n' } }, 'sshd_daemon_unknown'],
   ])('as another user on macOS: refuses %s', async (_label, over, problem) => {
     expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'darwin', machine: macMachine(), ...over }).deps)).toMatchObject({ ok: false, problem })
+  })
+
+  it.each([['plist'], ['disabled'], ['job'], ['netstat']] as const)('as another user on macOS: a program that exits with 1 is no answer, even with its usual text (%s)', async (key) => {
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'darwin', machine: macMachine(), darwinExit1: [key] }).deps)).toMatchObject({ ok: false, problem: 'sshd_daemon_unknown' })
   })
 
   it('as another user on macOS: refuses a configuration file or folder that is not root\'s, or that others can write', async () => {
