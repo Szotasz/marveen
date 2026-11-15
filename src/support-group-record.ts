@@ -25,6 +25,7 @@ import {
   fsyncSync,
   lstatSync,
   openSync,
+  readdirSync,
   readSync,
   renameSync,
   unlinkSync,
@@ -226,4 +227,29 @@ export function removeGroupRecord(supportDir: string): boolean {
   unlinkSync(target)
   if (lstatOrNull(target) !== null) throw new GroupRecordError('group_record_unsafe', 'the record file is still there after the removal')
   return true
+}
+
+/**
+ * Stop every running dispatcher on this machine (D4): each one watches its own pid file in
+ * the run folder (and the token) about five times a second, and stops its subcommand when the
+ * file is gone. Only names of digits that are regular files go; a run folder that is a link
+ * is left alone (the dispatcher refuses to start with one). Returns how many files went.
+ */
+export function stopRunningDispatchers(supportDir: string): number {
+  const dir = join(supportDir, SUPPORT_RUN_DIR)
+  const st = lstatOrNull(dir)
+  if (st === null || !st.isDirectory()) return 0
+  let removed = 0
+  for (const name of readdirSync(dir)) {
+    if (!/^[0-9]{1,10}$/.test(name)) continue
+    const target = join(dir, name)
+    if (!lstatOrNull(target)?.isFile()) continue
+    try {
+      unlinkSync(target)
+      removed++
+    } catch {
+      // gone between the listing and the removal: that dispatcher ended by itself
+    }
+  }
+  return removed
 }

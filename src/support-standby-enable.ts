@@ -25,7 +25,8 @@
 //
 // DISABLE works from the tree too, without a kit: lines first (a removal
 // never stops on how the keys files are laid out), then the token and the
-// record. It reports success only when all three are gone.
+// record, then the pid files of running dispatchers (each stops its subcommand
+// when its file goes). It reports success only when lines, token and record are gone.
 //
 // Until the real dispatcher exists (PR1c) the kit carries a placeholder that
 // refuses every start, so an enabled standby opens no login (Dani 78357, Q3).
@@ -36,7 +37,7 @@ import { validateSupportPins, type SupportKeyPin } from './support-access-pins.j
 import { classifySupportCode, redeemSupportCode, type RedeemProblem, type RedeemTransport, type SupportCodeProblem } from './support-access-redeem.js'
 import type { SshdAssessment, SshdProblem } from './support-access-sshd.js'
 import { readSupportToken, removeSupportToken, writeSupportToken } from './support-access-token.js'
-import { readGroupRecord, removeGroupRecord, writeGroupRecord } from './support-group-record.js'
+import { readGroupRecord, removeGroupRecord, stopRunningDispatchers, writeGroupRecord } from './support-group-record.js'
 import { verifyKit, type KitProblem } from './support-kit.js'
 import { KIT_DISPATCHER_NAME } from './support-kit-sources.js'
 
@@ -169,6 +170,13 @@ export async function disableSupportStandby(deps: Pick<StandbyDeps, 'supportDir'
     removeGroupRecord(deps.supportDir)
   } catch {
     recordFailed = true
+  }
+  // A running subcommand (a `run` above all) stops at once: its pid file goes. The token is
+  // gone already, which stops it too; this is the second, independent signal (D4).
+  try {
+    stopRunningDispatchers(deps.supportDir)
+  } catch {
+    // an unreadable run folder: the missing token still stops every dispatcher
   }
   if (linesFailed) return { ok: false, problem: 'lines_remain', removedLines }
   if (tokenFailed) return { ok: false, problem: 'token_remains', removedLines }
