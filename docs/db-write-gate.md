@@ -2,8 +2,9 @@
 
 `scripts/hooks/db-write-gate.mjs` is a PreToolUse gate for every agent, the main agent included. It denies:
 
-1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `auth_sessions`,
-   `dashboard_users`, `device_keys`, `vault_ssh_keys`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
+1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
+   `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
+   `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
    `sqlite_schema`;
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);
 3. a write of this install's gate wiring and autonomy levels: `.claude/settings.json`, `.claude/settings.local.json`,
@@ -13,6 +14,10 @@
    and the owner-gated agent settings the dashboard keeps in `store/` (GATEFILES1110): `store/custom-providers.json`
    (each provider's `baseUrl`) and `store/context-guard.json`. Their API routes are owner-gated; only the dashboard
    writes them;
+   and the support state of this machine, one folder outside the install tree: `~/.marveen/support` (SUPPORTKULCS1109,
+   D5: the narrow token, the group record, the kit with the dispatcher every support line binds, the spool and the run
+   folder). Only the support routine writes it (install-kit from the installer and the updater; enable, disable and
+   the reconcile from the dashboard), never a tool call;
 4. in the install's main checkout, every git subcommand that changes the tree or the refs except
    `git fetch [origin]`, exactly `git pull --ff-only origin <branch>`, and `git checkout -- <paths>` /
    `git restore <paths>` with no ref; everywhere, a write of `refs/remotes/*` and of the config keys that redirect a

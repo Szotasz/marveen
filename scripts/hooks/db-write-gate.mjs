@@ -6,7 +6,7 @@
 //   1. An SQL write (INSERT / UPDATE / DELETE / REPLACE / DROP / ALTER / CREATE
 //      TRIGGER|INDEX ... ON) on a security table of the dashboard database
 //      (SECURITY_TABLES in self-pace-gate.mjs: approvals, approval_events,
-//      auth_sessions, dashboard_users, device_keys, vault_ssh_keys), whatever
+//      auth_sessions, dashboard_users, device_keys, vault_ssh_keys, support_consents, support_password_state), whatever
 //      program runs it: sqlite3, python -c, node -e, a heredoc, a pipe. Also
 //      PRAGMA writable_schema and any write on sqlite_master / sqlite_schema
 //      (and the temp aliases): through them a table is renamed, written under
@@ -164,6 +164,12 @@ export const PROTECTED_INSTALL_PATHS = [
   // ...and the user-level settings of its isolated CLAUDE_CONFIG_DIR (Samu 67832): a disableAllHooks there switches off
   // every hook of that agent. Claude Code's own writes (/effort, /model) are not tool calls, so this gate never sees them.
   { rel: 'agents/*/.claude-config/settings.json', pattern: true },
+  // Support access (SUPPORTKULCS1109, D5; terv-v7 3.9): EVERY support state of this machine is one folder outside the
+  // install tree, ~/.marveen/support: the narrow token, the group record, the kit with the dispatcher (the command every
+  // support line binds) and its manifest, the spool and the run folder. Only the routine writes it (the installer's and
+  // the updater's install-kit, the dashboard's enable and disable, the reconcile), never a tool call; a write there
+  // could swap the gate a support login runs through, plant or keep a token, or erase the spool the owner reads.
+  { home: '.marveen/support', dir: true },
 ]
 // ENVRELAXGATE1104 (Dani's inventory 67751 and plan v2, Samu 67732/67752/67763): files whose ONE write turns a gate off or
 // gives an agent a right, for a SUB-AGENT only. The main agent writes the install .env legitimately (self-rename), so
@@ -1830,7 +1836,7 @@ const LIMIT_MSG =
 export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, auth_sessions, dashboard_users, ' +
-  'device_keys, vault_ssh_keys) semmilyen programmal (sqlite3, python, node, heredoc), es NEM irhatod fajl ' +
+  'device_keys, vault_ssh_keys, support_consents, support_password_state) semmilyen programmal (sqlite3, python, node, heredoc), es NEM irhatod fajl ' +
   'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup), ' +
   'es NEM hasznalhatod a PRAGMA writable_schema-t, sem a sqlite_master/sqlite_schema irasat. ' +
   'Jovahagyast a dashboard API-n kerj es hasznalj fel (/api/approvals). Olvasni szabad (SELECT, sqlite3 -readonly), ' +

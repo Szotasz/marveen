@@ -4,9 +4,11 @@
 //   node scripts/build-support-standby.mjs           write the file and the kit hashes
 //   node scripts/build-support-standby.mjs --check   exit 1 when either file in the repo is not what a build gives
 //
-// After the routine it writes scripts/support-kit.sha256: the stored sha256 of
-// every file of the kit (see src/support-kit-sources.ts, which names the same
-// files; a test keeps the two lists and the values in step).
+// Then it writes scripts/support-access, the kit's sh launcher, from
+// scripts/support-access.in and the routine's constants (src/support-access-launcher.ts;
+// the loader text word for word). Last it writes scripts/support-kit.sha256: the
+// stored sha256 of every file of the kit (see src/support-kit-sources.ts, which
+// names the same files; a test keeps the two lists and the values in step).
 //
 // esbuild runs HERE, at build time, and nowhere else: the built file is
 // committed, the installer and the rescue path only ever run that file. A test
@@ -14,7 +16,7 @@
 // and a fresh build differ, so the two cannot drift apart unnoticed.
 import { build } from 'esbuild'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -22,16 +24,23 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 export const SUPPORT_STANDBY_SOURCE = 'src/support-standby-cli.ts'
 export const SUPPORT_STANDBY_FILE = 'scripts/support-standby.mjs'
 export const SUPPORT_KIT_HASHES_FILE = 'scripts/support-kit.sha256'
+export const SUPPORT_LAUNCHER_SOURCE = 'src/support-access-launcher.ts'
+export const SUPPORT_LAUNCHER_TEMPLATE = 'scripts/support-access.in'
+export const SUPPORT_LAUNCHER_FILE = 'scripts/support-access'
 /** Kit name and tree path of every kit file, in name order (the same list as KIT_SOURCES). */
 export const SUPPORT_KIT_FILES = [
+  ['support-access', SUPPORT_LAUNCHER_FILE],
   ['support-dispatch.sh', 'scripts/support-dispatch.sh'],
   ['support-standby.mjs', SUPPORT_STANDBY_FILE],
 ]
 
-/** The text of the hashes file for the routine text `routine` and the other kit files as they are in the tree. */
-export function kitHashesText(routine) {
+/** The text of the hashes file for the routine text `routine`, the launcher text `launcher` and the other kit files as they are in the tree. */
+export function kitHashesText(routine, launcher) {
   return SUPPORT_KIT_FILES.map(([name, path]) => {
-    const bytes = path === SUPPORT_STANDBY_FILE ? Buffer.from(routine, 'utf8') : readFileSync(join(ROOT, path))
+    const bytes =
+      path === SUPPORT_STANDBY_FILE ? Buffer.from(routine, 'utf8')
+        : path === SUPPORT_LAUNCHER_FILE ? Buffer.from(launcher, 'utf8')
+          : readFileSync(join(ROOT, path))
     return createHash('sha256').update(bytes).digest('hex') + '  ' + name + '\n'
   }).join('')
 }
@@ -61,11 +70,33 @@ export async function buildSupportStandby() {
   return result.outputFiles[0].text
 }
 
+/**
+ * The text of the launcher: the template with the routine's constants filled in
+ * (src/support-access-launcher.ts, bundled here and run once). Nothing is written.
+ */
+export async function buildSupportLauncher() {
+  const result = await build({
+    absWorkingDir: ROOT,
+    entryPoints: [SUPPORT_LAUNCHER_SOURCE],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'esm',
+    target: 'node20',
+    packages: 'bundle',
+    logLevel: 'silent',
+  })
+  const mod = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'))
+  return mod.renderSupportLauncher(readFileSync(join(ROOT, SUPPORT_LAUNCHER_TEMPLATE), 'utf8'))
+}
+
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
   const fresh = await buildSupportStandby()
+  const launcher = await buildSupportLauncher()
   const outputs = [
     [SUPPORT_STANDBY_FILE, fresh],
-    [SUPPORT_KIT_HASHES_FILE, kitHashesText(fresh)],
+    [SUPPORT_LAUNCHER_FILE, launcher],
+    [SUPPORT_KIT_HASHES_FILE, kitHashesText(fresh, launcher)],
   ]
   if (process.argv.includes('--check')) {
     for (const [file, text] of outputs) {
@@ -83,6 +114,8 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
   } else {
     for (const [file, text] of outputs) {
       writeFileSync(join(ROOT, file), text)
+      // The launcher in the tree is run by hand in a test; in the kit install-kit gives it 0700.
+      if (file === SUPPORT_LAUNCHER_FILE) chmodSync(join(ROOT, file), 0o755)
       process.stdout.write('wrote ' + file + ' (' + text.length + ' characters)\n')
     }
   }
