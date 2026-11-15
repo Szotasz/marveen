@@ -161,7 +161,7 @@ describe('formatSupportStatus', () => {
   it('prints one fact per line, with the fixed keys and words the launcher matches on', async () => {
     expect(formatSupportStatus(await supportStatus(deps().deps))).toBe(
       'node=ok\nnode_version=v22.22.3\nnode_minimum=20\npins=ok\nsshd=ok\nsshd_version=10.0\ncurl=present\n' +
-        'support_lines=2\nsupport_lines_second_file=absent\nstandby=off\nstandby_keys=none\n',
+        'support_lines=2\nsupport_lines_second_file=absent\nstandby=off\nstandby_keys=none\nconsent_version=1\n',
     )
     const bad = await supportStatus(
       deps({
@@ -173,10 +173,10 @@ describe('formatSupportStatus', () => {
     )
     expect(formatSupportStatus(bad)).toBe(
       'node=too_old\nnode_version=v18.20.0\nnode_minimum=20\npins=support_keys_unset\nsshd=not_asked\nsshd_version=unknown\n' +
-        'curl=missing\nsupport_lines=unreadable\nsupport_lines_second_file=unreadable\nstandby=off\nstandby_keys=none\n',
+        'curl=missing\nsupport_lines=unreadable\nsupport_lines_second_file=unreadable\nstandby=off\nstandby_keys=none\nconsent_version=1\n',
     )
     const on = await supportStatus(deps({ readStandbyFiles: () => ({ token: 'ok', record: { kind: 'ok', keys: ['key1', 'key2'] } }) }).deps)
-    expect(formatSupportStatus(on).endsWith('standby=on\nstandby_keys=key1,key2\n')).toBe(true)
+    expect(formatSupportStatus(on).endsWith('standby=on\nstandby_keys=key1,key2\nconsent_version=1\n')).toBe(true)
   })
 })
 
@@ -422,6 +422,49 @@ describe('enable and disable on the command line', () => {
     },
   )
 
+  // Geri 78479: the launcher prints the consent text of the version it passes to enable.
+  const noInstall = async (): Promise<never> => {
+    throw new Error('install-kit must not run here')
+  }
+
+  it('consent-text: a known version without an approved text refuses with its own code, reads nothing', async () => {
+    const c = io()
+    let touched = false
+    const code = await runSupportCli(['consent-text', '--consent', '1'], c.io, {
+      status: () => {
+        touched = true
+        return deps().deps
+      },
+      installKit: noInstall,
+      standby: () => {
+        touched = true
+        throw new Error('no')
+      },
+      readCode: async () => {
+        touched = true
+        return null
+      },
+    })
+    expect([code, c.out, c.err.join('')]).toEqual([1, [], 'consent-text: refused: consent_text_unset\n'])
+    expect(touched).toBe(false)
+  })
+
+  it.each([['2'], ['9999']])('consent-text: a version this release does not know (%s) is consent_invalid', async (v) => {
+    const c = io()
+    expect(await runSupportCli(['consent-text', '--consent', v], c.io, { status: () => deps().deps, installKit: noInstall, ...NO_STANDBY })).toBe(1)
+    expect(c.err.join('')).toBe('consent-text: refused: consent_invalid\n')
+    expect(c.out).toEqual([])
+  })
+
+  it.each([[['consent-text']], [['consent-text', '--consent']], [['consent-text', '--consent', '0']], [['consent-text', '--consent', '01']], [['consent-text', '--consent', '1', 'x']]])(
+    'consent-text %j is the usage',
+    async (argv) => {
+      const c = io()
+      expect(await runSupportCli(argv, c.io, { status: () => deps().deps, installKit: noInstall, ...NO_STANDBY })).toBe(2)
+      expect(c.err.join('')).toBe(SUPPORT_CLI_USAGE)
+    },
+  )
+
   it('more standard input than a code can be is no code', async () => {
     expect(await readStdinCapped(64, (async function* () { yield 'x'.repeat(65) })())).toBeNull()
     expect(await readStdinCapped(64, (async function* () { yield 'msc_'; yield Buffer.from('abc') })())).toBe('msc_abc')
@@ -443,7 +486,8 @@ describe('the status and the group record', () => {
     writeSupportToken(supportDir, 'mst_' + 'TESTONLY'.repeat(5) + '_-0')
     writeGroupRecord(supportDir, {
       grantId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
-      consentVersion: 1,
+      // A consent version this release does not have: the status must not echo the RECORD's consent.
+      consentVersion: 7,
       consentAt: '2026-11-15T06:10:00Z',
       keys: TEST_ONLY_KEYS.map((k) => ({ name: k.name, fingerprint: k.fingerprint })),
       fromCidrs: [...TEST_ONLY_FROM],
@@ -453,8 +497,10 @@ describe('the status and the group record', () => {
     const real = createStatusDeps({ name: 'marveen', isRoot: false, home })
     const text = formatSupportStatus(await supportStatus({ ...real, pins: { keys: [], fromCidrs: [] } }))
     expect(text).toContain('standby=on\nstandby_keys=key1,key2\n')
-    for (const secret of ['203.0.113.7', '3f2504e0', 'consent', '2026-11-15', TEST_ONLY_KEYS[0].fingerprint, 'mst_']) {
+    for (const secret of ['203.0.113.7', '3f2504e0', '2026-11-15', TEST_ONLY_KEYS[0].fingerprint, 'mst_']) {
       expect(text).not.toContain(secret)
     }
+    // The one consent line is the routine's own version (Samu 78475), not the record's.
+    expect(text.split('\n').filter((l) => l.includes('consent'))).toEqual(['consent_version=1'])
   })
 })
