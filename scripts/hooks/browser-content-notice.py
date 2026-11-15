@@ -68,7 +68,7 @@ anything. Echoing a matched line there would hand the attacker exactly the
 channel this hook exists to close: their sentence, repeated inside the
 harness's own voice. The label reports pattern NAMES and COUNTS only. The
 payload goes to the log, where an operator reads it outside the model's
-context -- except for mail, calendar, Drive and playwright output, whose record
+context -- except for mail, calendar, Drive, playwright and Stripe output, whose record
 keeps only short excerpts around a forged frame (PRIVATE_PAYLOAD_RX below).
 
 CONTRACT
@@ -146,7 +146,7 @@ INSTRUCTION_PATTERNS = [
 ]
 
 # MCPUNTRUSTED1114 (#2745 review): the default-wired mail, calendar, Drive and
-# logged-in browser servers return private text. Their record keeps no payload
+# logged-in browser servers return private text, and so does a Stripe server (payments). Their record keeps no payload
 # (tool, source, bytes, pattern counts, nonce only), so the shared-store log is
 # not a second copy of a mailbox that agents without the mail server could read.
 # A forged frame keeps only EXCERPT_CHARS either side of each of the first
@@ -155,7 +155,7 @@ INSTRUCTION_PATTERNS = [
 # in one mail, and the neighbouring items must not follow it into the log.
 # Their source is logged without query or fragment (a logged-in URL can carry a
 # token). Same server list as ENVELOPE_MCP_SERVERS in src/web/agent-scaffold.ts.
-PRIVATE_PAYLOAD_RX = re.compile(r"^mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__")
+PRIVATE_PAYLOAD_RX = re.compile(r"^mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__")
 EXCERPT_CHARS = 200
 EXCERPT_MAX = 5
 
@@ -494,6 +494,7 @@ def main():
     # payload is indistinguishable from an empty round from the outside.
     reach = (" It came from a host the WebFetch allowlist lets through; reaching an allowed host"
              " says nothing about trusting what it returns.") if tool_name == "WebFetch" else (
+             " Payment descriptions and metadata are text a customer or a third party can author." if "__stripe__" in tool_name else
              " Mail, invites and shared documents are text anyone can author." if private and "__playwright__" not in tool_name else
              " It reached you without the WebFetch allowlist.")
     lines = [
