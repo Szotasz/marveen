@@ -1231,6 +1231,14 @@ function heredocOwnerRunsBody(before) {
   return false
 }
 
+// The same body reaches an interpreter when the heredoc's OUTPUT is piped into
+// one on the operator line: `cat <<'EOF' | bash` runs it like `bash <<'EOF'`.
+// `lineRest` is the text after the marker up to the end of that line.
+function heredocPipedIntoRunner(lineRest) {
+  const pipeline = lineRest.replace(/\|&/g, '|').split(/;|&&|\|\||&/)[0]
+  return pipeline.split('|').slice(1).some((stage) => heredocOwnerRunsBody(stage))
+}
+
 export function stripHeredocBodies(command) {
   const cmd = String(command ?? '')
   if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
@@ -1242,6 +1250,7 @@ export function stripHeredocBodies(command) {
       // A quoted body the shell will not expand is still executed when an
       // interpreter/remote-executor owns the redirect -- keep it visible then.
       if (heredocOwnerRunsBody(string.slice(0, offset))) return full
+      if (heredocPipedIntoRunner(body.split('\n', 1)[0])) return full
       return `${open}\n${close}`
     },
   )
@@ -3553,7 +3562,7 @@ function scanShellCode(command) {
     codes.push(c)
   }
   let bad = false
-  for (const seg of segs) {
+  for (const [k, seg] of segs.entries()) {
     const words = splitCodeWords(seg.own)
     const names = /\b(?:sh|bash|dash|zsh|ksh|ash|fish|csh|tcsh|mksh|rbash|yash|eval|trap|tmux|systemctl)\b/
     if (words == null) {
@@ -3569,7 +3578,9 @@ function scanShellCode(command) {
     let stdinBodies = null
     const stdinCodes = () => {
       if (stdinBodies == null) {
-        stdinBodies = (seg.bodies ?? []).map((b) => ({ value: b, ansi: false }))
+        // a heredoc of the command piped into this one reaches its stdin too (`cat <<'EOF' | bash`)
+        const piped = k > 0 && /^\|&?$/.test(segs[k - 1].sep ?? '') ? segs[k - 1].bodies ?? [] : []
+        stdinBodies = [...(seg.bodies ?? []), ...piped].map((b) => ({ value: b, ansi: false }))
         for (let j = 0; j < words.length; j++) {
           if (words[j].redirect && /^\d*<<<$/.test(words[j].value) && words[j + 1]?.target) stdinBodies.push(words[j + 1])
         }
