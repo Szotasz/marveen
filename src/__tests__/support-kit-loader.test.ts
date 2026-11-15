@@ -111,7 +111,7 @@ describe('running the kit copy of the routine', () => {
     })
     expect(direct.status).toBe(0)
     expect(viaKit).toEqual({ ok: true, code: 0, stdout: direct.stdout })
-    expect(direct.stdout.trimEnd().split('\n')).toHaveLength(9)
+    expect(direct.stdout.trimEnd().split('\n')).toHaveLength(11)
     // A call the routine does not know: its own exit code comes back.
     expect(await runKitRoutine({ supportDir, args: ['bogus'], timeoutMs: 30_000 })).toEqual({ ok: true, code: 2, stdout: '' })
   })
