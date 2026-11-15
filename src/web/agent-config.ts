@@ -994,10 +994,13 @@ export function agentMaySudo(name: string): boolean {
 // .env ROOT_CLAUDEMD_EXCLUDE_AGENTS: sub-agents that stop loading the install root's CLAUDE.md (the main agent's
 // persona, an ancestor of agents/<name>). Dropping it drops fleet rules too, so it comes from the same place and with
 // the same parsing as SUDO_AGENTS above, never from the agent's own agent-config.json. The main agent never qualifies.
+// A '*' entry means every sub-agent, including ones created later (it is not a valid agent name, so no clash).
 export function agentExcludesRootClaudeMd(name: string): boolean {
   if (name === MAIN_AGENT_ID) return false
   try {
-    return parseSudoAgents(readEnvFile(['ROOT_CLAUDEMD_EXCLUDE_AGENTS']).ROOT_CLAUDEMD_EXCLUDE_AGENTS).includes(name)
+    const raw = readEnvFile(['ROOT_CLAUDEMD_EXCLUDE_AGENTS']).ROOT_CLAUDEMD_EXCLUDE_AGENTS
+    if (typeof raw === 'string' && raw.split(/[\s,]+/).includes('*')) return true
+    return parseSudoAgents(raw).includes(name)
   } catch {
     return false
   }
